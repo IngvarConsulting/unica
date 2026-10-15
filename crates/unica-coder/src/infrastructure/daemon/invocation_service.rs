@@ -1099,20 +1099,7 @@ impl ActorBoundExecution {
             .sources
             .iter()
             .chain(parents.iter())
-            .map(|source| {
-                self.invocation.actor.validate_binding(&source.binding)?;
-                Ok(ActorReadSourceCapability {
-                    binding: source.binding.clone(),
-                    identity: format!(
-                        "{}:{}",
-                        self.invocation.workspace_identity_hash.as_str(),
-                        source.binding.source_set_name()
-                    ),
-                    read_identity: source.read_identity.clone(),
-                    deadline: lease.deadline,
-                    registration_cache: Arc::clone(&source.registration_cache),
-                })
-            })
+            .map(|source| self.issue_read_source(source, lease.deadline))
             .collect()
     }
 
@@ -1203,16 +1190,30 @@ impl ActorBoundExecution {
             .iter()
             .find(|binding| binding.source_set_name() == name)
             .ok_or_else(|| "the selected layout source was not admitted".to_string())?;
-        self.invocation.actor.validate_binding(binding)?;
-        Ok(ActorReadSourceCapability {
+        let source = ActorLogicalReadSourceLease {
             binding: binding.clone(),
-            identity: format!(
-                "{}:{name}",
-                self.invocation.workspace_identity_hash.as_str()
-            ),
             read_identity: uuid::Uuid::new_v4().to_string(),
-            deadline: lease.deadline,
             registration_cache: self.invocation.actor.source_artifacts(binding)?,
+        };
+        self.issue_read_source(&source, lease.deadline)
+    }
+
+    fn issue_read_source(
+        &self,
+        source: &ActorLogicalReadSourceLease,
+        read_deadline: ProviderDeadline,
+    ) -> Result<ActorReadSourceCapability, String> {
+        self.invocation.actor.validate_binding(&source.binding)?;
+        Ok(ActorReadSourceCapability {
+            binding: source.binding.clone(),
+            identity: format!(
+                "{}:{}",
+                self.invocation.workspace_identity_hash.as_str(),
+                source.binding.source_set_name()
+            ),
+            read_identity: source.read_identity.clone(),
+            deadline: read_deadline,
+            registration_cache: Arc::clone(&source.registration_cache),
         })
     }
 

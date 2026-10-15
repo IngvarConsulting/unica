@@ -4707,6 +4707,15 @@ fn main() {
 
         const CAPABILITY: &str = "ActorReadSourceCapability";
 
+        fn semantic_name(identifier: &syn::Ident) -> String {
+            use syn::ext::IdentExt;
+            identifier.unraw().to_string()
+        }
+
+        fn identifier_is(identifier: &syn::Ident, expected: &str) -> bool {
+            semantic_name(identifier) == expected
+        }
+
         fn tokens(node: &impl ToTokens) -> String {
             node.to_token_stream().to_string()
         }
@@ -5107,7 +5116,7 @@ fn main() {
                 "PartialEq",
             ];
             let is_proven_name =
-                |name: &syn::Ident| PROVEN_ATTRIBUTE_NAMES.contains(&name.to_string().as_str());
+                |name: &syn::Ident| PROVEN_ATTRIBUTE_NAMES.contains(&semantic_name(name).as_str());
             match tree {
                 syn::UseTree::Name(name) => is_proven_name(&name.ident),
                 syn::UseTree::Rename(rename) => {
@@ -5131,7 +5140,7 @@ fn main() {
 
         impl<'ast> Visit<'ast> for CapabilityPathFinder {
             fn visit_path_segment(&mut self, segment: &'ast syn::PathSegment) {
-                if segment.ident == CAPABILITY {
+                if identifier_is(&segment.ident, CAPABILITY) {
                     self.found = true;
                 }
                 syn::visit::visit_path_segment(self, segment);
@@ -5158,12 +5167,14 @@ fn main() {
 
         fn use_tree_mentions_capability(tree: &syn::UseTree) -> bool {
             match tree {
-                syn::UseTree::Name(name) => name.ident == CAPABILITY,
+                syn::UseTree::Name(name) => identifier_is(&name.ident, CAPABILITY),
                 syn::UseTree::Rename(rename) => {
-                    rename.ident == CAPABILITY || rename.rename == CAPABILITY
+                    identifier_is(&rename.ident, CAPABILITY)
+                        || identifier_is(&rename.rename, CAPABILITY)
                 }
                 syn::UseTree::Path(path) => {
-                    path.ident == CAPABILITY || use_tree_mentions_capability(path.tree.as_ref())
+                    identifier_is(&path.ident, CAPABILITY)
+                        || use_tree_mentions_capability(path.tree.as_ref())
                 }
                 syn::UseTree::Group(group) => group.items.iter().any(use_tree_mentions_capability),
                 syn::UseTree::Glob(_) => false,
@@ -5173,13 +5184,15 @@ fn main() {
         fn use_tree_can_shadow_inert_macro(tree: &syn::UseTree) -> bool {
             const INERT_MACROS: [&str; 3] = ["format", "matches", "vec"];
             match tree {
-                syn::UseTree::Name(name) => INERT_MACROS.contains(&name.ident.to_string().as_str()),
+                syn::UseTree::Name(name) => {
+                    INERT_MACROS.contains(&semantic_name(&name.ident).as_str())
+                }
                 syn::UseTree::Rename(rename) => {
-                    INERT_MACROS.contains(&rename.ident.to_string().as_str())
-                        || INERT_MACROS.contains(&rename.rename.to_string().as_str())
+                    INERT_MACROS.contains(&semantic_name(&rename.ident).as_str())
+                        || INERT_MACROS.contains(&semantic_name(&rename.rename).as_str())
                 }
                 syn::UseTree::Path(path) => {
-                    INERT_MACROS.contains(&path.ident.to_string().as_str())
+                    INERT_MACROS.contains(&semantic_name(&path.ident).as_str())
                         || use_tree_can_shadow_inert_macro(path.tree.as_ref())
                 }
                 syn::UseTree::Group(group) => {
@@ -5190,8 +5203,9 @@ fn main() {
         }
 
         fn inert_macro_payload_is_closed(mac: &syn::Macro) -> bool {
-            const FORBIDDEN_IDENTIFIERS: [&str; 14] = [
+            const FORBIDDEN_IDENTIFIERS: [&str; 15] = [
                 CAPABILITY,
+                "issue_read_source",
                 "const",
                 "enum",
                 "extern",
@@ -5206,11 +5220,17 @@ fn main() {
                 "type",
                 "use",
             ];
-            let payload = tokens(&mac.tokens);
-            !payload.contains('!')
-                && !payload
-                    .split_whitespace()
-                    .any(|token| FORBIDDEN_IDENTIFIERS.contains(&token))
+            fn tokens_are_closed(stream: proc_macro2::TokenStream) -> bool {
+                stream.into_iter().all(|token| match token {
+                    proc_macro2::TokenTree::Ident(identifier) => {
+                        !FORBIDDEN_IDENTIFIERS.contains(&semantic_name(&identifier).as_str())
+                    }
+                    proc_macro2::TokenTree::Punct(punctuation) => punctuation.as_char() != '!',
+                    proc_macro2::TokenTree::Group(group) => tokens_are_closed(group.stream()),
+                    proc_macro2::TokenTree::Literal(_) => true,
+                })
+            }
+            tokens_are_closed(mac.tokens.clone())
         }
 
         fn macro_is_proven_inert(mac: &syn::Macro) -> bool {
@@ -5231,9 +5251,10 @@ fn main() {
             function: Option<String>,
         }
 
-        struct CapabilityFunctionReference {
+        struct CapabilityFunctionReference<'ast> {
             owner_impl: Option<String>,
             signature: String,
+            method: Option<&'ast syn::ImplItemFn>,
         }
 
         #[derive(Default)]
@@ -5244,9 +5265,11 @@ fn main() {
             macro_references: Vec<String>,
             attribute_references: Vec<String>,
             item_references: Vec<String>,
-            function_references: Vec<CapabilityFunctionReference>,
+            function_references: Vec<CapabilityFunctionReference<'ast>>,
             constructions: Vec<CapabilityConstruction<'ast>>,
             capability_path_references: usize,
+            issuer_path_references: usize,
+            issuance_calls: Vec<(Option<String>, Option<String>, &'ast syn::ExprMethodCall)>,
             current_impl: Option<String>,
             current_function: Option<String>,
             item_macro_depth: usize,
@@ -5263,7 +5286,7 @@ fn main() {
                 if is_exact_cfg_test(&item.attrs) {
                     return;
                 }
-                if item.ident == CAPABILITY {
+                if identifier_is(&item.ident, CAPABILITY) {
                     self.declarations.push(item);
                 }
                 syn::visit::visit_item_struct(self, item);
@@ -5290,6 +5313,7 @@ fn main() {
                     self.function_references.push(CapabilityFunctionReference {
                         owner_impl: None,
                         signature: tokens(&item.sig),
+                        method: None,
                     });
                 }
                 let previous = self.current_function.replace(item.sig.ident.to_string());
@@ -5305,6 +5329,7 @@ fn main() {
                     self.function_references.push(CapabilityFunctionReference {
                         owner_impl: self.current_impl.clone(),
                         signature: tokens(&item.sig),
+                        method: Some(item),
                     });
                 }
                 let previous = self.current_function.replace(item.sig.ident.to_string());
@@ -5320,6 +5345,7 @@ fn main() {
                     self.function_references.push(CapabilityFunctionReference {
                         owner_impl: None,
                         signature: tokens(&item.sig),
+                        method: None,
                     });
                 }
                 syn::visit::visit_trait_item_fn(self, item);
@@ -5333,6 +5359,7 @@ fn main() {
                     self.function_references.push(CapabilityFunctionReference {
                         owner_impl: None,
                         signature: tokens(&item.sig),
+                        method: None,
                     });
                 }
                 syn::visit::visit_foreign_item_fn(self, item);
@@ -5410,9 +5437,9 @@ fn main() {
                     "Eq",
                     "PartialEq",
                 ];
-                if PROVEN_ATTRIBUTE_NAMES.contains(&item.ident.to_string().as_str())
+                if PROVEN_ATTRIBUTE_NAMES.contains(&semantic_name(&item.ident).as_str())
                     || item.rename.as_ref().is_some_and(|(_, rename)| {
-                        PROVEN_ATTRIBUTE_NAMES.contains(&rename.to_string().as_str())
+                        PROVEN_ATTRIBUTE_NAMES.contains(&semantic_name(rename).as_str())
                     })
                 {
                     self.attribute_references.push(tokens(item));
@@ -5459,7 +5486,7 @@ fn main() {
                     .path
                     .segments
                     .iter()
-                    .any(|segment| segment.ident == CAPABILITY);
+                    .any(|segment| identifier_is(&segment.ident, CAPABILITY));
                 let qualified_mentions = expression
                     .qself
                     .as_ref()
@@ -5474,9 +5501,23 @@ fn main() {
                 syn::visit::visit_expr_struct(self, expression);
             }
 
+            fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+                if identifier_is(&call.method, "issue_read_source") {
+                    self.issuance_calls.push((
+                        self.current_impl.clone(),
+                        self.current_function.clone(),
+                        call,
+                    ));
+                }
+                syn::visit::visit_expr_method_call(self, call);
+            }
+
             fn visit_path_segment(&mut self, segment: &'ast syn::PathSegment) {
-                if segment.ident == CAPABILITY {
+                if identifier_is(&segment.ident, CAPABILITY) {
                     self.capability_path_references += 1;
+                }
+                if identifier_is(&segment.ident, "issue_read_source") {
+                    self.issuer_path_references += 1;
                 }
                 syn::visit::visit_path_segment(self, segment);
             }
@@ -5504,9 +5545,9 @@ fn main() {
                 found.aliases
             ));
         }
-        if found.capability_path_references != 3 {
+        if found.capability_path_references != 5 {
             return Err(format!(
-                "actor read capability must have exactly three production path references (impl, read_sources return, singleton construction), found {}",
+                "actor read capability must have exactly five production path references (impl, three closed issuance signatures, singleton construction), found {}",
                 found.capability_path_references
             ));
         }
@@ -5516,25 +5557,131 @@ fn main() {
                 found.item_references
             ));
         }
-        let expected_read_sources_signature = tokens(
-            &syn::parse_str::<syn::Signature>(
-                "fn read_sources(&self,) -> Result<Vec<ActorReadSourceCapability>, String>",
-            )
-            .expect("the one actor capability return signature parses"),
-        );
-        let [read_sources_reference] = found.function_references.as_slice() else {
+        let expected_issuance_methods = [
+            r#"
+            #[allow(dead_code)]
+            pub(in crate::infrastructure::daemon) fn read_sources(
+                &self,
+            ) -> Result<Vec<ActorReadSourceCapability>, String> {
+                let ActorExecutionRevision::LogicalRead(lease) = &self.revision else {
+                    return Err("logical read sources are unavailable to a legacy invocation".to_string());
+                };
+                let parents = lease
+                    .parent_sources
+                    .lock()
+                    .map_err(|_| "parent read leases are poisoned")?;
+                lease.sources.iter().chain(parents.iter())
+                    .map(|source| self.issue_read_source(source, lease.deadline))
+                    .collect()
+            }
+            "#,
+            r#"
+            pub(in crate::infrastructure::daemon) fn layout_read_source(
+                &self,
+                name: &str,
+            ) -> Result<ActorReadSourceCapability, String> {
+                let ActorExecutionRevision::LayoutRead(lease) = &self.revision else {
+                    return Err("typed layout reads require a layout invocation".into());
+                };
+                let binding = lease.bindings.iter()
+                    .find(|binding| binding.source_set_name() == name)
+                    .ok_or_else(|| "the selected layout source was not admitted".to_string())?;
+                let source = ActorLogicalReadSourceLease {
+                    binding: binding.clone(),
+                    read_identity: uuid::Uuid::new_v4().to_string(),
+                    registration_cache: self.invocation.actor.source_artifacts(binding)?,
+                };
+                self.issue_read_source(&source, lease.deadline)
+            }
+            "#,
+            r#"
+            fn issue_read_source(
+                &self,
+                source: &ActorLogicalReadSourceLease,
+                read_deadline: ProviderDeadline,
+            ) -> Result<ActorReadSourceCapability, String> {
+                self.invocation.actor.validate_binding(&source.binding)?;
+                Ok(ActorReadSourceCapability {
+                    binding: source.binding.clone(),
+                    identity: format!(
+                        "{}:{}",
+                        self.invocation.workspace_identity_hash.as_str(),
+                        source.binding.source_set_name()
+                    ),
+                    read_identity: source.read_identity.clone(),
+                    deadline: read_deadline,
+                    registration_cache: Arc::clone(&source.registration_cache),
+                })
+            }
+            "#,
+        ]
+        .map(|expected| {
+            syn::parse_str::<syn::ImplItemFn>(expected)
+                .expect("the closed issuance method fixture parses")
+        });
+        if found.function_references.len() != expected_issuance_methods.len() {
             return Err(format!(
-                "actor read capability must appear in exactly one production function signature, found {}",
+                "actor read capability may appear only in the three closed issuance signatures, found {}",
                 found.function_references.len()
             ));
-        };
-        if read_sources_reference.owner_impl.as_deref() != Some("ActorBoundExecution")
-            || read_sources_reference.signature != expected_read_sources_signature
-        {
-            return Err(format!(
-                "only ActorBoundExecution::read_sources may return the capability; found owner={:?}, signature=`{}`",
-                read_sources_reference.owner_impl, read_sources_reference.signature
-            ));
+        }
+        for expected in &expected_issuance_methods {
+            let references = found
+                .function_references
+                .iter()
+                .filter(|reference| {
+                    reference.owner_impl.as_deref() == Some("ActorBoundExecution")
+                        && reference.signature == tokens(&expected.sig)
+                })
+                .collect::<Vec<_>>();
+            let [reference] = references.as_slice() else {
+                return Err(format!(
+                    "missing or duplicate closed issuance method `{}`",
+                    expected.sig.ident
+                ));
+            };
+            let Some(actual) = reference.method else {
+                return Err("capability issuance must be an inherent method".to_string());
+            };
+            // Visibility belongs to ImplItemFn, not syn::Signature. Comparing the
+            // signature alone would let a sibling call the private issuer.
+            if tokens(&actual.vis) != tokens(&expected.vis)
+                || actual
+                    .attrs
+                    .iter()
+                    .filter(|attribute| !attribute.path().is_ident("doc"))
+                    .map(tokens)
+                    .collect::<Vec<_>>()
+                    != expected.attrs.iter().map(tokens).collect::<Vec<_>>()
+                || tokens(&actual.block) != tokens(&expected.block)
+            {
+                return Err(format!(
+                    "issuance method `{}` changed its closed visibility, attributes or authority dataflow",
+                    expected.sig.ident
+                ));
+            }
+        }
+
+        if found.issuer_path_references != 0 || found.issuance_calls.len() != 2 {
+            return Err(
+                "the private issuer may only be called directly by the two closed read entries"
+                    .to_string(),
+            );
+        }
+        for (owner, function, call) in &found.issuance_calls {
+            let expected = match function.as_deref() {
+                Some("read_sources") => "self.issue_read_source(source, lease.deadline)",
+                Some("layout_read_source") => "self.issue_read_source(&source, lease.deadline)",
+                _ => return Err("private issuance escaped the two closed read entries".to_string()),
+            };
+            if owner.as_deref() != Some("ActorBoundExecution")
+                || !expression_is(&syn::Expr::MethodCall((*call).clone()), expected)
+            {
+                return Err(
+                    "private issuance must preserve the exact selected lease and deadline"
+                        .to_string(),
+                );
+            }
         }
 
         let [construction] = found.constructions.as_slice() else {
@@ -5545,14 +5692,14 @@ fn main() {
         };
         let expression = construction.expression;
         if construction.owner_impl.as_deref() != Some("ActorBoundExecution")
-            || construction.function.as_deref() != Some("read_sources")
+            || construction.function.as_deref() != Some("issue_read_source")
             || expression.qself.is_some()
             || !expression.path.is_ident(CAPABILITY)
             || !expression.attrs.is_empty()
             || expression.rest.is_some()
         {
             return Err(format!(
-                "only ActorBoundExecution::read_sources may construct the capability; found owner={:?}, function={:?}, expression=`{}`",
+                "only private ActorBoundExecution::issue_read_source may construct the capability; found owner={:?}, function={:?}, expression=`{}`",
                 construction.owner_impl,
                 construction.function,
                 tokens(expression)
@@ -5578,7 +5725,7 @@ fn main() {
         }
         let expected_construction_fields = std::collections::BTreeMap::from([
             ("binding", "source.binding.clone()"),
-            ("deadline", "lease.deadline"),
+            ("deadline", "read_deadline"),
             ("read_identity", "source.read_identity.clone()"),
             (
                 "registration_cache",
@@ -5821,6 +5968,8 @@ fn main() {
         actor_read_source_capability_ast_audit_rejects_replenished_deadline();
         actor_read_source_capability_ast_audit_rejects_side_effecting_profile_error_closure();
         actor_read_source_capability_ast_audit_rejects_substituted_construction_fields();
+        actor_read_source_capability_ast_audit_rejects_issuance_visibility_and_lazy_substitution();
+        actor_read_source_capability_issuer_privacy_is_enforced_by_rustc();
         actor_read_source_capability_ast_audit_skips_only_exact_cfg_test_scope();
     }
 
@@ -6740,15 +6889,15 @@ struct ActorLogicalReadLease {"#,
         let source = include_str!("invocation_service.rs");
         let hostile_fields = [
             (
-                "Ok(ActorReadSourceCapability {\n                    binding: source.binding.clone(),",
-                "Ok(ActorReadSourceCapability {\n                    binding: self.invocation.provider_root.clone(),",
+                "Ok(ActorReadSourceCapability {\n            binding: source.binding.clone(),",
+                "Ok(ActorReadSourceCapability {\n            binding: self.invocation.provider_root.clone(),",
             ),
             (
                 r#"identity: format!(
-                        "{}:{}",
-                        self.invocation.workspace_identity_hash.as_str(),
-                        source.binding.source_set_name()
-                    ),"#,
+                "{}:{}",
+                self.invocation.workspace_identity_hash.as_str(),
+                source.binding.source_set_name()
+            ),"#,
                 "identity: String::from(\"caller-supplied\"),",
             ),
             (
@@ -6756,7 +6905,7 @@ struct ActorLogicalReadLease {"#,
                 "read_identity: lease.sources[0].read_identity.clone(),",
             ),
             (
-                "deadline: lease.deadline,",
+                "deadline: read_deadline,",
                 "deadline: ProviderDeadline::from_budget(Duration::from_secs(120)),",
             ),
             (
@@ -6778,6 +6927,211 @@ struct ActorLogicalReadLease {"#,
         assert!(
             accepted.is_empty(),
             "substituted actor capability construction fields escaped: {accepted:?}"
+        );
+    }
+
+    #[test]
+    fn actor_read_source_capability_ast_audit_rejects_issuance_visibility_and_lazy_substitution() {
+        let source = include_str!("invocation_service.rs");
+        // First prove the valid source passes: a permanently red audit cannot
+        // demonstrate that any of these individual boundary mutations is caught.
+        audit_actor_read_source_capability_api(source).unwrap();
+        let substitutions = [
+            ("    fn issue_read_source(", "    pub(super) fn issue_read_source("),
+            ("    fn issue_read_source(", "    pub fn issue_read_source("),
+            (
+                "self.invocation.actor.validate_binding(&source.binding)?;\n        Ok(ActorReadSourceCapability",
+                "Ok(ActorReadSourceCapability",
+            ),
+            (
+                ".map(|source| self.issue_read_source(source, lease.deadline))",
+                ".map(|source| self.issue_read_source(source, ProviderDeadline::no_deadline()))",
+            ),
+            (
+                ".find(|binding| binding.source_set_name() == name)",
+                ".find(|binding| binding.source_set_name() == \"other\")",
+            ),
+            (
+                "let binding = lease\n            .bindings",
+                "let binding = self.invocation\n            .read_sources",
+            ),
+            (
+                "let source = ActorLogicalReadSourceLease {\n            binding: binding.clone(),",
+                "let source = ActorLogicalReadSourceLease {\n            binding: self.invocation.provider_root.clone(),",
+            ),
+            (
+                "registration_cache: self.invocation.actor.source_artifacts(binding)?,",
+                "registration_cache: self.invocation.actor.source_artifacts(&self.invocation.provider_root)?,",
+            ),
+            (
+                "registration_cache: self.invocation.actor.source_artifacts(binding)?,",
+                "registration_cache: Arc::new(RegistrationCache::default()),",
+            ),
+            (
+                "self.issue_read_source(&source, lease.deadline)",
+                "self.issue_read_source(&source, ProviderDeadline::no_deadline())",
+            ),
+            (
+                "self.issue_read_source(&source, lease.deadline)",
+                "self.issue_read_source(&lease.sources[0], lease.deadline)",
+            ),
+            (
+                "read_identity: uuid::Uuid::new_v4().to_string(),\n            registration_cache: self.invocation.actor.source_artifacts(binding)?,",
+                "read_identity: String::from(\"foreign\"),\n            registration_cache: self.invocation.actor.source_artifacts(binding)?,",
+            ),
+        ];
+        let escapes = [
+            r#"impl ActorBoundExecution {
+                fn foreign_issuance(&self, source: &ActorLogicalReadSourceLease) {
+                    let _ = self.issue_read_source(source, ProviderDeadline::no_deadline());
+                }
+            }"#,
+            r#"impl ActorBoundExecution {
+                fn foreign_issuance(&self, source: &ActorLogicalReadSourceLease) {
+                    let issue = ActorBoundExecution::issue_read_source;
+                    let _ = issue(self, source, ProviderDeadline::no_deadline());
+                }
+            }"#,
+            r#"impl ActorBoundExecution {
+                fn foreign_issuance(&self, source: &ActorLogicalReadSourceLease) {
+                    let _ = vec![self.issue_read_source(source, ProviderDeadline::no_deadline())];
+                }
+            }"#,
+            r#"impl ActorBoundExecution {
+                fn foreign_issuance(&self, source: &ActorLogicalReadSourceLease) {
+                    let _ = vec![self.r#issue_read_source(source, ProviderDeadline::no_deadline())];
+                }
+            }"#,
+            r#"impl ActorBoundExecution {
+                fn foreign_issuance(&self, source: &ActorLogicalReadSourceLease) {
+                    let _ = vec![r#ActorReadSourceCapability {
+                        binding: source.binding.clone(),
+                        identity: String::from("foreign"),
+                        read_identity: source.read_identity.clone(),
+                        deadline: ProviderDeadline::no_deadline(),
+                        registration_cache: Arc::clone(&source.registration_cache),
+                    }];
+                }
+            }"#,
+            r#"impl ActorBoundExecution {
+                fn foreign_issuance(&self, source: &ActorLogicalReadSourceLease) {
+                    let _ = self.r#issue_read_source(source, ProviderDeadline::no_deadline());
+                }
+            }"#,
+            r#"impl ActorBoundExecution {
+                fn foreign_issuance(&self, source: &ActorLogicalReadSourceLease) {
+                    let issue = ActorBoundExecution::r#issue_read_source;
+                    let _ = issue(self, source, ProviderDeadline::no_deadline());
+                }
+            }"#,
+            r#"impl ActorBoundExecution {
+                fn foreign_issuance(&self, source: &ActorLogicalReadSourceLease) {
+                    let _ = r#ActorReadSourceCapability {
+                        binding: source.binding.clone(),
+                        identity: String::from("foreign"),
+                        read_identity: source.read_identity.clone(),
+                        deadline: ProviderDeadline::no_deadline(),
+                        registration_cache: Arc::clone(&source.registration_cache),
+                    };
+                }
+            }"#,
+            r#"use external::x as r#vec;"#,
+            r#"use external::x as r#Clone;"#,
+        ];
+        for escape in escapes {
+            let hostile = format!("{source}\n{escape}");
+            syn::parse_file(&hostile).expect("an issuance escape is valid Rust syntax");
+            assert!(
+                audit_actor_read_source_capability_api(&hostile).is_err(),
+                "an inferred capability escaped the closed issuer calls: {escape}"
+            );
+        }
+        for (original, replacement) in substitutions {
+            let hostile = source.replacen(original, replacement, 1);
+            assert_ne!(hostile, source, "mutation must alter `{original}`");
+            syn::parse_file(&hostile).expect("each hostile dataflow must remain valid Rust syntax");
+            assert!(
+                audit_actor_read_source_capability_api(&hostile).is_err(),
+                "issuance mutation escaped the AST boundary: `{replacement}`"
+            );
+        }
+    }
+
+    #[test]
+    fn actor_read_source_capability_issuer_privacy_is_enforced_by_rustc() {
+        use quote::ToTokens;
+
+        let source = include_str!("invocation_service.rs");
+        audit_actor_read_source_capability_api(source).unwrap();
+        let file = syn::parse_file(source).unwrap();
+        let mut issuer = file
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                syn::Item::Impl(item) => Some(item),
+                _ => None,
+            })
+            .flat_map(|item| item.items.iter())
+            .find_map(|item| match item {
+                syn::ImplItem::Fn(method) if method.sig.ident == "issue_read_source" => {
+                    Some(method.clone())
+                }
+                _ => None,
+            })
+            .expect("the audited private issuer exists");
+        // Keep the production signature and real visibility; unrelated actor
+        // dependencies in the body are not needed to ask rustc about privacy.
+        issuer.block = syn::parse_quote!({ unimplemented!() });
+        let fixture = |issuer: &syn::ImplItemFn| {
+            format!(
+                r#"
+mod owner {{
+    pub(super) struct ActorBoundExecution;
+    pub(super) struct ActorLogicalReadSourceLease;
+    pub(super) struct ProviderDeadline;
+    pub(super) struct ActorReadSourceCapability;
+    impl ActorBoundExecution {{ {} }}
+}}
+mod sibling {{
+    fn forge(execution: &super::owner::ActorBoundExecution) {{
+        let _ = execution.issue_read_source(
+            &super::owner::ActorLogicalReadSourceLease,
+            super::owner::ProviderDeadline,
+        );
+    }}
+}}
+fn main() {{}}
+"#,
+                issuer.to_token_stream()
+            )
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("actor_issuer_privacy.rs");
+        let compile = |source: String| {
+            std::fs::write(&path, source).unwrap();
+            std::process::Command::new("rustc")
+                .arg("--edition=2021")
+                .arg("--emit=metadata")
+                .arg("--out-dir")
+                .arg(directory.path())
+                .arg(&path)
+                .output()
+                .expect("rustc is available to the Rust test suite")
+        };
+        let private = compile(fixture(&issuer));
+        let stderr = String::from_utf8_lossy(&private.stderr);
+        assert!(
+            !private.status.success()
+                && stderr.contains("E0624")
+                && stderr.contains("issue_read_source"),
+            "a sibling could call the actual private issuer: {stderr}"
+        );
+        issuer.vis = syn::parse_quote!(pub(super));
+        let exposed = compile(fixture(&issuer));
+        assert!(
+            exposed.status.success(),
+            "the visibility counterexample must compile: {}",
+            String::from_utf8_lossy(&exposed.stderr)
         );
     }
 
