@@ -1,0 +1,135 @@
+{
+  "id": "S-1483-stale-write-target",
+  "name": "saved-apply-reopens-write-target",
+  "issue": 1483,
+  "area": "apply",
+  "task": "Ожидающий план не удерживает заменяемый файл и после чужой публикации отказывает без записи",
+  "workspace": "tests/fixtures/acceptance/workspace-dcs",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema"
+      },
+      "expect": ["ok"],
+      "captures": {
+        "before": {
+          "kind": "sha256",
+          "file": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Query",
+        "ops": [
+          {
+            "op": "query.set",
+            "args": {
+              "values": {
+                "query": "ВЫБРАТЬ 99 КАК Category"
+              }
+            }
+          }
+        ]
+      },
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data/mode", "eq": "preview"}
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "eq": "$capture.before"
+        }
+      ],
+      "captures": {
+        "staleToken": {"pointer": "/data/executionToken"}
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Query",
+        "ops": [
+          {
+            "op": "query.patch",
+            "args": {
+              "values": {
+                "find": "\"Test\"",
+                "replace": "\" X \"",
+                "once": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data/mode", "eq": "preview"}
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "eq": "$capture.before"
+        }
+      ],
+      "captures": {
+        "freshToken": {"pointer": "/data/executionToken"}
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.freshToken"
+      },
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data/mode", "eq": "published"}
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "notEq": "$capture.before"
+        }
+      ],
+      "captures": {
+        "published": {
+          "kind": "sha256",
+          "file": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.staleToken"
+      },
+      "expect": ["refused"],
+      "refusal": "stale_revision: retained apply preimage changed: Reports/F05Report/Templates/F05Schema/Ext/Template.xml; input `Reports/F05Report/Templates/F05Schema/Ext/Template.xml`: source ",
+      "assertions": [
+        {
+          "pointer": "/diagnostics",
+          "eq": [
+            {
+              "code": "stale_revision",
+              "outcome": "fixCall",
+              "message": "retained apply preimage changed: Reports/F05Report/Templates/F05Schema/Ext/Template.xml; input `Reports/F05Report/Templates/F05Schema/Ext/Template.xml`: source write target; the plan retains its original state to prevent overwriting changes; request a fresh plan with apply(at, ops)"
+            }
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "eq": "$capture.published"
+        }
+      ]
+    }
+  ]
+}

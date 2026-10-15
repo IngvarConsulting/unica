@@ -1,0 +1,499 @@
+{
+  "id": "S-1413-event-source-order",
+  "issue": 1413,
+  "area": "Метаданные",
+  "task": "Дополнить источники подписки без перестановки прежних, удалить отдельные цели и проверить повтор без записи; сохранить прежнюю детерминированную замену",
+  "workspace": "tests/fixtures/acceptance/workspace-event-source-order",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "initial": {
+          "file": "src/EventSubscriptions/CorpusEventSubscription.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription",
+        "ops": [
+          {
+            "op": "relation.add",
+            "args": {
+              "values": {
+                "relation": "source",
+                "targets": [
+                  {
+                    "kind": "object",
+                    "metadataPath": "Catalog.ПримерБ"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/EventSubscriptions/CorpusEventSubscription.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/EventSubscriptions/CorpusEventSubscription.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Source/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "cfg:CatalogObject.ПримерВ",
+            "cfg:CatalogObject.ПримерА",
+            "cfg:CatalogObject.ПримерБ"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "source",
+              "at": "main:Catalog.ПримерВ",
+              "kind": "Catalog"
+            },
+            {
+              "relation": "source",
+              "at": "main:Catalog.ПримерА",
+              "kind": "Catalog"
+            },
+            {
+              "relation": "source",
+              "at": "main:Catalog.ПримерБ",
+              "kind": "Catalog"
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "added": {
+          "file": "src/EventSubscriptions/CorpusEventSubscription.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription",
+        "ops": [
+          {
+            "op": "relation.add",
+            "args": {
+              "values": {
+                "relation": "source",
+                "targets": [
+                  {
+                    "kind": "object",
+                    "metadataPath": "Catalog.ПримерБ"
+                  },
+                  {
+                    "kind": "object",
+                    "metadataPath": "Catalog.ПримерА"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/EventSubscriptions/CorpusEventSubscription.xml",
+          "kind": "sha256",
+          "eq": "$capture.added"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/EventSubscriptions/CorpusEventSubscription.xml",
+          "kind": "sha256",
+          "eq": "$capture.added"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription",
+        "ops": [
+          {
+            "op": "relation.remove",
+            "args": {
+              "values": {
+                "relation": "source",
+                "targets": [
+                  {
+                    "kind": "object",
+                    "metadataPath": "Catalog.ПримерА"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/EventSubscriptions/CorpusEventSubscription.xml",
+          "kind": "sha256",
+          "eq": "$capture.added"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/EventSubscriptions/CorpusEventSubscription.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Source/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "cfg:CatalogObject.ПримерВ",
+            "cfg:CatalogObject.ПримерБ"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "source",
+              "at": "main:Catalog.ПримерВ",
+              "kind": "Catalog"
+            },
+            {
+              "relation": "source",
+              "at": "main:Catalog.ПримерБ",
+              "kind": "Catalog"
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "removed": {
+          "file": "src/EventSubscriptions/CorpusEventSubscription.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription",
+        "ops": [
+          {
+            "op": "relation.remove",
+            "args": {
+              "values": {
+                "relation": "source",
+                "targets": [
+                  {
+                    "kind": "object",
+                    "metadataPath": "Catalog.ПримерА"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/EventSubscriptions/CorpusEventSubscription.xml",
+          "kind": "sha256",
+          "eq": "$capture.removed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/EventSubscriptions/CorpusEventSubscription.xml",
+          "kind": "sha256",
+          "eq": "$capture.removed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription",
+        "ops": [
+          {
+            "op": "relation.remove",
+            "args": {
+              "values": {
+                "relation": "source",
+                "targets": [
+                  {
+                    "kind": "object",
+                    "metadataPath": "Catalog.ПримерВ"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/EventSubscriptions/CorpusEventSubscription.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Source/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "cfg:CatalogObject.ПримерБ"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "source",
+              "at": "main:Catalog.ПримерБ",
+              "kind": "Catalog"
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "last": {
+          "file": "src/EventSubscriptions/CorpusEventSubscription.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription",
+        "ops": [
+          {
+            "op": "relation.remove",
+            "args": {
+              "values": {
+                "relation": "source",
+                "targets": [
+                  {
+                    "kind": "object",
+                    "metadataPath": "Catalog.ПримерБ"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/EventSubscriptions/CorpusEventSubscription.xml",
+          "kind": "sha256",
+          "eq": "$capture.last"
+        }
+      ],
+      "refusal": "bad_value: EventSubscription Source must retain at least one logical event source"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription",
+        "ops": [
+          {
+            "op": "relation.replace",
+            "args": {
+              "values": {
+                "relation": "source",
+                "targets": [
+                  {
+                    "kind": "object",
+                    "metadataPath": "Catalog.ПримерВ"
+                  },
+                  {
+                    "kind": "object",
+                    "metadataPath": "Catalog.ПримерА"
+                  },
+                  {
+                    "kind": "object",
+                    "metadataPath": "Catalog.ПримерБ"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/EventSubscriptions/CorpusEventSubscription.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Source/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "cfg:CatalogObject.ПримерА",
+            "cfg:CatalogObject.ПримерБ",
+            "cfg:CatalogObject.ПримерВ"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "meta"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/diagnosticCount",
+          "eq": 0
+        }
+      ]
+    }
+  ]
+}

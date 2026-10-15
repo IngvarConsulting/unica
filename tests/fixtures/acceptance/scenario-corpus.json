@@ -3951,7 +3951,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "formAttribute.add",
+        "op": "attribute.add",
         "args": {
          "items": [
           {
@@ -3980,7 +3980,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "formCommand.add",
+        "op": "command.add",
         "args": {
          "items": [
           {
@@ -4043,7 +4043,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "formCommand.add",
+        "op": "command.add",
         "args": {
          "items": [
           {
@@ -32597,7 +32597,7 @@
         }
        },
        {
-        "op": "formAttribute.add",
+        "op": "attribute.add",
         "args": {
          "at": "cf:Report.Sales.Form.Main",
          "items": [
@@ -32630,7 +32630,7 @@
         }
        },
        {
-        "op": "formCommand.add",
+        "op": "command.add",
         "args": {
          "at": "cf:Report.Sales.Form.Main",
          "items": [
@@ -39564,7 +39564,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "formCommand.add",
+        "op": "command.add",
         "args": {
          "items": [
           {
@@ -39579,7 +39579,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "bad_value: ops[0].args.items[0].use: unknown argument; `formCommand.add` writes only the arguments listed at `main:Catalog.Валюты.Form.ФормаЭлемента.Can.formCommand.add`",
+     "refusal": "bad_value: ops[0].args.items[0].use: unknown argument; `command.add` writes only the arguments listed at `main:Catalog.Валюты.Form.ФормаЭлемента.Can.command.add`",
      "assertions": [
       {
        "pointer": "/at",
@@ -39600,7 +39600,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "formCommand.add",
+        "op": "command.add",
         "args": {
          "items": [
           {
@@ -40287,7 +40287,7 @@
    "name": "form-attribute-add-refuses-unwritten-properties-and-writes-fill-check",
    "issue": 1447,
    "area": "Формы",
-   "task": "formAttribute.add отказывает bad_value на functionalOptions, которых писатель реквизита не пишет, без записи; проверка заполнения записывается тегом FillCheck, который загружает платформа, а не FillChecking",
+   "task": "attribute.add отказывает bad_value на functionalOptions, которых писатель реквизита не пишет, без записи; проверка заполнения записывается тегом FillCheck, который загружает платформа, а не FillChecking",
    "wire": [
     {
      "tool": "unica.view",
@@ -40310,7 +40310,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "formAttribute.add",
+        "op": "attribute.add",
         "args": {
          "items": [
           {
@@ -40328,7 +40328,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "bad_value: ops[0].args.items[0].functionalOptions: unknown argument; `formAttribute.add` writes only the arguments listed at `main:Catalog.Валюты.Form.ФормаЭлемента.Can.fo",
+     "refusal": "bad_value: ops[0].args.items[0].functionalOptions: unknown argument; `attribute.add` writes only the arguments listed at `main:Catalog.Валюты.Form.ФормаЭлемента.Can.attrib",
      "assertions": [
       {
        "pointer": "/at",
@@ -40336,7 +40336,7 @@
       },
       {
        "pointer": "/next/0/args/at",
-       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.formAttribute.add"
+       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.attribute.add"
       }
      ],
      "fileAssertions": [
@@ -40353,7 +40353,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "formAttribute.add",
+        "op": "attribute.add",
         "args": {
          "items": [
           {
