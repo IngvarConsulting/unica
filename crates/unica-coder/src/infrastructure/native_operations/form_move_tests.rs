@@ -32,14 +32,14 @@ fn named<'a>(doc: &'a Document<'a>, name: &str) -> Node<'a, 'a> {
 fn children(node: Node<'_, '_>) -> Vec<String> {
     node.children()
         .find(|n| n.has_tag_name((NS, "ChildItems")))
-        .unwrap()
-        .children()
+        .into_iter()
+        .flat_map(|items| items.children())
         .filter_map(|n| n.attribute("name").map(str::to_owned))
         .collect()
 }
 
-fn rejected(xml: &str, name: &str, into: Option<&str>, after: Option<&str>, field: &str) {
-    let error = move_item(
+fn rejection(xml: &str, name: &str, into: Option<&str>, after: Option<&str>) -> super::MoveError {
+    move_item(
         xml,
         &FormItemMove {
             name: name.into(),
@@ -50,7 +50,11 @@ fn rejected(xml: &str, name: &str, into: Option<&str>, after: Option<&str>, fiel
             after: after.map(str::to_owned),
         },
     )
-    .expect_err("invalid move must be rejected");
+    .expect_err("invalid move must be rejected")
+}
+
+fn rejected(xml: &str, name: &str, into: Option<&str>, after: Option<&str>, field: &str) {
+    let error = rejection(xml, name, into, after);
     assert_eq!(error.field, field, "{error:?}");
     assert!(!error.message.is_empty());
 }
@@ -264,11 +268,50 @@ fn cyclic_and_wrong_neighbor_moves_are_rejected() {
     let xml = form(
         r#"<ChildItems><UsualGroup name="Parent"><ChildItems><UsualGroup name="Child"/></ChildItems></UsualGroup><UsualGroup name="Other"/></ChildItems>"#,
     );
-    rejected(&xml, "Parent", Some("Parent"), None, "into");
-    rejected(&xml, "Parent", Some("Child"), None, "into");
+    for into in ["Parent", "Child"] {
+        let error = rejection(&xml, "Parent", Some(into), None);
+        assert_eq!(error.field, "into", "{error:?}");
+        assert_eq!(
+            error.message,
+            "an element cannot be moved into itself or its descendant"
+        );
+    }
     rejected(&xml, "Parent", None, Some("Parent"), "after");
     rejected(&xml, "Child", Some("Other"), Some("Parent"), "after");
     rejected(&xml, "Other", None, Some("Child"), "after");
+}
+
+#[test]
+fn moving_the_last_child_removes_empty_child_items_and_its_whitespace() {
+    let xml = form(
+        "\n\t<ChildItems>\n\t\t<UsualGroup name=\"Parent\">\n\t\t\t<ChildItems>\n\t\t\t\t<InputField name=\"Child\"/>\n\t\t\t</ChildItems>\n\t\t</UsualGroup>\n\t\t<UsualGroup name=\"Target\"/>\n\t</ChildItems>\n",
+    );
+    let result = moved(&xml, "Child", Some("Target"), None);
+    let doc = Document::parse(&result).unwrap();
+    let parent = named(&doc, "Parent");
+    assert!(
+        parent
+            .children()
+            .all(|node| !node.has_tag_name((NS, "ChildItems"))),
+        "{result}"
+    );
+    assert_eq!(
+        &result[parent.range()],
+        r#"<UsualGroup name="Parent"></UsualGroup>"#
+    );
+}
+
+#[test]
+fn parent_moved_after_its_last_child_gets_destination_indentation() {
+    let xml = form(
+        "\n\t<ChildItems>\n\t\t<UsualGroup name=\"Parent\">\n\t\t\t<ChildItems>\n\t\t\t\t<InputField name=\"Child\"/>\n\t\t\t</ChildItems>\n\t\t</UsualGroup>\n\t\t<UsualGroup name=\"ChildTarget\"/>\n\t\t<UsualGroup name=\"ParentTarget\">\n\t\t\t<ChildItems/>\n\t\t</UsualGroup>\n\t</ChildItems>\n",
+    );
+    let without_child = moved(&xml, "Child", Some("ChildTarget"), None);
+    let result = moved(&without_child, "Parent", Some("ParentTarget"), None);
+    assert!(
+        result.contains("\n\t\t\t\t<UsualGroup name=\"Parent\"></UsualGroup>\n\t\t\t</ChildItems>"),
+        "{result}"
+    );
 }
 
 #[test]
@@ -386,6 +429,23 @@ fn placement_matrix_matches_observed_platform_kinds_bindings_and_parents() {
                     "{}: {source_kind} to {destination_kind}: {result:?}",
                     case["id"]
                 );
+                let request = FormItemMove {
+                    name: "MovedChild".into(),
+                    source_path: None,
+                    into: if destination_kind == "Form" {
+                        FormMoveDestination::Root
+                    } else {
+                        FormMoveDestination::Named("TargetParent".into())
+                    },
+                    after: None,
+                };
+                let moved_result = move_item(&xml, &request);
+                assert_eq!(
+                    moved_result.is_ok(),
+                    expected == "allowed",
+                    "{} through move_item: {source_kind} to {destination_kind}: {moved_result:?}",
+                    case["id"]
+                );
                 if expected == "unsupported" {
                     assert!(
                         result
@@ -395,15 +455,19 @@ fn placement_matrix_matches_observed_platform_kinds_bindings_and_parents() {
                         "{}: unsupported case lost its typed reason",
                         case["id"]
                     );
+                    assert!(
+                        moved_result
+                            .as_ref()
+                            .unwrap_err()
+                            .message
+                            .contains("temporarily unsupported"),
+                        "{}: move_item lost the typed unsupported reason",
+                        case["id"]
+                    );
                 }
                 if expected == "allowed" {
                     let before = xml[source.range()].to_string();
-                    let result = moved(
-                        &xml,
-                        "MovedChild",
-                        (destination_kind != "Form").then_some("TargetParent"),
-                        None,
-                    );
+                    let result = moved_result.unwrap();
                     let moved_doc = Document::parse(&result).unwrap();
                     let actual = named(&moved_doc, "MovedChild");
                     assert_eq!(&result[actual.range()], before, "{}", case["id"]);
@@ -417,6 +481,19 @@ fn placement_matrix_matches_observed_platform_kinds_bindings_and_parents() {
     assert!(
         checked >= 100,
         "matrix unexpectedly lost coverage: {checked}"
+    );
+}
+
+#[test]
+fn incompatible_non_table_destination_has_no_table_binding_claim() {
+    let xml = form(
+        r#"<ChildItems><Pages name="Tabs"><ChildItems><Page name="Page"/></ChildItems></Pages><UsualGroup name="Target"/></ChildItems>"#,
+    );
+    let error = rejection(&xml, "Page", Some("Target"), None);
+    assert_eq!(error.field, "into");
+    assert_eq!(
+        error.message,
+        "Page cannot be placed in UsualGroup; this destination does not accept that element kind"
     );
 }
 

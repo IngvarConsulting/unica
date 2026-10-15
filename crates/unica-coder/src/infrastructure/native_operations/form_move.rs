@@ -221,6 +221,51 @@ fn cut_range(xml: &str, node: Node<'_, '_>) -> Range<usize> {
     range
 }
 
+/// Последний перенесённый элемент не оставляет секцию, которую платформа
+/// сама удаляет. Если `ChildItems` был единственным содержимым владельца,
+/// удаляем и оба пробельных узла: иначе отступ закрывающего тега переживёт
+/// последующий перенос владельца.
+fn emptied_child_items_range(
+    child_items: Node<'_, '_>,
+    source: Node<'_, '_>,
+) -> Option<Range<usize>> {
+    let becomes_empty = child_items.children().all(|node| {
+        node == source
+            || node.is_text()
+                && node
+                    .text()
+                    .is_some_and(|text| text.bytes().all(|byte| byte.is_ascii_whitespace()))
+    });
+    if !becomes_empty {
+        return None;
+    }
+    let mut range = child_items.range();
+    if let Some(previous) = child_items.prev_sibling().filter(|node| {
+        node.is_text()
+            && node
+                .text()
+                .is_some_and(|text| text.bytes().all(|byte| byte.is_ascii_whitespace()))
+    }) {
+        range.start = previous.range().start;
+    }
+    let owner_has_other_elements = child_items.parent_element().is_some_and(|owner| {
+        owner
+            .children()
+            .any(|node| node.is_element() && node != child_items)
+    });
+    if !owner_has_other_elements {
+        if let Some(next) = child_items.next_sibling().filter(|node| {
+            node.is_text()
+                && node
+                    .text()
+                    .is_some_and(|text| text.bytes().all(|byte| byte.is_ascii_whitespace()))
+        }) {
+            range.end = next.range().end;
+        }
+    }
+    Some(range)
+}
+
 fn line_ending(xml: &str) -> &'static str {
     if xml.contains("\r\n") {
         "\r\n"
@@ -366,7 +411,8 @@ pub(crate) fn move_item(xml: &str, request: &FormItemMove) -> Result<String, Mov
             return Ok(xml.to_string());
         }
     }
-    let cut = cut_range(xml, source);
+    let cut =
+        emptied_child_items_range(source_items, source).unwrap_or_else(|| cut_range(xml, source));
     let namespace_parent = target_items.unwrap_or(destination);
     let destination_prefix = target_items
         .map(|items| child_prefix(xml, items))
@@ -497,7 +543,12 @@ fn validate_placement(source: Node<'_, '_>, destination: Node<'_, '_>) -> Result
     if compatible {
         Ok(())
     } else {
-        Err(error("into", format!("{kind} cannot be placed in {parent} without conversion or losing its table binding")))
+        Err(error(
+            "into",
+            format!(
+                "{kind} cannot be placed in {parent}; this destination does not accept that element kind"
+            ),
+        ))
     }
 }
 

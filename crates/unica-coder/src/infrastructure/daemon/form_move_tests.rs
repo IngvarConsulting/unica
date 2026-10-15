@@ -164,6 +164,22 @@ fn canonical_form_move_composes_tabs_events_and_preserves_atomic_noops() {
     assert!(checked.ok, "{checked:?}");
     assert_eq!(checked.data.as_ref().unwrap()["diagnosticCount"], 0);
 
+    let cyclic = call(
+        ToolIdentity::Apply,
+        serde_json::json!({
+            "at": format!("{at}.Item.Tabs"),
+            "ops": [{"op":"item.move","args":{"values":{"into":"Primary"}}}]
+        }),
+    );
+    assert!(!cyclic.ok, "cyclic move was accepted: {cyclic:?}");
+    assert_eq!(cyclic.at.as_deref(), Some("ops[0].args.values.into"));
+    assert_eq!(cyclic.diagnostics[0]["code"], "bad_value", "{cyclic:?}");
+    assert_eq!(
+        cyclic.diagnostics[0]["message"],
+        "an element cannot be moved into itself or its descendant",
+        "{cyclic:?}"
+    );
+
     // Materialize the read model, then fail after a valid move: neither disk
     // contents nor the subsequent cached logical view may expose the move.
     let viewed_before = call(ToolIdentity::View, serde_json::json!({"at":at}));
@@ -303,4 +319,129 @@ fn canonical_form_move_composes_tabs_events_and_preserves_atomic_noops() {
         .as_ref()
         .is_none_or(|d| d.get("executionToken").is_none()));
     assert_eq!(std::fs::read(&form_path).unwrap(), invalid.as_bytes());
+}
+
+#[test]
+fn column_group_and_its_columns_are_addressable_through_the_wire() {
+    let workspace = tempfile::tempdir().unwrap();
+    let source = workspace.path().join("src");
+    std::fs::create_dir_all(source.join("Documents")).unwrap();
+    std::fs::write(
+        workspace.path().join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+    )
+    .unwrap();
+    std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name><DefaultLanguage>Language.Русский</DefaultLanguage></Properties><ChildObjects><Language>Русский</Language><Document>Order</Document></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+    std::fs::create_dir_all(source.join("Languages")).unwrap();
+    std::fs::write(
+            source.join("Languages/Русский.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Language uuid="33333333-3333-4333-8333-333333333333"><Properties><Name>Русский</Name><Comment/><LanguageCode>ru</LanguageCode></Properties></Language></MetaDataObject>"#,
+        )
+        .unwrap();
+    std::fs::write(
+            source.join("Documents/Order.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20"><Document uuid="11111111-1111-4111-8111-111111111111"><Properties><Name>Order</Name><Synonym/><Comment/></Properties><ChildObjects/></Document></MetaDataObject>"#,
+        )
+        .unwrap();
+    let runtime = V5CanonicalInvocationRuntime::new(
+        Arc::new(crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default()),
+        Arc::new(TokioClock),
+    );
+    let workspace_hint = std::fs::canonicalize(workspace.path()).unwrap();
+    let call = |tool, arguments| {
+        let request =
+            InvocationRequest::new(tool, arguments, workspace_hint.to_string_lossy(), 7_000)
+                .unwrap();
+        direct_v5(&runtime, request).unwrap()
+    };
+    let added = call(
+        ToolIdentity::Apply,
+        serde_json::json!({
+            "at": "main:Document.Order",
+            "ops": [{"op":"form.add","args":{"items":[{"name":"Main","type":"ObjectForm"}]}}]
+        }),
+    );
+    assert!(added.ok, "{added:?}");
+    let published = call(
+        ToolIdentity::Apply,
+        serde_json::json!({"executionToken":added.data.as_ref().unwrap()["executionToken"]}),
+    );
+    assert!(published.ok, "{published:?}");
+
+    let form_path = source.join("Documents/Order/Forms/Main/Ext/Form.xml");
+    let generated = std::fs::read_to_string(&form_path).unwrap();
+    let with_columns = generated.replace(
+        "\t<Attributes>\n",
+        "\t<ChildItems>\n\t\t<Table name=\"Rows\" id=\"1\">\n\t\t\t<ContextMenu name=\"RowsMenu\" id=\"5\"/>\n\t\t\t<AutoCommandBar name=\"RowsBar\" id=\"6\"/>\n\t\t\t<SearchStringAddition name=\"RowsSearch\" id=\"7\"/>\n\t\t\t<ViewStatusAddition name=\"RowsStatus\" id=\"8\"/>\n\t\t\t<SearchControlAddition name=\"RowsControl\" id=\"9\"/>\n\t\t\t<ChildItems>\n\t\t\t\t<ColumnGroup name=\"First\" id=\"2\">\n\t\t\t\t\t<ChildItems>\n\t\t\t\t\t\t<InputField name=\"Column\" id=\"3\">\n\t\t\t\t\t\t\t<ContextMenu name=\"ColumnMenu\" id=\"10\"/>\n\t\t\t\t\t\t\t<ExtendedTooltip name=\"ColumnTip\" id=\"11\"/>\n\t\t\t\t\t\t</InputField>\n\t\t\t\t\t</ChildItems>\n\t\t\t\t</ColumnGroup>\n\t\t\t\t<ColumnGroup name=\"Second\" id=\"4\"/>\n\t\t\t</ChildItems>\n\t\t</Table>\n\t</ChildItems>\n\t<Attributes>\n",
+    );
+    assert_ne!(with_columns, generated, "the generated form has ChildItems");
+    std::fs::write(&form_path, &with_columns).unwrap();
+
+    let form_at = "main:Document.Order.Form.Main";
+    let first_at = format!("{form_at}.Item.Rows.Item.First");
+    let column_at = format!("{first_at}.Item.Column");
+    let first = call(ToolIdentity::View, serde_json::json!({"at":first_at}));
+    assert!(first.ok, "ColumnGroup is absent from view: {first:?}");
+    assert_eq!(
+        first.data.as_ref().unwrap()["props"]["tag"],
+        "[ColumnGroup]"
+    );
+    let can = first.data.as_ref().unwrap()["can"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|entry| entry["op"].as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(can.contains("item.add"), "{first:?}");
+    assert!(can.contains("item.move"), "{first:?}");
+    assert!(can.contains("item.remove"), "{first:?}");
+    let column = call(ToolIdentity::View, serde_json::json!({"at":column_at}));
+    assert!(column.ok, "column is absent from its full path: {column:?}");
+    let can = column.data.as_ref().unwrap()["can"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|entry| entry["op"].as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(can.contains("item.move"), "{column:?}");
+    assert!(can.contains("item.remove"), "{column:?}");
+    assert!(!can.contains("item.add"), "{column:?}");
+
+    let moved = call(
+        ToolIdentity::Apply,
+        serde_json::json!({
+            "at": column_at,
+            "ops": [{"op":"item.move","args":{"values":{"into":"Second"}}}]
+        }),
+    );
+    assert!(
+        moved.ok,
+        "move through the full wire address failed: {moved:?}"
+    );
+    let published = call(
+        ToolIdentity::Apply,
+        serde_json::json!({"executionToken":moved.data.as_ref().unwrap()["executionToken"]}),
+    );
+    assert!(published.ok, "{published:?}");
+    let old = call(ToolIdentity::View, serde_json::json!({"at":column_at}));
+    assert!(!old.ok, "the old column path survived: {old:?}");
+    let new_at = format!("{form_at}.Item.Rows.Item.Second.Item.Column");
+    let new = call(ToolIdentity::View, serde_json::json!({"at":new_at}));
+    assert!(new.ok, "the new column path is absent: {new:?}");
+    let xml = std::fs::read_to_string(&form_path).unwrap();
+    let doc = roxmltree::Document::parse(xml.trim_start_matches('\u{feff}')).unwrap();
+    let first = doc
+        .descendants()
+        .find(|node| node.attribute("name") == Some("First"))
+        .unwrap();
+    assert!(
+        first
+            .children()
+            .all(|node| !node.has_tag_name("ChildItems")),
+        "{xml}"
+    );
 }

@@ -180,7 +180,7 @@
         ]
       },
       "expect": ["refused"],
-      "refusal": "bad_value: InputField cannot be placed in AutoCommandBar without conversion or losing its table binding",
+      "refusal": "bad_value: InputField cannot be placed in AutoCommandBar; this destination does not accept that element kind",
       "assertions": [
         {"pointer": "/ok", "eq": false},
         {"pointer": "/at", "eq": "ops[0].args.values.into"}

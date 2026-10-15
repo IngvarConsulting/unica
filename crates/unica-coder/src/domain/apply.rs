@@ -999,7 +999,7 @@ impl TemplateFormat {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FormItemRole {
     /// Принимает вложенные элементы: группа, страницы, страница, таблица,
-    /// командная панель, группа кнопок, подменю.
+    /// группа колонок, командная панель, группа кнопок, подменю.
     Container,
     /// Автоматическая командная панель формы или таблицы: в неё добавляются
     /// кнопки, но удалить её отдельно от владельца нельзя.
@@ -1019,9 +1019,8 @@ impl FormItemRole {
             .unwrap_or_default();
         match kind {
             "AutoCommandBar" => Self::AutoCommandBar,
-            "Group" | "Table" | "CmdBar" | "Pages" | "Page" | "Popup" | "BtnGroup" => {
-                Self::Container
-            }
+            "Group" | "Table" | "ColumnGroup" | "CmdBar" | "Pages" | "Page" | "Popup"
+            | "BtnGroup" => Self::Container,
             _ => Self::Leaf,
         }
     }
@@ -1246,7 +1245,7 @@ impl OperationDescriptor {
     }
 
     /// Фильтр роли элемента формы. Элемент добавляется только в контейнер
-    /// (группу, страницы, страницу, таблицу, командную панель), а
+    /// (группу, страницы, страницу, таблицу, группу колонок, командную панель), а
     /// автоматическая командная панель — часть своего владельца и не
     /// удаляется. `None` — роль не установлена.
     pub(crate) fn admits_form_item(self, role: Option<FormItemRole>) -> bool {
@@ -3887,6 +3886,7 @@ mod tests {
             ("[Group:V]", true, true),
             ("[Group]", true, true),
             ("[Table]", true, true),
+            ("[ColumnGroup]", true, true),
             ("[Pages]", true, true),
             ("[Page]", true, true),
             ("[CmdBar]", true, true),
