@@ -403,7 +403,8 @@ fn project_module_with_specs(
         events,
         compilation,
         body,
-    ))
+    )
+    .with_source(source.to_string()))
 }
 
 fn available_module_event(
@@ -609,6 +610,7 @@ fn method_projections(
             .chain([header_line])
             .min()
             .unwrap_or(header_line);
+        let text_from_line = documentation_comment_start(lines, from_line);
         let body_from_line = signature_end_line.saturating_add(1);
         let body_to_line = closing_line.saturating_sub(1);
         let compilation_count = compilation
@@ -664,6 +666,7 @@ fn method_projections(
                 compilation_count,
                 from_line,
                 to_line: closing_line,
+                text_from_line,
                 body_from_line,
                 body_to_line,
             },
@@ -719,6 +722,22 @@ fn extension_projection(
         directive,
         target_at,
     })
+}
+
+/// Первая строка документирующего комментария метода для его `Body`:
+/// подряд идущие строки `//` непосредственно над первой строкой метода
+/// (директивой, аннотацией или объявлением). Пустая строка и инструкция
+/// препроцессора обрывают комментарий; без комментария текст начинается
+/// с самого метода.
+fn documentation_comment_start(lines: &LineIndex<'_>, from_line: usize) -> usize {
+    let mut start = from_line;
+    while start > 1 {
+        match lines.text(start - 1) {
+            Some(text) if text.trim_start().starts_with("//") => start -= 1,
+            _ => break,
+        }
+    }
+    start
 }
 
 fn documentation_block(lines: &LineIndex<'_>, header_line: usize) -> Option<String> {
@@ -2054,15 +2073,13 @@ mod tests {
             multiline.doc.as_deref(),
             Some("Exact multiline declaration.\nThe body starts after the complete signature.")
         );
-        let body = projection
-            .method_body(&multiline.at, None, 20, None)
-            .unwrap();
+        assert_eq!(multiline.text_from_line, 1);
         assert_eq!(
-            body.lines
-                .iter()
-                .map(|line| (line.line, line.text.as_str()))
-                .collect::<Vec<_>>(),
-            vec![(7, "    Сообщить(\"body\");")]
+            projection.method_text(multiline),
+            SYNTAX_BOUNDARIES
+                .split_inclusive('\n')
+                .take(8)
+                .collect::<String>()
         );
 
         let empty = projection
@@ -2070,13 +2087,12 @@ mod tests {
             .iter()
             .find(|method| method.name == "Пустая")
             .unwrap();
-        assert!(projection
-            .method_body(&empty.at, None, 20, None)
-            .unwrap()
-            .lines
-            .is_empty());
+        assert_eq!(
+            projection.method_text(empty),
+            "Процедура Пустая(\n)\nКонецПроцедуры\n"
+        );
         let serialized = serde_json::to_value(empty).unwrap();
-        assert_eq!(serialized["branches"][1]["count"], 0);
+        assert_eq!(serialized["branches"][1]["count"], 3);
     }
 
     #[test]
@@ -2108,7 +2124,7 @@ mod tests {
     }
 
     #[test]
-    fn crlf_projection_preserves_source_signature_but_body_lines_drop_record_terminators() {
+    fn crlf_method_text_keeps_the_source_line_endings() {
         let source = SYNTAX_BOUNDARIES.replace('\n', "\r\n");
         let projection = project("main:CommonModule.ЗаказыСервер", Some(&source));
         let multiline = projection
@@ -2120,15 +2136,10 @@ mod tests {
             multiline.signature.contains("\r\n"),
             "source-proven signatures retain the source EOL profile"
         );
-        let body = projection
-            .method_body(&multiline.at, None, 100, None)
-            .unwrap();
-        assert!(
-            body.lines
-                .iter()
-                .all(|line| !line.text.contains(['\r', '\n'])),
-            "BodyLine.text must not expose record terminators: {:?}",
-            body.lines
+        assert_eq!(projection.source_text(), source);
+        assert_eq!(
+            projection.method_text(multiline),
+            source.split_inclusive('\n').take(8).collect::<String>()
         );
     }
 
@@ -3064,14 +3075,8 @@ mod tests {
             .unwrap();
         assert_eq!(method.signature, "Процедура ОбработатьGET(Запрос, Ответ)");
         assert_eq!(
-            projection
-                .method_body(&method.at, None, 20, None)
-                .unwrap()
-                .lines
-                .iter()
-                .map(|line| line.text.as_str())
-                .collect::<Vec<_>>(),
-            vec!["    Ответ.КодСостояния = 200;"]
+            projection.method_text(method),
+            "Процедура ОбработатьGET(Запрос, Ответ)\n    Ответ.КодСостояния = 200;\nКонецПроцедуры\n"
         );
         assert!(declarative_source(&case.owner).contains(&method.signature));
     }
@@ -3178,11 +3183,7 @@ mod tests {
             let method = &projection.methods()[0];
             assert_eq!(method.compile.contexts.is_none(), missing < 4);
             assert_eq!(projection.compilation()[0].contexts.is_none(), missing < 4);
-            assert!(!projection
-                .method_body(&method.at, None, 100, None)
-                .unwrap()
-                .lines
-                .is_empty());
+            assert!(projection.method_text(method).contains("Сообщить(1);"));
         }
         let mut no_execution = known;
         no_execution.server = Some(false);
@@ -3279,40 +3280,56 @@ mod tests {
     }
 
     #[test]
-    fn explicit_body_preserves_lines_paginates_and_filters_without_method_duplication() {
-        let projection = project(
-            "main:Document.Заказ.Form.ФормаДокумента.Module.Form",
-            Some(COMPLEX),
+    fn method_text_spans_doc_comment_directive_declaration_and_end_without_preprocessor() {
+        let source = concat!(
+            "// Отделён пустой строкой: не входит.\n",
+            "\n",
+            "// Документирует метод.\n",
+            "//\tВторая строка.\n",
+            "&НаСервере\n",
+            "Процедура Документированная() Экспорт\n",
+            "    Сообщить(1);\n",
+            "КонецПроцедуры\n",
+            "\n",
+            "// Комментарий над препроцессором не относится к методу.\n",
+            "#Если Сервер Тогда\n",
+            "Функция ВнутриУсловия()\n",
+            "    Возврат 1;\n",
+            "КонецФункции\n",
+            "#КонецЕсли\n",
+            "// Висящий комментарий.\n",
+            "\n",
+            "Процедура БезКомментария()\n",
+            "КонецПроцедуры",
         );
-        let method = projection
-            .methods()
-            .iter()
-            .find(|method| method.name == "ОбщийОбработчик")
-            .unwrap();
-        let all = projection.method_body(&method.at, None, 2, None).unwrap();
-        assert_eq!(all.lines.len(), 2);
-        assert!(all.next.is_some());
-        let next = projection
-            .method_body(&method.at, None, 100, all.next.as_deref())
-            .unwrap();
-        assert!(next.lines.first().unwrap().line > all.lines.last().unwrap().line);
-        let client = projection
-            .method_body(&method.at, Some("webClient"), 100, None)
-            .unwrap();
-        let server = projection
-            .method_body(&method.at, Some("server"), 100, None)
-            .unwrap();
-        assert!(client.lines.iter().any(|line| line.text.contains("web")));
-        assert!(!client
-            .lines
-            .iter()
-            .any(|line| line.text.contains("other client")));
-        assert!(server.lines.is_empty());
+        let projection = project("main:CommonModule.ЗаказыСервер", Some(source));
+        let text = |name: &str| {
+            let method = projection
+                .methods()
+                .iter()
+                .find(|method| method.name == name)
+                .unwrap();
+            projection.method_text(method)
+        };
+        assert_eq!(
+            text("Документированная"),
+            "// Документирует метод.\n//\tВторая строка.\n&НаСервере\nПроцедура Документированная() Экспорт\n    Сообщить(1);\nКонецПроцедуры\n"
+        );
+        assert_eq!(
+            text("ВнутриУсловия"),
+            "Функция ВнутриУсловия()\n    Возврат 1;\nКонецФункции\n"
+        );
+        // Последняя строка файла без разделителя остаётся без него.
+        assert_eq!(
+            text("БезКомментария"),
+            "Процедура БезКомментария()\nКонецПроцедуры"
+        );
+        assert_eq!(projection.source_text(), source);
         assert_eq!(
             projection
                 .methods()
                 .iter()
-                .filter(|candidate| candidate.name == method.name)
+                .filter(|candidate| candidate.name == "Документированная")
                 .count(),
             1
         );

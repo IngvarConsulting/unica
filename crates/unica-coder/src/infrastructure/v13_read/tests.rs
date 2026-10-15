@@ -24,7 +24,6 @@ use crate::infrastructure::v13_read_port::{
 use serde::Deserialize;
 use serde_json::json;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -3712,71 +3711,75 @@ fn a_structural_template_read_never_serves_a_cached_payload_to_a_content_read() 
 /// `Body` отдаёт исходные строки с их номерами: среза по контексту у `view`
 /// нет (#1374), и клиентский код формы остаётся в ответе.
 #[test]
-fn module_body_returns_every_source_line_with_its_number() {
-    let fixture = RealReaderFixture::new();
-    let source = fs::read_to_string(
-        fixture
-            .source
-            .join("Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl"),
-    )
-    .unwrap();
-    let expected = source
-        .trim_start_matches('\u{feff}')
-        .lines()
-        .enumerate()
-        .map(|(index, text)| json!({"line": index + 1, "text": text}))
-        .collect::<Vec<_>>();
-    assert!(!expected.is_empty());
-    let result = fixture
-        .view_service()
-        .view(ViewRequest::new("main:Report.ParityReport.Form.MainForm.Module.Form.Body").unwrap());
-
-    assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
-    assert_eq!(result.data.as_ref().unwrap()["items"], json!(expected));
-}
-
-#[test]
-#[ignore = "blocked by #1119: BSL Body still reads the complete module under an 8 MiB file cap"]
-fn ordinary_bsl_read_over_eight_mib_reassembles_every_body_line() {
+fn module_body_returns_the_source_text_byte_for_byte() {
     let fixture = RealReaderFixture::new();
     let module = fixture
         .source
         .join("Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl");
-    let mut file = std::io::BufWriter::new(fs::File::create(module).unwrap());
-    writeln!(file, "Процедура ПрочитатьБольшойМодуль()").unwrap();
-    for _ in 0..9 {
-        writeln!(file, "//{}", "я".repeat(512 * 1024)).unwrap();
-    }
-    writeln!(file, "КонецПроцедуры").unwrap();
-    file.flush().unwrap();
-    drop(file);
-
-    let service = fixture.view_service();
     let at = "main:Report.ParityReport.Form.MainForm.Module.Form.Body";
-    let mut cursor = None;
-    let mut observed_lines = Vec::new();
-    loop {
-        let mut request = ViewRequest::new(at).unwrap().with_limit(2).unwrap();
-        if let Some(previous) = cursor.take() {
-            request = request.with_cursor(previous);
-        }
-        let page = service.view(request);
-        assert!(page.ok, "large Body page failed");
-        for item in page.data.as_ref().unwrap()["items"].as_array().unwrap() {
-            let line = item["line"].as_u64().unwrap();
-            let text = item["text"].as_str().expect("Body line must carry text");
-            observed_lines.push(line);
-            if (2..=10).contains(&line) {
-                assert!(text.starts_with("//"));
-                assert_eq!(text.chars().count(), 2 + 512 * 1024);
-            }
-        }
-        cursor = page.cursor;
-        if cursor.is_none() {
-            break;
-        }
+    let original = fs::read_to_string(&module).unwrap();
+    // Начальные U+FEFF снимаются, CRLF, табуляция, кавычки и отсутствие
+    // разделителя в конце файла сохраняются как есть.
+    let crlf = "\u{feff}// Комментарий \"формы\".\r\nПроцедура А()\r\n\tВозврат;\r\nКонецПроцедуры";
+    for source in [original.as_str(), crlf] {
+        fs::write(&module, source).unwrap();
+        let result = fixture.view_service().view(ViewRequest::new(at).unwrap());
+        assert!(result.ok, "module Body must be read");
+        assert_eq!(
+            result.source_text.as_deref(),
+            Some(source.trim_start_matches('\u{feff}'))
+        );
+        let data = result.data.as_ref().unwrap();
+        assert_eq!(data["at"], at);
+        assert_eq!(data["kind"], "Body");
+        assert!(data.get("items").is_none());
+        assert!(result.cursor.is_none());
     }
-    assert_eq!(observed_lines, (1..=11).collect::<Vec<_>>());
+}
+
+#[test]
+fn view_never_returns_module_text_above_the_largest_host_budget() {
+    let fixture = RealReaderFixture::new();
+    let module = fixture
+        .source
+        .join("Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl");
+    let at = "main:Report.ParityReport.Form.MainForm.Module.Form.Body";
+    // 72 КиБ — наибольший бюджет известного хоста; число записано здесь
+    // явно, чтобы смена предела в коде была видна этой проверке.
+    let mut source = vec![b'a'; 73_728];
+    fs::write(&module, &source).unwrap();
+    let whole = fixture.view_service().view(ViewRequest::new(at).unwrap());
+    assert_eq!(whole.source_text.as_ref().map(String::len), Some(73_728));
+    source.push(b'a');
+    fs::write(&module, &source).unwrap();
+    let refused = fixture.view_service().view(ViewRequest::new(at).unwrap());
+    assert_eq!(refused.diagnostics[0]["code"], "result_too_large");
+    assert!(refused.source_text.is_none());
+}
+
+#[test]
+fn module_body_beyond_the_limit_is_still_checked_as_utf8_in_full() {
+    let fixture = RealReaderFixture::new();
+    let module = fixture
+        .source
+        .join("Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl");
+    let at = "main:Report.ParityReport.Form.MainForm.Module.Form.Body";
+    let mut source = vec![b'a'; crate::application::v13::source_text::MAX_SOURCE_TEXT_BYTES + 1];
+    let valid = fixture.view_service();
+    fs::write(&module, &source).unwrap();
+    let oversized = valid.view(ViewRequest::new(at).unwrap());
+    assert_eq!(oversized.diagnostics[0]["code"], "result_too_large");
+    // Неверный байт за пределом не теряется: отказ называет испорченный
+    // исходник, а не размер.
+    source.push(0xff);
+    fs::write(&module, &source).unwrap();
+    let broken = fixture.view_service().view(ViewRequest::new(at).unwrap());
+    assert!(!broken.ok);
+    assert_ne!(
+        broken.diagnostics[0]["code"], "result_too_large",
+        "a broken byte beyond the limit must not be reported as size"
+    );
+    assert!(broken.source_text.is_none());
 }
 
 #[test]

@@ -52,6 +52,7 @@ from tests.ci.acceptance_controls import (
     load_corpus,
     matches_step,
     substitute_capture,
+    tool_result,
     validate_controls,
 )
 
@@ -181,7 +182,7 @@ def classify(response, context):
         if "deadline expired" in message:
             return "provider", message[:160]
         return "error", json.dumps(response, ensure_ascii=False)[:200]
-    structured = response.get("result", {}).get("structuredContent")
+    structured = tool_result(response)
     if structured is None:
         return "error", "no structuredContent"
     if structured.get("rev"):
@@ -524,13 +525,13 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
 
     def test_corpus_is_uniquely_numbered_and_not_missing_steps(self) -> None:
         scenarios = self.corpus["scenarios"]
-        self.assertEqual(len(scenarios), 439)
+        self.assertEqual(len(scenarios), 440)
         # Исполнение apply следует за планированием с сохранением токена.
-        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 1203,
-            "a wire step went missing: the corpus freezes 1203 steps",
+        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 1207,
+            "a wire step went missing: the corpus freezes 1207 steps",
         )
         identifiers = [scenario["id"] for scenario in scenarios]
-        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 440)])
+        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 441)])
 
     def test_all_scenarios_have_an_executable_profile(self) -> None:
         source = {s["id"] for s in select_profile(self.corpus, "source")["scenarios"]}
@@ -875,7 +876,7 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None):
                     # node proves the verdict it froze; without these two
                     # checks a typo in an address or a failing validator
                     # would pass as the intended outcome.
-                    structured = response.get("result", {}).get("structuredContent") or {}
+                    structured = tool_result(response) or {}
                     verification.append({"tool": step["tool"], "args": arguments, "result": structured})
                     failures = content_mismatches(step, structured, actual, note, server.workspace, context)
                     if not failures:

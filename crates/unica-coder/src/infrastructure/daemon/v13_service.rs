@@ -4691,9 +4691,7 @@ fn view_error_result(
     // Маршрут переносится вместе с кодом и уточнением: иначе два пути наружу
     // расходятся, и отказ теряет альтернативу в зависимости от того, каким
     // из них он вышел.
-    if let Some(next) = error.next() {
-        result.next.push(next.clone());
-    }
+    result.next.extend(error.next().iter().cloned());
     result
 }
 
@@ -5634,7 +5632,7 @@ mod tests {
         ] {
             for (suffix, kind, from, to) in [
                 (".Method.Ping", "Method", 3, 65),
-                (".Method.Ping.Body", "Body", 4, 64),
+                (".Method.Ping.Body", "Body", 3, 65),
                 (".Body", "Body", 1, 72),
                 (".Region.A.Region.Inner", "Region", 2, 66),
                 (".Region.B.Region.Inner", "Region", 69, 71),
@@ -5873,7 +5871,8 @@ mod tests {
     fn resolve_exact_method_spans_annotations_through_its_closing_line() {
         use crate::application::invocation_store::ToolIdentity;
         let workspace = resolve_exact_workspace();
-        // Документация и пустая строка выше аннотаций методу не принадлежат.
+        // Документация, отделённая пустой строкой, методу не принадлежит;
+        // прилегающая входит в диапазон `Body` — тот же, что текст `view`.
         let module = concat!(
             "// Документация.\n\n&НаСервере\n&Перед(\"Ping\")\nПроцедура Annotated(\n",
             "    Value) Экспорт\n    Сообщить(Value);\nКонецПроцедуры\n\n",
@@ -5899,7 +5898,7 @@ mod tests {
                 (
                     ".Method.Annotated.Body",
                     "Body",
-                    json!({"state":"range","from":7,"to":7}),
+                    json!({"state":"range","from":3,"to":8}),
                 ),
                 (
                     ".Method.Empty",
@@ -5909,7 +5908,7 @@ mod tests {
                 (
                     ".Method.Empty.Body",
                     "Body",
-                    json!({"state":"notLineBased"}),
+                    json!({"state":"range","from":10,"to":11}),
                 ),
                 (
                     ".Method.Inline",
@@ -5931,6 +5930,11 @@ mod tests {
                     "Method",
                     json!({"state":"range","from":21,"to":24}),
                 ),
+                (
+                    ".Method.Documented.Body",
+                    "Body",
+                    json!({"state":"range","from":19,"to":24}),
+                ),
                 (".Body", "Body", json!({"state":"range","from":1,"to":24})),
             ] {
                 let at = format!("main:{prefix}{suffix}");
@@ -5942,7 +5946,7 @@ mod tests {
                 assert_eq!(data["path"], path, "{at}: {result:?}");
                 assert_eq!(data["lines"], lines, "{at}: {result:?}");
             }
-            // View keeps naming the body lines of the method.
+            // View names the same lines as the method text and its resolve.
             let view = invoke_exact_read(
                 workspace.path(),
                 ToolIdentity::View,
@@ -5950,7 +5954,7 @@ mod tests {
             );
             assert!(view.ok, "{view:?}");
             let props = &view.data.as_ref().unwrap()["props"];
-            assert_eq!((&props["line"], &props["endLine"]), (&json!(7), &json!(7)));
+            assert_eq!((&props["line"], &props["endLine"]), (&json!(3), &json!(8)));
         }
     }
 
@@ -5973,14 +5977,18 @@ mod tests {
             std::fs::write(&file, source).unwrap();
             let view = invoke_exact_read(workspace.path(), ToolIdentity::View, at.clone());
             assert!(view.ok, "{source:?}: {view:?}");
-            let items = view.data.as_ref().unwrap()["items"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default();
-            let viewed = items.last().map_or(
-                json!({"state":"notLineBased"}),
-                |last| json!({"state":"range","from":1,"to":last["line"]}),
-            );
+            // Строки текста `Body` агент считает сам — так же, как `str::lines`.
+            let lines = view
+                .source_text
+                .as_deref()
+                .unwrap_or_default()
+                .lines()
+                .count();
+            let viewed = if lines == 0 {
+                json!({"state":"notLineBased"})
+            } else {
+                json!({"state":"range","from":1,"to":lines})
+            };
             assert_eq!(viewed, expected, "view numbering of {source:?}");
             let resolved = invoke_exact_read(workspace.path(), ToolIdentity::Resolve, at.clone());
             assert!(resolved.ok, "{source:?}: {resolved:?}");

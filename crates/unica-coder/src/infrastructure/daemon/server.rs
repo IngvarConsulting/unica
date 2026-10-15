@@ -7582,7 +7582,7 @@ struct ActorLogicalReadLease {"#,
             (ToolIdentity::View, serde_json::json!({}), false),
             (
                 ToolIdentity::View,
-                serde_json::json!({"at": "main:Catalog.Items.Module.Object.Body", "limit": 1}),
+                serde_json::json!({"at": "main:Catalog.Items.Module.Object.Event", "limit": 1}),
                 true,
             ),
             (

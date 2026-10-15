@@ -1,5 +1,5 @@
 use crate::application::ports::{MetaLocalInfo, MetadataChildProfile};
-use crate::application::v13::body_snapshot::BodySnapshot;
+use crate::application::v13::source_text::{ModuleText, ModuleTextAccumulator};
 use crate::application::v13::view::ViewError;
 use crate::domain::address::NodeKind;
 use crate::domain::cancellation::CancellationToken;
@@ -51,7 +51,6 @@ use crate::infrastructure::v13_large_configuration::{
 use serde_json::{json, Value};
 #[cfg(test)]
 use std::cell::RefCell;
-use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -1301,37 +1300,26 @@ impl ProviderReadAuthority {
         Ok(Some(newlines + usize::from(last != Some(b'\n'))))
     }
 
-    pub(crate) fn module_body_snapshot(
+    /// Текст модуля для `Body`: без начальных U+FEFF и не длиннее
+    /// `MAX_SOURCE_TEXT_BYTES`. Больший файл дочитывается без накопления
+    /// ради проверки UTF-8 и полного размера. Отсутствующий файл — пустой
+    /// текст, как у прежнего `Body`.
+    pub(crate) fn module_text_within_limit(
         &self,
         target: &MetadataAddress,
         checkpoint: impl FnMut() -> Result<(), ViewError>,
-    ) -> Result<BodySnapshot, ViewError> {
-        let mut file = tempfile::tempfile().map_err(|error| {
-            ViewError::detailed(
-                RefusalDetail::BackendBroken,
-                format!("cannot create Body snapshot: {error}"),
-            )
+    ) -> Result<ModuleText, ViewError> {
+        let mut text = ModuleTextAccumulator::default();
+        let len = self.visit_module_utf8_chunks(target, checkpoint, |chunk| {
+            text.push(chunk);
+            Ok(())
         })?;
-        let len = self
-            .visit_module_utf8_chunks(target, checkpoint, |chunk| {
-                file.write_all(chunk).map_err(|error| {
-                    ViewError::detailed(RefusalDetail::BackendBroken, error.to_string())
-                })
-            })?
-            .unwrap_or(0);
-        file.flush().map_err(|error| {
-            ViewError::detailed(
-                RefusalDetail::BackendBroken,
-                format!("Body snapshot write failed: {error}"),
-            )
-        })?;
-        file.seek(SeekFrom::Start(0)).map_err(|error| {
-            ViewError::detailed(
-                RefusalDetail::BackendBroken,
-                format!("Body snapshot seek failed: {error}"),
-            )
-        })?;
-        Ok(BodySnapshot::new(file, len))
+        if len.is_none() {
+            return Ok(ModuleText::Text(String::new()));
+        }
+        text.finish().map_err(|_| {
+            ViewError::detailed(RefusalDetail::SourceUnreadable, "BSL module is not UTF-8")
+        })
     }
 
     /// Streams the module only after one shared UTF-8 check, so every Body

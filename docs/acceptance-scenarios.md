@@ -4,15 +4,15 @@
      tests/fixtures/acceptance/scenario-corpus.json. Не правьте вручную:
      измените корпус и выполните `python scripts/ci/render-acceptance-registry.py --write`. -->
 
-Корпус держит **439 сценариев** реальных задач разработчика конфигурации и **1203 шагов** канонических вызовов `unica.*`. Каждый шаг заморожен в одном из классов ответа. Исходный профиль `tests/ci/test_acceptance_scenarios.py` исполняется против собранного `target/debug/unica`; основное рабочее пространство — `tests/fixtures/acceptance/workspace/`; сценарии форматных проб (выгрузка 2.21, без версии, без файла поддержки) идут на выведенном из него пространстве `tests/fixtures/acceptance/workspace-format/`, а сценарии ответа до допуска наборов — на пустом `tests/fixtures/acceptance/workspace-bare/`. Профиль delivery использует отдельную `tests/fixtures/acceptance/workspace-symbol/` с контрольным методом. СКД, MXL и вставка BSL проверяются на отдельных `workspace-dcs/`, `workspace-mxl/` и `workspace-code/`; точное расположение узлов — на `workspace-resolve/`; заимствованные объекты из выгрузки платформы — на `workspace-borrowed/`; неоднозначное имя командной панели формы — на `workspace-form-names/`; отображение команды формы из набора кнопки — на `workspace-form-command-representation/`; агентные сценарии выбираются локальным набором `tests/agent_evaluation/`. Источник истины — JSON корпуса; этот документ — его рендер для людей, и проверка на расхождение входит в тот же тест.
+Корпус держит **440 сценариев** реальных задач разработчика конфигурации и **1207 шагов** канонических вызовов `unica.*`. Каждый шаг заморожен в одном из классов ответа. Исходный профиль `tests/ci/test_acceptance_scenarios.py` исполняется против собранного `target/debug/unica`; основное рабочее пространство — `tests/fixtures/acceptance/workspace/`; сценарии форматных проб (выгрузка 2.21, без версии, без файла поддержки) идут на выведенном из него пространстве `tests/fixtures/acceptance/workspace-format/`, а сценарии ответа до допуска наборов — на пустом `tests/fixtures/acceptance/workspace-bare/`. Профиль delivery использует отдельную `tests/fixtures/acceptance/workspace-symbol/` с контрольным методом. СКД, MXL и вставка BSL проверяются на отдельных `workspace-dcs/`, `workspace-mxl/` и `workspace-code/`; точное расположение узлов — на `workspace-resolve/`; заимствованные объекты из выгрузки платформы — на `workspace-borrowed/`; неоднозначное имя командной панели формы — на `workspace-form-names/`; отображение команды формы из набора кнопки — на `workspace-form-command-representation/`; агентные сценарии выбираются локальным набором `tests/agent_evaluation/`. Источник истины — JSON корпуса; этот документ — его рендер для людей, и проверка на расхождение входит в тот же тест.
 
-Профили исполнения: `source` — 423 сценария; `delivery/bsl-analyzer` — 7; `agent-evaluation/codex` — 2; `fault-injection/analyzer-jsonl-fault` — 6; `fault-injection/analyzer-delivery-failure` — 1. Delivery-драйвер скачивает закреплённый движок с проверкой SHA256 и выполняет MCP на отдельной синтетической фикстуре. Ошибка доставки или незавершённая задача проваливает прогон. По решению владельца агентный профиль не входит в CI: его запускают локально при изменении проверяемых навыков или поверхности. Профиль использует реальный Codex, закрытый аудит инструментов, проверки итогового XML и независимый смысловой reviewer; отсутствие CLI или авторизации означает отказ прогона. Fault-injection исполняет управляемый нативный producer повреждённого JSONL и аварийного завершения через настоящий процесс и публичный check, а также убирает его или подменяет его контрольную сумму в манифесте, проверяя отказ об отсутствующем движке; это не проверка опубликованного анализатора. Драйвер analyzer-delivery-failure ставит пакет, который называет анализатор без его файла и без манифеста выпуска, и проверяет, что ветвь графа вызовов заказывает поставку и называет её провал типизированным отказом. Этот medium-профиль обязателен в очереди и не скачивает движок. Runtime добавляется с исполняемым драйвером; неизвестный профиль не пропускается.
+Профили исполнения: `source` — 424 сценария; `delivery/bsl-analyzer` — 7; `agent-evaluation/codex` — 2; `fault-injection/analyzer-jsonl-fault` — 6; `fault-injection/analyzer-delivery-failure` — 1. Delivery-драйвер скачивает закреплённый движок с проверкой SHA256 и выполняет MCP на отдельной синтетической фикстуре. Ошибка доставки или незавершённая задача проваливает прогон. По решению владельца агентный профиль не входит в CI: его запускают локально при изменении проверяемых навыков или поверхности. Профиль использует реальный Codex, закрытый аудит инструментов, проверки итогового XML и независимый смысловой reviewer; отсутствие CLI или авторизации означает отказ прогона. Fault-injection исполняет управляемый нативный producer повреждённого JSONL и аварийного завершения через настоящий процесс и публичный check, а также убирает его или подменяет его контрольную сумму в манифесте, проверяя отказ об отсутствующем движке; это не проверка опубликованного анализатора. Драйвер analyzer-delivery-failure ставит пакет, который называет анализатор без его файла и без манифеста выпуска, и проверяет, что ветвь графа вызовов заказывает поставку и называет её провал типизированным отказом. Этот medium-профиль обязателен в очереди и не скачивает движок. Runtime добавляется с исполняемым драйвером; неизвестный профиль не пропускается.
 
 ## Классы ответа шага
 
 | Класс | Что означает | Шагов |
 | --- | --- | ---: |
-| `ok` | результат | 994 |
+| `ok` | результат | 998 |
 | `refused` | умышленный типизированный отказ | 153 |
 | `ok` / `provider` / `task` | любой из: результат; провайдер недоступен; длинная задача | 26 |
 | `provider` | провайдер недоступен | 21 |
@@ -248,7 +248,7 @@
 | Операция | Аргументы | Реализована | Сценарии |
 | --- | --- | --- | --- |
 | `code.insert` | `text` | да | S156, S159, S278, S314, S319, S325, S336, S337, S338, S397, S404, S405, S409, S419, S438 |
-| `code.replace` | `text` | да | S157, S316, S338, S357, S413 |
+| `code.replace` | `text` | да | S157, S316, S338, S357, S413, S440 |
 
 ### События
 
@@ -274,8 +274,8 @@
 
 | Инструмент | Сценариев |
 | --- | ---: |
-| `unica.apply` | 252 |
-| `unica.view` | 143 |
+| `unica.apply` | 253 |
+| `unica.view` | 144 |
 | `unica.check` | 76 |
 | `unica.search` | 36 |
 | `unica.docs` | 27 |
@@ -284,7 +284,7 @@
 
 ## Каталог сценариев
 
-Области: Навигация и чтение (58) · Свойства объектов (29) · Реквизиты и состав (51) · Создание и удаление объектов (23) · Формы (42) · Код BSL (47) · Роли и права (16) · СКД (45) · Макеты (16) · Подсистемы и интерфейс (13) · XDTO и обмены (11) · Сборка, ИБ и выгрузка (2) · Проверки качества (20) · Тесты и запуск (1) · Документация и стандарты (20) · Поддержка поставщика (16) · Расширения конфигурации (10) · Объекты метаданных (3) · Рабочее пространство (4) · Метаданные (2) · Приёмочный корпус (8) · Известные пробелы (1) · Применение изменений (1)
+Области: Навигация и чтение (58) · Свойства объектов (29) · Реквизиты и состав (51) · Создание и удаление объектов (23) · Формы (42) · Код BSL (48) · Роли и права (16) · СКД (45) · Макеты (16) · Подсистемы и интерфейс (13) · XDTO и обмены (11) · Сборка, ИБ и выгрузка (2) · Проверки качества (20) · Тесты и запуск (1) · Документация и стандарты (20) · Поддержка поставщика (16) · Расширения конфигурации (10) · Объекты метаданных (3) · Рабочее пространство (4) · Метаданные (2) · Приёмочный корпус (8) · Известные пробелы (1) · Применение изменений (1)
 
 ### Навигация и чтение
 
@@ -545,7 +545,7 @@
 | S318 | Найти определение функции по символу | `source` | `search` | `provider` |
 | S324 | После найденного метода отсутствующий символ дважды даёт завершённую пустую выдачу | `delivery/bsl-analyzer` | `search`<br>`search`<br>`search` | `ok`<br>`ok`<br>`ok` |
 | S336 | Module и Body: append в общем, объектном и собственном модуле расширения; точные BOM/CRLF, соседний код, повтор без записи и неизменный descriptor | `source` | `apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
-| S337 | Anchor before/after учитывает только методы; method before/after сохраняет аннотацию и соседей; точный post-image и повтор без записи | `source` | `apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
+| S337 | Anchor before/after учитывает только методы; method before встаёт над документирующим комментарием и аннотацией метода, after — после его окончания, соседи сохраняются; точный post-image и повтор без записи | `source` | `apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 | S338 | Method без position, Method.Body insert, Body+selector и неполные position/selector отказывают без записи; замена Method.Body сохраняет подпись/BOM/CRLF/соседей и повтор | `source` | `apply` `code.insert`<br>`apply` `code.insert`<br>`apply` `code.insert`<br>`apply` `code.insert`<br>`apply` `code.insert`<br>`apply` `code.replace`<br>`apply`<br>`apply` `code.replace`<br>`apply` | `refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 | S339 | Полный анализ без фильтра сохраняет предупреждение | `delivery/bsl-analyzer-diagnostics` | `check` валидаторы `bsl` | `ok` |
 | S340 | Действующий TOML фильтр авторов не объявляет скрытые находки чистым кодом | `delivery/bsl-analyzer-diagnostics` | `check` | `provider` |
@@ -558,13 +558,14 @@
 | S357 | Выделить три helper-метода одной заменой метода по его адресу: одна запись, опубликованный повтор пустой, повторно объявленный helper отказывает; снятый селектор метода отказывает без записи и ведёт к адресу метода | `source` | `apply` `code.replace`<br>`apply` `code.replace`<br>`apply`<br>`apply` `code.replace`<br>`apply`<br>`apply` `code.replace` | `refused`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`refused` |
 | S389 | Движок анализа завершился ошибкой: отказ называет причину и действие без stderr движка | `fault-injection/analyzer-jsonl-fault` | `check` | `provider` |
 | S390 | Движка анализа нет на машине: check сам запускает доставку и при её отказе называет класс сбоя и действие, а не голое unproven | `fault-injection/analyzer-jsonl-fault` | `check` | `provider` |
-| S392 | Найти литерал в тексте BSL, открыть модуль совпадения по его адресу и прочитать ту же строку | `source` | `search`<br>`view`<br>`view` | `ok`<br>`ok`<br>`ok` |
+| S392 | Найти литерал в тексте BSL, открыть модуль совпадения по его адресу и найти ту же строку в его исходном тексте | `source` | `search`<br>`view`<br>`view` | `ok`<br>`ok`<br>`ok` |
 | S395 | Узел метода называет ветви графа вызовов без счёта, а фильтра секций у view нет | `source` | `view`<br>`view` | `ok`<br>`refused` |
 | S396 | Ветвь графа вызовов заказывает отсутствующий анализатор этим же вызовом, а провал поставки даёт типизированный отказ «нет движка» | `fault-injection/analyzer-delivery-failure` | `view`<br>`view`<br>`view` | `ok`<br>`provider`<br>`provider` |
 | S398 | Подменённый анализатор даёт отказ «нет движка» с полями поставки в data, а не сбой анализа | `fault-injection/analyzer-jsonl-fault` | `check` | `provider` |
 | S413 | Заменить функцию модуля текстом крупнее 16 КиБ одним вызовом, без нарезки | `source` | `apply` `code.replace`<br>`apply` | `ok`<br>`ok` |
 | S425 | Найти объявление функции по виду метаданных: совпадение называет адрес своего модуля, а не область запроса, совпадает с поиском по самому модулю и открывается через view | `source` | `search`<br>`search`<br>`view` | `ok`<br>`ok`<br>`ok` |
 | S438 | Объявить переменную модуля после функций и проверить модуль: check проваливается находкой платформы о месте объявления, а не отвечает passed | `source` | `apply` `code.insert`<br>`apply`<br>`check` валидаторы `bsl` | `ok`<br>`ok`<br>`ok` / `provider` |
+| S440 | Прочитать метод исходным текстом с документирующим комментарием, исправить строку в этом тексте и заменить им тот же адрес: метод меняется на месте без дублирования комментария | `source` | `view`<br>`apply` `code.replace`<br>`apply`<br>`view` | `ok`<br>`ok`<br>`ok`<br>`ok` |
 
 ### Роли и права
 
