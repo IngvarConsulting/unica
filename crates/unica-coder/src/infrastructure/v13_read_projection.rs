@@ -937,11 +937,24 @@ fn project_mxl(
                 .flatten()
                 .filter_map(Value::as_str)
                 .map(|name| {
-                    json!({
-                        "at": member_address(address, name),
-                        "kind": "Parameter",
-                        "title": name,
-                    })
+                    // Параметр шаблона показывается как `Имя [tpl]`: это
+                    // подпись, а не имя, и адрес из неё грамматика отвергает.
+                    // Такой элемент выдаётся без `at`, как и другие
+                    // неадресуемые элементы (#1467).
+                    let at = member_address(address, name);
+                    if QualifiedAddress::parse(&at).is_ok() {
+                        json!({
+                            "at": at,
+                            "kind": "Parameter",
+                            "title": name,
+                        })
+                    } else {
+                        json!({
+                            "kind": "Parameter",
+                            "title": name,
+                            "addressable": false,
+                        })
+                    }
                 })
                 .collect(),
         )));

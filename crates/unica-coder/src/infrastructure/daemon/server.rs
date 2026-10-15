@@ -9932,16 +9932,25 @@ struct ActorLogicalReadLease {"#,
                 ]}},
                 {"op": "element.add", "args": {"at": "main:Document.Order.Form.Main.Item.Content", "items": [{
                     "name": "Html", "type": "HTMLDocumentField", "path": "HtmlSource",
-                    "titleLocation": "none", "width": 1, "height": 1,
-                    "autoMaxWidth": false, "skipOnInput": true, "on": ["OnClick"]
+                    "titleLocation": "None", "width": 1, "height": 1,
+                    "autoMaxWidth": false, "skipOnInput": true
                 }]}}
             ]),
         );
+        // События нового элемента привязывает `event.bind` на их адресах с
+        // явным именем обработчика (Р2, Р4 #1447).
         apply_pair(
-            &format!("{item_at}.Event.DocumentComplete"),
-            serde_json::json!([{"op": "event.bind", "args": {"values": {
-                "handler": "HtmlDocumentComplete"
-            }}}]),
+            item_at,
+            serde_json::json!([
+                {"op": "event.bind", "args": {
+                    "at": format!("{item_at}.Event.DocumentComplete"),
+                    "values": {"handler": "HtmlDocumentComplete"}
+                }},
+                {"op": "event.bind", "args": {
+                    "at": format!("{item_at}.Event.OnClick"),
+                    "values": {"handler": "HtmlOnClick"}
+                }}
+            ]),
         );
 
         let form_path = source.join("Documents/Order/Forms/Main/Ext/Form.xml");
@@ -9990,7 +9999,7 @@ struct ActorLogicalReadLease {"#,
             events
                 .iter()
                 .any(|node| node.attribute("name") == Some("OnClick")
-                    && node.text().is_some_and(|handler| !handler.is_empty())),
+                    && node.text() == Some("HtmlOnClick")),
             "{xml}"
         );
         assert!(
