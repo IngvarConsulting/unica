@@ -244,15 +244,18 @@ class GateProfileTests(unittest.TestCase):
             {"binary": "unica-coder", "name": prefix + "owned", "ignored": False},
             {"binary": "unica-coder", "name": "unrelated::sibling", "ignored": False},
             {"binary": "other-coder", "name": prefix + "foreign", "ignored": False},
+            # Контракт идёт тем же вызовом; переразметка его не касается.
+            {"binary": "unica-coder::daemon_receipt_ledger", "name": prefix + "contract", "ignored": False},
         ]
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             with patch.object(module.allure_results, "nextest_list", side_effect=lambda _, command: [dict(case) for case in cases] if "--features" in command else []):
-                self.assertEqual(module.write_rust_plan(root, "queue"), 3)
+                self.assertEqual(module.write_rust_plan(root, "queue"), 4)
             planned = json.loads((root / "plan.json").read_text())
             self.assertEqual(planned[0]["size"], "medium")
             self.assertNotIn("size", planned[1])
             self.assertNotIn("size", planned[2])
+            self.assertNotIn("size", planned[3])
             junit = root / "junit.xml"
             junit.write_text(
                 '<testsuites><testsuite name="unica-coder">'
@@ -260,19 +263,25 @@ class GateProfileTests(unittest.TestCase):
                 '<testcase name="unrelated::sibling" time="0.1"/>'
                 '</testsuite><testsuite name="other-coder">'
                 f'<testcase name="{prefix}foreign" time="0.1"/>'
+                '</testsuite><testsuite name="unica-coder::daemon_receipt_ledger">'
+                f'<testcase name="{prefix}contract" time="0.1"/>'
                 '</testsuite></testsuites>'
             )
+            contract_sizes = set()
             for selection, expected_owned_size in [(module.LEDGER_FEATURE_SELECTION, "medium"), (("--workspace",), "small")]:
                 output = root / expected_owned_size
-                self.assertEqual(module.emit_rust(output, "queue", "linux", junit, selection=selection), 3)
+                self.assertEqual(module.emit_rust(output, "queue", "linux", junit, selection=selection), 4)
                 results = [json.loads(path.read_text()) for path in output.glob("*-result.json")]
                 sizes = {entry["fullName"]: next(label["value"] for label in entry["labels"] if label["name"] == "size") for entry in results}
                 self.assertEqual(sizes["unica-coder::" + prefix + "owned"], expected_owned_size)
                 self.assertEqual(sizes["unica-coder::unrelated::sibling"], "small")
                 self.assertEqual(sizes["other-coder::" + prefix + "foreign"], "small")
+                contract_sizes.add(sizes["unica-coder::daemon_receipt_ledger::" + prefix + "contract"])
                 for entry in results:
                     self.assertIn({"name": "profile", "value": "queue"}, entry["labels"])
                     self.assertEqual(entry["parameters"], [{"name": "runner", "value": "linux"}])
+            # Размер контракта не зависит от того, каким вызовом он пришёл.
+            self.assertEqual(len(contract_sizes), 1)
 
     def test_each_rust_invocation_gets_its_own_junit_snapshot(self) -> None:
         """JUnit одного каталога снимается после каждого вызова, а не раз в конце."""
