@@ -1409,12 +1409,12 @@ mod tests {
         for (at, op, args) in [
             (
                 "main:Document.First.Form.Main.Item.Header.Event.OnChange",
-                "element.add",
+                "item.add",
                 serde_json::json!({"items": [{"name": "Comment"}]}),
             ),
             (
                 "main:Document.First.Form.Main",
-                "element.remove",
+                "item.remove",
                 serde_json::json!({}),
             ),
             (
@@ -1448,7 +1448,7 @@ mod tests {
         // Неизвестное свойство элемента — отказ, а не молча потерянный ключ.
         let request = seam_request(
             "main:Document.First.Form.Main",
-            "element.add",
+            "item.add",
             serde_json::json!({"items": [{"name": "Comment", "titel": "typo"}]}),
         );
         let error = super::parse_apply_operation(0, &request.ops()[0], &fixture.binding)
@@ -1459,7 +1459,7 @@ mod tests {
         // у обычной группы), отказывает по контракту вида до записи (#1447).
         let request = seam_request(
             "main:Document.First.Form.Main",
-            "element.add",
+            "item.add",
             serde_json::json!({"items": [{"name": "Header", "type": "Group", "headerDataPath": "Object.Ref"}]}),
         );
         let error = super::parse_apply_operation(0, &request.ops()[0], &fixture.binding)
@@ -1481,7 +1481,7 @@ mod tests {
             ),
             (
                 "main:Document.First.Form.Main.Item.Header",
-                "element.remove",
+                "item.remove",
                 serde_json::json!({"items": ["Other"]}),
                 "ops[0].args.items",
             ),
