@@ -40480,6 +40480,175 @@
      ]
     }
    ]
+  },
+  {
+   "id": "S438",
+   "name": "check-fails-a-module-variable-declared-after-methods",
+   "issue": 1460,
+   "area": "Код BSL",
+   "task": "Объявить переменную модуля после функций и проверить модуль: check проваливается находкой платформы о месте объявления, а не отвечает passed",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик.Method.Разрешения",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "text": "Перем ПоследнийОтвет;",
+         "position": "after"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик.Body"
+     },
+     "expect": [
+      "ok",
+      "provider"
+     ],
+     "status": "failed",
+     "validators": [
+      "bsl"
+     ],
+     "diagnostic": "VariableDeclarationPlacement"
+    }
+   ]
+  },
+  {
+   "id": "S439",
+   "name": "resolve-metadata-object-by-its-own-place",
+   "issue": 1457,
+   "area": "Навигация и чтение",
+   "task": "Разрешить корень конфигурации, объект и его форму по адресу в их файлы; отсутствующий объект даёт not_found",
+   "wire": [
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Configuration"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Configuration"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Configuration"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "Configuration.xml"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "notLineBased"
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Валюты"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Catalog.Валюты"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Catalog"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "Catalogs/Валюты.xml"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "notLineBased"
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Form"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "Catalogs/Валюты/Forms/ФормаЭлемента.xml"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "notLineBased"
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.НетТакогоСправочника"
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "not_found: the source layout does not place `main:Catalog.НетТакогоСправочника`"
+    }
+   ]
   }
  ]
 }

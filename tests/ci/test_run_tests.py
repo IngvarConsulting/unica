@@ -1,4 +1,4 @@
-"""Шов прогона тестов повторяет прежние команды и не пропускает ничего."""
+"""Шов прогона тестов управляет наборами CI, кроме локальной агентной приёмки."""
 
 from __future__ import annotations
 
@@ -22,11 +22,11 @@ def load_module():
 
 
 class RunTestsSeamTests(unittest.TestCase):
-    def test_profile_all_repeats_the_former_workflow_commands_verbatim(self) -> None:
+    def test_profile_all_runs_every_ci_managed_suite(self) -> None:
         """Команды закреплены дословно: правка гейта не должна прятаться в шве.
 
         Rust идёт через nextest одним профилем; число потоков и отчёт живут в
-        `.config/nextest.toml`. Python — те самые строки, что стояли в workflow.
+        `.config/nextest.toml`. Локальная агентная приёмка в этот профиль не входит.
         """
         module = load_module()
 
@@ -55,8 +55,7 @@ class RunTestsSeamTests(unittest.TestCase):
                 ["python", runner_script, "-s", "tests/dev", "--durations", "20"],
             ],
         )
-        self.assertEqual(python[2:], [
-            ["python", runner_script, "-s", "tests/agent_evaluation", "--durations", "20", "--size", "large"]])
+        self.assertEqual(len(python), 2)
 
     def test_all_ecosystems_keep_rust_before_python(self) -> None:
         module = load_module()
@@ -68,7 +67,7 @@ class RunTestsSeamTests(unittest.TestCase):
         self.assertEqual([command[0] for command in planned[:2]], ["cargo"] * 2)
         self.assertTrue(all(command[0] == "python" for command in planned[2:]))
         self.assertTrue(all(command[1].endswith("run-unittest.py") for command in planned[2:]))
-        self.assertEqual(len(planned), 5)
+        self.assertEqual(len(planned), 4)
 
     def test_results_directory_turns_emission_on_for_python_suites(self) -> None:
         """Без `--results` набор идёт как раньше; с ним пишет результаты и знает раннер."""
@@ -382,7 +381,9 @@ class GateProfileTests(unittest.TestCase):
                 suites = [command[3] for command in module.python_commands(gate, "python3")]
                 self.assertEqual(suites, [suite for suite, size, _ in module.PYTHON_SUITES
                                          if size in module.ADMITTED[gate]])
-        self.assertEqual([command[3] for command in module.python_commands("large", "python3")], ["tests/agent_evaluation"])
+        self.assertEqual(module.python_commands("large", "python3"), [])
+        with self.assertRaises(ValueError):
+            module.python_commands("all", "python3", suite="tests/agent_evaluation")
 
     def test_plan_only_for_python_writes_the_composition_of_the_suite(self) -> None:
         """Состав набора — до запуска, тем же швом: джоба, умершая на середине, его не унесёт."""

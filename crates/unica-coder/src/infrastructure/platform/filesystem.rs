@@ -417,6 +417,77 @@ pub(crate) struct PortablePermissions {
     key: u32,
 }
 
+/// Identity of one regular file's current content as the filesystem reports
+/// it: physical identity, length, modification time and change time (ctime,
+/// Windows `ChangeTime`). A write through the file, a replacement of its name
+/// or a restored modification time moves the change time. As in the Git
+/// index, a stamp proves content only once its times are older than the
+/// timestamp granularity window: see [`FileStamp::settled`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FileStamp {
+    identity: FileIdentity,
+    length: u64,
+    modified: Option<std::time::SystemTime>,
+    changed: Option<std::time::SystemTime>,
+}
+
+impl FileStamp {
+    pub(crate) fn of(file: &fs::File) -> io::Result<Self> {
+        let metadata = file.metadata()?;
+        Ok(Self {
+            identity: file_identity(file)?,
+            length: metadata.len(),
+            modified: metadata.modified().ok(),
+            changed: file_change_time(file, &metadata)
+                .ok()
+                .and_then(change_time_as_system_time),
+        })
+    }
+
+    /// Whether this stamp may stand for the file's content: both times are
+    /// known, not in the future and at least `window` older than `now`. A
+    /// write inside the window could keep every field, so such a stamp is
+    /// never cached and the file is read again until it settles.
+    pub(crate) fn settled(&self, now: std::time::SystemTime, window: std::time::Duration) -> bool {
+        [self.modified, self.changed].into_iter().all(|time| {
+            time.is_some_and(|time| now.duration_since(time).is_ok_and(|age| age >= window))
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        file: u64,
+        length: u64,
+        modified: Option<std::time::SystemTime>,
+        changed: Option<std::time::SystemTime>,
+    ) -> Self {
+        Self {
+            identity: FileIdentity { volume: 1, file },
+            length,
+            modified,
+            changed,
+        }
+    }
+}
+
+#[cfg(windows)]
+fn change_time_as_system_time((ticks, _): (i64, i64)) -> Option<std::time::SystemTime> {
+    // FILETIME counts 100 ns ticks since 1601-01-01.
+    const UNIX_EPOCH_TICKS: i64 = 116_444_736_000_000_000;
+    let since_epoch = u64::try_from(ticks.checked_sub(UNIX_EPOCH_TICKS)?).ok()?;
+    std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_nanos(
+        since_epoch.checked_mul(100)?,
+    ))
+}
+
+#[cfg(not(windows))]
+fn change_time_as_system_time((seconds, nanoseconds): (i64, i64)) -> Option<std::time::SystemTime> {
+    std::time::UNIX_EPOCH.checked_add(std::time::Duration::new(
+        u64::try_from(seconds).ok()?,
+        u32::try_from(nanoseconds).ok()?,
+    ))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct FileIdentity {
     volume: u64,
@@ -682,15 +753,26 @@ impl RetainedDirectoryCapability {
         filesystem_case_sensitive_for_directory(&self.retained.directory)
     }
 
-    pub(crate) fn validate_named_identity(&self) -> io::Result<()> {
+    /// Проверяет, указывает ли имя на удерживаемый каталог.
+    ///
+    /// `false` означает только завершённое сравнение двух разных физических
+    /// идентичностей. Ошибка открытия или чтения метаданных остаётся `Err`,
+    /// потому что по ней нельзя заключать, что имя было подменено.
+    pub(crate) fn named_identity_matches(&self) -> io::Result<bool> {
         let rebound = if let Some(parent) = &self.parent {
-            parent.directory.validate_named_identity()?;
+            if !parent.directory.named_identity_matches()? {
+                return Ok(false);
+            }
             open_directory_child_nofollow(&parent.directory.retained.directory, &parent.name)?
         } else {
             open_absolute_directory_path_nofollow(&self.path)?
         };
         let rebound_identity = file_identity(&rebound)?;
-        if rebound_identity != self.retained.identity {
+        Ok(rebound_identity == self.retained.identity)
+    }
+
+    pub(crate) fn validate_named_identity(&self) -> io::Result<()> {
+        if !self.named_identity_matches()? {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "named directory identity changed after capability admission",
@@ -1266,6 +1348,16 @@ impl RetainedDirectoryCapability {
         file.take(u64::try_from(max_bytes).unwrap_or(u64::MAX))
             .read_to_end(&mut bytes)?;
         Ok(bytes)
+    }
+
+    /// The stamp of a relative regular file, or `None` when it is absent.
+    /// Opening it is the only work: no content is read.
+    pub(crate) fn relative_file_stamp(&self, relative: &Path) -> io::Result<Option<FileStamp>> {
+        match self.open_relative_regular_nofollow(relative) {
+            Ok(file) => FileStamp::of(&file).map(Some),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     pub(crate) fn open_relative_regular_nofollow(&self, relative: &Path) -> io::Result<fs::File> {

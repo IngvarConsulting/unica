@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
-"""Одна точка входа для прогона тестов обеих экосистем.
+"""Одна точка входа для прогона наборов CI обеих экосистем.
 
-Workflow называет только этот скрипт — не `cargo test` и не `unittest`. Пока
-профиль один, `all`, и он повторяет прежние команды один в один: тот же
-набор, тот же порядок, тот же цвет гейта. Смысл шага не в отборе, а в том,
-что место для отбора появилось: профиль ворот меняет одну функцию здесь, а
-не шесть мест в YAML.
+Workflow называет только этот скрипт — не `cargo test` и не `unittest`.
+Профиль ворот меняет отбор в одном месте, а не в нескольких workflow.
+Локальная агентная приёмка `tests/agent_evaluation` сюда не входит.
 """
 
 from __future__ import annotations
@@ -25,7 +23,8 @@ RUN_UNITTEST = Path(__file__).with_name("run-unittest.py")
 PYTHON_SIZES = REPO_ROOT / ".config" / "python-sizes.toml"
 NEXTEST_JUNIT = REPO_ROOT / "target" / "nextest" / "default" / "junit.xml"
 
-# Ворота конвейера плюс локальный `all` — «гони всё» без подписи ворот.
+# Ворота конвейера плюс локальный `all` — все наборы, которыми управляет CI.
+# Агентная приёмка требует локальной авторизации и намеренно исключена.
 PROFILES = ("all", "pr", "queue", "main", "release", "large")
 SIZES = ("small", "medium", "large")
 # Какие размеры принимают ворота — таблица «Что тестировать и когда» из
@@ -49,7 +48,6 @@ ECOSYSTEMS = ("rust", "python", "all")
 PYTHON_SUITES = (
     ("tests/ci", "small", ("--durations", "20")),
     ("tests/dev", "small", ("--durations", "20")),
-    ("tests/agent_evaluation", "large", ("--durations", "20")),
 )
 
 

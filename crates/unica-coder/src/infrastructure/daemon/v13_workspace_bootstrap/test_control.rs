@@ -14,12 +14,12 @@ fn gates() -> &'static Mutex<HashMap<PathBuf, Arc<Gate>>> {
     GATES.get_or_init(Mutex::default)
 }
 
-pub(crate) struct HealthInspectionPause {
+pub(crate) struct RootInspectionPause {
     workspace: PathBuf,
     gate: Arc<Gate>,
 }
 
-impl HealthInspectionPause {
+impl RootInspectionPause {
     pub(crate) fn install(workspace: PathBuf) -> Self {
         let gate = Arc::new(Gate::default());
         assert!(gates()
@@ -40,7 +40,10 @@ impl HealthInspectionPause {
                 |(entries, _)| *entries == 0,
             )
             .unwrap();
-        assert_eq!(state.0, 1, "root inspection reached real health traversal");
+        assert_eq!(
+            state.0, 1,
+            "root inspection did not pause before its answer"
+        );
     }
 
     pub(crate) fn entries(&self) -> usize {
@@ -53,14 +56,14 @@ impl HealthInspectionPause {
     }
 }
 
-impl Drop for HealthInspectionPause {
+impl Drop for RootInspectionPause {
     fn drop(&mut self) {
         self.release();
         gates().lock().unwrap().remove(&self.workspace);
     }
 }
 
-pub(super) fn pause_before_health(workspace: &Path) {
+pub(super) fn pause_before_root_answer(workspace: &Path) {
     let gate = gates().lock().unwrap().get(workspace).cloned();
     if let Some(gate) = gate {
         let mut state = gate.state.lock().unwrap();

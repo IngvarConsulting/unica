@@ -502,6 +502,139 @@ impl LineIndex {
     }
 }
 
+/// Текст ошибки компиляции платформы для объявления не на своём месте.
+pub(crate) const MISPLACED_VARIABLE_MESSAGE: &str =
+    "Объявления переменных должны быть расположены в начале модуля, процедуры или функции";
+
+/// Объявления `Перем`/`Var`, которые платформа не компилирует (#1460).
+///
+/// Модуль платформы — раздел переменных, затем методы, затем основная
+/// программа; метод — свои переменные, затем операторы. Объявление уровня
+/// модуля после первого метода или оператора основной программы и объявление
+/// в методе после его первого оператора (в том числе внутри блока) платформа
+/// отвергает, а анализатор такой модуль пропускает. Диапазоны — от нуля,
+/// как у находок анализатора. Текст, который парсер не разобрал без ошибок,
+/// здесь не судится: его синтаксис называет анализатор.
+pub(crate) fn misplaced_variable_declarations(
+    text: &str,
+) -> Vec<crate::domain::diagnostics::DiagnosticRange> {
+    if text.len() > u32::MAX as usize {
+        return Vec::new();
+    }
+    let parsed = parse_bsl_syntax(text);
+    if !parsed.errors().is_empty() {
+        return Vec::new();
+    }
+    let root = parsed.syntax_node();
+    let is_method =
+        |kind: SyntaxKind| matches!(kind, SyntaxKind::PROCEDURE_DEF | SyntaxKind::FUNCTION_DEF);
+    let is_statement = |kind: SyntaxKind| {
+        matches!(
+            kind,
+            SyntaxKind::ASSIGN_STMT
+                | SyntaxKind::CALL_STMT
+                | SyntaxKind::RETURN_STMT
+                | SyntaxKind::IF_STMT
+                | SyntaxKind::WHILE_STMT
+                | SyntaxKind::FOR_STMT
+                | SyntaxKind::FOR_EACH_STMT
+                | SyntaxKind::TRY_STMT
+                | SyntaxKind::RAISE_STMT
+                | SyntaxKind::EXECUTE_STMT
+                | SyntaxKind::BREAK_STMT
+                | SyntaxKind::CONTINUE_STMT
+                | SyntaxKind::GOTO_STMT
+                | SyntaxKind::LABEL_STMT
+                | SyntaxKind::ADD_HANDLER_STMT
+                | SyntaxKind::REMOVE_HANDLER_STMT
+        )
+    };
+    // Метод, которому принадлежит узел; `None` — уровень модуля.
+    let owner = |node: &SyntaxNode| node.ancestors().find(|ancestor| is_method(ancestor.kind()));
+    let lines = LineIndex::new(text);
+    let position = |offset: usize| {
+        let line = lines.line_of(offset);
+        let start = lines.starts[line - 1];
+        let column = text[start..offset]
+            .chars()
+            .filter(|character| *character != '\u{feff}')
+            .count();
+        (line - 1, column)
+    };
+    // Раздел объявлений закрывает первый метод или оператор вне методов для
+    // модуля и первый оператор для метода. Ветви `#Если`/`#ИначеЕсли`/`#Иначе`
+    // взаимоисключающие: каждая начинает с состояния до `#Если`, а после
+    // `#КонецЕсли` раздел закрыт, если его закрыла хоть одна ветвь.
+    let mut sections: std::collections::HashMap<Option<SyntaxNode>, Section> =
+        std::collections::HashMap::new();
+    let mut misplaced = Vec::new();
+    for element in root.descendants_with_tokens() {
+        let node = match element {
+            bsl_syntax::NodeOrToken::Node(node) => node,
+            bsl_syntax::NodeOrToken::Token(token) => {
+                let Some(parent) = token.parent() else {
+                    continue;
+                };
+                let section = sections.entry(owner(&parent)).or_default();
+                match token.kind() {
+                    SyntaxKind::PRE_IF => section.enter(),
+                    SyntaxKind::PRE_ELSIF | SyntaxKind::PRE_ELSE => section.alternative(),
+                    SyntaxKind::PRE_END_IF => section.leave(),
+                    _ => {}
+                }
+                continue;
+            }
+        };
+        let kind = node.kind();
+        if is_method(kind) {
+            sections.entry(None).or_default().closed = true;
+        } else if is_statement(kind) {
+            let context = node.parent().and_then(|parent| owner(&parent));
+            sections.entry(context).or_default().closed = true;
+        } else if kind == SyntaxKind::VAR_DEF {
+            let context = node.parent().and_then(|parent| owner(&parent));
+            if sections.get(&context).is_some_and(|section| section.closed) {
+                let (start_line, start_column) = position(usize::from(node.text_range().start()));
+                let (end_line, end_column) = position(usize::from(node.text_range().end()));
+                misplaced.push(crate::domain::diagnostics::DiagnosticRange {
+                    start_line,
+                    start_column,
+                    end_line,
+                    end_column,
+                });
+            }
+        }
+    }
+    misplaced
+}
+
+/// Закрыт ли раздел объявлений модуля или метода, с учётом ветвей
+/// препроцессора: стек хранит состояние до `#Если` и итог пройденных ветвей.
+#[derive(Default)]
+struct Section {
+    closed: bool,
+    branches: Vec<(bool, bool)>,
+}
+
+impl Section {
+    fn enter(&mut self) {
+        self.branches.push((self.closed, false));
+    }
+
+    fn alternative(&mut self) {
+        if let Some((before, merged)) = self.branches.last_mut() {
+            *merged |= self.closed;
+            self.closed = *before;
+        }
+    }
+
+    fn leave(&mut self) {
+        if let Some((_, merged)) = self.branches.pop() {
+            self.closed |= merged;
+        }
+    }
+}
+
 fn module_identity(path: &str) -> ModuleIdentity {
     let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
     let Some((file_name, directories)) = parts.split_last() else {
@@ -1370,5 +1503,80 @@ mod tests {
                 parameter_count: 2,
             })
         );
+    }
+
+    /// Строки (от единицы) объявлений, которые платформа отвергла бы.
+    fn misplaced_lines(text: &str) -> Vec<usize> {
+        super::misplaced_variable_declarations(text)
+            .iter()
+            .map(|range| range.start_line + 1)
+            .collect()
+    }
+
+    #[test]
+    fn a_module_variable_after_a_method_is_reported_where_it_stands() {
+        let text = "Процедура А()\n\tХ = 1;\nКонецПроцедуры\n\nПерем Х;\n";
+        let ranges = super::misplaced_variable_declarations(text);
+        assert_eq!(ranges.len(), 1, "{ranges:?}");
+        assert_eq!((ranges[0].start_line, ranges[0].start_column), (4, 0));
+        assert_eq!(ranges[0].end_line, 4);
+        assert!(ranges[0].is_non_empty());
+        // Английский синтаксис и объявление между методами — то же место.
+        assert_eq!(
+            misplaced_lines("Procedure A()\nEndProcedure\nVar X;\nProcedure B()\nEndProcedure\n"),
+            [3]
+        );
+        // После оператора основной программы раздел переменных тоже закрыт.
+        assert_eq!(misplaced_lines("Перем А;\nА = 1;\nПерем Б;\n"), [3]);
+    }
+
+    #[test]
+    fn a_local_variable_after_a_statement_is_reported_even_inside_a_block() {
+        let text = "Процедура А()\n\tПерем Б;\n\tБ = 1;\n\tПерем В;\n\tЕсли Б = 1 Тогда\n\t\tПерем Г;\n\tКонецЕсли;\nКонецПроцедуры\n";
+        assert_eq!(misplaced_lines(text), [4, 6]);
+    }
+
+    #[test]
+    fn declarations_at_the_start_of_the_module_and_methods_are_accepted() {
+        let text = "\u{feff}#Если Клиент Тогда\n// Состояние формы.\n&НаКлиенте\nПерем Кеш Экспорт;\n#КонецЕсли\nПерем Счётчик;\n\n#Область СлужебныеПроцедурыИФункции\n\nФункция Б(Параметр)\n\tПерем Локальная, Вторая;\n\tПерем Третья;\n\tЛокальная = Параметр;\n\tВозврат Локальная;\nКонецФункции\n\n#КонецОбласти\n\nСчётчик = 0;\n";
+        assert_eq!(misplaced_lines(text), Vec::<usize>::new());
+        // Модуль, который парсер не разобрал, здесь не судится.
+        assert_eq!(
+            misplaced_lines("Процедура А(\nПерем Х;\n"),
+            Vec::<usize>::new()
+        );
+    }
+
+    #[test]
+    fn exclusive_preprocessor_branches_each_start_their_own_declarations() {
+        // Ветви `#Если` взаимоисключающие: `Перем Б` в `#Иначе` стоит в начале
+        // своего варианта модуля, и платформа его компилирует.
+        let module = "#Если Сервер Тогда\nПерем А;\nПроцедура Х()\nКонецПроцедуры\n#ИначеЕсли Клиент Тогда\nПерем В;\n#Иначе\nПерем Б;\nПроцедура У()\nКонецПроцедуры\n#КонецЕсли\n";
+        assert_eq!(misplaced_lines(module), Vec::<usize>::new());
+        // После `#КонецЕсли` раздел закрыт, если его закрыла хоть одна ветвь,
+        // а метод до `#Если` закрывает раздел в каждой ветви.
+        assert_eq!(
+            misplaced_lines("#Если Сервер Тогда\nПроцедура Х()\nКонецПроцедуры\n#Иначе\nПерем Б;\n#КонецЕсли\nПерем Г;\n"),
+            [7]
+        );
+        assert_eq!(
+            misplaced_lines(
+                "Процедура Х()\nКонецПроцедуры\n#Если Сервер Тогда\n#Иначе\nПерем Б;\n#КонецЕсли\n"
+            ),
+            [5]
+        );
+        // Так же внутри метода.
+        let method = "Процедура Х()\n#Если Сервер Тогда\n\tПерем А;\n\tА = 1;\n#Иначе\n\tПерем Б;\n\tБ = 1;\n#КонецЕсли\n\tПерем В;\nКонецПроцедуры\n";
+        assert_eq!(misplaced_lines(method), [9]);
+    }
+
+    /// Справка платформы («Структура программного модуля»): раздел
+    /// определения переменных длится до первого оператора `Процедура` или
+    /// `Функция`; исключения для директив компиляции в ней нет. Клиентская
+    /// переменная после серверной процедуры формы стоит не на месте.
+    #[test]
+    fn a_compilation_directive_does_not_reopen_the_declaration_section() {
+        let form = "&НаСервере\nПроцедура Х()\nКонецПроцедуры\n\n&НаКлиенте\nПерем Б;\n";
+        assert_eq!(misplaced_lines(form).len(), 1);
     }
 }
