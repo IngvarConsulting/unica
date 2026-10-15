@@ -55,9 +55,13 @@ repeated in the message) instead of calling again; a client with native
 Tasks receives that Task directly. `task_not_found` for that id means the
 daemon no longer knows the call, for example after a restart: inspect the
 actual state before repeating `apply` or `run`. `submit_not_delivered` means
-the call never reached the daemon and will not run; repeat it as is. A
-refused connection (`task_backend_failed` with `needsHuman`) will not pass on
-a repeat. An identical read repeated shortly after the first one joins that
+the call never reached the daemon and will not run; repeat it as is.
+`provider_limit_exceeded` whose message names the daemon request limit means
+the call is larger than the daemon accepts: it was not sent and will not run,
+and the message names both sizes. Reduce the call; several smaller calls each
+apply separately.
+A refused connection (`task_backend_failed` with `needsHuman`) will not pass
+on a repeat. An identical read repeated shortly after the first one joins that
 work under its own `taskId` only while no source changed since it began;
 `apply` and `run` never do, so never repeat them blindly.
 
@@ -120,7 +124,7 @@ source-set path itself has no stronger structural evidence.
 | Send sources / delete an extension | `push`, optional `sourceSet`, `full` and `force`; applies the database configuration after the generation check, `force:true` overwrites the infobase. Deletion uses only `delete: "InstalledName"` |
 | Replace one source set from the working configuration | `pull`, `force:true`, optional `sourceSet`, `extension`; no local-work protection |
 | Export the configuration or an extension as `.cf`/`.cfe` | `download`, `state=working` or `state=database`, `output`, optional `extension` |
-| Load a `.cf`/`.cfe` into the working configuration only | `upload` — unavailable: v8-runner 0.14 has no load without applying the database configuration ([#1246](https://github.com/IngvarConsulting/unica/issues/1246)) |
+| Load a `.cf`/`.cfe` into the working configuration only | `upload` — unavailable: the v8-runner 0.15 upload still applies the database configuration, and the adapter does not run `apply` or `reset` yet ([#1246](https://github.com/IngvarConsulting/unica/issues/1246)) |
 | Build a `.cf`/`.cfe` from sources | `make`, `output`, optional `sourceSet`, `extension`; `.epf`/`.erf` are not published |
 | Export the whole infobase as `.dt` | `infobase.dump`, `output` |
 | Load a `.dt` | `infobase.restore`, `input`, `mode=create` or `mode=replace` |

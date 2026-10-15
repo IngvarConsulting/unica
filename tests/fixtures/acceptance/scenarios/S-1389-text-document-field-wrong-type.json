@@ -1,0 +1,100 @@
+{
+ "id": "S-1389-text-document-field-wrong-type",
+ "name": "typed-text-document-field-refuses-string-binding",
+ "issue": 1389,
+ "area": "Формы",
+ "task": "Отказать TextDocumentField при привязке к строковому реквизиту; исходная форма не изменяется",
+ "wire": [
+  {
+   "tool": "unica.apply",
+   "args": {
+    "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+    "ops": [
+     {
+      "op": "attribute.add",
+      "args": {
+       "items": [
+        {
+         "name": "AcceptanceString",
+         "type": "String"
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "expect": [
+    "ok"
+   ],
+   "captures": {
+    "token": {
+     "pointer": "/data/executionToken"
+    }
+   }
+  },
+  {
+   "tool": "unica.apply",
+   "args": {
+    "executionToken": "$capture.token"
+   },
+   "expect": [
+    "ok"
+   ],
+   "assertions": [
+    {
+     "pointer": "/data/mode",
+     "eq": "published"
+    }
+   ],
+   "captures": {
+    "before": {
+     "kind": "sha256",
+     "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"
+    }
+   }
+  },
+  {
+   "tool": "unica.apply",
+   "args": {
+    "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+    "ops": [
+     {
+      "op": "item.add",
+      "args": {
+       "items": [
+        {
+         "name": "InvalidTextDocumentField",
+         "type": "TextDocumentField",
+         "path": "AcceptanceString"
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "expect": [
+    "refused"
+   ],
+   "refusal": "bad_value: TextDocumentField 'InvalidTextDocumentField' path 'AcceptanceString' requires a TextDocument attribute",
+   "assertions": [
+    {
+     "pointer": "/diagnostics/0/code",
+     "eq": "bad_value"
+    }
+   ],
+   "fileAssertions": [
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+     "eq": "$capture.before"
+    },
+    {
+     "kind": "xml",
+     "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+     "select": ".//{http://v8.1c.ru/8.3/xcf/logform}TextDocumentField[@name=\"InvalidTextDocumentField\"]",
+     "eq": []
+    }
+   ]
+  }
+ ]
+}

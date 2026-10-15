@@ -305,6 +305,27 @@ pub(crate) fn unix_mode_for_test(_path: &Path) -> io::Result<Option<u32>> {
     Ok(None)
 }
 
+/// Count descriptors (Unix) or handles (Windows) this process holds now. Only
+/// the difference between two calls is meaningful: the count includes
+/// whatever the test harness and concurrent tests keep open.
+#[cfg(unix)]
+pub(crate) fn open_handle_count_for_test() -> io::Result<usize> {
+    Ok(std::fs::read_dir("/dev/fd")?.count())
+}
+
+#[cfg(windows)]
+pub(crate) fn open_handle_count_for_test() -> io::Result<usize> {
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessHandleCount};
+
+    let mut count = 0_u32;
+    // SAFETY: the pseudo-handle of the current process needs no closing and
+    // `count` is a valid output location for the duration of the call.
+    if unsafe { GetProcessHandleCount(GetCurrentProcess(), &mut count) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(count as usize)
+}
+
 pub(crate) struct TestCommand {
     pub(crate) program: PathBuf,
     pub(crate) args: Vec<String>,

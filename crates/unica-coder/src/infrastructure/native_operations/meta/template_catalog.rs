@@ -3084,13 +3084,15 @@ pub(super) fn emit_meta_tabular_section<F>(
         "{indent}\t\t<FillChecking>DontCheck</FillChecking>"
     ));
     emit_meta_standard_attributes(lines, &format!("{indent}\t\t"), "TabularSection");
+    // The 8.3.27 export writes `Use` (hierarchical owners only) before
+    // `LineNumberLength` (#1385).
+    if matches!(object_type, "Catalog" | "ChartOfCharacteristicTypes") {
+        lines.push(format!("{indent}\t\t<Use>ForItem</Use>"));
+    }
     if meta_line_number_length_is_applicable(object_type) {
         lines.push(format!(
             "{indent}\t\t<LineNumberLength>9</LineNumberLength>"
         ));
-    }
-    if object_type == "Catalog" {
-        lines.push(format!("{indent}\t\t<Use>ForItem</Use>"));
     }
     lines.push(format!("{indent}\t</Properties>"));
     lines.push(format!("{indent}\t<ChildObjects>"));

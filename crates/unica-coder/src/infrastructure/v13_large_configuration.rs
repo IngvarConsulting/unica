@@ -4,6 +4,8 @@
 use crate::application::v13::view::ViewError;
 use crate::domain::address::NodeKind;
 use crate::domain::refusal::RefusalDetail;
+use crate::infrastructure::native_operations::common::SupportState;
+use crate::infrastructure::platform::filesystem::{FileStamp, RetainedDirectoryCapability};
 use serde_json::{json, Value};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -207,60 +209,214 @@ pub(crate) struct RegistrationIndex {
     count: u64,
 }
 
-/// Owned by one source read lease and shared by its capabilities. A new
-/// invocation gets a fresh cache; each source identity retains at most one
-/// completed read-identity index. Building runs outside the mutex: concurrent cold reads may perform
-/// duplicate work, but an expired or cancelled caller never blocks another
-/// caller behind a long XML parse.
-#[derive(Default)]
+/// Разобранные артефакты корня одного набора исходников: индекс регистраций
+/// `Configuration.xml`, полезная нагрузка корня и состояние поддержки. Актор
+/// держит один такой кеш на набор между вызовами. Запись годна, пока штамп
+/// её файлов (физическая идентичность, длина, время изменения содержимого и
+/// метаданных) совпадает с текущим. Штамп снимается до чтения, поэтому
+/// файл, изменённый во время разбора, при следующем обращении не совпадёт
+/// со штампом записи и будет разобран заново. Запись сохраняется, только
+/// если штамп устоялся (обе метки времени известны и старше окна); иначе
+/// файл разбирается при каждом обращении. Обхода дерева нет. Отравленная
+/// блокировка сбрасывает запись, а не отказывает дальше.
 pub(crate) struct RegistrationCache {
-    completed: Mutex<BTreeMap<String, (String, Arc<RegistrationIndex>)>>,
+    registrations: Mutex<Option<(FileStamp, Arc<RegistrationIndex>)>>,
+    configuration: Mutex<Option<(ConfigurationStamps, Arc<Value>)>>,
+    support: Mutex<Option<RetainedSupportState>>,
+    settle_window: std::time::Duration,
+    #[cfg(test)]
+    registration_builds: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    after_parse: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+}
+
+/// Timestamp granularity window: a stamp younger than this is never cached.
+const SETTLE_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
+
+impl Default for RegistrationCache {
+    fn default() -> Self {
+        Self {
+            registrations: Mutex::new(None),
+            configuration: Mutex::new(None),
+            support: Mutex::new(None),
+            settle_window: SETTLE_WINDOW,
+            #[cfg(test)]
+            registration_builds: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            after_parse: Mutex::new(None),
+        }
+    }
+}
+
+/// A support state with the stamp of its marker (`None` when absent).
+pub(crate) type RetainedSupportState = (Option<FileStamp>, Option<Arc<SupportState>>);
+
+/// Stamps of every file the configuration-root payload is built from.
+pub(crate) type ConfigurationStamps = [Option<FileStamp>; 4];
+
+/// Files the configuration-root payload reads, in stamp order.
+pub(crate) const CONFIGURATION_PAYLOAD_FILES: [&str; 4] = [
+    "Configuration.xml",
+    "Ext/ParentConfigurations.bin",
+    "Ext/HomePageWorkArea.xml",
+    "Ext/CommandInterface.xml",
+];
+
+fn unreadable(error: io::Error) -> ViewError {
+    ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+}
+
+/// Locks one cache slot; a poisoned slot is emptied and reused.
+fn slot<T>(mutex: &Mutex<Option<T>>) -> std::sync::MutexGuard<'_, Option<T>> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            let mut guard = poisoned.into_inner();
+            *guard = None;
+            mutex.clear_poison();
+            guard
+        }
+    }
 }
 
 impl RegistrationCache {
-    pub(crate) fn get_or_build(
+    #[cfg(test)]
+    pub(crate) fn with_settle_window_for_test(window: std::time::Duration) -> Self {
+        Self {
+            settle_window: window,
+            ..Self::default()
+        }
+    }
+
+    /// Runs once after the next parse, before its stamp is checked again.
+    #[cfg(test)]
+    pub(crate) fn after_next_parse_for_test(&self, hook: impl FnOnce() + Send + 'static) {
+        *slot(&self.after_parse) = Some(Box::new(hook));
+    }
+
+    fn parsed(&self) {
+        #[cfg(test)]
+        if let Some(hook) = slot(&self.after_parse).take() {
+            hook();
+        }
+    }
+
+    fn retains(&self, stamp: &FileStamp) -> bool {
+        stamp.settled(std::time::SystemTime::now(), self.settle_window)
+    }
+
+    /// The registration index of `Configuration.xml` under `root`, parsed
+    /// again unless a settled, unchanged stamp proves the retained one.
+    pub(crate) fn registrations(
         &self,
-        source_identity: &str,
-        revision: &str,
+        root: &RetainedDirectoryCapability,
         checkpoint: &dyn Fn() -> Result<(), ViewError>,
-        build: impl FnOnce() -> Result<RegistrationIndex, ViewError>,
     ) -> Result<Arc<RegistrationIndex>, ViewError> {
-        if let Some(index) = self
-            .completed
-            .lock()
-            .map_err(|_| {
-                ViewError::detailed(
-                    RefusalDetail::CachePoisoned,
-                    "registration cache is poisoned",
-                )
-            })?
-            .get(source_identity)
-            .filter(|(cached_revision, _)| cached_revision == revision)
-            .map(|(_, index)| Arc::clone(index))
-        {
-            return Ok(index);
-        }
         checkpoint()?;
-        let built = Arc::new(build()?);
-        checkpoint()?;
-        let mut cache = self.completed.lock().map_err(|_| {
-            ViewError::detailed(
-                RefusalDetail::CachePoisoned,
-                "registration cache is poisoned",
-            )
-        })?;
-        if let Some((_, existing)) = cache
-            .get(source_identity)
-            .filter(|(cached_revision, _)| cached_revision == revision)
-        {
-            return Ok(Arc::clone(existing));
+        let file = root
+            .open_relative_regular_nofollow(std::path::Path::new("Configuration.xml"))
+            .map_err(unreadable)?;
+        let stamp = FileStamp::of(&file).map_err(unreadable)?;
+        // A retained index whose scratch files were poisoned by a panicking
+        // reader counts as absent and is rebuilt.
+        if let Some((cached, index)) = slot(&self.registrations).as_ref() {
+            if *cached == stamp && !index.inner.is_poisoned() {
+                return Ok(Arc::clone(index));
+            }
         }
-        cache.insert(
-            source_identity.to_string(),
-            (revision.to_string(), Arc::clone(&built)),
-        );
+        #[cfg(test)]
+        self.registration_builds
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let built = Arc::new(read_configuration_registration_index(file, checkpoint)?);
+        self.parsed();
+        checkpoint()?;
+        *slot(&self.registrations) = self.retains(&stamp).then(|| (stamp, Arc::clone(&built)));
         Ok(built)
     }
+
+    /// The configuration-root payload, rebuilt unless settled, unchanged
+    /// stamps of all its files prove the retained one. The stamps are taken
+    /// before `build` reads the files, so a file changed meanwhile mismatches
+    /// on the next use.
+    pub(crate) fn configuration_payload(
+        &self,
+        root: &RetainedDirectoryCapability,
+        build: impl FnOnce() -> Result<Value, ViewError>,
+    ) -> Result<Arc<Value>, ViewError> {
+        let stamps = configuration_stamps(root)?;
+        if let Some((cached, payload)) = slot(&self.configuration).as_ref() {
+            if *cached == stamps {
+                return Ok(Arc::clone(payload));
+            }
+        }
+        let built = Arc::new(build()?);
+        self.parsed();
+        let settled = stamps.iter().flatten().all(|stamp| self.retains(stamp));
+        *slot(&self.configuration) = settled.then(|| (stamps, Arc::clone(&built)));
+        Ok(built)
+    }
+
+    /// The parsed support state of `Ext/ParentConfigurations.bin` (`None`
+    /// when absent) with the stamp it was read under.
+    pub(crate) fn support_state(
+        &self,
+        root: &RetainedDirectoryCapability,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+        parse: impl FnOnce(
+            File,
+            &mut dyn FnMut() -> Result<(), ViewError>,
+        ) -> Result<SupportState, ViewError>,
+    ) -> Result<RetainedSupportState, ViewError> {
+        checkpoint()?;
+        let file = match root
+            .open_relative_regular_nofollow(std::path::Path::new("Ext/ParentConfigurations.bin"))
+        {
+            Ok(file) => Some(file),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(unreadable(error)),
+        };
+        let stamp = file
+            .as_ref()
+            .map(FileStamp::of)
+            .transpose()
+            .map_err(unreadable)?;
+        if let Some((cached, state)) = slot(&self.support).as_ref() {
+            if *cached == stamp {
+                return Ok((stamp, state.clone()));
+            }
+        }
+        let (state, retain) = match file {
+            None => (None, true),
+            Some(file) => {
+                let state = Arc::new(parse(file, checkpoint)?);
+                self.parsed();
+                let settled = stamp.as_ref().is_some_and(|stamp| self.retains(stamp));
+                (Some(state), settled)
+            }
+        };
+        checkpoint()?;
+        *slot(&self.support) = retain.then(|| (stamp, state.clone()));
+        Ok((stamp, state))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn registration_builds_for_test(&self) -> usize {
+        self.registration_builds
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// Stamps of the configuration-root payload files under `root`.
+pub(crate) fn configuration_stamps(
+    root: &RetainedDirectoryCapability,
+) -> Result<ConfigurationStamps, ViewError> {
+    let mut stamps = [None; 4];
+    for (stamp, relative) in stamps.iter_mut().zip(CONFIGURATION_PAYLOAD_FILES) {
+        *stamp = root
+            .relative_file_stamp(std::path::Path::new(relative))
+            .map_err(unreadable)?;
+    }
+    Ok(stamps)
 }
 
 struct RegistrationIndexFiles {
@@ -517,7 +673,6 @@ pub(super) fn read_configuration_root(
     home_page: Value,
     interface: Value,
     checkpoint: &dyn Fn() -> Result<(), ViewError>,
-    mut verify_owner: impl FnMut(&str, &str) -> Result<(), ViewError>,
 ) -> Result<StreamedConfigurationRoot, ViewError> {
     let state = parse_configuration_owner(file, checkpoint)?;
     let RootState {
@@ -528,7 +683,7 @@ pub(super) fn read_configuration_root(
         ..
     } = state;
     let mut counts = BTreeMap::<String, usize>::new();
-    registrations.for_each_unique(checkpoint, |kind, name| {
+    registrations.for_each_unique(checkpoint, |kind, _name| {
         let Ok(kind_value) = NodeKind::parse(kind) else {
             return Ok(());
         };
@@ -536,7 +691,6 @@ pub(super) fn read_configuration_root(
             return Ok(());
         }
         checkpoint()?;
-        verify_owner(kind, name)?;
         let count = counts.entry(kind.to_string()).or_default();
         *count = count.checked_add(1).ok_or_else(|| {
             ViewError::detailed(
@@ -1059,7 +1213,6 @@ mod tests {
     use super::*;
     use crate::domain::refusal::RefusalCode;
     use std::cell::Cell;
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn temporary_index_failures_are_distinct_from_unreadable_source_xml() {
@@ -1089,7 +1242,6 @@ mod tests {
             Value::Null,
             Value::Null,
             checkpoint,
-            |_, _| Ok(()),
         )
     }
 
@@ -1277,47 +1429,315 @@ mod tests {
             .is_empty());
     }
 
-    #[test]
-    fn registration_cache_reuses_only_the_same_source_revision() {
-        fn index(name: &str) -> Result<RegistrationIndex, ViewError> {
-            let mut sorter = RegistrationSorter::new();
-            sorter.push("CommonModule".into(), name.into(), &|| Ok(()))?;
-            RegistrationIndex::from_sorter(sorter, &|| Ok(()))
+    fn configuration_xml(name: &str) -> String {
+        format!(
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects><CommonModule>{name}</CommonModule></ChildObjects></Configuration></MetaDataObject>"#
+        )
+    }
+
+    struct ArtifactRoot {
+        _directory: tempfile::TempDir,
+        path: std::path::PathBuf,
+        root: crate::infrastructure::platform::filesystem::RetainedDirectoryCapability,
+    }
+
+    fn artifact_root(name: &str) -> ArtifactRoot {
+        let directory = tempfile::tempdir().unwrap();
+        let path = std::fs::canonicalize(directory.path()).unwrap();
+        std::fs::write(path.join("Configuration.xml"), configuration_xml(name)).unwrap();
+        let root =
+            crate::infrastructure::platform::filesystem::RetainedDirectoryCapability::open(&path)
+                .unwrap();
+        ArtifactRoot {
+            _directory: directory,
+            path,
+            root,
         }
-        let cache = RegistrationCache::default();
-        let builds = AtomicUsize::new(0);
-        let first = cache
-            .get_or_build("source", "revision-1", &|| Ok(()), || {
-                builds.fetch_add(1, Ordering::Relaxed);
-                index("First")
-            })
+    }
+
+    /// Rewrites `path` in place and restores its previous modification time,
+    /// as a tool that preserves timestamps would.
+    fn rewrite_keeping_mtime(path: &std::path::Path, bytes: &[u8]) {
+        let modified = std::fs::metadata(path).unwrap().modified().unwrap();
+        // Время изменения файла идёт шагом часов ядра: NTFS ~15,6 мс, Linux
+        // 1–10 мс. Запись в тот же шаг оставила бы отпечаток прежним. В работе такой
+        // отпечаток не кешируется окном оседания; тест окно обнуляет, поэтому
+        // пишет заведомо в следующий шаг.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::fs::write(path, bytes).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(modified)
             .unwrap();
-        assert!(first.contains("CommonModule", "First", &|| Ok(())).unwrap());
-        assert!(!first.contains("CommonModule", "Other", &|| Ok(())).unwrap());
-        let same = cache
-            .get_or_build("source", "revision-1", &|| Ok(()), || {
-                builds.fetch_add(1, Ordering::Relaxed);
-                index("Unexpected")
-            })
-            .unwrap();
+    }
+
+    fn settled_cache() -> RegistrationCache {
+        RegistrationCache::with_settle_window_for_test(std::time::Duration::ZERO)
+    }
+
+    fn holds(index: &RegistrationIndex, name: &str) -> bool {
+        index.contains("CommonModule", name, &|| Ok(())).unwrap()
+    }
+
+    #[test]
+    fn retained_registrations_are_reused_until_their_file_changes() {
+        let fixture = artifact_root("First");
+        let cache = settled_cache();
+
+        let first = cache.registrations(&fixture.root, &|| Ok(())).unwrap();
+        let same = cache.registrations(&fixture.root, &|| Ok(())).unwrap();
         assert!(Arc::ptr_eq(&first, &same));
-        assert_eq!(builds.load(Ordering::Relaxed), 1);
-        let old = Arc::downgrade(&first);
-        let next = cache
-            .get_or_build("source", "revision-2", &|| Ok(()), || {
-                builds.fetch_add(1, Ordering::Relaxed);
-                index("Next")
-            })
+        assert_eq!(cache.registration_builds_for_test(), 1);
+        assert!(holds(&first, "First"));
+
+        // Same length, same inode, modification time restored: only the
+        // change time tells the rewrite apart.
+        let configuration = fixture.path.join("Configuration.xml");
+        rewrite_keeping_mtime(&configuration, configuration_xml("Other").as_bytes());
+        let rewritten = cache.registrations(&fixture.root, &|| Ok(())).unwrap();
+        assert!(holds(&rewritten, "Other") && !holds(&rewritten, "First"));
+
+        // A rename over the file with its time restored is observed too.
+        let replacement = fixture.path.join("Replacement.xml");
+        std::fs::write(&replacement, configuration_xml("Moved")).unwrap();
+        let modified = std::fs::metadata(&configuration)
+            .unwrap()
+            .modified()
             .unwrap();
-        assert!(next.contains("CommonModule", "Next", &|| Ok(())).unwrap());
-        assert!(!next.contains("CommonModule", "First", &|| Ok(())).unwrap());
-        assert_eq!(builds.load(Ordering::Relaxed), 2);
-        drop(first);
-        drop(same);
+        std::fs::File::options()
+            .write(true)
+            .open(&replacement)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        std::fs::rename(&replacement, &configuration).unwrap();
+        let renamed = cache.registrations(&fixture.root, &|| Ok(())).unwrap();
+        assert!(holds(&renamed, "Moved"));
+        assert_eq!(cache.registration_builds_for_test(), 3);
+        let old = Arc::downgrade(&first);
+        drop((first, same, rewritten));
         assert!(
             old.upgrade().is_none(),
-            "old revision file handles were retained"
+            "a replaced index must not be retained"
         );
+    }
+
+    #[test]
+    fn a_stamp_inside_the_racy_window_is_never_retained() {
+        let fixture = artifact_root("First");
+        let cache = RegistrationCache::default();
+        cache.registrations(&fixture.root, &|| Ok(())).unwrap();
+        cache.registrations(&fixture.root, &|| Ok(())).unwrap();
+        assert_eq!(
+            cache.registration_builds_for_test(),
+            2,
+            "a file younger than the window is parsed on every call"
+        );
+
+        let now = std::time::SystemTime::now();
+        let window = std::time::Duration::from_secs(2);
+        let old = now - std::time::Duration::from_secs(10);
+        let young = now - std::time::Duration::from_secs(1);
+        let future = now + std::time::Duration::from_secs(10);
+        let stamp = |modified, changed| {
+            crate::infrastructure::platform::filesystem::FileStamp::for_test(
+                7, 9, modified, changed,
+            )
+        };
+        assert!(stamp(Some(old), Some(old)).settled(now, window));
+        for (modified, changed) in [
+            (None, Some(old)),
+            (Some(old), None),
+            (Some(young), Some(old)),
+            (Some(old), Some(young)),
+            (Some(future), Some(old)),
+            (Some(old), Some(future)),
+        ] {
+            assert!(!stamp(modified, changed).settled(now, window));
+        }
+    }
+
+    #[test]
+    fn stamps_differ_by_every_identity_field() {
+        use crate::infrastructure::platform::filesystem::FileStamp;
+        let time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+        // SystemTime на Windows хранится в FILETIME с шагом 100 нс: сдвиг
+        // меньше шага там неразличим, микросекунда видна на всех системах.
+        let later = time + std::time::Duration::from_micros(1);
+        let base = FileStamp::for_test(7, 9, Some(time), Some(time));
+        assert_eq!(base, FileStamp::for_test(7, 9, Some(time), Some(time)));
+        for other in [
+            FileStamp::for_test(8, 9, Some(time), Some(time)),
+            FileStamp::for_test(7, 10, Some(time), Some(time)),
+            FileStamp::for_test(7, 9, Some(later), Some(time)),
+            FileStamp::for_test(7, 9, Some(time), Some(later)),
+        ] {
+            assert_ne!(base, other);
+        }
+    }
+
+    #[test]
+    fn a_file_changed_during_its_parse_is_not_retained() {
+        let fixture = artifact_root("First");
+        let cache = settled_cache();
+        let configuration = fixture.path.join("Configuration.xml");
+        let during = configuration.clone();
+        cache.after_next_parse_for_test(move || {
+            rewrite_keeping_mtime(&during, configuration_xml("Later").as_bytes());
+        });
+        let torn = cache.registrations(&fixture.root, &|| Ok(())).unwrap();
+        assert!(holds(&torn, "First"), "the parse saw the file it opened");
+        let next = cache.registrations(&fixture.root, &|| Ok(())).unwrap();
+        assert!(
+            holds(&next, "Later"),
+            "the changed file must be parsed again"
+        );
+        assert_eq!(cache.registration_builds_for_test(), 2);
+
+        let payload_root = fixture.path.join("Ext/HomePageWorkArea.xml");
+        std::fs::create_dir_all(payload_root.parent().unwrap()).unwrap();
+        std::fs::write(&payload_root, b"<HomePage/>").unwrap();
+        let builds = std::cell::Cell::new(0);
+        let build = || {
+            builds.set(builds.get() + 1);
+            Ok(json!({"build": builds.get()}))
+        };
+        let during = payload_root.clone();
+        cache.after_next_parse_for_test(move || {
+            rewrite_keeping_mtime(&during, b"<HomePage>");
+        });
+        cache.configuration_payload(&fixture.root, build).unwrap();
+        cache.configuration_payload(&fixture.root, build).unwrap();
+        assert_eq!(builds.get(), 2, "a payload whose file moved is rebuilt");
+
+        let marker = fixture.path.join("Ext/ParentConfigurations.bin");
+        std::fs::write(&marker, b"one").unwrap();
+        let parsed_state = {
+            let mut parser =
+                crate::infrastructure::native_operations::common::SupportStateStreamParser::default(
+                );
+            parser
+                .feed(
+                    &std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+                        "../../tests/fixtures/platform_8_3_27/support-edit-bin-only/src/Ext/ParentConfigurations.bin",
+                    ))
+                    .unwrap(),
+                )
+                .unwrap();
+            parser.finish().unwrap()
+        };
+        let parses = std::cell::Cell::new(0);
+        let support = |cache: &RegistrationCache| {
+            cache
+                .support_state(&fixture.root, &mut || Ok(()), |_file, _checkpoint| {
+                    parses.set(parses.get() + 1);
+                    Ok(parsed_state.clone())
+                })
+                .unwrap()
+        };
+        let during = marker.clone();
+        cache.after_next_parse_for_test(move || rewrite_keeping_mtime(&during, b"two"));
+        support(&cache);
+        support(&cache);
+        assert_eq!(
+            parses.get(),
+            2,
+            "a marker that moved while parsed is read again"
+        );
+    }
+
+    #[test]
+    fn every_payload_file_invalidates_the_retained_root() {
+        let fixture = artifact_root("First");
+        std::fs::create_dir_all(fixture.path.join("Ext")).unwrap();
+        for relative in &CONFIGURATION_PAYLOAD_FILES[1..] {
+            std::fs::write(fixture.path.join(relative), b"one").unwrap();
+        }
+        let cache = settled_cache();
+        let builds = std::cell::Cell::new(0);
+        let build = || {
+            builds.set(builds.get() + 1);
+            Ok(json!({"build": builds.get()}))
+        };
+        cache.configuration_payload(&fixture.root, build).unwrap();
+        cache.configuration_payload(&fixture.root, build).unwrap();
+        assert_eq!(builds.get(), 1);
+        for (index, relative) in CONFIGURATION_PAYLOAD_FILES.iter().enumerate() {
+            let path = fixture.path.join(relative);
+            let bytes = std::fs::read(&path).unwrap();
+            let mut changed = bytes.clone();
+            changed[0] ^= 1;
+            rewrite_keeping_mtime(&path, &changed);
+            let payload = cache.configuration_payload(&fixture.root, build).unwrap();
+            assert_eq!(
+                payload["build"],
+                index + 2,
+                "{relative} must invalidate the root"
+            );
+            cache.configuration_payload(&fixture.root, build).unwrap();
+            assert_eq!(
+                builds.get(),
+                index + 2,
+                "{relative}: rebuilt once, then retained"
+            );
+        }
+        assert_eq!(
+            CONFIGURATION_PAYLOAD_FILES,
+            [
+                "Configuration.xml",
+                "Ext/ParentConfigurations.bin",
+                "Ext/HomePageWorkArea.xml",
+                "Ext/CommandInterface.xml",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_poisoned_retained_index_is_rebuilt() {
+        let fixture = artifact_root("First");
+        let cache = settled_cache();
+        let poisoned = cache.registrations(&fixture.root, &|| Ok(())).unwrap();
+        let holder = Arc::clone(&poisoned);
+        std::thread::spawn(move || {
+            let _files = holder.inner.lock().unwrap();
+            panic!("poison the retained index");
+        })
+        .join()
+        .unwrap_err();
+        assert!(poisoned
+            .contains("CommonModule", "First", &|| Ok(()))
+            .is_err());
+
+        let rebuilt = cache.registrations(&fixture.root, &|| Ok(())).unwrap();
+        assert!(!Arc::ptr_eq(&poisoned, &rebuilt));
+        assert!(holds(&rebuilt, "First"));
+        assert_eq!(cache.registration_builds_for_test(), 2);
+        let retained = cache.registrations(&fixture.root, &|| Ok(())).unwrap();
+        assert!(Arc::ptr_eq(&rebuilt, &retained));
+    }
+
+    #[test]
+    fn a_poisoned_slot_is_emptied_and_reused() {
+        let fixture = artifact_root("First");
+        let cache = Arc::new(settled_cache());
+        cache.registrations(&fixture.root, &|| Ok(())).unwrap();
+        let poisoning = Arc::clone(&cache);
+        std::thread::spawn(move || {
+            let _held = poisoning.registrations.lock().unwrap();
+            panic!("poison the registration slot");
+        })
+        .join()
+        .unwrap_err();
+        assert!(cache.registrations.is_poisoned());
+
+        let rebuilt = cache.registrations(&fixture.root, &|| Ok(())).unwrap();
+        assert!(holds(&rebuilt, "First"));
+        let retained = cache.registrations(&fixture.root, &|| Ok(())).unwrap();
+        assert!(Arc::ptr_eq(&rebuilt, &retained));
+        assert_eq!(cache.registration_builds_for_test(), 2);
+        assert!(!cache.registrations.is_poisoned());
     }
 
     #[test]

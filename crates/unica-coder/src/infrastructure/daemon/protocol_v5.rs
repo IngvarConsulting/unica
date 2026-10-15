@@ -7,7 +7,7 @@ use crate::application::invocation_store_v5::V5SafeFailureReason;
 use crate::application::receipt_ledger::{
     canonical_v5_terminal, receipt_key_digest, request_scope_hash, AcknowledgedTombstoneReceipt,
     ReceiptKey, ReceiptKeyDigest, ReceiptTerminalOutcome, RequestIdentity, TerminalDigest,
-    V5ToolIdentity,
+    V5ToolIdentity, MAX_REQUEST_SCOPE_BYTES,
 };
 use crate::domain::invocation::{DomainResult, InvocationId, InvocationStatus, TaskId};
 use serde::{Deserialize, Serialize};
@@ -21,7 +21,23 @@ pub(crate) const DAEMON_PROTOCOL_VERSION: u32 = super::identity::DAEMON_PROTOCOL
 pub(crate) const DAEMON_PROTOCOL_IDENTITY: &str = "unica-daemon-jsonl-5";
 pub(crate) const V5_ENDPOINT_SCHEMA_VERSION: u32 = 1;
 pub(crate) const MAX_V5_ENDPOINT_RECORD_BYTES: usize = 16 * 1024;
-pub(crate) const MAX_V5_REQUEST_LINE_BYTES: usize = 16 * 1024;
+/// Bound of the first frame of a connection, `\n` included. Before the token
+/// is checked only a `hello` of a few hundred bytes is legitimate, and the
+/// number of connections is not capped (`INV.RUNTIME.DAEMON-CONNECTION-ADMISSION`):
+/// an unauthenticated peer can make the daemon hold at most this much.
+pub(crate) const MAX_V5_HANDSHAKE_LINE_BYTES: usize = 16 * 1024;
+/// Bound of one authenticated request frame, `\n` included.
+///
+/// Temporary, without a measured basis (#1309, #1312): the former 16 KiB cut
+/// an ordinary `unica.apply` with a BSL procedure of a few pages. The value is
+/// chosen far above the payloads seen in work: the largest module of a typical
+/// configuration (UT, 7.6 MB) is 7.9 MB as a JSON string, so its whole text
+/// fits eight times over, and twice over the 32 MiB file ceiling of `apply`.
+/// The daemon holds a frame, its parsed arguments and their canonical hash at
+/// once, so one request costs several times its size; the bound keeps that
+/// finite. The frontend refuses a larger call before sending it and names both
+/// numbers (`V5TransportError::RequestTooLarge`).
+pub(crate) const MAX_V5_REQUEST_LINE_BYTES: usize = 64 * 1024 * 1024;
 pub(crate) const MAX_V5_RESPONSE_LINE_BYTES: usize =
     MAX_CANONICAL_RESULT_BYTES + MAX_TASK_RECORD_ENVELOPE_BYTES;
 const MAX_V5_WAIT_MS: u64 = 7_000;
@@ -267,6 +283,11 @@ impl V5InvocationRequest {
         }
         if self.workspace_hint.is_empty() || self.workspace_hint.chars().any(char::is_control) {
             return Err("v5 invocation workspace hint must be non-empty text".to_string());
+        }
+        // The request scope hashes at most this much; the frame bound is far
+        // larger and no longer keeps an oversized hint out by itself.
+        if self.workspace_hint.len() > MAX_REQUEST_SCOPE_BYTES {
+            return Err("v5 invocation workspace hint exceeds the request scope limit".to_string());
         }
         // The origin names a host capability or a project variable; both are
         // short identifiers that a result quotes verbatim.
@@ -1128,6 +1149,18 @@ where
     read_bounded_json_line_with_limit_before(reader, MAX_V5_REQUEST_LINE_BYTES, before_fill)
 }
 
+/// The first frame of a connection, read before its token is checked.
+pub(crate) fn read_bounded_v5_handshake_frame_before<R, F>(
+    reader: &mut R,
+    before_fill: F,
+) -> io::Result<Vec<u8>>
+where
+    R: BufRead,
+    F: FnMut(&mut R) -> io::Result<()>,
+{
+    read_bounded_json_line_with_limit_before(reader, MAX_V5_HANDSHAKE_LINE_BYTES, before_fill)
+}
+
 pub(crate) fn read_bounded_v5_probe_response_frame<R: BufRead>(
     reader: &mut R,
 ) -> io::Result<Vec<u8>> {
@@ -1374,7 +1407,7 @@ pub(crate) fn strict_envelope_case_frame(case: StrictV5EnvelopeCase) -> Result<V
         StrictV5EnvelopeCase::OversizedWorkspaceHint => {
             invocation.insert(
                 "workspaceHint".to_string(),
-                json!("x".repeat(MAX_V5_REQUEST_LINE_BYTES)),
+                json!("x".repeat(MAX_REQUEST_SCOPE_BYTES + 1)),
             );
         }
     }
@@ -2044,7 +2077,7 @@ mod tests {
 
         let oversized_workspace = format!(
             "{{\"kind\":\"submit_invocation\",\"invocation\":{{\"invocationId\":\"{INVOCATION_ID}\",\"reservedTaskId\":\"{TASK_ID}\",\"tool\":\"unica.view\",\"arguments\":{{}},\"workspaceHint\":\"{}\",\"workspaceOrigin\":{{\"channel\":\"launchCwd\"}},\"responseBudgetMs\":1}}}}",
-            "x".repeat(MAX_V5_REQUEST_LINE_BYTES)
+            "x".repeat(MAX_REQUEST_SCOPE_BYTES + 1)
         );
         assert!(decode_v5_client_request(oversized_workspace.as_bytes()).is_err());
     }
@@ -2079,8 +2112,7 @@ mod tests {
                     }
                 };
             let expected_rejection = match case {
-                StrictV5EnvelopeCase::OversizedArguments
-                | StrictV5EnvelopeCase::OversizedWorkspaceHint => {
+                StrictV5EnvelopeCase::OversizedArguments => {
                     StrictV5EnvelopeRejectionKind::BoundedFrame
                 }
                 _ => StrictV5EnvelopeRejectionKind::StrictDecode,
@@ -2094,8 +2126,8 @@ mod tests {
                 StrictV5EnvelopeRejectionKind::StrictDecode => strict_decode_rejections += 1,
             }
         }
-        assert_eq!(bounded_frame_rejections, 2);
-        assert_eq!(strict_decode_rejections, 11);
+        assert_eq!(bounded_frame_rejections, 1);
+        assert_eq!(strict_decode_rejections, 12);
     }
 
     #[test]

@@ -1,0 +1,58 @@
+{
+  "platformVersion": "8.3.27.2130",
+  "platformBinarySha256": "6ecf2fc3143cb4a221016b9436d130a658eac0ed8d5e90429207ac3589d16a78",
+  "formatVersion": "2.20",
+  "source": "Raw platform exports from two independent disposable infobases, after parent import/apply and extension import/check/apply. Second cycle imported the unmodified first extension export. Supplemental XML 2.20 reader evidence; not the pinned 8.3.27.2074 platform gate.",
+  "files": {
+    "parent-common-module.xml": {
+      "sha256": "cd5c3afcfdd43363db4db6489b66cc85f0e812cd4af9cdddc94e092cce8f3597",
+      "size": 1585,
+      "byteExactAcrossIndependentRounds": true
+    },
+    "extension-common-module.xml": {
+      "sha256": "c00a82ba7181202e43c1f38b47748155923d65b6f4b53624d5afeb9e149c1890",
+      "size": 1400,
+      "byteExactAcrossIndependentRounds": true
+    },
+    "parent-catalog.xml": {
+      "sha256": "a8020d30f47afabf8468e1030917b9b9e178fd97b181f1226b4de3f39f77819c",
+      "size": 14930,
+      "byteExactAcrossIndependentRounds": true
+    },
+    "extension-catalog.xml": {
+      "sha256": "0ce535de5f0b4295212b7c20de8514944b33f6566143ad1632f11024c819313b",
+      "size": 2846,
+      "byteExactAcrossIndependentRounds": true
+    },
+    "parent-document.xml": {
+      "sha256": "af2c44a34afe6b16b8f9179f17b6e9844bafdce80f38de693bb41387f5bd9000",
+      "size": 4237,
+      "byteExactAcrossIndependentRounds": true
+    },
+    "extension-document.xml": {
+      "sha256": "f5db7ff2e306f41046abae9ab4d537178705f083d38d2804638bde6e0c64e5c8",
+      "size": 2475,
+      "byteExactAcrossIndependentRounds": true
+    },
+    "parent-information-register.xml": {
+      "sha256": "44cb25be0bf6805f54d32034bb4d5bdbdfa9f0be642e5f178b2aa1e40e8bbb03",
+      "size": 5163,
+      "byteExactAcrossIndependentRounds": true
+    },
+    "extension-information-register.xml": {
+      "sha256": "63d463efbe9c304594e65bc0e137f4da809013c277d353521c987067c85c1ef6",
+      "size": 3051,
+      "byteExactAcrossIndependentRounds": true
+    },
+    "parent-chart-of-calculation-types.xml": {
+      "sha256": "33d1f0bc7d49d17ae4e2c03865cbce303cba6fd68b428ffd228df7bca5d5d409",
+      "size": 5988,
+      "byteExactAcrossIndependentRounds": true
+    },
+    "extension-chart-of-calculation-types.xml": {
+      "sha256": "bcdef0a5c0c732a4e27ce57692e1930c506f3c4fca531f535d82af01d1644491",
+      "size": 4231,
+      "byteExactAcrossIndependentRounds": true
+    }
+  }
+}

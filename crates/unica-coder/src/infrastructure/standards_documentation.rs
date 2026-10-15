@@ -1405,6 +1405,42 @@ mod tests {
         assert!(stand.requests().is_empty());
     }
 
+    /// Сервер стандартов видит, что пишет ему Unica: `unica/<версия> (docs; …)`,
+    /// а не умолчание HTTP-библиотеки.
+    #[test]
+    fn v8std_requests_name_unica_in_the_user_agent() {
+        let stand =
+            unica_bootstrap::network::test_support::HttpStand::start(LIVE_BODY, "application/json");
+        let provider = V8StdDocumentationProvider {
+            endpoint: stand.url("mcp"),
+            network: NetworkAccess::Allow,
+            http: Arc::new(
+                crate::infrastructure::internal_adapters::NetworkHttpClient::with_client(
+                    unica_bootstrap::network::test_support::client_with(&[]),
+                ),
+            ),
+            cancellation: crate::domain::cancellation::CancellationToken::default(),
+            search_cache_ttl: Duration::from_secs(3600),
+            revalidate_search: false,
+        };
+
+        let sections = provider.search(&request(), &context());
+
+        assert!(
+            matches!(sections[0].status, DocumentationSectionStatus::Ok),
+            "{:?}",
+            sections[0].status
+        );
+        let agents = stand.header("User-Agent");
+        assert!(!agents.is_empty());
+        for agent in agents {
+            assert_eq!(
+                agent,
+                vec![unica_bootstrap::network::DOCS_USER_AGENT.to_owned()]
+            );
+        }
+    }
+
     #[test]
     fn v8std_requests_go_through_https_proxy_and_bypass_it_by_no_proxy() {
         use unica_bootstrap::network::test_support::{ConnectProxy, TestRoot, TlsStand};

@@ -42,5 +42,14 @@ tests/fixtures/acceptance/workspace-borrowed/** -text whitespace=cr-at-eol
 
 tests/fixtures/acceptance/workspace/** -text whitespace=cr-at-eol
 
+# Incomplete borrowed descriptors and MCP checks preserve platform-export bytes.
+tests/fixtures/platform_8_3_27/incomplete_borrowed/** -text whitespace=cr-at-eol
+tests/fixtures/acceptance/workspace-incomplete-borrowed/** -text whitespace=cr-at-eol
+tests/fixtures/acceptance/workspace-invalid-borrowing/** -text whitespace=cr-at-eol
+
+# Spreadsheet edit fixtures are 8.3.27 exports; BOM and CRLF are asserted.
+tests/fixtures/platform_8_3_27/mxl_edit/** -text -whitespace
+tests/fixtures/acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates/PlatformExport/** -text -whitespace
+
 # Preserve the literal platform-export TextDocumentField fragment.
 tests/fixtures/text-document-field/platform-field.xml -text whitespace=cr-at-eol

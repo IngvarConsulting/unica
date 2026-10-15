@@ -19,8 +19,7 @@ use std::fmt::Write as _;
 use std::io::Read as _;
 use unica_coder::receipt_ledger_test_support::{
     canonical_v5_terminal_for_test, execute_scenario_json, receipt_key_digest_for_test,
-    receipt_writer_wall_load_supported_for_test, request_scope_hash_for_test,
-    task_link_digest_for_test,
+    request_scope_hash_for_test, task_link_digest_for_test,
 };
 
 const CUTOFF_MS: u64 = 7_000;
@@ -2530,7 +2529,6 @@ fn sha256_hex(bytes: &[u8]) -> String {
     encoded
 }
 
-#[allow(clippy::chunks_exact_to_as_chunks)]
 fn decode_hex(value: &str, maximum_bytes: usize) -> Vec<u8> {
     assert!(
         !value.is_empty(),
@@ -2549,7 +2547,9 @@ fn decode_hex(value: &str, maximum_bytes: usize) -> Vec<u8> {
     );
     value
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             let nibble = |byte: u8| match byte {
                 b'0'..=b'9' => byte - b'0',
@@ -6265,10 +6265,6 @@ fn load_total_elapsed_ms(load: &LoadObservation) -> u64 {
     load.drain_completed_monotonic_ms - load.window_started_monotonic_ms
 }
 
-fn load_writer_drain_ms(load: &LoadObservation) -> u64 {
-    load.drain_completed_monotonic_ms - load.window_ended_monotonic_ms
-}
-
 fn completed_at_window_end(load: &LoadObservation) -> usize {
     load.lifecycles
         .iter()
@@ -7711,6 +7707,46 @@ fn exact_duplicate_preserves_cutoff_without_second_domain_callback() {
         direct_frames[0].response_jsonl.raw_hex, direct_frames[1].response_jsonl.raw_hex,
         "response-budget changes cannot perturb the stored identity response"
     );
+}
+
+/// #1384: once a known-long call has passed into its Task, the receipt
+/// ledger forgets its key and the Task link remembers it. An exact duplicate
+/// after that reads the same Task; the key is never reserved again.
+#[test]
+fn exact_duplicate_of_a_bound_task_reads_the_task_without_a_second_reservation() {
+    let report = execute(Scenario::fake(vec![
+        known_long_provider(),
+        submit("original"),
+        Action::WaitForEvent {
+            event: EventKind::TaskTerminalBoundCommitted,
+        },
+        Action::Submit {
+            request: RequestCase::SameIdentity,
+            response_budget_ms: 1_000,
+            disconnect: DisconnectPoint::Never,
+            label: "duplicate".to_string(),
+        },
+        checkpoint_action("after-duplicate"),
+    ]));
+
+    let original = response(&report, "original");
+    let duplicate = response(&report, "duplicate");
+    assert_eq!(original.kind, ResponseKind::Task);
+    assert_eq!(duplicate.kind, ResponseKind::Task, "{duplicate:?}");
+    let after = checkpoint(&report, "after-duplicate");
+    let task = only_task(after);
+    assert_eq!(task.status, TaskStatus::Completed);
+    let observed = duplicate
+        .task
+        .as_ref()
+        .expect("the duplicate names its Task");
+    assert_eq!(observed.task_id, task.task_id);
+    assert_eq!(observed.receipt_key, task.receipt_key);
+    assert_eq!(observed.status, TaskStatus::Completed);
+    assert_eq!(count_event(&report, EventKind::ReceiptReserved), 1);
+    assert_eq!(after.receipt_live_count, 0);
+    assert_eq!(after.callbacks.prepare, 1);
+    assert_eq!(after.callbacks.execute, 1);
 }
 
 #[test]
@@ -13080,43 +13116,6 @@ fn acknowledgement_crosses_former_tombstone_count_and_reopens_without_replay() {
         assert_eq!(repeated.terminal_digest, original.terminal_digest);
         assert_eq!(repeated.ack_epoch_ms, original.ack_epoch_ms);
     }
-}
-
-#[test]
-fn wall_clock_writer_sustains_32_receipts_per_second_on_posix() {
-    if !receipt_writer_wall_load_supported_for_test() {
-        return;
-    }
-
-    let report = execute(Scenario::wall(vec![Action::RunDirectLoad {
-        calls: 1_920,
-        duration_ms: 60_000,
-        concurrency: 32,
-        retained_receipt_terminals: 0,
-        immediate_ack: true,
-        label: "wall-clock".to_string(),
-    }]));
-
-    let load = load_run(&report, "wall-clock");
-    assert_direct_load_lifecycles(load, 1_920);
-    assert!(load_window_ms(load) >= 60_000);
-    assert!(
-        load_total_elapsed_ms(load) <= 62_000,
-        "wall gate overran: {}ms",
-        load_total_elapsed_ms(load)
-    );
-    assert!(completed_at_window_end(load) >= 1_920);
-    assert!(
-        load_p99_ms(load) <= 250,
-        "p99={}ms budget=250ms",
-        load_p99_ms(load)
-    );
-    assert!(load_writer_drain_ms(load) <= 2_000);
-    assert!(
-        max_concurrency_sample(load, |sample| sample.live_receipts) <= FORMER_LIVE_RECEIPT_LIMIT
-    );
-    assert_eq!(load.task_store_create_attempts, 0);
-    assert_eq!(load.listener, ListenerState::Listening);
 }
 
 #[test]

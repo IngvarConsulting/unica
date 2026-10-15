@@ -12,7 +12,10 @@
 //!   два набора не смешиваются, см. [`TrustSource`];
 //! - прокси берётся из переменных окружения, порядок описан в [`proxy`];
 //! - редиректы проходятся здесь, а не в `ureq`: для каждого шага заново
-//!   выбирается маршрут по `NO_PROXY`, и ни один шаг не уводит с HTTPS на HTTP.
+//!   выбирается маршрут по `NO_PROXY`, и ни один шаг не уводит с HTTPS на HTTP;
+//! - каждый запрос называет себя [`USER_AGENT`]: имя и версия Unica, без
+//!   сведений о машине и пользователе. Поставщики документации уточняют
+//!   назначение через [`DOCS_USER_AGENT`].
 //!
 //! Клиент собирается один раз на процесс ([`NetworkClient::shared`]) и
 //! держит пул соединений. Неудачная сборка не запоминается: исправленную
@@ -30,6 +33,25 @@ use std::time::{Duration, Instant};
 pub use failure::{NetworkError, NetworkFailure};
 use proxy::{EnvLookup, ProxyChoice, ProxySettings};
 use rustls_platform_verifier::BuilderVerifierExt;
+
+/// Значение `User-Agent` с назначением запроса. Только имя и версия пакета
+/// и адрес проекта: ни узла, ни пути, ни пользователя.
+macro_rules! user_agent {
+    ($($purpose:literal)?) => {
+        concat!(
+            "unica/",
+            env!("CARGO_PKG_VERSION"),
+            " (",
+            $($purpose, "; ",)?
+            "+https://github.com/IngvarConsulting/unica)"
+        )
+    };
+}
+
+/// `User-Agent` любого запроса клиента, если вызывающий не уточнил своё.
+pub const USER_AGENT: &str = user_agent!();
+/// `User-Agent` сетевых поставщиков документации (`kb-1ci`, `v8std`).
+pub const DOCS_USER_AGENT: &str = user_agent!("docs");
 
 /// Сколько редиректов проходим. Столько же разрешал прежний агент.
 const MAX_REDIRECTS: usize = 5;
@@ -107,6 +129,7 @@ impl NetworkClient {
         let build = |proxy: Option<&ProxyChoice>| {
             let mut builder = ureq::AgentBuilder::new()
                 .tls_config(Arc::clone(&tls))
+                .user_agent(USER_AGENT)
                 .try_proxy_from_env(false)
                 .timeout_connect(CONNECT_TIMEOUT)
                 .timeout_read(READ_TIMEOUT)
@@ -337,6 +360,42 @@ mod tests {
                 ),
             ],
             "докачка на новом адресе просит тот же хвост"
+        );
+    }
+
+    #[test]
+    fn the_user_agent_names_only_unica_its_version_and_the_purpose() {
+        let version = env!("CARGO_PKG_VERSION");
+        assert_eq!(
+            USER_AGENT,
+            format!("unica/{version} (+https://github.com/IngvarConsulting/unica)")
+        );
+        assert_eq!(
+            DOCS_USER_AGENT,
+            format!("unica/{version} (docs; +https://github.com/IngvarConsulting/unica)")
+        );
+        assert!(!version.is_empty());
+    }
+
+    #[test]
+    fn every_request_carries_the_unica_user_agent_unless_the_caller_narrows_it() {
+        let stand = test_support::HttpStand::start("ok", "text/plain");
+        let client = NetworkClient::from_environment(&|_| None).expect("client");
+
+        client.get(&stand.url("a"), &[], None).expect("get");
+        client.post(&stand.url("b"), &[], "{}", None).expect("post");
+        client
+            .get(&stand.url("c"), &[("User-Agent", DOCS_USER_AGENT)], None)
+            .expect("narrowed get");
+
+        assert_eq!(
+            stand.header("User-Agent"),
+            vec![
+                vec![USER_AGENT.to_owned()],
+                vec![USER_AGENT.to_owned()],
+                vec![DOCS_USER_AGENT.to_owned()],
+            ],
+            "уточнённое значение заменяет общее, а не добавляется вторым"
         );
     }
 

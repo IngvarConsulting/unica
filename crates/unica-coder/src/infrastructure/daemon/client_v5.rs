@@ -78,6 +78,13 @@ impl V5ObservationInterrupt {
 pub(crate) enum V5TransportError {
     SessionPoisoned,
     RequestNotSent(String),
+    /// The serialized frame, newline included, exceeds the daemon request
+    /// bound. Like `RequestNotSent`, no byte was written; unlike it, the same
+    /// call will never fit.
+    RequestTooLarge {
+        frame_bytes: usize,
+        limit_bytes: usize,
+    },
     ResponseLost(String),
 }
 
@@ -86,6 +93,14 @@ impl fmt::Display for V5TransportError {
         match self {
             Self::SessionPoisoned => formatter.write_str("protocol-v5 owner session is poisoned"),
             Self::RequestNotSent(error) | Self::ResponseLost(error) => formatter.write_str(error),
+            Self::RequestTooLarge {
+                frame_bytes,
+                limit_bytes,
+            } => write!(
+                formatter,
+                "protocol-v5 request frame is {frame_bytes} bytes, above the \
+                 {limit_bytes}-byte daemon request limit"
+            ),
         }
     }
 }
@@ -120,9 +135,9 @@ impl From<V5TransportError> for V5TaskExchangeError {
     fn from(error: V5TransportError) -> Self {
         match error {
             V5TransportError::SessionPoisoned => Self::SessionPoisoned,
-            V5TransportError::RequestNotSent(_) | V5TransportError::ResponseLost(_) => {
-                Self::Transport
-            }
+            V5TransportError::RequestNotSent(_)
+            | V5TransportError::RequestTooLarge { .. }
+            | V5TransportError::ResponseLost(_) => Self::Transport,
         }
     }
 }

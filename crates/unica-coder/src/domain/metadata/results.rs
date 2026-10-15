@@ -165,10 +165,14 @@ pub(crate) struct MetaRelationTargetData {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MetaRelationsData {
-    pub(crate) owners: Vec<MetaRelationTargetData>,
-    pub(crate) register_records: Vec<MetaRelationTargetData>,
-    pub(crate) based_on: Vec<MetaRelationTargetData>,
-    pub(crate) input_by_string: Vec<MetaRelationTargetData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) owners: Option<Option<Vec<MetaRelationTargetData>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) register_records: Option<Option<Vec<MetaRelationTargetData>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) based_on: Option<Option<Vec<MetaRelationTargetData>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) input_by_string: Option<Option<Vec<MetaRelationTargetData>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) data_lock_fields: Option<Option<Vec<MetaRelationTargetData>>>,
     pub(crate) source: Vec<MetaEventSource>,

@@ -194,7 +194,7 @@ fn build_router(
                         crate::domain::refusal::RefusalCode::InvalidState,
                         message,
                     );
-                    return task_projection::call_tool_result(&refusal)
+                    return task_projection::call_tool_result(&refusal, host.response_budget)
                         .map(CanonicalCallOutcome::Direct)
                         .map_err(task_projection::projection_error);
                 }
@@ -207,6 +207,7 @@ fn build_router(
                 deadline,
                 observer.as_ref(),
                 cancellation,
+                host.response_budget,
             )
         });
     let get_client = Arc::clone(&client);
@@ -284,6 +285,7 @@ fn bounded_wait_ms(requested_wait_ms: u64, cutoff: Instant, now: Instant) -> u64
     requested_wait_ms.min(remaining.as_millis().min(u128::from(u64::MAX)) as u64)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn submit_and_settle(
     client: &V5DaemonClient,
     workspace: unica_bootstrap::ResolvedWorkspace,
@@ -292,6 +294,7 @@ fn submit_and_settle(
     deadline: FrontendInvocationDeadline,
     observer: Option<&ReceiptObserver>,
     cancellation: CanonicalCancellation,
+    budget: unica_bootstrap::ResponseBudget,
 ) -> Result<CanonicalCallOutcome, ErrorData> {
     let cutoff = deadline.transport_cutoff();
     // No frame of this call has left the frontend yet: whatever the
@@ -346,10 +349,16 @@ fn submit_and_settle(
                 Err(refusal) => return lost_submit_outcome(refusal, &receipt_key),
             }
         }
+        // The frame exceeds the daemon bound and was never written: the
+        // daemon holds no receipt, and the same call will never fit.
+        Err(V5TransportError::RequestTooLarge {
+            frame_bytes,
+            limit_bytes,
+        }) => return request_too_large_refusal(frame_bytes, limit_bytes),
         // Writing never started: the frame did not reach the daemon.
         Err(error) => return Err(not_sent_refusal(&error)),
     };
-    settle(peer, response, &receipt_key)
+    settle(peer, response, &receipt_key, budget)
 }
 
 fn cancel_exact_endpoint(
@@ -517,6 +526,7 @@ fn settle(
     mut peer: V5DaemonProcessOwner,
     response: V5ServerResponse,
     receipt_key: &ReceiptKey,
+    budget: unica_bootstrap::ResponseBudget,
 ) -> Result<CanonicalCallOutcome, ErrorData> {
     match response {
         V5ServerResponse::Invocation {
@@ -529,7 +539,7 @@ fn settle(
             }
             // The final interface value is built first; a receipt whose value
             // cannot be built stays unacknowledged and expires on its own.
-            let projection = task_projection::project_direct_terminal(receipt.terminal())
+            let projection = task_projection::project_direct_terminal(receipt.terminal(), budget)
                 .map_err(task_projection::projection_error)?;
             let acknowledgement_deadline = Instant::now() + ACKNOWLEDGEMENT_BUDGET;
             // The acknowledgement proves the transfer daemon → frontend and
@@ -678,6 +688,30 @@ fn not_delivered_refusal(message: String) -> ErrorData {
             "outcome": code.outcome().as_str(),
         })),
     )
+}
+
+/// The canonical refusal for a call too large for the daemon request frame,
+/// delivered through `diagnostics` like any other refusal of a canonical call
+/// (`INV.WIRE.V13-REFUSAL-CHANNEL`). Hosts often show the model only the
+/// message: it names the resource, the unit and both sizes, and none of the
+/// arguments. The call did not leave the frontend, so it is not running, and
+/// repeating it unchanged meets the same bound.
+fn request_too_large_refusal(
+    frame_bytes: usize,
+    limit_bytes: usize,
+) -> Result<CanonicalCallOutcome, ErrorData> {
+    let refusal = crate::domain::invocation::DomainResult::canonical_rejection(
+        None,
+        RefusalCode::ProviderLimitExceeded,
+        format!(
+            "the call is {frame_bytes} bytes on the daemon wire, above its \
+             {limit_bytes}-byte request limit; it was not sent and will not run: \
+             reduce the arguments or split the change into several calls"
+        ),
+    );
+    task_projection::call_tool_result(&refusal, unica_bootstrap::ResponseBudget::default())
+        .map(CanonicalCallOutcome::Direct)
+        .map_err(task_projection::projection_error)
 }
 
 fn submission_rejected(code: V5DaemonErrorCode) -> ErrorData {
@@ -2143,6 +2177,73 @@ mod tests {
             "each new call executes once; recovery does not execute it again"
         );
         drop(peer);
+        drop(router);
+        daemon.finish();
+    }
+
+    /// #1309: a call far above the former 16 KiB frame reaches the service and
+    /// runs; one above the request bound never leaves the frontend and is
+    /// refused with the limit and its own size, not a bare `invalid_request`.
+    #[test]
+    fn live_daemon_runs_a_large_call_and_refuses_one_above_the_bound_unsent() {
+        use crate::infrastructure::daemon::protocol_v5::MAX_V5_REQUEST_LINE_BYTES;
+        let service = Arc::new(ScriptedService {
+            delay: Duration::ZERO,
+            known_long: false,
+            outcome: Mutex::new(None),
+            executions: AtomicUsize::new(0),
+        });
+        let daemon = LiveDaemon::start(service.clone());
+        let router = canonical_daemon_router(daemon.owner(), daemon.workspace_hint.clone());
+        let call_with = |text: String| {
+            // The scripted service ignores the address; only its size matters.
+            let arguments = json!({"at": format!("main:CommonModule.{text}")});
+            (router.call)(
+                V5ToolIdentity::View,
+                arguments.as_object().expect("argument object"),
+                &unica_bootstrap::HostRequest::default(),
+                deadline(None),
+                CancellationToken::new().into(),
+            )
+        };
+
+        // Cyrillic text: one character is two bytes on the wire.
+        let large = "Процедура".repeat(64 * 1024);
+        assert!(large.len() > 1024 * 1024);
+        let result = direct_result(call_with(large));
+        assert_eq!(
+            result
+                .structured_content
+                .as_ref()
+                .and_then(|value| value["summary"].as_str()),
+            Some("executed")
+        );
+        assert_eq!(service.executions.load(Ordering::SeqCst), 1);
+
+        let refusal = direct_result(call_with("x".repeat(MAX_V5_REQUEST_LINE_BYTES)));
+        let refusal = refusal.structured_content.expect("canonical refusal");
+        assert_eq!(refusal["ok"], json!(false));
+        let diagnostic = &refusal["diagnostics"][0];
+        assert_eq!(diagnostic["code"], json!("provider_limit_exceeded"));
+        assert_eq!(diagnostic["outcome"], json!("fixCall"));
+        // Hosts often show the model only the message: it names both numbers.
+        let message = diagnostic["message"].as_str().expect("refusal message");
+        assert!(message.contains(&format!("{MAX_V5_REQUEST_LINE_BYTES}-byte request limit")));
+        let actual: usize = message
+            .strip_prefix("the call is ")
+            .and_then(|rest| rest.split(' ').next())
+            .and_then(|number| number.parse().ok())
+            .expect("the message starts with the frame size");
+        assert!(actual > MAX_V5_REQUEST_LINE_BYTES, "actual {actual}");
+        assert_eq!(
+            service.executions.load(Ordering::SeqCst),
+            1,
+            "the oversized call must not reach the service"
+        );
+
+        // The refused call did not cost the daemon its session: the next one runs.
+        direct_result(call(&router, None));
+        assert_eq!(service.executions.load(Ordering::SeqCst), 2);
         drop(router);
         daemon.finish();
     }

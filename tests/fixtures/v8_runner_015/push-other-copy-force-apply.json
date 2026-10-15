@@ -1,0 +1,31 @@
+{
+  "ok": true,
+  "command": "push",
+  "duration_ms": 15577,
+  "data": {
+    "provider": {
+      "selected": "ibcmd",
+      "origin": {
+        "kind": "override",
+        "file": "v8project.yaml"
+      }
+    },
+    "ok": true,
+    "provider_dispatched": true,
+    "steps": [
+      {
+        "source_set": "main",
+        "mode": "full",
+        "ok": true,
+        "applied": true,
+        "message": "forced full rebuild",
+        "duration_ms": 15570
+      }
+    ],
+    "duration_ms": 15577
+  },
+  "warnings": [
+    "push writes the infobase '/workspace/E/ib' of another working copy: it is held by the working copy '/workspace/E' on this machine. The command changes that working copy's infobase, and its owner stays as it is in the owner marker '/workspace/E/.ib.v8-runner.owners.json'. To free the infobase: remove the infobase from v8project.local.yaml of '/workspace/E' or remove that working copy. Ways to an infobase of this working copy's own (`init --infobase` keeps the previous section as upstream): its own clean infobase built from the sources — `v8-runner init --infobase <connection string>`, then `v8-runner infobase create`; a copy of an infobase with its data — `v8-runner init --infobase <connection string>`, then `v8-runner infobase create --from upstream`; an infobase deployed from a reference image — `v8-runner init --infobase <connection string>`, then `v8-runner infobase restore --input <reference>.dt --create`"
+  ],
+  "steps": []
+}

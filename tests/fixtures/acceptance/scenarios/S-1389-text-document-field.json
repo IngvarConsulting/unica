@@ -1,0 +1,148 @@
+{
+ "id": "S-1389-text-document-field",
+ "name": "typed-text-document-field-publishes-native-element",
+ "issue": 1389,
+ "area": "Формы",
+ "task": "Создать реквизит TextDocument и TextDocumentField через актуальные операции формы; XML содержит текстовое поле с привязкой, а не InputField или HTMLDocumentField",
+ "wire": [
+  {
+   "tool": "unica.apply",
+   "args": {
+    "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+    "ops": [
+     {
+      "op": "attribute.add",
+      "args": {
+       "items": [
+        {
+         "name": "AcceptanceProtocol",
+         "type": "d5p1:TextDocument"
+        }
+       ]
+      }
+     },
+     {
+      "op": "item.add",
+      "args": {
+       "items": [
+        {
+         "name": "AcceptanceProtocolField",
+         "type": "TextDocumentField",
+         "path": "AcceptanceProtocol",
+         "titleLocation": "None",
+         "readOnly": true
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "expect": [
+    "ok"
+   ],
+   "captures": {
+    "token": {
+     "pointer": "/data/executionToken"
+    },
+    "before": {
+     "kind": "sha256",
+     "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"
+    }
+   }
+  },
+  {
+   "tool": "unica.apply",
+   "args": {
+    "executionToken": "$capture.token"
+   },
+   "expect": [
+    "ok"
+   ],
+   "assertions": [
+    {
+     "pointer": "/data/mode",
+     "eq": "published"
+    }
+   ],
+   "fileAssertions": [
+    {
+     "kind": "xml",
+     "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+     "select": ".//{http://v8.1c.ru/8.3/xcf/logform}TextDocumentField[@name=\"AcceptanceProtocolField\"]/{http://v8.1c.ru/8.3/xcf/logform}DataPath",
+     "eq": [
+      "AcceptanceProtocol"
+     ]
+    },
+    {
+     "kind": "xml",
+     "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+     "select": ".//{http://v8.1c.ru/8.3/xcf/logform}TextDocumentField[@name=\"AcceptanceProtocolField\"]/{http://v8.1c.ru/8.3/xcf/logform}TitleLocation",
+     "eq": [
+      "None"
+     ]
+    },
+    {
+     "kind": "xml",
+     "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+     "select": ".//{http://v8.1c.ru/8.3/xcf/logform}TextDocumentField[@name=\"AcceptanceProtocolField\"]/{http://v8.1c.ru/8.3/xcf/logform}ReadOnly",
+     "eq": [
+      "true"
+     ]
+    },
+    {
+     "kind": "xml",
+     "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+     "select": ".//{http://v8.1c.ru/8.3/xcf/logform}Attribute[@name=\"AcceptanceProtocol\"]/{http://v8.1c.ru/8.3/xcf/logform}Type/{http://v8.1c.ru/8.1/data/core}Type",
+     "eq": [
+      "d5p1:TextDocument"
+     ]
+    },
+    {
+     "kind": "xml",
+     "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+     "select": ".//{http://v8.1c.ru/8.3/xcf/logform}HTMLDocumentField[@name=\"AcceptanceProtocolField\"]",
+     "eq": []
+    },
+    {
+     "kind": "xml",
+     "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+     "select": ".//{http://v8.1c.ru/8.3/xcf/logform}InputField[@name=\"AcceptanceProtocolField\"]",
+     "eq": []
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+     "notEq": "$capture.before"
+    }
+   ]
+  },
+  {
+   "tool": "unica.view",
+   "args": {
+    "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.AcceptanceProtocolField"
+   },
+   "expect": [
+    "ok"
+   ]
+  },
+  {
+   "tool": "unica.check",
+   "status": "passed",
+   "validators": [
+    "form"
+   ],
+   "args": {
+    "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
+   },
+   "expect": [
+    "ok"
+   ],
+   "assertions": [
+    {
+     "pointer": "/data/diagnosticCount",
+     "eq": 0
+    }
+   ]
+  }
+ ]
+}

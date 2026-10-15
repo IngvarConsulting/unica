@@ -9,7 +9,7 @@
 
 | Задача | Что читать сначала | Где менять код |
 | --- | --- | --- |
-| Новый или изменённый публичный инструмент `unica.*` | `docs/tool-surface.md`, `crates/unica-coder/src/interfaces/mcp.rs`, `tests/fixtures/acceptance/scenario-corpus.json` | `crates/unica-coder/src/application/v13/tool_catalog.rs`, `crates/unica-coder/src/infrastructure/daemon/v13_service.rs`, `crates/unica-coder/src/infrastructure/native_operations/apply_families/`, `plugins/unica/skills/<имя>/SKILL.md` |
+| Новый или изменённый публичный инструмент `unica.*` | `docs/tool-surface.md`, `crates/unica-coder/src/interfaces/mcp.rs`, `tests/fixtures/acceptance/` | `crates/unica-coder/src/application/v13/tool_catalog.rs`, `crates/unica-coder/src/infrastructure/daemon/v13_service.rs`, `crates/unica-coder/src/infrastructure/native_operations/apply_families/`, `plugins/unica/skills/<имя>/SKILL.md` |
 | Изменение формата XML 1С или DSL | Нужная спецификация в `plugins/unica/references/specs/` и проверяющие её фикстуры | `crates/unica-coder/src/infrastructure/native_operations/` |
 | Кеш, состояние рабочего пространства, доменные события | Код владения состоянием и ближайшие тесты в перечисленных модулях | `crates/unica-coder/src/domain/events.rs`, `crates/unica-coder/src/domain/cache.rs`, `crates/unica-coder/src/infrastructure/workspace_state.rs`, `crates/unica-coder/src/infrastructure/workspace.rs`, `crates/unica-coder/src/infrastructure/workspace_actor.rs` |
 | Скрытый сервис рабочего пространства или задание runtime | Код жизненного цикла и тесты изоляции в перечисленных модулях | `crates/unica-coder/src/infrastructure/workspace_services.rs`, `crates/unica-coder/src/infrastructure/runtime_jobs.rs` |
@@ -31,5 +31,5 @@
 Семейства `apply` находятся в
 `crates/unica-coder/src/infrastructure/native_operations/apply_families/`.
 Реализацию режима подтверждают тело обработчика и содержательные проверки,
-включая `tests/fixtures/acceptance/scenario-corpus.json`. Типизированный ответ
+включая приёмочный корпус `tests/fixtures/acceptance/`. Типизированный ответ
 сам по себе не доказывает, что операция реализована.

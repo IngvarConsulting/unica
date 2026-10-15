@@ -102,6 +102,18 @@ pub(crate) enum V5PausePoint {
     BeforeCancelGateAcquire,
     AfterTaskStoreTerminalBeforeLifecycleLinkTerminal,
     BeforeRetirementSnapshot,
+    /// A submit holds its key's lock, has found no Task link for the key and
+    /// has not reserved it yet.
+    BeforeSubmitReservation,
+    /// A cancel holds its key's lock, has found no Task link for the key and
+    /// has not written its ledger cancel yet.
+    BeforeCancelReservation,
+    /// A cancel has read the bound Task it is about to mark and has not
+    /// written the mark yet.
+    BeforeTaskCancelWrite,
+    /// A begun attempt has passed its early look for a Task the session
+    /// handler materialized and has not claimed the cutoff yet.
+    BeforeCutoffClaim,
 }
 
 /// An injected workspace admission failure, in place of the real bind.

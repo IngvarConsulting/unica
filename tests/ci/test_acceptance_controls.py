@@ -8,11 +8,24 @@ from pathlib import Path
 
 from tests.ci.acceptance_controls import (
     FORM_AT, FORM_FILE, KNOWN_GAP, MODULE_FILE, capture_values,
-    content_mismatches, load_corpus, matches_step, substitute_capture, validate_controls,
+    content_mismatches, load_corpus, matches_step, substitute_capture, tool_result,
+    validate_controls,
 )
 
 
 class ContentAssertionTests(unittest.TestCase):
+    def test_source_text_answer_is_read_only_from_a_successful_envelope(self):
+        def answer(first, is_error=False):
+            return {"result": {"isError": is_error, "content": [
+                {"type": "text", "text": first}, {"type": "text", "text": "Процедура А()\r\n"}]}}
+
+        self.assertEqual(tool_result(answer('{"ok": true, "summary": "s"}')),
+                         {"ok": True, "summary": "s", "sourceText": "Процедура А()\r\n"})
+        self.assertIsNone(tool_result(answer("not json")))
+        self.assertIsNone(tool_result(answer('{"ok": true}', is_error=True)))
+        self.assertIsNone(tool_result(answer('{"ok": false}')))
+        self.assertEqual(tool_result({"result": {"structuredContent": {"ok": False}}}), {"ok": False})
+
     def test_successful_class_with_wrong_comment_fails(self):
         step = {"assertions": [{"pointer": "/data/props/Comment", "eq": "published"}]}
         result = {"ok": True, "data": {"props": {"Comment": "unchanged"}}}
@@ -129,6 +142,16 @@ class FileAndCaptureTests(FileFixtureTests):
         self.assertEqual(self.check_file(assertion), [])
         for value in [["first", "second", "second"], [" first ", "second"], ["second", " first ", "second"]]:
             self.assertTrue(self.check_file({**assertion, "eq": value}))
+
+    def test_xml_tags_observe_element_order_across_kinds(self):
+        (self.workspace / "data.xml").write_text('<r xmlns="urn:test"><a>x</a><b>x</b><a>y</a></r>')
+        assertion = {"path": "data.xml", "kind": "xmlTags", "select": "./*", "eq": ["a", "b", "a"]}
+        self.assertEqual(self.check_file(assertion), [])
+        for value in [["a", "a", "b"], ["x", "x", "y"], ["a", "b"]]:
+            self.assertTrue(self.check_file({**assertion, "eq": value}))
+        for invalid in [{**assertion, "eq": "a"}, {"path": "data.xml", "kind": "xmlTags", "select": "./*", "contains": "a"}]:
+            with self.subTest(assertion=invalid), self.assertRaises(ValueError):
+                validate_controls({"fileAssertions": [invalid]})
 
     def test_file_controls_refuse_missing_paths_traversal_and_symlinks(self):
         (self.workspace / "real").write_bytes(b"data")

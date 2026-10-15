@@ -126,7 +126,6 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             "crates/unica-coder/src/domain/code_intelligence.rs",
             "crates/unica-coder/src/domain/operational_config.rs",
             "crates/unica-coder/src/domain/source_location.rs",
-            "crates/unica-coder/src/domain/source_revision.rs",
             "crates/unica-coder/src/infrastructure/application_ports.rs",
             "crates/unica-coder/src/infrastructure/code_intelligence.rs",
             "crates/unica-coder/src/infrastructure/internal_adapters.rs",
@@ -134,12 +133,10 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             "crates/unica-coder/src/infrastructure/platform/process.rs",
             "crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs",
             "crates/unica-coder/src/infrastructure/rlm_navigation.rs",
-            "crates/unica-coder/src/infrastructure/source_revision.rs",
             "crates/unica-coder/src/infrastructure/source_roots.rs",
             "crates/unica-coder/src/infrastructure/workspace_index.rs",
             "crates/unica-coder/src/infrastructure/workspace_services.rs",
             "crates/unica-coder/src/interfaces/mcp.rs",
-            "crates/unica-coder/src/infrastructure/platform/source_revision_fence.rs",
         ):
             with self.subTest(path=path):
                 platform_changed = (

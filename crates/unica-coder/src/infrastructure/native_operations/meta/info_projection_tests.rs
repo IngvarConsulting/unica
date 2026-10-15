@@ -450,7 +450,7 @@ fn manifest_edge_fixtures_keep_the_canonical_platform_wrapper() {
             let path = fixture_root.join(relative.as_str().unwrap());
             let xml = std::fs::read_to_string(&path).unwrap();
             assert_eq!(
-                xml.lines().next(),
+                xml.strip_prefix('\u{feff}').unwrap_or(&xml).lines().next(),
                 Some("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"),
                 "{} must preserve the canonical XML declaration",
                 path.display()
@@ -1691,4 +1691,71 @@ fn observed_type_reads_an_extension_type_id_as_a_read_only_variant() {
             "{broken}"
         );
     }
+}
+
+#[test]
+fn property_observation_distinguishes_missing_false_empty_nil_and_damage() {
+    // Synthetic property fragments test the reader, not platform export policy.
+    use super::info_projection::observe_meta_info_property;
+    use crate::domain::metadata::MetaInfoPropertyValue;
+    for (kind, property) in [
+        (MetadataKind::CommonModule, "Server"),
+        (MetadataKind::Catalog, "Hierarchical"),
+        (MetadataKind::Document, "PostInPrivilegedMode"),
+        (MetadataKind::InformationRegister, "MainFilterOnPeriod"),
+    ] {
+        for raw in ["", "false", "true", "maybe"] {
+            let fragment = if raw.is_empty() {
+                String::new()
+            } else {
+                format!("<{property}>{raw}</{property}>")
+            };
+            let xml = format!("<Properties xmlns=\"http://v8.1c.ru/8.3/MDClasses\">{fragment}<Comment/></Properties>");
+            let doc = roxmltree::Document::parse(&xml).unwrap();
+            let props = doc.root_element();
+            let observed = observe_meta_info_property(props, kind, property);
+            match raw {
+                "" => assert_eq!(observed.unwrap(), None),
+                "false" => assert_eq!(
+                    observed.unwrap(),
+                    Some(MetaInfoPropertyValue::Boolean(false))
+                ),
+                "true" => assert_eq!(
+                    observed.unwrap(),
+                    Some(MetaInfoPropertyValue::Boolean(true))
+                ),
+                _ => assert!(observed.is_err()),
+            }
+            assert_eq!(
+                observe_meta_info_property(props, kind, "Comment").unwrap(),
+                Some(MetaInfoPropertyValue::String(String::new()))
+            );
+            let diagnostics = meta_info_profile_errors(kind, Some(props), None);
+            assert_eq!(diagnostics.is_empty(), raw != "maybe");
+        }
+    }
+    for fragment in [
+        "<Server/>",
+        "<Server>false</Server><Server>true</Server>",
+        "<Server xmlns=\"urn:other\">false</Server>",
+        "<Server><Nested>false</Nested></Server>",
+        "<Server attr=\"x\">false</Server>",
+    ] {
+        let xml =
+            format!("<Properties xmlns=\"http://v8.1c.ru/8.3/MDClasses\">{fragment}</Properties>");
+        let doc = roxmltree::Document::parse(&xml).unwrap();
+        assert!(
+            observe_meta_info_property(doc.root_element(), MetadataKind::CommonModule, "Server")
+                .is_err(),
+            "{fragment}"
+        );
+    }
+    let doc = roxmltree::Document::parse(r#"<Properties xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><MinValue xsi:nil="true"/></Properties>"#).unwrap();
+    let nil =
+        observe_meta_info_property(doc.root_element(), MetadataKind::Constant, "MinValue").unwrap();
+    assert!(nil.is_some());
+    assert_ne!(
+        nil,
+        observe_meta_info_property(doc.root_element(), MetadataKind::Constant, "MaxValue").unwrap()
+    );
 }

@@ -17,6 +17,7 @@ fn target(dataset: &[&str], variant: &str) -> Target {
     Target {
         datasets: dataset.iter().map(|name| (*name).to_string()).collect(),
         variant: variant.to_string(),
+        structure: Vec::new(),
         terminal: None,
     }
 }
@@ -25,29 +26,213 @@ fn run(xml: &mut String, operation: Primitive, args: Value, target: &Target) -> 
     run_in(xml, operation, args, target, "ru")
 }
 
+/// Ключи, которыми фикстуры этих тестов называют подузел. С #1354 подузел
+/// (поле, параметр, вариант) задаёт адрес: помощник переносит имя из
+/// `values` в цель так, как её строит разбор адреса.
+fn subnode_keys(operation: Primitive) -> &'static [&'static str] {
+    match operation {
+        Primitive::FieldSet | Primitive::FieldRoleSet => &["field", "dataPath", "name"],
+        Primitive::ParameterSet
+        | Primitive::ParameterRename
+        | Primitive::VariantSet
+        | Primitive::VariantRemove
+        | Primitive::DataSourceSet
+        | Primitive::DataSourceRemove
+        | Primitive::CalculatedFieldSet
+        | Primitive::CalculatedFieldRemove
+        | Primitive::TotalRemove
+        | Primitive::StructurePatch
+        | Primitive::StructureRemove => &["name"],
+        Primitive::TotalSet => &["field"],
+        _ => &[],
+    }
+}
+
+/// Ключ, которым фикстуры называют контейнер настроек — элемент структуры
+/// варианта. С #1357 контейнер задаёт адрес `Setting.V.Item.<имя>…`.
+fn container_key(operation: Primitive) -> Option<&'static str> {
+    match operation {
+        Primitive::StructureAdd => Some("parent"),
+        Primitive::FilterAdd
+        | Primitive::FilterSet
+        | Primitive::FilterRemove
+        | Primitive::FilterClear
+        | Primitive::SelectionAdd
+        | Primitive::SelectionSet
+        | Primitive::SelectionRemove
+        | Primitive::SelectionClear
+        | Primitive::OrderAdd
+        | Primitive::OrderSet
+        | Primitive::OrderRemove
+        | Primitive::OrderClear
+        | Primitive::ConditionalAppearanceAdd
+        | Primitive::ConditionalAppearanceRemove
+        | Primitive::ConditionalAppearanceClear
+        | Primitive::OutputParameterSet
+        | Primitive::OutputParameterRemove => Some("group"),
+        _ => None,
+    }
+}
+
+/// Путь элемента структуры с именем `name`, как его адресует чтение; без
+/// однозначного адреса — имя верхнего уровня.
+fn structure_path(xml: &str, variant: &str, name: &str) -> Vec<String> {
+    let Ok(doc) = Document::parse(xml) else {
+        return vec![name.to_string()];
+    };
+    let settings = doc
+        .root_element()
+        .children()
+        .filter(|node| node.has_tag_name((S, "settingsVariant")))
+        .find(|node| {
+            node.children()
+                .find(|item| item.has_tag_name((T, "name")))
+                .and_then(|item| item.text())
+                == Some(variant)
+        })
+        .and_then(|node| {
+            node.children()
+                .find(|item| item.has_tag_name((T, "settings")))
+        });
+    let Some(settings) = settings else {
+        return vec![name.to_string()];
+    };
+    let rows = crate::infrastructure::native_operations::dcs::dcs_structure_rows(settings);
+    match crate::infrastructure::v13_read_projection::dcs_structure_paths(&rows, name) {
+        (mut paths, 1) if paths.len() == 1 => paths.remove(0),
+        _ => vec![name.to_string()],
+    }
+}
+
+/// Снимает ключ контейнера с `values` и элементов `items`.
+fn take_containers(operation: Primitive, args: &mut Value) -> (Option<Value>, Vec<Option<Value>>) {
+    let Some(key) = container_key(operation) else {
+        return (None, Vec::new());
+    };
+    let values = args
+        .get_mut("values")
+        .and_then(Value::as_object_mut)
+        .and_then(|values| values.remove(key));
+    let items = args
+        .get_mut("items")
+        .and_then(Value::as_array_mut)
+        .map(|items| {
+            items
+                .iter_mut()
+                .map(|item| item.as_object_mut().and_then(|item| item.remove(key)))
+                .collect()
+        })
+        .unwrap_or_default();
+    (values, items)
+}
+
+fn take_subnode(operation: Primitive, args: &mut Value) -> Option<(&'static str, Value)> {
+    let values = args.get_mut("values")?.as_object_mut()?;
+    subnode_keys(operation)
+        .iter()
+        .find_map(|key| values.remove(*key).map(|value| (*key, value)))
+}
+
 /// Runs `operation` on a source set whose default language is `lang`.
 fn run_in(
     xml: &mut String,
     operation: Primitive,
-    args: Value,
+    mut args: Value,
     target: &Target,
     lang: &str,
 ) -> Result<(), String> {
+    let mut target = target.clone();
+    if let Some((_, Value::String(name))) = take_subnode(operation, &mut args) {
+        match operation {
+            Primitive::VariantSet | Primitive::VariantRemove => target.variant = name,
+            Primitive::StructurePatch | Primitive::StructureRemove => {
+                target.structure = structure_path(xml, &target.variant, &name)
+            }
+            _ => target.terminal = Some(name),
+        }
+    }
+    let (values_container, item_containers) = take_containers(operation, &mut args);
+    if let Some(Value::String(name)) = values_container {
+        target.structure = structure_path(xml, &target.variant, &name);
+    }
+    if item_containers.iter().any(Option::is_some) {
+        // Элементы с разными контейнерами — отдельные вызовы по их адресам.
+        let items = args["items"].as_array().cloned().unwrap_or_default();
+        let mut candidate = xml.clone();
+        for (item, container) in items.into_iter().zip(item_containers) {
+            let mut item_target = target.clone();
+            if let Some(Value::String(name)) = container {
+                item_target.structure = structure_path(&candidate, &target.variant, &name);
+            }
+            let mut single = args.clone();
+            single["items"] = Value::Array(vec![item]);
+            apply(
+                &mut candidate,
+                operation.as_str(),
+                single.as_object().unwrap(),
+                &item_target,
+                Some(lang),
+            )
+            .map_err(|error| error.to_string())?;
+        }
+        *xml = candidate;
+        return Ok(());
+    }
+    if args
+        .get("values")
+        .and_then(Value::as_object)
+        .is_some_and(serde_json::Map::is_empty)
+        && matches!(
+            operation,
+            Primitive::DataSourceRemove
+                | Primitive::CalculatedFieldRemove
+                | Primitive::TotalRemove
+                | Primitive::StructureRemove
+        )
+    {
+        args.as_object_mut().unwrap().remove("values");
+    }
     apply(
         xml,
         operation.as_str(),
         args.as_object().unwrap(),
-        target,
+        &target,
         Some(lang),
     )
     .map_err(|error| error.to_string())
 }
 
-fn normalized(operation: Primitive, args: Value) -> Value {
-    OperationContract::dcs(operation.as_str())
+fn normalized(operation: Primitive, mut args: Value) -> Value {
+    let subnode = take_subnode(operation, &mut args);
+    let (values_container, item_containers) = take_containers(operation, &mut args);
+    let bare = args
+        .get("values")
+        .and_then(Value::as_object)
+        .is_some_and(serde_json::Map::is_empty)
+        && OperationContract::dcs(operation.as_str()).unwrap().schema["properties"]
+            .get("values")
+            .is_none();
+    if bare {
+        args.as_object_mut().unwrap().remove("values");
+    }
+    let mut normalized = OperationContract::dcs(operation.as_str())
         .unwrap()
         .normalize(&args, "args")
-        .unwrap_or_else(|error| panic!("{}: {error:?}", operation.as_str()))
+        .unwrap_or_else(|error| panic!("{}: {error:?}", operation.as_str()));
+    if let Some((key, value)) = subnode {
+        normalized["values"][key] = value;
+    }
+    if let (Some(key), Some(value)) = (container_key(operation), values_container) {
+        normalized["values"][key] = value;
+    }
+    if let Some(key) = container_key(operation) {
+        for (index, container) in item_containers.into_iter().enumerate() {
+            if let Some(value) = container {
+                normalized["items"][index][key] = value;
+            }
+        }
+    }
+    normalized
 }
 
 fn direct<'a, 'i>(parent: Node<'a, 'i>, ns: &str, name: &str) -> Node<'a, 'i> {
@@ -836,12 +1021,19 @@ fn structure_patch_targets_parent_direct_group_items_and_preserves_child() {
         json!({"values":{"name":"Missing","groupBy":["Amount"]}}),
         &target(&[], "Main"),
     );
-    let ambiguous = xml.replace("<t:name>Child</t:name>", "<t:name>Parent</t:name>");
+    // Одноимённые элементы на одном уровне адреса не имеют: правка
+    // отказывает, а не выбирает первый (#1357).
+    let ambiguous = xml.replace(
+        "</t:settings>",
+        "<t:item xsi:type=\"t:StructureItemGroup\"><t:name>Parent</t:name></t:item></t:settings>",
+    );
+    let mut addressed = target(&[], "Main");
+    addressed.structure = vec!["Parent".to_string()];
     assert_refuses(
         &ambiguous,
         Primitive::StructurePatch,
-        json!({"values":{"name":"Parent","groupBy":["Amount"]}}),
-        &target(&[], "Main"),
+        json!({"values":{"groupBy":["Amount"]}}),
+        &addressed,
     );
 }
 
@@ -1750,6 +1942,7 @@ fn dcs_component_writer_refuses_wrong_existing_root_without_a_postimage() {
         &Target {
             datasets: Vec::new(),
             variant: String::new(),
+            structure: Vec::new(),
             terminal: None,
         },
         None,

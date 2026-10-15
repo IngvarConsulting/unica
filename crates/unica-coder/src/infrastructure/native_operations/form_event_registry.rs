@@ -720,6 +720,235 @@ pub(crate) fn form_event_catalog_8_3_27(
     by_id.into_values().collect()
 }
 
+/// Table events whose handler does not receive the item first, although the
+/// help is silent about it. Evidence from the 8.3.27 УТ dump: all 110
+/// `ПриПолученииДанныхНаСервере` handlers take `(ИмяЭлемента, Настройки,
+/// Строки)` and all 5 `ОбработкаЗаписиНового` table handlers take
+/// `(НовыйОбъект, Источник, СтандартнаяОбработка)`. Every other item event,
+/// including the server `ПриОбновленииСоставаПользовательскихНастроекНаСервере`
+/// of a table (13 of 18 handlers declare `Элемент`), receives the item.
+const TABLE_EVENTS_WITHOUT_ITEM: &[&str] = &["OnGetDataAtServer", "NewWriteProcessing"];
+
+/// Parameter lists the platform passes that the help does not document.
+/// Evidence from the 8.3.27 УТ dump: 103 `Нажатие` handlers of label
+/// decorations declare `(Элемент, СтандартнаяОбработка)`.
+const UNDOCUMENTED_FORMS: &[(&str, &str, &[&str])] = &[(
+    "Element.LabelDecoration",
+    "Click",
+    &["Элемент", "СтандартнаяОбработка"],
+)];
+
+/// Known parameter lists of one form or item event under one owner, from the
+/// checked 8.3.27 catalog. The first list follows
+/// [`form_event_handler_parameters_8_3_27`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FormEventParameterForms {
+    pub(crate) event_id: String,
+    /// Russian handler name of the event, as the help names it.
+    pub(crate) handler_ru: String,
+    /// The first entry is the help signature for this form; a later entry
+    /// is an undocumented list proven by the dump.
+    pub(crate) forms: Vec<Vec<String>>,
+}
+
+/// Every catalogued event of the owner with its known parameter lists. The
+/// events are selected for this form exactly as the event catalog selects
+/// them: by form kind, main attribute and a table's dynamic-list source.
+pub(crate) fn form_owner_event_parameters_8_3_27(
+    context: &FormEventContext,
+    owner: FormEventOwnerKind,
+    data_path: Option<&str>,
+) -> Vec<FormEventParameterForms> {
+    let key = owner.catalog_key();
+    let undocumented_key = match owner {
+        FormEventOwnerKind::Column(kind) => format!("Element.{}", kind.catalog_key()),
+        _ => key,
+    };
+    form_event_catalog_8_3_27(context, owner, data_path)
+        .into_iter()
+        .filter_map(|spec| {
+            let mut forms = vec![form_event_handler_parameters_8_3_27(owner, spec)?];
+            forms.extend(
+                UNDOCUMENTED_FORMS
+                    .iter()
+                    .filter(|(owner, event_id, _)| {
+                        *owner == undocumented_key && *event_id == spec.event_id
+                    })
+                    .map(|(_, _, parameters)| {
+                        parameters.iter().map(|name| (*name).to_string()).collect()
+                    }),
+            );
+            Some(FormEventParameterForms {
+                event_id: spec.event_id.clone(),
+                handler_ru: spec.handler_ru.clone(),
+                forms,
+            })
+        })
+        .collect()
+}
+
+/// Parameters of the current handler signature of a form, item, table or
+/// column event: the help list, with `Элемент` first for an item, table or
+/// column event. The help omits `Элемент`, which the platform passes first to
+/// those handlers; it is not added where the help already names it or
+/// [`TABLE_EVENTS_WITHOUT_ITEM`] says otherwise. A command action keeps its
+/// own `(Команда)`. `None` means the catalog signature has no parameter list.
+pub(crate) fn form_event_handler_parameters_8_3_27(
+    owner: FormEventOwnerKind,
+    spec: &PlatformEventSpec,
+) -> Option<Vec<String>> {
+    let mut parameters = signature_parameters(&spec.signature_ru)?;
+    let item_owner = matches!(
+        owner,
+        FormEventOwnerKind::Element(_) | FormEventOwnerKind::Table | FormEventOwnerKind::Column(_)
+    );
+    let explicit_item = parameters
+        .first()
+        .is_some_and(|first| first.to_lowercase() == "элемент");
+    let without_item = owner == FormEventOwnerKind::Table
+        && TABLE_EVENTS_WITHOUT_ITEM.contains(&spec.event_id.as_str());
+    if item_owner && !explicit_item && !without_item {
+        parameters.insert(0, "Элемент".to_string());
+    }
+    Some(parameters)
+}
+
+/// The Russian catalog signature of the event with the parameters of
+/// [`form_event_handler_parameters_8_3_27`]. A signature without a parameter
+/// list is returned as the catalog has it.
+pub(crate) fn form_event_handler_signature_8_3_27(
+    owner: FormEventOwnerKind,
+    spec: &PlatformEventSpec,
+) -> String {
+    let Some(parameters) = form_event_handler_parameters_8_3_27(owner, spec) else {
+        return spec.signature_ru.clone();
+    };
+    let Some((head, _)) = spec.signature_ru.split_once('(') else {
+        return spec.signature_ru.clone();
+    };
+    let tail = spec
+        .signature_ru
+        .rsplit_once(')')
+        .map_or("", |(_, tail)| tail);
+    format!("{head}({}){tail}", parameters.join(", "))
+}
+
+/// One declared handler parameter: its name and whether it has a default.
+pub(crate) use crate::domain::module_projection::MethodParameter as HandlerParameter;
+
+/// A handler signature that cannot belong to the bound event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum HandlerSignatureFinding {
+    /// The parameter names fit another event of the owner strictly better.
+    ForeignEvent {
+        bound_ru: String,
+        expected: Vec<String>,
+        other_ru: String,
+        other: Vec<String>,
+    },
+    /// More required parameters than any known list of the event.
+    ExtraRequired {
+        bound_ru: String,
+        required: usize,
+        expected: Vec<String>,
+    },
+}
+
+/// Compares a handler signature with the bound event among the owner's
+/// events. A shorter signature is never a finding: the platform still calls
+/// handlers written for earlier versions and matches their parameters by
+/// meaning.
+///
+/// The name score of a list is the number of handler parameter names it
+/// contains, case-insensitively. Another event is a candidate when its score
+/// is at least 2 and strictly greater than the bound event's score. The
+/// candidate must be the only one with the highest score; among equal scores
+/// the only one with a list of exactly the handler's parameter count wins.
+/// The handler's parameter count must also differ from every known list of
+/// the bound event: with the same count the platform passes exactly the bound
+/// event's arguments, and different names are only names.
+pub(crate) fn foreign_handler_signature_8_3_27(
+    owner_events: &[FormEventParameterForms],
+    event: &str,
+    parameters: &[HandlerParameter],
+) -> Option<HandlerSignatureFinding> {
+    let bound = owner_events
+        .iter()
+        .find(|candidate| candidate.event_id == event)?;
+    let names = parameters
+        .iter()
+        .map(|parameter| parameter.name.to_lowercase())
+        .collect::<Vec<_>>();
+    let score = |forms: &[Vec<String>]| {
+        forms
+            .iter()
+            .map(|form| {
+                names
+                    .iter()
+                    .filter(|name| form.iter().any(|known| known.to_lowercase() == **name))
+                    .count()
+            })
+            .max()
+            .unwrap_or(0)
+    };
+    let fits_count =
+        |forms: &[Vec<String>]| forms.iter().any(|form| form.len() == parameters.len());
+    let bound_score = score(&bound.forms);
+    let scored = owner_events
+        .iter()
+        .filter(|other| other.event_id != event)
+        .map(|other| (other, score(&other.forms)))
+        .collect::<Vec<_>>();
+    let top = scored.iter().map(|(_, score)| *score).max().unwrap_or(0);
+    let leaders = scored
+        .iter()
+        .filter(|(_, score)| *score == top)
+        .map(|(other, _)| *other)
+        .collect::<Vec<_>>();
+    let leader = match leaders.as_slice() {
+        [only] => Some(*only),
+        _ => {
+            let mut fitting = leaders.iter().filter(|other| fits_count(&other.forms));
+            match (fitting.next(), fitting.next()) {
+                (Some(only), None) => Some(*only),
+                _ => None,
+            }
+        }
+    };
+    if let Some(other) = leader {
+        if !fits_count(&bound.forms) && top >= 2 && top > bound_score {
+            return Some(HandlerSignatureFinding::ForeignEvent {
+                bound_ru: bound.handler_ru.clone(),
+                expected: bound.forms[0].clone(),
+                other_ru: other.handler_ru.clone(),
+                other: other.forms[0].clone(),
+            });
+        }
+    }
+    let required = parameters
+        .iter()
+        .filter(|parameter| !parameter.optional)
+        .count();
+    let maximum = bound.forms.iter().map(Vec::len).max().unwrap_or(0);
+    (required > maximum).then(|| HandlerSignatureFinding::ExtraRequired {
+        bound_ru: bound.handler_ru.clone(),
+        required,
+        expected: bound.forms[0].clone(),
+    })
+}
+
+fn signature_parameters(signature: &str) -> Option<Vec<String>> {
+    let (_, tail) = signature.split_once('(')?;
+    let (list, _) = tail.rsplit_once(')')?;
+    Some(
+        list.split(',')
+            .map(str::trim)
+            .filter(|parameter| !parameter.is_empty())
+            .map(str::to_string)
+            .collect(),
+    )
+}
+
 /// A managed-form command's direct `Action` is a form property binding, not
 /// the metadata Command-module `CommandProcessing` event. Keep this record
 /// outside the checked vendor module catalog so that catalog stays byte-exact.
@@ -778,6 +1007,9 @@ pub(crate) struct FormEventBinding<'a> {
     pub(crate) name: &'a str,
     pub(crate) handler: &'a str,
     pub(crate) call_type: Option<&'a str>,
+    /// Путь данных таблицы-владельца: по нему каталог выбирает события
+    /// источника динамического списка, как при публикации узлов `Event`.
+    pub(crate) data_path: Option<&'a str>,
 }
 
 impl<'a> FormEventBinding<'a> {
@@ -786,7 +1018,14 @@ impl<'a> FormEventBinding<'a> {
             name,
             handler,
             call_type: None,
+            data_path: None,
         }
+    }
+
+    #[must_use]
+    pub(crate) const fn with_data_path(mut self, data_path: Option<&'a str>) -> Self {
+        self.data_path = data_path;
+        self
     }
 
     #[must_use]
@@ -881,6 +1120,22 @@ impl fmt::Display for FormEventDiagnostic {
 
 impl std::error::Error for FormEventDiagnostic {}
 
+/// Событие есть в каталоге 8.3.27 для владельца этого вида и контекста формы.
+fn catalogued_event(
+    context: &FormEventContext,
+    target: FormEventTarget,
+    binding: &FormEventBinding<'_>,
+) -> bool {
+    let owner = match target {
+        FormEventTarget::Form => FormEventOwnerKind::Form,
+        FormEventTarget::Element(FormElementKind::Table) => FormEventOwnerKind::Table,
+        FormEventTarget::Element(kind) => FormEventOwnerKind::Element(kind),
+    };
+    form_event_catalog_8_3_27(context, owner, binding.data_path)
+        .iter()
+        .any(|spec| spec.event_id == binding.name)
+}
+
 pub(crate) fn validate_event(
     context: &FormEventContext,
     target: FormEventTarget,
@@ -890,7 +1145,12 @@ pub(crate) fn validate_event(
 
     validate_property_event_binding(context, target, binding)?;
 
-    if !target.allowed_events().contains(&binding.name) {
+    // Событие допустимо, если его знает матрица цели или каталог событий
+    // 8.3.27, из которого `view` строит узлы `Event`: привязка на адресе
+    // события исполнима везде, где этот узел опубликован (#1355).
+    if !target.allowed_events().contains(&binding.name)
+        && !catalogued_event(context, target, binding)
+    {
         return Err(FormEventDiagnostic::new(
             FormEventDiagnosticCode::EventNotAllowed,
             target_text,
@@ -2624,5 +2884,335 @@ pub(crate) mod tests {
                 (approved_reasons[4], 1),
             ])
         );
+    }
+
+    /// A catalog item form: object main attribute owned by a catalog.
+    fn item_form() -> FormEventContext {
+        FormEventContext {
+            definition: FormDefinitionKind::Regular,
+            direct_part_writable: true,
+            main_attribute: MainAttributeKind::PersistentObject,
+            main_attribute_type: Some("cfg:CatalogObject.Валюты".to_string()),
+            main_attribute_provenance: MainAttributeProvenance::DirectForm,
+            main_attribute_name: Some("Объект".to_string()),
+            metadata_owner: Some(NodeKind::Catalog),
+        }
+    }
+
+    fn list_form() -> FormEventContext {
+        FormEventContext {
+            main_attribute: MainAttributeKind::DynamicList,
+            main_attribute_type: Some("cfg:DynamicList".to_string()),
+            main_attribute_name: Some("Список".to_string()),
+            ..item_form()
+        }
+    }
+
+    fn events_of(owner: FormEventOwnerKind) -> Vec<FormEventParameterForms> {
+        form_owner_event_parameters_8_3_27(&item_form(), owner, Some("Объект.Строки"))
+    }
+
+    fn forms_of(owner: FormEventOwnerKind, event: &str) -> Vec<Vec<String>> {
+        events_of(owner)
+            .into_iter()
+            .find(|candidate| candidate.event_id == event)
+            .map(|candidate| candidate.forms)
+            .unwrap_or_default()
+    }
+
+    fn parameters(names: &[&str]) -> Vec<HandlerParameter> {
+        names
+            .iter()
+            .map(|name| HandlerParameter {
+                name: (*name).to_string(),
+                optional: false,
+            })
+            .collect()
+    }
+
+    fn check(
+        owner: FormEventOwnerKind,
+        event: &str,
+        handler: &[HandlerParameter],
+    ) -> Option<HandlerSignatureFinding> {
+        foreign_handler_signature_8_3_27(&events_of(owner), event, handler)
+    }
+
+    const INPUT: FormEventOwnerKind = FormEventOwnerKind::Element(FormElementKind::InputField);
+
+    #[test]
+    fn item_parameter_follows_the_help_and_the_dump_evidence() {
+        assert_eq!(
+            forms_of(INPUT, "ChoiceProcessing"),
+            [[
+                "Элемент",
+                "ВыбранноеЗначение",
+                "ДополнительныеДанные",
+                "ВыборДобавлением",
+                "СтандартнаяОбработка"
+            ]]
+        );
+        assert_eq!(
+            forms_of(FormEventOwnerKind::Form, "ChoiceProcessing"),
+            [["ВыбранноеЗначение", "ИсточникВыбора"]]
+        );
+        let table = FormEventOwnerKind::Table;
+        assert_eq!(
+            forms_of(table, "NewWriteProcessing"),
+            [["НовыйОбъект", "Источник", "СтандартнаяОбработка"]]
+        );
+        // Dynamic-list table events exist only for a table bound to the list.
+        let dynamic = form_owner_event_parameters_8_3_27(&list_form(), table, Some("Список"));
+        let dynamic_forms = |event: &str| {
+            dynamic
+                .iter()
+                .find(|candidate| candidate.event_id == event)
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(
+            dynamic_forms("URLGetProcessing").forms[0],
+            [
+                "Элемент",
+                "Ключ",
+                "Представление",
+                "НавигационнаяСсылка",
+                "СтандартнаяОбработка"
+            ]
+        );
+        assert_eq!(
+            dynamic_forms("OnUpdateUserSettingSetAtServer").forms,
+            [["Элемент", "СтандартнаяОбработка"]]
+        );
+        let on_get_data = dynamic_forms("OnGetDataAtServer");
+        assert_eq!(on_get_data.forms, [["ИмяЭлемента", "Настройки", "Строки"]]);
+        assert_eq!(on_get_data.handler_ru, "ПриПолученииДанныхНаСервере");
+        assert!(forms_of(table, "OnGetDataAtServer").is_empty());
+        assert_eq!(
+            forms_of(
+                FormEventOwnerKind::Element(FormElementKind::LabelDecoration),
+                "Click"
+            ),
+            [vec!["Элемент"], vec!["Элемент", "СтандартнаяОбработка"]]
+        );
+        assert!(events_of(FormEventOwnerKind::Element(
+            FormElementKind::ExtendedTooltip
+        ))
+        .is_empty());
+    }
+
+    #[test]
+    fn handler_signature_puts_the_item_first_only_where_the_platform_passes_it() {
+        let signature = |context: &FormEventContext,
+                         owner: FormEventOwnerKind,
+                         data_path: Option<&str>,
+                         event: &str| {
+            super::form_event_catalog_8_3_27(context, owner, data_path)
+                .into_iter()
+                .find(|spec| spec.event_id == event)
+                .map(|spec| form_event_handler_signature_8_3_27(owner, spec))
+                .unwrap_or_default()
+        };
+        let item = |owner, event| signature(&item_form(), owner, Some("Объект.Строки"), event);
+        assert_eq!(item(INPUT, "OnChange"), "Процедура ПриИзменении(Элемент)");
+        assert_eq!(
+            item(
+                FormEventOwnerKind::Column(FormElementKind::InputField),
+                "EditTextChange"
+            ),
+            "Процедура ИзменениеТекстаРедактирования(Элемент, Текст, СтандартнаяОбработка)"
+        );
+        assert_eq!(
+            item(FormEventOwnerKind::Table, "BeforeAddRow"),
+            "Процедура ПередНачаломДобавления(Элемент, Отказ, Копирование, Родитель, ЭтоГруппа, Параметр)"
+        );
+        assert_eq!(
+            item(FormEventOwnerKind::Table, "NewWriteProcessing"),
+            "Процедура ОбработкаЗаписиНового(НовыйОбъект, Источник, СтандартнаяОбработка)"
+        );
+        assert_eq!(
+            item(FormEventOwnerKind::Form, "OnOpen"),
+            "Процедура ПриОткрытии(Отказ)"
+        );
+        assert_eq!(
+            item(FormEventOwnerKind::Command, "Execute"),
+            "Процедура ОбработкаКоманды(Команда)"
+        );
+        let list = |event| {
+            signature(
+                &list_form(),
+                FormEventOwnerKind::Table,
+                Some("Список"),
+                event,
+            )
+        };
+        assert_eq!(
+            list("OnUpdateUserSettingSetAtServer"),
+            "Процедура ПриОбновленииСоставаПользовательскихНастроекНаСервере(Элемент, СтандартнаяОбработка)"
+        );
+        assert_eq!(
+            list("OnGetDataAtServer"),
+            "Процедура ПриПолученииДанныхНаСервере(ИмяЭлемента, Настройки, Строки)"
+        );
+        // The check compares a handler with the same list.
+        assert_eq!(
+            forms_of(INPUT, "OnChange")[0],
+            form_event_handler_parameters_8_3_27(
+                INPUT,
+                super::form_event_catalog_8_3_27(&item_form(), INPUT, None)
+                    .into_iter()
+                    .find(|spec| spec.event_id == "OnChange")
+                    .unwrap()
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn form_kind_selects_one_variant_of_each_event() {
+        // The object form of a catalog writes; a form without a persistent
+        // main attribute has no write events at all.
+        assert_eq!(
+            forms_of(FormEventOwnerKind::Form, "BeforeWrite"),
+            [["Отказ", "ПараметрыЗаписи"]]
+        );
+        let plain = FormEventContext {
+            main_attribute: MainAttributeKind::Other,
+            main_attribute_type: Some("cfg:DataProcessorObject.Обработка".to_string()),
+            metadata_owner: Some(NodeKind::DataProcessor),
+            ..item_form()
+        };
+        let events = form_owner_event_parameters_8_3_27(&plain, FormEventOwnerKind::Form, None);
+        assert!(events.iter().all(|event| event.event_id != "BeforeWrite"));
+        let task = FormEventContext {
+            main_attribute_type: Some("cfg:TaskObject.Задача".to_string()),
+            metadata_owner: Some(NodeKind::Task),
+            ..item_form()
+        };
+        let activation = form_owner_event_parameters_8_3_27(&task, FormEventOwnerKind::Form, None)
+            .into_iter()
+            .find(|event| event.event_id == "ActivationProcessing")
+            .unwrap();
+        assert_eq!(activation.forms, [Vec::<String>::new()]);
+    }
+
+    #[test]
+    fn foreign_signature_needs_a_strictly_better_unambiguous_match_and_another_count() {
+        let start_choice = [
+            "Элемент",
+            "ДанныеВыбора",
+            "ВыборДобавлением",
+            "СтандартнаяОбработка",
+        ];
+        assert_eq!(
+            check(INPUT, "AutoComplete", &parameters(&start_choice)),
+            Some(HandlerSignatureFinding::ForeignEvent {
+                bound_ru: "АвтоПодбор".to_string(),
+                expected: forms_of(INPUT, "AutoComplete")[0].clone(),
+                other_ru: "НачалоВыбора".to_string(),
+                other: forms_of(INPUT, "StartChoice")[0].clone(),
+            })
+        );
+        // Legacy shorter forms of the bound event.
+        for names in [
+            &["Элемент", "ВыбранноеЗначение", "СтандартнаяОбработка"][..],
+            &["Элемент", "Результат", "СтандартнаяОбработка"][..],
+            &[][..],
+        ] {
+            assert_eq!(
+                check(INPUT, "ChoiceProcessing", &parameters(names)),
+                None,
+                "{names:?}"
+            );
+        }
+        // One shared name is weak evidence.
+        assert_eq!(
+            check(INPUT, "OnChange", &parameters(&["ДанныеВыбора"])),
+            None
+        );
+        let mut single = parameters(&["Ожидание", "Прочее"]);
+        single[1].optional = true;
+        assert_eq!(check(INPUT, "OnChange", &single), None);
+        // Equal scores without one count-matching leader are a tie.
+        let mut tied = parameters(&["Элемент", "СтандартнаяОбработка", "Прочее"]);
+        tied[1].optional = true;
+        tied[2].optional = true;
+        assert_eq!(check(INPUT, "OnChange", &tied), None);
+        // An equally good other event does not outweigh the bound one.
+        assert_eq!(
+            check(
+                INPUT,
+                "ChoiceProcessing",
+                &parameters(&["Элемент", "ВыборДобавлением", "СтандартнаяОбработка"])
+            ),
+            None
+        );
+        // The same count as the bound event is a rename, not another event.
+        assert_eq!(
+            check(
+                FormEventOwnerKind::Table,
+                "ValueChoice",
+                &parameters(&["Элемент", "ВыбранноеЗначение", "СтандартнаяОбработка"])
+            ),
+            None
+        );
+        assert_eq!(
+            check(INPUT, "NoSuchEvent", &parameters(&start_choice)),
+            None
+        );
+    }
+
+    #[test]
+    fn a_tie_is_broken_by_the_only_leader_with_the_handler_parameter_count() {
+        // `Элемент`, `Текст` and `СтандартнаяОбработка` score 3 with
+        // EditTextChange, AutoComplete and TextEditEnd; only EditTextChange
+        // has three parameters, so it wins the tie.
+        let handler = parameters(&["Элемент", "Текст", "СтандартнаяОбработка"]);
+        assert_eq!(
+            check(INPUT, "OnChange", &handler),
+            Some(HandlerSignatureFinding::ForeignEvent {
+                bound_ru: "ПриИзменении".to_string(),
+                expected: vec!["Элемент".to_string()],
+                other_ru: "ИзменениеТекстаРедактирования".to_string(),
+                other: forms_of(INPUT, "EditTextChange")[0].clone(),
+            })
+        );
+    }
+
+    #[test]
+    fn extra_required_parameters_are_counted_against_every_known_list() {
+        assert_eq!(
+            check(
+                FormEventOwnerKind::Form,
+                "URLProcessing",
+                &parameters(&["Элемент", "Ссылка", "СтандартнаяОбработка"]),
+            ),
+            Some(HandlerSignatureFinding::ExtraRequired {
+                bound_ru: "ОбработкаНавигационнойСсылки".to_string(),
+                required: 3,
+                expected: forms_of(FormEventOwnerKind::Form, "URLProcessing")[0].clone(),
+            })
+        );
+        let mut optional = parameters(&["Ссылка", "СтандартнаяОбработка", "Режим"]);
+        optional[2].optional = true;
+        assert_eq!(
+            check(FormEventOwnerKind::Form, "URLProcessing", &optional),
+            None
+        );
+        // The undocumented two-parameter click of a label decoration is known.
+        assert_eq!(
+            check(
+                FormEventOwnerKind::Element(FormElementKind::LabelDecoration),
+                "Click",
+                &parameters(&["Элемент", "СтандартнаяОбработка"])
+            ),
+            None
+        );
+        assert!(check(
+            FormEventOwnerKind::Table,
+            "NewWriteProcessing",
+            &parameters(&["Элемент", "НовыйОбъект", "Источник", "СтандартнаяОбработка"])
+        )
+        .is_some());
     }
 }

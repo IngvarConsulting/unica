@@ -92,7 +92,9 @@ pub(crate) fn classify_route(
             NodeKind::DataSet
                 | NodeKind::Field
                 | NodeKind::Query
-                | NodeKind::Calculation
+                | NodeKind::DataSource
+                | NodeKind::CalculatedField
+                | NodeKind::Total
                 | NodeKind::Setting
         )
     });
@@ -141,6 +143,22 @@ mod tests {
             ("main:Document.Order.Form.Main.Command.Ok", RouteClass::Form),
             (
                 "main:Report.Sales.Template.Schema.Parameter.Period",
+                RouteClass::Dcs,
+            ),
+            (
+                "main:Report.Sales.Template.Schema.DataSource.Local",
+                RouteClass::Dcs,
+            ),
+            (
+                "main:Report.Sales.Template.Schema.CalculatedField.Double",
+                RouteClass::Dcs,
+            ),
+            (
+                "main:Report.Sales.Template.Schema.Total.Amount",
+                RouteClass::Dcs,
+            ),
+            (
+                "main:Report.Sales.Template.Schema.Setting.Main.Item.ByCategory.Item.Details",
                 RouteClass::Dcs,
             ),
             (
