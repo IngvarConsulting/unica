@@ -1,0 +1,831 @@
+{
+ "id": "S-1435-child-form-support",
+ "name": "unlock-child-form-before-bsl-publication",
+ "issue": 1435,
+ "area": "Поддержка поставщика",
+ "task": "Разрешить правку дочерней формы отдельным применением поддержки, затем опубликовать BSL; соседняя форма остаётся на замке",
+ "workspace": "tests/fixtures/acceptance/workspace-support-form",
+ "wire": [
+  {
+   "tool": "unica.apply",
+   "args": {
+    "at": "main:Catalog.Items.Form.Main.Module.Form",
+    "ops": [
+     {
+      "op": "code.insert",
+      "args": {
+       "text": "// support form accepted\n"
+      }
+     }
+    ]
+   },
+   "expect": [
+    "refused"
+   ],
+   "fileAssertions": [
+    {
+     "kind": "sha256",
+     "path": "src/Configuration.xml",
+     "eq": "5dc9e01de802985f8944346f4303b520c889dff194446955b7d53d897ba4e547"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items.xml",
+     "eq": "5036c9ec3477269115d11a117e503f866fe6779e2759b9a93b2537b190cc4220"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main.xml",
+     "eq": "fe617398b73bf445efdc7457d2bf4ed84954ccca5bd03740836d6b65b4098ec1"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+     "eq": "0b26b53049dc212d0ac00e76b9071695f0ac554ce0cde6bffc7a6c2c0d3c0daa"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other.xml",
+     "eq": "fcee95c674a5a3b047d9aed32e1004bfc60e3483693a9a515ee3de1f7ea5244c"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other/Ext/Form.xml",
+     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other/Ext/Form/Module.bsl",
+     "eq": "0b26b53049dc212d0ac00e76b9071695f0ac554ce0cde6bffc7a6c2c0d3c0daa"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Ext/ParentConfigurations.bin",
+     "eq": "096a8d156b5648b6c84d094837034f914946bea24d64c9180280fd5409facd3a"
+    }
+   ],
+   "refusal": "invalid_state: actor support policy denies editing this protected module owner"
+  },
+  {
+   "tool": "unica.apply",
+   "args": {
+    "at": "main:Catalog.Items.Form.Main",
+    "ops": [
+     {
+      "op": "supportRule.set",
+      "args": {
+       "values": {
+        "rule": "editable"
+       }
+      }
+     },
+     {
+      "op": "code.insert",
+      "args": {
+       "at": "main:Catalog.Items.Form.Main.Module.Form",
+       "text": "// must not publish\n"
+      }
+     }
+    ]
+   },
+   "expect": [
+    "refused"
+   ],
+   "fileAssertions": [
+    {
+     "kind": "sha256",
+     "path": "src/Configuration.xml",
+     "eq": "5dc9e01de802985f8944346f4303b520c889dff194446955b7d53d897ba4e547"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items.xml",
+     "eq": "5036c9ec3477269115d11a117e503f866fe6779e2759b9a93b2537b190cc4220"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main.xml",
+     "eq": "fe617398b73bf445efdc7457d2bf4ed84954ccca5bd03740836d6b65b4098ec1"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+     "eq": "0b26b53049dc212d0ac00e76b9071695f0ac554ce0cde6bffc7a6c2c0d3c0daa"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other.xml",
+     "eq": "fcee95c674a5a3b047d9aed32e1004bfc60e3483693a9a515ee3de1f7ea5244c"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other/Ext/Form.xml",
+     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other/Ext/Form/Module.bsl",
+     "eq": "0b26b53049dc212d0ac00e76b9071695f0ac554ce0cde6bffc7a6c2c0d3c0daa"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Ext/ParentConfigurations.bin",
+     "eq": "096a8d156b5648b6c84d094837034f914946bea24d64c9180280fd5409facd3a"
+    }
+   ],
+   "refusal": "invalid_state: support changes require a separate apply before ordinary edits"
+  },
+  {
+   "tool": "unica.apply",
+   "args": {
+    "at": "main:Catalog.Items.Form.Main",
+    "ops": [
+     {
+      "op": "supportRule.set",
+      "args": {
+       "values": {
+        "rule": "editable"
+       }
+      }
+     }
+    ]
+   },
+   "expect": [
+    "ok"
+   ],
+   "fileAssertions": [
+    {
+     "kind": "sha256",
+     "path": "src/Configuration.xml",
+     "eq": "5dc9e01de802985f8944346f4303b520c889dff194446955b7d53d897ba4e547"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items.xml",
+     "eq": "5036c9ec3477269115d11a117e503f866fe6779e2759b9a93b2537b190cc4220"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main.xml",
+     "eq": "fe617398b73bf445efdc7457d2bf4ed84954ccca5bd03740836d6b65b4098ec1"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+     "eq": "0b26b53049dc212d0ac00e76b9071695f0ac554ce0cde6bffc7a6c2c0d3c0daa"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other.xml",
+     "eq": "fcee95c674a5a3b047d9aed32e1004bfc60e3483693a9a515ee3de1f7ea5244c"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other/Ext/Form.xml",
+     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other/Ext/Form/Module.bsl",
+     "eq": "0b26b53049dc212d0ac00e76b9071695f0ac554ce0cde6bffc7a6c2c0d3c0daa"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Ext/ParentConfigurations.bin",
+     "eq": "096a8d156b5648b6c84d094837034f914946bea24d64c9180280fd5409facd3a"
+    }
+   ]
+  },
+  {
+   "tool": "unica.apply",
+   "args": {
+    "executionToken": "$executionToken"
+   },
+   "expect": [
+    "ok"
+   ],
+   "fileAssertions": [
+    {
+     "kind": "sha256",
+     "path": "src/Configuration.xml",
+     "eq": "5dc9e01de802985f8944346f4303b520c889dff194446955b7d53d897ba4e547"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items.xml",
+     "eq": "5036c9ec3477269115d11a117e503f866fe6779e2759b9a93b2537b190cc4220"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main.xml",
+     "eq": "fe617398b73bf445efdc7457d2bf4ed84954ccca5bd03740836d6b65b4098ec1"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+     "eq": "0b26b53049dc212d0ac00e76b9071695f0ac554ce0cde6bffc7a6c2c0d3c0daa"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other.xml",
+     "eq": "fcee95c674a5a3b047d9aed32e1004bfc60e3483693a9a515ee3de1f7ea5244c"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other/Ext/Form.xml",
+     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other/Ext/Form/Module.bsl",
+     "eq": "0b26b53049dc212d0ac00e76b9071695f0ac554ce0cde6bffc7a6c2c0d3c0daa"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Ext/ParentConfigurations.bin",
+     "eq": "c847800dac9cac0be244006ddc5107f979fed9a13868069789a8b5d14fba1b64"
+    }
+   ]
+  },
+  {
+   "tool": "unica.apply",
+   "args": {
+    "at": "main:Catalog.Items.Form.Main.Module.Form",
+    "ops": [
+     {
+      "op": "code.insert",
+      "args": {
+       "text": "// support form accepted\n"
+      }
+     }
+    ]
+   },
+   "expect": [
+    "ok"
+   ],
+   "fileAssertions": [
+    {
+     "kind": "sha256",
+     "path": "src/Configuration.xml",
+     "eq": "5dc9e01de802985f8944346f4303b520c889dff194446955b7d53d897ba4e547"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items.xml",
+     "eq": "5036c9ec3477269115d11a117e503f866fe6779e2759b9a93b2537b190cc4220"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main.xml",
+     "eq": "fe617398b73bf445efdc7457d2bf4ed84954ccca5bd03740836d6b65b4098ec1"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+     "eq": "0b26b53049dc212d0ac00e76b9071695f0ac554ce0cde6bffc7a6c2c0d3c0daa"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other.xml",
+     "eq": "fcee95c674a5a3b047d9aed32e1004bfc60e3483693a9a515ee3de1f7ea5244c"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other/Ext/Form.xml",
+     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other/Ext/Form/Module.bsl",
+     "eq": "0b26b53049dc212d0ac00e76b9071695f0ac554ce0cde6bffc7a6c2c0d3c0daa"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Ext/ParentConfigurations.bin",
+     "eq": "c847800dac9cac0be244006ddc5107f979fed9a13868069789a8b5d14fba1b64"
+    }
+   ]
+  },
+  {
+   "tool": "unica.apply",
+   "args": {
+    "executionToken": "$executionToken"
+   },
+   "expect": [
+    "ok"
+   ],
+   "fileAssertions": [
+    {
+     "kind": "sha256",
+     "path": "src/Configuration.xml",
+     "eq": "5dc9e01de802985f8944346f4303b520c889dff194446955b7d53d897ba4e547"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items.xml",
+     "eq": "5036c9ec3477269115d11a117e503f866fe6779e2759b9a93b2537b190cc4220"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main.xml",
+     "eq": "fe617398b73bf445efdc7457d2bf4ed84954ccca5bd03740836d6b65b4098ec1"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+     "eq": "06c2deaa5af5486feb67f5c06c2717f86d920ccdd7de9545422a396ed8686f89"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other.xml",
+     "eq": "fcee95c674a5a3b047d9aed32e1004bfc60e3483693a9a515ee3de1f7ea5244c"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other/Ext/Form.xml",
+     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other/Ext/Form/Module.bsl",
+     "eq": "0b26b53049dc212d0ac00e76b9071695f0ac554ce0cde6bffc7a6c2c0d3c0daa"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Ext/ParentConfigurations.bin",
+     "eq": "c847800dac9cac0be244006ddc5107f979fed9a13868069789a8b5d14fba1b64"
+    }
+   ]
+  },
+  {
+   "tool": "unica.apply",
+   "args": {
+    "at": "main:Catalog.Items.Form.Other.Module.Form",
+    "ops": [
+     {
+      "op": "code.insert",
+      "args": {
+       "text": "// support form accepted\n"
+      }
+     }
+    ]
+   },
+   "expect": [
+    "refused"
+   ],
+   "fileAssertions": [
+    {
+     "kind": "sha256",
+     "path": "src/Configuration.xml",
+     "eq": "5dc9e01de802985f8944346f4303b520c889dff194446955b7d53d897ba4e547"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items.xml",
+     "eq": "5036c9ec3477269115d11a117e503f866fe6779e2759b9a93b2537b190cc4220"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main.xml",
+     "eq": "fe617398b73bf445efdc7457d2bf4ed84954ccca5bd03740836d6b65b4098ec1"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+     "eq": "06c2deaa5af5486feb67f5c06c2717f86d920ccdd7de9545422a396ed8686f89"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other.xml",
+     "eq": "fcee95c674a5a3b047d9aed32e1004bfc60e3483693a9a515ee3de1f7ea5244c"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other/Ext/Form.xml",
+     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other/Ext/Form/Module.bsl",
+     "eq": "0b26b53049dc212d0ac00e76b9071695f0ac554ce0cde6bffc7a6c2c0d3c0daa"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Ext/ParentConfigurations.bin",
+     "eq": "c847800dac9cac0be244006ddc5107f979fed9a13868069789a8b5d14fba1b64"
+    }
+   ],
+   "refusal": "invalid_state: actor support policy denies editing this protected module owner"
+  },
+  {
+   "tool": "unica.apply",
+   "args": {
+    "at": "main:Catalog.Items",
+    "ops": [
+     {
+      "op": "supportRule.set",
+      "args": {
+       "values": {
+        "rule": "locked"
+       }
+      }
+     }
+    ]
+   },
+   "expect": [
+    "ok"
+   ],
+   "fileAssertions": [
+    {
+     "kind": "sha256",
+     "path": "src/Configuration.xml",
+     "eq": "5dc9e01de802985f8944346f4303b520c889dff194446955b7d53d897ba4e547"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items.xml",
+     "eq": "5036c9ec3477269115d11a117e503f866fe6779e2759b9a93b2537b190cc4220"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main.xml",
+     "eq": "fe617398b73bf445efdc7457d2bf4ed84954ccca5bd03740836d6b65b4098ec1"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+     "eq": "06c2deaa5af5486feb67f5c06c2717f86d920ccdd7de9545422a396ed8686f89"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other.xml",
+     "eq": "fcee95c674a5a3b047d9aed32e1004bfc60e3483693a9a515ee3de1f7ea5244c"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other/Ext/Form.xml",
+     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other/Ext/Form/Module.bsl",
+     "eq": "0b26b53049dc212d0ac00e76b9071695f0ac554ce0cde6bffc7a6c2c0d3c0daa"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Ext/ParentConfigurations.bin",
+     "eq": "c847800dac9cac0be244006ddc5107f979fed9a13868069789a8b5d14fba1b64"
+    }
+   ]
+  },
+  {
+   "tool": "unica.apply",
+   "args": {
+    "executionToken": "$executionToken"
+   },
+   "expect": [
+    "ok"
+   ],
+   "fileAssertions": [
+    {
+     "kind": "sha256",
+     "path": "src/Configuration.xml",
+     "eq": "5dc9e01de802985f8944346f4303b520c889dff194446955b7d53d897ba4e547"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items.xml",
+     "eq": "5036c9ec3477269115d11a117e503f866fe6779e2759b9a93b2537b190cc4220"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main.xml",
+     "eq": "fe617398b73bf445efdc7457d2bf4ed84954ccca5bd03740836d6b65b4098ec1"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+     "eq": "06c2deaa5af5486feb67f5c06c2717f86d920ccdd7de9545422a396ed8686f89"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other.xml",
+     "eq": "fcee95c674a5a3b047d9aed32e1004bfc60e3483693a9a515ee3de1f7ea5244c"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other/Ext/Form.xml",
+     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other/Ext/Form/Module.bsl",
+     "eq": "0b26b53049dc212d0ac00e76b9071695f0ac554ce0cde6bffc7a6c2c0d3c0daa"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Ext/ParentConfigurations.bin",
+     "eq": "68eae2b0dd5b5ac0a636b06d302219f6e0e49b5de348bebca749f946dd1b6fbb"
+    }
+   ]
+  },
+  {
+   "tool": "unica.apply",
+   "args": {
+    "at": "main:Catalog.Items.Form.Main.Module.Form",
+    "ops": [
+     {
+      "op": "code.insert",
+      "args": {
+       "text": "// support form accepted\n"
+      }
+     }
+    ]
+   },
+   "expect": [
+    "refused"
+   ],
+   "fileAssertions": [
+    {
+     "kind": "sha256",
+     "path": "src/Configuration.xml",
+     "eq": "5dc9e01de802985f8944346f4303b520c889dff194446955b7d53d897ba4e547"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items.xml",
+     "eq": "5036c9ec3477269115d11a117e503f866fe6779e2759b9a93b2537b190cc4220"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main.xml",
+     "eq": "fe617398b73bf445efdc7457d2bf4ed84954ccca5bd03740836d6b65b4098ec1"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+     "eq": "06c2deaa5af5486feb67f5c06c2717f86d920ccdd7de9545422a396ed8686f89"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other.xml",
+     "eq": "fcee95c674a5a3b047d9aed32e1004bfc60e3483693a9a515ee3de1f7ea5244c"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other/Ext/Form.xml",
+     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other/Ext/Form/Module.bsl",
+     "eq": "0b26b53049dc212d0ac00e76b9071695f0ac554ce0cde6bffc7a6c2c0d3c0daa"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Ext/ParentConfigurations.bin",
+     "eq": "68eae2b0dd5b5ac0a636b06d302219f6e0e49b5de348bebca749f946dd1b6fbb"
+    }
+   ],
+   "refusal": "invalid_state: `Catalog.Items` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` first"
+  },
+  {
+   "tool": "unica.apply",
+   "args": {
+    "at": "main:Configuration",
+    "ops": [
+     {
+      "op": "supportCapability.set",
+      "args": {
+       "values": {
+        "enabled": false
+       }
+      }
+     }
+    ]
+   },
+   "expect": [
+    "ok"
+   ],
+   "fileAssertions": [
+    {
+     "kind": "sha256",
+     "path": "src/Configuration.xml",
+     "eq": "5dc9e01de802985f8944346f4303b520c889dff194446955b7d53d897ba4e547"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items.xml",
+     "eq": "5036c9ec3477269115d11a117e503f866fe6779e2759b9a93b2537b190cc4220"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main.xml",
+     "eq": "fe617398b73bf445efdc7457d2bf4ed84954ccca5bd03740836d6b65b4098ec1"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+     "eq": "06c2deaa5af5486feb67f5c06c2717f86d920ccdd7de9545422a396ed8686f89"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other.xml",
+     "eq": "fcee95c674a5a3b047d9aed32e1004bfc60e3483693a9a515ee3de1f7ea5244c"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other/Ext/Form.xml",
+     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other/Ext/Form/Module.bsl",
+     "eq": "0b26b53049dc212d0ac00e76b9071695f0ac554ce0cde6bffc7a6c2c0d3c0daa"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Ext/ParentConfigurations.bin",
+     "eq": "68eae2b0dd5b5ac0a636b06d302219f6e0e49b5de348bebca749f946dd1b6fbb"
+    }
+   ]
+  },
+  {
+   "tool": "unica.apply",
+   "args": {
+    "executionToken": "$executionToken"
+   },
+   "expect": [
+    "ok"
+   ],
+   "fileAssertions": [
+    {
+     "kind": "sha256",
+     "path": "src/Configuration.xml",
+     "eq": "5dc9e01de802985f8944346f4303b520c889dff194446955b7d53d897ba4e547"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items.xml",
+     "eq": "5036c9ec3477269115d11a117e503f866fe6779e2759b9a93b2537b190cc4220"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main.xml",
+     "eq": "fe617398b73bf445efdc7457d2bf4ed84954ccca5bd03740836d6b65b4098ec1"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+     "eq": "06c2deaa5af5486feb67f5c06c2717f86d920ccdd7de9545422a396ed8686f89"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other.xml",
+     "eq": "fcee95c674a5a3b047d9aed32e1004bfc60e3483693a9a515ee3de1f7ea5244c"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other/Ext/Form.xml",
+     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other/Ext/Form/Module.bsl",
+     "eq": "0b26b53049dc212d0ac00e76b9071695f0ac554ce0cde6bffc7a6c2c0d3c0daa"
+    }
+   ],
+   "captures": {
+    "disabledSupport": {
+     "file": "src/Ext/ParentConfigurations.bin",
+     "kind": "sha256"
+    }
+   }
+  },
+  {
+   "tool": "unica.apply",
+   "args": {
+    "at": "main:Catalog.Items.Form.Main.Module.Form",
+    "ops": [
+     {
+      "op": "code.insert",
+      "args": {
+       "text": "// support form accepted\n"
+      }
+     }
+    ]
+   },
+   "expect": [
+    "refused"
+   ],
+   "fileAssertions": [
+    {
+     "kind": "sha256",
+     "path": "src/Configuration.xml",
+     "eq": "5dc9e01de802985f8944346f4303b520c889dff194446955b7d53d897ba4e547"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items.xml",
+     "eq": "5036c9ec3477269115d11a117e503f866fe6779e2759b9a93b2537b190cc4220"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main.xml",
+     "eq": "fe617398b73bf445efdc7457d2bf4ed84954ccca5bd03740836d6b65b4098ec1"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+     "eq": "06c2deaa5af5486feb67f5c06c2717f86d920ccdd7de9545422a396ed8686f89"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other.xml",
+     "eq": "fcee95c674a5a3b047d9aed32e1004bfc60e3483693a9a515ee3de1f7ea5244c"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other/Ext/Form.xml",
+     "eq": "73225264880eca28dd53834a14222eee5b205dd063ff5617a36820383eda596f"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Items/Forms/Other/Ext/Form/Module.bsl",
+     "eq": "0b26b53049dc212d0ac00e76b9071695f0ac554ce0cde6bffc7a6c2c0d3c0daa"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Ext/ParentConfigurations.bin",
+     "eq": "$capture.disabledSupport"
+    }
+   ],
+   "refusal": "invalid_state: the configuration is on vendor support with changes disabled; enable editing with `supportCapability.set` first"
+  }
+ ]
+}

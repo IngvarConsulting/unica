@@ -655,7 +655,8 @@ impl OperationApplicability {
         match self {
             Self::Configuration => "`Configuration`",
             Self::ExtensionRoot => "`Configuration` of an extension",
-            Self::Metadata | Self::SupportRule => "`Kind.Name`",
+            Self::Metadata => "`Kind.Name`",
+            Self::SupportRule => "`Kind.Name` or `Kind.Name.Form.F`",
             Self::MetadataOrRoleOrSubsystem => "`Kind.Name`, `Role.Name` or `Subsystem.Name`",
             Self::MetadataAttributeContainer => {
                 "`Kind.Name` of a kind with attributes or `Kind.Name.TabularSection.T`"
@@ -898,10 +899,19 @@ impl OperationApplicability {
                             segment.kind() == NodeKind::Subsystem && segment.name().is_some()
                         }))
             }
-            Self::SupportRule => matches!(segments, [owner]
-                if owner.name().is_some()
-                    && owner.kind().is_metadata_kind()
-                    && !matches!(owner.kind(), NodeKind::Form | NodeKind::Template | NodeKind::Command)),
+            Self::SupportRule => match segments {
+                [owner] | [owner, _] => {
+                    owner.name().is_some()
+                        && owner.kind().is_metadata_kind()
+                        && !matches!(
+                            owner.kind(),
+                            NodeKind::Form | NodeKind::Template | NodeKind::Command
+                        )
+                        && (segments.len() == 1
+                            || (terminal.kind() == NodeKind::Form && terminal.name().is_some()))
+                }
+                _ => false,
+            },
             Self::CodeInsert => {
                 site.route == RouteClass::Module
                     && (module_terminal(segments)
@@ -2660,6 +2670,20 @@ mod tests {
             .lookup_at(op, &site)
             .unwrap_or_else(|| panic!("{op} is registered"))
             .applies_at(&site)
+    }
+
+    #[test]
+    fn support_rule_addresses_a_form_without_addressing_its_contents() {
+        for at in ["main:Catalog.Items", "main:Catalog.Items.Form.Card"] {
+            assert!(applies("supportRule.set", at), "{at}");
+        }
+        for at in [
+            "main:Catalog.Items.Form.Card.Item.Field",
+            "main:Catalog.Items.Form.Card.Module.Form",
+            "main:Catalog.Items.Attribute.Code",
+        ] {
+            assert!(!applies("supportRule.set", at), "{at}");
+        }
     }
 
     fn applies(op: &str, raw: &str) -> bool {

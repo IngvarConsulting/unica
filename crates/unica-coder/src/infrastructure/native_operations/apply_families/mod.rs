@@ -937,6 +937,18 @@ pub(crate) fn plan_hidden_v13_apply(
         .map_err(|error| ApplyPlanError::staging(error, "ops"))?;
     refuse_targets_outside_writable_profile(request, binding, &mut staged)?;
     refuse_targets_on_locked_vendor_objects(request, binding, admission, &mut staged)?;
+    let support_operations = request
+        .ops()
+        .iter()
+        .filter(|op| SUPPORT_STATE_OPERATIONS.contains(&op.name()))
+        .count();
+    if support_operations > 0 && support_operations < request.ops().len() {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidState,
+            "support changes require a separate apply before ordinary edits",
+        )
+        .at_path("ops"));
+    }
     let mut provisional = Vec::new();
     let mut borrowing = Vec::new();
     let mut cursor = 0;
@@ -1513,6 +1525,50 @@ mod tests {
                 .err()
                 .unwrap_or_else(|| panic!("{op} must not redirect to another element"));
             assert_eq!(error.path(), Some(path), "{op}: {error}");
+        }
+    }
+
+    #[test]
+    fn support_and_ordinary_edits_require_separate_batches_under_every_policy() {
+        for policy in ["deny", "warn", "off"] {
+            let fixture = ApplySeamFixture::new();
+            std::fs::write(
+                fixture
+                    .source_dir()
+                    .parent()
+                    .unwrap()
+                    .join(".v8-project.json"),
+                serde_json::json!({"editingAllowedCheck": policy}).to_string(),
+            )
+            .unwrap();
+            let request = ApplyRequest::parse(
+                serde_json::json!({
+                    "at": "main:Document.First.Form.Card",
+                    "ops": [
+                        {"op": "supportRule.set", "args": {"values": {"rule": "editable"}}},
+                        {"op": "item.add", "args": {"items": [{
+                            "name": "Field",
+                            "type": "InputField",
+                            "path": "Object.Field"
+                        }]}}
+                    ], "dryRun": true
+                })
+                .as_object()
+                .unwrap(),
+                &["main"],
+            )
+            .unwrap();
+            let result = plan_hidden_v13_apply(&request, &fixture.binding, &fixture.admission());
+            let error = result.unwrap_err();
+            assert_eq!(
+                error.kind(),
+                ApplyPlanErrorKind::InvalidState,
+                "{policy}: {error}"
+            );
+            assert!(
+                error.to_string().contains("separate apply"),
+                "{policy}: {error}"
+            );
         }
     }
 
