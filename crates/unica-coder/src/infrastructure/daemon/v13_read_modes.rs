@@ -190,7 +190,7 @@ pub(super) fn operation_node(
         ))
     })?;
     let site = OperationSite::new(&owner, context).expect("node_site proved the operation site");
-    let Some(descriptor) = OperationRegistry::closed().lookup(operation) else {
+    let Some(descriptor) = OperationRegistry::closed().lookup_at(operation, &site) else {
         return Err(retired_operation_contract(
             operation, &site, &owner, format, item,
         ));
@@ -297,6 +297,47 @@ mod operation_dictionary_tests {
     fn can_of(mut data: Value) -> Value {
         attach_can(&mut data, super::configuration_context());
         data
+    }
+
+    /// Реквизит и команда формы названы по своему узлу, как у объекта
+    /// метаданных (#1465): одно имя, а контракт выбирает адрес — у формы
+    /// контракт писателя формы, у объекта — члена метаданных.
+    #[test]
+    fn a_shared_operation_name_publishes_the_contract_of_the_addressed_node() {
+        use crate::domain::apply::{OperationFamily, OperationRegistry, OperationSite};
+        use crate::domain::operation_contract::OperationContract;
+        let context = super::configuration_context();
+        for op in ["attribute.add", "command.add"] {
+            let form = "cf:Catalog.Items.Form.Choice";
+            let data = json!({"at": form, "kind": "Form"});
+            let answer = operation_node(&data, op, &format!("{form}.Can.{op}"), context)
+                .unwrap_or_else(|error| panic!("{op} at the form: {error}"));
+            assert_eq!(
+                answer["props"]["contract"],
+                OperationContract::form(op).unwrap().details(),
+                "{op} at the form"
+            );
+            let owner = "cf:Catalog.Items";
+            let data = json!({"at": owner, "kind": "Catalog"});
+            let answer = operation_node(&data, op, &format!("{owner}.Can.{op}"), context)
+                .unwrap_or_else(|error| panic!("{op} at the catalog: {error}"));
+            let address = crate::domain::address::QualifiedAddress::parse(owner).unwrap();
+            let site = OperationSite::new(&address, context).unwrap();
+            let metadata = OperationRegistry::closed()
+                .named(op)
+                .find(|descriptor| descriptor.family() == OperationFamily::Metadata)
+                .unwrap();
+            assert_eq!(
+                answer["props"]["contract"],
+                metadata.argument_contract_at(&site).unwrap().details(),
+                "{op} at the catalog"
+            );
+            assert_ne!(
+                answer["props"]["contract"],
+                OperationContract::form(op).unwrap().details(),
+                "{op}"
+            );
+        }
     }
 
     /// Контракт снятой операции не читается: отказ называет заменившую,

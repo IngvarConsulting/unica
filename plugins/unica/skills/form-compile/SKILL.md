@@ -14,7 +14,7 @@ allowed-tools:
 
 - Preferred path: use MCP `unica` tool `unica.apply`: форма заводится
   операцией `form.add` на объекте-владельце, наполняется `item.add`,
-  `formAttribute.add`, `formCommand.add`, `event.bind`.
+  `attribute.add`, `command.add`, `event.bind`.
 - Не зови внутренние адаптеры напрямую: они спрятаны за MCP `unica`.
 - Сначала вызови `unica.apply` с `at` и `ops`: это план без записи.
   Когда пользователь поручил внести эту правку, вызови `unica.apply` только
@@ -60,7 +60,7 @@ allowed-tools:
     "arguments": {
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
-        {"op": "formAttribute.add", "args": {"items": [{"name": "Объект", "type": "CatalogObject.Валюты", "main": true}]}},
+        {"op": "attribute.add", "args": {"items": [{"name": "Объект", "type": "CatalogObject.Валюты", "main": true}]}},
         {"op": "item.add", "args": {"items": [{"name": "Наименование", "type": "InputField", "path": "Объект.Наименование"}]}}
       ]
     }

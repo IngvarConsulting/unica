@@ -3951,7 +3951,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "formAttribute.add",
+        "op": "attribute.add",
         "args": {
          "items": [
           {
@@ -3980,7 +3980,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "formCommand.add",
+        "op": "command.add",
         "args": {
          "items": [
           {
@@ -4043,7 +4043,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "formCommand.add",
+        "op": "command.add",
         "args": {
          "items": [
           {
@@ -32597,7 +32597,7 @@
         }
        },
        {
-        "op": "formAttribute.add",
+        "op": "attribute.add",
         "args": {
          "at": "cf:Report.Sales.Form.Main",
          "items": [
@@ -32630,7 +32630,7 @@
         }
        },
        {
-        "op": "formCommand.add",
+        "op": "command.add",
         "args": {
          "at": "cf:Report.Sales.Form.Main",
          "items": [
@@ -39569,7 +39569,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "formCommand.add",
+        "op": "command.add",
         "args": {
          "items": [
           {
@@ -39584,7 +39584,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "bad_value: ops[0].args.items[0].use: unknown argument; `formCommand.add` writes only the arguments listed at `main:Catalog.Валюты.Form.ФормаЭлемента.Can.formCommand.add`",
+     "refusal": "bad_value: ops[0].args.items[0].use: unknown argument; `command.add` writes only the arguments listed at `main:Catalog.Валюты.Form.ФормаЭлемента.Can.command.add`",
      "assertions": [
       {
        "pointer": "/at",
@@ -39605,7 +39605,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "formCommand.add",
+        "op": "command.add",
         "args": {
          "items": [
           {
@@ -40292,7 +40292,7 @@
    "name": "form-attribute-add-refuses-unwritten-properties-and-writes-fill-check",
    "issue": 1447,
    "area": "Формы",
-   "task": "formAttribute.add отказывает bad_value на functionalOptions, которых писатель реквизита не пишет, без записи; проверка заполнения записывается тегом FillCheck, который загружает платформа, а не FillChecking",
+   "task": "attribute.add отказывает bad_value на functionalOptions, которых писатель реквизита не пишет, без записи; проверка заполнения записывается тегом FillCheck, который загружает платформа, а не FillChecking",
    "wire": [
     {
      "tool": "unica.view",
@@ -40315,7 +40315,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "formAttribute.add",
+        "op": "attribute.add",
         "args": {
          "items": [
           {
@@ -40333,7 +40333,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "bad_value: ops[0].args.items[0].functionalOptions: unknown argument; `formAttribute.add` writes only the arguments listed at `main:Catalog.Валюты.Form.ФормаЭлемента.Can.fo",
+     "refusal": "bad_value: ops[0].args.items[0].functionalOptions: unknown argument; `attribute.add` writes only the arguments listed at `main:Catalog.Валюты.Form.ФормаЭлемента.Can.attrib",
      "assertions": [
       {
        "pointer": "/at",
@@ -40341,7 +40341,7 @@
       },
       {
        "pointer": "/next/0/args/at",
-       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.formAttribute.add"
+       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.attribute.add"
       }
      ],
      "fileAssertions": [
@@ -40358,7 +40358,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "formAttribute.add",
+        "op": "attribute.add",
         "args": {
          "items": [
           {
@@ -40642,6 +40642,226 @@
       "ops": [
        {
         "op": "item.remove"
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "eq": "$capture.before"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S438",
+   "name": "form-attribute-and-command-share-the-node-names",
+   "issue": 1465,
+   "area": "Формы",
+   "task": "Реквизит и команда формы добавляются attribute.add и command.add на адресе формы, как у объекта метаданных: can формы выдаёт их, контракт по адресу Can выбирается адресом (форма или объект), снятые formAttribute.add и formCommand.add отказывают bad_value без записи с next к контракту на форме, а новые имена строят предпросмотр без записи",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "attribute.add",
+        "args": "items",
+        "implemented": true
+       }
+      },
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "command.add",
+        "args": "items",
+        "implemented": true
+       }
+      }
+     ],
+     "captures": {
+      "before": {
+       "kind": "sha256",
+       "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"
+      }
+     }
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.attribute.add"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/op",
+       "eq": "attribute.add"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Can.attribute.add"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/op",
+       "eq": "attribute.add"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "formAttribute.add",
+        "args": {
+         "items": [
+          {
+           "name": "Проба",
+           "type": "Boolean"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: apply operation `formAttribute.add` is retired: call `attribute.add` at `main:Catalog.Валюты.Form.ФормаЭлемента`; the arguments are unchanged",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].op"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.attribute.add"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "eq": "$capture.before"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "formCommand.add",
+        "args": {
+         "items": [
+          {
+           "name": "Проба"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: apply operation `formCommand.add` is retired: call `command.add` at `main:Catalog.Валюты.Form.ФормаЭлемента`; the arguments are unchanged",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].op"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.command.add"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "eq": "$capture.before"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "attribute.add",
+        "args": {
+         "items": [
+          {
+           "name": "Проба",
+           "type": "Boolean"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "eq": "$capture.before"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "command.add",
+        "args": {
+         "items": [
+          {
+           "name": "Проба"
+          }
+         ]
+        }
        }
       ]
      },

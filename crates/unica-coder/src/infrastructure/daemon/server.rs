@@ -9924,7 +9924,7 @@ struct ActorLogicalReadLease {"#,
         apply_pair(
             at,
             serde_json::json!([
-                {"op": "formAttribute.add", "args": {"items": [
+                {"op": "attribute.add", "args": {"items": [
                     {"name": "HtmlSource", "type": "String"}
                 ]}},
                 {"op": "item.add", "args": {"items": [

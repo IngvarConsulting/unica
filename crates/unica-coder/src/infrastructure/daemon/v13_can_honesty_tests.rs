@@ -20,7 +20,7 @@ use crate::application::ports::TokioClock;
 use crate::domain::address::{NodeKind, QualifiedAddress};
 use crate::domain::apply::{
     ApplyRequest, FormItemRole, OperationDescriptor, OperationFamily, OperationRegistry,
-    SourceSetTraits,
+    OperationSite, SourceSetTraits,
 };
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
@@ -196,8 +196,8 @@ const WRITES_CHECKED_AT_LEAST: &[(&str, &[&str])] = &[
             "item.add",
             "event.bind",
             "form.remove",
-            "formAttribute.add",
-            "formCommand.add",
+            "attribute.add",
+            "command.add",
             "help.create",
             "objectType.add",
             "props.set",
@@ -441,8 +441,9 @@ fn sample_args(descriptor: OperationDescriptor) -> Value {
         | "property.remove"
         | "event.implement"
         | "childSubsystem.remove" => json!({"at": ""}),
-        "form.add" | "formAttribute.add" | "formCommand.add" | "item.add"
-        | "childSubsystem.add" => json!({"items": [{"name": "Sample"}]}),
+        "form.add" | "attribute.add" | "command.add" | "item.add" | "childSubsystem.add" => {
+            json!({"items": [{"name": "Sample"}]})
+        }
         "form.set" => json!({"values": {"defaultObjectForm": "Sample"}}),
         "event.bind" => json!({"values": {"handler": "Sample"}}),
         "content.add" => json!({"items": [{"object": "Catalog.Sample"}]}),
@@ -845,6 +846,13 @@ fn check_node(checked: &Checked<'_>, at: &str, plan_writes: bool, mismatches: &m
     NARROWINGS_SEEN.with(|narrowings_seen| {
     for descriptor in OperationRegistry::closed().descriptors().iter().copied() {
         let op = descriptor.name();
+        // Общее имя (`attribute.add` объекта и формы, #1465): вызов на этом
+        // адресе исполняет запись, которую выбирает адрес, и сверяется она.
+        let resolved = OperationSite::new(&address, checked.traits)
+            .and_then(|site| OperationRegistry::closed().lookup_at(op, &site));
+        if resolved.is_some_and(|resolved| resolved.family() != descriptor.family()) {
+            continue;
+        }
         let listed = can.contains(op);
         let request = apply_request(at, op, node_args(descriptor, &address));
         let preflight = preflight_apply_operations(&request, checked.traits, &|_| None);
@@ -1031,7 +1039,7 @@ fn a_misplaced_operation_routes_next_to_the_node_where_it_applies() {
         ),
         (
             "cf:Catalog.Items.Form.Main.Item.Header",
-            "formAttribute.add",
+            "attribute.add",
             json!({"items": [{"name": "Comment"}]}),
             "cf:Catalog.Items.Form.Main",
             true,
@@ -1196,20 +1204,15 @@ fn honest_can_on_form_items_and_events() {
         "form.remove",
         "item.add",
         "item.remove",
-        "formAttribute.add",
-        "formCommand.add",
+        "attribute.add",
+        "command.add",
         "event.bind",
         "event.implement",
     ];
     let cases: [(String, &[&str]); 8] = [
         (
             form.to_string(),
-            &[
-                "form.remove",
-                "item.add",
-                "formAttribute.add",
-                "formCommand.add",
-            ],
+            &["form.remove", "item.add", "attribute.add", "command.add"],
         ),
         (
             format!("{form}.Item.ГруппаСлужебная"),
@@ -1241,8 +1244,8 @@ fn honest_can_on_form_items_and_events() {
             json!({"items": [{"name": "Проба", "type": "Button", "stdCommand": "Close"}]})
         }
         "item.remove" | "form.remove" | "event.implement" => json!({"at": at}),
-        "formAttribute.add" => json!({"items": [{"name": "Проба", "type": "String"}]}),
-        "formCommand.add" => json!({"items": [{"name": "Проба"}]}),
+        "attribute.add" => json!({"items": [{"name": "Проба", "type": "String"}]}),
+        "command.add" => json!({"items": [{"name": "Проба"}]}),
         "event.bind" => json!({"values": {"handler": "Проба"}}),
         other => panic!("{other} has no sample"),
     };
@@ -1927,8 +1930,32 @@ fn retired_subnode_arguments_route_next_to_the_subnode_address() {
         ),
         // На форме удалять нечего: элемент называет его адрес.
         (form.to_string(), "element.remove", json!({}), None),
+        // Реквизит и команда формы названы по своему узлу, как у объекта.
+        (
+            format!("{form}.Item.Code"),
+            "formAttribute.add",
+            json!({"items": [{"name": "Comment", "type": "String"}]}),
+            Some(form.to_string()),
+        ),
+        (
+            form.to_string(),
+            "formCommand.add",
+            json!({"items": [{"name": "Refresh"}]}),
+            Some(form.to_string()),
+        ),
+        // Снятая операция формы не уводит к реквизиту объекта.
+        (
+            "cf:Catalog.Items".to_string(),
+            "formAttribute.add",
+            json!({"items": [{"name": "Comment", "type": "String"}]}),
+            None,
+        ),
     ] {
-        let replacement = retired.replace("element.", "item.");
+        let replacement = match retired {
+            "formAttribute.add" => "attribute.add".to_string(),
+            "formCommand.add" => "command.add".to_string(),
+            other => other.replace("element.", "item."),
+        };
         let request = apply_request(&at, retired, args);
         let refusal = preflight_apply_operations(&request, traits, &|_| None)
             .expect_err("a retired operation refuses before planning");

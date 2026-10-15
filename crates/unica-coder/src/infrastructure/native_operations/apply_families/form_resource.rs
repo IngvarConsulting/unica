@@ -705,7 +705,15 @@ pub(crate) fn parse_form_resource_plan_operation(
         )
         .at_path(format!("ops[{op_index}].args"))
     })?;
-    let kind = match crate::application::v13::apply::dispatch_family(operation) {
+    // Общее имя (`attribute.add` формы и объекта, #1465) выбирает
+    // семейство по адресу вызова.
+    let at = object
+        .get("at")
+        .and_then(Value::as_str)
+        .and_then(|raw| QualifiedAddress::resolve_input(raw, &[binding.source_set_name()]).ok());
+    let family = super::resolved_descriptor(operation, at.as_ref(), binding)
+        .map(|descriptor| descriptor.family());
+    let kind = match family {
         Some(OperationFamily::Role) => parse_role_operation(operation, object, op_index, binding)?,
         Some(OperationFamily::Subsystem) => {
             parse_subsystem_operation(operation, object, op_index, binding)?
@@ -1693,7 +1701,7 @@ fn parse_form_operation(
                 definitions: vec![serde_json::json!({"removeElements": [{"name": name}]})],
             })
         }
-        "formAttribute.add" | "formCommand.add" => {
+        "attribute.add" | "command.add" => {
             let form = form_of(&target)?;
             let items = args
                 .get("items")
@@ -1708,7 +1716,7 @@ fn parse_form_operation(
                 let name = required_string(item, "name", op_index, &location)?.to_string();
                 let mut entry = item.clone();
                 entry.insert("name".to_string(), Value::String(name.clone()));
-                if operation == "formAttribute.add" {
+                if operation == "attribute.add" {
                     if let Some(type_name) = item.get("type").and_then(Value::as_str) {
                         entry.insert(
                             "type".to_string(),
@@ -1727,7 +1735,7 @@ fn parse_form_operation(
                     "`items` must list at least one entry",
                 ));
             }
-            let key = if operation == "formAttribute.add" {
+            let key = if operation == "attribute.add" {
                 "attributes"
             } else {
                 "commands"
@@ -3517,7 +3525,7 @@ mod tests {
             ("fillChecking", json!("DontCheck")),
         ] {
             let error = parse_form_resource_plan_operation(
-                "formAttribute.add",
+                "attribute.add",
                 &json!({"at": at, "items": [{"name": "A", "type": "String", key: value}]}),
                 0,
                 &fixture.binding,
@@ -3625,12 +3633,12 @@ mod tests {
                 1,
             ),
             parse(
-                "formAttribute.add",
+                "attribute.add",
                 json!({"at": form, "items": [{"name": "Comment", "type": "String", "title": "Comment"}]}),
                 2,
             ),
             parse(
-                "formCommand.add",
+                "command.add",
                 json!({"at": form, "items": [{"name": "Refresh", "title": "Refresh"}]}),
                 3,
             ),
@@ -4784,7 +4792,7 @@ mod tests {
         .is_ok());
     }
 
-    /// `formCommand.add` принимает ровно ключи, которые писатель кладёт
+    /// `command.add` принимает ровно ключи, которые писатель кладёт
     /// в `<Command>`, и передаёт их писателю; остальное отказывает
     /// `bad_value` до записи, а не теряется молча (#1439).
     #[test]
@@ -4800,7 +4808,7 @@ mod tests {
             "representation": "TextPicture",
         });
         let plan = parse_form_resource_plan_operation(
-            "formCommand.add",
+            "command.add",
             &json!({"at": at, "items": [item.clone()]}),
             0,
             &fixture.binding,
@@ -4808,7 +4816,7 @@ mod tests {
         .expect("every published key is accepted")
         .kind;
         let super::FormResourcePlanKind::FormEdit { definitions, .. } = plan else {
-            panic!("formCommand.add plans a form edit");
+            panic!("command.add plans a form edit");
         };
         let mut expected = item.as_object().unwrap().clone();
         expected.insert("action".into(), json!("Refresh"));
@@ -4837,7 +4845,7 @@ mod tests {
             ("shortcut", json!("")),
         ] {
             let error = parse_form_resource_plan_operation(
-                "formCommand.add",
+                "command.add",
                 &json!({"at": at, "items": [{"name": "Refresh", field: value}]}),
                 0,
                 &fixture.binding,

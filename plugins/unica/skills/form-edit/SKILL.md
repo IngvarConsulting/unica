@@ -36,7 +36,7 @@ allowed-tools:
 
 | Адрес `at` | Операции |
 |---|---|
-| `<набор>:<Вид>.<Имя>.Form.<Форма>` | `item.add` в корень формы, `formAttribute.add`, `formCommand.add`, `form.remove` |
+| `<набор>:<Вид>.<Имя>.Form.<Форма>` | `item.add` в корень формы, `attribute.add`, `command.add`, `form.remove` |
 | `….Form.<Форма>.Item.<Группа>[.Item.<Вложенная>…]` — контейнер | `item.add` внутрь контейнера, `item.remove` самого контейнера |
 | `….Item.<Поле>` — поле, декорация, кнопка | `item.remove` |
 | `….Item.<ФормаКоманднаяПанель>`, `….Item.<Таблица>.Item.<ТаблицаКоманднаяПанель>` | `item.add` кнопки в автоматическую командную панель |
@@ -71,7 +71,7 @@ allowed-tools:
 принимает только кнопки: её контракт публикует один вид `Button`. Группа и поле в ней добавляются в одном вызове
 двумя операциями: вторая адресует группу через `args.at`.
 
-`formAttribute.add` пишет `name`, `title` (строка), `type`, `main`,
+`attribute.add` пишет `name`, `title` (строка), `type`, `main`,
 `savedData`, `fillChecking` и `columns` реквизита-таблицы. Проверка
 заполнения `"fillChecking": "ShowError"` записывается тегом `<FillCheck>`;
 без ключа проверки нет. Просмотр и редактирование (`view`, `edit`),
@@ -84,14 +84,20 @@ allowed-tools:
 и `values.name` у `item.remove`, `values.element` и `values.event`
 у `event.bind`. Вызов с ними получает
 `bad_value`, а `next` ведёт к адресу узла, который называло значение.
-Прежние имена `element.add` и `element.remove` тоже сняты: вызов получает
-`bad_value` без записи, а `next` ведёт к тому же адресу, где исполнима
-`item.add` или `item.remove`.
+Прежние имена `element.add`, `element.remove`, `formAttribute.add`
+и `formCommand.add` тоже сняты: вызов получает `bad_value` без записи,
+а `next` ведёт к контракту `item.*`, `attribute.add` или `command.add`
+на ближайшем узле формы, где она исполнима.
 
-`formCommand.add` добавляет команды формы. Элемент `items[]` принимает
+Реквизит и команда формы добавляются теми же именами, что у объекта
+метаданных: `attribute.add` и `command.add` на адресе формы пишут в форму,
+а на адресе объекта — в его описание. Контракт по адресу
+`<форма>.Can.attribute.add` — контракт реквизита формы.
+
+`command.add` добавляет команды формы. Элемент `items[]` принимает
 `name`, `title`, `tooltip`, `action`, `shortcut`, `picture`,
 `representation`; другой ключ отклоняется до записи. Контракт —
-`<форма>.Can.formCommand.add`.
+`<форма>.Can.command.add`.
 
 ## MCP вызов
 
@@ -229,7 +235,7 @@ Preview и apply возвращают одинаковую типизирова�
 HTML-поле привязывается через `path` к строковому реквизиту формы.
 Публичный `items[]` задаёт `name` и `type: "HTMLDocumentField"`;
 внутренний ключ `html` здесь отклоняется, в том числе вместе с `type`.
-Сначала создайте его через `formAttribute.add`, если реквизита ещё нет.
+Сначала создайте его через `attribute.add`, если реквизита ещё нет.
 Затем запросите план добавления поля и примените его отдельным вызовом
 `unica.apply` только с `executionToken` из `data.executionToken` ответа:
 
@@ -391,7 +397,7 @@ BSL с неподтверждёнными именами. Пробел чтен�
 `Override`) на адресе события формы или элемента. У обычной формы
 `callType` не задаётся. Событие нового элемента привязывает `event.bind`
 на его адресе: `{"values": {"handler": "Расш1_ПолеПриИзмененииПосле",
-"callType": "After"}}`. `formCommand.add` `callType` и `actions`
+"callType": "After"}}`. `command.add` `callType` и `actions`
 не принимает: перехват действия команды формы расширения —
 `event.implement` с `callType` на адресе
 `….Form.<Форма>.Command.<Команда>.Event.Execute`.

@@ -4,7 +4,7 @@
 
 Справочник внутреннего JSON-описания общего писателя управляемых форм 1С.
 Публичный путь — `unica.apply`: создание через `form.add` на владельце, наполнение через
-`item.add`, `formAttribute.add`, `formCommand.add` и `event.bind`.
+`item.add`, `attribute.add`, `command.add` и `event.bind`.
 `item.add` принимает типизированные `items[]` с `name` и `type`;
 ключи DSL ниже не заменяют этот контракт. Поддержанные виды и примеры вызовов —
 в [form-edit](../../skills/form-edit/SKILL.md). Не все возможности справочника
@@ -1144,9 +1144,9 @@ Shorthand: `"Имя [Заголовок]: тип = Выражение #noField #
 ]
 ```
 
-`formCommand.add` принимает из этой таблицы только `name`, `title`, `tooltip`,
+`command.add` принимает из этой таблицы только `name`, `title`, `tooltip`,
 `action`, `shortcut`, `picture` (строкой) и `representation`; остальные ключи
-отклоняются до записи. Контракт операции — `<форма>.Can.formCommand.add`.
+отклоняются до записи. Контракт операции — `<форма>.Can.command.add`.
 
 | Свойство | Тип | Описание |
 |----------|-----|----------|
