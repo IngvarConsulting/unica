@@ -5365,18 +5365,19 @@ pub(crate) mod tests {
             thread::sleep(Duration::from_millis(10));
             cancelled = service.poll(&started.id).expect("poll cancellation");
         }
+        let descendant_already_exited = descendant
+            .exited_within(Duration::ZERO)
+            .expect("probe descendant immediately after terminal observation");
 
         assert!(
             cancelled.phase.is_terminal(),
             "cancelled tree stayed active"
         );
-        assert!(!service.store.active_lock_path().exists());
         assert!(
-            descendant
-                .exited_within(DESCENDANT_EXIT_SETTLE)
-                .expect("probe descendant after cancellation"),
-            "cancel returned before the owned descendant died"
+            descendant_already_exited,
+            "terminal state preceded the owned descendant's process signal"
         );
+        assert!(!service.store.active_lock_path().exists());
     }
 
     #[test]
