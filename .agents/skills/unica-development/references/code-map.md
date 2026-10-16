@@ -15,7 +15,7 @@
 | Скрытый сервис рабочего пространства или задание runtime | Код жизненного цикла и тесты изоляции в перечисленных модулях | `crates/unica-coder/src/infrastructure/workspace_services.rs`, `crates/unica-coder/src/infrastructure/runtime_jobs.rs` |
 | Упаковка или релиз | Контрактные метаданные пакета, `docs/release-runbook.md` | `scripts/ci/package-unica-plugin.py`, `crates/unica-bootstrap/src/`, `.github/workflows/unica-plugin-release.yml` |
 | Поведение, зависящее от ОС | `scripts/ci/check-rust-platform-boundary.py`, `tests/ci/test_rust_platform_boundary.py` | `crates/unica-coder/src/infrastructure/platform/`, `crates/unica-bootstrap/src/platform/` |
-| Само архитектурное правило | Применимая запись в `arch/rules/` и тело названного в `check` теста | Код, поведение которого проверяет этот тест |
+| Само архитектурное правило | [unica-rules](../../unica-rules/SKILL.md), затем применимая запись в `arch/rules/` и тело названного в `check` теста | Код, поведение которого проверяет этот тест |
 
 **Строки комбинируются.** Одна задача обычно попадает сразу в несколько:
 инструмент, который пишет платформенный XML, — это первая строка вместе со
