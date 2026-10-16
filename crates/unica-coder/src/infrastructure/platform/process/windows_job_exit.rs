@@ -6,6 +6,7 @@ use std::io;
 enum Witness<H> {
     Handle(H),
     Gone,
+    GoneThenHandle(H),
 }
 
 struct Coverage<H> {
@@ -23,6 +24,14 @@ impl<H> Coverage<H> {
         }
     }
 
+    fn pinned(&self, pid: u32) -> bool {
+        matches!(
+            self.members.get(&pid),
+            Some(Witness::Handle(_) | Witness::GoneThenHandle(_))
+        )
+    }
+
+    #[cfg(test)]
     fn contains(&self, pid: u32) -> bool {
         self.members.contains_key(&pid)
     }
@@ -34,8 +43,7 @@ impl<H> Coverage<H> {
                 "zero Job process identifier",
             ));
         }
-        // One credit for a PID over this Job's whole lifetime. A Gone PID
-        // cannot earn a second credit after reuse, even for another member.
+        // Duplicate historical observations do not identify another lifetime.
         self.members.entry(pid).or_insert(witness);
         Ok(())
     }
@@ -65,6 +73,12 @@ impl<H> Coverage<H> {
         // historical member. If this is a replacement PID, the former object
         // is gone; if it is still the original, its signal proves exit.
         // Keep a signaled handle too, to prevent another PID reuse.
+        if in_job && matches!(self.members.get(&pid), Some(Witness::Gone)) {
+            // Gone proves the former object was destroyed. A later retained
+            // handle with positive membership proves a distinct owned lifetime.
+            self.members.insert(pid, Witness::GoneThenHandle(handle));
+            return Ok(true);
+        }
         if in_job || signaled(&handle)? {
             self.record(pid, Witness::Handle(handle))?;
             return Ok(true);
@@ -73,7 +87,12 @@ impl<H> Coverage<H> {
     }
 
     fn complete(&self, total: u32) -> bool {
-        self.members.len() as u64 == u64::from(total)
+        let extra = self
+            .members
+            .values()
+            .filter(|witness| matches!(witness, Witness::GoneThenHandle(_)))
+            .count();
+        self.members.len() as u64 + extra as u64 == u64::from(total)
     }
 
     fn ready(
@@ -87,7 +106,7 @@ impl<H> Coverage<H> {
             return Ok(false);
         }
         for witness in self.members.values() {
-            if let Witness::Handle(handle) = witness {
+            if let Witness::Handle(handle) | Witness::GoneThenHandle(handle) = witness {
                 if !signaled(handle)? {
                     return Ok(false);
                 }
@@ -113,19 +132,45 @@ use windows_sys::Win32::{
 };
 
 #[cfg(windows)]
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc::{self, Receiver, Sender, TryRecvError},
+    Arc, Weak,
+};
+
+#[cfg(windows)]
+struct Candidate {
+    pid: u32,
+    captured: Option<Witness<Arc<ScopedWindowsHandle>>>,
+}
+
+#[cfg(windows)]
+enum Collection {
+    Candidate(Candidate),
+    Failed(io::Error),
+}
+
+#[cfg(windows)]
 pub(super) struct Census {
-    port: ScopedWindowsHandle,
-    coverage: Coverage<ScopedWindowsHandle>,
+    port: Arc<ScopedWindowsHandle>,
+    stop: Arc<AtomicBool>,
+    collected: Receiver<Collection>,
+    collector_failed: bool,
+    coverage: Coverage<Arc<ScopedWindowsHandle>>,
     pid_buffer: Vec<usize>,
-    pending: std::collections::VecDeque<u32>,
+    pending: std::collections::VecDeque<Candidate>,
 }
 
 #[cfg(windows)]
 impl Census {
-    // A work portion, never a lifetime/admission limit. Further polls resume
-    // the private completion queue and pending PID-list candidates.
+    // A work portion, never a lifetime/admission limit. The collector captures
+    // handles independently of owner polling; each owner poll validates a portion.
     const PORTION: usize = 64;
     const KEY: usize = 1;
+    const STOP_KEY: usize = 2;
+    // A failed stop notification must not leave a detached reader forever.
+    // This idle poll does not wait for process cleanup or extend its deadline.
+    const COLLECTOR_IDLE_MS: u32 = 25;
 
     pub(super) fn associate(job: wf::HANDLE) -> io::Result<Self> {
         // SAFETY: INVALID_HANDLE_VALUE creates a new anonymous completion port.
@@ -135,7 +180,7 @@ impl Census {
         if port.is_null() {
             return Err(io::Error::last_os_error());
         }
-        let port = ScopedWindowsHandle(port);
+        let port = Arc::new(ScopedWindowsHandle(port));
         let association = wjob::JOBOBJECT_ASSOCIATE_COMPLETION_PORT {
             CompletionKey: Self::KEY as *mut _,
             CompletionPort: port.0,
@@ -153,12 +198,118 @@ impl Census {
         {
             return Err(io::Error::last_os_error());
         }
+        let stop = Arc::new(AtomicBool::new(false));
+        let (sender, collected) = mpsc::channel();
+        let collector_port = Arc::clone(&port);
+        let collector_stop = Arc::clone(&stop);
+        // The worker owns no Job handle or process-control authority. A spawn
+        // failure occurs before the child is launched; Drop never joins it.
+        std::thread::Builder::new()
+            .name("windows-job-exit".into())
+            .spawn(move || {
+                if let Err(error) = Self::collect(&collector_port, &collector_stop, &sender) {
+                    let _ = sender.send(Collection::Failed(error));
+                }
+            })?;
         Ok(Self {
             port,
+            stop,
+            collected,
+            collector_failed: false,
             coverage: Coverage::new(),
             pid_buffer: vec![0; 8],
             pending: Default::default(),
         })
+    }
+
+    fn open_candidate(pid: u32) -> io::Result<Witness<Arc<ScopedWindowsHandle>>> {
+        if pid == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "zero Job process identifier",
+            ));
+        }
+        // SAFETY: fixed valid access flags, non-inheritance and nonzero PID.
+        // Query/sync grants no termination authority over a replacement PID.
+        let handle = unsafe {
+            wt::OpenProcess(
+                wt::PROCESS_QUERY_LIMITED_INFORMATION | wt::PROCESS_SYNCHRONIZE,
+                0,
+                pid,
+            )
+        };
+        if handle.is_null() {
+            let error = io::Error::last_os_error();
+            if is_missing_process_error(error.raw_os_error()) {
+                return Ok(Witness::Gone);
+            }
+            return Err(error);
+        }
+        Ok(Witness::Handle(Arc::new(ScopedWindowsHandle(handle))))
+    }
+
+    fn collect(
+        port: &ScopedWindowsHandle,
+        stop: &AtomicBool,
+        sender: &Sender<Collection>,
+    ) -> io::Result<()> {
+        // Weak entries only deduplicate already retained objects. They neither
+        // pin handles themselves nor prevent a later capture after Gone.
+        let mut retained: BTreeMap<u32, Weak<ScopedWindowsHandle>> = BTreeMap::new();
+        while !stop.load(Ordering::Acquire) {
+            let mut message = 0;
+            let mut key = 0;
+            let mut value = std::ptr::null_mut();
+            // SAFETY: the private port remains owned by this worker. This is
+            // its only consumer; each successful output is a Job notification.
+            if unsafe {
+                wio::GetQueuedCompletionStatus(
+                    port.0,
+                    &mut message,
+                    &mut key,
+                    &mut value,
+                    Self::COLLECTOR_IDLE_MS,
+                )
+            } == 0
+            {
+                let error = io::Error::last_os_error();
+                if value.is_null() && error.raw_os_error() == Some(wf::WAIT_TIMEOUT as i32) {
+                    continue;
+                }
+                return Err(error);
+            }
+            if key == Self::STOP_KEY && stop.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            if key != Self::KEY {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "unexpected private Job completion key",
+                ));
+            }
+            if message != ws::JOB_OBJECT_MSG_NEW_PROCESS {
+                continue;
+            }
+            let pid = u32::try_from(value as usize).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "Job PID outside DWORD range")
+            })?;
+            if retained.get(&pid).and_then(Weak::upgrade).is_some() {
+                continue;
+            }
+            // Capture before handing the event to the owner. Ordinary delayed
+            // owner polls must not turn whole cohorts into late PID opens.
+            let captured = Self::open_candidate(pid).ok();
+            if let Some(Witness::Handle(handle)) = &captured {
+                retained.insert(pid, Arc::downgrade(handle));
+            }
+            if sender
+                .send(Collection::Candidate(Candidate { pid, captured }))
+                .is_err()
+            {
+                return Ok(());
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn retain_assigned_root(&mut self, pid: u32, process: wf::HANDLE) -> io::Result<()> {
@@ -180,8 +331,10 @@ impl Census {
         {
             return Err(io::Error::last_os_error());
         }
-        self.coverage
-            .record(pid, Witness::Handle(ScopedWindowsHandle(duplicated)))
+        self.coverage.record(
+            pid,
+            Witness::Handle(Arc::new(ScopedWindowsHandle(duplicated))),
+        )
     }
 
     fn accounting(
@@ -207,7 +360,7 @@ impl Census {
         Ok(info)
     }
 
-    fn process_signaled(handle: &ScopedWindowsHandle) -> io::Result<bool> {
+    fn process_signaled(handle: &Arc<ScopedWindowsHandle>) -> io::Result<bool> {
         // SAFETY: the owned handle has SYNCHRONIZE access and remains pinned.
         match unsafe { wt::WaitForSingleObject(handle.0, 0) } {
             wf::WAIT_OBJECT_0 => Ok(true),
@@ -220,74 +373,60 @@ impl Census {
         }
     }
 
-    // Every candidate has historical membership evidence: either NEW_PROCESS
-    // on this Job's private port, or an entry in its full PID-list snapshot.
-    fn capture_candidate(&mut self, job: wf::HANDLE, pid: u32) -> io::Result<bool> {
-        if pid == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "zero Job process identifier",
-            ));
-        }
-        if self.coverage.contains(pid) {
+    // NEW_PROCESS or the full Job PID list provides historical membership.
+    // Only the owner validates current membership against its private Job.
+    fn capture_candidate(
+        &mut self,
+        job: wf::HANDLE,
+        candidate: &mut Candidate,
+    ) -> io::Result<bool> {
+        if self.coverage.pinned(candidate.pid) {
             return Ok(true);
         }
-        // SAFETY: fixed valid access flags, non-inheritance and nonzero PID.
-        // The handle grants no termination authority over a potentially reused PID.
-        let handle = unsafe {
-            wt::OpenProcess(
-                wt::PROCESS_QUERY_LIMITED_INFORMATION | wt::PROCESS_SYNCHRONIZE,
-                0,
-                pid,
-            )
-        };
-        if handle.is_null() {
-            let error = io::Error::last_os_error();
-            if is_missing_process_error(error.raw_os_error()) {
-                self.coverage.record(pid, Witness::Gone)?;
-                return Ok(true);
+        if candidate.captured.is_none() {
+            candidate.captured = Some(Self::open_candidate(candidate.pid)?);
+        }
+        match candidate.captured.as_ref().expect("captured above") {
+            Witness::Gone => {
+                self.coverage.record(candidate.pid, Witness::Gone)?;
+                Ok(true)
             }
-            return Err(error);
+            Witness::Handle(handle) => {
+                let mut in_job = 0;
+                // SAFETY: both handles remain live. Query failure is distinct
+                // from a successful FALSE membership result. No queue is locked.
+                if unsafe { wjob::IsProcessInJob(handle.0, job, &mut in_job) } == 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                self.coverage.record_opened(
+                    candidate.pid,
+                    Arc::clone(handle),
+                    in_job != 0,
+                    Self::process_signaled,
+                )
+            }
+            Witness::GoneThenHandle(_) => unreachable!("open returns a single witness"),
         }
-        let handle = ScopedWindowsHandle(handle);
-        let mut in_job = 0;
-        // SAFETY: both kernel handles remain live; query failure is distinct
-        // from a successful FALSE membership result.
-        if unsafe { wjob::IsProcessInJob(handle.0, job, &mut in_job) } == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        self.coverage
-            .record_opened(pid, handle, in_job != 0, Self::process_signaled)
     }
 
     fn receive_candidates(&mut self) -> io::Result<()> {
+        if self.collector_failed {
+            return Err(io::Error::other("Windows Job collector failed"));
+        }
         for _ in 0..Self::PORTION {
-            let mut message = 0;
-            let mut key = 0;
-            let mut value = std::ptr::null_mut();
-            // SAFETY: the private port is live and all outputs are writable;
-            // zero timeout makes this a bounded, nonblocking work portion.
-            if unsafe {
-                wio::GetQueuedCompletionStatus(self.port.0, &mut message, &mut key, &mut value, 0)
-            } == 0
-            {
-                let error = io::Error::last_os_error();
-                if value.is_null() && error.raw_os_error() == Some(wf::WAIT_TIMEOUT as i32) {
-                    break;
+            match self.collected.try_recv() {
+                Ok(Collection::Candidate(candidate)) => self.pending.push_back(candidate),
+                Ok(Collection::Failed(error)) => {
+                    self.collector_failed = true;
+                    return Err(error);
                 }
-                return Err(error);
-            }
-            if key != Self::KEY {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "unexpected private Job completion key",
-                ));
-            }
-            if message == ws::JOB_OBJECT_MSG_NEW_PROCESS {
-                let pid = u32::try_from(value as usize).map_err(|_| {
-                    io::Error::new(io::ErrorKind::InvalidData, "Job PID outside DWORD range")
-                })?;
-                self.pending.push_back(pid);
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    self.collector_failed = true;
+                    return Err(io::Error::other(
+                        "Windows Job collector stopped unexpectedly",
+                    ));
+                }
             }
         }
         Ok(())
@@ -371,8 +510,11 @@ impl Census {
             let pid = u32::try_from(pid).map_err(|_| {
                 io::Error::new(io::ErrorKind::InvalidData, "Job PID outside DWORD range")
             })?;
-            if !self.coverage.contains(pid) {
-                self.pending.push_back(pid);
+            if !self.coverage.pinned(pid) {
+                self.pending.push_back(Candidate {
+                    pid,
+                    captured: None,
+                });
             }
         }
         Ok(())
@@ -385,15 +527,18 @@ impl Census {
             self.list_candidates(job)?;
         }
         for _ in 0..Self::PORTION.min(self.pending.len()) {
-            let Some(pid) = self.pending.front().copied() else {
+            let Some(mut candidate) = self.pending.pop_front() else {
                 break;
             };
-            // Keep a candidate across transient query/access failures. A retry
-            // may eventually capture its handle or prove its object gone.
-            let captured = self.capture_candidate(job, pid)?;
-            self.pending.pop_front();
-            if !captured {
-                self.pending.push_back(pid);
+            // Keep the exact captured handle across transient membership/wait
+            // failures and foreign unsignaled candidates; never reopen its PID.
+            match self.capture_candidate(job, &mut candidate) {
+                Ok(true) => {}
+                Ok(false) => self.pending.push_back(candidate),
+                Err(error) => {
+                    self.pending.push_front(candidate);
+                    return Err(error);
+                }
             }
         }
         Ok(())
@@ -407,6 +552,19 @@ impl Census {
             accounting.TotalProcesses,
             Self::process_signaled,
         )
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Census {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        // SAFETY: our owned port remains live through this call. A failed post
+        // is covered by the worker's finite idle poll, without joining or
+        // allocating a second process-cleanup wait window.
+        unsafe {
+            wio::PostQueuedCompletionStatus(self.port.0, 0, Self::STOP_KEY, std::ptr::null());
+        }
     }
 }
 
@@ -517,6 +675,57 @@ mod tests {
         coverage.record(4, Witness::Handle(true)).unwrap();
         assert!(!coverage.ready(0, 2, |ready| Ok(*ready)).unwrap());
         assert!(coverage.ready(0, 1, |ready| Ok(*ready)).is_err());
+    }
+
+    #[test]
+    fn gone_then_attested_owned_handle_proves_exactly_two_lifetimes() {
+        let mut coverage = Coverage::new();
+        coverage.record(4, Witness::Gone).unwrap();
+        coverage
+            .record_opened(4, false, true, |ready| Ok(*ready))
+            .unwrap();
+        assert!(coverage.pinned(4));
+        assert!(!coverage.ready(0, 2, |ready| Ok(*ready)).unwrap());
+        // Duplicates cannot replace the unsignaled pinned object or earn a third credit.
+        coverage
+            .record_opened(4, true, true, |ready| Ok(*ready))
+            .unwrap();
+        assert!(!coverage.ready(0, 2, |ready| Ok(*ready)).unwrap());
+        *coverage.members.get_mut(&4).unwrap() = Witness::GoneThenHandle(true);
+        assert!(coverage.ready(0, 2, |ready| Ok(*ready)).unwrap());
+        assert!(!coverage.ready(0, 3, |ready| Ok(*ready)).unwrap());
+    }
+
+    #[test]
+    fn gone_then_foreign_signaled_handle_cannot_prove_another_membership() {
+        let mut coverage = Coverage::new();
+        coverage.record(4, Witness::Gone).unwrap();
+        coverage
+            .record_opened(4, true, false, |ready| Ok(*ready))
+            .unwrap();
+        assert!(!coverage.pinned(4));
+        assert!(!coverage.ready(0, 2, |ready| Ok(*ready)).unwrap());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_stopped_collector_cannot_release_even_an_empty_job() {
+        use super::{wjob, Census, Ordering, ScopedWindowsHandle};
+        use std::time::{Duration, Instant};
+        // SAFETY: create an anonymous private Job, owned by the fixture.
+        let job = unsafe { wjob::CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        assert!(!job.is_null());
+        let job = ScopedWindowsHandle(job);
+        let mut census = Census::associate(job.0).unwrap();
+        census.stop.store(true, Ordering::Release);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        // The receiver's disconnected state observes actual worker exit, not
+        // a scheduling guess or a synthetic successful collection.
+        while census.receive_candidates().is_ok() {
+            assert!(Instant::now() < deadline, "collector did not stop");
+            std::thread::yield_now();
+        }
+        assert!(census.ready(job.0).is_err());
     }
 
     #[test]
