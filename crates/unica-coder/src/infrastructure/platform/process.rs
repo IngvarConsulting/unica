@@ -3145,6 +3145,34 @@ mod tests {
                 print!("managed stdout");
                 eprint!("managed stderr");
             }
+            #[cfg(windows)]
+            "windows_finished_child_parent" => {
+                use std::os::windows::io::AsRawHandle;
+
+                let mut child = Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "infrastructure::platform::process::tests::managed_child_test_helper",
+                        "--nocapture",
+                    ])
+                    .env(HELPER_ENV, "success")
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .unwrap();
+                let created = windows_job_probe_creation_time(child.as_raw_handle() as _).unwrap();
+                std::fs::write(
+                    std::env::var_os(HELPER_PID_FILE_ENV).unwrap(),
+                    format!("{} {created}", child.id()),
+                )
+                .unwrap();
+                let status = child.wait().unwrap();
+                // Close the last fixture-owned descendant handle before the
+                // root can signal. The outer observer retains only the root.
+                drop(child);
+                assert!(status.success(), "finished-child helper failed: {status}");
+            }
             "read_stdin" => {
                 let mut input = String::new();
                 std::io::stdin().read_to_string(&mut input).unwrap();
@@ -4272,6 +4300,162 @@ mod tests {
         run_windows_job_signal_probe(true).expect("observe TerminateJobObject/process exit");
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_job_signal_probe_late_open() {
+        run_windows_job_late_open_probe().expect("observe delayed capture of an exited descendant");
+    }
+
+    #[cfg(windows)]
+    fn windows_job_probe_creation_time(
+        process: windows_sys::Win32::Foundation::HANDLE,
+    ) -> std::io::Result<u64> {
+        use windows_sys::Win32::Foundation::FILETIME;
+        use windows_sys::Win32::System::Threading::GetProcessTimes;
+        let mut created = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
+        let mut exited = created;
+        let mut kernel = created;
+        let mut user = created;
+        // SAFETY: caller retains a process handle with query access; all four
+        // outputs are writable FILETIME values for the duration of the call.
+        if unsafe { GetProcessTimes(process, &mut created, &mut exited, &mut kernel, &mut user) }
+            == 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok((u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
+    }
+
+    #[cfg(windows)]
+    fn run_windows_job_late_open_probe() -> std::io::Result<()> {
+        use std::mem::size_of;
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::System::JobObjects::{
+            IsProcessInJob, JobObjectBasicAccountingInformation, QueryInformationJobObject,
+            JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+        };
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+        };
+
+        let pid_file = std::env::temp_dir().join(format!(
+            "unica-windows-late-open-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _file_cleanup = FileCleanupGuard(pid_file.clone());
+        let mut command = Command::new(std::env::current_exe()?);
+        command
+            .args([
+                "--exact",
+                "infrastructure::platform::process::tests::managed_child_test_helper",
+                "--nocapture",
+            ])
+            .env(HELPER_ENV, "windows_finished_child_parent")
+            .env(HELPER_PID_FILE_ENV, &pid_file)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let tree = ProcessTree::prepare(&mut command)?;
+        let child = command.spawn()?;
+        let mut fixture = WindowsJobSignalProbeChild {
+            tree,
+            child: Some(child),
+        };
+        let observed: std::io::Result<serde_json::Value> = (|| {
+            let root = fixture.child.as_mut().expect("retained root");
+            fixture.tree.attach(root)?;
+            if !windows_job_signal_probe_wait(root.as_raw_handle() as _, 10_000)? {
+                return Err(std::io::Error::other("finished-child root did not signal"));
+            }
+            if !root.try_wait()?.is_some_and(|status| status.success()) {
+                return Err(std::io::Error::other("finished-child root helper failed"));
+            }
+            let record = std::fs::read_to_string(&pid_file)?;
+            let fields = record.split_whitespace().collect::<Vec<_>>();
+            let [pid, created] = fields.as_slice() else {
+                return Err(std::io::Error::other("invalid finished-child record"));
+            };
+            let pid = pid.parse::<u32>().map_err(std::io::Error::other)?;
+            let created = created.parse::<u64>().map_err(std::io::Error::other)?;
+            // SAFETY: this accounting output structure is POD and permits all-zero initialization.
+            let mut accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION =
+                unsafe { std::mem::zeroed() };
+            // SAFETY: the fixture retains its private Job and the exact output
+            // structure and length match the queried information class.
+            if unsafe {
+                QueryInformationJobObject(
+                    fixture.tree.job,
+                    JobObjectBasicAccountingInformation,
+                    &mut accounting as *mut _ as *mut _,
+                    size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+                    std::ptr::null_mut(),
+                )
+            } == 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            let pids = windows_job_signal_probe_pid_list(
+                fixture.tree.job,
+                &mut WindowsJobSignalProbeCounts::default(),
+            )?;
+            // The PID is deliberately reopened late for observation only. It
+            // never authorizes termination; membership and generation are separate.
+            let opened = unsafe {
+                OpenProcess(
+                    PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+                    0,
+                    pid,
+                )
+            };
+            let capture = if opened.is_null() {
+                serde_json::json!({"opened": false, "os_error": std::io::Error::last_os_error().raw_os_error()})
+            } else {
+                let retained = super::ScopedWindowsHandle(opened);
+                let same_creation_time = windows_job_probe_creation_time(retained.0)? == created;
+                let mut belongs = 0;
+                // SAFETY: both handles are owned and remain live during the query.
+                if unsafe { IsProcessInJob(retained.0, fixture.tree.job, &mut belongs) } == 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                serde_json::json!({
+                    "opened": true, "same_creation_time": same_creation_time,
+                    "in_exact_job": belongs != 0,
+                    "signaled": windows_job_signal_probe_wait(retained.0, 0)?,
+                })
+            };
+            Ok(serde_json::json!({
+                "probe": "windows_job_late_open", "version": 1,
+                "root_helper_success": true, "root_handle_retained": true,
+                "descendant_handle_closed_before_root_exit": true,
+                "total_processes": accounting.TotalProcesses,
+                "active_processes": accounting.ActiveProcesses,
+                "expected_total_processes_for_fixture": 2,
+                "fixture_count_matches": accounting.TotalProcesses == 2,
+                "prior_census_handles": 1, "pid_list_count": pids.len(),
+                "descendant_in_pid_list": pids.contains(&(pid as usize)),
+                "late_capture": capture,
+                "inference": "observations_only; IOCP_delivery_not_tested",
+            }))
+        })();
+        // Even a helper failure cannot leave a descendant behind intentionally.
+        let terminated = fixture
+            .tree
+            .terminate(fixture.child.as_mut().expect("retained root"));
+        let cleaned = fixture.cleanup();
+        let result = observed?;
+        terminated?;
+        cleaned?;
+        println!("{result}");
+        Ok(())
+    }
+
     // Research only: observations are not an assertion of Windows teardown
     // ordering or a replacement for the runtime's release proof (#1496).
     #[cfg(windows)]
@@ -4527,7 +4711,8 @@ mod tests {
             JobObjectBasicProcessIdList, QueryInformationJobObject, JOBOBJECT_BASIC_PROCESS_ID_LIST,
         };
         // usize storage supplies the alignment required by ULONG_PTR, unlike
-        // a Vec<u8>. This private fixture has one process; still require a full list.
+        // a Vec<u8>. These private fixtures have at most two processes; still
+        // require a full list.
         let mut buffer = vec![0usize; 8];
         for _ in 0..16 {
             let bytes = buffer.len() * size_of::<usize>();

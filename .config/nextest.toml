@@ -135,6 +135,7 @@ binary(daemon_receipt_ledger) & (
 ) | (
 binary(unica_coder) & (
     test(/^infrastructure::daemon::runtime_v5::tests::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks$/)
+    | test(/^infrastructure::platform::process::tests::windows_job_signal_probe_late_open$/)
     | test(/^infrastructure::platform::process::tests::windows_job_signal_probe_normal_exit$/)
     | test(/^infrastructure::platform::process::tests::windows_job_signal_probe_terminate_job$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_directory_handles_cross_former_128_and_keep_finality$/)
@@ -169,6 +170,7 @@ binary(daemon_receipt_ledger) & (
 ) | (
 binary(unica_coder) & (
     test(/^infrastructure::daemon::runtime_v5::tests::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks$/)
+    | test(/^infrastructure::platform::process::tests::windows_job_signal_probe_late_open$/)
     | test(/^infrastructure::platform::process::tests::windows_job_signal_probe_normal_exit$/)
     | test(/^infrastructure::platform::process::tests::windows_job_signal_probe_terminate_job$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_directory_handles_cross_former_128_and_keep_finality$/)
@@ -200,6 +202,7 @@ binary(daemon_receipt_ledger) & (
 ) | (
 binary(unica_coder) & (
     test(/^infrastructure::daemon::runtime_v5::tests::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks$/)
+    | test(/^infrastructure::platform::process::tests::windows_job_signal_probe_late_open$/)
     | test(/^infrastructure::platform::process::tests::windows_job_signal_probe_normal_exit$/)
     | test(/^infrastructure::platform::process::tests::windows_job_signal_probe_terminate_job$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_directory_handles_cross_former_128_and_keep_finality$/)
@@ -241,6 +244,7 @@ binary(daemon_receipt_ledger) & (
 ) | (
 binary(unica_coder) & (
     test(/^infrastructure::daemon::runtime_v5::tests::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks$/)
+    | test(/^infrastructure::platform::process::tests::windows_job_signal_probe_late_open$/)
     | test(/^infrastructure::platform::process::tests::windows_job_signal_probe_normal_exit$/)
     | test(/^infrastructure::platform::process::tests::windows_job_signal_probe_terminate_job$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_directory_handles_cross_former_128_and_keep_finality$/)
@@ -363,6 +367,7 @@ binary(daemon_receipt_ledger) & (
 ) | (
 binary(unica_coder) & (
     test(/^infrastructure::daemon::runtime_v5::tests::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks$/)
+    | test(/^infrastructure::platform::process::tests::windows_job_signal_probe_late_open$/)
     | test(/^infrastructure::platform::process::tests::windows_job_signal_probe_normal_exit$/)
     | test(/^infrastructure::platform::process::tests::windows_job_signal_probe_terminate_job$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_directory_handles_cross_former_128_and_keep_finality$/)
@@ -386,6 +391,6 @@ junit.store-success-output = true
 
 # Research observations must remain available even when no ordering window was seen.
 [[profile.default.overrides]]
-filter = 'test(/^infrastructure::platform::process::tests::windows_job_signal_probe_(normal_exit|terminate_job)$/)'
+filter = 'test(/^infrastructure::platform::process::tests::windows_job_signal_probe_(normal_exit|terminate_job|late_open)$/)'
 success-output = "immediate"
 junit.store-success-output = true
