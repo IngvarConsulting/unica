@@ -708,8 +708,9 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         return module
 
     def test_registry_document_is_rendered_from_the_corpus(self) -> None:
-        module = self.renderer()
-        rendered = module.render_document()
+        with patch("subprocess.Popen", side_effect=AssertionError("registry rendering must not launch Cargo or the product")):
+            module = self.renderer()
+            rendered = module.render_document()
         self.assertIn("## Покрытие реестра `apply`", rendered)
         corpus = load_acceptance_corpus()
         self.assertIn(f"**{len(corpus['scenarios'])} сценариев**", rendered)
@@ -769,34 +770,78 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("query.set", "Dcs", "DcsQuery", "Values"),
         ])
 
+    def test_role_metadata_survives_split_impls_and_unrelated_helpers(self) -> None:
+        metadata = (REPO_ROOT / "crates/unica-coder/src/domain/role_operation.rs").read_text(encoding="utf-8")
+        contract = "    pub(crate) fn contract(self) -> OperationContract {"
+        self.assertEqual(metadata.count(contract), 1)
+        metadata = metadata.replace(
+            contract,
+            '}\n\n// role_operations!(Commented => ("ignored.operation", Configuration, Values),);\n'
+            'impl RoleOperation {\n'
+            '    #[allow(dead_code)]\n'
+            '    fn unrelated_metadata_hint(self) -> &\'static str { "role_operations!(NotATable)" }\n\n'
+            + contract,
+        )
+        registry, _ = self.registration_fixture(
+            "(RoleOperation::Create), (RoleOperation::RightAdd), (RoleOperation::RightSet),",
+            metadata,
+        )
+        self.assertEqual(registry, [
+            ("role.create", "Role", "Configuration", "Values"),
+            ("right.add", "Role", "Role", "Items"),
+            ("right.set", "Role", "RoleRight", "Values"),
+        ])
+
     def test_unknown_or_incomplete_typed_metadata_cannot_silently_drop_a_role(self) -> None:
         metadata = (REPO_ROOT / "crates/unica-coder/src/domain/role_operation.rs").read_text(encoding="utf-8")
         table = '("query.set", Dcs, DcsQuery, Values),\n' + "\n".join(
             f"(RoleOperation::{variant})," for variant in ["Create", "RightAdd", "RightSet"]
         )
+        last_row = '    RightSet => ("right.set", RoleRight, Values),\n'
+        self.assertIn(last_row, metadata)
         cases = {
             "unknown typed family": (table.replace("RoleOperation::Create", "OtherOperation::Create"), metadata),
             "unknown variant": (table.replace("RoleOperation::Create", "RoleOperation::Missing"), metadata),
             "missing registration": (table.replace("(RoleOperation::RightSet),", ""), metadata),
+            "all typed registrations missing": ('("query.set", Dcs, DcsQuery, Values),', metadata),
             "duplicate registration": (table + "\n(RoleOperation::Create),", metadata),
             "missing metadata file": (table, None),
-            "missing enum variant": (table, metadata.replace("    RightSet,\n", "")),
-            "missing name arm": (table, metadata.replace('            Self::RightSet => "right.set",\n', "")),
-            "commented name arm": (table, metadata.replace('Self::RightSet => "right.set",', '// Self::RightSet => "right.set",')),
-            "nonliteral name": (table, metadata.replace('Self::Create => "role.create"', "Self::Create => old_name()")),
-            "duplicate name": (table, metadata.replace('Self::RightSet => "right.set"', 'Self::RightSet => "role.create"')),
-            "missing applicability": (table, metadata.replace("Self::RightSet => OperationApplicability::RoleRight,", "")),
-            "missing skeleton": (table, metadata.replace("const fn skeleton(self)", "const fn previous_skeleton(self)")),
-            "another type cannot supply metadata": (
-                table,
-                metadata.replace("const fn name(self)", "const fn previous_name(self)")
-                + '\nimpl Other { const fn name(self) -> &\'static str { match self { '
-                'Self::Create => "role.create", Self::RightAdd => "right.add", Self::RightSet => "right.set", } } }\n',
-            ),
+            "missing metadata table": (table, metadata.replace("\nrole_operations!(", "\nprevious_role_operations!(")),
+            "repeated metadata table": (table, metadata + '\nrole_operations!(Extra => ("role.extra", Configuration, Values),);\n'),
+            "empty metadata table": (table, "role_operations!();"),
+            "unterminated metadata table": (table, 'role_operations!(Create => ("role.create", Configuration, Values),'),
+            "missing metadata row": (table, metadata.replace(last_row, "")),
+            "incomplete metadata row": (table, metadata.replace(last_row, '    RightSet => ("right.set", RoleRight),\n')),
+            "unsupported metadata row": (table, metadata.replace(last_row, '    RightSet => role_metadata(),\n')),
+            "nonliteral metadata name": (table, metadata.replace(last_row, '    RightSet => (RIGHT_SET, RoleRight, Values),\n')),
+            "duplicate metadata variant": (table, metadata.replace(last_row, '    RightAdd => ("right.set", RoleRight, Values),\n')),
+            "duplicate metadata name": (table, metadata.replace(last_row, '    RightSet => ("right.add", RoleRight, Values),\n')),
         }
         for case, (source, role_metadata) in cases.items():
             with self.subTest(case=case), self.assertRaises(RuntimeError):
                 self.registration_fixture(source, role_metadata)
+
+    def test_metadata_table_locator_ignores_comments_strings_and_character_literals(self) -> None:
+        metadata = (REPO_ROOT / "crates/unica-coder/src/domain/role_operation.rs").read_text(encoding="utf-8")
+        decoy = 'role_operations!(Decoy => ("ignored.operation", Configuration, Values),);'
+        prefix = (
+            '// ' + decoy + '\n'
+            '/* outer /* nested */ ' + decoy + ' */\n'
+            'const ORDINARY: &str = ' + json.dumps(decoy) + ';\n'
+            'const RAW: &str = r###"a quoted \" prefix ' + decoy + '"###;\n'
+            'const RAW_BYTES: &[u8] = br##"a quoted \" prefix ' + decoy + '"##;\n'
+            'fn unused_c_literal() { let _ = cr#"left " role_operations!(NotATable); right"#; }\n'
+            'fn quote_marker() -> char { \'"\' }\n'
+            'fn byte_quote_marker() -> u8 { b\'"\' }\n'
+            "fn lifetime_probe<'a>(value: &'a str) -> &'a str { value }\n"
+        )
+        table = "(RoleOperation::Create), (RoleOperation::RightAdd), (RoleOperation::RightSet),"
+        expected, implemented = self.registration_fixture(table, metadata)
+        actual, actual_implemented = self.registration_fixture(table, prefix + metadata)
+        self.assertEqual(actual, expected)
+        self.assertEqual(actual_implemented, implemented)
+        with self.assertRaises(RuntimeError):
+            self.registration_fixture(table, prefix)
 
 
 class AcceptanceCorpusRunTests(unittest.TestCase):
