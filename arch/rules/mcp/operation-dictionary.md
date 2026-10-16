@@ -1,6 +1,8 @@
 ---
 id: INV.WIRE.V13-CAN-DICTIONARY
 check:
+  - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::support_can_contract_examples_preview_without_source_changes
+  - crates/unica-coder/src/infrastructure/native_operations/apply_families/form_resource.rs::support_contracts_and_productive_parser_agree_on_closed_arguments
   - crates/unica-coder/src/application/v13/tool_catalog.rs::v13_catalog_locks_the_eight_domain_contracts_without_publishing_them
   - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_refusals_answer_one_diagnostics_channel_from_the_closed_code_set
   - crates/unica-coder/src/infrastructure/daemon/v13_read_modes.rs::every_node_answer_carries_its_dictionary_and_keeps_its_own_slots

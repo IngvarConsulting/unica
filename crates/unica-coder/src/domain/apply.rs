@@ -1392,6 +1392,9 @@ impl OperationDescriptor {
                 super::operation_contract::OperationContract::metadata(self.name)
             }
             OperationFamily::Role => super::operation_contract::OperationContract::role(self.name),
+            OperationFamily::Support => {
+                super::operation_contract::OperationContract::support(self.name)
+            }
             OperationFamily::Form => super::operation_contract::OperationContract::form(self.name),
             OperationFamily::Event => {
                 super::operation_contract::OperationContract::event(self.name)
