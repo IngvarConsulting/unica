@@ -48,6 +48,9 @@ pub(crate) fn classify_route(
     address: &QualifiedAddress,
     profile: PlatformProfile,
 ) -> Option<RouteClass> {
+    if address.form_metadata_owner().is_some() {
+        return Some(RouteClass::Metadata);
+    }
     if profile.module_prefix_capability(address).is_some()
         || !profile.module_children(address).is_empty()
     {

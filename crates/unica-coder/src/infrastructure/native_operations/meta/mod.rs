@@ -73,7 +73,9 @@ fn run_before_meta_remove_subsystem_child_inspection_hook(path: &Path) {
 }
 
 mod edit;
+mod form_metadata;
 mod format_contract;
+pub(crate) use form_metadata::parse_form_metadata_properties;
 mod help_facet;
 mod info;
 mod info_projection;

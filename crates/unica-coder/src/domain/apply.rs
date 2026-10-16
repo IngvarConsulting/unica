@@ -2672,6 +2672,33 @@ mod tests {
     }
 
     #[test]
+    fn form_metadata_does_not_advertise_or_accept_owner_and_content_writers() {
+        let registry = OperationRegistry::closed();
+        let traits =
+            SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+        for raw in [
+            "main:CommonForm.Main.Metadata",
+            "main:Document.Order.Form.Main.Metadata",
+        ] {
+            let at = address(raw);
+            let site = OperationSite::new(&at, traits).unwrap();
+            assert!(registry.copyable_skeletons(&site).is_empty(), "{raw}");
+            for operation in registry.descriptors() {
+                assert!(
+                    !operation.applies_at(&site),
+                    "{} must not write through {raw}",
+                    operation.name()
+                );
+            }
+        }
+        assert!(applies("item.add", "main:Document.Order.Form.Main"));
+        assert!(applies(
+            "code.replace",
+            "main:Document.Order.Form.Main.Module.Form"
+        ));
+    }
+
+    #[test]
     fn support_rule_addresses_a_form_without_addressing_its_contents() {
         for at in ["main:Catalog.Items", "main:Catalog.Items.Form.Card"] {
             assert!(applies("supportRule.set", at), "{at}");

@@ -52,6 +52,8 @@ pub(crate) enum NodeKind {
     Task,
     IntegrationService,
     Form,
+    /// Локальное описание формы; содержимое остаётся в корне формы.
+    Metadata,
     Template,
     Command,
     ExternalDataProcessor,
@@ -181,6 +183,7 @@ struct V13KindSpelling {
 
 const V13_KIND_SPELLINGS: &[V13KindSpelling] = &[
     spelling(NodeKind::Configuration, &["Конфигурация"]),
+    spelling(NodeKind::Metadata, &["Метаданные"]),
     spelling(NodeKind::WebSocketClient, &[]),
     spelling(NodeKind::Attribute, &["Реквизит"]),
     spelling(NodeKind::StandardAttribute, &["СтандартныйРеквизит"]),
@@ -262,7 +265,7 @@ impl NodeKind {
     /// Терминальный вид без имени — другое: это адрес ветки, и он допустим у
     /// любого вида. См. `arch/rules/mcp/qualified-logical-address.md`.
     pub(crate) const fn takes_name(self) -> bool {
-        !matches!(self, Self::Configuration | Self::Interface)
+        !matches!(self, Self::Configuration | Self::Interface | Self::Metadata)
     }
 
     /// Может ли имя узла этого вида в этом месте адреса содержать точку.
@@ -379,6 +382,7 @@ impl NodeKind {
             Self::Task => "Task",
             Self::IntegrationService => "IntegrationService",
             Self::Form => "Form",
+            Self::Metadata => "Metadata",
             Self::Template => "Template",
             Self::Command => "Command",
             Self::ExternalDataProcessor => "ExternalDataProcessor",
@@ -631,10 +635,47 @@ impl QualifiedAddress {
             ));
         }
 
-        Ok(Self {
+        let address = Self {
             source_set: source_set.to_string(),
             segments,
-        })
+        };
+        let metadata_subject = address
+            .operation_query()
+            .map_or_else(|| address.clone(), |(owner, _)| owner);
+        if metadata_subject
+            .segments
+            .iter()
+            .any(|segment| segment.kind == NodeKind::Metadata)
+            && metadata_subject.form_metadata_owner().is_none()
+        {
+            return Err(AddressError::new(
+                AddressErrorCode::InvalidName,
+                "Metadata is the terminal nameless descriptor of a named form",
+            ));
+        }
+        Ok(address)
+    }
+
+    /// Владелец самостоятельного XML-описания формы, без содержимого и модуля.
+    pub(crate) fn form_metadata_owner(&self) -> Option<Self> {
+        let valid = match self.segments.as_slice() {
+            [form, metadata] => {
+                form.kind == NodeKind::CommonForm
+                    && form.name.is_some()
+                    && metadata.kind == NodeKind::Metadata
+                    && metadata.name.is_none()
+            }
+            [owner, form, metadata] => {
+                owner.kind.is_metadata_kind()
+                    && owner.name.is_some()
+                    && form.kind == NodeKind::Form
+                    && form.name.is_some()
+                    && metadata.kind == NodeKind::Metadata
+                    && metadata.name.is_none()
+            }
+            _ => false,
+        };
+        valid.then(|| self.prefix(self.segments.len() - 1))
     }
 
     pub(crate) fn source_set(&self) -> &str {
@@ -1342,5 +1383,45 @@ mod tests {
     fn configuration_kind_is_rejected_everywhere_except_the_sole_root() {
         let error = QualifiedAddress::parse("main:Document.Заказ.Configuration").unwrap_err();
         assert_eq!(error.code(), AddressErrorCode::ConfigurationRootOnly);
+    }
+}
+
+#[cfg(test)]
+mod form_metadata_addresses {
+    use super::QualifiedAddress;
+    #[test]
+    fn metadata_is_a_terminal_nameless_form_descriptor_and_keeps_operation_queries() {
+        for (raw, owner) in [
+            ("main:CommonForm.Main.Metadata", "main:CommonForm.Main"),
+            (
+                "main:Document.Order.Form.Main.Metadata",
+                "main:Document.Order.Form.Main",
+            ),
+            (
+                "main:ExternalDataProcessor.Report.Form.Main.Metadata",
+                "main:ExternalDataProcessor.Report.Form.Main",
+            ),
+            (
+                "main:ОбщаяФорма.Главная.Метаданные",
+                "main:CommonForm.Главная",
+            ),
+        ] {
+            let at = QualifiedAddress::parse(raw).unwrap();
+            assert_eq!(at.form_metadata_owner().unwrap().to_string(), owner);
+            assert!(at.segments().last().unwrap().name().is_none());
+            let query = QualifiedAddress::parse(&format!("{at}.Can.form.set")).unwrap();
+            assert_eq!(query.operation_query().unwrap().0, at);
+        }
+        for raw in [
+            "main:Metadata",
+            "main:Document.Order.Metadata",
+            "main:CommonForm.Main.Metadata.Fake",
+            "main:CommonForm.Main.Metadata.Item.A",
+            "main:CommonForm.Main.Item.A.Metadata",
+            "main:CommonForm.Main.Metadata.Module.Form",
+            "main:CommonForm.Main.Metadata.Metadata",
+        ] {
+            assert!(QualifiedAddress::parse(raw).is_err(), "{raw}");
+        }
     }
 }

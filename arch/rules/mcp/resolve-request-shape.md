@@ -1,6 +1,12 @@
 ---
 id: INV.WIRE.RESOLVE-EXACT-BRIDGE
 check:
+  - crates/unica-coder/tests/platform/v13_resolve_resources.rs::resolve_external_form_resources_round_trip_all_three_file_kinds
+  - crates/unica-coder/tests/platform/v13_resolve_resources.rs::resolve_external_form_resources_require_registered_matching_owner_and_form
+  - crates/unica-coder/tests/platform/v13_resolve_resources.rs::resolve_external_form_resources_never_follow_linked_content
+  - crates/unica-coder/tests/platform/v13_resolve_resources.rs::resolve_form_metadata_survives_absent_local_content_without_substituting_it
+  - crates/unica-coder/tests/platform/v13_resolve_resources.rs::resolve_common_form_resources_preserve_deepest_root_and_ambiguity
+  - crates/unica-coder/tests/platform/v13_resolve_resources.rs::resolve_common_form_resources_never_follow_content_or_metadata_links
   - crates/unica-coder/tests/platform/v13_resolve_resources.rs::resolve_resource_refuses_mismatched_descriptor_identity_on_public_mcp
   - crates/unica-coder/tests/platform/v13_resolve_resources.rs::resolve_form_and_module_paths_preserve_the_exact_resource_on_public_mcp
   - crates/unica-coder/tests/platform/v13_resolve_resources.rs::resolve_resources_refuse_unregistered_and_absent_targets_on_public_mcp
@@ -84,9 +90,24 @@ check:
 выбора. `not_found` возможен лишь после проверки всех относящихся к запросу
 кандидатов.
 
-В наборах конфигурации и расширения `Forms/<форма>/Ext/Form.xml`
-разрешается в адрес формы, а `Forms/<форма>/Ext/Form/Module.bsl` — в её
-`Module.Form`. Файл `Ext/<Роль>Module.bsl` владельца, включая корневой модуль
+В наборах конфигурации и расширения `Forms/<форма>/Ext/Form.xml` владельца
+и `CommonForms/<форма>/Ext/Form.xml` разрешаются в адрес формы, а соответствующий
+`Ext/Form/Module.bsl` — в её `Module.Form`. Дескриптор формы
+`Forms/<форма>.xml` или `CommonForms/<форма>.xml` разрешается в её `Metadata`.
+Обратное разрешение этих трёх адресов называет тот же локальный ресурс:
+структуру формы, её декларацию или модуль. Вложенный элемент формы разрешается
+в содержащий его XML; путь всего XML не восстанавливает адрес отдельного
+элемента. Отсутствующее локальное содержимое заимствованной формы не заменяется
+дескриптором или файлом базового набора; локальная декларация доступна по
+`Metadata` независимо от наличия содержимого.
+
+У именованной формы внешней обработки или отчёта действуют те же три адреса
+и обратимость ресурсов. В наборах внешних исходников дескриптор расположен
+по `<владелец>/Forms/<форма>.xml`, а структура и модуль — под
+`<владелец>/Forms/<форма>/Ext/`. Это правило относится к ресурсам формы и
+не добавляет разрешение прочих модулей внешнего объекта.
+
+Файл `Ext/<Роль>Module.bsl` владельца, включая корневой модуль
 конфигурации и модуль общей или вложенной команды, разрешается в его
 `Module.<Роль>`, только если общая раскладка модулей и профиль платформы
 допускают эту роль для вида владельца. Возвращённый путь называет запрошенный

@@ -7992,10 +7992,18 @@ fn borrowed_objects_without_companion_files_read_their_content_as_inherited() {
             data["props"]["parentId"].is_string(),
             "{at}: the parent stays addressable"
         );
-        assert!(
-            data.get("branches").is_none(),
-            "{at}: no branch is invented for content the extension does not carry"
-        );
+        if kind == "Form" {
+            assert_eq!(
+                data["branches"],
+                json!([{"at":format!("{at}.Metadata"),"count":1}]),
+                "{at}: only the local declaration is reachable, no inherited content or Module"
+            );
+        } else {
+            assert!(
+                data.get("branches").is_none(),
+                "{at}: no inherited content branches"
+            );
+        }
     }
     assert_eq!(
         service
@@ -8803,6 +8811,253 @@ fn canonical_subsystem_check_preserves_bom_format_warning() {
                 .iter()
                 .any(|diagnostic| diagnostic.code() == "platformVersionUnsupported"),
             version == "2.21"
+        );
+    }
+}
+
+fn install_form_metadata_test_sources(fixture: &RealReaderFixture) {
+    let config = fs::read_to_string(fixture.source.join("Configuration.xml")).unwrap();
+    write(&fixture.source.join("Configuration.xml"), &config.replace("</ChildObjects>", "<CommonForm>ОбщаяФорма</CommonForm><DataProcessor>Обработка</DataProcessor></ChildObjects>"));
+    write_metadata_owner(
+        &fixture.source,
+        "DataProcessors",
+        "DataProcessor",
+        "Обработка",
+        "<Form>Форма</Form>",
+    );
+    for (descriptor, artifact, name, content) in [
+        (
+            "CommonForms/ОбщаяФорма.xml",
+            "CommonForm",
+            "ОбщаяФорма",
+            "CommonForms/ОбщаяФорма/Ext/Form.xml",
+        ),
+        (
+            "DataProcessors/Обработка/Forms/Форма.xml",
+            "Form",
+            "Форма",
+            "DataProcessors/Обработка/Forms/Форма/Ext/Form.xml",
+        ),
+    ] {
+        write(
+            &fixture.source.join(descriptor),
+            &format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{artifact} uuid="e9455333-3333-4333-8333-333333333333"><Properties><Name>{name}</Name><FormType>Managed</FormType></Properties></{artifact}></MetaDataObject>"#
+            ),
+        );
+        write(
+            &fixture.source.join(content),
+            r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><ChildItems/></Form>"#,
+        );
+    }
+}
+
+#[test]
+fn form_metadata_has_its_own_descriptor_properties_and_resource_identity() {
+    let fixture = RealReaderFixture::new();
+    install_form_metadata_test_sources(&fixture);
+    for (root, descriptor, artifact, name, uuid, content) in [
+        (
+            "main:CommonForm.ОбщаяФорма",
+            "CommonForms/ОбщаяФорма.xml",
+            "CommonForm",
+            "ОбщаяФорма",
+            "e9455111-1111-4111-8111-111111111111",
+            "CommonForms/ОбщаяФорма/Ext/Form.xml",
+        ),
+        (
+            "main:DataProcessor.Обработка.Form.Форма",
+            "DataProcessors/Обработка/Forms/Форма.xml",
+            "Form",
+            "Форма",
+            "e9455222-2222-4222-8222-222222222222",
+            "DataProcessors/Обработка/Forms/Форма/Ext/Form.xml",
+        ),
+    ] {
+        write(
+            &fixture.source.join(descriptor),
+            &format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" version="2.20"><{artifact} uuid="{uuid}"><Properties><Name>{name}</Name><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Описание формы</v8:content></v8:item><v8:item><v8:lang>en</v8:lang><v8:content>Form declaration</v8:content></v8:item></Synonym><ExtendedPresentation><v8:item><v8:lang>ru</v8:lang><v8:content>Расширенное представление</v8:content></v8:item><v8:item><v8:lang>en</v8:lang><v8:content>Extended presentation</v8:content></v8:item></ExtendedPresentation><Explanation><v8:item><v8:lang>ru</v8:lang><v8:content>Пояснение</v8:content></v8:item><v8:item><v8:lang>en</v8:lang><v8:content>Explanation</v8:content></v8:item></Explanation><FutureProperty><Nested>preserved source</Nested></FutureProperty><Comment>Only descriptor properties</Comment><FormType>Managed</FormType><UseStandardCommands>false</UseStandardCommands><UsePurposes><v8:Value xsi:type="app:ApplicationUsePurpose">PlatformApplication</v8:Value><v8:Value xsi:type="app:ApplicationUsePurpose">MobilePlatformApplication</v8:Value></UsePurposes></Properties></{artifact}></MetaDataObject>"#
+            ),
+        );
+        let service = fixture.view_service();
+        let metadata_at = format!("{root}.Metadata");
+        let view = service.view(ViewRequest::new(&metadata_at).unwrap());
+        assert!(view.ok, "{metadata_at}: {view:?}");
+        let data = view.data.unwrap();
+        assert_eq!(data["kind"], "Metadata");
+        assert_eq!(data["props"]["uuid"], uuid);
+        assert_eq!(data["props"]["Name"], name);
+        assert_eq!(data["props"]["Comment"], "Only descriptor properties");
+        assert_eq!(data["props"]["FormType"], "Managed");
+        assert_eq!(data["props"]["UseStandardCommands"], false);
+        assert_eq!(
+            data["props"]["UsePurposes"],
+            json!(["PlatformApplication", "MobilePlatformApplication"])
+        );
+        assert_eq!(
+            data["props"]["Synonym"],
+            json!({"kind":"localizedString","values":[{"language":"ru","content":"Описание формы"},{"language":"en","content":"Form declaration"}]})
+        );
+        for (key, ru, en) in [
+            (
+                "ExtendedPresentation",
+                "Расширенное представление",
+                "Extended presentation",
+            ),
+            ("Explanation", "Пояснение", "Explanation"),
+        ] {
+            assert_eq!(
+                data["props"][key],
+                json!({"kind":"localizedString","values":[{"language":"ru","content":ru},{"language":"en","content":en}]})
+            );
+        }
+        assert!(data["limits"].as_array().unwrap().iter().any(|limit| limit
+            .as_str()
+            .is_some_and(|text| text.contains("FutureProperty"))));
+        assert!(data["props"].get("FutureProperty").is_none());
+        let root_view = service.view(ViewRequest::new(root).unwrap());
+        assert!(root_view.ok);
+        let root_data = root_view.data.unwrap();
+        assert_eq!(root_data["kind"], "Form");
+        assert!(root_data["props"].get("Comment").is_none());
+        assert!(root_data["branches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|branch| branch["at"] == metadata_at));
+        let authority = fixture.read_authority();
+        assert_eq!(
+            authority
+                .existing_export_path(&QualifiedAddress::parse(root).unwrap(), None)
+                .unwrap(),
+            content
+        );
+        assert_eq!(
+            authority
+                .existing_export_path(&QualifiedAddress::parse(&metadata_at).unwrap(), None)
+                .unwrap(),
+            descriptor
+        );
+    }
+}
+
+#[test]
+fn inherited_form_metadata_is_local_without_claiming_a_local_form_payload() {
+    let fixture = RealReaderFixture::new();
+    install_inherited_objects(&fixture);
+    let service = fixture.extension_view_service();
+    for (root, descriptor) in [
+        ("main:CommonForm.ОбщаяФорма", "CommonForms/ОбщаяФорма.xml"),
+        (
+            "main:DataProcessor.Обработка.Form.Форма",
+            "DataProcessors/Обработка/Forms/Форма.xml",
+        ),
+    ] {
+        let metadata_at = format!("{root}.Metadata");
+        let metadata = service.view(ViewRequest::new(&metadata_at).unwrap());
+        assert!(metadata.ok, "{metadata_at}: {metadata:?}");
+        let data = metadata.data.unwrap();
+        assert_eq!(data["kind"], "Metadata");
+        assert!(data["props"]["uuid"].is_string());
+        assert!(data["props"]["Name"].is_string());
+        assert!(data["props"].get("content").is_none());
+        let form = service.view(ViewRequest::new(root).unwrap());
+        assert!(form.ok);
+        assert_eq!(form.data.unwrap()["props"]["content"], "inherited");
+        let authority = fixture.extension_read_authority();
+        assert_eq!(
+            authority
+                .existing_export_path(&QualifiedAddress::parse(&metadata_at).unwrap(), None)
+                .unwrap(),
+            descriptor
+        );
+        assert!(authority
+            .existing_export_path(&QualifiedAddress::parse(root).unwrap(), None)
+            .is_err());
+    }
+}
+
+#[test]
+fn form_metadata_rejects_orphans_and_does_not_follow_descriptor_links() {
+    let fixture = RealReaderFixture::new();
+    install_form_metadata_test_sources(&fixture);
+    copy_fixture(
+        "acceptance/workspace-resolve-resources/src/CommonForms/Orphan.xml",
+        &fixture.source.join("CommonForms/Orphan.xml"),
+    );
+    let service = fixture.view_service();
+    let orphan = service.view(ViewRequest::new("main:CommonForm.Orphan.Metadata").unwrap());
+    assert!(!orphan.ok);
+    assert_eq!(orphan.diagnostics[0]["code"], "not_found");
+    for raw in [
+        "main:CommonForm.ОбщаяФорма.Metadata.Item.X",
+        "main:DataProcessor.Обработка.Metadata",
+        "main:DataProcessor.Обработка.Form.Metadata",
+    ] {
+        let refused = ViewRequest::new(raw).map(|request| service.view(request));
+        assert!(refused.is_err() || !refused.unwrap().ok, "{raw}");
+    }
+    {
+        use crate::infrastructure::platform::testing::{
+            create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+        };
+        let descriptor = fixture.source.join("CommonForms/ОбщаяФорма.xml");
+        let outside = fixture.root.path().join("outside-form.xml");
+        fs::rename(&descriptor, &outside).unwrap();
+        let outcome = create_file_link_fixture_for_test(&outside, &descriptor).unwrap();
+        if outcome != FileLinkFixtureOutcome::Created {
+            eprintln!("[SKIPPED FIXTURE] file link unavailable: {outcome:?}");
+            return;
+        }
+        let fresh = fixture.view_service();
+        let refused = fresh.view(ViewRequest::new("main:CommonForm.ОбщаяФорма.Metadata").unwrap());
+        assert!(
+            !refused.ok,
+            "metadata must stay under the retained no-follow root"
+        );
+    }
+}
+
+#[test]
+fn external_form_metadata_uses_the_local_descriptor_without_a_companion() {
+    let fixture = RealExternalReaderFixture::new();
+    for (source, kind, root, descriptor) in [
+        (
+            "artifact_processor",
+            SourceSetKind::ExternalProcessor,
+            "ExternalDataProcessor.Import.Form.Main",
+            fixture.processor.join("Import/Forms/Main.xml"),
+        ),
+        (
+            "artifact_report",
+            SourceSetKind::ExternalReport,
+            "ExternalReport.Sales.Form.Main",
+            fixture.report.join("Sales/Forms/Main.xml"),
+        ),
+    ] {
+        let form_xml = descriptor.with_extension("").join("Ext/Form.xml");
+        fs::remove_file(form_xml).unwrap();
+        let service = ViewService::new(
+            fixture.read_authority(source, kind),
+            ViewCursorStore::default(),
+        );
+        let metadata_at = format!("{source}:{root}.Metadata");
+        let view = service.view(ViewRequest::new(&metadata_at).unwrap());
+        assert!(view.ok, "{metadata_at}: {view:?}");
+        let data = view.data.unwrap();
+        assert_eq!(data["kind"], "Metadata");
+        assert_eq!(data["props"]["Name"], "Main");
+        assert!(data["props"].get("Comment").is_none());
+        assert!(data["props"].get("UseStandardCommands").is_none());
+        assert_eq!(
+            data["props"]["uuid"],
+            "10000000-0000-4000-8000-000000000011"
+        );
+        assert!(
+            !service
+                .view(ViewRequest::new(&format!("{source}:{root}")).unwrap())
+                .ok
         );
     }
 }

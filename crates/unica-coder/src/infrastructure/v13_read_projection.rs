@@ -33,6 +33,27 @@ fn project_typed_payload_inner(
     form_events: Option<&[EventProjection]>,
 ) -> Result<NodeViewData, ViewError> {
     validate_reader_payload(route.reader(), &payload)?;
+    if route.at().form_metadata_owner().is_some() {
+        let props = payload
+            .get("properties")
+            .and_then(Value::as_object)
+            .cloned()
+            .ok_or_else(|| {
+                ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
+                    "form metadata properties are not an object",
+                )
+            })?;
+        let title = props
+            .get("Name")
+            .and_then(Value::as_str)
+            .unwrap_or("Metadata")
+            .to_string();
+        return Ok(NodeViewData::Node(
+            NodeView::new(route.at().to_string(), "Metadata", title, props)
+                .with_limits(metadata_limits(&payload)),
+        ));
+    }
     let root_depth = route
         .reader_metadata_path()
         .map(|target| target.as_str().split('.').count().div_ceil(2))

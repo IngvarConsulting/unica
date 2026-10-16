@@ -569,6 +569,34 @@ impl ProviderReadAuthority {
         }))
     }
 
+    pub(crate) fn form_metadata_payload(
+        &self,
+        target: &MetadataAddress,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<Value, ViewError> {
+        let bytes = self.metadata_descriptor_with_checkpoint(
+            target,
+            Some(MAX_CONFIGURATION_BYTES),
+            checkpoint,
+        )?;
+        let (mut properties, limits) =
+            crate::infrastructure::native_operations::meta::parse_form_metadata_properties(
+                &bytes, target,
+            )
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+        if self.source_set_kind == SourceSetKind::Extension {
+            let borrowing = parse_meta_borrowing(&bytes)
+                .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+            properties.extend(crate::infrastructure::v13_read_projection::borrowing_props(
+                &borrowing,
+            ));
+        }
+        checkpoint()?;
+        Ok(
+            json!({"kind":"Metadata", "name": properties.get("Name"), "properties":properties, "unreadable": limits.into_iter().map(|message| json!({"field":"formMetadata", "message":message})).collect::<Vec<_>>()}),
+        )
+    }
+
     pub(crate) fn form_payload(
         &self,
         target: &MetadataAddress,

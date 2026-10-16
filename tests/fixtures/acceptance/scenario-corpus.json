@@ -35700,7 +35700,12 @@
       },
       {
        "pointer": "/data/branches",
-       "absent": true
+       "eq": [
+        {
+         "at": "ext:CommonForm.ОбщаяФорма.Metadata",
+         "count": 1
+        }
+       ]
       }
      ]
     },
@@ -35775,7 +35780,12 @@
       },
       {
        "pointer": "/data/branches",
-       "absent": true
+       "eq": [
+        {
+         "at": "ext:DataProcessor.Обработка.Form.Форма.Metadata",
+         "count": 1
+        }
+       ]
       }
      ]
     },
@@ -40608,7 +40618,7 @@
       },
       {
        "pointer": "/data/path",
-       "eq": "Catalogs/Валюты/Forms/ФормаЭлемента.xml"
+       "eq": "Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"
       },
       {
        "pointer": "/data/lines",

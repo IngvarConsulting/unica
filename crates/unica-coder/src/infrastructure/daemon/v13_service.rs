@@ -2304,7 +2304,7 @@ impl CanonicalV13ReadService {
         // Кандидаты на присоединённые файлы подтверждаются тем же читателем,
         // что и view: регистрацию владельца и точный ресурс нельзя вывести
         // только из правдоподобной раскладки.
-        if entry.kind() == "Module"
+        if matches!(entry.kind(), "Module" | "Metadata")
             || entry
                 .placed_path()
                 .is_some_and(|path| path.ends_with("/Ext/Form.xml"))
@@ -2350,10 +2350,26 @@ impl CanonicalV13ReadService {
         address: &QualifiedAddress,
         cancellation: &CancellationToken,
     ) -> DomainResult {
-        if address
-            .segments()
-            .iter()
-            .any(|segment| !segment.kind().is_metadata_kind())
+        let form_owner = address.form_metadata_owner().or_else(|| {
+            matches!(address.segments().last(), Some(last) if last.name().is_some() && matches!(last.kind(), NodeKind::Form | NodeKind::CommonForm))
+                .then(|| address.clone())
+        });
+        if let Some(owner) = form_owner {
+            // Preserve resolve's descriptor/owner identity proof before reading
+            // content. A missing required owner is invalid source; a successful
+            // descriptor proof does not substitute that file for the form body.
+            if let Some(mut proof) = self.resolve_metadata_point(invocation, &owner, cancellation) {
+                if !proof.ok {
+                    proof.at = Some(address.to_string());
+                    return proof;
+                }
+            }
+        }
+        if matches!(address.segments().last(), Some(last) if last.name().is_some() && matches!(last.kind(), NodeKind::Form | NodeKind::CommonForm))
+            || address
+                .segments()
+                .iter()
+                .any(|segment| !segment.kind().is_metadata_kind())
         {
             return match self.resolve_projected_source(invocation, address, cancellation) {
                 Ok(source) => resolve_result(source),
@@ -2434,9 +2450,14 @@ impl CanonicalV13ReadService {
                 Err(error) => return Some(find_build_error_result(Some(at), error)),
             };
         let Some((kind, placed)) = entry.as_ref().and_then(|entry| {
-            (entry.at() == at)
-                .then(|| entry.placed_path().map(|placed| (entry.kind(), placed)))
-                .flatten()
+            (entry.at() == at
+                || QualifiedAddress::parse(entry.at())
+                    .ok()
+                    .and_then(|located| located.form_metadata_owner())
+                    .as_ref()
+                    == Some(address))
+            .then(|| entry.placed_path().map(|placed| (entry.kind(), placed)))
+            .flatten()
         }) else {
             return Some(error_result(
                 Some(at.clone()),
@@ -5936,12 +5957,38 @@ mod tests {
             let expected = directory
                 .locate_address(at)
                 .unwrap_or_else(|| panic!("the directory places {at}"));
+            let is_form = matches!(expected.kind(), "Form" | "CommonForm");
+            let query = if is_form {
+                format!("{at}.Metadata")
+            } else {
+                at.to_string()
+            };
             let result =
-                invoke_exact_read(workspace.path(), ToolIdentity::Resolve, json!({"at":at}));
-            assert!(result.ok, "{at}: {result:?}");
+                invoke_exact_read(workspace.path(), ToolIdentity::Resolve, json!({"at":query}));
+            assert!(result.ok, "{query}: {result:?}");
             let data = result.data.as_ref().unwrap();
-            assert_eq!(data["kind"], expected.kind(), "{at}");
-            assert_eq!(data["path"], expected.placed_path().unwrap(), "{at}");
+            assert_eq!(
+                data["kind"],
+                if is_form { "Metadata" } else { expected.kind() },
+                "{query}"
+            );
+            assert_eq!(data["path"], expected.placed_path().unwrap(), "{query}");
+            if is_form {
+                let content =
+                    invoke_exact_read(workspace.path(), ToolIdentity::Resolve, json!({"at":at}));
+                assert!(content.ok, "{at}: {content:?}");
+                assert_eq!(
+                    content.data.unwrap()["path"],
+                    format!(
+                        "{}/Ext/Form.xml",
+                        expected
+                            .placed_path()
+                            .unwrap()
+                            .strip_suffix(".xml")
+                            .unwrap()
+                    )
+                );
+            }
         }
         for at in ["main:Catalog.Missing", "main:Catalog.Items.Command.Missing"] {
             assert!(directory.locate_address(at).is_none());

@@ -360,6 +360,19 @@ pub(crate) struct MetaValidationRegistrationImage {
 pub(crate) fn inspect_metadata_image_identity(
     bytes: &[u8],
 ) -> Result<MetaValidationImageIdentity, MetaValidationImageIdentityError> {
+    inspect_metadata_image_identity_for_kinds(bytes, meta_validate_valid_types())
+}
+
+pub(super) fn inspect_form_metadata_image_identity(
+    bytes: &[u8],
+) -> Result<MetaValidationImageIdentity, MetaValidationImageIdentityError> {
+    inspect_metadata_image_identity_for_kinds(bytes, &["Form", "CommonForm"])
+}
+
+fn inspect_metadata_image_identity_for_kinds(
+    bytes: &[u8],
+    accepted_kinds: &[&str],
+) -> Result<MetaValidationImageIdentity, MetaValidationImageIdentityError> {
     let (_, document) =
         parse_metadata_image(bytes).map_err(MetaValidationImageIdentityError::Structural)?;
     let root = document.root_element();
@@ -385,7 +398,7 @@ pub(crate) fn inspect_metadata_image_identity(
         ));
     }
     let object_type = artifact.tag_name().name();
-    if !meta_validate_valid_types().contains(&object_type) {
+    if !accepted_kinds.contains(&object_type) {
         return Err(MetaValidationImageIdentityError::UnsupportedKind(format!(
             "unrecognized metadata type: {object_type}"
         )));

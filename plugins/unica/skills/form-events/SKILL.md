@@ -82,12 +82,12 @@ source bridge, which permits opening a file outside Unica:
 
 The returned `path` is relative to the selected source-set root, which need not
 be the workspace root. Confirm the root and format in the project configuration.
-In a Designer dump it may identify the descriptor
-`Catalogs/Номенклатура/Forms/ФормаЭлемента.xml`; the item tree lives beside it
-in `ФормаЭлемента/Ext/Form.xml`. Check that this file exists and has a `Form`
-root in the `http://v8.1c.ru/8.3/xcf/logform` namespace. A `MetaDataObject`
-descriptor does not contain the complete form tree. Do not assume this layout
-for EDT or other formats without evidence.
+In a Designer dump the form address identifies its `…/Ext/Form.xml`, whose
+root is `Form` in the `http://v8.1c.ru/8.3/xcf/logform` namespace. The separate
+`….Metadata` address identifies its XML descriptor (UUID, name, synonym and
+metadata properties); `….Module.Form` identifies its BSL module. This also
+applies to common forms, for example `main:CommonForm.ВыборПериода.Metadata`.
+Do not assume this layout for EDT or other formats without evidence.
 
 Read the form content with `Read` and collect every element whose `CommandName`
 exactly matches the command, accounting for the XML namespace. Traverse the whole XML, including `AutoCommandBar`,
