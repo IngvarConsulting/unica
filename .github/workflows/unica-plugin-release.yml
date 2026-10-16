@@ -14,7 +14,7 @@ on:
         required: false
         default: ''
       windows_candidate:
-        description: Exact commit for nine Windows maintenance cases and isolated recovery RED, empty skips
+        description: Exact commit for seventeen positive Windows maintenance and recovery cases, empty skips
         type: string
         required: false
         default: ''
@@ -83,7 +83,6 @@ jobs:
     timeout-minutes: 60
     env:
       CANDIDATE_SHA: ${{ inputs.windows_candidate }}
-      RESEARCH_SHA: ${{ github.sha }}
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
       CARGO_BUILD_JOBS: '4'
       CARGO_TERM_COLOR: never
@@ -112,60 +111,25 @@ jobs:
       - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8
         with:
           tool: cargo-nextest@0.9.143
-      - name: Full native Windows clippy before recovery mutation
+      - name: Full native Windows clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - name: Nine native maintenance and locked-file cases, no retries or LEAK
+      - name: Seventeen native maintenance and recovery cases, no retries or LEAK
         run: |
           set -euo pipefail
           mkdir -p .session-temp/v014-native
-          filter='test(/^infrastructure::workspace_index::tests::(registered_owner_observes_maintenance_while_its_file_is_exclusively_locked|registered_owner_rejects_in_place_record_substitution_without_overwriting_it|poisoned_owner_never_proves_maintenance_or_writes_a_release_record|foreign_or_replaced_lock_never_proves_queued_or_running_maintenance)$/) | test(/^infrastructure::workspace_services::tests::(maintenance_queue_execution_and_failure_keep_the_published_index_readable|real_index_queue_and_worker_state_reach_serialized_search_and_navigation)$/) | test(/^infrastructure::daemon::runtime_v5::tests::reopened_retirement_rejects_old_authority_and_preserves_indexes_until_confirmed_delete$/) | test(/^infrastructure::platform::filesystem::tests::(empty_owned_snapshot_preserves_bytes_and_rejects_unproven_lock_files|file_lock_contention_classifier_preserves_real_errors)$/)'
+          filter='test(/^infrastructure::workspace_index::tests::(registered_owner_observes_maintenance_while_its_file_is_exclusively_locked|registered_owner_rejects_in_place_record_substitution_without_overwriting_it|poisoned_owner_never_proves_maintenance_or_writes_a_release_record|foreign_or_replaced_lock_never_proves_queued_or_running_maintenance|stale_recovery_does_not_overwrite_an_unexpected_held_record|stale_recovery_preserves_the_matching_record_identity_and_fields|stale_recovery_with_expected_identity_preserves_unreadable_records|stale_legacy_lock_is_recovered_by_active_lock|stale_structured_lock_is_recovered_by_active_lock|invalid_lock_without_building_status_is_treated_as_active|fresh_invalid_lock_with_stale_status_is_treated_as_active|stale_lock_held_by_current_process_is_still_active)$/) | test(/^infrastructure::workspace_services::tests::(maintenance_queue_execution_and_failure_keep_the_published_index_readable|real_index_queue_and_worker_state_reach_serialized_search_and_navigation)$/) | test(/^infrastructure::daemon::runtime_v5::tests::reopened_retirement_rejects_old_authority_and_preserves_indexes_until_confirmed_delete$/) | test(/^infrastructure::platform::filesystem::tests::(empty_owned_snapshot_preserves_bytes_and_rejects_unproven_lock_files|file_lock_contention_classifier_preserves_real_errors)$/)'
           log=.session-temp/v014-native/windows-1523-green.log
           cargo nextest run -p unica-coder --lib --profile queue --retries 0 --test-threads 2 --no-tests=fail --color never --success-output immediate -E "$filter" 2>&1 | tee "$log"
-          test "$(grep -cE '^[[:space:]]*PASS \[' "$log")" -eq 9
-          grep -Eq 'Summary .*9 tests run: 9 passed,' "$log"
+          test "$(grep -cE '^[[:space:]]*PASS \[' "$log")" -eq 17
+          grep -Eq 'Summary .*17 tests run: 17 passed,' "$log"
           if grep -Eq '^[[:space:]]*(LEAK|TRY|FAIL|TIMEOUT)([[:space:]]|$)' "$log"; then
-            echo 'The nine-case GREEN slice must have no failures, retries or leaked handles.' >&2
+            echo 'The seventeen-case GREEN slice must have no failures, retries or leaked handles.' >&2
             exit 1
           fi
           cp target/nextest/queue/junit.xml .session-temp/v014-native/windows-1523-green-junit.xml
-      - name: Read recovery fixture from the immutable research workflow revision
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ github.sha }}
-          path: research-fixtures
-          persist-credentials: false
-      - name: Expected recovery refusal RED, isolated after the nine GREEN cases
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
-          test "$(git -C research-fixtures rev-parse HEAD)" = "$RESEARCH_SHA"
-          fixture=scripts/research/1523-recovery-unexpected-record-red.patch
-          git -C research-fixtures ls-files --error-unmatch -- "$fixture"
-          patch=.session-temp/v014-native/windows-1523-recovery-fixture.patch
-          git -C research-fixtures show "$RESEARCH_SHA:$fixture" > "$patch"
-          echo "25d141741fd4ad7cba17cffa35205efb919cde6394f73745e43abe17c0bf1389  $patch" | sha256sum --check
-          git apply --check "$patch"
-          git apply "$patch"
-          log=.session-temp/v014-native/windows-1523-recovery-red.log
-          filter='test(/^infrastructure::workspace_index::tests::stale_recovery_does_not_overwrite_an_unexpected_held_record$/)'
-          set +e
-          cargo nextest run -p unica-coder --lib --profile queue --retries 0 --test-threads 2 --no-tests=fail --color never -E "$filter" 2>&1 | tee "$log"
-          status=${PIPESTATUS[0]}
-          set -e
-          test "$status" -ne 0
-          grep -Eq '^[[:space:]]*FAIL \[.*stale_recovery_does_not_overwrite_an_unexpected_held_record[[:space:]]*$' "$log"
-          grep -Eq 'Starting 1 test across 1 binary' "$log"
-          grep -Eq 'Summary .*1 test run:.*1 failed' "$log"
-          grep -F 'recovery must reject a different expected lock id before writing' "$log"
-          if grep -Eq '^[[:space:]]*(LEAK|TRY|TIMEOUT)([[:space:]]|$)' "$log"; then
-            echo 'A harness failure, retry or leak is not the expected recovery assertion RED.' >&2
-            exit 1
-          fi
-          cp target/nextest/queue/junit.xml .session-temp/v014-native/windows-1523-recovery-red-junit.xml
           {
-            echo 'Nine-case Windows maintenance GREEN slice passed without retries or LEAK.'
-            echo 'The separate recovery experiment reproduced its exact expected assertion failure; recovery is still unresolved.'
-            echo 'This job does not accept the other three original Windows symptoms or the full Windows large profile.'
+            echo 'Seventeen Windows maintenance and recovery cases passed without failures, retries, LEAK or TIMEOUT.'
+            echo 'This job does not accept the other three original Windows symptoms, #988 or the full Windows large profile.'
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
