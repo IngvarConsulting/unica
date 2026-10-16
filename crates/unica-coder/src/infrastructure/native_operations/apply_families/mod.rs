@@ -567,8 +567,7 @@ fn parse_family_operation(
     operation: &crate::domain::apply::ApplyOp,
     binding: &ProviderRootBinding,
 ) -> Result<ParsedApplyOperation, ApplyPlanError> {
-    let Some(family) = resolved_descriptor(operation.name(), Some(operation.at()), binding)
-        .map(|descriptor| descriptor.family())
+    let Some(descriptor) = resolved_descriptor(operation.name(), Some(operation.at()), binding)
     else {
         return Err(hidden_apply_family_unimplemented(op_index));
     };
@@ -576,7 +575,7 @@ fn parse_family_operation(
     if operation.name() == "object.borrow" {
         return borrow::parse(&args, op_index, binding).map(ParsedApplyOperation::Borrow);
     }
-    let parsed = match family {
+    let parsed = match descriptor.family() {
         OperationFamily::Metadata | OperationFamily::Properties => {
             let parsed = metadata::parse_metadata_plan_operation(
                 operation.name(),
@@ -595,7 +594,7 @@ fn parse_family_operation(
         | OperationFamily::Interface
         | OperationFamily::Support => {
             let parsed = form_resource::parse_form_resource_plan_operation_in(
-                Some(family),
+                Some(descriptor),
                 operation.name(),
                 &args,
                 op_index,

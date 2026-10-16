@@ -63,7 +63,6 @@ pub(crate) struct OperationContract {
 
 const REPORTS_HELP: &str = "references/use-cases/reports-printing.md";
 const METADATA_HELP: &str = "skills/meta-edit/SKILL.md";
-const ROLE_HELP: &str = "skills/role-edit/SKILL.md";
 
 #[derive(Debug, PartialEq)]
 pub(crate) struct ContractError {
@@ -71,7 +70,7 @@ pub(crate) struct ContractError {
     pub(crate) message: String,
 }
 
-fn text(nonempty: bool) -> Value {
+pub(super) fn text(nonempty: bool) -> Value {
     if nonempty {
         json!({"type":"string", "pattern":r"\S"})
     } else {
@@ -79,7 +78,7 @@ fn text(nonempty: bool) -> Value {
     }
 }
 
-fn object(fields: &[(&str, Value)], required: &[&str]) -> Value {
+pub(super) fn object(fields: &[(&str, Value)], required: &[&str]) -> Value {
     json!({"type":"object", "additionalProperties":false,
         "properties":fields.iter().map(|(key,value)| (key.to_string(),value.clone())).collect::<Map<_,_>>(),
         "required":required})
@@ -785,89 +784,6 @@ impl OperationContract {
     }
 }
 
-impl OperationContract {
-    /// Создание роли и её права: `role.create` на конфигурации, `right.add`
-    /// на роли, `right.set` на существующей записи прав.
-    pub(crate) fn role(op: &str) -> Option<Self> {
-        let (schema, target, effect, notes, example_args) = match op {
-            "role.create" => (
-                object(
-                    &[
-                        ("at", text(true)),
-                        (
-                            "values",
-                            object(
-                                &[(
-                                    "name",
-                                    json!({
-                                        "type":"string",
-                                        "pattern":r"^\s*[_A-Za-zА-Яа-яЁё][_A-Za-zА-Яа-яЁё0-9]*\s*$",
-                                        "description":"A new 1C role identifier; surrounding whitespace is trimmed."
-                                    }),
-                                )],
-                                &["name"],
-                            ),
-                        ),
-                    ],
-                    &["values"],
-                ),
-                "The source-set configuration root: <source-set>:Configuration.",
-                "Create a role descriptor, its empty Rights.xml and its registration in Configuration.xml.",
-                "The name must be unused. Add initial rights with right.add at Role.<Name> in the same batch. Preview returns an execution token; execute it separately to write the source.",
-                json!({"values":{"name":"ContractRole"}}),
-            ),
-            "right.add" => (
-                object(
-                    &[
-                        ("at", text(true)),
-                        (
-                            "items",
-                            json!({"type":"array","minItems":1,"items":object(&[
-                                ("object",json!({"type":"string","pattern":r"^[^.\s]+\.[^.\s]+(\.[^.\s]+\.[^.\s]+)*$",
-                                    "description":"A metadata object `Kind.Name` (or `Configuration.Name`), or a nested one such as `Kind.Name.Command.C`, without a rights entry in the role yet."})),
-                                ("rights",json!({"type":"object","minProperties":1,"additionalProperties":{"type":"boolean"},
-                                    "description":"Initial rights by platform name, e.g. Read, View, Use; values different from the role default for new objects are stored."})),
-                            ], &["object","rights"])}),
-                        ),
-                    ],
-                    &["items"],
-                ),
-                "The existing role itself: <source-set>:Role.<Name>. Read its Right branch before choosing objects without an entry.",
-                "Create rights entries for objects the role does not list yet, each with its initial rights. An object that already has an entry is refused; change it with right.set at Role.<Name>.Right.<Kind>_<Name>.",
-                "An entry whose rights all equal the role default would stay empty and is refused. Restrict records with right.set on the new entry in the same batch. A nested object (command, attribute) is one entry whose further dots are escaped: Role.<Name>.Right.<Kind>_<Name>\\.Command\\.<C>.",
-                json!({"items":[{"object":"Catalog.Sample","rights":{"Read":true,"View":true}}]}),
-            ),
-            "right.set" => {
-                let mut values = object(
-                    &[
-                        ("right", text(true)),
-                        ("value", json!({"type":"boolean"})),
-                        ("rls", text(true)),
-                    ],
-                    &["right"],
-                );
-                values["anyOf"] = json!([{"required":["value"]},{"required":["rls"]}]);
-                (
-                    object(&[("at", text(true)), ("values", values)], &["values"]),
-                    "An existing rights entry by its canonical name: <source-set>:Role.<Name>.Right.<Kind>_<Name>. The address names the object; a missing entry is refused, create it with right.add on the role.",
-                    "Set one right of the addressed entry and/or its record restriction. A value equal to the role default removes the right with its restriction; an emptied entry is removed.",
-                    "rls alone also grants the right. Restriction templates are preserved but not created.",
-                    json!({"values":{"right":"Read","value":true}}),
-                )
-            }
-            _ => return None,
-        };
-        Some(Self {
-            schema,
-            target,
-            effect,
-            notes,
-            example_args,
-            help: ROLE_HELP,
-        })
-    }
-}
-
 /// Compiled grammar of an owned contract pattern. Every pattern comes from a
 /// schema built in this crate, so the set is closed and the cache is bounded.
 /// Compiling the Unicode identifier class anew for each validated argument
@@ -1102,6 +1018,7 @@ fn normalize_aliases(schema: &Value, value: &mut Value) {
 mod tests {
     use super::*;
     use crate::domain::apply::{OperationFamily, OperationRegistry, IMPLEMENTED_APPLY_OPERATIONS};
+    use crate::domain::role_operation::RoleOperation;
 
     /// Скомпилированная грамматика берётся из кеша по своему шаблону: повторная
     /// проверка не подменяет одну грамматику другой (#1441).
@@ -1151,7 +1068,7 @@ mod tests {
                 "{op}"
             );
         }
-        let create = OperationContract::role("role.create").unwrap();
+        let create = RoleOperation::Create.contract();
         for name in [
             "Reader",
             "МенеджерПродаж",
@@ -1184,7 +1101,7 @@ mod tests {
             );
         }
         assert!(create.example_args.get("at").is_none());
-        let add = OperationContract::role("right.add").unwrap();
+        let add = RoleOperation::RightAdd.contract();
         for (args, path) in [
             (json!({"items":[]}), "args.items"),
             (
@@ -1214,7 +1131,7 @@ mod tests {
                 "args"
             )
             .is_ok());
-        let set = OperationContract::role("right.set").unwrap();
+        let set = RoleOperation::RightSet.contract();
         assert!(set
             .normalize(
                 &json!({"values":{"right":"Read","rls":"ГДЕ ИСТИНА"}}),
