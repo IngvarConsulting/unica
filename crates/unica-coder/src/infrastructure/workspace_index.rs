@@ -959,17 +959,7 @@ impl OwnedIndexLock {
         // Windows mandatory locking rejects reads through a new File. Use the
         // actual lock owner, serialized with heartbeat/release writes. Cloned
         // handles and Windows seek_read share or alter the owner's cursor.
-        let position = self.file.stream_position()?;
-        let mut text = String::new();
-        let read = self
-            .file
-            .seek(SeekFrom::Start(0))
-            .and_then(|_| self.file.read_to_string(&mut text));
-        let restored = self.file.seek(SeekFrom::Start(position));
-        read?;
-        restored?;
-        let current: BslIndexLock = serde_json::from_str(&text)
-            .map_err(|error| std::io::Error::new(ErrorKind::InvalidData, error))?;
+        let current = read_lock_from_open(&mut self.file)?;
         if current.lock_id != lock_id
             || !current.is_active()
             || !self.named_identity_matches(path)?
@@ -1719,6 +1709,18 @@ fn read_lock_path(path: &Path) -> Result<BslIndexLock, String> {
     serde_json::from_str(&text).map_err(|error| error.to_string())
 }
 
+fn read_lock_from_open(file: &mut File) -> std::io::Result<BslIndexLock> {
+    let position = file.stream_position()?;
+    let mut text = String::new();
+    let read = file
+        .seek(SeekFrom::Start(0))
+        .and_then(|_| file.read_to_string(&mut text));
+    let restored = file.seek(SeekFrom::Start(position));
+    read?;
+    restored?;
+    serde_json::from_str(&text).map_err(|error| std::io::Error::new(ErrorKind::InvalidData, error))
+}
+
 fn acquire_index_lock(
     path: &Path,
     action: &str,
@@ -1812,7 +1814,7 @@ fn mark_lock_recovered(
     reason: &str,
 ) -> bool {
     let Ok(mut file) = OpenOptions::new()
-        .create(true)
+        .create(expected_lock_id.is_none())
         .truncate(false)
         .read(true)
         .write(true)
@@ -1826,7 +1828,7 @@ fn mark_lock_recovered(
         Err(_) => return false,
     }
 
-    let recovered = match read_lock_path(path) {
+    let recovered = match read_lock_from_open(&mut file) {
         Ok(mut current) => {
             if expected_lock_id
                 .map(|lock_id| current.lock_id != lock_id)
@@ -1837,6 +1839,10 @@ fn mark_lock_recovered(
             }
             current.mark_recovered(reason);
             current
+        }
+        Err(_) if expected_lock_id.is_some() => {
+            let _ = file.unlock();
+            return false;
         }
         Err(_) => BslIndexLock::recovered(reason, source_root),
     };
@@ -3501,6 +3507,33 @@ mod tests {
     }
 
     #[test]
+    fn stale_recovery_does_not_overwrite_an_unexpected_held_record() {
+        let context = test_context("recovery-unexpected-record");
+        let source_root = context.workspace_root.join("src");
+        fs::create_dir_all(&source_root).unwrap();
+        let path = super::lock_path(&context, &source_root).unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        write_lock_path(&path, BslIndexLock::new("build", &source_root)).unwrap();
+        let before = fs::read(&path).unwrap();
+        let recovered = mark_lock_recovered(
+            &path,
+            Some("another-expected-lock-id"),
+            &source_root,
+            "must not recover a different record",
+        );
+        let after = fs::read(&path).unwrap();
+        assert!(
+            !recovered,
+            "recovery must reject a different expected lock id before writing"
+        );
+        assert_eq!(
+            after, before,
+            "recovery must preserve the unexpected record bytes"
+        );
+        cleanup(&context);
+    }
+
+    #[test]
     fn stale_structured_lock_is_recovered_by_active_lock() {
         let context = test_context("stale-structured-recovered");
         let source_root = default_source_root(&context);
@@ -3514,6 +3547,86 @@ mod tests {
             read_lock_path(&lock_path(&context)).expect("stale lock should remain as marker");
         assert_eq!(current.state, "recovered");
         assert_eq!(read_bsl_index_status(&context).unwrap().status, "failed");
+        cleanup(&context);
+    }
+
+    #[test]
+    fn stale_recovery_preserves_the_matching_record_identity_and_fields() {
+        let context = test_context("recovery-matching-record");
+        let source_root = context.workspace_root.join("src");
+        fs::create_dir_all(&source_root).unwrap();
+        let path = super::lock_path(&context, &source_root).unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut original = BslIndexLock::new("update", &source_root);
+        original.owner_pid = 12345;
+        original.child_pid = Some(23456);
+        original.started_at = now_secs().saturating_sub(LOCK_STALE_AFTER.as_secs() + 1);
+        original.updated_at = original.started_at;
+        write_lock_path(&path, original.clone()).unwrap();
+        let identity = file_identity(&File::open(&path).unwrap()).unwrap();
+        let started = now_secs();
+        let reason = "recover the matching stale record";
+
+        assert!(mark_lock_recovered(
+            &path,
+            Some(&original.lock_id),
+            &source_root,
+            reason,
+        ));
+
+        let current = read_lock_path(&path).unwrap();
+        assert_eq!(
+            file_identity(&File::open(&path).unwrap()).unwrap(),
+            identity
+        );
+        assert_eq!(current.schema_version, original.schema_version);
+        assert_eq!(current.lock_id, original.lock_id);
+        assert_eq!(current.owner_pid, original.owner_pid);
+        assert_eq!(current.action, original.action);
+        assert_eq!(current.source_root, original.source_root);
+        assert_eq!(current.started_at, original.started_at);
+        assert_eq!(current.child_pid, original.child_pid);
+        assert_eq!(current.state, "recovered");
+        assert!(current.updated_at >= started);
+        assert_eq!(current.released_at, Some(current.updated_at));
+        assert_eq!(current.message.as_deref(), Some(reason));
+        cleanup(&context);
+    }
+
+    #[test]
+    fn stale_recovery_with_expected_identity_preserves_unreadable_records() {
+        let context = test_context("recovery-unreadable-record");
+        let source_root = context.workspace_root.join("src");
+        fs::create_dir_all(&source_root).unwrap();
+        let path = super::lock_path(&context, &source_root).unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        assert!(!mark_lock_recovered(
+            &path,
+            Some("expected-record-id"),
+            &source_root,
+            "expected record disappeared",
+        ));
+        assert!(
+            !path.exists(),
+            "refusal must not create a replacement marker"
+        );
+        for bytes in [b"".as_slice(), b"{", b"\xff"] {
+            fs::write(&path, bytes).unwrap();
+            let identity = file_identity(&File::open(&path).unwrap()).unwrap();
+
+            assert!(!mark_lock_recovered(
+                &path,
+                Some("expected-record-id"),
+                &source_root,
+                "identity could not be read",
+            ));
+
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+            assert_eq!(
+                file_identity(&File::open(&path).unwrap()).unwrap(),
+                identity
+            );
+        }
         cleanup(&context);
     }
 
