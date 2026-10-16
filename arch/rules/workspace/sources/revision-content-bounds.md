@@ -5,6 +5,7 @@ check:
   - crates/unica-coder/src/infrastructure/native_operations/apply.rs::reference_scan_refuses_a_file_larger_than_the_per_file_budget
   - crates/unica-coder/src/infrastructure/native_operations/apply.rs::reference_scan_entry_budget_stops_incrementally_at_a_test_limit
   - crates/unica-coder/src/infrastructure/native_operations/apply.rs::reference_scan_depth_budget_stops_before_recursive_descent
+  - crates/unica-coder/src/infrastructure/native_operations/apply.rs::reference_guard_preserves_finite_deadline_after_capture_without_writing
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::apply_plan_fence_is_targeted_and_binds_read_only_inputs
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::prepared_apply_rejects_stale_revision_source_change_cancellation_and_deadline_before_publication
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::retained_apply_stop_causes_preserve_rollback_at_every_late_gate
