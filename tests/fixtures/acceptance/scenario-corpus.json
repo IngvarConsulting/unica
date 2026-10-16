@@ -33322,10 +33322,10 @@
   },
   {
    "id": "S392",
-   "name": "text-search-hit-opens-its-module",
+   "name": "text-search-hit-opens-its-body-line",
    "issue": 1298,
    "area": "Код BSL",
-   "task": "Найти литерал в тексте BSL, открыть модуль совпадения по его адресу и найти ту же строку в его исходном тексте",
+   "task": "Найти литерал в тексте BSL, открыть строку Body содержащего метода по адресу совпадения и подтвердить тот же фрагмент в целом Body модуля",
    "workspace": "tests/fixtures/acceptance/workspace",
    "wire": [
     {
@@ -33344,7 +33344,7 @@
       },
       {
        "pointer": "/data/matches/0/at",
-       "eq": "main:Catalog.Валюты.Module.Manager"
+       "eq": "main:Catalog.Валюты.Module.Manager.Method.ВалютаПоКоду.Body#L13"
       },
       {
        "pointer": "/data/matches/1",
@@ -33378,7 +33378,7 @@
      "assertions": [
       {
        "pointer": "/data/at",
-       "eq": "main:Catalog.Валюты.Module.Manager"
+       "eq": "$capture.moduleAt"
       }
      ]
     },
@@ -38692,10 +38692,10 @@
   },
   {
    "id": "S425",
-   "name": "kind-scoped-text-hit-names-its-module",
+   "name": "kind-scoped-text-hit-opens-its-body-line",
    "issue": 1416,
    "area": "Код BSL",
-   "task": "Найти объявление функции по виду метаданных: совпадение называет адрес своего модуля, а не область запроса, совпадает с поиском по самому модулю и открывается через view",
+   "task": "Найти объявление функции по виду метаданных: совпадение называет читаемый адрес Body метода, сохраняет область запроса, совпадает с поиском по самому модулю и открывается через view",
    "workspace": "tests/fixtures/acceptance/workspace",
    "wire": [
     {
@@ -38716,7 +38716,7 @@
       },
       {
        "pointer": "/data/matches/0/at",
-       "eq": "main:CommonModule.GoogleПереводчик"
+       "eq": "main:CommonModule.GoogleПереводчик.Method.НастройкиАвторизации.Body#L145"
       },
       {
        "pointer": "/data/matches/1",
@@ -38791,7 +38791,7 @@
      "assertions": [
       {
        "pointer": "/data/at",
-       "eq": "main:CommonModule.GoogleПереводчик"
+       "eq": "$capture.moduleAt"
       }
      ]
     }
