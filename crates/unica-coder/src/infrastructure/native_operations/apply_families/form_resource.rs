@@ -5,6 +5,7 @@ use crate::domain::apply::{FormItemRole, OperationDescriptor, OperationFamily};
 use crate::domain::events::{DomainEvent, DomainEventKind};
 use crate::domain::role_operation::RoleOperation;
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use crate::domain::support_operation::SupportOperation;
 use crate::infrastructure::logical_event_source::attached_resource_relative;
 use crate::infrastructure::native_operations::apply::{
     empty_apply_family_batch, hidden_apply_family_unimplemented, ApplyPlanError,
@@ -753,7 +754,10 @@ pub(crate) fn parse_form_resource_plan_operation_in(
             parse_subsystem_operation(operation, object, op_index, binding)?
         }
         Some(OperationFamily::Support) => {
-            parse_support_operation(operation, object, op_index, binding)?
+            match descriptor.and_then(OperationDescriptor::support_operation) {
+                Some(operation) => parse_support_operation(operation, object, op_index, binding)?,
+                None => return Err(hidden_apply_family_unimplemented(op_index)),
+            }
         }
         Some(OperationFamily::Form) => parse_form_operation(operation, object, op_index, binding)?,
         _ => FormResourcePlanKind::Unsupported,
@@ -1106,26 +1110,24 @@ fn parse_subsystem_operation(
 }
 
 fn parse_support_operation(
-    operation: &str,
+    operation: SupportOperation,
     args: &Map<String, Value>,
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<FormResourcePlanKind, ApplyPlanError> {
     let target = qualified_target(args, op_index, binding)?;
-    if let Some(contract) = crate::domain::operation_contract::OperationContract::support(operation)
-    {
-        contract
-            .normalize(
-                &Value::Object(args.clone()),
-                &format!("ops[{op_index}].args"),
-            )
-            .map_err(|error| {
-                ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(error.path)
-            })?;
-    }
+    operation
+        .contract()
+        .normalize(
+            &Value::Object(args.clone()),
+            &format!("ops[{op_index}].args"),
+        )
+        .map_err(|error| {
+            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(error.path)
+        })?;
 
     match operation {
-        "supportCapability.set" => {
+        SupportOperation::CapabilitySet => {
             // Возможность изменения — свойство всей конфигурации; вызов на
             // объекте писал бы не в тот узел.
             if !matches!(target.segments(), [root] if root.kind() == NodeKind::Configuration) {
@@ -1162,7 +1164,7 @@ fn parse_support_operation(
                 SupportCapability::Off
             }))
         }
-        "supportRule.set" => {
+        SupportOperation::RuleSet => {
             let values = required_values(args, op_index, &["rule"])?;
             let rule = required_string(values, "rule", op_index, "values")?;
             let rule = match rule {
@@ -1207,7 +1209,6 @@ fn parse_support_operation(
                 .map_err(|error| bad(op_index, "at", error.to_string()))?;
             Ok(FormResourcePlanKind::SupportRule { target, rule })
         }
-        _ => Ok(FormResourcePlanKind::Unsupported),
     }
 }
 
@@ -5233,6 +5234,115 @@ mod tests {
                     assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn support_aliases_select_the_exact_capability_and_object_rule() {
+        use super::{FormResourcePlanKind, SupportCapability, SupportObjectRule};
+        let fixture = ApplySeamFixture::new();
+        for (values, expected) in [
+            (json!({"enabled": true}), SupportCapability::On),
+            (json!({"enabled": false}), SupportCapability::Off),
+            (json!({"rule": "on"}), SupportCapability::On),
+            (json!({"rule": "off"}), SupportCapability::Off),
+            (
+                json!({"rule": "EditableSupportEnabled"}),
+                SupportCapability::On,
+            ),
+            (
+                json!({"rule": "EditableSupportDisabled"}),
+                SupportCapability::Off,
+            ),
+            (json!({"rule": "enabled"}), SupportCapability::On),
+            (json!({"rule": "disabled"}), SupportCapability::Off),
+        ] {
+            let args = json!({"at": "main:Configuration", "values": values});
+            let parsed = parse_form_resource_plan_operation(
+                "supportCapability.set",
+                &args,
+                3,
+                &fixture.binding,
+            )
+            .unwrap();
+            match parsed.kind {
+                FormResourcePlanKind::SupportCapability(actual) => {
+                    assert_eq!(actual, expected, "{args}")
+                }
+                other => panic!("support capability selected {other:?}: {args}"),
+            }
+        }
+        for (rule, expected) in [
+            ("locked", SupportObjectRule::Locked),
+            ("editable", SupportObjectRule::Editable),
+            ("off-support", SupportObjectRule::OffSupport),
+            ("NotEditable", SupportObjectRule::Locked),
+            ("EditableWithSupport", SupportObjectRule::Editable),
+            ("NotSupported", SupportObjectRule::OffSupport),
+        ] {
+            for (at, expected_target) in [
+                ("main:Document.First", "Document.First"),
+                ("main:Document.First.Form.Card", "Document.First.Form.Card"),
+            ] {
+                let args = json!({"at": at, "values": {"rule": rule}});
+                let parsed = parse_form_resource_plan_operation(
+                    "supportRule.set",
+                    &args,
+                    3,
+                    &fixture.binding,
+                )
+                .unwrap();
+                match parsed.kind {
+                    FormResourcePlanKind::SupportRule {
+                        target,
+                        rule: actual,
+                    } => {
+                        assert_eq!(actual, expected, "{args}");
+                        assert_eq!(target.as_str(), expected_target, "{args}");
+                    }
+                    other => panic!("support rule selected {other:?}: {args}"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn support_target_refusals_precede_argument_contract_refusals() {
+        let fixture = ApplySeamFixture::new();
+        for operation in ["supportCapability.set", "supportRule.set"] {
+            for target in [None, Some(json!(42)), Some(json!(null))] {
+                let mut args = json!({"values": {"rule": true}, "unknown": true});
+                if let Some(target) = target {
+                    args["at"] = target;
+                }
+                let error =
+                    parse_form_resource_plan_operation(operation, &args, 3, &fixture.binding)
+                        .expect_err("an invalid target precedes malformed arguments");
+                assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{operation}");
+                assert_eq!(error.path(), Some("ops[3].args.at"), "{operation}");
+                assert_eq!(
+                    error.to_string(),
+                    "`at` must be a logical address",
+                    "{operation}"
+                );
+            }
+        }
+        for (operation, args, path) in [
+            (
+                "supportCapability.set",
+                json!({"at":"main:Document.First", "values":{"enabled":"wrong"}}),
+                "ops[3].args.values",
+            ),
+            (
+                "supportRule.set",
+                json!({"at":"main:Configuration", "values":{"rule":true}}),
+                "ops[3].args.values.rule",
+            ),
+        ] {
+            let error = parse_form_resource_plan_operation(operation, &args, 3, &fixture.binding)
+                .expect_err("a logical target still checks its arguments before its owner kind");
+            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{operation}");
+            assert_eq!(error.path(), Some(path), "{operation}: {error}");
         }
     }
 

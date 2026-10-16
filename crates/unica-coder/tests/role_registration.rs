@@ -1,4 +1,4 @@
-//! The real registration macros reject the former untyped Role entry.
+//! The real registration macros reject untyped Role and Support entries.
 use quote::ToTokens;
 use std::process::{Command, Output};
 
@@ -22,22 +22,31 @@ fn compile_registration(entry: &str) -> Output {
     let fixture = format!(
         r#"
         #![allow(dead_code)]
-        enum OperationFamily {{ Role, Metadata }}
-        enum OperationApplicability {{ Configuration }}
+        enum OperationFamily {{ Role, Support, Metadata }}
+        enum OperationApplicability {{ Configuration, SupportRule }}
         enum OperationSkeleton {{ Values }}
         enum RoleOperation {{ Create }}
+        enum SupportOperation {{ CapabilitySet, RuleSet }}
+        enum TypedOperation {{ Role(RoleOperation), Support(SupportOperation) }}
         struct OperationDescriptor {{
             name: &'static str,
             family: OperationFamily,
             applicability: OperationApplicability,
             skeleton: OperationSkeleton,
-            role_operation: Option<RoleOperation>,
+            typed_operation: Option<TypedOperation>,
         }}
         impl OperationDescriptor {{
             const fn role(operation: RoleOperation) -> Self {{ Self {{
                 name: "role.create", family: OperationFamily::Role,
                 applicability: OperationApplicability::Configuration,
-                skeleton: OperationSkeleton::Values, role_operation: Some(operation),
+                skeleton: OperationSkeleton::Values,
+                typed_operation: Some(TypedOperation::Role(operation)),
+            }} }}
+            const fn support(operation: SupportOperation) -> Self {{ Self {{
+                name: "supportCapability.set", family: OperationFamily::Support,
+                applicability: OperationApplicability::Configuration,
+                skeleton: OperationSkeleton::Values,
+                typed_operation: Some(TypedOperation::Support(operation)),
             }} }}
         }}
         {macros}
@@ -57,6 +66,30 @@ fn compile_registration(entry: &str) -> Output {
         .arg(directory.path())
         .output()
         .unwrap()
+}
+
+#[test]
+fn typed_support_registration_compiles_and_legacy_support_tuple_is_rejected() {
+    let typed = compile_registration(
+        r#"(RoleOperation::Create), (SupportOperation::CapabilitySet), (SupportOperation::RuleSet), ("object.create", Metadata, Configuration, Values)"#,
+    );
+    assert!(
+        typed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&typed.stderr)
+    );
+    let legacy = compile_registration(r#"("supportRule.set", Support, SupportRule, Values)"#);
+    assert!(
+        !legacy.status.success(),
+        "the old Support registration must fail"
+    );
+    assert!(
+        String::from_utf8_lossy(&legacy.stderr).contains(
+            "Support operations must register a typed SupportOperation with a mandatory contract"
+        ),
+        "{}",
+        String::from_utf8_lossy(&legacy.stderr)
+    );
 }
 
 #[test]

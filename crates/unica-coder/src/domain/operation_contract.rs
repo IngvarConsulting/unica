@@ -749,41 +749,6 @@ impl OperationContract {
     }
 }
 
-impl OperationContract {
-    /// The same closed Support grammar is published by Can and checked by
-    /// the productive planner before converting values into its typed edit.
-    pub(crate) fn support(op: &str) -> Option<Self> {
-        let (values, target, effect, notes, example_args) = match op {
-            "supportCapability.set" => (
-                json!({"anyOf":[
-                    object(&[("enabled",json!({"type":"boolean"}))], &["enabled"]),
-                    object(&[("rule",json!({"type":"string","enum":["on","off","EditableSupportEnabled","EditableSupportDisabled","enabled","disabled"]}))], &["rule"])
-                ]}),
-                "The configuration root: <source-set>:Configuration.",
-                "Switch editing capability of a configuration already on vendor support. An actual switch resets vendor object rules to locked; setting the current state leaves them unchanged.",
-                "Supply exactly one of enabled (boolean) or rule. on/EditableSupportEnabled/enabled mean true; off/EditableSupportDisabled/disabled mean false. This Support-only apply must be separate from ordinary edits; project support policy and vendor payload validation still apply.",
-                json!({"values":{"enabled":true}}),
-            ),
-            "supportRule.set" => (
-                object(&[("rule",json!({"type":"string","enum":["locked","editable","off-support","NotEditable","EditableWithSupport","NotSupported"]}))], &["rule"]),
-                "One existing top-level metadata object or its named form: <source-set>:<Kind>.<Name>[.Form.<FormName>].",
-                "Set the vendor support rule for the addressed object's registered UUID. Other object rules stay unchanged.",
-                "locked/NotEditable prohibit edits; editable/EditableWithSupport allow edits while keeping vendor support; off-support/NotSupported remove the object from vendor support. This Support-only apply must be separate from ordinary edits; source profile, registration and support state are still checked.",
-                json!({"values":{"rule":"editable"}}),
-            ),
-            _ => return None,
-        };
-        Some(Self {
-            schema: object(&[("at", text(true)), ("values", values)], &["values"]),
-            target,
-            effect,
-            notes,
-            example_args,
-            help: "skills/release-support/SKILL.md",
-        })
-    }
-}
-
 /// Compiled grammar of an owned contract pattern. Every pattern comes from a
 /// schema built in this crate, so the set is closed and the cache is bounded.
 /// Compiling the Unicode identifier class anew for each validated argument

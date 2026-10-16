@@ -6,6 +6,7 @@ use crate::domain::platform_profile::PlatformProfile;
 use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
 use crate::domain::refusal::RefusalCode;
 use crate::domain::role_operation::RoleOperation;
+use crate::domain::support_operation::SupportOperation;
 use serde_json::{Map, Value};
 use std::fmt;
 
@@ -1028,12 +1029,18 @@ impl FormItemRole {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TypedOperation {
+    Role(RoleOperation),
+    Support(SupportOperation),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct OperationDescriptor {
     name: &'static str,
     family: OperationFamily,
     applicability: OperationApplicability,
     skeleton: OperationSkeleton,
-    role_operation: Option<RoleOperation>,
+    typed_operation: Option<TypedOperation>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1203,12 +1210,32 @@ impl OperationDescriptor {
             family: OperationFamily::Role,
             applicability: operation.applicability(),
             skeleton: operation.skeleton(),
-            role_operation: Some(operation),
+            typed_operation: Some(TypedOperation::Role(operation)),
+        }
+    }
+
+    const fn support(operation: SupportOperation) -> Self {
+        Self {
+            name: operation.name(),
+            family: OperationFamily::Support,
+            applicability: operation.applicability(),
+            skeleton: operation.skeleton(),
+            typed_operation: Some(TypedOperation::Support(operation)),
         }
     }
 
     pub(crate) const fn role_operation(self) -> Option<RoleOperation> {
-        self.role_operation
+        match self.typed_operation {
+            Some(TypedOperation::Role(operation)) => Some(operation),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn support_operation(self) -> Option<SupportOperation> {
+        match self.typed_operation {
+            Some(TypedOperation::Support(operation)) => Some(operation),
+            _ => None,
+        }
     }
 
     pub(crate) const fn name(self) -> &'static str {
@@ -1231,7 +1258,7 @@ impl OperationDescriptor {
     pub(crate) fn content_resource(self) -> Option<&'static str> {
         match self.family {
             OperationFamily::Role => self
-                .role_operation
+                .role_operation()
                 .and_then(RoleOperation::content_resource),
             OperationFamily::Form
                 if !matches!(self.name, "form.add" | "form.set" | "form.remove") =>
@@ -1409,10 +1436,8 @@ impl OperationDescriptor {
             OperationFamily::Metadata => {
                 super::operation_contract::OperationContract::metadata(self.name)
             }
-            OperationFamily::Role => self.role_operation.map(RoleOperation::contract),
-            OperationFamily::Support => {
-                super::operation_contract::OperationContract::support(self.name)
-            }
+            OperationFamily::Role => self.role_operation().map(RoleOperation::contract),
+            OperationFamily::Support => self.support_operation().map(SupportOperation::contract),
             OperationFamily::Form => super::operation_contract::OperationContract::form(self.name),
             OperationFamily::Event => {
                 super::operation_contract::OperationContract::event(self.name)
@@ -1462,8 +1487,16 @@ macro_rules! operation_descriptor {
             "Role operations must register a typed RoleOperation with a mandatory contract"
         )
     };
-    (($operation:path)) => {
-        OperationDescriptor::role($operation)
+    (($name:literal, Support, $applicability:ident, $skeleton:ident)) => {
+        compile_error!(
+            "Support operations must register a typed SupportOperation with a mandatory contract"
+        )
+    };
+    ((RoleOperation::$variant:ident)) => {
+        OperationDescriptor::role(RoleOperation::$variant)
+    };
+    ((SupportOperation::$variant:ident)) => {
+        OperationDescriptor::support(SupportOperation::$variant)
     };
     (($name:literal, $family:ident, $applicability:ident, $skeleton:ident)) => {
         OperationDescriptor {
@@ -1471,7 +1504,7 @@ macro_rules! operation_descriptor {
             family: OperationFamily::$family,
             applicability: OperationApplicability::$applicability,
             skeleton: OperationSkeleton::$skeleton,
-            role_operation: None,
+            typed_operation: None,
         }
     };
 }
@@ -1644,8 +1677,8 @@ operation_descriptors!(
     ("content.remove", Subsystem, Subsystem, Target),
     ("childSubsystem.add", Subsystem, Subsystem, Items),
     ("childSubsystem.remove", Subsystem, NestedSubsystem, Target),
-    ("supportCapability.set", Support, Configuration, Values),
-    ("supportRule.set", Support, SupportRule, Values),
+    (SupportOperation::CapabilitySet),
+    (SupportOperation::RuleSet),
     ("commandVisibility.set", Interface, Interface, Items),
     ("commandPlacement.set", Interface, Interface, Items),
     ("commandOrder.set", Interface, InterfaceGroup, Values),
@@ -2693,7 +2726,7 @@ mod tests {
     use super::{
         ApplyRequest, OperationApplicability, OperationDescriptor, OperationFamily,
         OperationRegistry, OperationSite, OperationSkeleton, RoleOperation, SourceSetTraits,
-        TemplateFormat, RETIRED_ARGUMENTS,
+        SupportOperation, TemplateFormat, TypedOperation, RETIRED_ARGUMENTS,
     };
     use crate::domain::address::QualifiedAddress;
     use crate::domain::platform_profile::PlatformProfile;
@@ -2977,26 +3010,43 @@ mod tests {
         assert_eq!(request.if_rev(), Some("rev-42"));
     }
 
-    fn role_registration_is_consistent(descriptor: OperationDescriptor) -> bool {
-        match descriptor.role_operation() {
-            Some(operation) => {
-                descriptor.family() == OperationFamily::Role
-                    && descriptor.name() == operation.name()
-                    && descriptor.applicability == operation.applicability()
-                    && descriptor.skeleton == operation.skeleton()
-                    && descriptor.argument_contract().is_some()
+    fn typed_registration_is_consistent(descriptor: OperationDescriptor) -> bool {
+        let (family, name, applicability, skeleton) = match descriptor.typed_operation {
+            Some(TypedOperation::Role(operation)) => (
+                OperationFamily::Role,
+                operation.name(),
+                operation.applicability(),
+                operation.skeleton(),
+            ),
+            Some(TypedOperation::Support(operation)) => (
+                OperationFamily::Support,
+                operation.name(),
+                operation.applicability(),
+                operation.skeleton(),
+            ),
+            None => {
+                return !matches!(
+                    descriptor.family(),
+                    OperationFamily::Role | OperationFamily::Support
+                )
             }
-            None => descriptor.family() != OperationFamily::Role,
-        }
+        };
+        descriptor.family() == family
+            && descriptor.name() == name
+            && descriptor.applicability == applicability
+            && descriptor.skeleton == skeleton
+            && descriptor.argument_contract().is_some()
     }
 
     #[test]
     fn role_registration_rejects_missing_and_mismatched_typed_operations() {
         let valid = OperationDescriptor::role(RoleOperation::Create);
-        assert!(role_registration_is_consistent(valid));
+        assert!(typed_registration_is_consistent(valid));
+        assert_eq!(valid.role_operation(), Some(RoleOperation::Create));
+        assert_eq!(valid.support_operation(), None);
         for invalid in [
             OperationDescriptor {
-                role_operation: None,
+                typed_operation: None,
                 ..valid
             },
             OperationDescriptor {
@@ -3016,11 +3066,58 @@ mod tests {
                 ..valid
             },
             OperationDescriptor {
-                role_operation: Some(RoleOperation::RightSet),
+                typed_operation: Some(TypedOperation::Role(RoleOperation::RightSet)),
+                ..valid
+            },
+            OperationDescriptor {
+                typed_operation: Some(TypedOperation::Support(SupportOperation::CapabilitySet)),
                 ..valid
             },
         ] {
-            assert!(!role_registration_is_consistent(invalid), "{invalid:?}");
+            assert!(!typed_registration_is_consistent(invalid), "{invalid:?}");
+        }
+    }
+
+    #[test]
+    fn support_registration_rejects_missing_and_mismatched_typed_operations() {
+        let valid = OperationDescriptor::support(SupportOperation::CapabilitySet);
+        assert!(typed_registration_is_consistent(valid));
+        assert_eq!(
+            valid.support_operation(),
+            Some(SupportOperation::CapabilitySet)
+        );
+        assert_eq!(valid.role_operation(), None);
+        for invalid in [
+            OperationDescriptor {
+                typed_operation: None,
+                ..valid
+            },
+            OperationDescriptor {
+                family: OperationFamily::Metadata,
+                ..valid
+            },
+            OperationDescriptor {
+                name: "support.uncontracted",
+                ..valid
+            },
+            OperationDescriptor {
+                applicability: OperationApplicability::SupportRule,
+                ..valid
+            },
+            OperationDescriptor {
+                skeleton: OperationSkeleton::Items,
+                ..valid
+            },
+            OperationDescriptor {
+                typed_operation: Some(TypedOperation::Support(SupportOperation::RuleSet)),
+                ..valid
+            },
+            OperationDescriptor {
+                typed_operation: Some(TypedOperation::Role(RoleOperation::Create)),
+                ..valid
+            },
+        ] {
+            assert!(!typed_registration_is_consistent(invalid), "{invalid:?}");
         }
     }
 
@@ -3163,7 +3260,7 @@ mod tests {
         assert_eq!(unique.len(), expected.len() - SHARED_NAMES.len());
         for descriptor in registry.descriptors() {
             assert!(
-                role_registration_is_consistent(*descriptor),
+                typed_registration_is_consistent(*descriptor),
                 "{descriptor:?}"
             );
         }

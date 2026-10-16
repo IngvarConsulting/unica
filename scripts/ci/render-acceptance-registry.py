@@ -123,13 +123,15 @@ def _literal_table(source: str, name: str) -> str:
     return _metadata_source(source[start:start + closing.start()])
 
 
-def _role_registration_metadata() -> dict[str, tuple[str, str, str, str]]:
-    path = APPLY_REGISTRY.with_name("role_operation.rs")
+def _registration_metadata(family: str) -> dict[str, tuple[str, str, str, str]]:
+    stem = family.lower()
+    path = APPLY_REGISTRY.with_name(f"{stem}_operation.rs")
     try:
         source = path.read_text(encoding="utf-8")
     except OSError as error:
-        raise RuntimeError(f"typed Role metadata is unavailable: {path}") from error
-    table = _literal_table(source, "role_operations")
+        raise RuntimeError(f"typed {family} metadata is unavailable: {path}") from error
+    table_name = f"{stem}_operations"
+    table = _literal_table(source, table_name)
     row = re.compile(
         r'\s*([A-Za-z_]\w*)\s*=>\s*\(\s*"([A-Za-z]+\.[A-Za-z]+)"\s*,'
         r'\s*([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*)\s*\)\s*(?:,|$)'
@@ -140,51 +142,57 @@ def _role_registration_metadata() -> dict[str, tuple[str, str, str, str]]:
     while table[position:].strip():
         match = row.match(table, position)
         if match is None:
-            raise RuntimeError("unsupported or incomplete role_operations metadata row")
+            raise RuntimeError(f"unsupported or incomplete {table_name} metadata row")
         variant, name, applicability, skeleton = match.groups()
         if variant in entries or name in names:
-            raise RuntimeError("role_operations variants and names must be unique")
-        entries[variant] = (name, "Role", applicability, skeleton)
+            raise RuntimeError(f"{table_name} variants and names must be unique")
+        entries[variant] = (name, family, applicability, skeleton)
         names.add(name)
         position = match.end()
     if not entries:
-        raise RuntimeError("the role_operations metadata table is empty")
+        raise RuntimeError(f"the {table_name} metadata table is empty")
     return entries
 
 
 def load_apply_registry() -> tuple[list[tuple[str, str, str, str]], set[str]]:
-    """Read raw descriptors and typed Role metadata without skipping entries."""
+    """Read raw descriptors and literal typed metadata without skipping entries."""
     source = APPLY_REGISTRY.read_text(encoding="utf-8")
     table = _literal_table(source, "operation_descriptors")
     pattern = re.compile(
         r'\(\s*(?:"([A-Za-z]+\.[A-Za-z]+)"\s*,\s*(\w+)\s*,\s*(\w+)\s*,\s*(\w+)'
-        r'|RoleOperation::([A-Za-z_]\w*))\s*\)'
+        r'|([A-Za-z_]\w*)::([A-Za-z_]\w*))\s*\)'
     )
     entries = []
-    typed = _role_registration_metadata()
-    registered = []
+    typed_families = ("Role", "Support")
+    typed = {f"{family}Operation": _registration_metadata(family) for family in typed_families}
+    registered = {operation_type: [] for operation_type in typed}
     position = 0
     for match in pattern.finditer(table):
         if table[position:match.start()].strip(" \t\r\n,"):
             raise RuntimeError("unsupported apply registration; no entry may be skipped")
-        if variant := match[5]:
-            if variant not in typed:
-                raise RuntimeError(f"unknown typed Role registration: {variant}")
-            registered.append(variant)
-            entries.append(typed[variant])
+        if operation_type := match[5]:
+            variant = match[6]
+            if operation_type not in typed or variant not in typed[operation_type]:
+                raise RuntimeError(f"unknown typed registration: {operation_type}::{variant}")
+            registered[operation_type].append(variant)
+            entries.append(typed[operation_type][variant])
         else:
-            entries.append(match.group(1, 2, 3, 4))
+            entry = match.group(1, 2, 3, 4)
+            if entry[1] in typed_families:
+                raise RuntimeError(f"{entry[1]} registrations must use their typed operation")
+            entries.append(entry)
         position = match.end()
     if table[position:].strip(" \t\r\n,"):
         raise RuntimeError("unsupported apply registration; no entry may be skipped")
     if not entries:
         raise RuntimeError("the apply registry table was not found in domain/apply.rs")
-    if (
-        len(registered) != len(typed)
-        or set(registered) != set(typed)
-        or sum(entry[1] == "Role" for entry in entries) != len(typed)
-    ):
-        raise RuntimeError("typed Role registrations must name every variant exactly once")
+    for family in typed_families:
+        operation_type = f"{family}Operation"
+        if (
+            len(registered[operation_type]) != len(typed[operation_type])
+            or set(registered[operation_type]) != set(typed[operation_type])
+        ):
+            raise RuntimeError(f"typed {family} registrations must name every variant exactly once")
     implemented_start = source.index("const IMPLEMENTED_APPLY_OPERATIONS: &[&str] = &[")
     implemented_end = source.index("];", implemented_start)
     implemented = set(re.findall(r'"([A-Za-z]+\.[A-Za-z]+)"', source[implemented_start:implemented_end]))

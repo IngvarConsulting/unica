@@ -4,7 +4,7 @@ pub(crate) mod form_resource;
 pub(crate) mod metadata;
 mod request;
 
-use crate::domain::apply::{ApplyRequest, OperationFamily};
+use crate::domain::apply::{ApplyRequest, OperationDescriptor, OperationFamily};
 use crate::domain::project_sources::SourceSetKind;
 use crate::infrastructure::native_operations::apply::{
     hidden_apply_family_unimplemented, ApplyPlanError, ApplyPlanErrorKind, ApplyStagedState,
@@ -46,7 +46,15 @@ fn refuse_targets_outside_writable_profile(
 
 /// Operations that change the vendor-support state itself: they are the way
 /// to unlock an object, so the lock they edit never refuses them.
-const SUPPORT_STATE_OPERATIONS: &[&str] = &["supportCapability.set", "supportRule.set"];
+fn changes_support_state(
+    operation: &str,
+    at: Option<&crate::domain::address::QualifiedAddress>,
+    binding: &ProviderRootBinding,
+) -> bool {
+    resolved_descriptor(operation, at, binding)
+        .and_then(OperationDescriptor::support_operation)
+        .is_some_and(|operation| operation.changes_support_state())
+}
 
 /// Vendor-support gate of the canonical mutation path. When the actor's
 /// support policy is `deny`, a request whose owner is a vendor object with
@@ -72,7 +80,7 @@ fn refuse_targets_on_locked_vendor_objects(
     if request
         .ops()
         .iter()
-        .all(|operation| SUPPORT_STATE_OPERATIONS.contains(&operation.name()))
+        .all(|operation| changes_support_state(operation.name(), Some(operation.at()), binding))
     {
         return Ok(());
     }
@@ -942,7 +950,7 @@ pub(crate) fn plan_hidden_v13_apply(
     let support_operations = request
         .ops()
         .iter()
-        .filter(|op| SUPPORT_STATE_OPERATIONS.contains(&op.name()))
+        .filter(|op| changes_support_state(op.name(), Some(op.at()), binding))
         .count();
     if support_operations > 0 && support_operations < request.ops().len() {
         return Err(ApplyPlanError::new(
@@ -1527,6 +1535,97 @@ mod tests {
                 .err()
                 .unwrap_or_else(|| panic!("{op} must not redirect to another element"));
             assert_eq!(error.path(), Some(path), "{op}: {error}");
+        }
+    }
+
+    #[test]
+    fn support_state_classification_preserves_names_across_targets_and_profiles() {
+        use crate::domain::address::QualifiedAddress;
+        use crate::domain::apply::OperationRegistry;
+        let fixture = ApplySeamFixture::new();
+        let source = fixture.source_dir();
+        let workspace = source.parent().unwrap().to_path_buf();
+        let mut names = OperationRegistry::closed().names();
+        names.extend(["", "supportCapability.set.extra", "supportRule.unknown"]);
+        for (kind, format, profile) in [
+            (
+                SourceSetKind::Configuration,
+                SourceFormat::PlatformXml,
+                SourceProfile::platform_xml_8_3_27_format_2_20(),
+            ),
+            (
+                SourceSetKind::Extension,
+                SourceFormat::PlatformXml,
+                SourceProfile::platform_xml_8_3_27_format_2_20(),
+            ),
+            (
+                SourceSetKind::ExternalProcessor,
+                SourceFormat::PlatformXml,
+                SourceProfile::platform_xml_8_3_27_format_2_20(),
+            ),
+            (
+                SourceSetKind::ExternalReport,
+                SourceFormat::PlatformXml,
+                SourceProfile::platform_xml_8_3_27_format_2_20(),
+            ),
+            (
+                SourceSetKind::Configuration,
+                SourceFormat::Edt,
+                SourceProfile::legacy_workspace_service_compatibility(),
+            ),
+            (
+                SourceSetKind::Configuration,
+                SourceFormat::PlatformXml,
+                SourceProfile::legacy_workspace_service_compatibility(),
+            ),
+            (
+                SourceSetKind::Configuration,
+                SourceFormat::PlatformXml,
+                SourceProfile::TestPlatform8_3_28Format2_20,
+            ),
+            (
+                SourceSetKind::Configuration,
+                SourceFormat::PlatformXml,
+                SourceProfile::TestPlatform8_3_27Format2_21,
+            ),
+        ] {
+            let context = WorkspaceContext {
+                cwd: workspace.clone(),
+                workspace_root: workspace.clone(),
+                cache_root: workspace.join(".build/unica"),
+                workspace_epoch: 1,
+            };
+            let identity = WorkspaceIdentity::new(
+                &context,
+                [WorkspaceSourceSetInput::new(
+                    "main", &source, kind, format, profile,
+                )],
+                "support-state-classification",
+            )
+            .unwrap();
+            let actor = WorkspaceActor::new(identity, context).unwrap();
+            let binding = actor.bind_provider_root("main", &source).unwrap();
+            for raw_target in [
+                None,
+                Some("main:Configuration"),
+                Some("main:Document.First"),
+                Some("main:Document.First.Form.Card"),
+                Some("main:Role.Reader"),
+                Some("other:Configuration"),
+                Some("not a logical address"),
+                Some("main:Document."),
+            ] {
+                let target = raw_target.and_then(|raw| QualifiedAddress::parse(raw).ok());
+                for name in &names {
+                    // The previous name-only gate exempted exactly these two operations.
+                    let expected = matches!(*name, "supportCapability.set" | "supportRule.set");
+                    assert_eq!(
+                        super::changes_support_state(name, target.as_ref(), &binding),
+                        expected,
+                        "{name} at {raw_target:?}, {kind:?}/{format:?}/{profile:?}"
+                    );
+                }
+            }
         }
     }
 
