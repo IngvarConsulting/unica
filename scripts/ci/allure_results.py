@@ -145,7 +145,8 @@ def nextest_list(root: Path, command: list[str]) -> list[dict]:
     перечисляются тоже: план обязан знать всё, что дерево знает. Команду
     строит шов прогона — тот же отбор, что и у `nextest run`.
     """
-    completed = subprocess.run(command, cwd=root, capture_output=True, text=True, check=True)
+    # stdout is the JSON plan; compiler/nextest diagnostics belong in the CI log.
+    completed = subprocess.run(command, cwd=root, stdout=subprocess.PIPE, text=True, check=True)
     listed = json.loads(completed.stdout)
     entries = []
     for suite in listed["rust-suites"].values():
