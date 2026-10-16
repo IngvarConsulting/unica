@@ -99,6 +99,7 @@ description: Разработка самого Unica — исследовани�
 | Текст для человека, включая правило, комментарий, сайт, commit или PR | [unica-writing](../unica-writing/SKILL.md) |
 | Выпуск версии или разбор его состояния | [unica-release](../unica-release/SKILL.md) |
 | Подготовка PR, правки по ревью, push или слияние | [Порядок PR](references/pull-requests.md) |
+| Обновление заимствованных материалов, принятого baseline или снимка донора | [Сопровождение апстримов](references/upstream-maintenance.md) |
 | Настройка окружения, Inspector, LSP или отчёт Allure | Нужный раздел [CONTRIBUTING.md](../../../CONTRIBUTING.md) |
 | Подготовка внешнего общения | [CODE_OF_CONDUCT.md](../../../CODE_OF_CONDUCT.md) |
 
