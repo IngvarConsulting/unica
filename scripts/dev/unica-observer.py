@@ -308,9 +308,10 @@ class McpClient:
                 return name
         raise McpError(f"сервер не объявил инструмент {verb}; объявлены: {', '.join(names)}")
 
-    def _call_once(self, name: str, arguments: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+    def _call_once(self, name: str, arguments: dict[str, Any]) -> tuple[bool, dict[str, Any], str | None]:
         result = self.request("tools/call", {"name": name, "arguments": arguments})
         structured = result.get("structuredContent")
+        source_text = None
         if structured is None:
             # Без structuredContent ответ доступен только текстом.
             parts = result.get("content") or []
@@ -321,13 +322,25 @@ class McpClient:
                 for part in parts
                 if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str)
             ]
-            try:
-                structured = json.loads("".join(texts))
-            except json.JSONDecodeError:
-                structured = {"ok": False, "summary": "".join(texts)}
+            # Body приходит двумя блоками: конверт JSON и исходный текст.
+            # Склейка превращает успешное чтение в ошибку разбора JSON.
+            if len(parts) == len(texts) == 2 and not result.get("isError"):
+                try:
+                    envelope = json.loads(texts[0])
+                except json.JSONDecodeError:
+                    envelope = None
+                data = envelope.get("data") if isinstance(envelope, dict) else None
+                if (isinstance(envelope, dict) and envelope.get("ok") is True
+                        and isinstance(data, dict) and data.get("kind") == "Body"):
+                    structured, source_text = envelope, texts[1]
+            if structured is None:
+                try:
+                    structured = json.loads("".join(texts))
+                except json.JSONDecodeError:
+                    structured = {"ok": False, "summary": "".join(texts)}
         if not isinstance(structured, dict):
             raise McpError(f"{name}: structuredContent не объект: {json.dumps(structured, ensure_ascii=False)[:300]}")
-        return bool(result.get("isError")), structured
+        return bool(result.get("isError")), structured, source_text
 
     def call_tool(self, verb: str, arguments: dict[str, Any], follow_tasks: bool = True) -> dict[str, Any]:
         """Вызов инструмента со временем по стене.
@@ -342,7 +355,7 @@ class McpClient:
             self.tool_calls += 1
             cold = self.tool_calls == 1
         started = time.monotonic()
-        is_error, structured = self._call_once(name, arguments)
+        is_error, structured, source_text = self._call_once(name, arguments)
         handoff_ms = None
         polls = 0
         while True:
@@ -364,7 +377,7 @@ class McpClient:
                     pass
                 raise McpError(f"{name}: задача {task_id} не завершилась за {self.timeout:.0f} с и отменена")
             polls += 1
-            is_error, structured = self._call_once(
+            is_error, structured, source_text = self._call_once(
                 self.tool_name("task.result"), {"taskId": task_id, "waitMs": 5000}
             )
         answer = {
@@ -373,6 +386,8 @@ class McpClient:
             "cold": cold,
             "result": structured,
         }
+        if source_text is not None:
+            answer["sourceText"] = source_text
         if handoff_ms is not None:
             answer["task"] = {"handoffMs": handoff_ms, "polls": polls}
         return answer
@@ -1250,6 +1265,11 @@ async function fill(container, at, cursor) {
   }
 }
 
+function sourceTextHtml(answer) {
+  return typeof answer.sourceText === "string"
+    ? `<section><h3>текст</h3><pre class="source-text"><code>${esc(answer.sourceText)}</code></pre></section>` : "";
+}
+
 function renderNode(at, answer) {
   const result = answer.result || {};
   const data = result.data || {};
@@ -1261,6 +1281,7 @@ function renderNode(at, answer) {
   html += `<dl><dt>ok</dt><dd class="${result.ok ? "yes" : "err"}">${result.ok}</dd>`;
   html += `<dt>kind</dt><dd>${esc(data.kind ?? "—")}</dd><dt>title</dt><dd>${esc(data.title ?? "—")}</dd>`;
   html += `<dt>summary</dt><dd>${esc(result.summary ?? "")}</dd><dt>время</dt><dd>${timing(answer)}</dd></dl>`;
+  html += sourceTextHtml(answer);
   if (!result.ok) {
     html += `<section><h3>Отказ</h3><pre>${esc(pretty({diagnostics: result.diagnostics, next: result.next}))}</pre></section>`;
   }
@@ -1553,7 +1574,7 @@ async function callTool(tool) {
     const result = answer.result || {};
     const unchecked = (answer.schemaUnchecked || []).length ? `<p class="note">проверка аргументов по схеме неполная: не проверяются ${esc(answer.schemaUnchecked.join(", "))}</p>` : "";
     out.innerHTML = (result.ok ? `<p class="yes">ok: ${esc(result.summary || "")} ${timing(answer)}</p>` : `<p class="err">отказ: ${esc(result.summary || "")} ${timing(answer)}</p>`) +
-      unchecked + nextButtons(result) + `<pre>${esc(pretty(result))}</pre>`;
+      unchecked + nextButtons(result) + sourceTextHtml(answer) + `<pre>${esc(pretty(result))}</pre>`;
     bindNext(out, result);
   } catch (error) { stop(); out.innerHTML = `<p class="err">${esc(error.message)}</p>`; }
 }

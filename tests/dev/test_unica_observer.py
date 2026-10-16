@@ -224,6 +224,22 @@ class UnicaObserverTests(unittest.TestCase):
         )
         self.assertEqual(tree_digest(self.workspace), self.before, "observer must not change workspace files")
 
+    def test_body_is_a_successful_text_leaf_without_source_changes(self) -> None:
+        module = self.view("main:Catalog.Валюты.Module.Manager")
+        at = next(branch["at"] for branch in module["data"]["branches"] if branch["at"].endswith(".Body"))
+        expected = (self.workspace / "src/Catalogs/Валюты/Ext/ManagerModule.bsl").read_bytes().decode("utf-8-sig")
+        for route, body in [("/api/view", {"at": at}),
+                            ("/api/tool", {"tool": "unica.view", "arguments": {"at": at}})]:
+            with self.subTest(route=route):
+                status, answer = self.post(route, body)
+                self.assertEqual(status, 200, answer)
+                self.assertTrue(answer["result"]["ok"], answer)
+                self.assertFalse(answer["isError"], answer)
+                self.assertEqual(answer["sourceText"], expected)
+                self.assertNotIn("branches", answer["result"]["data"])
+                self.assertNotIn("items", answer["result"]["data"])
+        self.assertEqual(tree_digest(self.workspace), self.before)
+
     def get(self, path: str) -> dict:
         with urllib.request.urlopen(self.url + path, timeout=30) as response:
             return json.load(response)
