@@ -18,12 +18,17 @@ on:
         type: string
         required: false
         default: ''
+      windows_reference_candidate:
+        description: Exact commit for Windows reference scan and finite deadline proofs, empty skips
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
 
 concurrency:
-  group: research-v014-exact-${{ github.ref }}-${{ inputs.daemon_candidate }}-${{ inputs.unix_candidate }}-${{ inputs.windows_candidate }}
+  group: research-v014-exact-${{ github.ref }}-${{ inputs.daemon_candidate }}-${{ inputs.unix_candidate }}-${{ inputs.windows_candidate }}-${{ inputs.windows_reference_candidate }}
   cancel-in-progress: false
 
 jobs:
@@ -190,4 +195,62 @@ jobs:
           path: |
             .session-temp/v014-native/*
             target/nextest/queue/junit.xml
+          if-no-files-found: warn
+
+  windows-reference-scan:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/1496-windows-focused-probes' && inputs.windows_reference_candidate != ''
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      CANDIDATE_SHA: ${{ inputs.windows_reference_candidate }}
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_BUILD_JOBS: '2'
+      CARGO_TERM_COLOR: never
+      NEXTEST_RETRIES: '0'
+      NEXTEST_TEST_THREADS: '1'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.windows_reference_candidate }}
+          persist-credentials: false
+      - name: Verify exact immutable source
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          save-if: false
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8
+        with:
+          tool: cargo-nextest@0.9.143
+      - name: Full native Windows clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Reference scan resource and finite deadline proofs, no retries
+        run: |
+          set -euo pipefail
+          mkdir -p .session-temp/v014-native
+          filter='test(/^infrastructure::native_operations::apply::tests::(reference_scan_descriptor_count_does_not_grow_with_inputs|reference_guard_preserves_finite_deadline_after_capture_without_writing)$/)'
+          log=.session-temp/v014-native/windows-reference-scan.log
+          cargo nextest run -p unica-coder --lib --profile queue --ignore-default-filter --retries 0 --test-threads 1 --no-tests=fail --color never --success-output immediate -E "$filter" 2>&1 | tee "$log"
+          test "$(grep -cE '^[[:space:]]*PASS \[' "$log")" -eq 2
+          grep -Eq 'Summary .*2 tests run: 2 passed,' "$log"
+          if grep -Eq '^[[:space:]]*(LEAK|TRY|FAIL|TIMEOUT)([[:space:]]|$)' "$log"; then
+            echo 'Reference proofs must have no failures, retries or leaked handles.' >&2
+            exit 1
+          fi
+          cp target/nextest/queue/junit.xml .session-temp/v014-native/windows-reference-scan-junit.xml
+          echo 'Only the two reference scan proofs ran; lazy cancellation, 4097 Task and full Windows large remain separate.' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: windows-reference-scan-${{ inputs.windows_reference_candidate }}
+          path: .session-temp/v014-native/windows-reference-scan*
           if-no-files-found: warn
