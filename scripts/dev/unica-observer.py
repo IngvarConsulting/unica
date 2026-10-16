@@ -1116,14 +1116,59 @@ section h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; 
 #log summary { cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dir-out { color: var(--accent); } .dir-in { color: var(--ok); }
 </style>
+<style id="logPanelStyle">
+body { height: 100dvh; min-height: 0; overflow: hidden; }
+#workspace { position: relative; display: flex; flex-direction: column; flex: 1 1 0; min-width: 0; min-height: 0; overflow: hidden; }
+#workspace > main { flex: 1 1 0; min-width: 0; min-height: 0; order: 0; }
+#workspace[data-log-dock="left"], #workspace[data-log-dock="right"] { flex-direction: row; }
+#workspace > #splitLog { flex: 0 0 6px; order: 1; }
+#workspace[data-log-dock="left"] > #splitLog, #workspace[data-log-dock="top"] > #splitLog { order: -1; }
+#workspace[data-log-dock="left"] > #logPanel, #workspace[data-log-dock="top"] > #logPanel { order: -2; }
+#logPanel { margin: 0; position: relative; display: flex; flex-direction: column; flex: 0 0 28vh; order: 2; min-width: 0; min-height: 0; background: var(--bg); }
+#logPanel > #log { flex: 1 1 0; min-height: 0; max-height: none; border-top: 0; }
+#logPanel[hidden], #splitLog[hidden], #showLog[hidden], #logDockMenu[hidden], #log[hidden] { display: none !important; }
+#logBar { display: flex; align-items: center; gap: 4px; flex: 0 0 32px; min-height: 32px; padding: 0 6px; border-bottom: 1px solid var(--line); background: var(--panel); user-select: none; -webkit-user-select: none; }
+#logBar button { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 26px; height: 26px; min-height: 26px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--text); font-size: 16px; }
+#logBar button:hover { background: var(--hover, var(--accent-bg)); }
+#logBar #logTab { flex: 1 1 auto; justify-content: flex-start; width: auto; min-width: 0; height: 32px; padding: 0 8px; border-radius: 0; box-shadow: inset 0 -2px 0 var(--accent); font-size: 12px; font-weight: 600; }
+.log-actions { display: flex; align-items: center; gap: 2px; }
+#logDockMenu { position: fixed; z-index: 20; width: 180px; max-height: calc(100dvh - 16px); overflow: auto; padding: 4px; border: 1px solid var(--control, var(--line)); border-radius: 6px; background: var(--bg); color: var(--text); box-shadow: 0 8px 24px var(--shadow, rgb(0 0 0 / 25%)); }
+#logDockMenu button { display: block; width: 100%; min-height: 28px; padding: 5px 8px; border: 0; border-radius: 4px; background: transparent; color: inherit; text-align: left; font-size: 12px; }
+#logDockMenu button:hover { background: var(--hover, var(--accent-bg)); }
+#logDockMenu [aria-checked="true"] { background: var(--sel); font-weight: 600; }
+#workspace[data-log-mode="collapsed"] > #logPanel { flex-basis: 32px; }
+#workspace[data-log-mode="collapsed"][data-log-dock="left"] > #logPanel,
+#workspace[data-log-mode="collapsed"][data-log-dock="right"] > #logPanel { flex-basis: 36px; }
+#workspace[data-log-mode="collapsed"][data-log-dock="left"] #logBar,
+#workspace[data-log-mode="collapsed"][data-log-dock="right"] #logBar { flex: 1; flex-direction: column; width: 36px; padding: 4px 0; border-bottom: 0; }
+#workspace[data-log-mode="collapsed"][data-log-dock="left"] .log-actions,
+#workspace[data-log-mode="collapsed"][data-log-dock="right"] .log-actions { order: -1; flex-direction: column; }
+#workspace[data-log-mode="collapsed"][data-log-dock="left"] #logTab,
+#workspace[data-log-mode="collapsed"][data-log-dock="right"] #logTab { justify-content: flex-start; align-self: center; width: 32px; height: auto; min-height: 0; padding: 12px 0; writing-mode: vertical-rl; box-shadow: none; }
+#workspace[data-log-mode="maximized"] > main, #workspace[data-log-mode="maximized"] > #splitLog { display: none; }
+#workspace[data-log-mode="maximized"] > #logPanel { flex: 1 1 0; }
+#workspace > #splitLog { position: relative; display: block; background: var(--bg); cursor: row-resize; touch-action: none; }
+#workspace > #splitLog::after { content: ""; position: absolute; top: 2px; bottom: auto; left: 0; right: 0; width: auto; height: 1px; background: var(--line); pointer-events: none; }
+#workspace[data-log-dock="left"] > #splitLog, #workspace[data-log-dock="right"] > #splitLog { cursor: col-resize; }
+#workspace[data-log-dock="left"] > #splitLog::after, #workspace[data-log-dock="right"] > #splitLog::after { top: 0; bottom: 0; left: 2px; right: auto; width: 1px; height: auto; }
+#workspace > #splitLog:hover::after, #workspace > #splitLog.drag::after, #workspace > #splitLog:focus-visible::after { background: var(--accent); }
+#workspace > #splitLog:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+@media (max-width: 760px) {
+  #workspace > main { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(90px, 30%) minmax(0, 1fr); }
+  #workspace #tree { max-height: none; }
+  #workspace #right { min-height: 0; }
+}
+</style>
 </head>
 <body>
 <header>
   <h1>Наблюдатель адресов</h1>
   <input id="addr" placeholder="адрес, например main:Catalog.Валюты; пусто — корень" spellcheck="false">
   <button class="primary" id="go">Открыть</button>
+  <button id="showLog" type="button" title="Показать журнал" aria-label="Показать журнал" aria-controls="logPanel" hidden>Журнал</button>
   <button id="copy" title="Скопировать адрес выбранного узла">Копировать адрес</button>
 </header>
+<div id="workspace" data-log-dock="bottom" data-log-mode="normal">
 <main>
   <div id="tree"></div>
   <div class="split split-v" id="splitTree" title="Тяните, чтобы изменить ширину; двойной щелчок — по умолчанию"></div>
@@ -1133,8 +1178,26 @@ section h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; 
     <div id="tools" hidden><p class="cnt">загрузка инструментов…</p></div>
   </div>
 </main>
-<div class="split split-h" id="splitLog" title="Тяните, чтобы изменить высоту журнала; двойной щелчок — по умолчанию"></div>
-<div id="log"></div>
+<div id="splitLog" class="split split-h" role="separator" tabindex="0" aria-label="Размер журнала" aria-orientation="horizontal" title="Тяните или используйте стрелки; двойной щелчок — размер по умолчанию"></div>
+<section id="logPanel" aria-label="Журнал протокола">
+  <div id="logBar" role="toolbar" aria-label="Управление журналом">
+    <button id="logTab" type="button" aria-controls="log" aria-expanded="true">Журнал</button>
+    <div class="log-actions">
+      <button id="logDock" type="button" title="Положение журнала" aria-label="Положение журнала" aria-haspopup="menu" aria-controls="logDockMenu" aria-expanded="false">▤</button>
+      <button id="logCollapse" type="button" title="Свернуть журнал" aria-label="Свернуть журнал" aria-controls="log">⌄</button>
+      <button id="logMaximize" type="button" title="Развернуть журнал на всю область" aria-label="Развернуть журнал на всю область" aria-pressed="false">□</button>
+      <button id="logHide" type="button" title="Скрыть журнал" aria-label="Скрыть журнал">×</button>
+    </div>
+  </div>
+  <div id="log"></div>
+</section>
+<div id="logDockMenu" role="menu" aria-label="Положение журнала" hidden>
+  <button type="button" role="menuitemradio" data-log-dock="bottom" aria-checked="true">Снизу</button>
+  <button type="button" role="menuitemradio" data-log-dock="right" aria-checked="false">Справа</button>
+  <button type="button" role="menuitemradio" data-log-dock="left" aria-checked="false">Слева</button>
+  <button type="button" role="menuitemradio" data-log-dock="top" aria-checked="false">Сверху</button>
+</div>
+</div>
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
@@ -1677,7 +1740,7 @@ async function pollLog() {
   try {
     const {entries} = await api("/api/log?since=" + logSeq);
     const log = $("log");
-    const stick = log.scrollTop + log.clientHeight >= log.scrollHeight - 8;
+    const stick = log.clientHeight > 0 && log.scrollTop + log.clientHeight >= log.scrollHeight - 8;
     for (const entry of entries) {
       logSeq = entry.seq;
       const p = entry.payload || {};
@@ -1696,6 +1759,224 @@ async function pollLog() {
     if (stick) log.scrollTop = log.scrollHeight;
   } catch (error) { /* сервер остановлен */ }
   setTimeout(pollLog, 1000);
+}
+
+function initLogPanel() {
+  const get = (id) => document.getElementById(id);
+  const root = document.documentElement;
+  const workspace = get("workspace"), main = workspace.querySelector("main");
+  const panel = get("logPanel"), log = get("log"), bar = get("logBar");
+  const tab = get("logTab"), dock = get("logDock"), menu = get("logDockMenu");
+  const collapse = get("logCollapse"), maximize = get("logMaximize");
+  const hide = get("logHide"), show = get("showLog"), split = get("splitLog");
+  const choices = [...menu.querySelectorAll("[data-log-dock]")];
+  const docks = ["bottom", "right", "left", "top"];
+  const modes = ["normal", "collapsed", "maximized", "hidden"];
+  const key = "unica-observer.logPanel";
+  const bound = (value, low, high) => Math.max(low, Math.min(high, value));
+  const validSize = (value) => Number.isFinite(value) && value > 0;
+  const read = (name) => { try { return localStorage.getItem(name); } catch { return null; } };
+  const px = (value) => typeof value === "string" && /^\d+(?:\.\d+)?px$/.test(value.trim())
+    ? Number(value.trim().slice(0, -2)) : NaN;
+  const defaultHeight = () => Math.max(140, workspace.clientHeight * .28);
+  const state = {dock: "bottom", mode: "normal", height: defaultHeight(), width: 420};
+  const saved = read(key);
+  if (saved !== null) {
+    try {
+      const value = JSON.parse(saved);
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        if (docks.includes(value.dock)) state.dock = value.dock;
+        if (modes.includes(value.mode)) state.mode = value.mode;
+        for (const dimension of ["height", "width"]) {
+          if (validSize(value[dimension])) state[dimension] = value[dimension];
+        }
+      }
+    } catch { /* повреждённое сохранение заменяется значениями по умолчанию */ }
+  } else {
+    const legacy = px(read("unica-observer.logHeight"));
+    if (validSize(legacy)) state.height = legacy;
+  }
+  const save = () => { try { localStorage.setItem(key, JSON.stringify(state)); } catch { /* локальное состояние */ } };
+  let scroll = {top: 0, bottom: true};
+  let paintedLogHeight = 0;
+  let drag = null;
+
+  function captureScroll() {
+    const height = log.clientHeight;
+    // Изменение размера и вместившийся целиком журнал не меняют намерение прокрутки.
+    if (height > 0 && height === paintedLogHeight && log.scrollHeight > height + 8) scroll = {
+      top: log.scrollTop,
+      bottom: log.scrollHeight - height - log.scrollTop <= 8,
+    };
+  }
+  function limits() {
+    const horizontal = state.dock === "bottom" || state.dock === "top";
+    const max = Math.max(0, (horizontal ? workspace.clientHeight : workspace.clientWidth) * .75);
+    return {dimension: horizontal ? "height" : "width", min: Math.min(horizontal ? 140 : 260, max), max, horizontal};
+  }
+  function fitTree() {
+    const preferred = px(read("unica-observer.treeWidth"));
+    const max = Math.max(0, main.clientWidth - 246);
+    root.style.setProperty("--tree-w", bound(validSize(preferred) ? preferred : 300, Math.min(160, max), max) + "px");
+  }
+  function positionMenu() {
+    if (menu.hidden) return;
+    const rect = dock.getBoundingClientRect(), width = menu.offsetWidth, height = menu.offsetHeight;
+    const above = rect.top - height - 4, below = rect.bottom + 4;
+    let top = state.dock === "bottom" ? above : below;
+    if (top < 8) top = below;
+    else if (top + height > window.innerHeight - 8) top = above;
+    menu.style.top = bound(top, 8, Math.max(8, window.innerHeight - height - 8)) + "px";
+    menu.style.left = bound(rect.right - width, 8, Math.max(8, window.innerWidth - width - 8)) + "px";
+  }
+  function label(button, text) { button.title = text; button.setAttribute("aria-label", text); }
+  function paint() {
+    captureScroll();
+    workspace.dataset.logDock = state.dock;
+    workspace.dataset.logMode = state.mode;
+    panel.hidden = state.mode === "hidden";
+    log.hidden = state.mode === "collapsed";
+    split.hidden = state.mode !== "normal";
+    show.hidden = state.mode !== "hidden";
+    const size = limits(), actual = bound(state[size.dimension], size.min, size.max);
+    panel.style.flexBasis = state.mode === "normal" ? actual + "px" : "";
+    split.setAttribute("aria-orientation", size.horizontal ? "horizontal" : "vertical");
+    split.setAttribute("aria-valuemin", Math.round(size.min));
+    split.setAttribute("aria-valuemax", Math.round(size.max));
+    split.setAttribute("aria-valuenow", Math.round(actual));
+    split.setAttribute("aria-valuetext", Math.round(actual) + " пикселей");
+    const collapsed = state.mode === "collapsed", maximized = state.mode === "maximized";
+    const arrows = {bottom: ["⌃", "⌄"], top: ["⌄", "⌃"], left: ["›", "‹"], right: ["‹", "›"]};
+    collapse.textContent = arrows[state.dock][collapsed ? 0 : 1];
+    maximize.textContent = maximized ? "❐" : "□";
+    label(tab, collapsed ? "Развернуть журнал" : "Свернуть журнал");
+    label(collapse, collapsed ? "Развернуть журнал" : "Свернуть журнал");
+    label(maximize, maximized ? "Восстановить размер журнала" : "Развернуть журнал на всю область");
+    tab.setAttribute("aria-expanded", String(!collapsed && state.mode !== "hidden"));
+    collapse.setAttribute("aria-expanded", String(!collapsed && state.mode !== "hidden"));
+    maximize.setAttribute("aria-pressed", String(maximized));
+    choices.forEach((button) => {
+      const selected = button.dataset.logDock === state.dock;
+      button.setAttribute("aria-checked", String(selected));
+      button.tabIndex = selected ? 0 : -1;
+    });
+    fitTree();
+    paintedLogHeight = log.clientHeight;
+    if (paintedLogHeight > 0) log.scrollTop = scroll.bottom ? log.scrollHeight : scroll.top;
+    positionMenu();
+  }
+  function closeMenu(refocus = false) {
+    menu.hidden = true;
+    dock.setAttribute("aria-expanded", "false");
+    if (refocus) dock.focus();
+  }
+  function stopResize() {
+    if (!drag) return;
+    const pointerId = drag.pointerId;
+    drag = null;
+    split.classList.remove("drag");
+    if (split.hasPointerCapture(pointerId)) split.releasePointerCapture(pointerId);
+    save();
+  }
+  function change(update) {
+    stopResize();
+    closeMenu();
+    Object.assign(state, update);
+    paint();
+    save();
+  }
+  const toggleCollapse = () => change({mode: state.mode === "collapsed" ? "normal" : "collapsed"});
+  const toggleMaximize = () => change({mode: state.mode === "maximized" ? "normal" : "maximized"});
+  tab.addEventListener("click", toggleCollapse);
+  collapse.addEventListener("click", toggleCollapse);
+  maximize.addEventListener("click", toggleMaximize);
+  bar.addEventListener("dblclick", (event) => { if (event.target === bar || event.target.classList?.contains("log-actions")) toggleMaximize(); });
+  hide.addEventListener("click", () => { change({mode: "hidden"}); show.focus(); });
+  show.addEventListener("click", () => { change({mode: "normal"}); tab.focus(); });
+  label(dock, "Положение журнала");
+  label(hide, "Скрыть журнал");
+  label(show, "Показать журнал");
+  dock.setAttribute("aria-haspopup", "menu");
+  dock.setAttribute("aria-controls", menu.id);
+  for (const button of [tab, collapse, maximize, show]) button.setAttribute("aria-controls", log.id);
+  dock.addEventListener("click", () => {
+    if (!menu.hidden) { closeMenu(); return; }
+    menu.hidden = false;
+    dock.setAttribute("aria-expanded", "true");
+    positionMenu();
+    choices.find((button) => button.dataset.logDock === state.dock)?.focus();
+  });
+  choices.forEach((button) => button.addEventListener("click", () => {
+    if (!docks.includes(button.dataset.logDock)) return;
+    change({dock: button.dataset.logDock});
+    dock.focus();
+  }));
+  menu.addEventListener("keydown", (event) => {
+    const index = choices.indexOf(event.target), offsets = {ArrowUp: -1, ArrowLeft: -1, ArrowDown: 1, ArrowRight: 1};
+    if (event.key === "Escape") { event.preventDefault(); closeMenu(true); return; }
+    if (index < 0) return;
+    const next = event.key === "Home" ? 0 : event.key === "End" ? choices.length - 1
+      : Object.hasOwn(offsets, event.key) ? (index + offsets[event.key] + choices.length) % choices.length : null;
+    if (next === null) return;
+    event.preventDefault();
+    choices.forEach((button, position) => { button.tabIndex = position === next ? 0 : -1; });
+    choices[next].focus();
+  });
+  document.addEventListener("click", (event) => {
+    if (!menu.hidden && !menu.contains(event.target) && !dock.contains(event.target)) closeMenu();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (!menu.hidden && event.key === "Escape") { event.preventDefault(); closeMenu(true); }
+  });
+  split.setAttribute("role", "separator");
+  split.setAttribute("aria-controls", panel.id);
+  split.setAttribute("aria-label", "Размер журнала");
+  split.tabIndex = 0;
+  split.addEventListener("pointerdown", (event) => {
+    if (state.mode !== "normal" || event.button !== 0 || drag) return;
+    const size = limits();
+    event.preventDefault();
+    drag = {pointerId: event.pointerId, dimension: size.dimension,
+      start: size.horizontal ? event.clientY : event.clientX,
+      size: bound(state[size.dimension], size.min, size.max),
+      sign: state.dock === "bottom" || state.dock === "right" ? -1 : 1};
+    split.setPointerCapture(event.pointerId);
+    split.classList.add("drag");
+    split.focus();
+  });
+  split.addEventListener("pointermove", (event) => {
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    const size = limits(), coordinate = size.horizontal ? event.clientY : event.clientX;
+    state[drag.dimension] = bound(drag.size + (coordinate - drag.start) * drag.sign, size.min, size.max);
+    paint();
+  });
+  for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) {
+    split.addEventListener(type, (event) => { if (drag && event.pointerId === drag.pointerId) stopResize(); });
+  }
+  split.addEventListener("keydown", (event) => {
+    if (state.mode !== "normal") return;
+    const size = limits(), negative = size.horizontal ? "ArrowUp" : "ArrowLeft", positive = size.horizontal ? "ArrowDown" : "ArrowRight";
+    if (event.key !== negative && event.key !== positive) return;
+    event.preventDefault();
+    const sign = state.dock === "bottom" || state.dock === "right" ? -1 : 1;
+    const actual = bound(state[size.dimension], size.min, size.max);
+    state[size.dimension] = bound(actual + (event.key === positive ? 20 : -20) * sign, size.min, size.max);
+    paint();
+    save();
+  });
+  split.addEventListener("dblclick", () => {
+    if (state.mode !== "normal") return;
+    const {dimension} = limits();
+    change({[dimension]: dimension === "height" ? defaultHeight() : 420});
+  });
+  log.addEventListener("scroll", captureScroll, {passive: true});
+  window.addEventListener("resize", positionMenu);
+  window.addEventListener("scroll", positionMenu, true);
+  const observer = new ResizeObserver(paint);
+  observer.observe(workspace);
+  closeMenu();
+  paint();
+  save();
 }
 
 async function boot() {
@@ -1750,9 +2031,12 @@ function splitter(handle, cssVar, key, measure) {
 }
 const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
 splitter($("splitTree"), "--tree-w", "unica-observer.treeWidth",
-  (e) => clamp(e.clientX - document.querySelector("main").getBoundingClientRect().left, 160, window.innerWidth - 240));
-splitter($("splitLog"), "--log-h", "unica-observer.logHeight",
-  (e) => clamp(window.innerHeight - e.clientY - 3, 60, window.innerHeight - 200));
+  (e) => {
+    const rect = document.querySelector("main").getBoundingClientRect();
+    const low = Math.min(160, Math.max(80, rect.width * .35));
+    return clamp(e.clientX - rect.left, low, Math.max(low, rect.width - 186));
+  });
+initLogPanel();
 
 boot();
 </script>
