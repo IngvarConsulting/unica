@@ -21,6 +21,7 @@ check:
   - crates/unica-coder/src/interfaces/mcp.rs::every_tool_that_can_return_source_text_declares_its_result_size
   - crates/unica-coder/src/interfaces/mcp.rs::client_name_comes_from_initialize_or_from_the_request_meta
   - crates/unica-bootstrap/src/host/response_budget.rs::known_hosts_get_their_measured_budgets_and_others_the_default
+  - crates/unica-bootstrap/src/host/response_budget.rs::zcode_measured_budget_preserves_client_and_environment_precedence
   - crates/unica-bootstrap/src/host/response_budget.rs::explicit_setting_then_client_name_then_launch_environment_then_default
   - crates/unica-coder/tests/v13_search_integration.rs::public_view_refuses_bsl_text_over_the_default_budget_whole_with_structural_next
   - crates/unica-coder/tests/v13_search_integration.rs::public_view_budget_belongs_to_the_client_and_the_summary_marks_the_body
