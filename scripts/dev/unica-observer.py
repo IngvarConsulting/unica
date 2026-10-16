@@ -1186,11 +1186,12 @@ body { height: 100dvh; min-height: 0; overflow: hidden; }
 #logPanel[hidden], #splitLog[hidden], #showLog[hidden], #logDockMenu[hidden], #log[hidden] { display: none !important; }
 #logBar { display: flex; align-items: center; gap: 4px; flex: 0 0 32px; min-height: 32px; padding: 0 6px; border-bottom: 1px solid var(--line); background: var(--panel); user-select: none; -webkit-user-select: none; }
 #logBar button { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 26px; height: 26px; min-height: 26px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--text); font-size: 16px; }
+#logBar svg, #logDockMenu svg { flex: none; }
 #logBar button:hover { background: var(--hover, var(--accent-bg)); }
 #logBar #logTab { flex: 0 0 auto; justify-content: flex-start; width: auto; min-width: 0; height: 32px; padding: 0 8px; border-radius: 0; box-shadow: inset 0 -2px 0 var(--accent); font-size: 12px; font-weight: 600; }
 .log-actions { display: flex; align-items: center; gap: 2px; margin-left: auto; }
 #logDockMenu { position: fixed; z-index: 20; width: 180px; max-height: calc(100dvh - 16px); overflow: auto; padding: 4px; border: 1px solid var(--control, var(--line)); border-radius: 6px; background: var(--bg); color: var(--text); box-shadow: 0 8px 24px var(--shadow, rgb(0 0 0 / 25%)); }
-#logDockMenu button { display: block; width: 100%; min-height: 28px; padding: 5px 8px; border: 0; border-radius: 4px; background: transparent; color: inherit; text-align: left; font-size: 12px; }
+#logDockMenu button { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 28px; padding: 5px 8px; border: 0; border-radius: 4px; background: transparent; color: inherit; text-align: left; font-size: 12px; }
 #logDockMenu button:hover { background: var(--hover, var(--accent-bg)); }
 #logDockMenu [aria-checked="true"] { background: var(--sel); font-weight: 600; }
 #workspace[data-log-mode="collapsed"] > #logPanel { flex-basis: 32px; }
@@ -1255,10 +1256,10 @@ body { height: 100dvh; min-height: 0; overflow: hidden; }
   <div id="logBar" role="toolbar" aria-label="Управление журналом">
     <button id="logTab" type="button" aria-controls="log" aria-expanded="true">Журнал</button>
     <div class="log-actions">
-      <button id="logDock" type="button" title="Положение журнала" aria-label="Положение журнала" aria-haspopup="menu" aria-controls="logDockMenu" aria-expanded="false">▤</button>
-      <button id="logCollapse" type="button" title="Свернуть журнал" aria-label="Свернуть журнал" aria-controls="log">⌄</button>
-      <button id="logMaximize" type="button" title="Развернуть журнал на всю область" aria-label="Развернуть журнал на всю область" aria-pressed="false">□</button>
-      <button id="logHide" type="button" title="Скрыть журнал" aria-label="Скрыть журнал">×</button>
+      <button id="logDock" type="button" title="Положение журнала" aria-label="Положение журнала" aria-haspopup="menu" aria-controls="logDockMenu" aria-expanded="false"></button>
+      <button id="logMaximize" type="button" title="Развернуть журнал на всю область" aria-label="Развернуть журнал на всю область" aria-pressed="false"></button>
+      <button id="logCollapse" type="button" title="Свернуть журнал" aria-label="Свернуть журнал" aria-controls="log"></button>
+      <button id="logHide" type="button" title="Скрыть журнал" aria-label="Скрыть журнал"></button>
     </div>
   </div>
   <div id="log"></div>
@@ -1985,6 +1986,24 @@ function initLogPanel() {
   const hide = get("logHide"), show = get("showLog"), split = get("splitLog");
   const choices = [...menu.querySelectorAll("[data-log-dock]")];
   const docks = ["bottom", "right", "left", "top"];
+  const icons = {
+    up: '<path d="M4 10l4-4 4 4"/>',
+    down: '<path d="M4 6l4 4 4-4"/>',
+    left: '<path d="M10 4l-4 4 4 4"/>',
+    right: '<path d="M6 4l4 4-4 4"/>',
+    bottom: '<rect x="2" y="2.5" width="12" height="11" rx="1.5"/><rect x="2.8" y="9.3" width="10.4" height="3.4" fill="currentColor" stroke="none"/>',
+    top: '<rect x="2" y="2.5" width="12" height="11" rx="1.5"/><rect x="2.8" y="3.3" width="10.4" height="3.4" fill="currentColor" stroke="none"/>',
+    leftSide: '<rect x="2" y="2.5" width="12" height="11" rx="1.5"/><rect x="2.8" y="3.3" width="3.6" height="9.4" fill="currentColor" stroke="none"/>',
+    rightSide: '<rect x="2" y="2.5" width="12" height="11" rx="1.5"/><rect x="9.6" y="3.3" width="3.6" height="9.4" fill="currentColor" stroke="none"/>',
+    maximize: '<path d="M9.5 2.5h4v4M13.5 2.5 9 7M6.5 13.5h-4v-4M2.5 13.5 7 9"/>',
+    restore: '<path d="M13.5 6.5h-4v-4M9.5 6.5l4-4M2.5 9.5h4v4M6.5 9.5l-4 4"/>',
+    close: '<path d="M4 4l8 8M12 4l-8 8"/>',
+  };
+  const dockIcons = {bottom: "bottom", top: "top", left: "leftSide", right: "rightSide"};
+  const arrows = {bottom: ["up", "down"], top: ["down", "up"], left: ["right", "left"], right: ["left", "right"]};
+  const icon = (name) => `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name]}</svg>`;
+  hide.innerHTML = icon("close");
+  choices.forEach((button) => button.insertAdjacentHTML("afterbegin", icon(dockIcons[button.dataset.logDock])));
   const modes = ["normal", "collapsed", "maximized", "hidden"];
   const key = "unica-observer.logPanel";
   const bound = (value, low, high) => Math.max(low, Math.min(high, value));
@@ -2069,9 +2088,9 @@ function initLogPanel() {
     split.setAttribute("aria-valuenow", Math.round(actual));
     split.setAttribute("aria-valuetext", Math.round(actual) + " пикселей");
     const collapsed = state.mode === "collapsed", maximized = state.mode === "maximized";
-    const arrows = {bottom: ["⌃", "⌄"], top: ["⌄", "⌃"], left: ["›", "‹"], right: ["‹", "›"]};
-    collapse.textContent = arrows[state.dock][collapsed ? 0 : 1];
-    maximize.textContent = maximized ? "❐" : "□";
+    dock.innerHTML = icon(dockIcons[state.dock]);
+    collapse.innerHTML = icon(arrows[state.dock][collapsed ? 0 : 1]);
+    maximize.innerHTML = icon(maximized ? "restore" : "maximize");
     label(tab, collapsed ? "Развернуть журнал" : "Свернуть журнал");
     label(collapse, collapsed ? "Развернуть журнал" : "Свернуть журнал");
     label(maximize, maximized ? "Восстановить размер журнала" : "Развернуть журнал на всю область");
