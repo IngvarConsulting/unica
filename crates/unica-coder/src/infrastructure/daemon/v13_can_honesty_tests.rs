@@ -2407,3 +2407,77 @@ fn every_role_family_contract_builds_a_preview_without_source_writes() {
         );
     }
 }
+
+/// The advertised Support operations publish a copyable contract and its
+/// example builds a preview on the addressed node without source writes.
+#[test]
+fn support_can_contract_examples_preview_without_source_changes() {
+    let fixture = fixture("workspace-support-form");
+    let before = tree_digest(&fixture.workspace.join("src"));
+    let runtime = V5CanonicalInvocationRuntime::new(
+        Arc::new(CanonicalV13ReadService::default()),
+        Arc::new(TokioClock),
+    );
+    for (at, operation) in [
+        ("main:Configuration", "supportCapability.set"),
+        ("main:Catalog.Items", "supportRule.set"),
+        ("main:Catalog.Items.Form.Main", "supportRule.set"),
+    ] {
+        let owner = invoke_on(
+            &runtime,
+            &fixture.workspace,
+            ToolIdentity::View,
+            json!({"at":at}),
+        );
+        assert!(owner.ok, "{at}: {owner:?}");
+        assert!(owner.data.as_ref().unwrap()["can"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["op"] == operation && entry["implemented"] == true));
+        let detailed = invoke_on(
+            &runtime,
+            &fixture.workspace,
+            ToolIdentity::View,
+            json!({"at":format!("{at}.Can.{operation}")}),
+        );
+        assert!(
+            detailed.ok,
+            "implemented {operation} at {at} has no usable detailed contract: {detailed:?}"
+        );
+        let data = detailed.data.unwrap();
+        assert_eq!(data["kind"], "Can");
+        let contract = &data["props"]["contract"];
+        assert_eq!(contract["argsSchema"]["additionalProperties"], false);
+        let example = &contract["exampleArgs"];
+        assert!(example["values"].is_object(), "{contract}");
+        assert!(
+            example.get("at").is_none(),
+            "the operation address supplies its subject"
+        );
+        let planned = invoke_on(
+            &runtime,
+            &fixture.workspace,
+            ToolIdentity::Apply,
+            json!({"at":at,"ops":[{"op":operation,"args":example}]}),
+        );
+        assert!(
+            planned.ok,
+            "contract example must preview: {operation} at {at}: {planned:?}"
+        );
+        assert!(
+            planned
+                .data
+                .as_ref()
+                .and_then(|data| data.get("executionToken"))
+                .and_then(Value::as_str)
+                .is_some_and(|token| !token.is_empty()),
+            "successful Support preview must supply a nonempty execution token: {planned:?}"
+        );
+        assert_eq!(
+            tree_digest(&fixture.workspace.join("src")),
+            before,
+            "reading Can and preview never publish Support changes"
+        );
+    }
+}

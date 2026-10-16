@@ -1446,7 +1446,15 @@ pub(crate) mod tests {
     use std::cell::Cell;
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    thread_local! {
+        static REFERENCE_SCAN_TEST_NOW: Cell<Instant> = Cell::new(Instant::now());
+    }
+
+    fn reference_scan_test_now() -> Instant {
+        REFERENCE_SCAN_TEST_NOW.get()
+    }
 
     fn staged(root: &Path) -> ApplyStagedState {
         staged_with_authority(
@@ -1459,10 +1467,22 @@ pub(crate) mod tests {
         root: &Path,
         authority: crate::infrastructure::workspace_actor::ApplyWriterAuthority,
     ) -> ApplyStagedState {
+        staged_with_authority_and_deadline(
+            root,
+            authority,
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+        )
+    }
+
+    fn staged_with_authority_and_deadline(
+        root: &Path,
+        authority: crate::infrastructure::workspace_actor::ApplyWriterAuthority,
+        deadline: ProviderDeadline,
+    ) -> ApplyStagedState {
         let canonical = std::fs::canonicalize(root).unwrap();
         ApplyStagedState::from_retained_root(
             Arc::new(RetainedDirectoryCapability::open(&canonical).unwrap()),
-            ProviderDeadline::from_budget(Duration::from_secs(5)),
+            deadline,
             CancellationToken::new(),
             authority,
         )
@@ -1846,6 +1866,8 @@ pub(crate) mod tests {
     /// A reference scan over a whole configuration (issue #1466) must not
     /// keep a descriptor per inspected file or directory: the saved guard is
     /// an identity and a fingerprint, re-proved by walking the route again.
+    /// This resource invariant has no operation cutoff; the finite-deadline
+    /// refusal is checked separately below.
     #[test]
     fn reference_scan_descriptor_count_does_not_grow_with_inputs() {
         use crate::infrastructure::platform::testing::open_handle_count_for_test;
@@ -1867,7 +1889,11 @@ pub(crate) mod tests {
         }
         std::fs::write(root.join("Owner.bsl"), b"before").unwrap();
         let authority = crate::infrastructure::workspace_actor::apply_writer_authority_for_test();
-        let mut state = staged_with_authority(root, authority.clone());
+        let mut state = staged_with_authority_and_deadline(
+            root,
+            authority.clone(),
+            ProviderDeadline::no_deadline(),
+        );
         let before = open_handle_count_for_test().unwrap();
         for relative in &inputs {
             assert!(state
@@ -1902,6 +1928,48 @@ pub(crate) mod tests {
             .commit_retained_apply_with(authority, || Ok(()), || Ok(()))
             .unwrap();
         assert_eq!(std::fs::read(root.join("Owner.bsl")).unwrap(), b"after!");
+    }
+
+    #[test]
+    fn reference_guard_preserves_finite_deadline_after_capture_without_writing() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::write(root.join("Reference.bsl"), b"abcdef").unwrap();
+        std::fs::write(root.join("Owner.bsl"), b"before").unwrap();
+        let authority = crate::infrastructure::workspace_actor::apply_writer_authority_for_test();
+        let started = Instant::now();
+        REFERENCE_SCAN_TEST_NOW.set(started);
+        let mut state = staged_with_authority_and_deadline(
+            root,
+            authority.clone(),
+            ProviderDeadline::with_clock(started + Duration::from_secs(5), reference_scan_test_now),
+        );
+        assert_eq!(
+            state
+                .read_guarded_bounded(Path::new("Reference.bsl"), 16)
+                .unwrap(),
+            Some(b"abcdef".to_vec())
+        );
+        state
+            .replace("Owner.bsl", b"before", b"after!".to_vec())
+            .unwrap();
+        let transaction = state.finalize().unwrap();
+        REFERENCE_SCAN_TEST_NOW.set(started + Duration::from_secs(6));
+        assert_eq!(
+            transaction
+                .validate_retained_for_apply_typed()
+                .unwrap_err()
+                .kind(),
+            super::RetainedApplyValidationErrorKind::Deadline
+        );
+        assert!(transaction
+            .commit_retained_apply_with(authority, || Ok(()), || Ok(()))
+            .is_err());
+        assert_eq!(std::fs::read(root.join("Owner.bsl")).unwrap(), b"before");
+        assert_eq!(
+            std::fs::read(root.join("Reference.bsl")).unwrap(),
+            b"abcdef"
+        );
     }
 
     /// Without a held descriptor the saved plan still refuses a nested input

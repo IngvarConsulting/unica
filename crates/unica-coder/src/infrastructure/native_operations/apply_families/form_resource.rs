@@ -1108,6 +1108,18 @@ fn parse_support_operation(
     binding: &ProviderRootBinding,
 ) -> Result<FormResourcePlanKind, ApplyPlanError> {
     let target = qualified_target(args, op_index, binding)?;
+    if let Some(contract) = crate::domain::operation_contract::OperationContract::support(operation)
+    {
+        contract
+            .normalize(
+                &Value::Object(args.clone()),
+                &format!("ops[{op_index}].args"),
+            )
+            .map_err(|error| {
+                ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(error.path)
+            })?;
+    }
+
     match operation {
         "supportCapability.set" => {
             // Возможность изменения — свойство всей конфигурации; вызов на
@@ -5100,6 +5112,110 @@ mod tests {
         assert!(!doc
             .descendants()
             .any(|n| n.has_tag_name(("http://v8.1c.ru/8.3/xcf/readable", "Item"))));
+    }
+
+    #[test]
+    fn support_contracts_and_productive_parser_agree_on_closed_arguments() {
+        use crate::domain::apply::OperationRegistry;
+        let fixture = ApplySeamFixture::new();
+        let capability = [
+            (json!({"enabled": true}), true),
+            (json!({"enabled": false}), true),
+            (json!({"rule": "on"}), true),
+            (json!({"rule": "off"}), true),
+            (json!({"rule": "EditableSupportEnabled"}), true),
+            (json!({"rule": "EditableSupportDisabled"}), true),
+            (json!({"rule": "enabled"}), true),
+            (json!({"rule": "disabled"}), true),
+            (json!({}), false),
+            (json!({"enabled": "true"}), false),
+            (json!({"enabled": null}), false),
+            (json!({"rule": true}), false),
+            (json!({"rule": "editable"}), false),
+            (json!({"enabled": true, "rule": "on"}), false),
+            (json!({"enabled": true, "ignored": 1}), false),
+        ];
+        let rule = [
+            (json!({"rule": "locked"}), true),
+            (json!({"rule": "editable"}), true),
+            (json!({"rule": "off-support"}), true),
+            (json!({"rule": "NotEditable"}), true),
+            (json!({"rule": "EditableWithSupport"}), true),
+            (json!({"rule": "NotSupported"}), true),
+            (json!({}), false),
+            (json!({"rule": "on"}), false),
+            (json!({"rule": true}), false),
+            (json!({"rule": null}), false),
+            (json!({"rule": ""}), false),
+            (json!({"rule": "editable", "ignored": 1}), false),
+        ];
+        for (operation, at, cases) in [
+            (
+                "supportCapability.set",
+                "main:Configuration",
+                capability.as_slice(),
+            ),
+            ("supportRule.set", "main:Document.First", rule.as_slice()),
+            (
+                "supportRule.set",
+                "main:Document.First.Form.Card",
+                rule.as_slice(),
+            ),
+        ] {
+            let descriptor = OperationRegistry::closed().lookup(operation).unwrap();
+            let contract = descriptor
+                .argument_contract()
+                .expect("implemented support operation must publish its argument contract");
+            assert_eq!(contract.schema["additionalProperties"], false);
+            assert!(contract.example_args.get("at").is_none());
+            let mut unknown_argument = contract.example_args.clone();
+            unknown_argument["ignored"] = json!(true);
+            for args in [
+                json!({"values": null}),
+                json!({"values": []}),
+                json!({"values": "editable"}),
+                unknown_argument,
+            ] {
+                let contract_error = contract.normalize(&args, "args").unwrap_err();
+                let has_unknown_argument = args.get("ignored").is_some();
+                if has_unknown_argument {
+                    assert_eq!(contract_error.path, "args.ignored");
+                }
+                let mut args = args;
+                args["at"] = json!(at);
+                let error =
+                    parse_form_resource_plan_operation(operation, &args, 3, &fixture.binding)
+                        .unwrap_err();
+                assert_eq!(
+                    error.kind(),
+                    ApplyPlanErrorKind::BadValue,
+                    "{operation}: {args}"
+                );
+                if has_unknown_argument {
+                    assert_eq!(error.path(), Some("ops[3].args.ignored"));
+                }
+            }
+            for (values, accepted) in cases {
+                let args = json!({"values": values});
+                assert_eq!(
+                    contract.normalize(&args, "args").is_ok(),
+                    *accepted,
+                    "contract: {operation} {args}"
+                );
+                let mut args = args;
+                args["at"] = json!(at);
+                let parsed =
+                    parse_form_resource_plan_operation(operation, &args, 3, &fixture.binding);
+                assert_eq!(
+                    parsed.is_ok(),
+                    *accepted,
+                    "parser: {operation} {args}: {parsed:?}"
+                );
+                if let Err(error) = parsed {
+                    assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
+                }
+            }
+        }
     }
 
     #[test]
