@@ -1,3 +1,6 @@
+#[cfg(any(windows, test))]
+mod windows_job_exit;
+
 use crate::domain::cancellation::{cancelled_error, CancellationToken};
 #[cfg(test)]
 use std::cell::Cell;
@@ -211,6 +214,10 @@ impl RuntimeProcessTreeHandle {
         }
         #[cfg(not(unix))]
         {
+            // Collect while the leader is still alive too: short-lived
+            // descendants can disappear before its final exit is observed.
+            #[cfg(windows)]
+            self.tree.observe_runtime_members()?;
             if self.leader_exit.is_none() {
                 self.leader_exit = child.try_wait()?;
             }
@@ -2366,6 +2373,7 @@ impl ProcessTree {
 #[cfg(windows)]
 struct ProcessTree {
     job: windows_sys::Win32::Foundation::HANDLE,
+    exit_census: Option<windows_job_exit::Census>,
 }
 
 // SAFETY: Windows kernel handles may be transferred and used from other threads.
@@ -2383,7 +2391,9 @@ impl ProcessTree {
     }
 
     fn prepare_runtime(command: &mut Command) -> io::Result<Self> {
-        Self::prepare(command)
+        let mut tree = Self::prepare(command)?;
+        tree.exit_census = Some(windows_job_exit::Census::associate(tree.job)?);
+        Ok(tree)
     }
 
     fn prepare_detachable(command: &mut Command) -> io::Result<Self> {
@@ -2430,7 +2440,10 @@ impl ProcessTree {
             }
         }
 
-        Ok(Self { job })
+        Ok(Self {
+            job,
+            exit_census: None,
+        })
     }
 
     fn attach(&mut self, child: &mut Child) -> io::Result<Option<ExitStatus>> {
@@ -2441,6 +2454,9 @@ impl ProcessTree {
         // SAFETY: both handles are live for the duration of the call.
         if unsafe { AssignProcessToJobObject(self.job, child.as_raw_handle() as _) } == 0 {
             return Err(io::Error::last_os_error());
+        }
+        if let Some(census) = &mut self.exit_census {
+            census.retain_assigned_root(child.id(), child.as_raw_handle() as _)?;
         }
         let primary_thread = open_primary_thread(child.id())?;
         // SAFETY: the thread handle was opened with `THREAD_SUSPEND_RESUME` access.
@@ -2524,7 +2540,17 @@ impl ProcessTree {
         self.detach()
     }
 
+    fn observe_runtime_members(&mut self) -> io::Result<()> {
+        if let Some(census) = &mut self.exit_census {
+            census.observe(self.job)?;
+        }
+        Ok(())
+    }
+
     fn is_empty(&mut self) -> io::Result<bool> {
+        if let Some(census) = &mut self.exit_census {
+            return census.ready(self.job);
+        }
         use std::mem::{size_of, zeroed};
         use windows_sys::Win32::System::JobObjects::{
             JobObjectBasicAccountingInformation, QueryInformationJobObject,
@@ -3147,8 +3173,6 @@ mod tests {
             }
             #[cfg(windows)]
             "windows_finished_child_parent" => {
-                use std::os::windows::io::AsRawHandle;
-
                 let mut child = Command::new(std::env::current_exe().unwrap())
                     .args([
                         "--exact",
@@ -3161,10 +3185,9 @@ mod tests {
                     .stderr(Stdio::null())
                     .spawn()
                     .unwrap();
-                let created = windows_job_probe_creation_time(child.as_raw_handle() as _).unwrap();
                 std::fs::write(
                     std::env::var_os(HELPER_PID_FILE_ENV).unwrap(),
-                    format!("{} {created}", child.id()),
+                    child.id().to_string(),
                 )
                 .unwrap();
                 let status = child.wait().unwrap();
@@ -4290,59 +4313,11 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn windows_job_signal_probe_normal_exit() {
-        run_windows_job_signal_probe(false).expect("observe normal Windows Job/process exit");
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_job_signal_probe_terminate_job() {
-        run_windows_job_signal_probe(true).expect("observe TerminateJobObject/process exit");
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_job_signal_probe_late_open() {
-        run_windows_job_late_open_probe().expect("observe delayed capture of an exited descendant");
-    }
-
-    #[cfg(windows)]
-    fn windows_job_probe_creation_time(
-        process: windows_sys::Win32::Foundation::HANDLE,
-    ) -> std::io::Result<u64> {
-        use windows_sys::Win32::Foundation::FILETIME;
-        use windows_sys::Win32::System::Threading::GetProcessTimes;
-        let mut created = FILETIME {
-            dwLowDateTime: 0,
-            dwHighDateTime: 0,
-        };
-        let mut exited = created;
-        let mut kernel = created;
-        let mut user = created;
-        // SAFETY: caller retains a process handle with query access; all four
-        // outputs are writable FILETIME values for the duration of the call.
-        if unsafe { GetProcessTimes(process, &mut created, &mut exited, &mut kernel, &mut user) }
-            == 0
-        {
-            return Err(std::io::Error::last_os_error());
-        }
-        Ok((u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
-    }
-
-    #[cfg(windows)]
-    fn run_windows_job_late_open_probe() -> std::io::Result<()> {
-        use std::mem::size_of;
+    fn windows_runtime_tree_proves_a_child_that_finished_before_first_poll() {
         use std::os::windows::io::AsRawHandle;
-        use windows_sys::Win32::System::JobObjects::{
-            IsProcessInJob, JobObjectBasicAccountingInformation, QueryInformationJobObject,
-            JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
-        };
-        use windows_sys::Win32::System::Threading::{
-            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
-        };
 
         let pid_file = std::env::temp_dir().join(format!(
-            "unica-windows-late-open-{}-{}",
+            "unica-runtime-finished-child-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -4350,7 +4325,7 @@ mod tests {
                 .as_nanos()
         ));
         let _file_cleanup = FileCleanupGuard(pid_file.clone());
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = Command::new(std::env::current_exe().unwrap());
         command
             .args([
                 "--exact",
@@ -4362,259 +4337,44 @@ mod tests {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        let tree = ProcessTree::prepare(&mut command)?;
-        let child = command.spawn()?;
-        let mut fixture = WindowsJobSignalProbeChild {
+        let tree = ProcessTree::prepare_runtime(&mut command).unwrap();
+        let mut fixture = WindowsRuntimeTreeFixture {
             tree,
-            child: Some(child),
+            child: Some(command.spawn().unwrap()),
         };
-        let observed: std::io::Result<serde_json::Value> = (|| {
-            let root = fixture.child.as_mut().expect("retained root");
-            fixture.tree.attach(root)?;
-            if !windows_job_signal_probe_wait(root.as_raw_handle() as _, 10_000)? {
-                return Err(std::io::Error::other("finished-child root did not signal"));
-            }
-            if !root.try_wait()?.is_some_and(|status| status.success()) {
-                return Err(std::io::Error::other("finished-child root helper failed"));
-            }
-            let record = std::fs::read_to_string(&pid_file)?;
-            let fields = record.split_whitespace().collect::<Vec<_>>();
-            let [pid, created] = fields.as_slice() else {
-                return Err(std::io::Error::other("invalid finished-child record"));
-            };
-            let pid = pid.parse::<u32>().map_err(std::io::Error::other)?;
-            let created = created.parse::<u64>().map_err(std::io::Error::other)?;
-            // SAFETY: this accounting output structure is POD and permits all-zero initialization.
-            let mut accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION =
-                unsafe { std::mem::zeroed() };
-            // SAFETY: the fixture retains its private Job and the exact output
-            // structure and length match the queried information class.
-            if unsafe {
-                QueryInformationJobObject(
-                    fixture.tree.job,
-                    JobObjectBasicAccountingInformation,
-                    &mut accounting as *mut _ as *mut _,
-                    size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
-                    std::ptr::null_mut(),
-                )
-            } == 0
-            {
-                return Err(std::io::Error::last_os_error());
-            }
-            let pids = windows_job_signal_probe_pid_list(
-                fixture.tree.job,
-                &mut WindowsJobSignalProbeCounts::default(),
-            )?;
-            // The PID is deliberately reopened late for observation only. It
-            // never authorizes termination; membership and generation are separate.
-            let opened = unsafe {
-                OpenProcess(
-                    PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
-                    0,
-                    pid,
-                )
-            };
-            let capture = if opened.is_null() {
-                serde_json::json!({"opened": false, "os_error": std::io::Error::last_os_error().raw_os_error()})
-            } else {
-                let retained = super::ScopedWindowsHandle(opened);
-                let same_creation_time = windows_job_probe_creation_time(retained.0)? == created;
-                let mut belongs = 0;
-                // SAFETY: both handles are owned and remain live during the query.
-                if unsafe { IsProcessInJob(retained.0, fixture.tree.job, &mut belongs) } == 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                serde_json::json!({
-                    "opened": true, "same_creation_time": same_creation_time,
-                    "in_exact_job": belongs != 0,
-                    "signaled": windows_job_signal_probe_wait(retained.0, 0)?,
-                })
-            };
-            Ok(serde_json::json!({
-                "probe": "windows_job_late_open", "version": 1,
-                "root_helper_success": true, "root_handle_retained": true,
-                "descendant_handle_closed_before_root_exit": true,
-                "total_processes": accounting.TotalProcesses,
-                "active_processes": accounting.ActiveProcesses,
-                "expected_total_processes_for_fixture": 2,
-                "fixture_count_matches": accounting.TotalProcesses == 2,
-                "prior_census_handles": 1, "pid_list_count": pids.len(),
-                "descendant_in_pid_list": pids.contains(&(pid as usize)),
-                "late_capture": capture,
-                "inference": "observations_only; IOCP_delivery_not_tested",
-            }))
-        })();
-        // Even a helper failure cannot leave a descendant behind intentionally.
-        let terminated = fixture
-            .tree
-            .terminate(fixture.child.as_mut().expect("retained root"));
-        let cleaned = fixture.cleanup();
-        let result = observed?;
-        terminated?;
-        cleaned?;
-        println!("{result}");
-        Ok(())
-    }
-
-    // Research only: observations are not an assertion of Windows teardown
-    // ordering or a replacement for the runtime's release proof (#1496).
-    #[cfg(windows)]
-    fn run_windows_job_signal_probe(terminate: bool) -> std::io::Result<()> {
-        use std::os::windows::io::AsRawHandle;
-        use windows_sys::Win32::System::JobObjects::IsProcessInJob;
-
-        const ITERATIONS: usize = 128;
-        let mut counts = WindowsJobSignalProbeCounts::default();
-        for iteration in 0..ITERATIONS {
-            let mut command = Command::new(std::env::current_exe()?);
-            command
-                .args([
-                    "--exact",
-                    "infrastructure::platform::process::tests::managed_child_test_helper",
-                    "--nocapture",
-                ])
-                .env(HELPER_ENV, if terminate { "read_stdin" } else { "success" })
-                // Keeping stdin open prevents the existing read_stdin helper
-                // from completing normally before the termination request.
-                .stdin(Stdio::piped())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null());
-            let tree = ProcessTree::prepare(&mut command)?;
-            let child = command.spawn()?;
-            let mut fixture = WindowsJobSignalProbeChild {
-                tree,
-                child: Some(child),
-            };
-            let observed = (|| {
-                let child = fixture.child.as_mut().expect("retained child");
-                fixture.tree.attach(child)?;
-                let process = child.as_raw_handle() as _;
-                let mut belongs = 0;
-                // SAFETY: Child and ProcessTree retain both kernel handles.
-                if unsafe { IsProcessInJob(process, fixture.tree.job, &mut belongs) } == 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                if belongs == 0 {
-                    if !windows_job_signal_probe_wait(process, 0)? {
-                        return Err(std::io::Error::other(
-                            "live probe child is outside its private Job",
-                        ));
-                    }
-                    counts.membership_absent_after_signal += 1;
-                }
-                if terminate {
-                    let mut setup_counts = WindowsJobSignalProbeCounts::default();
-                    let initial = windows_job_signal_probe_sample(
-                        fixture.tree.job,
-                        process,
-                        child.id(),
-                        &mut setup_counts,
-                    )?;
-                    if initial.signaled || initial.active == 0 || !initial.present {
-                        return Err(std::io::Error::other(
-                            "termination fixture was not live in its Job",
-                        ));
-                    }
-                    fixture.tree.terminate(child)?;
-                }
-                let started = Instant::now();
-                let mut signaled_at = None;
-                let mut saw_pre_signal = false;
-                loop {
-                    let sample = windows_job_signal_probe_sample(
-                        fixture.tree.job,
-                        process,
-                        child.id(),
-                        &mut counts,
-                    )?;
-                    saw_pre_signal |= sample.started_unsignaled;
-                    if sample.signaled {
-                        let observed_at = *signaled_at.get_or_insert_with(Instant::now);
-                        if sample.active == 0 && !sample.present {
-                            counts.quiescent_iterations += 1;
-                            break;
-                        }
-                        // Bound observations even if retained handles keep
-                        // accounting/list entries after the process signal.
-                        if observed_at.elapsed() >= Duration::from_millis(10) {
-                            counts.post_signal_observation_limit += 1;
-                            break;
-                        }
-                    }
-                    if started.elapsed() >= Duration::from_secs(10) {
-                        return Err(std::io::Error::other(format!(
-                            "probe process did not signal in observation window: iteration {iteration}"
-                        )));
-                    }
-                }
-                if saw_pre_signal {
-                    counts.iterations_with_pre_signal_sample += 1;
-                }
-                Ok(())
-            })();
-            // Always clean up, including query/membership failure. No unbounded
-            // Child::wait or PID-based termination in this diagnostic.
-            let cleaned = fixture.cleanup();
-            observed?;
-            cleaned?;
-        }
-        println!(
-            "{}",
-            serde_json::json!({
-                "probe": "windows_job_signal_ordering", "version": 1,
-                "mode": if terminate { "terminate_job" } else { "normal_exit" },
-                "accounting_and_pid_list_are_sequential": true,
-                "samples_begin": if terminate { "after_TerminateJobObject_returns" } else { "after_attach_and_membership_probe" },
-                "fixture_setup_samples_excluded": if terminate { ITERATIONS } else { 0 },
-                "iterations": ITERATIONS,
-                "sample_count": counts.samples,
-                "bracket_categories": ["unsignaled_before_and_after", "signal_crossed_query_interval", "signaled_before_and_after"],
-                "accounting_samples": counts.accounting_samples,
-                "pid_list_samples": counts.pid_list_samples,
-                "joint_samples": counts.joint_samples,
-                "iterations_with_pre_signal_sample": counts.iterations_with_pre_signal_sample,
-                "active_zero": counts.active_zero,
-                "pid_absent": counts.pid_absent,
-                "active_zero_and_pid_absent": counts.both_empty,
-                "quiescent_iterations": counts.quiescent_iterations,
-                "post_signal_observation_limit": counts.post_signal_observation_limit,
-                "membership_absent_after_signal": counts.membership_absent_after_signal,
-                "pid_list_buffer_retries": counts.list_retries,
-                "max_sample_ns": counts.max_sample_ns,
-                "inference": "observations_only; zero_unsignaled_observations_does_not_prove_ordering"
-            })
+        let child = fixture.child.as_mut().unwrap();
+        fixture.tree.attach(child).unwrap();
+        assert!(
+            windows_fixture_process_signaled_within(child.as_raw_handle() as _, 10_000).unwrap()
         );
-        Ok(())
+        assert!(child.try_wait().unwrap().unwrap().success());
+        // No runtime poll has run before the parent reaped and closed its own
+        // child's handle. Lifetime coverage must recover this ordinary case.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if fixture.tree.is_empty().unwrap() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "finished child left an unprovable coverage gap"
+            );
+            thread::yield_now();
+        }
+        assert!(
+            std::fs::read_to_string(pid_file)
+                .unwrap()
+                .parse::<u32>()
+                .unwrap()
+                > 0
+        );
+        fixture
+            .cleanup()
+            .expect("release the completed runtime fixture");
     }
 
     #[cfg(windows)]
-    #[derive(Default)]
-    struct WindowsJobSignalProbeCounts {
-        samples: u64,
-        accounting_samples: [u64; 3],
-        pid_list_samples: [u64; 3],
-        joint_samples: [u64; 3],
-        iterations_with_pre_signal_sample: u64,
-        active_zero: [u64; 3],
-        pid_absent: [u64; 3],
-        both_empty: [u64; 3],
-        quiescent_iterations: u64,
-        post_signal_observation_limit: u64,
-        membership_absent_after_signal: u64,
-        list_retries: u64,
-        max_sample_ns: u128,
-    }
-
-    #[cfg(windows)]
-    struct WindowsJobSignalProbeSample {
-        active: u32,
-        present: bool,
-        signaled: bool,
-        started_unsignaled: bool,
-    }
-
-    #[cfg(windows)]
-    fn windows_job_signal_probe_wait(
+    fn windows_fixture_process_signaled_within(
         process: windows_sys::Win32::Foundation::HANDLE,
         millis: u32,
     ) -> std::io::Result<bool> {
@@ -4632,173 +4392,46 @@ mod tests {
     }
 
     #[cfg(windows)]
-    fn windows_job_signal_probe_bracket(before: bool, after: bool) -> std::io::Result<usize> {
-        match (before, after) {
-            (false, false) => Ok(0),
-            (false, true) => Ok(1),
-            (true, true) => Ok(2),
-            (true, false) => Err(std::io::Error::other("process signal regressed")),
-        }
-    }
-
-    #[cfg(windows)]
-    fn windows_job_signal_probe_sample(
-        job: windows_sys::Win32::Foundation::HANDLE,
-        process: windows_sys::Win32::Foundation::HANDLE,
-        pid: u32,
-        counts: &mut WindowsJobSignalProbeCounts,
-    ) -> std::io::Result<WindowsJobSignalProbeSample> {
-        use std::mem::{size_of, zeroed};
-        use windows_sys::Win32::System::JobObjects::{
-            JobObjectBasicAccountingInformation, QueryInformationJobObject,
-            JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
-        };
-        let started = Instant::now();
-        let before_accounting = windows_job_signal_probe_wait(process, 0)?;
-        // SAFETY: zero is valid for this POD output buffer.
-        let mut accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { zeroed() };
-        // SAFETY: the retained job, class, buffer and exact size agree.
-        if unsafe {
-            QueryInformationJobObject(
-                job,
-                JobObjectBasicAccountingInformation,
-                &mut accounting as *mut _ as *mut _,
-                size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
-                std::ptr::null_mut(),
-            )
-        } == 0
-        {
-            return Err(std::io::Error::last_os_error());
-        }
-        let after_accounting = windows_job_signal_probe_wait(process, 0)?;
-        let before_list = windows_job_signal_probe_wait(process, 0)?;
-        let present = windows_job_signal_probe_pid_list(job, counts)?.contains(&(pid as usize));
-        let after_list = windows_job_signal_probe_wait(process, 0)?;
-        let accounting_class =
-            windows_job_signal_probe_bracket(before_accounting, after_accounting)?;
-        let list_class = windows_job_signal_probe_bracket(before_list, after_list)?;
-        let joint_class = windows_job_signal_probe_bracket(before_accounting, after_list)?;
-        counts.samples += 1;
-        counts.accounting_samples[accounting_class] += 1;
-        counts.pid_list_samples[list_class] += 1;
-        counts.joint_samples[joint_class] += 1;
-        counts.max_sample_ns = counts.max_sample_ns.max(started.elapsed().as_nanos());
-        if accounting.ActiveProcesses == 0 {
-            counts.active_zero[accounting_class] += 1;
-            if !present {
-                counts.both_empty[joint_class] += 1;
-            }
-        }
-        if !present {
-            counts.pid_absent[list_class] += 1;
-        }
-        Ok(WindowsJobSignalProbeSample {
-            active: accounting.ActiveProcesses,
-            present,
-            signaled: after_list,
-            started_unsignaled: !before_accounting,
-        })
-    }
-
-    #[cfg(windows)]
-    fn windows_job_signal_probe_pid_list(
-        job: windows_sys::Win32::Foundation::HANDLE,
-        counts: &mut WindowsJobSignalProbeCounts,
-    ) -> std::io::Result<Vec<usize>> {
-        use std::mem::{offset_of, size_of};
-        use windows_sys::Win32::Foundation::ERROR_MORE_DATA;
-        use windows_sys::Win32::System::JobObjects::{
-            JobObjectBasicProcessIdList, QueryInformationJobObject, JOBOBJECT_BASIC_PROCESS_ID_LIST,
-        };
-        // usize storage supplies the alignment required by ULONG_PTR, unlike
-        // a Vec<u8>. These private fixtures have at most two processes; still
-        // require a full list.
-        let mut buffer = vec![0usize; 8];
-        for _ in 0..16 {
-            let bytes = buffer.len() * size_of::<usize>();
-            let mut returned = 0;
-            // SAFETY: aligned writable storage, matching class and byte length.
-            let ok = unsafe {
-                QueryInformationJobObject(
-                    job,
-                    JobObjectBasicProcessIdList,
-                    buffer.as_mut_ptr().cast(),
-                    bytes as u32,
-                    &mut returned,
-                )
-            };
-            if ok == 0 {
-                let error = std::io::Error::last_os_error();
-                if error.raw_os_error() != Some(ERROR_MORE_DATA as i32) {
-                    return Err(error);
-                }
-            } else {
-                // SAFETY: successful query wrote the header within the aligned allocation.
-                let info = unsafe { &*buffer.as_ptr().cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>() };
-                let offset = offset_of!(JOBOBJECT_BASIC_PROCESS_ID_LIST, ProcessIdList);
-                let length = info.NumberOfProcessIdsInList as usize;
-                if (returned as usize) > bytes
-                    || (returned as usize) < offset
-                    || length > (bytes - offset) / size_of::<usize>()
-                    || offset + length * size_of::<usize>() > returned as usize
-                {
-                    return Err(std::io::Error::other("invalid Job PID-list output bounds"));
-                }
-                if info.NumberOfProcessIdsInList == info.NumberOfAssignedProcesses {
-                    // SAFETY: header counts were checked against allocation bounds.
-                    return Ok(unsafe {
-                        std::slice::from_raw_parts(
-                            buffer.as_ptr().cast::<u8>().add(offset).cast::<usize>(),
-                            length,
-                        )
-                    }
-                    .to_vec());
-                }
-            }
-            counts.list_retries += 1;
-            buffer.resize(buffer.len() * 2, 0);
-        }
-        Err(std::io::Error::other(
-            "Job PID-list query did not produce a complete bounded list",
-        ))
-    }
-
-    #[cfg(windows)]
-    struct WindowsJobSignalProbeChild {
+    struct WindowsRuntimeTreeFixture {
         tree: ProcessTree,
         child: Option<Child>,
     }
 
     #[cfg(windows)]
-    impl WindowsJobSignalProbeChild {
+    impl WindowsRuntimeTreeFixture {
         fn cleanup(&mut self) -> std::io::Result<()> {
             use std::os::windows::io::AsRawHandle;
             let Some(mut child) = self.child.take() else {
                 return Ok(());
             };
-            let process = child.as_raw_handle() as _;
-            if !matches!(windows_job_signal_probe_wait(process, 0), Ok(true)) {
-                let _ = self.tree.terminate(&mut child);
-                // Also covers an attach failure before Job membership.
-                let _ = child.kill();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let _ = self.tree.terminate(&mut child);
+            // Also covers an attach failure before Job membership.
+            let _ = child.kill();
+            loop {
+                let root_done =
+                    windows_fixture_process_signaled_within(child.as_raw_handle() as _, 0)?;
+                if root_done && self.tree.is_empty()? {
+                    child.try_wait()?.ok_or_else(|| {
+                        std::io::Error::other("signaled fixture root was not reaped")
+                    })?;
+                    return Ok(());
+                }
+                if Instant::now() >= deadline {
+                    return Err(std::io::Error::other(
+                        "Windows runtime fixture cleanup exceeded 5 seconds",
+                    ));
+                }
+                thread::yield_now();
             }
-            if !windows_job_signal_probe_wait(process, 5000)? {
-                return Err(std::io::Error::other(
-                    "probe child cleanup did not signal within 5 seconds",
-                ));
-            }
-            child
-                .try_wait()?
-                .ok_or_else(|| std::io::Error::other("signaled probe child was not reaped"))?;
-            Ok(())
         }
     }
 
     #[cfg(windows)]
-    impl Drop for WindowsJobSignalProbeChild {
+    impl Drop for WindowsRuntimeTreeFixture {
         fn drop(&mut self) {
             if let Err(error) = self.cleanup() {
-                eprintln!("Windows Job signal probe cleanup failed: {error}");
+                eprintln!("Windows runtime fixture cleanup failed: {error}");
             }
         }
     }
