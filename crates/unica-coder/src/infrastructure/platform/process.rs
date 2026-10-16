@@ -2349,7 +2349,8 @@ struct ProcessTree {
 #[cfg(windows)]
 unsafe impl Send for ProcessTree {}
 
-// SAFETY: the Job Object APIs used here support concurrent access to the handle.
+// SAFETY: Job Object APIs support concurrent access. The Census receiver and
+// its mutable coverage are private and accessed only through exclusive &mut self.
 #[cfg(windows)]
 unsafe impl Sync for ProcessTree {}
 
@@ -4332,22 +4333,25 @@ mod tests {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        let tree = ProcessTree::prepare_runtime(&mut command).unwrap();
+        let runtime = super::RuntimeProcessTreeHandle::prepare(&mut command).unwrap();
         let mut fixture = WindowsRuntimeTreeFixture {
-            tree,
+            runtime,
             child: Some(command.spawn().unwrap()),
+            descendant: None,
         };
         let child = fixture.child.as_mut().unwrap();
-        fixture.tree.attach(child).unwrap();
+        fixture.runtime.attach(child).unwrap();
         assert!(
             windows_fixture_process_signaled_within(child.as_raw_handle() as _, 10_000).unwrap()
         );
-        assert!(child.try_wait().unwrap().unwrap().success());
         // No runtime poll has run before the parent reaped and closed its own
         // child's handle. Lifetime coverage must recover this ordinary case.
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            if fixture.tree.is_empty().unwrap() {
+            if let super::RuntimeProcessTreeState::Exited(status) =
+                fixture.runtime.poll(child).unwrap()
+            {
+                assert!(status.success());
                 break;
             }
             assert!(
@@ -4366,6 +4370,102 @@ mod tests {
         fixture
             .cleanup()
             .expect("release the completed runtime fixture");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_runtime_terminal_waits_for_the_descendant_process_signal() {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::System::JobObjects::IsProcessInJob;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+        };
+
+        for _ in 0..16 {
+            let temp = tempfile::tempdir().unwrap();
+            let pid_file = temp.path().join("descendant.pid");
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "infrastructure::platform::process::tests::managed_child_test_helper",
+                    "--nocapture",
+                ])
+                .env(HELPER_ENV, "exit_leaving_detached_grandchild")
+                .env(HELPER_PID_FILE_ENV, &pid_file)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            let runtime = super::RuntimeProcessTreeHandle::prepare(&mut command).unwrap();
+            let mut fixture = WindowsRuntimeTreeFixture {
+                runtime,
+                child: Some(command.spawn().unwrap()),
+                descendant: None,
+            };
+            let child = fixture.child.as_mut().unwrap();
+            fixture.runtime.attach(child).unwrap();
+            assert!(
+                windows_fixture_process_signaled_within(child.as_raw_handle() as _, 5000).unwrap()
+            );
+            let pid = std::fs::read_to_string(pid_file)
+                .unwrap()
+                .trim()
+                .parse::<u32>()
+                .unwrap();
+            // SAFETY: this read-only capture is attested against our exact Job
+            // before it is retained. Process control stays on the private Job.
+            let process = unsafe {
+                OpenProcess(
+                    PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+                    0,
+                    pid,
+                )
+            };
+            assert!(
+                !process.is_null(),
+                "capture live descendant: {}",
+                std::io::Error::last_os_error()
+            );
+            fixture.descendant = Some(super::ScopedWindowsHandle(process));
+            let mut in_job = 0;
+            // SAFETY: both owned handles remain live for this membership query.
+            assert_ne!(
+                unsafe { IsProcessInJob(process, fixture.runtime.tree.job, &mut in_job) },
+                0
+            );
+            assert_ne!(in_job, 0, "fixture descendant is outside its private Job");
+            assert!(!windows_fixture_process_signaled_within(process, 0).unwrap());
+            assert!(matches!(
+                fixture.runtime.poll(child).unwrap(),
+                super::RuntimeProcessTreeState::Running
+            ));
+            assert!(
+                fixture.runtime.leader_exited(),
+                "root exit must be known before termination"
+            );
+
+            fixture.runtime.terminate(child).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if let super::RuntimeProcessTreeState::Exited(_) =
+                    fixture.runtime.poll(child).unwrap()
+                {
+                    assert!(
+                        windows_fixture_process_signaled_within(process, 0).unwrap(),
+                        "runtime terminal preceded descendant process signal"
+                    );
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "terminated runtime tree stayed unproven"
+                );
+                thread::yield_now();
+            }
+            fixture
+                .cleanup()
+                .expect("release runtime regression fixture");
+        }
     }
 
     #[cfg(windows)]
@@ -4388,37 +4488,34 @@ mod tests {
 
     #[cfg(windows)]
     struct WindowsRuntimeTreeFixture {
-        tree: ProcessTree,
+        runtime: super::RuntimeProcessTreeHandle,
         child: Option<Child>,
+        descendant: Option<super::ScopedWindowsHandle>,
     }
 
     #[cfg(windows)]
     impl WindowsRuntimeTreeFixture {
         fn cleanup(&mut self) -> std::io::Result<()> {
-            use std::os::windows::io::AsRawHandle;
             let Some(mut child) = self.child.take() else {
                 return Ok(());
             };
             let deadline = Instant::now() + Duration::from_secs(5);
-            let _ = self.tree.terminate(&mut child);
-            // Also covers an attach failure before Job membership.
-            let _ = child.kill();
-            loop {
-                let root_done =
-                    windows_fixture_process_signaled_within(child.as_raw_handle() as _, 0)?;
-                if root_done && self.tree.is_empty()? {
-                    child.try_wait()?.ok_or_else(|| {
-                        std::io::Error::other("signaled fixture root was not reaped")
-                    })?;
-                    return Ok(());
+            let result = self.runtime.terminate_and_reap_until(&mut child, deadline);
+            if let Some(descendant) = &self.descendant {
+                // Failure cleanup also waits on the independent fixture witness;
+                // it cannot mask the assertion made before cleanup above.
+                while !windows_fixture_process_signaled_within(descendant.0, 0)? {
+                    if Instant::now() >= deadline {
+                        return Err(result.err().unwrap_or_else(|| {
+                            std::io::Error::other(
+                                "Windows fixture descendant cleanup exceeded its deadline",
+                            )
+                        }));
+                    }
+                    thread::yield_now();
                 }
-                if Instant::now() >= deadline {
-                    return Err(std::io::Error::other(
-                        "Windows runtime fixture cleanup exceeded 5 seconds",
-                    ));
-                }
-                thread::yield_now();
             }
+            result
         }
     }
 
