@@ -1784,7 +1784,9 @@ impl CanonicalV13ReadService {
         }
         let sources = match invocation.read_sources() {
             Ok(sources) => sources,
-            Err(error) => return error_result(None, RefusalCode::ProviderUnavailable, error),
+            Err(error) => {
+                return error_result_detailed(None, RefusalDetail::SourceUnreadable, error)
+            }
         };
         let project_hits = |hits: &[crate::domain::code_intelligence::ProviderSearchHit]| -> Result<Vec<Map<String, Value>>, ViewError> {
             use crate::domain::source_location::SourceLocation;
