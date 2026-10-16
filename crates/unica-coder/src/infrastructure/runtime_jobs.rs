@@ -4289,9 +4289,6 @@ pub(crate) mod tests {
     };
 
     const PROCESS_TREE_STARTUP_BUDGET: Duration = Duration::from_secs(15);
-    /// Lag of a descendant's own handle behind the empty Job Object that the
-    /// runtime takes as tree death on Windows; see `exited_within`.
-    const DESCENDANT_EXIT_SETTLE: Duration = Duration::from_secs(1);
 
     /// Загрузку зависимостей продукт стороннему исполнителю не делегирует:
     /// `tools-download` снят с провода вместе с v0.12 и не должен доживать
@@ -5289,9 +5286,7 @@ pub(crate) mod tests {
         cancel_and_reap(&mut *process).expect("cancel and reap process group");
 
         assert!(
-            descendant
-                .exited_within(DESCENDANT_EXIT_SETTLE)
-                .expect("probe runtime-job descendant"),
+            !descendant.is_alive().expect("probe runtime-job descendant"),
             "the process tree must no longer be alive"
         );
     }
@@ -5365,8 +5360,8 @@ pub(crate) mod tests {
             thread::sleep(Duration::from_millis(10));
             cancelled = service.poll(&started.id).expect("poll cancellation");
         }
-        let descendant_already_exited = descendant
-            .exited_within(Duration::ZERO)
+        let descendant_still_alive = descendant
+            .is_alive()
             .expect("probe descendant immediately after terminal observation");
 
         assert!(
@@ -5374,7 +5369,7 @@ pub(crate) mod tests {
             "cancelled tree stayed active"
         );
         assert!(
-            descendant_already_exited,
+            !descendant_still_alive,
             "terminal state preceded the owned descendant's process signal"
         );
         assert!(!service.store.active_lock_path().exists());
