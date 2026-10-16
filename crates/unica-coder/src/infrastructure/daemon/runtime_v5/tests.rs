@@ -4696,6 +4696,7 @@ type IdleIndexGate = Arc<(Mutex<bool>, Condvar)>;
 
 struct IdleIndexService {
     calls: AtomicUsize,
+    keep_first_lease: bool,
     producers: Arc<AtomicUsize>,
     entered: mpsc::Sender<()>,
     exited: mpsc::Sender<()>,
@@ -4746,12 +4747,13 @@ impl super::super::server::CanonicalInvocationService for IdleIndexService {
             })?;
         if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
             assert!(lease.started_here());
-            drop(lease);
         } else {
             assert!(
                 !lease.started_here(),
                 "later RPC must attach to the original live producer"
             );
+        }
+        if self.keep_first_lease || !lease.started_here() {
             self.follower.send(lease).unwrap();
         }
         Ok(crate::domain::invocation::DomainResult::success(
@@ -4793,6 +4795,7 @@ fn daemon_idle_running_index_producer_without_rpc_or_lease_preserves_instance_th
     let (follower, joined) = mpsc::channel();
     let service = Arc::new(IdleIndexService {
         calls: AtomicUsize::new(0),
+        keep_first_lease: false,
         producers: Arc::clone(&producers),
         entered,
         exited,
@@ -4848,6 +4851,303 @@ fn daemon_idle_running_index_producer_without_rpc_or_lease_preserves_instance_th
         !daemon.observe_idle_interval(idle * 3),
         "completed index work with no leases must allow empty daemon idle cleanup"
     );
+    daemon.join();
+    assert!(daemon.endpoint().is_none());
+}
+
+/// Holds execution at the service boundary; the listener, ownership registry,
+/// receipt handoff and terminal publication remain the real TCP runtime.
+struct IdleInvocationService {
+    known_long: bool,
+    prepares: AtomicUsize,
+    executions: AtomicUsize,
+    entered: mpsc::Sender<()>,
+    release: IdleIndexGate,
+}
+
+impl CanonicalInvocationService for IdleInvocationService {
+    fn prepare(
+        &self,
+        _invocation: &super::super::server::ActorBoundInvocation,
+    ) -> Result<ExecutionClass, Box<DomainResult>> {
+        self.prepares.fetch_add(1, Ordering::SeqCst);
+        Ok(if self.known_long {
+            ExecutionClass::KnownLong(KnownLongReason::ExternalProcess)
+        } else {
+            ExecutionClass::InlineCandidate
+        })
+    }
+
+    fn execute(
+        &self,
+        _invocation: &super::super::server::ActorBoundExecution,
+        _cancellation: CancellationToken,
+    ) -> Result<DomainResult, InvocationFailure> {
+        let attempt = self.executions.fetch_add(1, Ordering::SeqCst) + 1;
+        self.entered.send(()).unwrap();
+        let (released, changed) = &*self.release;
+        let mut released = released.lock().unwrap();
+        while !*released {
+            released = changed.wait(released).unwrap();
+        }
+        let mut result = DomainResult::success("idle owner attempt completed");
+        result.data = Some(json!({"attempt": attempt}));
+        Ok(result)
+    }
+}
+
+struct IdleInvocationRelease(IdleIndexGate);
+
+impl IdleInvocationRelease {
+    fn release(&self) {
+        *self.0 .0.lock().unwrap() = true;
+        self.0 .1.notify_all();
+    }
+}
+
+impl Drop for IdleInvocationRelease {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+fn idle_request_over_tcp(
+    owner: &mut (TcpStream, BufReader<TcpStream>),
+    request: V5ClientRequest,
+) -> V5ServerResponse {
+    write_json_line(&mut owner.0, &serde_json::to_value(request).unwrap());
+    let frame = read_bounded_v5_probe_response_frame(&mut owner.1)
+        .expect("read idle ownership response from the original daemon");
+    decode_v5_server_response(&frame).unwrap()
+}
+
+fn idle_task_terminal_over_tcp(
+    owner: &mut (TcpStream, BufReader<TcpStream>),
+    invocation: &V5InvocationRequest,
+) -> V5DaemonTaskSnapshot {
+    let until = Instant::now() + Duration::from_secs(5);
+    loop {
+        let response = idle_request_over_tcp(
+            owner,
+            V5ClientRequest::WaitTask {
+                task_id: invocation.reserved_task_id(),
+                wait_ms: 1_000,
+            },
+        );
+        let V5ServerResponse::Task { snapshot } = response else {
+            panic!("the same Task must remain readable: {response:?}");
+        };
+        assert_eq!(snapshot.task_id(), invocation.reserved_task_id());
+        assert_eq!(snapshot.invocation_id(), invocation.invocation_id());
+        if task_snapshot_is_terminal(&snapshot) {
+            return snapshot;
+        }
+        assert!(Instant::now() < until, "released idle Task never completed");
+    }
+}
+
+#[test]
+fn daemon_idle_live_task_after_client_release_preserves_attempt_then_retires() {
+    let (_workspace, workspace) = catalog_workspace();
+    let (entered, executing) = mpsc::channel();
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let service = Arc::new(IdleInvocationService {
+        known_long: true,
+        prepares: AtomicUsize::new(0),
+        executions: AtomicUsize::new(0),
+        entered,
+        release: Arc::clone(&release),
+    });
+    let idle = Duration::from_millis(80);
+    let mut daemon = PromisedWorkIdleDaemon::with_service(idle, service.clone());
+    // Release before the daemon's panic cleanup joins the held execution.
+    let cleanup = IdleInvocationRelease(release);
+    let invocation = view_catalog_request(TaskId::new(), &workspace);
+    let mut owner = daemon.owner();
+    let initial = submitted_task_snapshot(Ok(idle_request_over_tcp(
+        &mut owner,
+        V5ClientRequest::SubmitInvocation {
+            invocation: invocation.clone(),
+        },
+    )));
+    assert_eq!(initial.task_id(), invocation.reserved_task_id());
+    assert_eq!(initial.invocation_id(), invocation.invocation_id());
+    executing.recv_timeout(Duration::from_secs(3)).unwrap();
+    release_promised_work_owner(owner);
+
+    assert!(daemon.observe_idle_interval(idle * 3));
+    assert_eq!(daemon.endpoint(), Some(daemon.record.clone()));
+    let mut successor = daemon.owner();
+    let V5ServerResponse::Task { snapshot: running } = idle_request_over_tcp(
+        &mut successor,
+        V5ClientRequest::GetTask {
+            task_id: invocation.reserved_task_id(),
+        },
+    ) else {
+        panic!("successor must see the original live Task");
+    };
+    assert_eq!(running.task_id(), initial.task_id());
+    assert_eq!(running.invocation_id(), initial.invocation_id());
+    assert!(!task_snapshot_is_terminal(&running));
+    cleanup.release();
+    let terminal = idle_task_terminal_over_tcp(&mut successor, &invocation);
+    assert!(
+        matches!(&terminal, V5DaemonTaskSnapshot::Completed { result, .. }
+        if result.ok && result.data == Some(json!({"attempt": 1})))
+    );
+    let replay = submitted_task_snapshot(Ok(idle_request_over_tcp(
+        &mut successor,
+        V5ClientRequest::SubmitInvocation { invocation },
+    )));
+    assert_eq!(replay, terminal);
+    assert_eq!(service.prepares.load(Ordering::SeqCst), 1);
+    assert_eq!(service.executions.load(Ordering::SeqCst), 1);
+    release_promised_work_owner(successor);
+    assert!(!daemon.observe_idle_interval(idle * 3));
+    daemon.join();
+    assert!(daemon.endpoint().is_none());
+}
+
+#[test]
+fn daemon_idle_disconnected_inline_invocation_preserves_attempt_then_retires() {
+    let (_workspace, workspace) = catalog_workspace();
+    let (entered, executing) = mpsc::channel();
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let service = Arc::new(IdleInvocationService {
+        known_long: false,
+        prepares: AtomicUsize::new(0),
+        executions: AtomicUsize::new(0),
+        entered,
+        release: Arc::clone(&release),
+    });
+    let idle = Duration::from_millis(80);
+    let mut daemon = PromisedWorkIdleDaemon::with_service(idle, service.clone());
+    let cleanup = IdleInvocationRelease(release);
+    let invocation = view_catalog_request(TaskId::new(), &workspace);
+    let mut owner = daemon.owner();
+    write_json_line(
+        &mut owner.0,
+        &serde_json::to_value(V5ClientRequest::SubmitInvocation {
+            invocation: invocation.clone(),
+        })
+        .unwrap(),
+    );
+    executing.recv_timeout(Duration::from_secs(3)).unwrap();
+    owner.0.shutdown(std::net::Shutdown::Both).unwrap();
+    drop(owner);
+
+    // The client has left, but the synchronous handler still owns its lease
+    // until this invocation returns. Do not call its registry empty.
+    assert!(daemon.observe_until(Instant::now() + idle * 3));
+    assert_eq!(daemon.endpoint(), Some(daemon.record.clone()));
+    let mut successor = daemon.owner();
+    cleanup.release();
+    let recovered = idle_request_over_tcp(
+        &mut successor,
+        V5ClientRequest::SubmitInvocation {
+            invocation: invocation.clone(),
+        },
+    );
+    let result = match recovered {
+        V5ServerResponse::Invocation {
+            outcome: V5InvocationResponse::Direct { receipt },
+        } => {
+            assert_eq!(
+                receipt.receipt_key().invocation_id(),
+                invocation.invocation_id()
+            );
+            assert_eq!(
+                receipt.receipt_key().reserved_task_id(),
+                invocation.reserved_task_id()
+            );
+            let ReceiptTerminalOutcome::Completed { result } = receipt.terminal() else {
+                panic!("disconnected invocation did not complete: {receipt:?}");
+            };
+            *result.clone()
+        }
+        V5ServerResponse::Invocation {
+            outcome: V5InvocationResponse::Task { snapshot },
+        } => {
+            assert_eq!(snapshot.task_id(), invocation.reserved_task_id());
+            assert_eq!(snapshot.invocation_id(), invocation.invocation_id());
+            let terminal = idle_task_terminal_over_tcp(&mut successor, &invocation);
+            let V5DaemonTaskSnapshot::Completed { result, .. } = terminal else {
+                panic!("disconnected invocation did not complete: {terminal:?}");
+            };
+            *result
+        }
+        other => panic!("exact repeat must recover the admitted invocation: {other:?}"),
+    };
+    assert!(result.ok);
+    assert_eq!(result.data, Some(json!({"attempt": 1})));
+    assert_eq!(service.prepares.load(Ordering::SeqCst), 1);
+    assert_eq!(service.executions.load(Ordering::SeqCst), 1);
+    release_promised_work_owner(successor);
+    assert!(!daemon.observe_idle_interval(idle * 3));
+    daemon.join();
+    assert!(daemon.endpoint().is_none());
+}
+
+#[test]
+fn daemon_idle_completed_index_lease_preserves_same_result_then_retires() {
+    let workspace =
+        super::super::server::actor_capacity_tests::subsystem_picture_workspace("", false);
+    let producers = Arc::new(AtomicUsize::new(0));
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let (entered, started) = mpsc::channel();
+    let (exited, finished) = mpsc::channel();
+    let (follower, joined) = mpsc::channel();
+    let service = Arc::new(IdleIndexService {
+        calls: AtomicUsize::new(0),
+        keep_first_lease: true,
+        producers: Arc::clone(&producers),
+        entered,
+        exited,
+        release: Arc::clone(&release),
+        follower,
+    });
+    let idle = Duration::from_millis(80);
+    let mut daemon = PromisedWorkIdleDaemon::with_service(idle, service);
+    let cleanup = IdleIndexProducerCleanup {
+        release,
+        exited: finished,
+    };
+    let mut owner = daemon.owner();
+    let call = |owner: &mut (TcpStream, BufReader<TcpStream>)| {
+        promised_work_call_over_tcp(
+            owner,
+            workspace.path(),
+            V5ToolIdentity::View,
+            json!({"at": "main:Subsystem.Sales"}),
+        )
+    };
+    assert!(call(&mut owner).ok);
+    started.recv_timeout(Duration::from_secs(2)).unwrap();
+    let lease = joined.recv_timeout(Duration::from_secs(2)).unwrap();
+    release_promised_work_owner(owner);
+    cleanup.release();
+    let crate::application::shared_work::SharedWorkSnapshot::Ready(original) =
+        lease.wait_timeout(Duration::from_secs(2))
+    else {
+        panic!("the producer must finish before the lease-only idle interval");
+    };
+
+    assert!(daemon.observe_idle_interval(idle * 3));
+    assert_eq!(daemon.endpoint(), Some(daemon.record.clone()));
+    let mut successor = daemon.owner();
+    assert!(call(&mut successor).ok);
+    let follower = joined.recv_timeout(Duration::from_secs(2)).unwrap();
+    let crate::application::shared_work::SharedWorkSnapshot::Ready(reused) = follower.snapshot()
+    else {
+        panic!("successor must receive the completed original shared work");
+    };
+    assert!(Arc::ptr_eq(&original, &reused));
+    assert_eq!(producers.load(Ordering::SeqCst), 1);
+    release_promised_work_owner(successor);
+    drop(follower);
+    assert!(daemon.observe_idle_interval(idle * 3));
+    drop(lease);
+    assert!(!daemon.observe_idle_interval(idle * 3));
     daemon.join();
     assert!(daemon.endpoint().is_none());
 }

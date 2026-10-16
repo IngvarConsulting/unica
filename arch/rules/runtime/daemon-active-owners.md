@@ -7,6 +7,9 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::daemon_idle_empty_runtime_still_exits_after_owner_release
   - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::daemon_idle_saved_apply_plan_does_not_prevent_explicit_stop
   - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::daemon_idle_running_index_producer_without_rpc_or_lease_preserves_instance_then_retires
+  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::daemon_idle_live_task_after_client_release_preserves_attempt_then_retires
+  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::daemon_idle_disconnected_inline_invocation_preserves_attempt_then_retires
+  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::daemon_idle_completed_index_lease_preserves_same_result_then_retires
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::warm_actor_expires_after_the_idle_ttl_and_is_rebuilt
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::idle_cleanup_retains_unknown_actor_state_without_rejecting_other_profiles
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::idle_listener_retains_unknown_registry_ownership
