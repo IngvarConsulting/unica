@@ -545,4 +545,103 @@ mod tests {
         assert!(coverage.record(0, Witness::Gone).is_err());
         assert!(!coverage.complete(1));
     }
+
+    // Research only: measure conservative gaps without claiming every possible
+    // PID history is provable. This test is excluded from the release PR tree.
+    #[cfg(windows)]
+    #[test]
+    fn native_finished_child_cohort_observation() {
+        use super::super::ProcessTree;
+        use std::os::windows::io::AsRawHandle;
+        use std::process::{Child, Command, Stdio};
+        use std::time::{Duration, Instant};
+        use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+        use windows_sys::Win32::System::Threading::WaitForSingleObject;
+        struct Fixture {
+            tree: ProcessTree,
+            child: Child,
+        }
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = self.tree.terminate(&mut self.child);
+                let _ = self.child.kill();
+                unsafe {
+                    WaitForSingleObject(self.child.as_raw_handle() as _, 5000);
+                }
+                let _ = self.child.try_wait();
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let record = temp.path().join("pids.txt");
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "infrastructure::platform::process::tests::managed_child_test_helper",
+                "--nocapture",
+            ])
+            .env(
+                "UNICA_MANAGED_CHILD_HELPER",
+                "windows_finished_child_cohort",
+            )
+            .env("UNICA_MANAGED_CHILD_PID_FILE", &record)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let tree = ProcessTree::prepare_runtime(&mut command).unwrap();
+        let mut fixture = Fixture {
+            tree,
+            child: command.spawn().unwrap(),
+        };
+        fixture.tree.attach(&mut fixture.child).unwrap();
+        assert_eq!(
+            unsafe { WaitForSingleObject(fixture.child.as_raw_handle() as _, 20000) },
+            WAIT_OBJECT_0
+        );
+        assert!(fixture.child.try_wait().unwrap().unwrap().success());
+        let mut pids = std::collections::BTreeSet::new();
+        pids.insert(fixture.child.id());
+        let record = std::fs::read_to_string(record).unwrap();
+        let ids = record
+            .lines()
+            .map(|line| line.parse::<u32>().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(ids.len(), 128);
+        pids.extend(ids);
+        let job = fixture.tree.job;
+        let census = fixture.tree.exit_census.as_mut().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let complete = loop {
+            if census.ready(job).unwrap() {
+                break true;
+            }
+            if Instant::now() >= deadline {
+                break false;
+            }
+            std::thread::yield_now();
+        };
+        let accounting = census.accounting(job).unwrap();
+        let handles = census
+            .coverage
+            .members
+            .values()
+            .filter(|w| matches!(w, Witness::Handle(_)))
+            .count();
+        let gone = census.coverage.members.len() - handles;
+        assert_eq!(accounting.ActiveProcesses, 0);
+        assert_eq!(accounting.TotalProcesses, 129);
+        if complete {
+            assert_eq!(pids.len(), 129);
+        }
+        println!(
+            "{}",
+            serde_json::json!({
+                "probe": "windows_census_finished_child_cohort", "descendants": 128,
+                "total_processes": accounting.TotalProcesses, "active_processes": accounting.ActiveProcesses,
+                "unique_pids": pids.len(), "handles": handles, "gone": gone,
+                "pending": census.pending.len(), "ready": complete,
+                "inference": "observations_only; conservative_gap_retains_ownership"
+            })
+        );
+    }
 }

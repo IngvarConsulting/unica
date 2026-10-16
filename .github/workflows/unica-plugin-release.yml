@@ -34,15 +34,15 @@ jobs:
       - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8
         with:
           tool: cargo-nextest@0.9.143
-      - name: Observe the unchanged runtime and strengthened terminal check
+      - name: Validate runtime Census and immediate terminal checks
         run: |
           set -euo pipefail
           mkdir -p .session-temp/1496-native-baseline
-          cargo nextest run -p unica-coder --lib --profile large --retries 0 --test-threads 1 --no-tests=fail --success-output immediate -E 'test(/^infrastructure::platform::process::tests::windows_job_signal_probe_(normal_exit|terminate_job|late_open)$/) | test(/^infrastructure::runtime_jobs::tests::system_runtime_job_keeps_resource_owned_after_leader_exit_until_descendant_dies$/) | test(/^infrastructure::platform::filesystem::tests::windows::failed_single_file_publication_unlinks_stage_while_another_handle_is_open$/)' 2>&1 | tee .session-temp/1496-native-baseline/tests.log
+          cargo nextest run -p unica-coder --lib --profile large --retries 0 --test-threads 2 --no-tests=fail --success-output immediate -E 'test(/^infrastructure::platform::process::/) | test(/^infrastructure::runtime_jobs::tests::/)' 2>&1 | tee .session-temp/1496-native-baseline/tests.log
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
-          name: windows-1496-baseline
+          name: windows-1496-census
           path: |
             .session-temp/1496-native-baseline/tests.log
             target/nextest/large/junit.xml

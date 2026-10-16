@@ -3165,6 +3165,32 @@ mod tests {
                 drop(child);
                 assert!(status.success(), "finished-child helper failed: {status}");
             }
+            #[cfg(windows)]
+            "windows_finished_child_cohort" => {
+                let mut ids = Vec::new();
+                for _ in 0..128 {
+                    let mut child = Command::new(std::env::current_exe().unwrap())
+                        .args([
+                            "--exact",
+                            "infrastructure::platform::process::tests::managed_child_test_helper",
+                            "--nocapture",
+                        ])
+                        .env(HELPER_ENV, "success")
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .spawn()
+                        .unwrap();
+                    ids.push(child.id().to_string());
+                    assert!(child.wait().unwrap().success());
+                    drop(child);
+                }
+                std::fs::write(
+                    std::env::var_os(HELPER_PID_FILE_ENV).unwrap(),
+                    ids.join("\n"),
+                )
+                .unwrap();
+            }
             "read_stdin" => {
                 let mut input = String::new();
                 std::io::stdin().read_to_string(&mut input).unwrap();
