@@ -451,6 +451,70 @@ fn initialize_body_mcp_as(mcp: &mut McpProcess, client: &str) {
 }
 
 #[test]
+fn public_body_line_ranges_open_search_hits_and_refuse_line_edits() {
+    let root = tempfile::tempdir().unwrap();
+    body_workspace(root.path(), "\u{feff}// outside\r\n\r\nProcedure Ping() Export\r\n    Message(\"Needle\");\r\nEndProcedure".as_bytes());
+    let mut mcp = McpProcess::start(root.path());
+    initialize_body_mcp(&mut mcp);
+    let found = mcp.completed_tool_call(call_tool(
+        2,
+        "unica.search",
+        json!({"query":"Needle","scope":"main:CommonModule.Main"}),
+    ));
+    assert_eq!(found["ok"], true, "{found:#}");
+    let at = found["data"]["matches"][0]["at"].as_str().unwrap();
+    assert_eq!(at, "main:CommonModule.Main.Method.Ping.Body#L4");
+    let response = mcp.exchange(call_tool(3, "unica.view", json!({"at":at})));
+    assert!(
+        response["result"].get("structuredContent").is_none(),
+        "{response:#}"
+    );
+    assert_eq!(
+        response["result"]["content"][1]["text"],
+        "    Message(\"Needle\");\r\n"
+    );
+    let envelope: Value =
+        serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        envelope["data"]["props"]["lines"],
+        json!({"state":"range","from":4,"to":4})
+    );
+    assert_eq!(envelope["data"]["can"], json!([]));
+    assert!(!response.to_string().contains("sourceTextReadHint"));
+    let resolved = mcp.completed_tool_call(call_tool(4, "unica.resolve", json!({"at":at})));
+    assert_eq!(resolved["ok"], true, "{resolved:#}");
+    assert_eq!(
+        resolved["data"]["lines"],
+        json!({"state":"range","from":4,"to":4})
+    );
+    let refused = mcp.completed_tool_call(call_tool(
+        5,
+        "unica.apply",
+        json!({"at":at,"ops":[{"op":"code.replace","args":{"text":"    Return;"}}]}),
+    ));
+    assert_eq!(refused["ok"], false, "{refused:#}");
+    assert_eq!(refused["diagnostics"][0]["code"], "bad_value");
+    assert_eq!(
+        refused["next"][0]["args"]["at"],
+        "main:CommonModule.Main.Method.Ping"
+    );
+    let plan = mcp.completed_tool_call(call_tool(6,"unica.apply",json!({"at":"main:CommonModule.Main.Method.Ping","ops":[{"op":"code.replace","args":{"text":"Procedure Ping() Export\r\n    Message(\"Changed\");\r\nEndProcedure"}}]})));
+    assert_eq!(plan["ok"], true, "{plan:#}");
+    let applied = mcp.completed_tool_call(call_tool(
+        7,
+        "unica.apply",
+        json!({"executionToken":plan["data"]["executionToken"]}),
+    ));
+    assert_eq!(applied["ok"], true, "{applied:#}");
+    let after = mcp.exchange(call_tool(8, "unica.view", json!({"at":at})));
+    assert_eq!(
+        after["result"]["content"][1]["text"],
+        "    Message(\"Changed\");\r\n"
+    );
+    mcp.finish();
+}
+
+#[test]
 fn public_view_refuses_bsl_text_over_the_default_budget_whole_with_structural_next() {
     let root = tempfile::tempdir().unwrap();
     let mut source = String::from(
@@ -487,9 +551,29 @@ fn public_view_refuses_bsl_text_over_the_default_budget_whole_with_structural_ne
     assert!(body.get("data").is_none(), "no partial text: {body:#}");
     assert!(body.get("cursor").is_none(), "{body:#}");
     assert_eq!(
-        next_targets(&body),
+        next_targets(&body)[1..],
         [format!("{module}.Region"), format!("{module}.Method")]
     );
+
+    let first = body["next"][0]["args"]["at"].as_str().unwrap();
+    assert!(
+        first.starts_with(&format!("{module}.Body#L1-L")),
+        "{body:#}"
+    );
+    let chunk = mcp.exchange(call_tool(90, "unica.view", json!({"at":first})));
+    assert_eq!(chunk["result"]["isError"], false, "{chunk:#}");
+    let raw = chunk["result"]["content"][1]["text"].as_str().unwrap();
+    assert!(source.starts_with(raw));
+    assert!(raw.ends_with('\n'));
+    assert!(!chunk.to_string().contains("sourceTextReadHint"));
+    let end = first.rsplit_once("-L").unwrap().1.parse::<usize>().unwrap();
+    let one_more = mcp.completed_tool_call(call_tool(
+        91,
+        "unica.view",
+        json!({"at":format!("{module}.Body#L1-L{}",end+1)}),
+    ));
+    assert_eq!(one_more["ok"], false, "{one_more:#}");
+    assert_eq!(one_more["diagnostics"][0]["code"], "result_too_large");
 
     // Прямой ответ на проводе: конверт JSON первым блоком, сырой текст вторым,
     // без `structuredContent`.
@@ -526,7 +610,7 @@ fn public_view_refuses_bsl_text_over_the_default_budget_whole_with_structural_ne
     assert_eq!(large["diagnostics"][0]["code"], "result_too_large");
     assert!(large.get("data").is_none(), "{large:#}");
     assert_eq!(
-        next_targets(&large),
+        next_targets(&large)[1..],
         [
             format!("{module}.Method.Large"),
             format!("{module}.Region"),
@@ -600,7 +684,7 @@ fn public_view_budget_belongs_to_the_client_and_the_summary_marks_the_body() {
         "{refused:#}"
     );
     assert_eq!(
-        refused["next"][0]["args"]["at"],
+        refused["next"][1]["args"]["at"],
         format!("{module}.Method.Large")
     );
     narrow.finish();
@@ -643,6 +727,19 @@ fn public_view_budget_belongs_to_the_client_and_the_summary_marks_the_body() {
         whole["diagnostics"][0]["code"], "result_too_large",
         "{whole:#}"
     );
+    assert!(!whole.to_string().contains("sourceTextReadHint"));
+    let first = whole["next"][0]["args"]["at"].as_str().unwrap();
+    assert!(
+        first.starts_with(&format!("{module}.Body#L1-L")),
+        "{whole:#}"
+    );
+    let reopened = read(&mut wide, 4, first.to_owned());
+    assert_eq!(reopened["result"]["isError"], false, "{reopened:#}");
+    let prefix = reopened["result"]["content"][1]["text"].as_str().unwrap();
+    assert!(source.starts_with(prefix));
+    assert!(prefix.ends_with('\n'));
+    assert!(prefix.len() < source.len());
+    assert!(!reopened.to_string().contains("sourceTextReadHint"));
     wide.finish();
 }
 
@@ -1759,8 +1856,8 @@ fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
     }
 }
 
-/// Reads a whole module body through `view`: the raw text block of the
-/// answer, numbered by the agent itself (`str::lines`, from one).
+/// Opens either a module Body or an exact search range; the raw block uses
+/// the absolute starting line declared by the ranged envelope.
 fn view_body_lines(
     mcp: &mut McpProcess,
     id: &mut u64,
@@ -1769,7 +1866,7 @@ fn view_body_lines(
     let response = mcp.exchange(call_tool(
         *id,
         "unica.view",
-        json!({"at": format!("{at}.Body")}),
+        json!({"at": if at.contains("#L") { at.to_owned() } else { format!("{at}.Body") }}),
     ));
     *id += 1;
     assert!(
@@ -1779,10 +1876,23 @@ fn view_body_lines(
     let text = response["result"]["content"][1]["text"]
         .as_str()
         .unwrap_or_else(|| panic!("{at}: Body text block: {response:#}"));
+    let envelope: Value =
+        serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let from = envelope["data"]["props"]["lines"]["from"]
+        .as_u64()
+        .unwrap_or(1);
     text.lines()
         .enumerate()
-        .map(|(index, line)| (index as u64 + 1, line.to_owned()))
+        .map(|(index, line)| (index as u64 + from, line.to_owned()))
         .collect()
+}
+
+fn hit_module(at: &str) -> &str {
+    let body = at.split_once('#').map_or(at, |(body, _)| body);
+    let owner = body.strip_suffix(".Body").unwrap_or(body);
+    owner
+        .rsplit_once(".Method.")
+        .map_or(owner, |(module, _)| module)
 }
 
 /// #1298: a text hit names the logical module it was found in, and `view` of
@@ -1893,7 +2003,7 @@ fn text_hits_name_their_module_and_view_reads_the_same_line() {
             let at = hit["at"]
                 .as_str()
                 .unwrap_or_else(|| panic!("hit has no module: {hit:#}"));
-            modules.insert(at.to_owned());
+            modules.insert(hit_module(at).to_owned());
         }
         let mut expected = expected.to_vec();
         expected.sort_unstable();
@@ -1901,23 +2011,26 @@ fn text_hits_name_their_module_and_view_reads_the_same_line() {
             modules.iter().map(String::as_str).collect::<Vec<_>>(),
             expected
         );
-        for at in &modules {
+        for hit in matches {
+            let at = hit["at"].as_str().unwrap();
+            assert!(
+                at.contains(".Body#L"),
+                "a textual hit is an executable Body line address: {hit:#}"
+            );
             let lines = view_body_lines(&mut mcp, &mut id, at);
-            for hit in matches.iter().filter(|hit| hit["at"] == at.as_str()) {
-                let line = hit["line"].as_u64().expect("hit line");
-                let text = lines.get(&line).map(String::as_str);
-                assert_eq!(text, hit["snippet"].as_str(), "{at} line {line}");
-                let column = usize::try_from(hit["column"].as_u64().expect("hit column"))
-                    .expect("column fits");
-                let tail = text
-                    .expect("hit line")
-                    .chars()
-                    .skip(column - 1)
-                    .collect::<String>();
-                assert!(tail.starts_with(query), "{at} line {line}: {hit:#}");
-                if line == 1 {
-                    first_line_hits += 1;
-                }
+            let line = hit["line"].as_u64().expect("hit line");
+            let text = lines.get(&line).map(String::as_str);
+            assert_eq!(text, hit["snippet"].as_str(), "{at} line {line}");
+            let column =
+                usize::try_from(hit["column"].as_u64().expect("hit column")).expect("column fits");
+            let tail = text
+                .expect("hit line")
+                .chars()
+                .skip(column - 1)
+                .collect::<String>();
+            assert!(tail.starts_with(query), "{at} line {line}: {hit:#}");
+            if line == 1 {
+                first_line_hits += 1;
             }
         }
     }
@@ -1960,7 +2073,7 @@ fn text_hits_name_their_module_and_view_reads_the_same_line() {
         reasons,
         std::collections::BTreeMap::from([
             (
-                "ext:CommonModule.Свой".to_owned(),
+                "ext:CommonModule.Свой.Body#L1".to_owned(),
                 "ext:Configuration".to_owned()
             ),
             (
@@ -2029,7 +2142,13 @@ fn broad_text_search_scopes_name_the_module_of_every_hit() {
         json!({"query": declaration, "corpus": "text", "scope": module, "limit": 5}),
     );
     assert_eq!(narrow.len(), 1, "{narrow:#?}");
-    assert_eq!(narrow[0]["at"], module, "{narrow:#?}");
+    assert!(
+        narrow[0]["at"]
+            .as_str()
+            .unwrap()
+            .starts_with(&format!("{module}.Method.НастройкиАвторизации.Body#L")),
+        "{narrow:#?}"
+    );
     for scope in [Some("main:CommonModule"), Some("main:Configuration"), None] {
         let mut args = json!({"query": declaration, "corpus": "text", "limit": 5});
         if let Some(scope) = scope {
@@ -2063,6 +2182,7 @@ fn broad_text_search_scopes_name_the_module_of_every_hit() {
                 .unwrap_or_else(|| panic!("hit has no module: {hit:#}"))
                 .to_owned()
         })
+        .map(|at| hit_module(&at).to_owned())
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(
         modules.iter().map(String::as_str).collect::<Vec<_>>(),

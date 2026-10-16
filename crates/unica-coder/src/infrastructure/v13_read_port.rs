@@ -1454,6 +1454,36 @@ impl ProviderReadAuthority {
         })
     }
 
+    /// Retains only the requested complete file lines, while validating the
+    /// entire stream and preserving retained-source identity/cancellation.
+    pub(crate) fn module_text_range(
+        &self,
+        target: &MetadataAddress,
+        range: crate::domain::address::BodyLineRange,
+        checkpoint: impl FnMut() -> Result<(), ViewError>,
+    ) -> Result<ModuleText, ViewError> {
+        let mut text = ModuleTextAccumulator::with_range(range);
+        let exists = self.visit_module_utf8_chunks(target, checkpoint, |chunk| {
+            text.push(chunk);
+            Ok(())
+        })?;
+        if exists.is_none() {
+            return Err(ViewError::new(
+                RefusalCode::NotFound,
+                "the BSL module source file does not exist",
+            ));
+        }
+        if range.to > text.line_count() {
+            return Err(ViewError::new(
+                RefusalCode::BadValue,
+                "Body line selector exceeds the file's last line",
+            ));
+        }
+        text.finish().map_err(|_| {
+            ViewError::detailed(RefusalDetail::SourceUnreadable, "BSL module is not UTF-8")
+        })
+    }
+
     /// Streams the module only after one shared UTF-8 check, so every Body
     /// reader sees the same text and numbers the same lines. An absent file
     /// is `None`; the length is in bytes.

@@ -414,6 +414,7 @@ fn parse_mxl_operation(
         _ => return Err(ApplyPlanError::new(ApplyPlanErrorKind::BadValue, shape).at_path(at_path)),
     };
     let template_address = QualifiedAddress {
+        line_range: None,
         source_set: address.source_set().to_string(),
         segments: template_segments,
     };

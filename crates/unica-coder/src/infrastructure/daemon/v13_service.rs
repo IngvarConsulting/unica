@@ -241,6 +241,44 @@ impl CanonicalV13ReadService {
                 )
             }
         };
+        // A line selector is a read address. Refuse before write admission
+        // creates staging, even if an op overrides the top-level target.
+        if let Some(ranged) = std::iter::once(request.at())
+            .chain(request.ops().iter().map(|op| op.at()))
+            .find(|at| at.line_range().is_some())
+        {
+            let mut refusal = error_result(Some(ranged.to_string()), RefusalCode::BadValue, "Body line ranges are read-only; replace a whole containing Method or use the module Body");
+            if let Ok(source) = invocation.apply_range_refusal_source(ranged) {
+                if let Ok(authority) = source.logical_view_read_authority(cancellation) {
+                    let range = ranged.line_range().expect("selected ranged address");
+                    if let Ok(body) =
+                        authority.narrowest_body_for_lines(ranged, range.from, range.to)
+                    {
+                        let segments = body.segments();
+                        let target = if segments.len() >= 2
+                            && segments[segments.len() - 2].kind() == NodeKind::Method
+                        {
+                            body.prefix(segments.len() - 1)
+                        } else {
+                            body
+                        };
+                        refusal.next.push(json!({"tool":"unica.view","args":{"at":target.to_string()},"reason":"прочитать целый метод или Body модуля перед правкой"}));
+                    }
+                }
+            }
+            if refusal.next.is_empty() {
+                let segments = ranged.segments();
+                let module_body = if segments.len() >= 2
+                    && segments[segments.len() - 2].kind() == NodeKind::Method
+                {
+                    format!("{}.Body", ranged.prefix(segments.len() - 2))
+                } else {
+                    ranged.without_line_range().to_string()
+                };
+                refusal.next.push(json!({"tool":"unica.view","args":{"at":module_body},"reason":"прочитать Body модуля и выбрать семантическую цель правки"}));
+            }
+            return refusal;
+        }
         let (binding, mut admission) = match invocation.admit_apply(&request, cancellation) {
             Ok(admitted) => admitted,
             Err(ApplyAdmissionError::Other(error)) => {
@@ -1268,7 +1306,50 @@ impl CanonicalV13ReadService {
                 &scope_at,
                 cancellation,
             ) {
-                Ok(found) => {
+                Ok(mut found) => {
+                    let mut groups = std::collections::BTreeMap::<String, Vec<usize>>::new();
+                    for (index, hit) in found.matches.iter().enumerate() {
+                        if let Some(at) = hit.get("at").and_then(Value::as_str) {
+                            groups.entry(at.to_owned()).or_default().push(index);
+                        }
+                    }
+                    // A page retains its hits, not every full module projection.
+                    // Each module is parsed once and released before the next one.
+                    for (raw, indices) in groups {
+                        let Ok(module) = QualifiedAddress::parse(&raw) else {
+                            continue;
+                        };
+                        let Ok(authority) = source.logical_view_read_authority(cancellation) else {
+                            continue;
+                        };
+                        for index in indices {
+                            let hit = &mut found.matches[index];
+                            let Some(line) = hit
+                                .get("line")
+                                .and_then(Value::as_u64)
+                                .and_then(|line| usize::try_from(line).ok())
+                            else {
+                                continue;
+                            };
+                            let body = match authority.narrowest_body_for_lines(&module, line, line)
+                            {
+                                Ok(body) => body.to_string(),
+                                Err(error) => {
+                                    if matches!(
+                                        error.code(),
+                                        RefusalCode::Cancelled
+                                            | RefusalCode::DeadlineExceeded
+                                            | RefusalCode::ConcurrentChange
+                                    ) {
+                                        return view_error_result(Some(module.to_string()), error);
+                                    }
+                                    hit["limits"] = json!(["Method boundaries could not be established; this address opens the module Body line"]);
+                                    format!("{module}.Body")
+                                }
+                            };
+                            hit["at"] = json!(format!("{body}#L{line}"));
+                        }
+                    }
                     matches.extend(found.matches);
                     uncovered += found.uncovered;
                     uncovered_details.extend(
@@ -1701,13 +1782,53 @@ impl CanonicalV13ReadService {
                 return refusal;
             }
         }
-        provider_search_page(
+        let sources = match invocation.read_sources() {
+            Ok(sources) => sources,
+            Err(error) => return error_result(None, RefusalCode::ProviderUnavailable, error),
+        };
+        let project_hits = |hits: &[crate::domain::code_intelligence::ProviderSearchHit]| -> Result<Vec<Map<String, Value>>, ViewError> {
+            use crate::domain::source_location::SourceLocation;
+            use crate::domain::source_target::TargetKind;
+            let limited = || Map::from_iter([("limits".into(), json!(["The current source does not prove a Body range containing this provider snippet"]))]);
+            let mut projected = vec![Map::new(); hits.len()];
+            let mut groups = std::collections::BTreeMap::<String, (usize,QualifiedAddress,Vec<usize>)>::new();
+            for (index,hit) in hits.iter().enumerate() {
+                let SourceLocation::Addressed { source_set, metadata_path: Some(target), target_kind: TargetKind::Module } = &hit.location else { continue; };
+                projected[index] = limited();
+                let Some(source_index) = sources.iter().position(|source| source.source_set_name() == source_set) else { continue; };
+                let Ok(authority) = sources[source_index].logical_view_read_authority(cancellation) else { continue; };
+                let Some(module) = authority.module_address_for_source_target(target) else { continue; };
+                groups.entry(module.to_string()).or_insert_with(|| (source_index,module,Vec::new())).2.push(index);
+            }
+            // Only the current module's semantic projection is retained.
+            // Enrichment never changes provider order, ranks or snippets.
+            for (_, (source_index,module,indices)) in groups {
+                let Ok(authority) = sources[source_index].logical_view_read_authority(cancellation) else { continue; };
+                for index in indices {
+                    let hit = &hits[index];
+                    if hit.line == 0 || hit.snippet.is_empty() { continue; }
+                    let Some(to) = hit.end_line.or_else(|| hit.line.checked_add(hit.snippet.lines().count().saturating_sub(1))) else { continue; };
+                    match authority.body_for_search_hit(&module, hit.line, to, &hit.snippet) {
+                        Ok(Some(body)) => {
+                            let at = if to == hit.line { format!("{body}#L{}", hit.line) } else { format!("{body}#L{}-L{to}", hit.line) };
+                            projected[index] = Map::from_iter([("at".into(),json!(at))]);
+                        }
+                        Ok(None) => {}
+                        Err(error) if matches!(error.code(), RefusalCode::Cancelled | RefusalCode::DeadlineExceeded | RefusalCode::ConcurrentChange) => return Err(error),
+                        Err(_) => {}
+                    }
+                }
+            }
+            Ok(projected)
+        };
+        provider_search_page_projected(
             &self.search_cursors,
             role,
             execution,
             binding,
             cursor,
             cancellation,
+            &project_hits,
         )
     }
 
@@ -3019,14 +3140,40 @@ fn provider_search_failure(
     result
 }
 
+#[cfg(test)]
 pub(crate) fn provider_search_page(
+    cursors: &SearchCursorStore,
+    role: ProviderRole,
+    execution: crate::application::code_intelligence::CodeSearchExecution,
+    binding: SearchCursorBinding,
+    cursor_token: Option<&str>,
+    cancellation: &CancellationToken,
+) -> DomainResult {
+    provider_search_page_projected(
+        cursors,
+        role,
+        execution,
+        binding,
+        cursor_token,
+        cancellation,
+        &|hits| Ok(vec![Map::new(); hits.len()]),
+    )
+}
+
+fn provider_search_page_projected<F>(
     cursors: &SearchCursorStore,
     role: ProviderRole,
     execution: crate::application::code_intelligence::CodeSearchExecution,
     mut binding: SearchCursorBinding,
     cursor_token: Option<&str>,
     cancellation: &CancellationToken,
-) -> DomainResult {
+    project_hits: &F,
+) -> DomainResult
+where
+    F: Fn(
+        &[crate::domain::code_intelligence::ProviderSearchHit],
+    ) -> Result<Vec<Map<String, Value>>, ViewError>,
+{
     use crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES;
     use crate::application::v13::view::PREFERRED_PAGE_BYTES;
 
@@ -3076,14 +3223,35 @@ pub(crate) fn provider_search_page(
     // Providers expose top-N only. Re-query the same finite window on a later
     // page and bind the cursor to every fact returned by that provider; an
     // index refresh must make the old cursor stale instead of moving hits.
-    let fingerprint_bytes = serde_json::to_vec(&(&section, &warnings))
+    let mut section_value =
+        serde_json::to_value(&section).expect("provider search section is serializable");
+    let projections = match project_hits(&section.hits) {
+        Ok(projections) if projections.len() == section.hits.len() => projections,
+        Ok(_) => {
+            return error_result(
+                None,
+                RefusalCode::InvalidResult,
+                "search hit projection count changed",
+            )
+        }
+        Err(error) => return view_error_result(None, error),
+    };
+    for (extra, value) in projections.into_iter().zip(
+        section_value["hits"]
+            .as_array_mut()
+            .expect("provider hits array"),
+    ) {
+        value
+            .as_object_mut()
+            .expect("provider hit object")
+            .extend(extra);
+    }
+    let fingerprint_bytes = serde_json::to_vec(&(&section_value, &warnings))
         .expect("provider search evidence is serializable");
     let mut hasher = Sha256::new();
     hasher.update(b"unica-v13-provider-search-v1\0");
     hasher.update(&fingerprint_bytes);
     binding.result_fingerprint = Some(format!("provider-sha256-v1:{:x}", hasher.finalize()));
-    let mut section_value =
-        serde_json::to_value(&section).expect("provider search section is serializable");
     let hits = std::mem::take(
         section_value["hits"]
             .as_array_mut()
@@ -4418,6 +4586,7 @@ pub(super) fn preflight_apply_operations_with(
                 .split_last()
                 .expect("a member address has a terminal segment");
             let branch = QualifiedAddress {
+                line_range: None,
                 source_set: redirect.at.source_set().to_string(),
                 segments: owner.to_vec(),
             };
@@ -4457,6 +4626,7 @@ pub(super) fn preflight_apply_operations_with(
             // операции родителя, которая его создаёт (#1354).
             if let Some(creator) = descriptor.creator() {
                 let parent = QualifiedAddress {
+                    line_range: None,
                     source_set: redirect.at.source_set().to_string(),
                     segments: owner.to_vec(),
                 };
@@ -4680,6 +4850,7 @@ pub(super) fn with_missing_target_parent(
     let segments = operation.at().segments();
     let parent = if segments.len() > 1 {
         QualifiedAddress {
+            line_range: None,
             source_set: operation.at().source_set().to_string(),
             segments: segments[..segments.len() - 1].to_vec(),
         }
@@ -5781,13 +5952,24 @@ mod tests {
         tool: crate::application::invocation_store::ToolIdentity,
         arguments: serde_json::Value,
     ) -> crate::domain::invocation::DomainResult {
+        invoke_exact_read_with_service(
+            workspace,
+            tool,
+            arguments,
+            Arc::new(super::CanonicalV13ReadService::default()),
+        )
+    }
+
+    fn invoke_exact_read_with_service(
+        workspace: &std::path::Path,
+        tool: crate::application::invocation_store::ToolIdentity,
+        arguments: serde_json::Value,
+        service: Arc<super::CanonicalV13ReadService>,
+    ) -> crate::domain::invocation::DomainResult {
         use crate::application::ports::TokioClock;
         use crate::infrastructure::daemon::protocol::InvocationRequest;
         use crate::infrastructure::daemon::server::V5CanonicalInvocationRuntime;
-        let runtime = V5CanonicalInvocationRuntime::new(
-            Arc::new(super::CanonicalV13ReadService::default()),
-            Arc::new(TokioClock),
-        );
+        let runtime = V5CanonicalInvocationRuntime::new(service, Arc::new(TokioClock));
         runtime
             .bind(
                 InvocationRequest::new(
@@ -6180,6 +6362,318 @@ mod tests {
             let props = &view.data.as_ref().unwrap()["props"];
             assert_eq!((&props["line"], &props["endLine"]), (&json!(3), &json!(8)));
         }
+    }
+
+    #[test]
+    fn body_line_view_and_resolve_share_absolute_byte_exact_ranges() {
+        use crate::application::invocation_store::ToolIdentity;
+        let workspace = resolve_exact_workspace();
+        let source = "\u{feff}\u{feff}#Область A\r\n\t// comment\r\nПроцедура Ping() Экспорт\r\n\tСообщить(\"needle\");\r\nКонецПроцедуры\r\n#КонецОбласти";
+        for (prefix, path) in [
+            ("CommonModule.Probe", "CommonModules/Probe/Ext/Module.bsl"),
+            (
+                "Catalog.Items.Module.Object",
+                "Catalogs/Items/Ext/ObjectModule.bsl",
+            ),
+            (
+                "Catalog.Items.Form.Main.Module.Form",
+                "Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+            ),
+        ] {
+            std::fs::write(workspace.path().join("src").join(path), source).unwrap();
+            for (suffix, expected, from, to) in [
+                (".Body#L1", "#Область A\r\n", 1, 1),
+                (
+                    ".Body#L2-L3",
+                    "\t// comment\r\nПроцедура Ping() Экспорт\r\n",
+                    2,
+                    3,
+                ),
+                (
+                    ".Method.Ping.Body#L4-L5",
+                    "\tСообщить(\"needle\");\r\nКонецПроцедуры\r\n",
+                    4,
+                    5,
+                ),
+                (".Body#L6", "#КонецОбласти", 6, 6),
+            ] {
+                let at = format!("main:{prefix}{suffix}");
+                let viewed =
+                    invoke_exact_read(workspace.path(), ToolIdentity::View, json!({"at":at}));
+                assert!(viewed.ok, "{at}: {viewed:?}");
+                assert_eq!(viewed.source_text.as_deref(), Some(expected), "{at}");
+                let resolved =
+                    invoke_exact_read(workspace.path(), ToolIdentity::Resolve, json!({"at":at}));
+                assert!(resolved.ok, "{at}: {resolved:?}");
+                let data = resolved.data.unwrap();
+                assert_eq!(data["at"], at);
+                assert_eq!(data["path"], path);
+                assert_eq!(data["lines"], json!({"state":"range","from":from,"to":to}));
+            }
+        }
+    }
+
+    #[test]
+    fn body_line_ranges_refuse_file_eof_and_method_boundary_crossings() {
+        use crate::application::invocation_store::ToolIdentity;
+        let workspace = resolve_exact_workspace();
+        let file = workspace
+            .path()
+            .join("src/CommonModules/Probe/Ext/Module.bsl");
+        std::fs::write(&file, "// outside\n\nПроцедура Ping()\nКонецПроцедуры\n").unwrap();
+        for suffix in [".Body#L5", ".Body#L3-L5", ".Method.Ping.Body#L1-L3"] {
+            for tool in [ToolIdentity::View, ToolIdentity::Resolve] {
+                let at = format!("main:CommonModule.Probe{suffix}");
+                let result = invoke_exact_read(workspace.path(), tool, json!({"at":at}));
+                assert!(!result.ok, "{at}: {result:?}");
+                assert_eq!(
+                    result.diagnostics[0]["code"], "bad_value",
+                    "{at}: {result:?}"
+                );
+                assert!(result.source_text.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn body_line_apply_refuses_before_staging_and_can_has_no_writes() {
+        use crate::application::invocation_store::ToolIdentity;
+        let workspace = resolve_exact_workspace();
+        let file = workspace
+            .path()
+            .join("src/CommonModules/Probe/Ext/Module.bsl");
+        let source = "// outside\n\nПроцедура Ping()\n\tСообщить(\"needle\");\nКонецПроцедуры\n";
+        std::fs::write(&file, source).unwrap();
+        for (suffix, target) in [
+            (".Body#L4", "main:CommonModule.Probe.Method.Ping"),
+            (
+                ".Method.Ping.Body#L4-L5",
+                "main:CommonModule.Probe.Method.Ping",
+            ),
+            (".Body#L1-L4", "main:CommonModule.Probe.Body"),
+        ] {
+            let at = format!("main:CommonModule.Probe{suffix}");
+            let view = invoke_exact_read(workspace.path(), ToolIdentity::View, json!({"at":at}));
+            assert!(view.ok, "{view:?}");
+            assert_eq!(view.data.as_ref().unwrap()["can"], json!([]));
+            for op in ["code.replace", "code.insert"] {
+                let refused = invoke_exact_read(
+                    workspace.path(),
+                    ToolIdentity::Apply,
+                    json!({"at":at,"ops":[{"op":op,"args":{"text":"Возврат;"}}]}),
+                );
+                assert!(!refused.ok, "{refused:?}");
+                assert_eq!(refused.diagnostics[0]["code"], "bad_value");
+                assert_eq!(refused.next[0]["args"]["at"], target);
+                assert!(refused
+                    .data
+                    .as_ref()
+                    .is_none_or(|data| data.get("executionToken").is_none()));
+                assert_eq!(std::fs::read_to_string(&file).unwrap(), source);
+            }
+        }
+    }
+
+    #[test]
+    fn body_line_read_validates_the_tail_and_continuation_reopens_exact_bytes() {
+        use crate::application::invocation_store::ToolIdentity;
+        let workspace = resolve_exact_workspace();
+        let file = workspace
+            .path()
+            .join("src/CommonModules/Probe/Ext/Module.bsl");
+        let module = format!("{}end", "// юникод\r\n".repeat(12_000));
+        let method = format!(
+            "// outside\r\n\r\nПроцедура Ping()\r\n{}КонецПроцедуры",
+            "\tСообщить(\"юникод\");\r\n".repeat(6_000)
+        );
+        for (source, body, first) in [
+            (&module, "main:CommonModule.Probe.Body", 1),
+            (&method, "main:CommonModule.Probe.Method.Ping.Body", 3),
+            (
+                &method,
+                "main:CommonModule.Probe.Method.Ping.Body#L100-L5000",
+                100,
+            ),
+        ] {
+            std::fs::write(&file, source).unwrap();
+            let whole = invoke_exact_read(workspace.path(), ToolIdentity::View, json!({"at":body}));
+            assert!(!whole.ok, "{whole:?}");
+            let budgeted =
+                crate::application::v13::source_text::apply_response_budget(&whole, 16_384)
+                    .into_owned();
+            let at = budgeted.next[0]["args"]["at"].as_str().unwrap();
+            let address = crate::domain::address::QualifiedAddress::parse(at).unwrap();
+            let range = address.line_range().unwrap();
+            assert_eq!(range.from, first);
+            let part = invoke_exact_read(workspace.path(), ToolIdentity::View, json!({"at":at}));
+            assert!(part.ok, "{part:?}");
+            assert!(crate::application::v13::source_text::apply_response_budget(&part, 16_384).ok);
+            let expected = source
+                .split_inclusive('\n')
+                .skip(range.from - 1)
+                .take(range.to - range.from + 1)
+                .collect::<String>();
+            assert_eq!(part.source_text.as_deref(), Some(expected.as_str()));
+            let next = format!(
+                "{}#L{}-L{}",
+                address.without_line_range(),
+                range.from,
+                range.to + 1
+            );
+            let one_more =
+                invoke_exact_read(workspace.path(), ToolIdentity::View, json!({"at":next}));
+            assert!(one_more.ok, "{one_more:?}");
+            assert!(
+                !crate::application::v13::source_text::apply_response_budget(&one_more, 16_384).ok,
+                "one extra complete line must exceed this host budget: {at}"
+            );
+        }
+        let mut broken = module.into_bytes();
+        broken.push(0xff);
+        std::fs::write(&file, broken).unwrap();
+        let refused = invoke_exact_read(
+            workspace.path(),
+            ToolIdentity::View,
+            json!({"at":"main:CommonModule.Probe.Body#L1"}),
+        );
+        assert!(!refused.ok);
+        assert_ne!(refused.diagnostics[0]["code"], "result_too_large");
+        assert!(refused.source_text.is_none());
+    }
+
+    #[test]
+    fn body_line_provider_search_uses_current_spans_and_preserves_evidence() {
+        use crate::application::invocation_store::ToolIdentity;
+        use crate::domain::code_intelligence::ProviderSearchHit;
+        use crate::domain::source_location::SourceLocation;
+        use crate::domain::source_target::{
+            MetadataAddress, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
+        };
+        let workspace = resolve_exact_workspace();
+        std::fs::write(workspace.path().join("src/CommonModules/Probe/Ext/Module.bsl"), "// outside Needle\n\n// Needle doc\nПроцедура Ping()\n\tСообщить(\"Needle\");\nКонецПроцедуры\n").unwrap();
+        for role in [
+            ProviderRole::Lexical,
+            ProviderRole::Symbol,
+            ProviderRole::Semantic,
+        ] {
+            let hits = [
+                (1, "// outside Needle"),
+                (3, "// Needle doc"),
+                (5, "Сообщить(\"Needle\");"),
+                (5, "stale Needle"),
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(index, (line, snippet))| ProviderSearchHit {
+                rank: Some(index + 1),
+                provider_score: Some(0.5),
+                location: SourceLocation::Addressed {
+                    source_set: "main".into(),
+                    metadata_path: Some(
+                        MetadataAddress::parse(
+                            PLATFORM_XML_8_3_27_FORMAT_2_20,
+                            "CommonModule.Probe.Module",
+                        )
+                        .unwrap(),
+                    ),
+                    target_kind: TargetKind::Module,
+                },
+                line,
+                end_line: None,
+                symbol: Some("InventedMethodName".into()),
+                kind: Some("procedure".into()),
+                snippet: snippet.into(),
+                attributes: serde_json::Map::from_iter([("column".into(), json!(2))]),
+            })
+            .collect();
+            let section = ProviderSearchSection::complete(
+                ProviderIdentity::new(role, "fixture"),
+                SearchRanking::Provider,
+                SearchOrdering::Provider,
+                hits,
+                vec![],
+            )
+            .unwrap();
+            let calls = Arc::new(AtomicUsize::new(0));
+            let service = Arc::new(
+                super::CanonicalV13ReadService::with_search_providers_for_test(vec![Arc::new(
+                    SectionSearchProvider {
+                        section,
+                        calls: calls.clone(),
+                    },
+                )]),
+            );
+            let result = invoke_exact_read_with_service(
+                workspace.path(),
+                ToolIdentity::Search,
+                json!({"query":"Needle","role":role.as_str(),"scope":"main:CommonModule.Probe"}),
+                service,
+            );
+            assert!(result.ok, "{role:?}: {result:?}");
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            let data = result.data.unwrap();
+            let hits = data["matches"][0]["hits"].as_array().unwrap();
+            for (index, at) in [
+                "main:CommonModule.Probe.Body#L1",
+                "main:CommonModule.Probe.Method.Ping.Body#L3",
+                "main:CommonModule.Probe.Method.Ping.Body#L5",
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                assert_eq!(hits[index]["at"], at, "{role:?}: {data:#}");
+                assert_eq!(hits[index]["symbol"], "InventedMethodName");
+                assert_eq!(hits[index]["attributes"]["column"], 2);
+                let view =
+                    invoke_exact_read(workspace.path(), ToolIdentity::View, json!({"at":at}));
+                assert!(view.ok, "{view:?}");
+                assert!(view
+                    .source_text
+                    .unwrap()
+                    .contains(hits[index]["snippet"].as_str().unwrap()));
+            }
+            assert!(hits[3].get("at").is_none());
+            assert!(hits[3]["limits"].is_array());
+            assert_eq!(hits[3]["snippet"], "stale Needle");
+        }
+    }
+
+    #[test]
+    fn a_text_search_hit_opens_the_narrowest_body_line_address() {
+        use crate::application::invocation_store::ToolIdentity;
+        let workspace = resolve_exact_workspace();
+        std::fs::write(
+            workspace
+                .path()
+                .join("src/CommonModules/Probe/Ext/Module.bsl"),
+            "// outside\n\nПроцедура Ping()\n\tСообщить(\"needle\");\nКонецПроцедуры\n",
+        )
+        .unwrap();
+        let result = invoke_exact_read(
+            workspace.path(),
+            ToolIdentity::Search,
+            json!({
+                "query":"needle", "scope":"main:CommonModule.Probe"
+            }),
+        );
+        assert!(result.ok, "{result:?}");
+        let data = result.data.unwrap();
+        let hits = data["matches"].as_array().unwrap();
+        assert_eq!(hits.len(), 1, "{data:?}");
+        let hit = &hits[0];
+        assert_eq!(hit["at"], "main:CommonModule.Probe.Method.Ping.Body#L4");
+        assert_eq!(hit["line"], 4);
+        let opened = invoke_exact_read(
+            workspace.path(),
+            ToolIdentity::View,
+            json!({"at":hit["at"]}),
+        );
+        assert!(opened.ok, "{opened:?}");
+        assert!(opened
+            .source_text
+            .as_deref()
+            .unwrap()
+            .contains(hit["snippet"].as_str().unwrap()));
     }
 
     #[test]

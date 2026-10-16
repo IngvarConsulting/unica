@@ -727,6 +727,7 @@ fn staged_schema_lookup(
         Some(last) if last.kind() == NodeKind::Template => (owner.clone(), None),
         Some(last) if last.kind() == NodeKind::Setting && segments.len() > 1 => (
             crate::domain::address::QualifiedAddress {
+                line_range: None,
                 source_set: owner.source_set().to_string(),
                 segments: segments[..segments.len() - 1].to_vec(),
             },
@@ -794,6 +795,7 @@ pub(crate) fn staged_form_item_role(
         return None;
     }
     let form = crate::domain::address::QualifiedAddress {
+        line_range: None,
         source_set: item.source_set().to_string(),
         segments: segments[..2].to_vec(),
     };
@@ -906,6 +908,7 @@ pub(crate) fn staged_node_existence(
                 return None;
             }
             let form = crate::domain::address::QualifiedAddress {
+                line_range: None,
                 source_set: at.source_set().to_string(),
                 segments: at.segments()[..covered].to_vec(),
             };

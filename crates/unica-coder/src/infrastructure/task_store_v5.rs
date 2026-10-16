@@ -1728,6 +1728,68 @@ mod tests {
     }
 
     #[test]
+    fn body_read_hint_survives_completed_task_reopen_without_rewriting() {
+        use crate::application::receipt_ledger::{canonical_v5_terminal, ReceiptTerminalOutcome};
+        for hint in [
+            None,
+            Some(Box::new(crate::domain::invocation::SourceTextReadHint {
+                from_line: 97,
+                to_line: 98,
+                prefix: Some("first\r\nsecond".into()),
+            })),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let path = physical_root(&root);
+            let clock = Arc::new(ManualEpochClock::at(6_000));
+            let unlimited = ProviderDeadline::no_deadline();
+            let (store, _) =
+                FileInvocationStoreV5::open_inspect_only(&path, clock.clone(), unlimited).unwrap();
+            let created = store
+                .create_exact(
+                    new_record(
+                        task_id("35353535-3535-4535-8535-353535353535"),
+                        invocation_id("36363636-3636-4636-8636-363636363636"),
+                        0x2a,
+                    ),
+                    unlimited,
+                )
+                .unwrap();
+            let identity = created.identity();
+            let V5StartWorkingOutcome::Started(working) = store
+                .start_working_if_not_cancel_requested(&identity, created.version, unlimited)
+                .unwrap()
+            else {
+                panic!("not Working");
+            };
+            let mut result = DomainResult::success("Body persisted");
+            result.source_text_read_hint = hint;
+            let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
+                result: Box::new(result.clone()),
+            })
+            .unwrap();
+            let winner = store
+                .publish_terminal_exact(
+                    &identity,
+                    working.version,
+                    V5TerminalPublication::Completed {
+                        terminal_epoch_ms: 6_100,
+                        terminal_digest: terminal.digest().clone(),
+                        result: Box::new(result),
+                    },
+                    unlimited,
+                )
+                .unwrap();
+            let record_path = path.join(format!("{}.json", created.task_id));
+            let before = fs::read(&record_path).unwrap();
+            drop(store);
+            let (reopened, _) =
+                FileInvocationStoreV5::open_inspect_only(&path, clock, unlimited).unwrap();
+            assert_eq!(reopened.get(created.task_id, unlimited).unwrap(), winner);
+            assert_eq!(fs::read(record_path).unwrap(), before);
+        }
+    }
+
+    #[test]
     fn no_deadline_task_visible_io_failure_is_still_commit_uncertain() {
         let root = tempfile::tempdir().unwrap();
         let root_path = physical_root(&root);
