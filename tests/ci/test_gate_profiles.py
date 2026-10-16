@@ -24,7 +24,6 @@ GATES = ("pr", "queue", "main", "release")
 # file that declares them: map capacity checks and the real-time daemon run
 # past the former operation deadlines (#1251).
 LARGE_LIBRARY_MODULES = {
-    "infrastructure::platform::process::tests::": "src/infrastructure/platform/process.rs",
     "infrastructure::source_selection_evidence::tests::": "src/infrastructure/source_selection_evidence.rs",
     "infrastructure::daemon::runtime_v5::tests::": "src/infrastructure/daemon/runtime_v5/tests.rs",
 }
