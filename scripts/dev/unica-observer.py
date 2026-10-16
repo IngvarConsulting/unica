@@ -1183,7 +1183,7 @@ body { height: 100dvh; min-height: 0; overflow: hidden; }
 #workspace[data-log-dock="left"] > #logPanel, #workspace[data-log-dock="top"] > #logPanel { order: -2; }
 #logPanel { margin: 0; position: relative; display: flex; flex-direction: column; flex: 0 0 28vh; order: 2; min-width: 0; min-height: 0; background: var(--bg); }
 #logPanel > #log { flex: 1 1 0; min-height: 0; max-height: none; border-top: 0; }
-#logPanel[hidden], #splitLog[hidden], #showLog[hidden], #logDockMenu[hidden], #log[hidden] { display: none !important; }
+#splitLog[hidden], #logDockMenu[hidden], #log[hidden] { display: none !important; }
 #logBar { display: flex; align-items: center; gap: 4px; flex: 0 0 32px; min-height: 32px; padding: 0 6px; border-bottom: 1px solid var(--line); background: var(--panel); user-select: none; -webkit-user-select: none; }
 #logBar button { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 26px; height: 26px; min-height: 26px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--text); font-size: 16px; }
 #logBar svg, #logDockMenu svg { flex: none; }
@@ -1223,7 +1223,6 @@ body { height: 100dvh; min-height: 0; overflow: hidden; }
   <h1>Наблюдатель адресов</h1>
   <input id="addr" placeholder="адрес, например main:Catalog.Валюты; пусто — корень" spellcheck="false">
   <button class="primary" id="go">Открыть</button>
-  <button id="showLog" type="button" title="Показать журнал" aria-label="Показать журнал" aria-controls="logPanel" hidden>Журнал</button>
   <button id="copy" title="Скопировать адрес выбранного узла">Копировать адрес</button>
   <button id="appearance" type="button" title="Оформление" aria-label="Оформление" aria-haspopup="dialog" aria-controls="appearanceMenu" aria-expanded="false">◐</button>
   <div class="appearance-menu" id="appearanceMenu" role="dialog" aria-label="Оформление" hidden>
@@ -1259,7 +1258,6 @@ body { height: 100dvh; min-height: 0; overflow: hidden; }
       <button id="logDock" type="button" title="Положение журнала" aria-label="Положение журнала" aria-haspopup="menu" aria-controls="logDockMenu" aria-expanded="false"></button>
       <button id="logMaximize" type="button" title="Развернуть журнал на всю область" aria-label="Развернуть журнал на всю область" aria-pressed="false"></button>
       <button id="logCollapse" type="button" title="Свернуть журнал" aria-label="Свернуть журнал" aria-controls="log"></button>
-      <button id="logHide" type="button" title="Скрыть журнал" aria-label="Скрыть журнал"></button>
     </div>
   </div>
   <div id="log"></div>
@@ -1983,7 +1981,7 @@ function initLogPanel() {
   const panel = get("logPanel"), log = get("log"), bar = get("logBar");
   const tab = get("logTab"), dock = get("logDock"), menu = get("logDockMenu");
   const collapse = get("logCollapse"), maximize = get("logMaximize");
-  const hide = get("logHide"), show = get("showLog"), split = get("splitLog");
+  const split = get("splitLog");
   const choices = [...menu.querySelectorAll("[data-log-dock]")];
   const docks = ["bottom", "right", "left", "top"];
   const icons = {
@@ -1997,14 +1995,12 @@ function initLogPanel() {
     rightSide: '<rect x="2" y="2.5" width="12" height="11" rx="1.5"/><rect x="9.6" y="3.3" width="3.6" height="9.4" fill="currentColor" stroke="none"/>',
     maximize: '<path d="M9.5 2.5h4v4M13.5 2.5 9 7M6.5 13.5h-4v-4M2.5 13.5 7 9"/>',
     restore: '<path d="M13.5 6.5h-4v-4M9.5 6.5l4-4M2.5 9.5h4v4M6.5 9.5l-4 4"/>',
-    close: '<path d="M4 4l8 8M12 4l-8 8"/>',
   };
   const dockIcons = {bottom: "bottom", top: "top", left: "leftSide", right: "rightSide"};
   const arrows = {bottom: ["up", "down"], top: ["down", "up"], left: ["right", "left"], right: ["left", "right"]};
   const icon = (name) => `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name]}</svg>`;
-  hide.innerHTML = icon("close");
   choices.forEach((button) => button.insertAdjacentHTML("afterbegin", icon(dockIcons[button.dataset.logDock])));
-  const modes = ["normal", "collapsed", "maximized", "hidden"];
+  const modes = ["normal", "collapsed", "maximized"];
   const key = "unica-observer.logPanel";
   const bound = (value, low, high) => Math.max(low, Math.min(high, value));
   const validSize = (value) => Number.isFinite(value) && value > 0;
@@ -2076,10 +2072,8 @@ function initLogPanel() {
     captureScroll();
     workspace.dataset.logDock = state.dock;
     workspace.dataset.logMode = state.mode;
-    panel.hidden = state.mode === "hidden";
     log.hidden = state.mode === "collapsed";
     split.hidden = state.mode !== "normal";
-    show.hidden = state.mode !== "hidden";
     const size = limits(), actual = bound(state[size.dimension], size.min, size.max);
     panel.style.flexBasis = state.mode === "normal" ? actual + "px" : "";
     split.setAttribute("aria-orientation", size.horizontal ? "horizontal" : "vertical");
@@ -2094,8 +2088,8 @@ function initLogPanel() {
     label(tab, collapsed ? "Развернуть журнал" : "Свернуть журнал");
     label(collapse, collapsed ? "Развернуть журнал" : "Свернуть журнал");
     label(maximize, maximized ? "Восстановить размер журнала" : "Развернуть журнал на всю область");
-    tab.setAttribute("aria-expanded", String(!collapsed && state.mode !== "hidden"));
-    collapse.setAttribute("aria-expanded", String(!collapsed && state.mode !== "hidden"));
+    tab.setAttribute("aria-expanded", String(!collapsed));
+    collapse.setAttribute("aria-expanded", String(!collapsed));
     maximize.setAttribute("aria-pressed", String(maximized));
     choices.forEach((button) => {
       const selected = button.dataset.logDock === state.dock;
@@ -2133,14 +2127,10 @@ function initLogPanel() {
   collapse.addEventListener("click", toggleCollapse);
   maximize.addEventListener("click", toggleMaximize);
   bar.addEventListener("dblclick", (event) => { if (event.target === bar || event.target.classList?.contains("log-actions")) toggleMaximize(); });
-  hide.addEventListener("click", () => { change({mode: "hidden"}); show.focus(); });
-  show.addEventListener("click", () => { change({mode: "normal"}); tab.focus(); });
   label(dock, "Положение журнала");
-  label(hide, "Скрыть журнал");
-  label(show, "Показать журнал");
   dock.setAttribute("aria-haspopup", "menu");
   dock.setAttribute("aria-controls", menu.id);
-  for (const button of [tab, collapse, maximize, show]) button.setAttribute("aria-controls", log.id);
+  for (const button of [tab, collapse, maximize]) button.setAttribute("aria-controls", log.id);
   dock.addEventListener("click", () => {
     if (!menu.hidden) { closeMenu(); return; }
     menu.hidden = false;
