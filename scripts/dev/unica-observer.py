@@ -1016,7 +1016,6 @@ PAGE = r"""<!doctype html>
 body { margin: 0; display: flex; flex-direction: column; height: 100vh; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
 header { display: flex; gap: 8px; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
 header h1 { font-size: 15px; margin: 0 12px 0 0; }
-header .ws { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 #addr { flex: 1 1 320px; min-width: 0; font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); }
 a { color: var(--accent); }
 button { font: inherit; font-size: 13px; padding: 5px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); cursor: pointer; }
@@ -1089,7 +1088,6 @@ section h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; 
   <input id="addr" placeholder="адрес, например main:Catalog.Валюты; пусто — корень" spellcheck="false">
   <button class="primary" id="go">Открыть</button>
   <button id="copy" title="Скопировать адрес выбранного узла">Копировать адрес</button>
-  <span class="ws" id="ws"></span>
 </header>
 <main>
   <div id="tree"></div>
@@ -1584,10 +1582,6 @@ async function pollLog() {
 }
 
 async function boot() {
-  try {
-    const info = await api("/api/info");
-    $("ws").textContent = `${info.workspace} · ${(info.server || {}).name || ""} ${(info.server || {}).version || ""} · ${info.tools.join(", ")}`;
-  } catch (error) { $("ws").textContent = error.message; }
   const root = makeRow("(корень)", "");
   $("tree").appendChild(root);
   document.querySelectorAll("#tabs button").forEach((b) => b.onclick = () => {
