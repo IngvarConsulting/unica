@@ -4,38 +4,42 @@ use serde_json::json;
 
 const ROLE_HELP: &str = "skills/role-edit/SKILL.md";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RoleOperation {
-    Create,
-    RightAdd,
-    RightSet,
+macro_rules! role_operations {
+    ($($variant:ident => ($name:literal, $applicability:ident, $skeleton:ident)),+ $(,)?) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub(crate) enum RoleOperation {
+            $($variant),+
+        }
+
+        impl RoleOperation {
+            pub(crate) const fn name(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $name),+
+                }
+            }
+
+            pub(super) const fn applicability(self) -> OperationApplicability {
+                match self {
+                    $(Self::$variant => OperationApplicability::$applicability),+
+                }
+            }
+
+            pub(super) const fn skeleton(self) -> OperationSkeleton {
+                match self {
+                    $(Self::$variant => OperationSkeleton::$skeleton),+
+                }
+            }
+        }
+    };
 }
 
+role_operations!(
+    Create => ("role.create", Configuration, Values),
+    RightAdd => ("right.add", Role, Items),
+    RightSet => ("right.set", RoleRight, Values),
+);
+
 impl RoleOperation {
-    pub(crate) const fn name(self) -> &'static str {
-        match self {
-            Self::Create => "role.create",
-            Self::RightAdd => "right.add",
-            Self::RightSet => "right.set",
-        }
-    }
-
-    pub(super) const fn applicability(self) -> OperationApplicability {
-        match self {
-            Self::Create => OperationApplicability::Configuration,
-            Self::RightAdd => OperationApplicability::Role,
-            Self::RightSet => OperationApplicability::RoleRight,
-        }
-    }
-
-    pub(super) const fn skeleton(self) -> OperationSkeleton {
-        match self {
-            Self::Create => OperationSkeleton::Values,
-            Self::RightAdd => OperationSkeleton::Items,
-            Self::RightSet => OperationSkeleton::Values,
-        }
-    }
-
     pub(crate) const fn content_resource(self) -> Option<&'static str> {
         match self {
             Self::Create => None,
@@ -124,8 +128,36 @@ impl RoleOperation {
 
 #[cfg(test)]
 mod tests {
-    use super::RoleOperation;
+    use super::{OperationApplicability, OperationSkeleton, RoleOperation};
     use serde_json::json;
+
+    #[test]
+    fn registration_metadata_preserves_the_published_role_operations() {
+        for (operation, name, applicability, skeleton) in [
+            (
+                RoleOperation::Create,
+                "role.create",
+                OperationApplicability::Configuration,
+                OperationSkeleton::Values,
+            ),
+            (
+                RoleOperation::RightAdd,
+                "right.add",
+                OperationApplicability::Role,
+                OperationSkeleton::Items,
+            ),
+            (
+                RoleOperation::RightSet,
+                "right.set",
+                OperationApplicability::RoleRight,
+                OperationSkeleton::Values,
+            ),
+        ] {
+            assert_eq!(operation.name(), name);
+            assert_eq!(operation.applicability(), applicability, "{name}");
+            assert_eq!(operation.skeleton(), skeleton, "{name}");
+        }
+    }
 
     #[test]
     fn normalization_preserves_creation_names_and_explicit_right_payloads() {
