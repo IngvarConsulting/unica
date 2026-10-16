@@ -3,9 +3,9 @@ use crate::domain::code_intelligence::IndexMaintenanceEvidence;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
 use crate::infrastructure::platform::filesystem::{
-    file_identity, metadata_is_link_or_reparse_point, path_starts_with_host_root,
-    provider_state_path_identity, replace_file_atomically, sync_parent_directory,
-    RetainedDirectoryCapability,
+    file_identity, is_file_lock_contended, metadata_is_link_or_reparse_point,
+    path_starts_with_host_root, provider_state_path_identity, replace_file_atomically,
+    sync_parent_directory, RetainedDirectoryCapability,
 };
 use crate::infrastructure::platform::{
     ensure_truncation_diagnostics, ManagedChild, ManagedCommand, ManagedOutput,
@@ -1736,7 +1736,7 @@ fn acquire_index_lock(
         .map_err(|error| format!("failed to open RLM index lock: {error}"))?;
     match file.try_lock_exclusive() {
         Ok(()) => {}
-        Err(error) if lock_error_is_contended(&error) => return Ok(None),
+        Err(error) if is_file_lock_contended(&error) => return Ok(None),
         Err(error) => return Err(format!("failed to lock RLM index lock: {error}")),
     }
     if active_lock_registered(path) {
@@ -1822,7 +1822,7 @@ fn mark_lock_recovered(
     };
     match file.try_lock_exclusive() {
         Ok(()) => {}
-        Err(error) if lock_error_is_contended(&error) => return false,
+        Err(error) if is_file_lock_contended(&error) => return false,
         Err(_) => return false,
     }
 
@@ -1854,13 +1854,9 @@ fn lock_is_held_by_other_process(path: &Path) -> bool {
             let _ = file.unlock();
             false
         }
-        Err(error) if lock_error_is_contended(&error) => true,
+        Err(error) if is_file_lock_contended(&error) => true,
         Err(_) => true,
     }
-}
-
-fn lock_error_is_contended(error: &std::io::Error) -> bool {
-    error.kind() == ErrorKind::WouldBlock
 }
 
 fn file_modified_secs(path: &Path) -> Option<u64> {

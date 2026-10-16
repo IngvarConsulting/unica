@@ -5,6 +5,17 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// A nonblocking fs2 lock refusal is expected contention. Other I/O errors
+/// remain failures, including a Windows file-sharing violation.
+pub(crate) fn is_file_lock_contended(error: &io::Error) -> bool {
+    let expected = fs2::lock_contended_error();
+    error.kind() == io::ErrorKind::WouldBlock
+        || error
+            .raw_os_error()
+            .zip(expected.raw_os_error())
+            .is_some_and(|(actual, expected)| actual == expected)
+}
+
 #[cfg(windows)]
 pub(crate) fn is_file_sharing_violation(error: &io::Error) -> bool {
     error.raw_os_error() == Some(windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION as i32)
@@ -6409,6 +6420,39 @@ mod tests {
     use std::io;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn file_lock_contention_classifier_preserves_real_errors() {
+        use super::is_file_lock_contended;
+
+        assert!(is_file_lock_contended(&fs2::lock_contended_error()));
+        assert!(is_file_lock_contended(&io::Error::from(
+            io::ErrorKind::WouldBlock
+        )));
+        for kind in [io::ErrorKind::PermissionDenied, io::ErrorKind::Other] {
+            assert!(!is_file_lock_contended(&io::Error::from(kind)), "{kind:?}");
+        }
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::Foundation::{
+                ERROR_ACCESS_DENIED, ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION,
+            };
+
+            assert!(is_file_lock_contended(&io::Error::from_raw_os_error(
+                ERROR_LOCK_VIOLATION as i32
+            )));
+            for code in [ERROR_SHARING_VIOLATION, ERROR_ACCESS_DENIED] {
+                assert!(
+                    !is_file_lock_contended(&io::Error::from_raw_os_error(code as i32)),
+                    "{code}"
+                );
+            }
+        }
+        #[cfg(not(windows))]
+        for code in [32, 33] {
+            assert!(!is_file_lock_contended(&io::Error::from_raw_os_error(code)));
+        }
+    }
 
     #[cfg(windows)]
     use super::strip_windows_extended_length_prefix;
