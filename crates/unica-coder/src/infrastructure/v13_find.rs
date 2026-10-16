@@ -47,8 +47,20 @@ enum AttachedPathResource {
 }
 
 impl AttachedPathResource {
-    fn from_layout(parts: &[&str]) -> Option<Self> {
+    fn from_layout(parts: &[&str], source_kind: SourceSetKind) -> Option<Self> {
+        if matches!(
+            source_kind,
+            SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+        ) {
+            return match parts {
+                [_, "forms", _, "ext", "form.xml"] => Some(Self::Form),
+                [_, "forms", _, "ext", "form", "module.bsl"] => Some(Self::FormModule),
+                _ => None,
+            };
+        }
         match parts {
+            ["commonforms", _, "ext", "form.xml"] => Some(Self::Form),
+            ["commonforms", _, "ext", "form", "module.bsl"] => Some(Self::FormModule),
             [_, _, "forms", _, "ext", "form.xml"] => Some(Self::Form),
             [_, _, "forms", _, "ext", "form", "module.bsl"] => Some(Self::FormModule),
             [.., "ext", file] if file.ends_with("module.bsl") && *file != "module.bsl" => {
@@ -408,7 +420,7 @@ impl WorkspaceFindDirectoryBuilder {
         // The full index chooses the longest stored path. Probe equal-length
         // candidates in every source set before trying shorter fallbacks, so
         // a damaged, unrelated fallback cannot block an exact target.
-        for depth in [7, 6, 4, 3, 2, 1] {
+        for depth in [7, 6, 5, 4, 3, 2, 1] {
             let tail = parts
                 .len()
                 .checked_sub(depth)
@@ -511,7 +523,7 @@ impl WorkspaceFindDirectoryBuilder {
                     }
                 }
                 find_checkpoint(deadline, cancellation)?;
-                return Ok(located);
+                return located.map(form_descriptor_location).transpose();
             }
         }
         find_checkpoint(deadline, cancellation)?;
@@ -531,21 +543,16 @@ impl WorkspaceFindDirectoryBuilder {
         located: &mut Option<FindDocument>,
         ambiguous_alias: &mut bool,
     ) -> Result<(), FindBuildError> {
-        if matches!(
-            source.kind,
-            SourceSetKind::Configuration | SourceSetKind::Extension
-        ) {
-            if let Some(tail) = parts.len().checked_sub(depth).map(|start| &parts[start..]) {
-                if let Some(resource) = AttachedPathResource::from_layout(tail) {
-                    return self.locate_attached_path(
-                        source,
-                        tail,
-                        resource,
-                        deadline,
-                        cancellation,
-                        located,
-                    );
-                }
+        if let Some(tail) = parts.len().checked_sub(depth).map(|start| &parts[start..]) {
+            if let Some(resource) = AttachedPathResource::from_layout(tail, source.kind) {
+                return self.locate_attached_path(
+                    source,
+                    tail,
+                    resource,
+                    deadline,
+                    cancellation,
+                    located,
+                );
             }
         }
         let physical_names = absolute_relative.map(|relative| {
@@ -802,7 +809,12 @@ impl WorkspaceFindDirectoryBuilder {
             AttachedPathResource::FormModule => (".Module.Form", "/Ext/Form/Module.bsl", true),
             AttachedPathResource::RoleModule => unreachable!("ветка обработана выше"),
         };
-        let descriptor_query = format!("{}.xml", tail[..4].join("/"));
+        let descriptor_parts = match source.kind {
+            SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport => 3,
+            _ if tail.first() == Some(&"commonforms") => 2,
+            _ => 4,
+        };
+        let descriptor_query = format!("{}.xml", tail[..descriptor_parts].join("/"));
         let source = LayoutFindSource::new(source.name, source.kind, source.root);
         let Some(owner) = self.locate_path(
             std::slice::from_ref(&source),
@@ -813,16 +825,18 @@ impl WorkspaceFindDirectoryBuilder {
         else {
             return Ok(());
         };
-        let at = format!("{}{address_suffix}", owner.at());
+        let descriptor_address =
+            QualifiedAddress::parse(owner.at()).map_err(|_| unsafe_layout_entry())?;
+        let form_address = descriptor_address
+            .form_metadata_owner()
+            .ok_or_else(unsafe_layout_entry)?;
+        let at = format!("{form_address}{address_suffix}");
         let address = QualifiedAddress::parse(&at).map_err(|_| unsafe_layout_entry())?;
-        if is_module {
-            if crate::domain::platform_profile::PlatformProfile::v8_3_27()
+        if is_module
+            && crate::domain::platform_profile::PlatformProfile::v8_3_27()
                 .module_capability(&address)
                 .is_none()
-            {
-                return Ok(());
-            }
-        } else if owner.kind() != "Form" {
+        {
             return Ok(());
         }
         let descriptor = owner.placed_path().ok_or_else(unsafe_layout_entry)?;
@@ -883,10 +897,13 @@ impl WorkspaceFindDirectoryBuilder {
         let Some(owner) = owner else {
             return Ok(());
         };
+        let owner_address =
+            QualifiedAddress::parse(owner.at()).map_err(|_| unsafe_layout_entry())?;
+        let owner_address = owner_address.form_metadata_owner().unwrap_or(owner_address);
         let branch = if owner.kind() == "Configuration" {
             format!("{}:Module", source.name)
         } else {
-            format!("{}.Module", owner.at())
+            format!("{owner_address}.Module")
         };
         let branch = QualifiedAddress::parse(&branch).map_err(|_| unsafe_layout_entry())?;
         let profile = PlatformProfile::v8_3_27();
@@ -1827,6 +1844,26 @@ fn require_target_identity(
             "resolve target descriptor does not declare the expected owner and name",
         )
     })
+}
+
+/// Path lookup names the descriptor facet; the name directory still names the form root.
+fn form_descriptor_location(document: FindDocument) -> Result<FindDocument, FindBuildError> {
+    if !matches!(document.kind(), "Form" | "CommonForm")
+        || !document
+            .placed_path()
+            .is_some_and(|path| path.ends_with(".xml") && !path.ends_with("/Ext/Form.xml"))
+    {
+        return Ok(document);
+    }
+    let address = QualifiedAddress::parse(&format!("{}.Metadata", document.at()))
+        .map_err(|_| unsafe_layout_entry())?;
+    if address.form_metadata_owner().is_none() {
+        return Err(unsafe_layout_entry());
+    }
+    Ok(
+        FindDocument::new(address.to_string(), "Metadata", document.at(), Vec::new())
+            .with_path(document.placed_path().ok_or_else(unsafe_layout_entry)?),
+    )
 }
 
 fn find_document(
@@ -2853,7 +2890,7 @@ mod tests {
             ("src/Catalogs/Валюты.xml", "main:Catalog.Валюты"),
             (
                 "Catalogs/Валюты/Forms/ФормаЭлемента.xml",
-                "main:Catalog.Валюты.Form.ФормаЭлемента",
+                "main:Catalog.Валюты.Form.ФормаЭлемента.Metadata",
             ),
             (
                 "Catalogs/Валюты/Templates/Печать.xml",
@@ -3547,7 +3584,10 @@ mod tests {
         let entry = lookup(WorkspaceFindDirectoryBuilder::default())
             .unwrap()
             .expect("the form and its owner are proven");
-        assert_eq!(entry.at(), "main:Catalog.Валюты.Form.ФормаЭлемента");
+        assert_eq!(
+            entry.at(),
+            "main:Catalog.Валюты.Form.ФормаЭлемента.Metadata"
+        );
 
         let error = lookup(
             WorkspaceFindDirectoryBuilder::default()
@@ -3688,24 +3728,34 @@ mod tests {
         let cancelled = CancellationToken::new();
         cancelled.cancel();
         let builder = WorkspaceFindDirectoryBuilder::default();
-        let error = builder
-            .locate_path(
-                &source,
-                "Catalogs/Валюты.xml",
-                ProviderDeadline::from_budget(Duration::from_secs(7)),
-                &cancelled,
-            )
-            .unwrap_err();
-        assert_eq!(error.code(), RefusalCode::Cancelled);
-        let error = builder
-            .locate_path(
-                &source,
-                "Catalogs/Валюты.xml",
-                ProviderDeadline::from_budget(Duration::ZERO),
-                &CancellationToken::new(),
-            )
-            .unwrap_err();
-        assert_eq!(error.code(), RefusalCode::DeadlineExceeded);
+        for path in [
+            "Catalogs/Валюты.xml",
+            "Catalogs/Валюты/Forms/ФормаЭлемента.xml",
+            "Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+            "Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form/Module.bsl",
+            "CommonForms/Main.xml",
+            "CommonForms/Main/Ext/Form.xml",
+            "CommonForms/Main/Ext/Form/Module.bsl",
+        ] {
+            let error = builder
+                .locate_path(
+                    &source,
+                    path,
+                    ProviderDeadline::from_budget(Duration::from_secs(7)),
+                    &cancelled,
+                )
+                .unwrap_err();
+            assert_eq!(error.code(), RefusalCode::Cancelled);
+            let error = builder
+                .locate_path(
+                    &source,
+                    path,
+                    ProviderDeadline::from_budget(Duration::ZERO),
+                    &CancellationToken::new(),
+                )
+                .unwrap_err();
+            assert_eq!(error.code(), RefusalCode::DeadlineExceeded);
+        }
     }
 
     #[test]
@@ -3856,7 +3906,10 @@ mod tests {
             )
             .unwrap()
             .expect("the unrelated owner is outside the nested path");
-        assert_eq!(found.at(), "main:Catalog.Валюты.Form.ФормаЭлемента");
+        assert_eq!(
+            found.at(),
+            "main:Catalog.Валюты.Form.ФормаЭлемента.Metadata"
+        );
     }
 
     #[test]
@@ -4395,7 +4448,7 @@ mod tests {
             ("Импорт.xml", "processor:ExternalDataProcessor.Импорт"),
             (
                 "Импорт/Forms/Основная.xml",
-                "processor:ExternalDataProcessor.Импорт.Form.Основная",
+                "processor:ExternalDataProcessor.Импорт.Form.Основная.Metadata",
             ),
         ] {
             let entry = builder

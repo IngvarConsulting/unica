@@ -114,6 +114,11 @@ pub(crate) fn route_logical_address(
             Ok(route(address, class, Some(target), None))
         }
         LogicalReader::Metadata => {
+            if let Some(owner) = address.form_metadata_owner() {
+                let target = typed_form_reader_target(&owner).ok_or_else(|| not_found(address))?;
+                return Ok(route(address, class, Some(target), None));
+            }
+
             if matches!(segments, [branch] if branch.kind().is_metadata_kind() && branch.name().is_none())
                 || matches!(segments, [owner] if owner.kind() == NodeKind::WebSocketClient && owner.name().is_some())
             {

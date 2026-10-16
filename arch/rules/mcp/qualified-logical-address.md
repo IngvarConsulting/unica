@@ -1,6 +1,9 @@
 ---
 id: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
 check:
+  - crates/unica-coder/src/domain/address.rs::metadata_is_a_terminal_nameless_form_descriptor_and_keeps_operation_queries
+  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::form_metadata_has_its_own_descriptor_properties_and_resource_identity
+  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::form_metadata_rejects_orphans_and_does_not_follow_descriptor_links
   - crates/unica-coder/src/domain/address.rs::qualified_addresses_are_table_driven_canonical_and_arbitrarily_deep
   - crates/unica-coder/src/domain/address.rs::qualified_addresses_reject_unqualified_malformed_and_noncanonical_roots
   - crates/unica-coder/src/domain/address.rs::metadata_aliases_reuse_v12_evidence_while_structural_aliases_stay_separate
@@ -45,11 +48,19 @@ check:
 так же.
 
 Вид в конце без имени обозначает ветвь, например
-`main:Catalog.Валюты.Attribute`. У `Configuration` и `Interface` имени
+`main:Catalog.Валюты.Attribute`. У `Configuration`, `Interface` и `Metadata` имени
 не бывает: следующий сегмент разбирается как вид. Выдуманное имя
 отклоняется с объяснением этой причины. `Configuration` разрешён только
 как самостоятельный корень `main:Configuration` и перед вопросом к его
 словарю `main:Configuration.Can.<op>`.
+
+`Metadata` обозначает декларацию общей формы или именованной формы владельца:
+`main:CommonForm.ВыборПериода.Metadata` либо
+`main:Document.Заказ.Form.Основная.Metadata`. Корень формы сохраняет структуру
+управляемой формы, а `Module.Form` — её программный модуль. Адреса элементов,
+реквизитов, команд, параметров и событий формы не получают промежуточного
+`Metadata`. Этот узел не адресует содержимое формы и не принимает прикладного
+имени или произвольного продолжения.
 
 Сегмент `Can` спрашивает операцию словаря узла и всегда последний: его имя —
 весь остаток адреса вместе с точками (`main:Catalog.Валюты.Can.query.set`),

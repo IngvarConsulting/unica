@@ -312,25 +312,25 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 ));
             }
         }
-        let mut path = self.identity_export_path(at)?.ok_or_else(|| {
+        let path = self.identity_export_path(at)?.ok_or_else(|| {
             ViewError::new(RefusalCode::NotFound, "the logical node has no source file")
         })?;
-        // У формы есть дескриптор и файл содержимого по одному логическому
-        // адресу. resolve(at) сохраняет дескриптор, а resolve(path) может выбрать
-        // точный файл содержимого, уже прочитанный и подтверждённый source_lines.
-        if requested_path.is_some_and(|requested| requested != path)
-            && route.reader() == LogicalReader::Form
-        {
-            if let Some(target) = route.reader_metadata_path() {
-                let content = self
-                    .read
-                    .attached_resource_export_path(target, "Form.xml")?;
-                if requested_path == Some(content.as_str())
-                    && self.read.form_source_exists(target)?
-                {
-                    path = content;
-                }
+        if route.reader() == LogicalReader::Form {
+            let target = route
+                .reader_metadata_path()
+                .ok_or_else(|| ViewError::new(RefusalCode::NotFound, "form route has no target"))?;
+            if !self.read.form_source_exists(target)? {
+                return Err(ViewError::new(
+                    RefusalCode::NotFound,
+                    "the local Form.xml source file does not exist",
+                ));
             }
+        }
+        if requested_path.is_some_and(|requested| requested != path) {
+            return Err(ViewError::new(
+                RefusalCode::NotFound,
+                "the requested file is not the logical node's source",
+            ));
         }
         self.read_checkpoint()?;
         Ok(path)
@@ -788,6 +788,15 @@ impl<'a> LogicalViewReadAuthority<'a> {
         route: &LogicalTreeRoute,
         admitted: &ViewSourceSnapshot,
     ) -> Result<Value, ViewError> {
+        if route.at().form_metadata_owner().is_some() {
+            let target = route.reader_metadata_path().ok_or_else(|| {
+                ViewError::new(RefusalCode::NotFound, "form metadata route has no owner")
+            })?;
+            self.verify_registered_owner(target, admitted)?;
+            return self
+                .read
+                .form_metadata_payload(target, &mut || self.read_checkpoint());
+        }
         if matches!(
             route.at().segments(),
             [owner] if owner.kind() == NodeKind::WebSocketClient && owner.name().is_some()
@@ -1640,7 +1649,7 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         let target_depth = target.as_str().split('.').count().div_ceil(2);
         let is_detail = at.segments().len() > target_depth;
         let path = match route.reader() {
-            LogicalReader::Form if is_detail => self
+            LogicalReader::Form => self
                 .read
                 .attached_resource_export_path(target, "Form.xml")?,
             LogicalReader::Role if is_detail => self
@@ -1656,7 +1665,6 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                 .read
                 .attached_resource_export_path(target, "Package.bin")?,
             LogicalReader::Metadata
-            | LogicalReader::Form
             | LogicalReader::Role
             | LogicalReader::Subsystem
             | LogicalReader::Xdto => self.read.metadata_descriptor_export_path(target)?,
@@ -1794,6 +1802,17 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
             projected
         } else {
             self.with_module_branch(projected, at, admitted)?
+        };
+        let projected = if route.reader() == LogicalReader::Form
+            && route.reader_metadata_path().is_some_and(|target| {
+                at.segments().len() == target.as_str().split('.').count().div_ceil(2)
+            }) {
+            projected.with_branch(crate::domain::node_view::BranchRef::new(
+                format!("{at}.Metadata"),
+                1,
+            ))
+        } else {
+            projected
         };
         self.read_checkpoint()?;
         if admitted.revision != self.exact_revision()? {

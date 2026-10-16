@@ -739,6 +739,20 @@ mod tests {
     }
 
     #[test]
+    fn form_metadata_checks_readability_without_selecting_a_content_or_owner_validator() {
+        for extension in [false, true] {
+            let facts = NodeFacts {
+                named: true,
+                extension,
+                ..NodeFacts::default()
+            };
+            assert!(plan_for_node("Metadata", facts).is_empty());
+            let at = QualifiedAddress::parse("main:CommonForm.Main.Metadata").unwrap();
+            assert_eq!(CheckValidator::for_unread_address(&at, extension), None);
+        }
+    }
+
+    #[test]
     fn every_node_kind_owns_its_validators_without_a_caller_choice() {
         let plain = NodeFacts {
             named: true,
