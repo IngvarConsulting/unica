@@ -1,0 +1,37 @@
+diff --git a/crates/unica-coder/src/infrastructure/workspace_index.rs b/crates/unica-coder/src/infrastructure/workspace_index.rs
+--- a/crates/unica-coder/src/infrastructure/workspace_index.rs
++++ b/crates/unica-coder/src/infrastructure/workspace_index.rs
+@@ -3505,6 +3505,33 @@
+     }
+ 
+     #[test]
++    fn stale_recovery_does_not_overwrite_an_unexpected_held_record() {
++        let context = test_context("recovery-unexpected-record");
++        let source_root = context.workspace_root.join("src");
++        fs::create_dir_all(&source_root).unwrap();
++        let path = super::lock_path(&context, &source_root).unwrap();
++        fs::create_dir_all(path.parent().unwrap()).unwrap();
++        write_lock_path(&path, BslIndexLock::new("build", &source_root)).unwrap();
++        let before = fs::read(&path).unwrap();
++        let recovered = mark_lock_recovered(
++            &path,
++            Some("another-expected-lock-id"),
++            &source_root,
++            "must not recover a different record",
++        );
++        let after = fs::read(&path).unwrap();
++        assert!(
++            !recovered,
++            "recovery must reject a different expected lock id before writing"
++        );
++        assert_eq!(
++            after, before,
++            "recovery must preserve the unexpected record bytes"
++        );
++        cleanup(&context);
++    }
++
++    #[test]
+     fn stale_structured_lock_is_recovered_by_active_lock() {
+         let context = test_context("stale-structured-recovered");
+         let source_root = default_source_root(&context);

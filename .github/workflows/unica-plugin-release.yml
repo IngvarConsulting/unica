@@ -13,12 +13,17 @@ on:
         type: string
         required: false
         default: ''
+      windows_candidate:
+        description: Exact commit for eight Windows maintenance cases and isolated recovery RED, empty skips
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
 
 concurrency:
-  group: research-v014-exact-${{ github.ref }}
+  group: research-v014-exact-${{ github.ref }}-${{ inputs.daemon_candidate }}-${{ inputs.unix_candidate }}-${{ inputs.windows_candidate }}
   cancel-in-progress: false
 
 jobs:
@@ -70,6 +75,102 @@ jobs:
           path: |
             .session-temp/v014-native/*.log
             target/nextest/queue/junit.xml
+          if-no-files-found: warn
+
+  windows-maintenance:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/1496-windows-focused-probes' && inputs.windows_candidate != ''
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      CANDIDATE_SHA: ${{ inputs.windows_candidate }}
+      RESEARCH_SHA: ${{ github.sha }}
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_BUILD_JOBS: '4'
+      CARGO_TERM_COLOR: never
+      NEXTEST_RETRIES: '0'
+      NEXTEST_TEST_THREADS: '2'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.windows_candidate }}
+          persist-credentials: false
+      - name: Verify exact immutable candidate
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          save-if: false
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8
+        with:
+          tool: cargo-nextest@0.9.143
+      - name: Full native Windows clippy before recovery mutation
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Eight native maintenance and locked-file cases, no retries or LEAK
+        run: |
+          set -euo pipefail
+          mkdir -p .session-temp/v014-native
+          filter='test(/^infrastructure::workspace_index::tests::(registered_owner_observes_maintenance_while_its_file_is_exclusively_locked|registered_owner_rejects_in_place_record_substitution_without_overwriting_it|poisoned_owner_never_proves_maintenance_or_writes_a_release_record|foreign_or_replaced_lock_never_proves_queued_or_running_maintenance)$/) | test(/^infrastructure::workspace_services::tests::(maintenance_queue_execution_and_failure_keep_the_published_index_readable|real_index_queue_and_worker_state_reach_serialized_search_and_navigation)$/) | test(/^infrastructure::daemon::runtime_v5::tests::reopened_retirement_rejects_old_authority_and_preserves_indexes_until_confirmed_delete$/) | test(/^infrastructure::platform::filesystem::tests::empty_owned_snapshot_preserves_bytes_and_rejects_unproven_lock_files$/)'
+          log=.session-temp/v014-native/windows-1523-green.log
+          cargo nextest run -p unica-coder --lib --profile queue --retries 0 --test-threads 2 --no-tests=fail --color never --success-output immediate -E "$filter" 2>&1 | tee "$log"
+          test "$(grep -cE '^[[:space:]]*PASS \[' "$log")" -eq 8
+          grep -Eq 'Summary .*8 tests run: 8 passed,' "$log"
+          if grep -Eq '^[[:space:]]*(LEAK|TRY|FAIL|TIMEOUT)([[:space:]]|$)' "$log"; then
+            echo 'The eight-case GREEN slice must have no failures, retries or leaked handles.' >&2
+            exit 1
+          fi
+          cp target/nextest/queue/junit.xml .session-temp/v014-native/windows-1523-green-junit.xml
+      - name: Read recovery fixture from the immutable research workflow revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          path: research-fixtures
+          persist-credentials: false
+      - name: Expected recovery refusal RED, isolated after the eight GREEN cases
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test "$(git -C research-fixtures rev-parse HEAD)" = "$RESEARCH_SHA"
+          fixture=scripts/research/1523-recovery-unexpected-record-red.patch
+          git -C research-fixtures ls-files --error-unmatch -- "$fixture"
+          patch="research-fixtures/$fixture"
+          echo "25d141741fd4ad7cba17cffa35205efb919cde6394f73745e43abe17c0bf1389  $patch" | sha256sum --check
+          git apply --check "$patch"
+          git apply "$patch"
+          log=.session-temp/v014-native/windows-1523-recovery-red.log
+          filter='test(/^infrastructure::workspace_index::tests::stale_recovery_does_not_overwrite_an_unexpected_held_record$/)'
+          set +e
+          cargo nextest run -p unica-coder --lib --profile queue --retries 0 --test-threads 2 --no-tests=fail --color never -E "$filter" 2>&1 | tee "$log"
+          status=${PIPESTATUS[0]}
+          set -e
+          test "$status" -ne 0
+          grep -Eq '^[[:space:]]*FAIL \[.*stale_recovery_does_not_overwrite_an_unexpected_held_record[[:space:]]*$' "$log"
+          grep -Eq 'Starting 1 test across 1 binary' "$log"
+          grep -Eq 'Summary .*1 test run:.*1 failed' "$log"
+          grep -F 'recovery must reject a different expected lock id before writing' "$log"
+          if grep -Eq '^[[:space:]]*(LEAK|TRY|TIMEOUT)([[:space:]]|$)' "$log"; then
+            echo 'A harness failure, retry or leak is not the expected recovery assertion RED.' >&2
+            exit 1
+          fi
+          cp target/nextest/queue/junit.xml .session-temp/v014-native/windows-1523-recovery-red-junit.xml
+          {
+            echo 'Eight-case Windows maintenance GREEN slice passed without retries or LEAK.'
+            echo 'The separate recovery experiment reproduced its exact expected assertion failure; recovery is still unresolved.'
+            echo 'This job does not accept the other three original Windows symptoms or the full Windows large profile.'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: windows-maintenance-${{ inputs.windows_candidate }}
+          path: .session-temp/v014-native/windows-1523-*
           if-no-files-found: warn
 
   linux-twenty-queues:
