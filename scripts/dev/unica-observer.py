@@ -1044,14 +1044,6 @@ PAGE = r"""<!doctype html>
   --bad-bg: light-dark(#fde7e9, #4a2426);
   --warn: light-dark(#8a5a00, #e8b84a);
   --warn-bg: light-dark(#fff4d6, #3f3217);
-  --code: light-dark(#ffffff, #1f1f1f);
-  --code-text: light-dark(#3b3b3b, #cccccc);
-  --code-keyword: light-dark(#0000ff, #569cd6);
-  --code-string: light-dark(#a31515, #ce9178);
-  --code-comment: light-dark(#008000, #6a9955);
-  --code-number: light-dark(#098658, #b5cea8);
-  --code-property: light-dark(#0451a5, #9cdcfe);
-  --code-directive: light-dark(#795e26, #dcdcaa);
   --shadow: light-dark(rgb(0 0 0 / 18%), rgb(0 0 0 / 50%));
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
@@ -1073,11 +1065,20 @@ button:disabled { opacity: .55; cursor: default; }
 #addr { flex: 1 1 260px; min-width: 120px; height: 28px; padding: 4px 8px; border: 1px solid var(--control); border-radius: 5px; background: var(--bg); color: var(--text); font: 12px var(--mono); }
 #appearance { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 28px; padding: 0; font-size: 18px; line-height: 1; }
 #appearance[aria-expanded="true"] { border-color: var(--accent); background: var(--accent-bg); }
-.appearance-menu { position: absolute; top: calc(100% + 4px); right: 8px; width: 260px; max-width: calc(100vw - 16px); padding: 12px; border: 1px solid var(--control); border-radius: 8px; background: var(--bg); box-shadow: 0 10px 28px var(--shadow); }
+.appearance-menu { position: absolute; top: calc(100% + 4px); right: 8px; width: 320px; max-width: calc(100vw - 16px); max-height: calc(100dvh - 120px); overflow: auto; padding: 12px; border: 1px solid var(--control); border-radius: 8px; background: var(--bg); box-shadow: 0 10px 28px var(--shadow); }
 .appearance-title { margin-bottom: 8px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
 .theme-options { display: flex; gap: 2px; padding: 2px; border-radius: 7px; background: var(--hover); }
 .theme-options button { flex: 1 1 0; min-height: 26px; padding: 3px 4px; border: 0; border-radius: 5px; background: transparent; color: var(--muted); font-size: 11px; }
 .theme-options button[aria-checked="true"] { background: var(--bg); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px var(--shadow); }
+.palette-title { margin-top: 14px; }
+.palette-options { display: flex; flex-direction: column; gap: 2px; }
+.palette-options button { display: flex; align-items: center; gap: 6px; min-height: 30px; padding: 4px 8px; border: 0; background: transparent; text-align: left; }
+.palette-options button:hover { background: var(--hover-row); }
+.palette-options button[aria-checked="true"] { background: var(--sel); font-weight: 600; }
+.palette-variant { color: var(--muted); font-size: 10px; font-weight: 400; }
+.palette-swatch { display: inline-flex; gap: 3px; margin-left: auto; padding: 4px; border: 1px solid var(--line-strong); border-radius: 4px; }
+.palette-swatch i { width: 7px; height: 7px; border-radius: 2px; }
+pre.appearance-sample { margin-top: 10px; padding: 8px; font-size: 11px; }
 main { display: grid; grid-template-columns: var(--tree-w, 300px) 6px minmax(0, 1fr); flex: 1 1 auto; min-height: 0; }
 .split { position: relative; background: var(--bg); touch-action: none; user-select: none; }
 .split::after { content: ""; position: absolute; background: var(--line-strong); pointer-events: none; }
@@ -1138,7 +1139,7 @@ pre.source-text { max-height: min(52vh, 520px); }
 .syntax-comment { color: var(--code-comment); }
 .syntax-number { color: var(--code-number); }
 .syntax-property { color: var(--code-property); }
-.syntax-literal { color: var(--code-keyword); }
+.syntax-literal { color: var(--code-literal); }
 .syntax-directive { color: var(--code-directive); }
 table { width: 100%; border-collapse: collapse; font-size: 12px; }
 th, td { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
@@ -1186,6 +1187,12 @@ section > details > summary { color: var(--muted); font-size: 11px; cursor: poin
       <button type="button" role="radio" data-theme="light" aria-checked="false">Светлая</button>
       <button type="button" role="radio" data-theme="dark" aria-checked="false">Тёмная</button>
     </div>
+    <div class="appearance-title palette-title">Раскраска кода</div>
+    <div class="palette-options" id="codePalettes" role="radiogroup" aria-label="Раскраска кода"></div>
+    <pre class="appearance-sample" aria-label="Образец раскраски"><code><span class="syntax-keyword">Если</span> Проверка <span class="syntax-keyword">Тогда</span>
+    <span class="syntax-keyword">Возврат</span> <span class="syntax-string">"Готово"</span>; <span class="syntax-comment">// комментарий</span>
+<span class="syntax-keyword">КонецЕсли</span>;
+{<span class="syntax-property">"число"</span>: <span class="syntax-number">42</span>, <span class="syntax-property">"флаг"</span>: <span class="syntax-literal">true</span>}</code></pre>
   </div>
 </header>
 <main>
@@ -1217,59 +1224,139 @@ async function api(path, body) {
   return payload;
 }
 
+const CODE_PALETTES = [
+  {id: "vscode", title: "VS Code", names: ["Light Modern", "Dark Modern"],
+    light: ["#ffffff", "#3b3b3b", "#0000ff", "#a31515", "#008000", "#098658", "#0451a5", "#0000ff", "#795e26"],
+    dark: ["#1f1f1f", "#cccccc", "#569cd6", "#ce9178", "#6a9955", "#b5cea8", "#9cdcfe", "#569cd6", "#dcdcaa"]},
+  {id: "intellij", title: "IntelliJ", names: ["IntelliJ Light", "Darcula"],
+    light: ["#ffffff", "#080808", "#0033b3", "#067d17", "#8c8c8c", "#1750eb", "#871094", "#0033b3", "#00627a"],
+    dark: ["#2b2b2b", "#a9b7c6", "#cc7832", "#6a8759", "#808080", "#6897bb", "#9876aa", "#cc7832", "#ffc66d"]},
+  {id: "github", title: "GitHub", names: ["Light", "Dark"],
+    light: ["#ffffff", "#1f2328", "#cf222e", "#0a3069", "#6e7781", "#0550ae", "#0550ae", "#0550ae", "#8250df"],
+    dark: ["#0d1117", "#e6edf3", "#ff7b72", "#a5d6ff", "#8b949e", "#79c0ff", "#79c0ff", "#79c0ff", "#d2a8ff"]},
+  {id: "solarized", title: "Solarized", names: ["Light", "Dark"],
+    light: ["#fdf6e3", "#586e75", "#829600", "#299d94", "#93a1a1", "#d33682", "#268bd2", "#cb4b16", "#268bd2"],
+    dark: ["#002b36", "#93a1a1", "#859900", "#2aa198", "#657b83", "#d33682", "#268bd2", "#cb4b16", "#268bd2"]},
+  {id: "gruvbox", title: "Gruvbox", names: ["Light", "Dark"],
+    light: ["#fbf1c7", "#3c3836", "#9d0006", "#79740e", "#928374", "#8f3f71", "#076678", "#8f3f71", "#427b58"],
+    dark: ["#282828", "#ebdbb2", "#fb4934", "#b8bb26", "#928374", "#d3869b", "#83a598", "#d3869b", "#8ec07c"]},
+  {id: "one", title: "One", names: ["One Light", "One Dark"],
+    light: ["#fafafa", "#383a42", "#a626a4", "#50a14f", "#a0a1a7", "#986801", "#e45649", "#986801", "#4078f2"],
+    dark: ["#282c34", "#abb2bf", "#c678dd", "#98c379", "#7f848e", "#d19a66", "#e06c75", "#d19a66", "#61afef"]},
+];
+const CODE_COLOR_ROLES = ["code", "code-text", "code-keyword", "code-string", "code-comment", "code-number", "code-property", "code-literal", "code-directive"];
+
 function initAppearance() {
   const trigger = $("appearance");
   const menu = $("appearanceMenu");
-  const radios = [...menu.querySelectorAll("[data-theme]")];
+  const root = document.documentElement;
+  const uiRadios = [...menu.querySelectorAll("[data-theme]")];
   const themes = ["system", "light", "dark"];
-  const storageKey = "unica-observer.theme";
+  const uiKey = "unica-observer.theme";
+  const codeKey = "unica-observer.code-palette";
+  const systemTheme = matchMedia("(prefers-color-scheme: dark)");
   let theme = "system";
-  try {
-    const saved = localStorage.getItem(storageKey);
-    if (themes.includes(saved)) theme = saved;
-  } catch { /* выбор живёт до перезагрузки */ }
+  let palette = CODE_PALETTES[0];
 
-  function choose(value, persist = true) {
-    if (!themes.includes(value)) return;
-    theme = value;
-    document.documentElement.dataset.theme = theme;
+  function read(key, allowed, fallback) {
+    try {
+      const value = localStorage.getItem(key);
+      return allowed.includes(value) ? value : fallback;
+    } catch { return fallback; }
+  }
+  function remember(key, value) {
+    try { localStorage.setItem(key, value); } catch { /* выбор живёт до перезагрузки */ }
+  }
+  function mark(radios, attribute, value) {
     radios.forEach((radio) => {
-      const selected = radio.dataset.theme === theme;
+      const selected = radio.dataset[attribute] === value;
       radio.setAttribute("aria-checked", String(selected));
       radio.tabIndex = selected ? 0 : -1;
     });
-    if (persist) {
-      try { localStorage.setItem(storageKey, theme); } catch { /* хранилище недоступно */ }
-    }
+  }
+  function refreshVariants() {
+    const dark = theme === "dark" || (theme === "system" && systemTheme.matches);
+    CODE_PALETTES.forEach((item, index) => {
+      codeRadios[index].querySelector("small").textContent = item.names[dark ? 1 : 0];
+    });
+  }
+  function chooseUi(value, persist = true) {
+    if (!themes.includes(value)) return;
+    theme = value;
+    root.dataset.theme = theme;
+    mark(uiRadios, "theme", theme);
+    refreshVariants();
+    if (persist) remember(uiKey, theme);
+  }
+  function chooseCode(value, persist = true) {
+    const next = CODE_PALETTES.find((item) => item.id === value);
+    if (!next) return;
+    palette = next;
+    root.dataset.codePalette = palette.id;
+    CODE_COLOR_ROLES.forEach((role, index) => {
+      root.style.setProperty(`--${role}`, `light-dark(${palette.light[index]}, ${palette.dark[index]})`);
+    });
+    mark(codeRadios, "palette", palette.id);
+    if (persist) remember(codeKey, palette.id);
   }
 
+  const codeRadios = CODE_PALETTES.map((item) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.setAttribute("role", "radio");
+    button.setAttribute("aria-label", item.title);
+    button.dataset.palette = item.id;
+    button.title = `${item.names[0]} · ${item.names[1]}`;
+    button.appendChild(document.createTextNode(item.title));
+    button.appendChild(document.createElement("small")).className = "palette-variant";
+    const swatch = button.appendChild(document.createElement("span"));
+    swatch.className = "palette-swatch";
+    swatch.setAttribute("aria-hidden", "true");
+    swatch.style.background = `light-dark(${item.light[0]}, ${item.dark[0]})`;
+    for (const role of ["code-property", "code-string", "code-number", "code-keyword", "code-directive"]) {
+      const index = CODE_COLOR_ROLES.indexOf(role);
+      swatch.appendChild(document.createElement("i")).style.background = `light-dark(${item.light[index]}, ${item.dark[index]})`;
+    }
+    $("codePalettes").appendChild(button);
+    return button;
+  });
+  function bindGroup(radios, attribute, choose) {
+    radios.forEach((radio) => radio.addEventListener("click", () => choose(radio.dataset[attribute])));
+    radios[0].parentElement.addEventListener("keydown", (event) => {
+      const index = radios.indexOf(event.target);
+      if (index < 0) return;
+      const offsets = {ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1};
+      let next;
+      if (event.key === "Home") next = 0;
+      else if (event.key === "End") next = radios.length - 1;
+      else if (Object.hasOwn(offsets, event.key)) next = (index + offsets[event.key] + radios.length) % radios.length;
+      else return;
+      event.preventDefault();
+      choose(radios[next].dataset[attribute]);
+      radios[next].focus();
+    });
+  }
   function close(refocus = false) {
     menu.hidden = true;
     trigger.setAttribute("aria-expanded", "false");
     if (refocus) trigger.focus();
   }
 
-  choose(theme, false);
+  chooseCode(read(codeKey, CODE_PALETTES.map((item) => item.id), palette.id), false);
+  chooseUi(read(uiKey, themes, theme), false);
+  bindGroup(uiRadios, "theme", chooseUi);
+  bindGroup(codeRadios, "palette", chooseCode);
+  systemTheme.addEventListener("change", refreshVariants);
+  window.addEventListener("storage", (event) => {
+    if (event.key === uiKey || event.key === null) chooseUi(read(uiKey, themes, "system"), false);
+    if (event.key === codeKey || event.key === null) chooseCode(read(codeKey, CODE_PALETTES.map((item) => item.id), CODE_PALETTES[0].id), false);
+  });
   close();
   trigger.addEventListener("click", () => {
     if (!menu.hidden) { close(); return; }
     menu.hidden = false;
     trigger.setAttribute("aria-expanded", "true");
-    radios.find((radio) => radio.dataset.theme === theme)?.focus();
-  });
-  radios.forEach((radio) => radio.addEventListener("click", () => choose(radio.dataset.theme)));
-  menu.addEventListener("keydown", (event) => {
-    const index = radios.indexOf(event.target);
-    const offsets = {ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1};
-    if (index < 0) return;
-    let next;
-    if (event.key === "Home") next = 0;
-    else if (event.key === "End") next = radios.length - 1;
-    else if (Object.hasOwn(offsets, event.key)) next = (index + offsets[event.key] + radios.length) % radios.length;
-    else return;
-    event.preventDefault();
-    choose(radios[next].dataset.theme);
-    radios[next].focus();
+    uiRadios.find((radio) => radio.dataset.theme === theme)?.focus();
   });
   document.addEventListener("keydown", (event) => {
     if (!menu.hidden && event.key === "Escape") { event.preventDefault(); close(true); }
