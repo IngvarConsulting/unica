@@ -698,13 +698,17 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
     built; it is not committed, so two added scenarios never edit its counts
     and coverage lists in the same lines."""
 
-    def test_registry_document_is_rendered_from_the_corpus(self) -> None:
+    def renderer(self):
         module_path = REPO_ROOT / "scripts" / "ci" / "render-acceptance-registry.py"
         spec = importlib.util.spec_from_file_location("render_acceptance_registry", module_path)
         self.assertIsNotNone(spec)
         assert spec is not None and spec.loader is not None
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
+        return module
+
+    def test_registry_document_is_rendered_from_the_corpus(self) -> None:
+        module = self.renderer()
         rendered = module.render_document()
         self.assertIn("## Покрытие реестра `apply`", rendered)
         corpus = load_acceptance_corpus()
@@ -714,6 +718,85 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         page = module.render_html(rendered)
         self.assertIn('id="S047"', page)
         self.assertIn("описан в <code>tests/fixtures/acceptance/README.md</code>", page)
+
+    def test_role_rows_keep_their_arguments_order_and_implemented_status(self) -> None:
+        module = self.renderer()
+        registry, implemented = module.load_apply_registry()
+        self.assertEqual(
+            [entry for entry in registry if entry[1] == "Role"],
+            [
+                ("role.create", "Role", "Configuration", "Values"),
+                ("right.add", "Role", "Role", "Items"),
+                ("right.set", "Role", "RoleRight", "Values"),
+            ],
+        )
+        rendered = module.render_document()
+        for operation, args in [("role.create", "values"), ("right.add", "items"), ("right.set", "values")]:
+            self.assertIn(operation, implemented)
+            self.assertIn(f"| `{operation}` | `{args}` | да | ", rendered)
+
+    def registration_fixture(self, table, metadata):
+        module = self.renderer()
+        with tempfile.TemporaryDirectory(prefix="role-registry-") as raw:
+            root = Path(raw)
+            registry = root / "apply.rs"
+            registry.write_text(
+                "\noperation_descriptors!(\n" + table + "\n);\n"
+                'const IMPLEMENTED_APPLY_OPERATIONS: &[&str] = &["role.create", "right.add", "right.set"];\n',
+                encoding="utf-8",
+            )
+            if metadata is not None:
+                (root / "role_operation.rs").write_text(metadata, encoding="utf-8")
+            with patch.object(module, "APPLY_REGISTRY", registry):
+                return module.load_apply_registry()
+
+    def test_typed_role_rows_stay_between_their_raw_registry_neighbors(self) -> None:
+        metadata = (REPO_ROOT / "crates/unica-coder/src/domain/role_operation.rs").read_text(encoding="utf-8")
+        registry, _ = self.registration_fixture(
+            '("object.create", Metadata, Configuration, Values),\n'
+            '(RoleOperation::Create),\n'
+            '(RoleOperation::RightAdd),\n'
+            '// A comment is not a descriptor: (OtherOperation::Hidden),\n'
+            '(RoleOperation::RightSet),\n'
+            '("query.set", Dcs, DcsQuery, Values),',
+            metadata,
+        )
+        self.assertEqual(registry, [
+            ("object.create", "Metadata", "Configuration", "Values"),
+            ("role.create", "Role", "Configuration", "Values"),
+            ("right.add", "Role", "Role", "Items"),
+            ("right.set", "Role", "RoleRight", "Values"),
+            ("query.set", "Dcs", "DcsQuery", "Values"),
+        ])
+
+    def test_unknown_or_incomplete_typed_metadata_cannot_silently_drop_a_role(self) -> None:
+        metadata = (REPO_ROOT / "crates/unica-coder/src/domain/role_operation.rs").read_text(encoding="utf-8")
+        table = '("query.set", Dcs, DcsQuery, Values),\n' + "\n".join(
+            f"(RoleOperation::{variant})," for variant in ["Create", "RightAdd", "RightSet"]
+        )
+        cases = {
+            "unknown typed family": (table.replace("RoleOperation::Create", "OtherOperation::Create"), metadata),
+            "unknown variant": (table.replace("RoleOperation::Create", "RoleOperation::Missing"), metadata),
+            "missing registration": (table.replace("(RoleOperation::RightSet),", ""), metadata),
+            "duplicate registration": (table + "\n(RoleOperation::Create),", metadata),
+            "missing metadata file": (table, None),
+            "missing enum variant": (table, metadata.replace("    RightSet,\n", "")),
+            "missing name arm": (table, metadata.replace('            Self::RightSet => "right.set",\n', "")),
+            "commented name arm": (table, metadata.replace('Self::RightSet => "right.set",', '// Self::RightSet => "right.set",')),
+            "nonliteral name": (table, metadata.replace('Self::Create => "role.create"', "Self::Create => old_name()")),
+            "duplicate name": (table, metadata.replace('Self::RightSet => "right.set"', 'Self::RightSet => "role.create"')),
+            "missing applicability": (table, metadata.replace("Self::RightSet => OperationApplicability::RoleRight,", "")),
+            "missing skeleton": (table, metadata.replace("const fn skeleton(self)", "const fn previous_skeleton(self)")),
+            "another type cannot supply metadata": (
+                table,
+                metadata.replace("const fn name(self)", "const fn previous_name(self)")
+                + '\nimpl Other { const fn name(self) -> &\'static str { match self { '
+                'Self::Create => "role.create", Self::RightAdd => "right.add", Self::RightSet => "right.set", } } }\n',
+            ),
+        }
+        for case, (source, role_metadata) in cases.items():
+            with self.subTest(case=case), self.assertRaises(RuntimeError):
+                self.registration_fixture(source, role_metadata)
 
 
 class AcceptanceCorpusRunTests(unittest.TestCase):

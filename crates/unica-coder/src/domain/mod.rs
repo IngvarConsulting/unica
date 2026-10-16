@@ -35,6 +35,7 @@ pub(crate) mod project_health;
 pub mod project_sources;
 pub mod refusal;
 pub mod role;
+pub(crate) mod role_operation;
 pub mod source_location;
 pub mod source_resources;
 pub mod source_roots;

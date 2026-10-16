@@ -75,21 +75,120 @@ def load_corpus() -> dict:
     return module.load()
 
 
+def _without_comments(source: str) -> str:
+    """Metadata below contains identifiers and operation names, not Rust bodies."""
+    def keep_literal(match: re.Match[str]) -> str:
+        token = match[0]
+        if token.startswith('"'):
+            return token
+        if token.startswith("/*") and "/*" in token[2:]:
+            raise RuntimeError("nested comments are not supported in registry metadata")
+        return " "
+
+    return re.sub(r'"(?:\\.|[^"\\])*"|//[^\n]*|/\*.*?\*/', keep_literal, source, flags=re.S)
+
+
+def _role_registration_metadata() -> dict[str, tuple[str, str, str, str]]:
+    path = APPLY_REGISTRY.with_name("role_operation.rs")
+    try:
+        source = _without_comments(path.read_text(encoding="utf-8"))
+    except OSError as error:
+        raise RuntimeError(f"typed Role metadata is unavailable: {path}") from error
+    syntax = re.sub(r'"(?:\\.|[^"\\])*"', lambda match: " " * len(match[0]), source)
+    declaration = re.search(r"\benum\s+RoleOperation\s*\{([^{}]*)\}", syntax)
+    if declaration is None:
+        raise RuntimeError("the RoleOperation enum was not found")
+    variants = [part.strip() for part in _without_comments(declaration[1]).split(",") if part.strip()]
+    if not variants or len(set(variants)) != len(variants) or any(
+        re.fullmatch(r"[A-Za-z_]\w*", variant) is None for variant in variants
+    ):
+        raise RuntimeError("RoleOperation variants must be unique unit variants")
+    implementations = list(re.finditer(r"\bimpl\s+RoleOperation\s*\{", syntax))
+    if len(implementations) != 1:
+        raise RuntimeError("RoleOperation metadata must have one inherent implementation")
+    body_start = implementations[0].end()
+    depth = 1
+    body_end = body_start
+    while depth and body_end < len(syntax):
+        depth += (syntax[body_end] == "{") - (syntax[body_end] == "}")
+        body_end += 1
+    if depth:
+        raise RuntimeError("the RoleOperation implementation is incomplete")
+    body = source[body_start:body_end - 1]
+
+    def literal_match(method: str, return_type: str, value: str) -> dict[str, str]:
+        function = re.search(
+            rf"\bconst\s+fn\s+{method}\s*\(\s*self\s*\)\s*->\s*{return_type}"
+            rf"\s*\{{\s*match\s+self\s*\{{([^{{}}]*)\}}\s*\}}",
+            body,
+        )
+        if function is None:
+            raise RuntimeError(f"RoleOperation::{method} must be an exhaustive literal match")
+        arms = _without_comments(function[1])
+        pattern = re.compile(rf"\s*Self::([A-Za-z_]\w*)\s*=>\s*{value}\s*,?")
+        values: dict[str, str] = {}
+        position = 0
+        for match in pattern.finditer(arms):
+            if arms[position:match.start()].strip() or match[1] in values:
+                raise RuntimeError(f"unsupported or duplicate RoleOperation::{method} arm")
+            values[match[1]] = match[2]
+            position = match.end()
+        if arms[position:].strip() or set(values) != set(variants):
+            raise RuntimeError(f"RoleOperation::{method} does not describe every variant exactly once")
+        return values
+
+    names = literal_match("name", r"&'static\s+str", r'"([A-Za-z]+\.[A-Za-z]+)"')
+    applicability = literal_match(
+        "applicability", "OperationApplicability", r"OperationApplicability::([A-Za-z_]\w*)"
+    )
+    skeletons = literal_match("skeleton", "OperationSkeleton", r"OperationSkeleton::([A-Za-z_]\w*)")
+    if len(set(names.values())) != len(names):
+        raise RuntimeError("RoleOperation names must be unique")
+    return {
+        variant: (names[variant], "Role", applicability[variant], skeletons[variant])
+        for variant in variants
+    }
+
+
 def load_apply_registry() -> tuple[list[tuple[str, str, str, str]], set[str]]:
-    """The closed `apply` registry as `(operation, family, applicability, args)`
-    tuples plus the set of operations the registry marks as implemented."""
+    """Read raw descriptors and typed Role metadata without skipping entries."""
     source = APPLY_REGISTRY.read_text(encoding="utf-8")
     # The registry is one `operation_descriptors!(...)` invocation; the macro
     # definition above it carries the same tokens, so anchor on the call.
     table_start = source.index("\noperation_descriptors!(")
     table_end = source.index("\n);", table_start)
-    table = source[table_start:table_end]
-    entries = re.findall(
-        r'\(\s*"([A-Za-z]+\.[A-Za-z]+)",\s*(\w+),\s*(\w+),\s*(\w+)\s*\)',
-        table,
+    table = _without_comments(source[table_start + len("\noperation_descriptors!("):table_end])
+    pattern = re.compile(
+        r'\(\s*(?:"([A-Za-z]+\.[A-Za-z]+)"\s*,\s*(\w+)\s*,\s*(\w+)\s*,\s*(\w+)'
+        r'|RoleOperation::([A-Za-z_]\w*))\s*\)'
     )
+    entries = []
+    typed = None
+    registered = []
+    position = 0
+    for match in pattern.finditer(table):
+        if table[position:match.start()].strip(" \t\r\n,"):
+            raise RuntimeError("unsupported apply registration; no entry may be skipped")
+        if variant := match[5]:
+            if typed is None:
+                typed = _role_registration_metadata()
+            if variant not in typed:
+                raise RuntimeError(f"unknown typed Role registration: {variant}")
+            registered.append(variant)
+            entries.append(typed[variant])
+        else:
+            entries.append(match.group(1, 2, 3, 4))
+        position = match.end()
+    if table[position:].strip(" \t\r\n,"):
+        raise RuntimeError("unsupported apply registration; no entry may be skipped")
     if not entries:
         raise RuntimeError("the apply registry table was not found in domain/apply.rs")
+    if typed is not None and (
+        len(registered) != len(typed)
+        or set(registered) != set(typed)
+        or sum(entry[1] == "Role" for entry in entries) != len(typed)
+    ):
+        raise RuntimeError("typed Role registrations must name every variant exactly once")
     implemented_start = source.index("const IMPLEMENTED_APPLY_OPERATIONS: &[&str] = &[")
     implemented_end = source.index("];", implemented_start)
     implemented = set(re.findall(r'"([A-Za-z]+\.[A-Za-z]+)"', source[implemented_start:implemented_end]))

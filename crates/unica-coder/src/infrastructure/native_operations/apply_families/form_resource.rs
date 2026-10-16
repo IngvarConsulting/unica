@@ -1,8 +1,9 @@
 use super::metadata::{owner_registration_image, qualified_target};
 use super::validate_platform_xml_binding;
 use crate::domain::address::{member_address, NodeKind, QualifiedAddress};
-use crate::domain::apply::{FormItemRole, OperationFamily};
+use crate::domain::apply::{FormItemRole, OperationDescriptor, OperationFamily};
 use crate::domain::events::{DomainEvent, DomainEventKind};
+use crate::domain::role_operation::RoleOperation;
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use crate::infrastructure::logical_event_source::attached_resource_relative;
 use crate::infrastructure::native_operations::apply::{
@@ -717,15 +718,14 @@ pub(crate) fn parse_form_resource_plan_operation(
         .get("at")
         .and_then(Value::as_str)
         .and_then(|raw| QualifiedAddress::resolve_input(raw, &[binding.source_set_name()]).ok());
-    let family = super::resolved_descriptor(operation, at.as_ref(), binding)
-        .map(|descriptor| descriptor.family());
-    parse_form_resource_plan_operation_in(family, operation, args, op_index, binding)
+    let descriptor = super::resolved_descriptor(operation, at.as_ref(), binding);
+    parse_form_resource_plan_operation_in(descriptor, operation, args, op_index, binding)
 }
 
 /// Разбор операции семейством, которое выбрал разбор `apply` по записи
 /// реестра для адреса вызова.
 pub(crate) fn parse_form_resource_plan_operation_in(
-    family: Option<OperationFamily>,
+    descriptor: Option<OperationDescriptor>,
     operation: &str,
     args: &Value,
     op_index: usize,
@@ -739,8 +739,13 @@ pub(crate) fn parse_form_resource_plan_operation_in(
         )
         .at_path(format!("ops[{op_index}].args"))
     })?;
-    let kind = match family {
-        Some(OperationFamily::Role) => parse_role_operation(operation, object, op_index, binding)?,
+    let kind = match descriptor.map(OperationDescriptor::family) {
+        Some(OperationFamily::Role) => {
+            match descriptor.and_then(OperationDescriptor::role_operation) {
+                Some(operation) => parse_role_operation(operation, object, op_index, binding)?,
+                None => return Err(hidden_apply_family_unimplemented(op_index)),
+            }
+        }
         Some(OperationFamily::Subsystem) => {
             parse_subsystem_operation(operation, object, op_index, binding)?
         }
@@ -797,35 +802,35 @@ fn role_of(
 }
 
 fn parse_role_operation(
-    operation: &str,
+    operation: RoleOperation,
     args: &Map<String, Value>,
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<FormResourcePlanKind, ApplyPlanError> {
     let target = qualified_target(args, op_index, binding)?;
     // Опубликованный контракт и разбор планировщиком принимают одну форму
-    // аргументов (#1354): схема проверяется первой.
-    if let Some(contract) = crate::domain::operation_contract::OperationContract::role(operation) {
-        contract
-            .normalize(
-                &Value::Object(args.clone()),
-                &format!("ops[{op_index}].args"),
+    // аргументов (#1354): после адреса схема проверяется до ручного разбора.
+    // Нормализованный JSON не подменяет исходные аргументы планировщика.
+    operation
+        .contract()
+        .normalize(
+            &Value::Object(args.clone()),
+            &format!("ops[{op_index}].args"),
+        )
+        .map_err(|error| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::BadValue,
+                format!("{}: {}", error.path, error.message),
             )
-            .map_err(|error| {
-                ApplyPlanError::new(
-                    ApplyPlanErrorKind::BadValue,
-                    format!("{}: {}", error.path, error.message),
-                )
-                .at_path(error.path)
-            })?;
-    }
+            .at_path(error.path)
+        })?;
     match operation {
-        "role.create" => {
+        RoleOperation::Create => {
             let values = required_values(args, op_index, &["name"])?;
             let name = creation_name(&target, NodeKind::Role, values, op_index)?;
             Ok(FormResourcePlanKind::CreateRole { name })
         }
-        "right.add" => {
+        RoleOperation::RightAdd => {
             let role = role_of(&target, false, op_index)?;
             let items = args
                 .get("items")
@@ -959,7 +964,7 @@ fn parse_role_operation(
                 entries,
             })
         }
-        "right.set" => {
+        RoleOperation::RightSet => {
             let role = role_of(&target, true, op_index)?;
             // Объект записи задаёт адрес `Role.R.Right.<Вид_Имя>` (#1354).
             let object = target
@@ -1012,7 +1017,6 @@ fn parse_role_operation(
                 rls,
             })
         }
-        _ => Ok(FormResourcePlanKind::Unsupported),
     }
 }
 
@@ -4819,10 +4823,24 @@ mod tests {
     }
 
     #[test]
+    fn role_target_refusals_precede_argument_contract_refusals() {
+        let fixture = ApplySeamFixture::new();
+        for (operation, args) in [
+            ("role.create", json!({"values":{"name":42},"unknown":true})),
+            ("right.add", json!({"items":"wrong","unknown":true})),
+            ("right.set", json!({"values":{"right":42},"unknown":true})),
+        ] {
+            let error = parse_form_resource_plan_operation(operation, &args, 0, &fixture.binding)
+                .expect_err("missing target must be refused before malformed arguments");
+            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{operation}");
+            assert_eq!(error.path(), Some("ops[0].args.at"), "{operation}");
+        }
+    }
+
+    #[test]
     fn role_create_contract_preserves_typed_names_and_rejects_unknown_args() {
         let fixture = ApplySeamFixture::new();
-        let contract = crate::domain::operation_contract::OperationContract::role("role.create")
-            .expect("the productive creation grammar is published");
+        let contract = crate::domain::role_operation::RoleOperation::Create.contract();
         for (input, expected) in [
             ("Reader", "Reader"),
             ("МенеджерПродаж", "МенеджерПродаж"),

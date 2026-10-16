@@ -5,6 +5,7 @@ use crate::domain::node_view::OperationRef;
 use crate::domain::platform_profile::PlatformProfile;
 use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
 use crate::domain::refusal::RefusalCode;
+use crate::domain::role_operation::RoleOperation;
 use serde_json::{Map, Value};
 use std::fmt;
 
@@ -544,7 +545,7 @@ impl<'a> OperationSite<'a> {
 /// Где операция исполнима. Каждый вариант — форма адреса, которую принимает
 /// разбор цели планировщиком, а не только вид последнего сегмента.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OperationApplicability {
+pub(super) enum OperationApplicability {
     /// Корень набора исходников.
     Configuration,
     /// Корень расширения: заимствование.
@@ -1032,10 +1033,11 @@ pub(crate) struct OperationDescriptor {
     family: OperationFamily,
     applicability: OperationApplicability,
     skeleton: OperationSkeleton,
+    role_operation: Option<RoleOperation>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OperationSkeleton {
+pub(super) enum OperationSkeleton {
     From,
     Items,
     Values,
@@ -1195,6 +1197,20 @@ pub(crate) const IMPLEMENTED_APPLY_OPERATIONS: &[&str] = &[
 ];
 
 impl OperationDescriptor {
+    const fn role(operation: RoleOperation) -> Self {
+        Self {
+            name: operation.name(),
+            family: OperationFamily::Role,
+            applicability: operation.applicability(),
+            skeleton: operation.skeleton(),
+            role_operation: Some(operation),
+        }
+    }
+
+    pub(crate) const fn role_operation(self) -> Option<RoleOperation> {
+        self.role_operation
+    }
+
     pub(crate) const fn name(self) -> &'static str {
         self.name
     }
@@ -1214,7 +1230,9 @@ impl OperationDescriptor {
     /// операция пишет описание объекта или вне такого содержимого.
     pub(crate) fn content_resource(self) -> Option<&'static str> {
         match self.family {
-            OperationFamily::Role if self.name != "role.create" => Some("Rights.xml"),
+            OperationFamily::Role => self
+                .role_operation
+                .and_then(RoleOperation::content_resource),
             OperationFamily::Form
                 if !matches!(self.name, "form.add" | "form.set" | "form.remove") =>
             {
@@ -1391,7 +1409,7 @@ impl OperationDescriptor {
             OperationFamily::Metadata => {
                 super::operation_contract::OperationContract::metadata(self.name)
             }
-            OperationFamily::Role => super::operation_contract::OperationContract::role(self.name),
+            OperationFamily::Role => self.role_operation.map(RoleOperation::contract),
             OperationFamily::Support => {
                 super::operation_contract::OperationContract::support(self.name)
             }
@@ -1438,15 +1456,30 @@ impl OperationDescriptor {
     }
 }
 
+macro_rules! operation_descriptor {
+    (($name:literal, Role, $applicability:ident, $skeleton:ident)) => {
+        compile_error!(
+            "Role operations must register a typed RoleOperation with a mandatory contract"
+        )
+    };
+    (($operation:path)) => {
+        OperationDescriptor::role($operation)
+    };
+    (($name:literal, $family:ident, $applicability:ident, $skeleton:ident)) => {
+        OperationDescriptor {
+            name: $name,
+            family: OperationFamily::$family,
+            applicability: OperationApplicability::$applicability,
+            skeleton: OperationSkeleton::$skeleton,
+            role_operation: None,
+        }
+    };
+}
+
 macro_rules! operation_descriptors {
-    ($(($name:literal, $family:ident, $applicability:ident, $skeleton:ident)),+ $(,)?) => {
+    ($($entry:tt),+ $(,)?) => {
         const OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
-            $(OperationDescriptor {
-                name: $name,
-                family: OperationFamily::$family,
-                applicability: OperationApplicability::$applicability,
-                skeleton: OperationSkeleton::$skeleton,
-            }),+
+            $(operation_descriptor!($entry)),+
         ];
     };
 }
@@ -1526,9 +1559,9 @@ operation_descriptors!(
     ("attribute.add", Form, Form, Items),
     ("command.add", Form, Form, Items),
     ("event.bind", Form, FormEvent, Values),
-    ("role.create", Role, Configuration, Values),
-    ("right.add", Role, Role, Items),
-    ("right.set", Role, RoleRight, Values),
+    (RoleOperation::Create),
+    (RoleOperation::RightAdd),
+    (RoleOperation::RightSet),
     ("dataSource.add", Dcs, DcsSchema, Items),
     ("dataSource.set", Dcs, DcsDataSource, Values),
     ("dataSource.remove", Dcs, DcsDataSource, Target),
@@ -2658,7 +2691,8 @@ impl OperationRegistry {
 #[cfg(test)]
 mod tests {
     use super::{
-        ApplyRequest, OperationFamily, OperationRegistry, OperationSite, SourceSetTraits,
+        ApplyRequest, OperationApplicability, OperationDescriptor, OperationFamily,
+        OperationRegistry, OperationSite, OperationSkeleton, RoleOperation, SourceSetTraits,
         TemplateFormat, RETIRED_ARGUMENTS,
     };
     use crate::domain::address::QualifiedAddress;
@@ -2943,6 +2977,53 @@ mod tests {
         assert_eq!(request.if_rev(), Some("rev-42"));
     }
 
+    fn role_registration_is_consistent(descriptor: OperationDescriptor) -> bool {
+        match descriptor.role_operation() {
+            Some(operation) => {
+                descriptor.family() == OperationFamily::Role
+                    && descriptor.name() == operation.name()
+                    && descriptor.applicability == operation.applicability()
+                    && descriptor.skeleton == operation.skeleton()
+                    && descriptor.argument_contract().is_some()
+            }
+            None => descriptor.family() != OperationFamily::Role,
+        }
+    }
+
+    #[test]
+    fn role_registration_rejects_missing_and_mismatched_typed_operations() {
+        let valid = OperationDescriptor::role(RoleOperation::Create);
+        assert!(role_registration_is_consistent(valid));
+        for invalid in [
+            OperationDescriptor {
+                role_operation: None,
+                ..valid
+            },
+            OperationDescriptor {
+                family: OperationFamily::Metadata,
+                ..valid
+            },
+            OperationDescriptor {
+                name: "role.uncontracted",
+                ..valid
+            },
+            OperationDescriptor {
+                applicability: OperationApplicability::Role,
+                ..valid
+            },
+            OperationDescriptor {
+                skeleton: OperationSkeleton::Items,
+                ..valid
+            },
+            OperationDescriptor {
+                role_operation: Some(RoleOperation::RightSet),
+                ..valid
+            },
+        ] {
+            assert!(!role_registration_is_consistent(invalid), "{invalid:?}");
+        }
+    }
+
     #[test]
     fn operation_registry_is_exact_closed_unique_and_drives_skeletons_and_dispatch() {
         let expected = [
@@ -3080,6 +3161,12 @@ mod tests {
         unique.sort_unstable();
         unique.dedup();
         assert_eq!(unique.len(), expected.len() - SHARED_NAMES.len());
+        for descriptor in registry.descriptors() {
+            assert!(
+                role_registration_is_consistent(*descriptor),
+                "{descriptor:?}"
+            );
+        }
         for name in SHARED_NAMES {
             let families = registry
                 .descriptors()
