@@ -135,6 +135,8 @@ binary(daemon_receipt_ledger) & (
 ) | (
 binary(unica_coder) & (
     test(/^infrastructure::daemon::runtime_v5::tests::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks$/)
+    | test(/^infrastructure::platform::process::tests::windows_job_signal_probe_normal_exit$/)
+    | test(/^infrastructure::platform::process::tests::windows_job_signal_probe_terminate_job$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_directory_handles_cross_former_128_and_keep_finality$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_exact_bytes_cross_former_32mib_without_source_walk$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_membership_crosses_former_16384_across_sources$/)
@@ -167,6 +169,8 @@ binary(daemon_receipt_ledger) & (
 ) | (
 binary(unica_coder) & (
     test(/^infrastructure::daemon::runtime_v5::tests::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks$/)
+    | test(/^infrastructure::platform::process::tests::windows_job_signal_probe_normal_exit$/)
+    | test(/^infrastructure::platform::process::tests::windows_job_signal_probe_terminate_job$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_directory_handles_cross_former_128_and_keep_finality$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_exact_bytes_cross_former_32mib_without_source_walk$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_membership_crosses_former_16384_across_sources$/)
@@ -196,6 +200,8 @@ binary(daemon_receipt_ledger) & (
 ) | (
 binary(unica_coder) & (
     test(/^infrastructure::daemon::runtime_v5::tests::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks$/)
+    | test(/^infrastructure::platform::process::tests::windows_job_signal_probe_normal_exit$/)
+    | test(/^infrastructure::platform::process::tests::windows_job_signal_probe_terminate_job$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_directory_handles_cross_former_128_and_keep_finality$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_exact_bytes_cross_former_32mib_without_source_walk$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_membership_crosses_former_16384_across_sources$/)
@@ -235,6 +241,8 @@ binary(daemon_receipt_ledger) & (
 ) | (
 binary(unica_coder) & (
     test(/^infrastructure::daemon::runtime_v5::tests::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks$/)
+    | test(/^infrastructure::platform::process::tests::windows_job_signal_probe_normal_exit$/)
+    | test(/^infrastructure::platform::process::tests::windows_job_signal_probe_terminate_job$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_directory_handles_cross_former_128_and_keep_finality$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_exact_bytes_cross_former_32mib_without_source_walk$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_membership_crosses_former_16384_across_sources$/)
@@ -355,6 +363,8 @@ binary(daemon_receipt_ledger) & (
 ) | (
 binary(unica_coder) & (
     test(/^infrastructure::daemon::runtime_v5::tests::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks$/)
+    | test(/^infrastructure::platform::process::tests::windows_job_signal_probe_normal_exit$/)
+    | test(/^infrastructure::platform::process::tests::windows_job_signal_probe_terminate_job$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_directory_handles_cross_former_128_and_keep_finality$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_exact_bytes_cross_former_32mib_without_source_walk$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_membership_crosses_former_16384_across_sources$/)
@@ -371,5 +381,11 @@ threads-required = "num-cpus"
 # успешного прогона: общая длительность теста включает подготовку раннера.
 [[profile.default.overrides]]
 filter = 'test(/^interfaces::mcp::tests::public_native_cancel_waits_for_slow_job_attach_before_answering$/)'
+success-output = "immediate"
+junit.store-success-output = true
+
+# Research observations must remain available even when no ordering window was seen.
+[[profile.default.overrides]]
+filter = 'test(/^infrastructure::platform::process::tests::windows_job_signal_probe_(normal_exit|terminate_job)$/)'
 success-output = "immediate"
 junit.store-success-output = true
