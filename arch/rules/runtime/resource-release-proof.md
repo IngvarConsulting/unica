@@ -2,6 +2,15 @@
 id: INV.APP.RUNTIME-RESOURCE-TREE
 check:
   - crates/unica-coder/src/infrastructure/platform/process.rs::runtime_sentinel_preserves_a_meaningful_inherited_fd198
+  - crates/unica-coder/src/infrastructure/platform/process.rs::windows_runtime_tree_proves_a_child_that_finished_before_first_poll
+  - crates/unica-coder/src/infrastructure/platform/process.rs::windows_runtime_terminal_waits_for_the_descendant_process_signal
+  - crates/unica-coder/src/infrastructure/platform/process/windows_job_exit.rs::empty_accounting_does_not_release_an_unsignaled_process
+  - crates/unica-coder/src/infrastructure/platform/process/windows_job_exit.rs::every_retained_process_must_signal
+  - crates/unica-coder/src/infrastructure/platform/process/windows_job_exit.rs::a_missing_notification_or_failed_admission_keeps_the_gap
+  - crates/unica-coder/src/infrastructure/platform/process/windows_job_exit.rs::reused_gone_pid_does_not_earn_a_second_lifetime_credit
+  - crates/unica-coder/src/infrastructure/platform/process/windows_job_exit.rs::gone_then_attested_owned_handle_proves_exactly_two_lifetimes
+  - crates/unica-coder/src/infrastructure/platform/process/windows_job_exit.rs::gone_then_foreign_signaled_handle_cannot_prove_another_membership
+  - crates/unica-coder/src/infrastructure/platform/process/windows_job_exit.rs::a_stopped_collector_cannot_release_even_an_empty_job
   - crates/unica-coder/src/infrastructure/runtime_jobs.rs::system_runtime_job_keeps_resource_owned_after_leader_exit_until_descendant_dies
   - crates/unica-coder/src/infrastructure/runtime_jobs.rs::worker_supervises_initial_retained_ownership_until_proven_terminal
   - crates/unica-coder/src/infrastructure/runtime_jobs.rs::worker_supervises_fallback_retained_ownership_until_proven_terminal
@@ -35,6 +44,11 @@ check:
 доказано отсутствие оставшихся процессов, блокировку можно снять сразу.
 Запись результата и снятие блокировки соблюдают
 [границу исходного каталога задания](retained-job-publication.md).
+
+На Windows перед публикацией терминального состояния и снятием
+`active.lock` процессы дерева должны уже подать сигнал завершения;
+дополнительное ожидание после terminal не входит в гарантию. Публичная
+отмена подтверждает запрос и может вернуть промежуточное состояние.
 
 После потери подтверждённого права на Unix-группу процессов отмена и
 освобождение объекта не посылают сигналы по её прежнему числовому идентификатору.
