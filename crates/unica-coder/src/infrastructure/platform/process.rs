@@ -2361,6 +2361,11 @@ impl ProcessTree {
     }
 
     fn prepare_runtime(command: &mut Command) -> io::Result<Self> {
+        // Research branch only: reproduce the pre-1496 proof on native Windows.
+        #[cfg(test)]
+        if std::env::var_os("UNICA_RESEARCH_LEGACY_JOB_PROOF").is_some() {
+            return Self::prepare(command);
+        }
         let mut tree = Self::prepare(command)?;
         tree.exit_census = Some(windows_job_exit::Census::associate(tree.job)?);
         Ok(tree)
@@ -3754,6 +3759,136 @@ mod tests {
             output.stdout
         );
         assert!(output.stdout.contains("nul=2"), "{}", output.stdout);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_runtime_descendant_probe_distinguishes_zombie_from_live_process() {
+        const HARNESS_ENV: &str = "UNICA_TEST_RUNTIME_ZOMBIE_PROBE_HARNESS";
+        if std::env::var_os(HARNESS_ENV).is_none() {
+            let status = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "infrastructure::platform::process::tests::linux_runtime_descendant_probe_distinguishes_zombie_from_live_process",
+                    "--nocapture",
+                ])
+                .env(HARNESS_ENV, "1")
+                .status()
+                .expect("run the isolated Linux subreaper");
+            assert!(status.success(), "isolated Linux process probe failed");
+            return;
+        }
+
+        // Adoption is process-wide, so this test runs alone in another process.
+        // Only the runtime reaps its shell leader; we reap the adopted sleep by
+        // its exact PID after observing it with WNOWAIT.
+        assert_eq!(unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1) }, 0);
+        struct Fixture {
+            child: std::process::Child,
+            tree: super::RuntimeProcessTreeHandle,
+            descendant: Option<libc::pid_t>,
+        }
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = self
+                    .tree
+                    .terminate_and_reap_bounded(&mut self.child, Duration::from_secs(2));
+                if let Some(pid) = self.descendant.take() {
+                    // The owned group was killed above. Never signal a numeric
+                    // PID here, nor reap any child other than this descendant.
+                    let deadline = Instant::now() + Duration::from_secs(2);
+                    while unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) } == 0
+                        && Instant::now() < deadline
+                    {
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                }
+            }
+        }
+        let root = tempfile::tempdir().expect("create runtime fixture root");
+        let scenario = super::runtime_process_tree_test_scenario_for_test(root.path());
+        let mut command = Command::new(scenario.program());
+        command
+            .args(scenario.long_lived_args())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut tree = super::RuntimeProcessTreeHandle::prepare(&mut command).unwrap();
+        let mut child = command.spawn().expect("spawn the runtime-owned tree");
+        tree.attach(&mut child)
+            .expect("attach the runtime-owned tree");
+        let mut fixture = Fixture {
+            child,
+            tree,
+            descendant: None,
+        };
+        let probe = scenario
+            .wait_for_descendant(Duration::from_secs(5))
+            .expect("capture the live runtime descendant");
+        let pid: libc::pid_t = std::fs::read_to_string(&scenario.descendant_pid_path)
+            .unwrap()
+            .parse()
+            .unwrap();
+        fixture.descendant = Some(pid);
+        assert!(probe.is_alive().expect("observe the live descendant"));
+        assert!(!probe
+            .is_alive()
+            .map(|alive| !alive)
+            .expect("a live descendant is not terminal"));
+
+        fixture.tree.terminate(&mut fixture.child).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while matches!(
+            fixture.tree.poll(&mut fixture.child).unwrap(),
+            super::RuntimeProcessTreeState::Running
+        ) {
+            assert!(
+                Instant::now() < deadline,
+                "runtime did not prove tree death"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        let mut information: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        loop {
+            assert_eq!(
+                unsafe {
+                    libc::waitid(
+                        libc::P_PID,
+                        pid as libc::id_t,
+                        &mut information,
+                        libc::WEXITED | libc::WNOWAIT | libc::WNOHANG,
+                    )
+                },
+                0,
+                "the subreaper must own the exited descendant"
+            );
+            if unsafe { information.si_pid() } == pid {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "descendant did not become waitable"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(unsafe { information.si_pid() }, pid);
+        assert_eq!(information.si_code, libc::CLD_KILLED);
+        assert_eq!(unsafe { libc::kill(pid, 0) }, 0, "zombie PID still exists");
+        let zombie_reported_alive = probe.is_alive().expect("observe the retained zombie");
+        let zombie_reported_exited = probe
+            .is_alive()
+            .map(|alive| !alive)
+            .expect("observe exit without an additional wait window");
+        assert_eq!(unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) }, pid);
+        fixture.descendant = None;
+        assert!(!probe
+            .is_alive()
+            .expect("observe the same process after reap"));
+        assert!(probe.is_alive().map(|alive| !alive).unwrap());
+        assert!(
+            !zombie_reported_alive && zombie_reported_exited,
+            "a completed runtime descendant is a zombie, not a live process: alive={zombie_reported_alive}, exited={zombie_reported_exited}"
+        );
     }
 
     #[cfg(windows)]

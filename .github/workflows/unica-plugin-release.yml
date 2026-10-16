@@ -1,4 +1,4 @@
-name: Research 1496 Windows process signals
+name: Research v014 parallel runtime proofs
 
 on:
   workflow_dispatch:
@@ -7,11 +7,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: research-1496-windows-${{ github.ref }}
+  group: research-v014-runtime-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  windows-probes:
+  windows-proofs:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/1496-windows-focused-probes'
     runs-on: windows-latest
     timeout-minutes: 45
@@ -34,16 +34,92 @@ jobs:
       - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8
         with:
           tool: cargo-nextest@0.9.143
-      - name: Validate runtime Census and immediate terminal checks
+      - name: Compile native tests before semantic RED experiments
+        id: compile
         run: |
           set -euo pipefail
-          mkdir -p .session-temp/1496-native-baseline
-          cargo nextest run -p unica-coder --lib --profile large --retries 0 --test-threads 2 --no-tests=fail --success-output immediate -E 'test(/^infrastructure::platform::process::/) | test(/^infrastructure::runtime_jobs::tests::/)' 2>&1 | tee .session-temp/1496-native-baseline/tests.log
+          mkdir -p .session-temp/v014-native
+          cargo test -p unica-coder --lib --no-run
+      - name: Reproduce legacy terminal before descendant signal
+        run: |
+          set -euo pipefail
+          set +e
+          UNICA_RESEARCH_LEGACY_JOB_PROOF=1 cargo nextest run -p unica-coder --lib --profile large --retries 0 --test-threads 1 --no-tests=fail -E 'test(/^infrastructure::platform::process::tests::windows_runtime_terminal_waits_for_the_descendant_process_signal$/)' 2>&1 | tee .session-temp/v014-native/windows-1496-red.log
+          result=${PIPESTATUS[0]}
+          set -e
+          test "$result" -ne 0
+          grep -F 'runtime terminal preceded descendant process signal' .session-temp/v014-native/windows-1496-red.log
+      - name: Reproduce Windows maintenance observer failure
+        if: always() && steps.compile.outcome == 'success'
+        run: |
+          set -euo pipefail
+          set +e
+          cargo nextest run -p unica-coder --lib --profile large --retries 0 --test-threads 1 --no-tests=fail -E 'test(/^infrastructure::workspace_index::tests::registered_owner_observes_maintenance_while_its_file_is_exclusively_locked$/)' 2>&1 | tee .session-temp/v014-native/windows-1523-red.log
+          result=${PIPESTATUS[0]}
+          set -e
+          test "$result" -ne 0
+          grep -F 'the registered owner must observe its state without reopening locked bytes' .session-temp/v014-native/windows-1523-red.log
+      - name: Validate collector including delayed owner cohort and immediate terminal
+        if: always() && steps.compile.outcome == 'success'
+        run: |
+          set -euo pipefail
+          cargo nextest run -p unica-coder --lib --profile large --retries 0 --test-threads 2 --no-tests=fail --success-output immediate -E 'test(/^infrastructure::platform::process::/) | test(/^infrastructure::runtime_jobs::tests::/)' 2>&1 | tee .session-temp/v014-native/windows-1496-green.log
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
-          name: windows-1496-census
+          name: windows-v014-proofs
           path: |
-            .session-temp/1496-native-baseline/tests.log
+            .session-temp/v014-native/*.log
             target/nextest/large/junit.xml
+          if-no-files-found: warn
+
+  linux-proof:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/1496-windows-focused-probes'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_TERM_COLOR: never
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          save-if: false
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8
+        with:
+          tool: cargo-nextest@0.9.143
+      - name: Compile native Linux counterexample
+        run: |
+          set -euo pipefail
+          mkdir -p .session-temp/v014-native
+          cargo test -p unica-coder --lib --no-run
+      - name: Reproduce PID existence misclassifying a retained zombie
+        run: |
+          set -euo pipefail
+          set +e
+          cargo nextest run -p unica-coder --lib --profile queue --retries 0 --test-threads 1 --no-tests=fail -E 'test(/^infrastructure::platform::process::tests::linux_runtime_descendant_probe_distinguishes_zombie_from_live_process$/)' 2>&1 | tee .session-temp/v014-native/linux-1346-red.log
+          result=${PIPESTATUS[0]}
+          set -e
+          test "$result" -ne 0
+          grep -F 'a completed runtime descendant is a zombie, not a live process: alive=true, exited=false' .session-temp/v014-native/linux-1346-red.log
+      - name: Apply exact pidfd observation fix and validate native behavior
+        run: |
+          set -euo pipefail
+          git apply --recount scripts/research/1346-native-green.patch
+          cargo nextest run -p unica-coder --lib --profile queue --retries 0 --test-threads 2 --no-tests=fail --success-output immediate -E 'test(/^infrastructure::platform::process::tests::linux_runtime_descendant_probe_/) | test(/^infrastructure::runtime_jobs::tests::runtime_resource_tree_lease_contract$/) | test(/^infrastructure::runtime_jobs::tests::system_runtime_job_cancellation_reaps_the_owned_process_tree$/) | test(/^infrastructure::platform::process::tests::managed_process_tree_lifecycle_is_bounded$/)' 2>&1 | tee .session-temp/v014-native/linux-1346-green.log
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: linux-v014-proofs
+          path: |
+            .session-temp/v014-native/*.log
+            target/nextest/queue/junit.xml
           if-no-files-found: warn

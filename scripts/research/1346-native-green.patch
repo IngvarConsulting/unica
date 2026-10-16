@@ -1,0 +1,163 @@
+--- a/crates/unica-coder/src/infrastructure/platform/process.rs
++++ b/crates/unica-coder/src/infrastructure/platform/process.rs
+@@ -392,8 +392,10 @@
+ 
+ #[cfg(test)]
+ pub(crate) struct RuntimeProcessTreeTestProbe {
+-    #[cfg(not(windows))]
++    #[cfg(not(any(windows, target_os = "linux")))]
+     process_id: u32,
++    #[cfg(target_os = "linux")]
++    process: std::fs::File,
+     #[cfg(windows)]
+     process: ScopedWindowsHandle,
+ }
+@@ -401,6 +403,22 @@
+ #[cfg(test)]
+ impl RuntimeProcessTreeTestProbe {
+     fn capture(process_id: u32) -> io::Result<Self> {
++        #[cfg(target_os = "linux")]
++        {
++            use std::os::fd::FromRawFd;
++
++            let pid = libc::pid_t::try_from(process_id)
++                .map_err(|_| io::Error::other("process id is outside Linux pid range"))?;
++            // The fixture keeps its descendant alive until cancellation. The
++            // retained pidfd then observes that exact process even after reap.
++            let descriptor = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0_u32) };
++            if descriptor == -1 {
++                return Err(io::Error::last_os_error());
++            }
++            Ok(Self {
++                process: unsafe { std::fs::File::from_raw_fd(descriptor as i32) },
++            })
++        }
+         #[cfg(windows)]
+         {
+             use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE};
+@@ -415,18 +433,22 @@
+                 process: ScopedWindowsHandle(process),
+             })
+         }
+-        #[cfg(not(windows))]
++        #[cfg(not(any(windows, target_os = "linux")))]
+         {
+             Ok(Self { process_id })
+         }
+     }
+ 
+     pub(crate) fn is_alive(&self) -> io::Result<bool> {
++        #[cfg(target_os = "linux")]
++        {
++            runtime_process_pidfd_alive_for_test(&self.process)
++        }
+         #[cfg(windows)]
+         {
+             runtime_process_handle_alive_for_test(&self.process)
+         }
+-        #[cfg(not(windows))]
++        #[cfg(not(any(windows, target_os = "linux")))]
+         {
+             runtime_process_pid_alive_for_test(self.process_id)
+         }
+@@ -472,18 +494,25 @@
+     #[cfg(unix)]
+     {
+         let escaped_path = descendant_pid_path.to_string_lossy().replace('\'', "'\\''");
++        // Linux's GNU sleep does not expire while the fixture is paused before
++        // capturing its pidfd. Cancellation remains the sole lifetime owner.
++        let descendant_command = if cfg!(target_os = "linux") {
++            "sleep infinity"
++        } else {
++            "sleep 30"
++        };
+         RuntimeProcessTreeTestScenario {
+             program: PathBuf::from("/bin/sh"),
+             leader_with_descendant_args: vec![
+                 "-c".to_string(),
+                 format!(
+-                    "sleep 30 </dev/null >/dev/null 2>&1 & child=$!; printf '%s' \"$child\" > '{escaped_path}'"
++                    "{descendant_command} </dev/null >/dev/null 2>&1 & child=$!; printf '%s' \"$child\" > '{escaped_path}'"
+                 ),
+             ],
+             long_lived_args: vec![
+                 "-c".to_string(),
+                 format!(
+-                    "sleep 30 </dev/null >/dev/null 2>&1 & child=$!; printf '%s' \"$child\" > '{escaped_path}'; wait \"$child\""
++                    "{descendant_command} </dev/null >/dev/null 2>&1 & child=$!; printf '%s' \"$child\" > '{escaped_path}'; wait \"$child\""
+                 ),
+             ],
+             descendant_pid_path,
+@@ -523,7 +552,40 @@
+     }
+ }
+ 
+-#[cfg(all(test, unix))]
++#[cfg(all(test, target_os = "linux"))]
++fn runtime_process_pidfd_alive_for_test(process: &std::fs::File) -> io::Result<bool> {
++    use std::os::fd::AsRawFd;
++
++    let mut descriptor = libc::pollfd {
++        fd: process.as_raw_fd(),
++        events: libc::POLLIN,
++        revents: 0,
++    };
++    // Readiness means terminated, including an unreaped zombie; it does not
++    // depend on whether the old PID exists or has since been reused.
++    let ready = unsafe { libc::poll(&mut descriptor, 1, 0) };
++    if ready == -1 {
++        return Err(io::Error::last_os_error());
++    }
++    if descriptor.revents & (libc::POLLNVAL | libc::POLLERR) != 0 {
++        return Err(io::Error::other(format!(
++            "runtime process pidfd poll failed: events={:#x}",
++            descriptor.revents
++        )));
++    }
++    if ready == 0 {
++        return Ok(true);
++    }
++    if descriptor.revents & (libc::POLLIN | libc::POLLHUP) != 0 {
++        return Ok(false);
++    }
++    Err(io::Error::other(format!(
++        "unexpected runtime process pidfd events: {:#x}",
++        descriptor.revents
++    )))
++}
++
++#[cfg(all(test, unix, not(target_os = "linux")))]
+ fn runtime_process_pid_alive_for_test(process_id: u32) -> io::Result<bool> {
+     let process_id = i32::try_from(process_id)
+         .map_err(|_| io::Error::other("process id is outside Unix pid range"))?;
+@@ -3707,6 +3769,30 @@
+             output.stdout
+         );
+         assert!(output.stdout.contains("nul=2"), "{}", output.stdout);
++    }
++
++    #[cfg(target_os = "linux")]
++    #[test]
++    fn linux_runtime_descendant_probe_refuses_failed_pidfd_capture() {
++        assert!(super::RuntimeProcessTreeTestProbe::capture(0).is_err());
++        assert!(super::RuntimeProcessTreeTestProbe::capture(u32::MAX).is_err());
++    }
++
++    #[cfg(target_os = "linux")]
++    #[test]
++    fn linux_runtime_descendant_probe_does_not_report_poll_errors_as_death() {
++        use std::os::unix::fs::OpenOptionsExt;
++
++        // An owned O_PATH descriptor is valid but cannot be polled. This
++        // exercises POLLNVAL without closing or manufacturing a descriptor.
++        let process = std::fs::OpenOptions::new()
++            .read(true)
++            .custom_flags(libc::O_PATH | libc::O_CLOEXEC)
++            .open("/proc/self")
++            .unwrap();
++        let probe = super::RuntimeProcessTreeTestProbe { process };
++        assert!(probe.is_alive().is_err());
++        assert!(probe.is_alive().map(|alive| !alive).is_err());
+     }
+ 
+     #[cfg(target_os = "linux")]

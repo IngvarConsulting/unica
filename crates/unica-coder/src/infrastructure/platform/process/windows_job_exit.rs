@@ -834,14 +834,11 @@ mod tests {
             .coverage
             .members
             .values()
-            .filter(|w| matches!(w, Witness::Handle(_)))
+            .filter(|w| matches!(w, Witness::Handle(_) | Witness::GoneThenHandle(_)))
             .count();
         let gone = census.coverage.members.len() - handles;
         assert_eq!(accounting.ActiveProcesses, 0);
         assert_eq!(accounting.TotalProcesses, 129);
-        if complete {
-            assert_eq!(pids.len(), 129);
-        }
         println!(
             "{}",
             serde_json::json!({
@@ -849,8 +846,12 @@ mod tests {
                 "total_processes": accounting.TotalProcesses, "active_processes": accounting.ActiveProcesses,
                 "unique_pids": pids.len(), "handles": handles, "gone": gone,
                 "pending": census.pending.len(), "ready": complete,
-                "inference": "observations_only; conservative_gap_retains_ownership"
+                "inference": "native_delayed_owner_poll; no_helper_collector_barrier"
             })
+        );
+        assert!(
+            complete,
+            "completed child cohort retained an unfillable lifetime gap"
         );
     }
 }

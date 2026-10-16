@@ -2345,7 +2345,38 @@ mod tests {
     }
 
     #[test]
+    fn registered_owner_observes_maintenance_while_its_file_is_exclusively_locked() {
+        let context = test_context("maintenance-own-locked-observation");
+        let source_root = context.workspace_root.join("src");
+        fs::create_dir_all(&source_root).unwrap();
+        let path = super::lock_path(&context, &source_root).unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let lease = acquire_index_lock(&path, "build", &source_root)
+            .unwrap()
+            .expect("own the actual index lock");
+
+        for state in [
+            IndexMaintenanceStatus::Queued,
+            IndexMaintenanceStatus::Running,
+        ] {
+            *lease.observation.lock().unwrap() = MaintenanceObservation::Observed(state.clone());
+            assert!(lease.validate_ownership());
+            assert_eq!(
+                observed_maintenance(&path),
+                Some(state),
+                "the registered owner must observe its state without reopening locked bytes"
+            );
+        }
+        drop(lease);
+        assert!(observed_maintenance(&path).is_none());
+        cleanup(&context);
+    }
+
+    #[test]
     fn foreign_or_replaced_lock_never_proves_queued_or_running_maintenance() {
+        use crate::infrastructure::platform::filesystem::file_identity;
+        use std::io::Read;
+
         let context = test_context("maintenance-ownership");
         let source_root = context.workspace_root.join("src");
         fs::create_dir_all(&source_root).unwrap();
@@ -2354,14 +2385,28 @@ mod tests {
         let path = super::lock_path(&context, &source_root).unwrap();
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         write_lock_path(&path, BslIndexLock::new("build", &source_root)).unwrap();
-        let foreign = File::options().read(true).write(true).open(&path).unwrap();
-        foreign.lock_exclusive().unwrap();
         let before = fs::read(&path).unwrap();
+        let mut foreign = File::options().read(true).write(true).open(&path).unwrap();
+        let held_identity = file_identity(&foreign).unwrap();
+        foreign.lock_exclusive().unwrap();
         let report =
             service.start_isolated_build(&context, &source_root, &CancellationToken::new());
         assert_eq!(report.maintenance, IndexMaintenanceStatus::Unknown);
         assert!(runner.backgrounds.borrow().is_empty());
-        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(
+            file_identity(&File::open(&path).unwrap()).unwrap(),
+            held_identity,
+            "the foreign owner's named file must not be replaced"
+        );
+        // Windows enforces the byte-range lock against a newly opened reader,
+        // including another handle in this process. Inspect through its owner
+        // while keeping that lock held and restoring the owner's file cursor.
+        let position = foreign.stream_position().unwrap();
+        foreign.seek(SeekFrom::Start(0)).unwrap();
+        let mut after = Vec::new();
+        foreign.read_to_end(&mut after).unwrap();
+        foreign.seek(SeekFrom::Start(position)).unwrap();
+        assert_eq!(after, before);
         foreign.unlock().unwrap();
         drop(foreign);
         assert_eq!(
