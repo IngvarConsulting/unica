@@ -5,6 +5,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+#[cfg(target_os = "macos")]
+mod macos_acl;
+
 #[cfg(windows)]
 pub(crate) fn is_file_sharing_violation(error: &io::Error) -> bool {
     error.raw_os_error() == Some(windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION as i32)
@@ -2369,6 +2372,8 @@ pub(crate) fn verify_owner_only_acl(file: &fs::File) -> io::Result<()> {
             "state object must be owned by the current user and owner-only",
         ));
     }
+    #[cfg(target_os = "macos")]
+    macos_acl::verify_owner_only_acl(file, current_uid)?;
     Ok(())
 }
 
@@ -4248,9 +4253,9 @@ pub(crate) fn create_owner_only_directory_child(
     use std::os::unix::fs::PermissionsExt;
 
     let encoded_name = unix_child_name(name)?;
-    // SAFETY: the retained parent descriptor and validated child name remain live. 0700 is
-    // owner-only even before the process umask is applied, so there is no permissive creation
-    // window before the retained handle is normalized below.
+    // SAFETY: the retained parent descriptor and validated child name remain live.
+    // POSIX permissions start at 0700; the retained handle's verifier also rejects
+    // inherited ACL grants before the directory is returned to its caller.
     let status = unsafe { libc::mkdirat(parent.as_raw_fd(), encoded_name.as_ptr(), 0o700) };
     if status != 0 {
         return Err(io::Error::last_os_error());
@@ -4270,7 +4275,8 @@ pub(crate) fn create_owner_only_file_child(
 
     let name = unix_child_name(name)?;
     // SAFETY: parent and name remain live, and a successful result transfers one newly owned
-    // descriptor. Mode 0600 is private before umask filtering and O_NOFOLLOW rejects links.
+    // descriptor. POSIX permissions start at 0600 and O_NOFOLLOW rejects links;
+    // the retained handle's verifier checks inherited ACLs before returning a writer.
     let descriptor = unsafe {
         libc::openat(
             parent.as_raw_fd(),
