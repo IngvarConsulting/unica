@@ -1953,7 +1953,7 @@ async function pollLog() {
   try {
     const {entries} = await api("/api/log?since=" + logSeq);
     const log = $("log");
-    const stick = log.clientHeight > 0 && log.scrollTop + log.clientHeight >= log.scrollHeight - 8;
+    logViewport.beforeEntries();
     for (const entry of entries) {
       logSeq = entry.seq;
       const p = entry.payload || {};
@@ -1969,7 +1969,7 @@ async function pollLog() {
       highlightCodeBlocks(d);
       log.appendChild(d);
     }
-    if (stick) log.scrollTop = log.scrollHeight;
+    logViewport.afterEntries();
   } catch (error) { /* сервер остановлен */ }
   setTimeout(pollLog, 1000);
 }
@@ -2012,15 +2012,24 @@ function initLogPanel() {
   const save = () => { try { localStorage.setItem(key, JSON.stringify(state)); } catch { /* локальное состояние */ } };
   let scroll = {top: 0, bottom: true};
   let paintedLogHeight = 0;
+  let appliedScroll = null;
   let drag = null;
 
   function captureScroll() {
     const height = log.clientHeight;
-    // Изменение размера и вместившийся целиком журнал не меняют намерение прокрутки.
-    if (height > 0 && height === paintedLogHeight && log.scrollHeight > height + 8) scroll = {
-      top: log.scrollTop,
-      bottom: log.scrollHeight - height - log.scrollTop <= 8,
-    };
+    // Переразметка и наша ограниченная браузером прокрутка не означают выбор пользователя.
+    if (height <= 0 || height !== paintedLogHeight || log.scrollHeight <= height + 8) return;
+    if (appliedScroll && height === appliedScroll.height && Math.abs(log.scrollTop - appliedScroll.top) < 1) return;
+    appliedScroll = null;
+    scroll = {top: log.scrollTop, bottom: log.scrollHeight - height - log.scrollTop <= 8};
+  }
+  function applyScroll() {
+    const height = log.clientHeight;
+    if (height <= 0) return;
+    const max = Math.max(0, log.scrollHeight - height);
+    const top = scroll.bottom ? max : bound(scroll.top, 0, max);
+    appliedScroll = {top, height};
+    log.scrollTop = top;
   }
   function limits() {
     const horizontal = state.dock === "bottom" || state.dock === "top";
@@ -2075,7 +2084,7 @@ function initLogPanel() {
     });
     fitTree();
     paintedLogHeight = log.clientHeight;
-    if (paintedLogHeight > 0) log.scrollTop = scroll.bottom ? log.scrollHeight : scroll.top;
+    applyScroll();
     positionMenu();
   }
   function closeMenu(refocus = false) {
@@ -2183,6 +2192,10 @@ function initLogPanel() {
     change({[dimension]: dimension === "height" ? defaultHeight() : 420});
   });
   log.addEventListener("scroll", captureScroll, {passive: true});
+  log.addEventListener("toggle", () => {
+    appliedScroll = null;
+    captureScroll();
+  }, true);
   window.addEventListener("resize", positionMenu);
   window.addEventListener("scroll", positionMenu, true);
   const observer = new ResizeObserver(paint);
@@ -2190,6 +2203,10 @@ function initLogPanel() {
   closeMenu();
   paint();
   save();
+  return {
+    beforeEntries: captureScroll,
+    afterEntries: () => { if (scroll.bottom) applyScroll(); },
+  };
 }
 
 async function boot() {
@@ -2249,7 +2266,7 @@ splitter($("splitTree"), "--tree-w", "unica-observer.treeWidth",
     const low = Math.min(160, Math.max(80, rect.width * .35));
     return clamp(e.clientX - rect.left, low, Math.max(low, rect.width - 186));
   });
-initLogPanel();
+const logViewport = initLogPanel();
 
 initAppearance();
 boot();
