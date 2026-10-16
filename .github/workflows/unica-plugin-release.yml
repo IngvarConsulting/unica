@@ -14,7 +14,7 @@ on:
         required: false
         default: ''
       windows_candidate:
-        description: Exact commit for eight Windows maintenance cases and isolated recovery RED, empty skips
+        description: Exact commit for nine Windows maintenance cases and isolated recovery RED, empty skips
         type: string
         required: false
         default: ''
@@ -114,17 +114,17 @@ jobs:
           tool: cargo-nextest@0.9.143
       - name: Full native Windows clippy before recovery mutation
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - name: Eight native maintenance and locked-file cases, no retries or LEAK
+      - name: Nine native maintenance and locked-file cases, no retries or LEAK
         run: |
           set -euo pipefail
           mkdir -p .session-temp/v014-native
-          filter='test(/^infrastructure::workspace_index::tests::(registered_owner_observes_maintenance_while_its_file_is_exclusively_locked|registered_owner_rejects_in_place_record_substitution_without_overwriting_it|poisoned_owner_never_proves_maintenance_or_writes_a_release_record|foreign_or_replaced_lock_never_proves_queued_or_running_maintenance)$/) | test(/^infrastructure::workspace_services::tests::(maintenance_queue_execution_and_failure_keep_the_published_index_readable|real_index_queue_and_worker_state_reach_serialized_search_and_navigation)$/) | test(/^infrastructure::daemon::runtime_v5::tests::reopened_retirement_rejects_old_authority_and_preserves_indexes_until_confirmed_delete$/) | test(/^infrastructure::platform::filesystem::tests::empty_owned_snapshot_preserves_bytes_and_rejects_unproven_lock_files$/)'
+          filter='test(/^infrastructure::workspace_index::tests::(registered_owner_observes_maintenance_while_its_file_is_exclusively_locked|registered_owner_rejects_in_place_record_substitution_without_overwriting_it|poisoned_owner_never_proves_maintenance_or_writes_a_release_record|foreign_or_replaced_lock_never_proves_queued_or_running_maintenance)$/) | test(/^infrastructure::workspace_services::tests::(maintenance_queue_execution_and_failure_keep_the_published_index_readable|real_index_queue_and_worker_state_reach_serialized_search_and_navigation)$/) | test(/^infrastructure::daemon::runtime_v5::tests::reopened_retirement_rejects_old_authority_and_preserves_indexes_until_confirmed_delete$/) | test(/^infrastructure::platform::filesystem::tests::(empty_owned_snapshot_preserves_bytes_and_rejects_unproven_lock_files|file_lock_contention_classifier_preserves_real_errors)$/)'
           log=.session-temp/v014-native/windows-1523-green.log
           cargo nextest run -p unica-coder --lib --profile queue --retries 0 --test-threads 2 --no-tests=fail --color never --success-output immediate -E "$filter" 2>&1 | tee "$log"
-          test "$(grep -cE '^[[:space:]]*PASS \[' "$log")" -eq 8
-          grep -Eq 'Summary .*8 tests run: 8 passed,' "$log"
+          test "$(grep -cE '^[[:space:]]*PASS \[' "$log")" -eq 9
+          grep -Eq 'Summary .*9 tests run: 9 passed,' "$log"
           if grep -Eq '^[[:space:]]*(LEAK|TRY|FAIL|TIMEOUT)([[:space:]]|$)' "$log"; then
-            echo 'The eight-case GREEN slice must have no failures, retries or leaked handles.' >&2
+            echo 'The nine-case GREEN slice must have no failures, retries or leaked handles.' >&2
             exit 1
           fi
           cp target/nextest/queue/junit.xml .session-temp/v014-native/windows-1523-green-junit.xml
@@ -134,7 +134,7 @@ jobs:
           ref: ${{ github.sha }}
           path: research-fixtures
           persist-credentials: false
-      - name: Expected recovery refusal RED, isolated after the eight GREEN cases
+      - name: Expected recovery refusal RED, isolated after the nine GREEN cases
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
@@ -162,7 +162,7 @@ jobs:
           fi
           cp target/nextest/queue/junit.xml .session-temp/v014-native/windows-1523-recovery-red-junit.xml
           {
-            echo 'Eight-case Windows maintenance GREEN slice passed without retries or LEAK.'
+            echo 'Nine-case Windows maintenance GREEN slice passed without retries or LEAK.'
             echo 'The separate recovery experiment reproduced its exact expected assertion failure; recovery is still unresolved.'
             echo 'This job does not accept the other three original Windows symptoms or the full Windows large profile.'
           } >> "$GITHUB_STEP_SUMMARY"
