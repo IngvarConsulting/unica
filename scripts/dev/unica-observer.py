@@ -1073,6 +1073,22 @@ dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margi
 dt { color: var(--muted); }
 dd { margin: 0; min-width: 0; }
 pre { background: var(--code); padding: 8px; border-radius: 6px; overflow: auto; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 4px 0; max-height: 360px; }
+.syntax-keyword { color: #762b9b; font-weight: 600; }
+.syntax-string { color: #9d3516; }
+.syntax-comment { color: #526b4c; }
+.syntax-number { color: #175d91; }
+.syntax-property { color: #006475; }
+.syntax-literal { color: #984500; }
+.syntax-directive { color: #755600; }
+@media (prefers-color-scheme: dark) {
+  .syntax-keyword { color: #d2a8ff; }
+  .syntax-string { color: #f0b58f; }
+  .syntax-comment { color: #91af83; }
+  .syntax-number { color: #a5d6a7; }
+  .syntax-property { color: #9cdcfe; }
+  .syntax-literal { color: #79b8ff; }
+  .syntax-directive { color: #e5c07b; }
+}
 table { border-collapse: collapse; width: 100%; font-size: 13px; }
 td, th { border-bottom: 1px solid var(--line); padding: 4px 6px; text-align: left; vertical-align: top; }
 td code { font-size: 12px; }
@@ -1120,6 +1136,55 @@ async function api(path, body) {
   const payload = await response.json();
   if (!response.ok) throw new Error(payload.error || response.statusText);
   return payload;
+}
+
+// Подсветка меняет только представление: исходные символы остаются в text nodes.
+const BSL_KEYWORDS = new Set((
+  "если тогда иначеесли иначе конецесли для каждого из по пока цикл конеццикла прервать продолжить " +
+  "процедура конецпроцедуры функция конецфункции перем экспорт возврат попытка исключение конецпопытки " +
+  "вызватьисключение новый выполнить добавитьобработчик удалитьобработчик перейти и или не знач асинх ждать " +
+  "if then elsif else endif for each in to while do enddo break continue procedure endprocedure function endfunction " +
+  "var export return try except endtry raise new execute addhandler removehandler goto and or not val async await"
+).split(" "));
+const BSL_LITERALS = new Set(["истина", "ложь", "неопределено", "true", "false", "undefined", "null"]);
+
+function syntaxTokens(text, language) {
+  const pattern = language === "bsl"
+    ? /(?<comment>\/\/[^\r\n]*)|(?<string>"(?:[^"]|"")*"|'[^'\r\n]*')|(?<directive>[#&][\p{L}_][\p{L}\p{N}_]*)|(?<number>\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)|(?<word>[\p{L}_][\p{L}\p{N}_]*)/gu
+    : /(?<property>"(?:\\[\s\S]|[^"\\])*")(?=\s*:)|(?<string>"(?:\\[\s\S]|[^"\\])*")|(?<number>-?\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)|(?<literal>\b(?:true|false|null)\b)/g;
+  const tokens = [];
+  let end = 0;
+  for (const match of text.matchAll(pattern)) {
+    if (match.index > end) tokens.push({text: text.slice(end, match.index)});
+    let kind = Object.keys(match.groups).find((key) => match.groups[key] !== undefined);
+    if (kind === "word") {
+      const word = match[0].toLowerCase();
+      kind = BSL_KEYWORDS.has(word) ? "keyword" : BSL_LITERALS.has(word) ? "literal" : undefined;
+    }
+    tokens.push({text: match[0], kind});
+    end = match.index + match[0].length;
+  }
+  if (end < text.length) tokens.push({text: text.slice(end)});
+  return tokens;
+}
+
+function highlightCodeBlocks(container, sourceText) {
+  for (const pre of container.querySelectorAll("pre")) {
+    const source = pre.classList.contains("source-text");
+    const language = source ? "bsl" : "json";
+    const text = source && typeof sourceText === "string" ? sourceText : pre.textContent;
+    const code = document.createElement("code");
+    for (const token of syntaxTokens(text, language)) {
+      if (token.kind) {
+        const span = document.createElement("span");
+        span.className = `syntax-${token.kind}`;
+        span.textContent = token.text;
+        code.appendChild(span);
+      } else code.appendChild(document.createTextNode(token.text));
+    }
+    pre.dataset.language = language;
+    pre.replaceChildren(code);
+  }
 }
 
 // Кеш хранит обещание: раскрытие и выбор одного узла делят один вызов,
@@ -1318,6 +1383,7 @@ function renderNode(at, answer) {
   html += `<section id="detail"></section>`;
   html += `<section><h3>ответ view</h3><details><summary>сырой JSON</summary><pre>${esc(pretty(answer))}</pre></details></section>`;
   node.innerHTML = html;
+  highlightCodeBlocks(node, answer.sourceText);
   node.querySelectorAll("a[data-at]").forEach((a) => a.onclick = (event) => { event.preventDefault(); select(a.dataset.at); });
   node.querySelectorAll("button[data-contract]").forEach((b) => b.onclick = () => showContract(nodeAt, data.can[+b.dataset.contract]));
   node.querySelectorAll("button[data-preview]").forEach((b) => b.onclick = () => showPreview(nodeAt, data.can[+b.dataset.preview]));
@@ -1352,6 +1418,7 @@ async function showContract(nodeAt, entry) {
     const props = (result.data || {}).props;
     detail.innerHTML = `<h3>Контракт ${esc(entry.op)}</h3><p class="at">${esc(address)} <button id="openCan">открыть узел</button> ${timing(answer)}</p>` +
       (result.ok ? `<pre>${esc(pretty(props))}</pre>` : `<p class="err">отказ: ${esc(result.summary)}</p><pre>${esc(pretty({diagnostics: result.diagnostics, next: result.next}))}</pre>`);
+    highlightCodeBlocks(detail);
     $("openCan").onclick = () => select(address);
   } catch (error) { detail.innerHTML += `<p class="err">${esc(error.message)}</p>`; }
 }
@@ -1414,6 +1481,7 @@ async function showPreview(nodeAt, entry) {
       const result = answer.result || {};
       out.innerHTML = (result.ok ? `<p class="yes">план построен: ${esc(result.summary)} ${timing(answer)}</p>` : `<p class="err">отказ: ${esc(result.summary)} ${timing(answer)}</p>`) +
         nextButtons(result) + `<pre>${esc(pretty(result))}</pre>`;
+      highlightCodeBlocks(out, answer.sourceText);
       bindNext(out, result);
     } catch (error) { stop(); out.innerHTML = `<p class="err">${esc(error.message)}</p>`; }
   };
@@ -1578,6 +1646,7 @@ async function callTool(tool) {
     const unchecked = (answer.schemaUnchecked || []).length ? `<p class="note">проверка аргументов по схеме неполная: не проверяются ${esc(answer.schemaUnchecked.join(", "))}</p>` : "";
     out.innerHTML = (result.ok ? `<p class="yes">ok: ${esc(result.summary || "")} ${timing(answer)}</p>` : `<p class="err">отказ: ${esc(result.summary || "")} ${timing(answer)}</p>`) +
       unchecked + nextButtons(result) + `<pre>${esc(pretty(result))}</pre>`;
+    highlightCodeBlocks(out, answer.sourceText);
     bindNext(out, result);
   } catch (error) { stop(); out.innerHTML = `<p class="err">${esc(error.message)}</p>`; }
 }
@@ -1600,6 +1669,7 @@ async function pollLog() {
       const d = document.createElement("details");
       const time = new Date(entry.time * 1000).toLocaleTimeString();
       d.innerHTML = `<summary><span class="dir-${entry.dir}">${entry.dir === "out" ? "→" : "←"}</span> ${esc(time)} ${esc(what + id + tool + at + progress + took)}</summary><pre>${esc(pretty(p))}</pre>`;
+      highlightCodeBlocks(d);
       log.appendChild(d);
     }
     if (stick) log.scrollTop = log.scrollHeight;
