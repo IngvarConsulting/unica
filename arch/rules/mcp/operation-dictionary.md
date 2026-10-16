@@ -41,6 +41,8 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/v13_read_modes.rs::operation_dictionary_tests::a_retired_operation_route_follows_roles_and_inherited_content
   - crates/unica-coder/src/domain/apply.rs::a_renamed_operation_target_respects_the_item_role
   - crates/unica-coder/src/domain/operation_contract.rs::role_contracts_publish_the_entry_shape
+  - crates/unica-coder/src/infrastructure/native_operations/apply_families/form_resource.rs::role_create_contract_preserves_typed_names_and_rejects_unknown_args
+  - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::every_role_family_contract_builds_a_preview_without_source_writes
   - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::retired_subnode_arguments_route_next_to_the_subnode_address
   - crates/unica-coder/src/infrastructure/native_operations/apply_families/form_resource.rs::right_set_grants_lists_and_restricts_rights_on_the_staged_document
   - crates/unica-coder/src/infrastructure/native_operations/apply_families/mod.rs::an_area_is_written_only_where_it_exists_and_created_only_by_area_add

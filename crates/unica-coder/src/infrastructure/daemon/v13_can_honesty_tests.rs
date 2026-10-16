@@ -1175,7 +1175,7 @@ fn a_misplaced_operation_routes_next_to_the_node_where_it_applies() {
             "role.create",
             json!({"values": {"name": "Reader"}}),
             "cf:Configuration",
-            false,
+            true,
         ),
     ] {
         let request = apply_request(at, op, args);
@@ -2311,4 +2311,99 @@ fn interface_slices_publish_only_addresses_view_opens() {
         walk(&fixture.workspace, at).unroutable,
         Vec::<String>::new()
     );
+}
+
+/// Role creation and rights use the same contracts that the productive
+/// planner checks. Preview keeps both source sets unchanged.
+#[test]
+fn every_role_family_contract_builds_a_preview_without_source_writes() {
+    let (_root, workspace) = two_set_workspace();
+    let before = tree_digest(&workspace.join("src"));
+    let runtime = V5CanonicalInvocationRuntime::new(
+        Arc::new(CanonicalV13ReadService::default()),
+        Arc::new(TokioClock),
+    );
+    for (at, operation, args) in [
+        ("sales:Configuration", "role.create", None),
+        (
+            "sales:Role.SalesReader",
+            "right.add",
+            Some(
+                json!({"items":[{"object":"Report.АнализВерсийОбъектов","rights":{"Read":true}}]}),
+            ),
+        ),
+        (
+            "sales:Role.SalesReader.Right.Catalog_Валюты",
+            "right.set",
+            Some(json!({"values":{"right":"View","value":false}})),
+        ),
+    ] {
+        let detailed = invoke_on(
+            &runtime,
+            &workspace,
+            ToolIdentity::View,
+            json!({"at":format!("{at}.Can.{operation}")}),
+        );
+        assert!(
+            detailed.ok,
+            "implemented {operation} must publish its contract at {at}: {detailed:?}"
+        );
+        let data = detailed.data.unwrap();
+        assert_eq!(data["kind"], "Can");
+        let contract = &data["props"]["contract"];
+        assert_eq!(contract["argsSchema"]["additionalProperties"], false);
+        let args = args.unwrap_or_else(|| contract["exampleArgs"].clone());
+        assert!(args.get("at").is_none());
+        let planned = invoke_on(
+            &runtime,
+            &workspace,
+            ToolIdentity::Apply,
+            json!({"at":at,"ops":[{"op":operation,"args":args}]}),
+        );
+        assert!(planned.ok, "{operation}: {planned:?}");
+        assert!(
+            planned
+                .data
+                .as_ref()
+                .and_then(|data| data.get("executionToken"))
+                .and_then(Value::as_str)
+                .is_some_and(|token| !token.is_empty()),
+            "{planned:?}"
+        );
+        assert_eq!(tree_digest(&workspace.join("src")), before);
+    }
+    let batch = invoke_on(
+        &runtime,
+        &workspace,
+        ToolIdentity::Apply,
+        json!({"at":"sales:Configuration","ops":[
+            {"op":"role.create","args":{"values":{"name":"RoleCanBatch"}}},
+            {"op":"right.add","args":{"at":"sales:Role.RoleCanBatch","items":[
+                {"object":"Catalog.Валюты","rights":{"Read":true,"View":true}}
+            ]}}
+        ]}),
+    );
+    assert!(batch.ok, "{batch:?}");
+    assert!(
+        batch
+            .data
+            .as_ref()
+            .and_then(|data| data["executionToken"].as_str())
+            .is_some_and(|token| !token.is_empty()),
+        "{batch:?}"
+    );
+    assert_eq!(tree_digest(&workspace.join("src")), before);
+    assert!(!workspace.join("src/sales/Roles/ContractRole.xml").exists());
+    assert!(!workspace.join("src/sales/Roles/RoleCanBatch.xml").exists());
+    for at in [
+        "sales:Can.role.create",
+        "sales:Конфигурация.Can.role.create",
+    ] {
+        let detailed = invoke_on(&runtime, &workspace, ToolIdentity::View, json!({"at":at}));
+        assert!(detailed.ok, "{at}: {detailed:?}");
+        assert_eq!(
+            detailed.data.unwrap()["at"],
+            "sales:Configuration.Can.role.create"
+        );
+    }
 }

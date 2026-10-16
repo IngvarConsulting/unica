@@ -751,10 +751,36 @@ impl OperationContract {
 }
 
 impl OperationContract {
-    /// Права роли (#1354): `right.add` создаёт записи на роли, `right.set`
-    /// меняет одно право существующей записи по её адресу.
+    /// Создание роли и её права: `role.create` на конфигурации, `right.add`
+    /// на роли, `right.set` на существующей записи прав.
     pub(crate) fn role(op: &str) -> Option<Self> {
         let (schema, target, effect, notes, example_args) = match op {
+            "role.create" => (
+                object(
+                    &[
+                        ("at", text(true)),
+                        (
+                            "values",
+                            object(
+                                &[(
+                                    "name",
+                                    json!({
+                                        "type":"string",
+                                        "pattern":r"^\s*[_A-Za-zА-Яа-яЁё][_A-Za-zА-Яа-яЁё0-9]*\s*$",
+                                        "description":"A new 1C role identifier; surrounding whitespace is trimmed."
+                                    }),
+                                )],
+                                &["name"],
+                            ),
+                        ),
+                    ],
+                    &["values"],
+                ),
+                "The source-set configuration root: <source-set>:Configuration.",
+                "Create a role descriptor, its empty Rights.xml and its registration in Configuration.xml.",
+                "The name must be unused. Add initial rights with right.add at Role.<Name> in the same batch. Preview returns an execution token; execute it separately to write the source.",
+                json!({"values":{"name":"ContractRole"}}),
+            ),
             "right.add" => (
                 object(
                     &[
@@ -1076,18 +1102,53 @@ mod tests {
     #[test]
     fn role_contracts_publish_the_entry_shape() {
         let registry = OperationRegistry::closed();
-        for op in ["right.add", "right.set"] {
-            let contract = registry.lookup(op).unwrap().argument_contract().unwrap();
+        for descriptor in registry
+            .descriptors()
+            .iter()
+            .filter(|descriptor| descriptor.family() == OperationFamily::Role)
+        {
+            let op = descriptor.name();
+            let contract = descriptor
+                .argument_contract()
+                .expect("every implemented Role operation publishes its argument contract");
             assert!(
                 contract.normalize(&contract.example_args, "args").is_ok(),
                 "{op}"
             );
         }
-        assert!(registry
-            .lookup("role.create")
-            .unwrap()
-            .argument_contract()
-            .is_none());
+        let create = OperationContract::role("role.create").unwrap();
+        for name in [
+            "Reader",
+            "МенеджерПродаж",
+            "_Reader2",
+            " Reader ",
+            "\tЧитатель\r\n",
+            "\u{a0}Ёж\u{a0}",
+        ] {
+            assert!(
+                create
+                    .normalize(&json!({"values":{"name":name}}), "args")
+                    .is_ok(),
+                "{name:?}"
+            );
+        }
+        for values in [
+            json!({}),
+            json!({"name":""}),
+            json!({"name":"  "}),
+            json!({"name":1}),
+            json!({"name":null}),
+            json!({"name":"1Reader"}),
+            json!({"name":"Role.Reader"}),
+            json!({"name":"Reader/Other"}),
+            json!({"name":"Reader", "synonym":"Ignored"}),
+        ] {
+            assert!(
+                create.normalize(&json!({"values":values}), "args").is_err(),
+                "{values}"
+            );
+        }
+        assert!(create.example_args.get("at").is_none());
         let add = OperationContract::role("right.add").unwrap();
         for (args, path) in [
             (json!({"items":[]}), "args.items"),

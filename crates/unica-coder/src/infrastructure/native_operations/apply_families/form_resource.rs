@@ -4807,6 +4807,66 @@ mod tests {
     }
 
     #[test]
+    fn role_create_contract_preserves_typed_names_and_rejects_unknown_args() {
+        let fixture = ApplySeamFixture::new();
+        let contract = crate::domain::operation_contract::OperationContract::role("role.create")
+            .expect("the productive creation grammar is published");
+        for (input, expected) in [
+            ("Reader", "Reader"),
+            ("МенеджерПродаж", "МенеджерПродаж"),
+            ("_Reader2", "_Reader2"),
+            (" Reader ", "Reader"),
+            ("\tЧитатель\r\n", "Читатель"),
+            ("\u{a0}Ёж\u{a0}", "Ёж"),
+        ] {
+            let args = json!({"at":"main:Configuration","values":{"name":input}});
+            assert!(
+                contract.normalize(&args, "ops[0].args").is_ok(),
+                "{input:?}"
+            );
+            let parsed =
+                parse_form_resource_plan_operation("role.create", &args, 0, &fixture.binding)
+                    .unwrap_or_else(|error| panic!("{input:?}: {error:?}"));
+            let super::FormResourcePlanKind::CreateRole { name } = parsed.kind else {
+                panic!("role.create must produce a typed role creation");
+            };
+            assert_eq!(name, expected);
+        }
+        for (args, expected_path) in [
+            (json!({"values":{}}), "ops[0].args.values.name"),
+            (json!({"values":{"name":" "}}), "ops[0].args.values.name"),
+            (
+                json!({"values":{"name":"Role.Reader"}}),
+                "ops[0].args.values.name",
+            ),
+            (json!({"values":{"name":1}}), "ops[0].args.values.name"),
+            (json!({"values":{"name":null}}), "ops[0].args.values.name"),
+            (json!({"values":null}), "ops[0].args.values"),
+            (json!({"values":[]}), "ops[0].args.values"),
+            (json!({"values":"Reader"}), "ops[0].args.values"),
+            (
+                json!({"values":{"name":"Reader","synonym":"Ignored"}}),
+                "ops[0].args.values.synonym",
+            ),
+            // Previously ignored top-level fields are intentionally closed by #1468.
+            (
+                json!({"values":{"name":"Reader"},"ignored":true}),
+                "ops[0].args.ignored",
+            ),
+        ] {
+            let mut args = args;
+            args["at"] = json!("main:Configuration");
+            let schema_error = contract.normalize(&args, "ops[0].args").unwrap_err();
+            assert_eq!(schema_error.path, expected_path, "{args}");
+            let error =
+                parse_form_resource_plan_operation("role.create", &args, 0, &fixture.binding)
+                    .expect_err("closed typed creation arguments");
+            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{args}");
+            assert_eq!(error.path(), Some(expected_path), "{args}");
+        }
+    }
+
+    #[test]
     fn role_create_stages_descriptor_rights_and_registration_deterministically() {
         let fixture = ApplySeamFixture::new();
         let plan = |fixture: &ApplySeamFixture| {
