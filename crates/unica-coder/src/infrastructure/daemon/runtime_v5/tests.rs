@@ -6470,6 +6470,39 @@ fn accumulated_retirement_store(hooks: Arc<dyn V5RuntimeHooks>) -> AccumulatedRe
     }
 }
 
+/// Include the exact empty marker files of the four live owners on Windows;
+/// all stored records and every unproven file still require a byte snapshot.
+fn retirement_disk_snapshot(
+    runtime: &V5ReceiptRuntime,
+    state: &DaemonStateDirectory,
+) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
+    let owners = std::collections::BTreeMap::from([
+        (
+            std::path::PathBuf::from(".receipt-authority/.receipt-authority.lock"),
+            runtime._stable_authority.ownership_file_identity_for_test(),
+        ),
+        (
+            std::path::PathBuf::from("receipts/.receipt-ledger.lock"),
+            runtime.receipt_owner_identity_for_test,
+        ),
+        (
+            std::path::PathBuf::from("tasks/.task-store-v5.lock"),
+            runtime
+                .task_projection
+                .task_store
+                .ownership_file_identity_for_test(),
+        ),
+        (
+            std::path::PathBuf::from("task-lifecycle-links/.task-lifecycle-link-v5.lock"),
+            runtime
+                .task_projection
+                .lifecycle_links
+                .ownership_file_identity_for_test(),
+        ),
+    ]);
+    crate::test_support::tree_snapshot_with_empty_owned_files(state.path(), &owners)
+}
+
 /// Reopening invalidates the previous owner's permission before any new one
 /// is issued. A failed deletion keeps the exact pending link and both indexes.
 #[test]
@@ -6539,7 +6572,7 @@ fn reopened_retirement_rejects_old_authority_and_preserves_indexes_until_confirm
         .task_projection
         .lifecycle_links
         .memory_catalog_for_test();
-    let disk_before = crate::test_support::tree_snapshot(state.path());
+    let disk_before = retirement_disk_snapshot(&runtime, &state);
     match runtime.task_projection.delete_terminal_authorized(
         &old,
         clock.now_epoch_millis(),
@@ -6578,10 +6611,7 @@ fn reopened_retirement_rejects_old_authority_and_preserves_indexes_until_confirm
             .memory_catalog_for_test(),
         links_before
     );
-    assert_eq!(
-        crate::test_support::tree_snapshot(state.path()),
-        disk_before
-    );
+    assert_eq!(retirement_disk_snapshot(&runtime, &state), disk_before);
 
     let fresh = runtime
         .task_projection

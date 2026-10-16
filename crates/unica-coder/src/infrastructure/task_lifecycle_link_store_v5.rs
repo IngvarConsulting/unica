@@ -901,6 +901,13 @@ pub(crate) struct TaskLifecycleLinkStoreV5 {
 }
 
 impl TaskLifecycleLinkStoreV5 {
+    #[cfg(test)]
+    pub(crate) fn ownership_file_identity_for_test(
+        &self,
+    ) -> crate::infrastructure::platform::filesystem::FileIdentity {
+        file_identity(&self._ownership_lock).expect("retained Task lifecycle owner identity")
+    }
+
     #[cfg(feature = "receipt-ledger-test-support")]
     pub(crate) fn seed_task_terminal_bounds_bulk_for_test(
         &self,

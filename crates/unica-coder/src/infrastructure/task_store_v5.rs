@@ -71,6 +71,13 @@ pub(crate) struct FileInvocationStoreV5 {
 }
 
 impl FileInvocationStoreV5 {
+    #[cfg(test)]
+    pub(crate) fn ownership_file_identity_for_test(
+        &self,
+    ) -> crate::infrastructure::platform::filesystem::FileIdentity {
+        file_identity(&self._ownership_lock).expect("retained Task store owner identity")
+    }
+
     #[cfg(feature = "receipt-ledger-test-support")]
     pub(crate) fn seed_exact_records_bulk_for_test(
         &self,

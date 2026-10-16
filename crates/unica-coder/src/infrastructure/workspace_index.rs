@@ -3,8 +3,9 @@ use crate::domain::code_intelligence::IndexMaintenanceEvidence;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
 use crate::infrastructure::platform::filesystem::{
-    metadata_is_link_or_reparse_point, path_starts_with_host_root, provider_state_path_identity,
-    replace_file_atomically, sync_parent_directory, RetainedDirectoryCapability,
+    file_identity, metadata_is_link_or_reparse_point, path_starts_with_host_root,
+    provider_state_path_identity, replace_file_atomically, sync_parent_directory,
+    RetainedDirectoryCapability,
 };
 use crate::infrastructure::platform::{
     ensure_truncation_diagnostics, ManagedChild, ManagedCommand, ManagedOutput,
@@ -21,9 +22,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
-use std::io::{ErrorKind, Seek, SeekFrom, Write};
+use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -927,15 +928,65 @@ fn default_lock_state() -> String {
 #[derive(Debug)]
 pub struct IndexLockLease {
     path: PathBuf,
+    lock_id: String,
+    owner: Arc<Mutex<OwnedIndexLock>>,
+    observation: MaintenanceObserver,
+}
+
+#[derive(Debug)]
+struct OwnedIndexLock {
     file: File,
     lock: BslIndexLock,
     released: bool,
-    observation: MaintenanceObserver,
+}
+
+impl OwnedIndexLock {
+    fn named_identity_matches(&self, path: &Path) -> std::io::Result<bool> {
+        let metadata = fs::symlink_metadata(path)?;
+        if !metadata.is_file() || metadata_is_link_or_reparse_point(&metadata) {
+            return Ok(false);
+        }
+        let named = File::open(path)?;
+        Ok(file_identity(&named)? == file_identity(&self.file)?)
+    }
+
+    fn current_record(&mut self, path: &Path, lock_id: &str) -> std::io::Result<BslIndexLock> {
+        if self.released || !self.named_identity_matches(path)? {
+            return Err(std::io::Error::other(
+                "index lock owner no longer names its file",
+            ));
+        }
+        // Windows mandatory locking rejects reads through a new File. Use the
+        // actual lock owner, serialized with heartbeat/release writes. Cloned
+        // handles and Windows seek_read share or alter the owner's cursor.
+        let position = self.file.stream_position()?;
+        let mut text = String::new();
+        let read = self
+            .file
+            .seek(SeekFrom::Start(0))
+            .and_then(|_| self.file.read_to_string(&mut text));
+        let restored = self.file.seek(SeekFrom::Start(position));
+        read?;
+        restored?;
+        let current: BslIndexLock = serde_json::from_str(&text)
+            .map_err(|error| std::io::Error::new(ErrorKind::InvalidData, error))?;
+        if current.lock_id != lock_id
+            || !current.is_active()
+            || !self.named_identity_matches(path)?
+        {
+            return Err(std::io::Error::other("index lock owner record changed"));
+        }
+        Ok(current)
+    }
+
+    fn write_record(&mut self) -> Result<(), String> {
+        write_lock_file_to_open(&mut self.file, &self.lock)
+    }
 }
 
 impl IndexLockLease {
     fn lock_id(&self) -> &str {
-        self.lock.lock_id.as_str()
+        &self.lock_id
     }
 
     fn registered_ownership_is_current(&self) -> bool {
@@ -943,20 +994,41 @@ impl IndexLockLease {
             .lock()
             .ok()
             .and_then(|locks| locks.get(&self.path).cloned())
-            .is_some_and(|entry| entry.lock_id == self.lock.lock_id)
+            .is_some_and(|entry| {
+                entry.lock_id == self.lock_id && entry.owner.ptr_eq(&Arc::downgrade(&self.owner))
+            })
     }
 
     fn refresh(&mut self, child_pid: u32) -> bool {
-        if !self.validate_ownership() {
+        if !self.registered_ownership_is_current() {
             return false;
         }
-        self.lock.updated_at = now_secs();
-        self.lock.child_pid = Some(child_pid);
-        write_lock_file_to_open(&mut self.file, &self.lock).is_ok()
+        let Ok(mut owner) = self.owner.lock() else {
+            return false;
+        };
+        let Ok(current) = owner.current_record(&self.path, &self.lock_id) else {
+            return false;
+        };
+        owner.lock = current;
+        owner.lock.updated_at = now_secs();
+        owner.lock.child_pid = Some(child_pid);
+        owner.write_record().is_ok() && owner.named_identity_matches(&self.path).unwrap_or(false)
     }
 
     fn release(&mut self) {
-        if self.released {
+        let mut owner = match self.owner.lock() {
+            Ok(owner) => owner,
+            Err(poisoned) => {
+                // Cleanup may unlock a poisoned owner, but must not write a
+                // record whose authority could not be validated.
+                unregister_active_lock(&self.path, self.lock_id());
+                let mut owner = poisoned.into_inner();
+                owner.released = true;
+                let _ = owner.file.unlock();
+                return;
+            }
+        };
+        if owner.released {
             return;
         }
         {
@@ -974,25 +1046,29 @@ impl IndexLockLease {
                 *observation = MaintenanceObservation::Observed(IndexMaintenanceStatus::Unknown);
             }
         }
-        let still_owned = self.validate_ownership();
+        let current = self
+            .registered_ownership_is_current()
+            .then(|| owner.current_record(&self.path, &self.lock_id).ok())
+            .flatten();
         unregister_active_lock(&self.path, self.lock_id());
-        if still_owned {
-            self.lock.mark_released();
-            let _ = write_lock_file_to_open(&mut self.file, &self.lock);
+        if let Some(current) = current {
+            owner.lock = current;
+            owner.lock.mark_released();
+            let _ = owner.write_record();
         }
-        let _ = self.file.unlock();
-        self.released = true;
+        owner.released = true;
+        let _ = owner.file.unlock();
     }
 
     fn validate_ownership(&self) -> bool {
         let registered = self.registered_ownership_is_current();
-        if !registered || !self.path.exists() {
+        if !registered {
             return false;
         }
-        match read_lock_path(&self.path) {
-            Ok(index_lock) => index_lock.lock_id == self.lock.lock_id,
-            Err(_) => registered,
-        }
+        self.owner
+            .lock()
+            .ok()
+            .is_some_and(|mut owner| owner.current_record(&self.path, &self.lock_id).is_ok())
     }
 }
 
@@ -1005,6 +1081,7 @@ impl Drop for IndexLockLease {
 #[derive(Clone)]
 struct RegisteredIndexLock {
     lock_id: String,
+    owner: Weak<Mutex<OwnedIndexLock>>,
     observation: MaintenanceObserver,
 }
 
@@ -1014,13 +1091,18 @@ fn active_index_locks() -> &'static Mutex<HashMap<PathBuf, RegisteredIndexLock>>
     ACTIVE_INDEX_LOCKS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn register_active_lock(path: &Path, lock_id: &str) -> MaintenanceObserver {
+fn register_active_lock(
+    path: &Path,
+    lock_id: &str,
+    owner: &Arc<Mutex<OwnedIndexLock>>,
+) -> MaintenanceObserver {
     let observation = Arc::new(Mutex::new(MaintenanceObservation::Prepared));
     if let Ok(mut locks) = active_index_locks().lock() {
         locks.insert(
             path.to_path_buf(),
             RegisteredIndexLock {
                 lock_id: lock_id.to_string(),
+                owner: Arc::downgrade(owner),
                 observation: Arc::clone(&observation),
             },
         );
@@ -1029,12 +1111,17 @@ fn register_active_lock(path: &Path, lock_id: &str) -> MaintenanceObserver {
 }
 
 fn observed_maintenance(path: &Path) -> Option<IndexMaintenanceStatus> {
-    let entry = active_index_locks().lock().ok()?.get(path).cloned()?;
-    let lock = read_lock_path(path).ok()?;
-    if lock.lock_id != entry.lock_id || !lock.is_active() {
-        return None;
-    }
-    Some(observed_status(&entry.observation))
+    // Never hold the global registry mutex while waiting for an owner. Release
+    // takes the owner first and unregisters before dropping its kernel lock.
+    let entry = { active_index_locks().lock().ok()?.get(path).cloned()? };
+    let owner = entry.owner.upgrade()?;
+    let mut owner = owner.lock().ok()?;
+    owner.current_record(path, &entry.lock_id).ok()?;
+    let observation = entry.observation.lock().ok()?;
+    Some(match &*observation {
+        MaintenanceObservation::Prepared => IndexMaintenanceStatus::Unknown,
+        MaintenanceObservation::Observed(status) => status.clone(),
+    })
 }
 
 fn unregister_active_lock(path: &Path, lock_id: &str) {
@@ -1658,12 +1745,17 @@ fn acquire_index_lock(
     }
     let index_lock = BslIndexLock::new(action, source_root);
     write_lock_file_to_open(&mut file, &index_lock)?;
-    let observation = register_active_lock(path, index_lock.lock_id.as_str());
-    Ok(Some(IndexLockLease {
-        path: path.to_path_buf(),
+    let lock_id = index_lock.lock_id.clone();
+    let owner = Arc::new(Mutex::new(OwnedIndexLock {
         file,
         lock: index_lock,
         released: false,
+    }));
+    let observation = register_active_lock(path, &lock_id, &owner);
+    Ok(Some(IndexLockLease {
+        path: path.to_path_buf(),
+        lock_id,
+        owner,
         observation,
     }))
 }
@@ -2345,7 +2437,122 @@ mod tests {
     }
 
     #[test]
+    fn registered_owner_observes_maintenance_while_its_file_is_exclusively_locked() {
+        let context = test_context("maintenance-own-locked-observation");
+        let source_root = context.workspace_root.join("src");
+        fs::create_dir_all(&source_root).unwrap();
+        let path = super::lock_path(&context, &source_root).unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let lease = acquire_index_lock(&path, "build", &source_root)
+            .unwrap()
+            .expect("own the actual index lock");
+        lease
+            .owner
+            .lock()
+            .unwrap()
+            .file
+            .seek(SeekFrom::Start(7))
+            .unwrap();
+
+        for state in [
+            IndexMaintenanceStatus::Queued,
+            IndexMaintenanceStatus::Running,
+        ] {
+            *lease.observation.lock().unwrap() = MaintenanceObservation::Observed(state.clone());
+            assert!(lease.validate_ownership());
+            assert_eq!(
+                observed_maintenance(&path),
+                Some(state),
+                "the registered owner must observe its state without reopening locked bytes"
+            );
+            assert_eq!(
+                lease.owner.lock().unwrap().file.stream_position().unwrap(),
+                7
+            );
+        }
+        drop(lease);
+        assert!(observed_maintenance(&path).is_none());
+        cleanup(&context);
+    }
+
+    #[test]
+    fn registered_owner_rejects_in_place_record_substitution_without_overwriting_it() {
+        for case in ["foreign-id", "inactive", "wrong-schema", "invalid-json"] {
+            let context = test_context(&format!("maintenance-in-place-{case}"));
+            let source_root = context.workspace_root.join("src");
+            fs::create_dir_all(&source_root).unwrap();
+            let path = super::lock_path(&context, &source_root).unwrap();
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let mut lease = acquire_index_lock(&path, "build", &source_root)
+                .unwrap()
+                .unwrap();
+            *lease.observation.lock().unwrap() =
+                MaintenanceObservation::Observed(IndexMaintenanceStatus::Queued);
+            let mut owner = lease.owner.lock().unwrap();
+            let identity = file_identity(&owner.file).unwrap();
+            let mut foreign = owner.lock.clone();
+            match case {
+                "foreign-id" => foreign.lock_id = "foreign-owner".to_string(),
+                "inactive" => foreign.mark_released(),
+                "wrong-schema" => foreign.schema_version += 1,
+                _ => {}
+            }
+            let bytes = if case == "invalid-json" {
+                b"broken-json".to_vec()
+            } else {
+                serde_json::to_vec(&foreign).unwrap()
+            };
+            owner.file.set_len(0).unwrap();
+            owner.file.seek(SeekFrom::Start(0)).unwrap();
+            owner.file.write_all(&bytes).unwrap();
+            owner.file.flush().unwrap();
+            assert_eq!(file_identity(&owner.file).unwrap(), identity);
+            drop(owner);
+            assert!(observed_maintenance(&path).is_none(), "{case}");
+            assert!(!lease.validate_ownership(), "{case}");
+            assert!(!lease.refresh(123), "{case}");
+            drop(lease);
+            assert_eq!(
+                fs::read(&path).unwrap(),
+                bytes,
+                "{case}: stale owner wrote the lock"
+            );
+            cleanup(&context);
+        }
+    }
+
+    #[test]
+    fn poisoned_owner_never_proves_maintenance_or_writes_a_release_record() {
+        let context = test_context("maintenance-poisoned-owner");
+        let source_root = context.workspace_root.join("src");
+        fs::create_dir_all(&source_root).unwrap();
+        let path = super::lock_path(&context, &source_root).unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut lease = acquire_index_lock(&path, "build", &source_root)
+            .unwrap()
+            .unwrap();
+        let owner = Arc::clone(&lease.owner);
+        assert!(std::panic::catch_unwind(move || {
+            let _guard = owner.lock().unwrap();
+            panic!("controlled owner mutex poison");
+        })
+        .is_err());
+        assert!(observed_maintenance(&path).is_none());
+        assert!(!lease.validate_ownership());
+        assert!(!lease.refresh(123));
+        drop(lease);
+        assert!(
+            read_lock_path(&path).unwrap().is_active(),
+            "poisoned owner must not publish a release"
+        );
+        cleanup(&context);
+    }
+
+    #[test]
     fn foreign_or_replaced_lock_never_proves_queued_or_running_maintenance() {
+        use crate::infrastructure::platform::filesystem::file_identity;
+        use std::io::Read;
+
         let context = test_context("maintenance-ownership");
         let source_root = context.workspace_root.join("src");
         fs::create_dir_all(&source_root).unwrap();
@@ -2354,14 +2561,28 @@ mod tests {
         let path = super::lock_path(&context, &source_root).unwrap();
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         write_lock_path(&path, BslIndexLock::new("build", &source_root)).unwrap();
-        let foreign = File::options().read(true).write(true).open(&path).unwrap();
-        foreign.lock_exclusive().unwrap();
         let before = fs::read(&path).unwrap();
+        let mut foreign = File::options().read(true).write(true).open(&path).unwrap();
+        let held_identity = file_identity(&foreign).unwrap();
+        foreign.lock_exclusive().unwrap();
         let report =
             service.start_isolated_build(&context, &source_root, &CancellationToken::new());
         assert_eq!(report.maintenance, IndexMaintenanceStatus::Unknown);
         assert!(runner.backgrounds.borrow().is_empty());
-        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(
+            file_identity(&File::open(&path).unwrap()).unwrap(),
+            held_identity,
+            "the foreign owner's named file must not be replaced"
+        );
+        // Windows enforces the byte-range lock against a newly opened reader,
+        // including another handle in this process. Inspect through its owner
+        // while keeping that lock held and restoring the owner's file cursor.
+        let position = foreign.stream_position().unwrap();
+        foreign.seek(SeekFrom::Start(0)).unwrap();
+        let mut after = Vec::new();
+        foreign.read_to_end(&mut after).unwrap();
+        foreign.seek(SeekFrom::Start(position)).unwrap();
+        assert_eq!(after, before);
         foreign.unlock().unwrap();
         drop(foreign);
         assert_eq!(
@@ -2787,7 +3008,7 @@ mod tests {
         let lock = lock_path(&context);
 
         assert!(job.lock_lease.registered_ownership_is_current());
-        register_active_lock(&lock, "replacement-owner");
+        register_active_lock(&lock, "replacement-owner", &job.lock_lease.owner);
         assert!(!job.lock_lease.registered_ownership_is_current());
 
         unregister_active_lock(&lock, "replacement-owner");
@@ -2801,9 +3022,10 @@ mod tests {
         let mut job = test_background_job(&context, "update");
         let command = long_running_index_command(&context);
         let lock = lock_path(&context);
+        let owner = Arc::clone(&job.lock_lease.owner);
         let replacement = thread::spawn(move || {
             thread::sleep(Duration::from_millis(500));
-            register_active_lock(&lock, "replacement-owner");
+            register_active_lock(&lock, "replacement-owner", &owner);
         });
 
         let started = Instant::now();
@@ -3325,8 +3547,9 @@ mod tests {
     }
 
     fn force_lock_updated_at(lease: &mut IndexLockLease, updated_at: u64) {
-        lease.lock.updated_at = updated_at;
-        write_lock_file_to_open(&mut lease.file, &lease.lock).unwrap();
+        let mut owner = lease.owner.lock().unwrap();
+        owner.lock.updated_at = updated_at;
+        owner.write_record().unwrap();
     }
 
     impl IndexOutput {

@@ -1152,6 +1152,13 @@ pub(crate) struct ReceiptLedgerStore {
 }
 
 impl ReceiptLedgerStore {
+    #[cfg(test)]
+    pub(crate) fn ownership_file_identity_for_test(
+        &self,
+    ) -> crate::infrastructure::platform::filesystem::FileIdentity {
+        file_identity(&self._ownership_lock).expect("retained receipt owner identity")
+    }
+
     pub(crate) fn open(receipts_path: impl AsRef<Path>) -> Result<Self, ReceiptLedgerError> {
         Self::open_with_recovery_deadline(receipts_path, None)
     }

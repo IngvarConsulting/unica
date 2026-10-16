@@ -6352,6 +6352,51 @@ fn path_lock_identity_text(path: &str) -> String {
     path.to_string()
 }
 
+/// Preserve ordinary byte snapshots except for a Windows marker whose exact
+/// live owner's file identity and length zero prove its complete bytes.
+#[cfg(test)]
+pub(crate) fn read_snapshot_file_with_empty_owner(
+    path: &Path,
+    owner_identity: FileIdentity,
+) -> Vec<u8> {
+    #[cfg(windows)]
+    {
+        let named_metadata = std::fs::symlink_metadata(path).unwrap();
+        assert!(named_metadata.is_file() && !metadata_is_link_or_reparse_point(&named_metadata));
+        let named = std::fs::File::open(path).unwrap();
+        assert_eq!(file_identity(&named).unwrap(), owner_identity);
+        assert_eq!(
+            named.metadata().unwrap().len(),
+            0,
+            "owned marker is not empty"
+        );
+        Vec::new()
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = owner_identity;
+        fs::read(path).unwrap()
+    }
+}
+
+/// Unix owns directory handles, so its ordinary tree contains no child lock
+/// markers. Windows owns the exact marker files, which must all be present.
+#[cfg(test)]
+pub(crate) fn assert_owned_snapshot_markers_present(
+    snapshot: &std::collections::BTreeMap<PathBuf, Vec<u8>>,
+    owners: &std::collections::BTreeMap<PathBuf, FileIdentity>,
+) {
+    #[cfg(windows)]
+    for expected in owners.keys() {
+        assert!(
+            snapshot.contains_key(expected),
+            "owned marker disappeared: {expected:?}"
+        );
+    }
+    #[cfg(not(windows))]
+    let _ = (snapshot, owners);
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
@@ -8812,5 +8857,61 @@ mod tests {
         assert!(error.contains("sourceDir must be inside workspace root"));
         let _ = std::fs::remove_dir_all(workspace);
         let _ = std::fs::remove_dir_all(outside);
+    }
+    #[cfg(windows)]
+    #[test]
+    fn empty_owned_snapshot_preserves_bytes_and_rejects_unproven_lock_files() {
+        use crate::infrastructure::platform::filesystem::file_identity;
+        use crate::test_support::tree_snapshot_with_empty_owned_files;
+        use fs2::FileExt;
+        use std::collections::BTreeMap;
+        use std::fs::File;
+        use std::io::Write;
+        use std::path::{Path, PathBuf};
+
+        let root = tempfile::tempdir().unwrap();
+        let mut owner = File::options()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(root.path().join("owned.lock"))
+            .unwrap();
+        owner.lock_exclusive().unwrap();
+        std::fs::write(root.path().join("record.json"), b"unchanged record").unwrap();
+        let proofs =
+            BTreeMap::from([(PathBuf::from("owned.lock"), file_identity(&owner).unwrap())]);
+        let snapshot = tree_snapshot_with_empty_owned_files(root.path(), &proofs);
+        assert_eq!(snapshot[Path::new("owned.lock")], b"");
+        assert_eq!(snapshot[Path::new("record.json")], b"unchanged record");
+
+        owner.write_all(b"unexpected bytes").unwrap();
+        owner.flush().unwrap();
+        assert!(
+            std::panic::catch_unwind(|| tree_snapshot_with_empty_owned_files(root.path(), &proofs))
+                .is_err()
+        );
+        owner.set_len(0).unwrap();
+
+        let other = File::create(root.path().join("other.lock")).unwrap();
+        let wrong = BTreeMap::from([(PathBuf::from("owned.lock"), file_identity(&other).unwrap())]);
+        assert!(
+            std::panic::catch_unwind(|| tree_snapshot_with_empty_owned_files(root.path(), &wrong))
+                .is_err()
+        );
+
+        let unknown_path = root.path().join("unknown.lock");
+        std::fs::write(&unknown_path, b"must still be read").unwrap();
+        let unknown = File::options()
+            .read(true)
+            .write(true)
+            .open(unknown_path)
+            .unwrap();
+        unknown.lock_exclusive().unwrap();
+        assert!(
+            std::panic::catch_unwind(|| tree_snapshot_with_empty_owned_files(root.path(), &proofs))
+                .is_err()
+        );
+        unknown.unlock().unwrap();
+        owner.unlock().unwrap();
     }
 }

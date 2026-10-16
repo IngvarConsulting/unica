@@ -723,6 +723,13 @@ pub(crate) struct ReceiptAuthorityLock {
     _authority_directory: RetainedDirectoryCapability,
 }
 
+#[cfg(test)]
+impl ReceiptAuthorityLock {
+    pub(crate) fn ownership_file_identity_for_test(&self) -> FileIdentity {
+        file_identity(&self.file).expect("retained receipt authority identity")
+    }
+}
+
 impl Drop for SpawnLock {
     fn drop(&mut self) {
         let _ = FileExt::unlock(&self.file);
