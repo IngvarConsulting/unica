@@ -105,6 +105,57 @@ pub(super) struct JoinAlias {
     pub(super) holder: JoinHolder,
     /// Когда этот держатель отменил свой интерес.
     pub(super) cancelled_at_epoch_ms: Option<u64>,
+    generation: u64,
+    terminal_view: Option<HolderTerminalView>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum HolderTerminalView {
+    Shared,
+    Cancelled(u64),
+}
+
+/// Captured before reading the canonical Task. Request changes require a new
+/// read: an old Working snapshot cannot decide a cancellation received later.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct HolderReadContext {
+    pub(super) leader: TaskId,
+    pub(super) holder: JoinHolder,
+    pub(super) canonical_holder: JoinHolder,
+    generation: u64,
+    requested_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum HolderProjection {
+    Shared,
+    Cancelled(u64),
+    Reload,
+    Retired,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct HolderReplyContext {
+    task_id: TaskId,
+    read: Option<HolderReadContext>,
+    revision: Option<u64>,
+}
+
+impl HolderReplyContext {
+    pub(super) fn task_id(&self) -> TaskId {
+        self.task_id
+    }
+
+    pub(super) fn read(&self) -> Option<&HolderReadContext> {
+        self.read.as_ref()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum HolderReplyProjection {
+    Unchanged,
+    Normalize,
+    Retired,
 }
 
 /// Что делать с отменой одного держателя.
@@ -118,6 +169,7 @@ pub(super) enum HolderCancel {
 
 struct Leader {
     task_id: TaskId,
+    holder: JoinHolder,
     in_flight: bool,
     deadline: InvocationResponseDeadline,
     /// Начало ведущего чтения по часам его срока.
@@ -137,8 +189,10 @@ impl Leader {
     }
 }
 
-#[derive(Default)]
 struct SharedWork {
+    holder: JoinHolder,
+    generation: u64,
+    terminal_view: Option<HolderTerminalView>,
     /// Когда держатель исходного вызова отменил свой интерес.
     leader_released_at_epoch_ms: Option<u64>,
     /// Общая работа уже отменена: к ней больше не присоединяются.
@@ -157,9 +211,21 @@ struct JoinState {
     /// Растёт с каждой отправкой `apply` или `run`: чтение, проверившее
     /// мутации раньше, не становится ведущим после неё.
     mutation_epoch: u64,
+    membership_revision: u64,
+    membership_overflowed: bool,
 }
 
 impl JoinState {
+    fn membership_changed(&mut self) {
+        match self.membership_revision.checked_add(1) {
+            Some(next) => self.membership_revision = next,
+            None => self.membership_overflowed = true,
+        }
+    }
+
+    fn membership_revision(&self) -> Option<u64> {
+        (!self.membership_overflowed).then_some(self.membership_revision)
+    }
     fn forget_leader_task(&mut self, task_id: TaskId) {
         self.joinable.retain(|_, leader| leader.task_id != task_id);
     }
@@ -203,11 +269,16 @@ impl JoinRegistry {
             return false;
         }
         let order = state.next_order;
-        state.next_order = state.next_order.wrapping_add(1);
+        let Some(next_order) = state.next_order.checked_add(1) else {
+            return false;
+        };
+        Self::forget_shared_locked(&mut state, key.reserved_task_id());
+        state.next_order = next_order;
         state.joinable.insert(
             key.request_identity(),
             Leader {
                 task_id: key.reserved_task_id(),
+                holder: JoinHolder::of(key),
                 in_flight: true,
                 started_at: deadline.now(),
                 started_wall: std::time::SystemTime::now(),
@@ -327,6 +398,7 @@ impl JoinRegistry {
         let mut state = self.lock();
         let holder = JoinHolder::of(joiner);
         if holder.task_id == leader
+            || state.membership_overflowed
             || state.aliases.len() >= MAX_JOINED_HOLDERS
             || state.aliases.contains_key(&holder.task_id)
             || state.shared.contains_key(&holder.task_id)
@@ -340,18 +412,31 @@ impl JoinRegistry {
         {
             return None;
         }
+        let candidate = state.joinable.get(identity)?;
+        let leader_holder = candidate.holder.clone();
+        let generation = candidate.order;
         let alias = JoinAlias {
             leader,
             holder,
             cancelled_at_epoch_ms: None,
+            generation,
+            terminal_view: None,
         };
         state
             .shared
             .entry(leader)
-            .or_default()
+            .or_insert_with(|| SharedWork {
+                holder: leader_holder,
+                generation,
+                terminal_view: None,
+                leader_released_at_epoch_ms: None,
+                cancel_issued: false,
+                joiners: Vec::new(),
+            })
             .joiners
             .push(alias.holder.task_id);
         state.aliases.insert(alias.holder.task_id, alias.clone());
+        state.membership_changed();
         Some(alias)
     }
 
@@ -359,12 +444,127 @@ impl JoinRegistry {
         self.lock().aliases.get(&task_id).cloned()
     }
 
+    fn context(state: &JoinState, task_id: TaskId) -> Option<HolderReadContext> {
+        if let Some(alias) = state.aliases.get(&task_id) {
+            return Some(HolderReadContext {
+                leader: alias.leader,
+                holder: alias.holder.clone(),
+                canonical_holder: state.shared.get(&alias.leader)?.holder.clone(),
+                generation: alias.generation,
+                requested_at: alias.cancelled_at_epoch_ms,
+            });
+        }
+        state.shared.get(&task_id).map(|work| HolderReadContext {
+            leader: task_id,
+            holder: work.holder.clone(),
+            canonical_holder: work.holder.clone(),
+            generation: work.generation,
+            requested_at: work.leader_released_at_epoch_ms,
+        })
+    }
+
+    pub(super) fn read_context(&self, task_id: TaskId) -> Option<HolderReadContext> {
+        Self::context(&self.lock(), task_id)
+    }
+
+    pub(super) fn capture_reply(&self, task_id: TaskId) -> HolderReplyContext {
+        let state = self.lock();
+        HolderReplyContext {
+            task_id,
+            read: Self::context(&state, task_id),
+            revision: state.membership_revision(),
+        }
+    }
+
+    pub(super) fn reply_projection(&self, before: &HolderReplyContext) -> HolderReplyProjection {
+        let state = self.lock();
+        let current = Self::context(&state, before.task_id);
+        if let Some(old) = &before.read {
+            if !current.as_ref().is_some_and(|read| {
+                read.leader == old.leader
+                    && read.holder == old.holder
+                    && read.canonical_holder == old.canonical_holder
+                    && read.generation == old.generation
+            }) {
+                return HolderReplyProjection::Retired;
+            }
+        }
+        if before.read.is_some()
+            || current.is_some()
+            || before.revision.is_none()
+            || before.revision != state.membership_revision()
+        {
+            HolderReplyProjection::Normalize
+        } else {
+            HolderReplyProjection::Unchanged
+        }
+    }
+
+    /// The only owner of a holder's terminal decision. No I/O or payload is
+    /// retained here; a terminal already observed for this holder never flips.
+    pub(super) fn project_holder(
+        &self,
+        captured: &HolderReplyContext,
+        shared_terminal: bool,
+    ) -> HolderProjection {
+        let mut state = self.lock();
+        let task_id = captured.task_id;
+        let read = captured.read.as_ref();
+        let Some(current) = Self::context(&state, task_id) else {
+            return if read.is_some() {
+                HolderProjection::Retired
+            } else if captured.revision != state.membership_revision() {
+                HolderProjection::Reload
+            } else {
+                HolderProjection::Shared
+            };
+        };
+        let Some(read) = read else {
+            return HolderProjection::Reload;
+        };
+        if current.leader != read.leader
+            || current.holder != read.holder
+            || current.canonical_holder != read.canonical_holder
+            || current.generation != read.generation
+        {
+            return HolderProjection::Retired;
+        }
+        let winner = if let Some(alias) = state.aliases.get_mut(&task_id) {
+            &mut alias.terminal_view
+        } else {
+            &mut state
+                .shared
+                .get_mut(&task_id)
+                .expect("the context exists")
+                .terminal_view
+        };
+        match winner {
+            Some(HolderTerminalView::Cancelled(at)) => HolderProjection::Cancelled(*at),
+            Some(HolderTerminalView::Shared) if !shared_terminal => HolderProjection::Reload,
+            Some(HolderTerminalView::Shared) => HolderProjection::Shared,
+            None if shared_terminal => {
+                *winner = Some(HolderTerminalView::Shared);
+                HolderProjection::Shared
+            }
+            None if current.requested_at != read.requested_at => HolderProjection::Reload,
+            None => match current.requested_at {
+                Some(at) => {
+                    *winner = Some(HolderTerminalView::Cancelled(at));
+                    HolderProjection::Cancelled(at)
+                }
+                None => HolderProjection::Shared,
+            },
+        }
+    }
+
     /// Задание исходного вызова, к которому присоединились другие вызовы.
+    #[cfg(test)]
     pub(super) fn is_shared_leader(&self, task_id: TaskId) -> bool {
         self.lock().shared.contains_key(&task_id)
     }
 
     /// Когда держатель исходного вызова отпустил общее задание.
+    #[cfg(test)]
     pub(super) fn leader_released_at(&self, task_id: TaskId) -> Option<u64> {
         self.lock()
             .shared
@@ -380,6 +580,31 @@ impl JoinRegistry {
     /// отмены, а присоединившийся позже не получает отменённую работу.
     pub(super) fn cancel_holder(&self, task_id: TaskId, epoch_ms: u64) -> HolderCancel {
         let mut state = self.lock();
+        Self::cancel_holder_locked(&mut state, task_id, epoch_ms)
+    }
+
+    pub(super) fn cancel_holder_in_context(
+        &self,
+        read: &HolderReadContext,
+        epoch_ms: u64,
+    ) -> Option<HolderCancel> {
+        let mut state = self.lock();
+        let current = Self::context(&state, read.holder.task_id)?;
+        if current.leader != read.leader
+            || current.holder != read.holder
+            || current.canonical_holder != read.canonical_holder
+            || current.generation != read.generation
+        {
+            return None;
+        }
+        Some(Self::cancel_holder_locked(
+            &mut state,
+            read.holder.task_id,
+            epoch_ms,
+        ))
+    }
+
+    fn cancel_holder_locked(state: &mut JoinState, task_id: TaskId, epoch_ms: u64) -> HolderCancel {
         let leader = match state.aliases.get_mut(&task_id) {
             Some(alias) => {
                 alias.cancelled_at_epoch_ms.get_or_insert(epoch_ms);
@@ -397,7 +622,7 @@ impl JoinRegistry {
         };
         let JoinState {
             shared, aliases, ..
-        } = &mut *state;
+        } = state;
         let Some(work) = shared.get_mut(&leader) else {
             return HolderCancel::Released;
         };
@@ -419,10 +644,27 @@ impl JoinRegistry {
     /// перезапуска: его держатели больше ничего не получат.
     pub(super) fn forget_shared(&self, leader: TaskId) {
         let mut state = self.lock();
+        Self::forget_shared_locked(&mut state, leader);
+    }
+
+    pub(super) fn forget_missing_context(&self, read: &HolderReadContext) {
+        let mut state = self.lock();
+        if Self::context(&state, read.holder.task_id).is_some_and(|current| {
+            current.leader == read.leader
+                && current.holder == read.holder
+                && current.canonical_holder == read.canonical_holder
+                && current.generation == read.generation
+        }) {
+            Self::forget_shared_locked(&mut state, read.leader);
+        }
+    }
+
+    fn forget_shared_locked(state: &mut JoinState, leader: TaskId) {
         if let Some(work) = state.shared.remove(&leader) {
             for joiner in work.joiners {
                 state.aliases.remove(&joiner);
             }
+            state.membership_changed();
         }
         state.forget_leader_task(leader);
     }
@@ -582,6 +824,221 @@ mod tests {
 
     fn deadline() -> InvocationResponseDeadline {
         InvocationResponseDeadline::capture(Arc::new(TokioClock))
+    }
+
+    fn joined_pair() -> (JoinRegistry, ReceiptKey, ReceiptKey) {
+        let registry = JoinRegistry::default();
+        let leader = key(V5ToolIdentity::Search, "same");
+        let joiner = key(V5ToolIdentity::Search, "same");
+        registry.register_leader(&leader, deadline(), registry.mutation_epoch());
+        registry
+            .attach(
+                &leader.request_identity(),
+                leader.reserved_task_id(),
+                &joiner,
+            )
+            .unwrap();
+        (registry, leader, joiner)
+    }
+
+    #[test]
+    fn a_stale_working_read_cannot_replace_an_observed_shared_terminal_with_cancelled() {
+        for leader_holder in [true, false] {
+            let (registry, leader, joiner) = joined_pair();
+            let task = if leader_holder {
+                leader.reserved_task_id()
+            } else {
+                joiner.reserved_task_id()
+            };
+            let old = registry.capture_reply(task);
+            let completed = registry.capture_reply(task);
+            assert_eq!(
+                registry.project_holder(&completed, true),
+                HolderProjection::Shared
+            );
+            registry.cancel_holder(task, 1_000);
+            assert_eq!(
+                registry.project_holder(&old, false),
+                HolderProjection::Reload
+            );
+            let fresh = registry.capture_reply(task);
+            assert_eq!(
+                registry.project_holder(&fresh, true),
+                HolderProjection::Shared
+            );
+        }
+    }
+
+    #[test]
+    fn a_stale_alias_read_keeps_the_holder_cancellation_after_shared_completion() {
+        for leader_holder in [true, false] {
+            let (registry, leader, joiner) = joined_pair();
+            let task = if leader_holder {
+                leader.reserved_task_id()
+            } else {
+                joiner.reserved_task_id()
+            };
+            let old = registry.capture_reply(task);
+            registry.cancel_holder(task, 1_000);
+            let cancel = registry.capture_reply(task);
+            assert_eq!(
+                registry.project_holder(&cancel, false),
+                HolderProjection::Cancelled(1_000)
+            );
+            assert_eq!(
+                registry.project_holder(&old, true),
+                HolderProjection::Cancelled(1_000)
+            );
+        }
+    }
+
+    #[test]
+    fn a_working_snapshot_from_before_the_cancel_request_must_reload() {
+        for leader_holder in [true, false] {
+            let (registry, leader, joiner) = joined_pair();
+            let task = if leader_holder {
+                leader.reserved_task_id()
+            } else {
+                joiner.reserved_task_id()
+            };
+            let old = registry.capture_reply(task);
+            // The shared task completed after this old Working read, before
+            // the cancellation request. Its fresh canonical read is terminal.
+            registry.cancel_holder(task, 1_000);
+            assert_eq!(
+                registry.project_holder(&old, false),
+                HolderProjection::Reload
+            );
+            let fresh = registry.capture_reply(task);
+            assert_eq!(
+                registry.project_holder(&fresh, true),
+                HolderProjection::Shared
+            );
+        }
+    }
+
+    #[test]
+    fn retired_or_foreign_holder_contexts_never_project_or_cancel_a_new_alias() {
+        let (registry, leader, joiner) = joined_pair();
+        let task = joiner.reserved_task_id();
+        let old = registry.capture_reply(task);
+        let mut foreign = old.clone();
+        foreign.read.as_mut().unwrap().holder.invocation_id = InvocationId::new();
+        assert_eq!(
+            registry.project_holder(&foreign, true),
+            HolderProjection::Retired
+        );
+        assert_eq!(
+            registry.cancel_holder_in_context(foreign.read.as_ref().unwrap(), 1_000),
+            None
+        );
+        registry.forget_shared(leader.reserved_task_id());
+        assert_eq!(
+            registry.project_holder(&old, true),
+            HolderProjection::Retired
+        );
+        assert!(registry.read_context(task).is_none());
+        registry.register_leader(&leader, deadline(), registry.mutation_epoch());
+        registry
+            .attach(
+                &leader.request_identity(),
+                leader.reserved_task_id(),
+                &joiner,
+            )
+            .unwrap();
+        assert_eq!(
+            registry.project_holder(&old, true),
+            HolderProjection::Retired
+        );
+        assert_eq!(
+            registry.cancel_holder_in_context(old.read.as_ref().unwrap(), 1_000),
+            None
+        );
+        registry.forget_missing_context(old.read.as_ref().unwrap());
+        assert!(
+            registry.read_context(task).is_some(),
+            "a stale missing read cannot retire the new alias"
+        );
+        let fresh = registry.capture_reply(task);
+        assert_eq!(
+            registry.project_holder(&fresh, false),
+            HolderProjection::Shared
+        );
+    }
+
+    #[test]
+    fn reply_membership_capture_detects_attach_retire_aba_and_revision_overflow() {
+        let registry = JoinRegistry::default();
+        let leader = key(V5ToolIdentity::Search, "same");
+        let joiner = key(V5ToolIdentity::Search, "same");
+        registry.register_leader(&leader, deadline(), registry.mutation_epoch());
+        let before = registry.capture_reply(leader.reserved_task_id());
+        assert_eq!(
+            registry.reply_projection(&before),
+            HolderReplyProjection::Unchanged
+        );
+        registry
+            .attach(
+                &leader.request_identity(),
+                leader.reserved_task_id(),
+                &joiner,
+            )
+            .unwrap();
+        let tracked = registry.capture_reply(leader.reserved_task_id());
+        assert_eq!(
+            registry.reply_projection(&tracked),
+            HolderReplyProjection::Normalize
+        );
+        registry.forget_shared(leader.reserved_task_id());
+        assert_eq!(
+            registry.reply_projection(&tracked),
+            HolderReplyProjection::Retired
+        );
+        assert_eq!(
+            registry.reply_projection(&before),
+            HolderReplyProjection::Normalize
+        );
+        assert_eq!(
+            registry.project_holder(&before, false),
+            HolderProjection::Reload
+        );
+        registry.lock().membership_revision = u64::MAX;
+        registry.register_leader(&leader, deadline(), registry.mutation_epoch());
+        registry
+            .attach(
+                &leader.request_identity(),
+                leader.reserved_task_id(),
+                &joiner,
+            )
+            .unwrap();
+        registry.forget_shared(leader.reserved_task_id());
+        let overflowed = registry.capture_reply(leader.reserved_task_id());
+        assert_eq!(
+            registry.reply_projection(&overflowed),
+            HolderReplyProjection::Normalize
+        );
+        assert!(registry.lock().membership_overflowed);
+        registry.register_leader(&leader, deadline(), registry.mutation_epoch());
+        assert!(
+            registry
+                .attach(
+                    &leader.request_identity(),
+                    leader.reserved_task_id(),
+                    &joiner
+                )
+                .is_none(),
+            "exhausted membership history must not open another tracked interval"
+        );
+        let fresh = registry.capture_reply(leader.reserved_task_id());
+        assert_eq!(
+            registry.project_holder(&fresh, false),
+            HolderProjection::Shared,
+            "a fresh canonical untracked read must finish without a reload loop"
+        );
+        assert_eq!(
+            registry.reply_projection(&fresh),
+            HolderReplyProjection::Normalize
+        );
     }
 
     #[test]

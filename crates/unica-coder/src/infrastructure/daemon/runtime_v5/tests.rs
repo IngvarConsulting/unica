@@ -6648,6 +6648,77 @@ fn materialize_completed_task_key(
     key
 }
 
+struct RejectUnexpectedTaskRead {
+    armed: AtomicBool,
+    reads: AtomicUsize,
+}
+
+impl V5RuntimeHooks for RejectUnexpectedTaskRead {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn pause(&self, point: V5PausePoint, _deadline: Instant) -> Result<(), ReceiptLedgerError> {
+        if point == V5PausePoint::BeforeRetirementSnapshot && self.armed.load(Ordering::SeqCst) {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            return Err(ReceiptLedgerError::StoreUnavailable);
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn an_unjoined_task_reply_does_not_read_its_canonical_store_again() {
+    let root = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(root.path()).unwrap();
+    let identity = CoreIdentity::production_v5();
+    let clock = Arc::new(ManualEpochClock::new(1_000));
+    let hooks = Arc::new(RejectUnexpectedTaskRead {
+        armed: AtomicBool::new(false),
+        reads: AtomicUsize::new(0),
+    });
+    let config = DaemonServerConfig::new(
+        state_root.clone(),
+        identity.clone(),
+        Duration::from_millis(80),
+    )
+    .with_v5_epoch_clock_for_test(clock.clone())
+    .with_runtime_hooks_for_test(hooks.clone());
+    let state = DaemonStateDirectory::open(&state_root, &identity).unwrap();
+    let runtime = V5ReceiptRuntime::open(&state, &config).unwrap();
+    let task = materialize_completed_task(
+        &runtime,
+        &identity,
+        &clock,
+        "unjoined",
+        1_000,
+        1_001,
+        "canonical result",
+    );
+    let before = runtime.joins.capture_reply(task);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let canonical = runtime.resolve_task(task, deadline).unwrap();
+    hooks.armed.store(true, Ordering::SeqCst);
+    let reply = runtime
+        .project_holder_reply(
+            &before,
+            V5RuntimeReply::Json(V5ServerResponse::Task {
+                snapshot: canonical.clone(),
+            }),
+            deadline,
+        )
+        .unwrap();
+    let V5RuntimeReply::Json(V5ServerResponse::Task { snapshot }) = reply else {
+        panic!("normalization changed the reply envelope");
+    };
+    assert_eq!(snapshot, canonical);
+    assert_eq!(
+        hooks.reads.load(Ordering::SeqCst),
+        0,
+        "an unrelated canonical handoff must not acquire another Task read"
+    );
+}
+
 fn retirement_link(runtime: &V5ReceiptRuntime, task_id: TaskId) -> Option<TaskLifecycleLinkRecord> {
     let deadline = crate::domain::code_intelligence::ProviderDeadline::new(
         Instant::now() + Duration::from_secs(5),

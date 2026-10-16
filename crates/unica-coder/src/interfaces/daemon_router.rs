@@ -1050,6 +1050,7 @@ pub(in crate::interfaces) mod test_support {
         pub(in crate::interfaces) state_root: std::path::PathBuf,
         thread: Option<thread::JoinHandle<Result<(), String>>>,
         hooks: Option<Arc<dyn crate::infrastructure::daemon::runtime_v5::V5RuntimeHooks>>,
+        epoch_clock: Option<Arc<dyn crate::application::invocation_store::EpochMillisClock>>,
     }
 
     impl LiveDaemon {
@@ -1065,7 +1066,7 @@ pub(in crate::interfaces) mod test_support {
         ) -> Self {
             let workspace = tempfile::tempdir().unwrap();
             std::fs::write(workspace.path().join("v8project.yaml"), WORKSPACE_MANIFEST).unwrap();
-            Self::start_over(workspace, service, hooks)
+            Self::start_over(workspace, service, hooks, None)
         }
 
         /// A workspace whose sources live in `src/` and whose files are older
@@ -1075,6 +1076,14 @@ pub(in crate::interfaces) mod test_support {
         pub(in crate::interfaces) fn start_with_aged_sources(
             service: Arc<dyn crate::infrastructure::daemon::server::CanonicalInvocationService>,
             hooks: Option<Arc<dyn crate::infrastructure::daemon::runtime_v5::V5RuntimeHooks>>,
+        ) -> Self {
+            Self::start_with_aged_sources_and_clock(service, hooks, None)
+        }
+
+        pub(in crate::interfaces) fn start_with_aged_sources_and_clock(
+            service: Arc<dyn crate::infrastructure::daemon::server::CanonicalInvocationService>,
+            hooks: Option<Arc<dyn crate::infrastructure::daemon::runtime_v5::V5RuntimeHooks>>,
+            epoch_clock: Option<Arc<dyn crate::application::invocation_store::EpochMillisClock>>,
         ) -> Self {
             let workspace = tempfile::tempdir().unwrap();
             std::fs::write(
@@ -1092,13 +1101,14 @@ pub(in crate::interfaces) mod test_support {
                 crate::infrastructure::daemon::runtime_v5::JOIN_TIMESTAMP_MARGIN
                     + Duration::from_millis(200),
             );
-            Self::start_over(workspace, service, hooks)
+            Self::start_over(workspace, service, hooks, epoch_clock)
         }
 
         fn start_over(
             workspace: tempfile::TempDir,
             service: Arc<dyn crate::infrastructure::daemon::server::CanonicalInvocationService>,
             hooks: Option<Arc<dyn crate::infrastructure::daemon::runtime_v5::V5RuntimeHooks>>,
+            epoch_clock: Option<Arc<dyn crate::application::invocation_store::EpochMillisClock>>,
         ) -> Self {
             let state = tempfile::tempdir().unwrap();
             let state_root = std::fs::canonicalize(state.path()).unwrap();
@@ -1113,6 +1123,7 @@ pub(in crate::interfaces) mod test_support {
                 state_root,
                 thread: None,
                 hooks,
+                epoch_clock,
             };
             daemon.restart(service, Duration::from_millis(400));
             daemon
@@ -1135,6 +1146,10 @@ pub(in crate::interfaces) mod test_support {
                 idle_grace,
             )
             .with_invocation_service(service);
+            let config = match &self.epoch_clock {
+                Some(clock) => config.with_v5_epoch_clock_for_test(clock.clone()),
+                None => config,
+            };
             let config = match &self.hooks {
                 Some(hooks) => config.with_runtime_hooks_for_test(hooks.clone()),
                 None => config,
@@ -2670,6 +2685,144 @@ mod tests {
         assert_eq!(service.executions.load(Ordering::SeqCst), 1);
         drop(router);
         daemon.finish();
+    }
+
+    struct FixedHolderEpoch;
+
+    impl crate::application::invocation_store::EpochMillisClock for FixedHolderEpoch {
+        fn now_epoch_millis(&self) -> u64 {
+            1_000
+        }
+    }
+
+    /// Settle the held service and listener even when an assertion is RED.
+    struct JoinedClockFixture {
+        router: Option<CanonicalDaemonRouter>,
+        daemon: Option<LiveDaemon>,
+        service: Arc<GatedService>,
+    }
+
+    impl JoinedClockFixture {
+        fn start() -> Self {
+            let service = GatedService::new();
+            let daemon = LiveDaemon::start_with_aged_sources_and_clock(
+                service.clone(),
+                None,
+                Some(Arc::new(FixedHolderEpoch)),
+            );
+            let router = canonical_daemon_router(daemon.owner(), daemon.workspace_hint.clone());
+            Self {
+                router: Some(router),
+                daemon: Some(daemon),
+                service,
+            }
+        }
+
+        fn router(&self) -> &CanonicalDaemonRouter {
+            self.router.as_ref().unwrap()
+        }
+    }
+
+    impl Drop for JoinedClockFixture {
+        fn drop(&mut self) {
+            self.service.release();
+            drop(self.router.take());
+            if let Some(daemon) = self.daemon.take() {
+                daemon.finish();
+            }
+        }
+    }
+
+    #[test]
+    fn holder_cancel_before_completion_stays_cancelled_at_the_same_epoch() {
+        use crate::domain::invocation::InvocationStatus;
+        for cancel_leader in [true, false] {
+            let fixture = JoinedClockFixture::start();
+            let router = fixture.router();
+            let same = json!({"query": "Товары"}).as_object().unwrap().clone();
+            let leader = task_of(call_tool(router, V5ToolIdentity::Search, &same));
+            let joined = task_of(call_tool(router, V5ToolIdentity::Search, &same));
+            assert_eq!(fixture.service.executions.load(Ordering::SeqCst), 1);
+            let (leaving, remaining) = if cancel_leader {
+                (&leader, &joined)
+            } else {
+                (&joined, &leader)
+            };
+            let cancelled = (router.cancel)(leaving.task_id(), deadline(None)).unwrap();
+            assert_eq!(cancelled.task_id(), leaving.task_id());
+            assert_eq!(cancelled.invocation_id(), leaving.invocation_id());
+            assert_eq!(
+                cancelled.status(),
+                InvocationStatus::Cancelled,
+                "the holder's cancellation must complete before producer release"
+            );
+            assert!(cancelled.cancel_requested());
+            let V5DaemonTaskSnapshot::Cancelled {
+                terminal_epoch_ms, ..
+            } = &cancelled
+            else {
+                unreachable!();
+            };
+            assert_eq!(*terminal_epoch_ms, 1_000);
+            fixture.service.release();
+
+            let kept = wait_terminal(router, remaining.task_id());
+            assert_eq!(
+                kept.completed_result()
+                    .map(|result| result.summary.as_str()),
+                Some("shared traversal")
+            );
+            let V5DaemonTaskSnapshot::Completed {
+                terminal_epoch_ms, ..
+            } = &kept
+            else {
+                unreachable!();
+            };
+            assert_eq!(*terminal_epoch_ms, 1_000);
+            let after = wait_terminal(router, leaving.task_id());
+            assert_eq!(after.status(), InvocationStatus::Cancelled,
+                "a completed holder cancellation must survive later shared completion in the same millisecond");
+            assert_eq!(after.task_id(), leaving.task_id());
+            assert_eq!(after.invocation_id(), leaving.invocation_id());
+            assert_eq!(fixture.service.executions.load(Ordering::SeqCst), 1);
+            assert_eq!(fixture.service.cancelled.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[test]
+    fn shared_completion_before_holder_cancel_keeps_result_at_the_same_epoch() {
+        use crate::domain::invocation::InvocationStatus;
+        for cancel_leader in [true, false] {
+            let fixture = JoinedClockFixture::start();
+            let router = fixture.router();
+            let same = json!({"query": "Товары"}).as_object().unwrap().clone();
+            let leader = task_of(call_tool(router, V5ToolIdentity::Search, &same));
+            let joined = task_of(call_tool(router, V5ToolIdentity::Search, &same));
+            assert_eq!(fixture.service.executions.load(Ordering::SeqCst), 1);
+            fixture.service.release();
+            let (leaving, remaining) = if cancel_leader {
+                (&leader, &joined)
+            } else {
+                (&joined, &leader)
+            };
+            let completed = wait_terminal(router, leaving.task_id());
+            assert_eq!(completed.status(), InvocationStatus::Completed);
+            let V5DaemonTaskSnapshot::Completed {
+                terminal_epoch_ms, ..
+            } = &completed
+            else {
+                unreachable!();
+            };
+            assert_eq!(*terminal_epoch_ms, 1_000);
+            let late_cancel = (router.cancel)(leaving.task_id(), deadline(None)).unwrap();
+            assert_eq!(late_cancel, completed,
+                "a holder cancelling after completion must retain the original terminal even at the same millisecond");
+            assert_eq!(wait_terminal(router, leaving.task_id()), completed);
+            let kept = wait_terminal(router, remaining.task_id());
+            assert_eq!(kept.completed_result(), completed.completed_result());
+            assert_eq!(fixture.service.executions.load(Ordering::SeqCst), 1);
+            assert_eq!(fixture.service.cancelled.load(Ordering::SeqCst), 0);
+        }
     }
 
     #[test]
