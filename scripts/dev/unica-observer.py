@@ -1186,8 +1186,8 @@ body { height: 100dvh; min-height: 0; overflow: hidden; }
 #logBar { display: flex; align-items: center; gap: 4px; flex: 0 0 32px; min-height: 32px; padding: 0 6px; border-bottom: 1px solid var(--line); background: var(--panel); user-select: none; -webkit-user-select: none; }
 #logBar button { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 26px; height: 26px; min-height: 26px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--text); font-size: 16px; }
 #logBar button:hover { background: var(--hover, var(--accent-bg)); }
-#logBar #logTab { flex: 1 1 auto; justify-content: flex-start; width: auto; min-width: 0; height: 32px; padding: 0 8px; border-radius: 0; box-shadow: inset 0 -2px 0 var(--accent); font-size: 12px; font-weight: 600; }
-.log-actions { display: flex; align-items: center; gap: 2px; }
+#logBar #logTab { flex: 0 0 auto; justify-content: flex-start; width: auto; min-width: 0; height: 32px; padding: 0 8px; border-radius: 0; box-shadow: inset 0 -2px 0 var(--accent); font-size: 12px; font-weight: 600; }
+.log-actions { display: flex; align-items: center; gap: 2px; margin-left: auto; }
 #logDockMenu { position: fixed; z-index: 20; width: 180px; max-height: calc(100dvh - 16px); overflow: auto; padding: 4px; border: 1px solid var(--control, var(--line)); border-radius: 6px; background: var(--bg); color: var(--text); box-shadow: 0 8px 24px var(--shadow, rgb(0 0 0 / 25%)); }
 #logDockMenu button { display: block; width: 100%; min-height: 28px; padding: 5px 8px; border: 0; border-radius: 4px; background: transparent; color: inherit; text-align: left; font-size: 12px; }
 #logDockMenu button:hover { background: var(--hover, var(--accent-bg)); }
@@ -1198,9 +1198,9 @@ body { height: 100dvh; min-height: 0; overflow: hidden; }
 #workspace[data-log-mode="collapsed"][data-log-dock="left"] #logBar,
 #workspace[data-log-mode="collapsed"][data-log-dock="right"] #logBar { flex: 1; flex-direction: column; width: 36px; padding: 4px 0; border-bottom: 0; }
 #workspace[data-log-mode="collapsed"][data-log-dock="left"] .log-actions,
-#workspace[data-log-mode="collapsed"][data-log-dock="right"] .log-actions { order: -1; flex-direction: column; }
+#workspace[data-log-mode="collapsed"][data-log-dock="right"] .log-actions { order: -1; flex-direction: column; margin-left: 0; }
 #workspace[data-log-mode="collapsed"][data-log-dock="left"] #logTab,
-#workspace[data-log-mode="collapsed"][data-log-dock="right"] #logTab { justify-content: flex-start; align-self: center; width: 32px; height: auto; min-height: 0; padding: 12px 0; writing-mode: vertical-rl; box-shadow: none; }
+#workspace[data-log-mode="collapsed"][data-log-dock="right"] #logTab { flex: 1 1 auto; justify-content: flex-start; align-self: center; width: 32px; height: auto; min-height: 0; padding: 12px 0; writing-mode: vertical-rl; box-shadow: none; }
 #workspace[data-log-mode="maximized"] > main, #workspace[data-log-mode="maximized"] > #splitLog { display: none; }
 #workspace[data-log-mode="maximized"] > #logPanel { flex: 1 1 0; }
 #workspace > #splitLog { position: relative; display: block; background: var(--bg); cursor: row-resize; touch-action: none; }
