@@ -121,6 +121,8 @@ pub(crate) struct V5ReceiptRuntime {
     // joins and releases its store before named authority is released. A
     // fail-stopped runtime is retained until process death instead.
     receipt_ledger: ReceiptLedgerActor,
+    #[cfg(test)]
+    receipt_owner_identity_for_test: crate::infrastructure::platform::filesystem::FileIdentity,
     _stable_authority: ReceiptAuthorityLock,
     epoch_clock: Arc<dyn EpochMillisClock>,
     invocation_executor: V5InvocationExecutor,
@@ -2665,6 +2667,8 @@ impl V5ReceiptRuntime {
         let recovery_keys = receipt_ledger
             .recovery_keys(None)
             .map_err(|error| format!("inspect protocol-v5 receipt recovery catalog: {error}"))?;
+        #[cfg(test)]
+        let receipt_owner_identity_for_test = receipt_ledger.ownership_file_identity_for_test();
         let receipt_ledger = spawn_receipt_ledger_actor(receipt_ledger);
         let startup_deadline = Instant::now() + STARTUP_RECONCILIATION_TIMEOUT;
         let task_projection =
@@ -2674,6 +2678,8 @@ impl V5ReceiptRuntime {
             core_identity: config.core_identity.clone(),
             _stable_authority: stable_authority,
             receipt_ledger,
+            #[cfg(test)]
+            receipt_owner_identity_for_test,
             epoch_clock,
             invocation_executor: {
                 #[cfg(test)]

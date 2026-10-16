@@ -109,8 +109,11 @@ pub(super) fn call_tool_result(
     result: &DomainResult,
     budget: ResponseBudget,
 ) -> Result<CallToolResult, TaskProjectionError> {
-    let result = apply_response_budget(result, budget.bytes());
-    let result = result.as_ref();
+    let mut public_result = apply_response_budget(result, budget.bytes());
+    if public_result.source_text_read_hint.is_some() {
+        public_result.to_mut().source_text_read_hint = None;
+    }
+    let result = public_result.as_ref();
     match canonical_result_size(result) {
         Ok(_) => {}
         Err(CanonicalResultSizeError::TooLarge) => return Err(TaskProjectionError::ResultTooLarge),
@@ -396,6 +399,7 @@ mod tests {
             cursor: None,
             page: None,
             source_text: None,
+            source_text_read_hint: None,
         };
         let direct = match super::project_direct_terminal(
             &crate::application::receipt_ledger::ReceiptTerminalOutcome::Completed {
@@ -546,7 +550,18 @@ mod tests {
     fn task_result_with_source_text_follows_the_client_budget() {
         let mut result = DomainResult::success("logical node text resolved");
         result.at = Some("main:CommonModule.Пример.Method.А.Body".into());
-        result.source_text = Some("a".repeat(4_000));
+        result.source_text = Some(format!("{}\n", "a".repeat(39)).repeat(100));
+        result.data = Some(
+            json!({"at":result.at,"kind":"Body","title":"Body","can":[{"op":"code.replace"}]}),
+        );
+        result.rev = Some("revision".into());
+        result.source_text_read_hint =
+            Some(Box::new(crate::domain::invocation::SourceTextReadHint {
+                from_line: 97,
+                to_line: 196,
+                prefix: None,
+            }));
+        let canonical_before = serde_json::to_vec(&result).unwrap();
         let (task_id, invocation_id, receipt_key_digest) = v5_common();
         let completed = V5DaemonTaskSnapshot::Completed {
             task_id,
@@ -560,7 +575,7 @@ mod tests {
             cancel_requested: false,
             terminal_epoch_ms: 1_777_012_346_789,
             terminal_digest: v5_terminal_digest(),
-            result: Box::new(result),
+            result: Box::new(result.clone()),
         };
         let embedded = |budget: usize| {
             let detailed =
@@ -570,6 +585,46 @@ mod tests {
             };
             Value::Object(result)
         };
+        let compatibility = crate::application::v13::task_tools::CompatibilityTaskSnapshot::new(
+            task_id,
+            crate::domain::invocation::InvocationStatus::Completed,
+            Some(result.clone()),
+            None,
+            false,
+            1_777_012_345_678,
+            1_777_012_346_789,
+            3_600_000,
+            250,
+        );
+        let compatibility = crate::application::v13::task_tools::project_task_snapshot(
+            &compatibility,
+            crate::application::v13::task_tools::CompatibilityProjection::TerminalResult,
+        )
+        .unwrap();
+        for budget in [16_384, 4_096, 3_000] {
+            let direct = match super::project_direct_terminal(
+                &crate::application::receipt_ledger::ReceiptTerminalOutcome::Completed {
+                    result: Box::new(result.clone()),
+                },
+                ResponseBudget::from_bytes(budget),
+            )
+            .unwrap()
+            {
+                super::DirectProjection::Result(value) => serde_json::to_value(value).unwrap(),
+                super::DirectProjection::Error(error) => panic!("{error}"),
+            };
+            let compat = serde_json::to_value(
+                super::call_tool_result(&compatibility, ResponseBudget::from_bytes(budget))
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(embedded(budget), direct);
+            assert_eq!(compat, direct);
+            assert!(!serde_json::to_string(&direct)
+                .unwrap()
+                .contains("sourceTextReadHint"));
+            assert!(!serde_json::to_string(&direct).unwrap().contains("fromLine"));
+        }
         let wide = embedded(16_384);
         assert_eq!(
             wide["content"][1]["text"].as_str().map(str::len),
@@ -581,6 +636,16 @@ mod tests {
             narrow["structuredContent"]["diagnostics"][0]["code"],
             "result_too_large"
         );
+        assert!(narrow["structuredContent"]["next"][0]["args"]["at"]
+            .as_str()
+            .unwrap()
+            .contains("Body#L97-L"));
+        assert_eq!(
+            embedded(16_384),
+            wide,
+            "a narrower reader never changes the saved result"
+        );
+        assert_eq!(serde_json::to_vec(&result).unwrap(), canonical_before);
     }
 
     #[test]
@@ -591,6 +656,12 @@ mod tests {
         result.at = Some("main:CommonModule.Пример.Method.А.Body".into());
         result.data = Some(json!({"at": "main:CommonModule.Пример.Method.А.Body", "kind": "Body"}));
         result.source_text = Some(text.to_string());
+        result.source_text_read_hint =
+            Some(Box::new(crate::domain::invocation::SourceTextReadHint {
+                from_line: 1,
+                to_line: 5,
+                prefix: None,
+            }));
         let direct = match super::project_direct_terminal(
             &crate::application::receipt_ledger::ReceiptTerminalOutcome::Completed {
                 result: Box::new(result.clone()),
@@ -610,6 +681,7 @@ mod tests {
         let envelope: Value = serde_json::from_str(blocks[0]["text"].as_str().unwrap()).unwrap();
         let mut expected = result.clone();
         expected.source_text = None;
+        expected.source_text_read_hint = None;
         assert_eq!(envelope, serde_json::to_value(&expected).unwrap());
         assert!(envelope.get("sourceText").is_none());
         // Текст идёт байт в байт, без экранирования JSON.
@@ -646,6 +718,9 @@ mod tests {
         )
         .unwrap();
         assert!(refused["structuredContent"].is_object());
+        assert!(!serde_json::to_string(&refused)
+            .unwrap()
+            .contains("sourceTextReadHint"));
     }
 
     #[test]

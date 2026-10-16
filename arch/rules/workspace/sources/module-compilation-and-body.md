@@ -1,6 +1,13 @@
 ---
 id: INV.SOURCE.MODULE-COMPILATION-AND-BODY
 check:
+  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::body_line_view_and_resolve_share_absolute_byte_exact_ranges
+  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::body_line_ranges_refuse_file_eof_and_method_boundary_crossings
+  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::body_line_apply_refuses_before_staging_and_can_has_no_writes
+  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::body_line_read_validates_the_tail_and_continuation_reopens_exact_bytes
+  - crates/unica-coder/src/application/v13/source_text.rs::continuation_fits_the_real_ranged_envelope_at_each_host_budget
+  - crates/unica-coder/src/infrastructure/receipt_ledger/tests.rs::body_read_hint_survives_receipt_reopen_and_tampering_is_rejected
+  - crates/unica-coder/src/infrastructure/task_store_v5.rs::body_read_hint_survives_completed_task_reopen_without_rewriting
   - crates/unica-coder/src/infrastructure/bsl_module_projection.rs::method_compilation_count_and_nested_guards_match_actual_ranges
   - crates/unica-coder/src/infrastructure/bsl_module_projection.rs::method_text_spans_doc_comment_directive_declaration_and_end_without_preprocessor
   - crates/unica-coder/src/infrastructure/bsl_module_projection.rs::crlf_method_text_keeps_the_source_line_endings
@@ -37,7 +44,7 @@ gap: https://github.com/IngvarConsulting/unica/issues/1119
 Единственная нормализация: начальные U+FEFF в текст не входят. Разделители
 строк, табуляция и отсутствие перевода строки в конце файла сохраняются.
 Текст идёт отдельным текстовым блоком ответа, вне конверта JSON: номеров
-строк, элементов коллекции и курсора у него нет.
+строк внутри самого текста, элементов коллекции и курсора у него нет.
 
 `Method.<имя>.Body` возвращает текст метода. Он начинается с
 документирующего комментария — подряд идущих строк `//` непосредственно
@@ -45,6 +52,16 @@ gap: https://github.com/IngvarConsulting/unica/issues/1119
 обрывает. Затем идут директива, объявление, тело и строка `КонецПроцедуры`
 или `КонецФункции` включительно. Инструкции препроцессора вокруг метода
 в текст не входят.
+
+Явный селектор `Body#L<n>` или `Body#L<a>-L<b>` читает только указанные
+полные строки с теми же разделителями. Нумерация абсолютная, как в поиске
+и `resolve`, включая `Method.<имя>.Body`. Узел возвращает `props.lines`
+в формате `{state: range, from, to}`; `resolve` называет тот же диапазон
+и файл. Выход за EOF или за границы выбранного Body отказывает `bad_value`.
+Чтение фрагмента проверяет UTF-8 всего файла и сохраняет отмену и проверку
+идентичности исходника. Адрес с диапазоном предназначен для чтения:
+`code.replace` и `code.insert` отказывают до staging; `next` ведёт к целому
+содержащему методу, если весь диапазон внутри него, иначе к Body модуля.
 
 `code.replace` по адресу `Method.<имя>.Body` с текстом, который объявляет
 метод, заменяет участок, который отдаёт `view`: от комментария до строки
@@ -64,9 +81,13 @@ UTF-8 вместе с конвертом. Известным хостам наз
 в сводке модуля. Инструменты, чей ответ может нести текст (`unica.view`
 и `unica.task.result`), объявляют хосту предел символов ответа; объявление
 относится к любому их ответу, а не только к тексту `Body`. Ответ сверх бюджета
-отказывает `result_too_large` без частичного текста, а `next` ведёт
-к адресам `Region` и `Method` этого модуля, у метода — сначала к самому
-методу. Предел касается только самого текста: контракт операции
+отказывает `result_too_large` без частичного текста. Если хотя бы одна
+полная начальная строка помещается, `next` сначала предлагает диапазон
+`Body#L<a>-L<b>` с наибольшим помещающимся начальным фрагментом; `a` —
+абсолютное начало запрошенного Body или диапазона. Подсказка проверяется
+по тому же конверту и бюджету, что реальный `view` этого адреса. Если первая
+строка не помещается, ложной подсказки нет. Структурные `next` к `Region`
+и `Method` сохраняются, у метода — и к самому методу. Предел касается только самого текста: контракт операции
 `<узел>.Can.<op>` отдаётся и для большого модуля.
 
 Для `Method.<имя>.Body` на большом файле ещё нужен ограниченный по памяти

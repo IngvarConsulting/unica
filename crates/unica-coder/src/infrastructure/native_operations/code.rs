@@ -325,6 +325,12 @@ pub(crate) fn parse_code_plan_operation(
     let at_raw = non_empty_code_string(object.get("at"), &at_path, "at")?;
     let at = crate::domain::address::QualifiedAddress::parse(at_raw)
         .map_err(|_| bad_code_arg(&at_path, "at must be a qualified logical address"))?;
+    if at.line_range().is_some() {
+        return Err(bad_code_arg(
+            &at_path,
+            "Body line ranges are read-only; address the whole Method or module Body",
+        ));
+    }
     if at.source_set() != binding.source_set_name() {
         return Err(bad_code_arg(
             &at_path,

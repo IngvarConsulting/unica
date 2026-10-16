@@ -603,6 +603,7 @@ fn attribute_owner_and_name(
         .at_path(format!("ops[{op_index}].args.at"))
     })?;
     let owner_target = QualifiedAddress {
+        line_range: None,
         source_set: target.source_set().to_string(),
         segments: vec![owner.clone()],
     };
@@ -973,6 +974,7 @@ fn metadata_member_target(
         .at_path(at_path.clone())
     })?;
     let owner_target = QualifiedAddress {
+        line_range: None,
         source_set: target.source_set().to_string(),
         segments: vec![owner.clone()],
     };

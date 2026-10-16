@@ -135,7 +135,15 @@ impl CollectionView {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SourceText {
     Whole(String),
-    Oversized { bytes: u64 },
+    Oversized {
+        bytes: u64,
+        prefix: String,
+    },
+    Window {
+        text: Box<SourceText>,
+        from: usize,
+        to: usize,
+    },
 }
 
 /// Узел с исходным текстом (`Body` модуля или метода BSL). Текст в

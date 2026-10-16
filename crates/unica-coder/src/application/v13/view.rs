@@ -1,12 +1,12 @@
 use crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES;
 use crate::application::result_store::{ViewCursorBinding, ViewCursorError, ViewCursorStore};
-use crate::application::v13::source_text::{oversized_body, ModuleText};
+use crate::application::v13::source_text::{body_text_result, oversized_body, ModuleText};
 use crate::domain::address::QualifiedAddress;
 use crate::domain::invocation::DomainResult;
 use crate::domain::node_view::SourceText;
 use crate::domain::node_view::{NodeView, NodeViewData, TextView};
 use crate::domain::refusal::{RefusalCode, RefusalDetail};
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use std::io::{self, Write};
 use std::sync::Arc;
 
@@ -343,13 +343,63 @@ impl<A: ViewReadAuthority> ViewService<A> {
                         "source changed while the source text was read; retry the question",
                     ));
                 }
-                let text = match text {
-                    SourceText::Whole(text) => text,
-                    SourceText::Oversized { bytes } => {
-                        return Err(oversized_body(&canonical_at.to_string(), bytes));
+                let (text, from, to) = match text {
+                    SourceText::Window { text, from, to } => (*text, from, to),
+                    SourceText::Whole(text) => {
+                        let to = text.lines().count();
+                        (SourceText::Whole(text), 1, to)
+                    }
+                    SourceText::Oversized { bytes, prefix } => {
+                        (SourceText::Oversized { bytes, prefix }, 1, 0)
                     }
                 };
-                return text_result(&canonical_at, object, text, snapshot.revision);
+                if canonical_at.line_range().is_some() {
+                    object.insert(
+                        "props".into(),
+                        json!({"lines": {"state": "range", "from": from, "to": to}}),
+                    );
+                }
+                let mut result = body_text_result(&canonical_at, object, Some(snapshot.revision));
+                match text {
+                    SourceText::Whole(text) => {
+                        result.source_text = Some(text);
+                    }
+                    SourceText::Oversized { bytes, prefix } => {
+                        let error = oversized_body(&canonical_at.to_string(), bytes);
+                        let data = result.data.take();
+                        let rev = result.rev.take();
+                        result = DomainResult::canonical_rejection(
+                            Some(canonical_at.to_string()),
+                            RefusalCode::ResultTooLarge,
+                            error.to_string(),
+                        );
+                        result.data = data;
+                        result.rev = rev;
+                        result.next.extend(error.next().iter().cloned());
+                        result.source_text_read_hint =
+                            Some(Box::new(crate::domain::invocation::SourceTextReadHint {
+                                from_line: from,
+                                to_line: to,
+                                prefix: Some(prefix),
+                            }));
+                    }
+                    SourceText::Window { .. } => unreachable!("a Body has one coordinate window"),
+                }
+                if result.source_text_read_hint.is_none() && to >= from {
+                    result.source_text_read_hint =
+                        Some(Box::new(crate::domain::invocation::SourceTextReadHint {
+                            from_line: from,
+                            to_line: to,
+                            prefix: None,
+                        }));
+                }
+                if serialized_result_size(&result) > MAX_CANONICAL_RESULT_BYTES {
+                    return Err(ViewError::new(
+                        RefusalCode::ResultTooLarge,
+                        "logical node exceeds the transport result limit",
+                    ));
+                }
+                return Ok(result);
             }
         }
         let Some(items) = object.remove("items") else {
@@ -405,9 +455,24 @@ fn module_body_view(
     body_at: &QualifiedAddress,
     text: ModuleText,
 ) -> Result<NodeViewData, ViewError> {
-    let text = match text {
-        ModuleText::TooLarge { bytes } => SourceText::Oversized { bytes },
-        ModuleText::Text(text) => SourceText::Whole(text),
+    let (text, count) = match text {
+        ModuleText::TooLarge {
+            bytes,
+            prefix,
+            lines,
+        } => (SourceText::Oversized { bytes, prefix }, lines),
+        ModuleText::Text(text) => {
+            let lines = text.lines().count();
+            (SourceText::Whole(text), lines)
+        }
+    };
+    let (from, to) = body_at
+        .line_range()
+        .map_or((1, count), |range| (range.from, range.to));
+    let text = SourceText::Window {
+        text: Box::new(text),
+        from,
+        to,
     };
     Ok(NodeViewData::Text(TextView::new(
         NodeView::new(body_at.to_string(), "Body", "Body", Map::new()),
@@ -447,28 +512,6 @@ fn node_result(
     result.at = Some(at.to_string());
     result.data = Some(Value::Object(node));
     result.rev = Some(revision);
-    if serialized_result_size(&result) > MAX_CANONICAL_RESULT_BYTES {
-        return Err(ViewError::new(
-            RefusalCode::ResultTooLarge,
-            "logical node exceeds the transport result limit",
-        ));
-    }
-    Ok(result)
-}
-
-/// Узел с исходным текстом: конверт несёт адрес, вид и `can`, а текст —
-/// поле `source_text`, которое наружу уходит отдельным блоком MCP.
-fn text_result(
-    at: &QualifiedAddress,
-    node: Map<String, Value>,
-    text: String,
-    revision: String,
-) -> Result<DomainResult, ViewError> {
-    let mut result = DomainResult::success("logical node text resolved");
-    result.at = Some(at.to_string());
-    result.data = Some(Value::Object(node));
-    result.rev = Some(revision);
-    result.source_text = Some(text);
     if serialized_result_size(&result) > MAX_CANONICAL_RESULT_BYTES {
         return Err(ViewError::new(
             RefusalCode::ResultTooLarge,
@@ -1129,6 +1172,8 @@ mod tests {
         let mut authority = FixtureAuthority::new();
         authority.module_text = Some(ModuleText::TooLarge {
             bytes: MAX_SOURCE_TEXT_BYTES as u64 + 1,
+            prefix: String::new(),
+            lines: 1,
         });
         let result = ViewService::new(authority, ViewCursorStore::default()).view_projected(
             ViewRequest::new(at).unwrap(),
@@ -1162,12 +1207,15 @@ mod tests {
         let mut authority = FixtureAuthority::new();
         authority.module_text = Some(ModuleText::TooLarge {
             bytes: MAX_SOURCE_TEXT_BYTES as u64 + 1,
+            prefix: String::new(),
+            lines: 1,
         });
         let result = ViewService::new(authority, ViewCursorStore::default())
             .view(ViewRequest::new(at).unwrap());
         assert!(!result.ok);
         assert_eq!(result.diagnostics[0]["code"], "result_too_large");
-        assert!(result.data.is_none());
+        assert_eq!(result.data.as_ref().unwrap()["kind"], "Body");
+        assert!(result.source_text_read_hint.is_some());
         assert!(result.cursor.is_none());
         let targets = result
             .next

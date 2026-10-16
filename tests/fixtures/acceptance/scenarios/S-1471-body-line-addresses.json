@@ -1,0 +1,294 @@
+{
+  "id": "S-1471-body-line-addresses",
+  "issue": 1471,
+  "area": "Код BSL",
+  "task": "Открыть строку результата поиска точным абсолютным диапазоном Body, проверить resolve и отказ правки по строкам, затем заменить целый содержащий метод и прочитать изменённую строку.",
+  "workspace": "tests/fixtures/acceptance/workspace-resolve",
+  "wire": [
+    {
+      "tool": "unica.search",
+      "args": {
+        "query": "Сообщить(\"probe\")",
+        "scope": "main:CommonModule.Probe",
+        "limit": 1
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/matches/0/at",
+          "eq": "main:CommonModule.Probe.Method.Ping.Body#L4"
+        },
+        {
+          "pointer": "/data/matches/0/line",
+          "eq": 4
+        }
+      ],
+      "captures": {
+        "hit": {
+          "pointer": "/data/matches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.hit"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/sourceText",
+          "eq": "    Сообщить(\"probe\");\n"
+        },
+        {
+          "pointer": "/data/props/lines",
+          "eq": {
+            "state": "range",
+            "from": 4,
+            "to": 4
+          }
+        },
+        {
+          "pointer": "/data/can",
+          "eq": []
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "06e6740a8b5bf78f00bebb76e0f91956a97d690e5b78aaa088858b0487cee937"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "at": "$capture.hit"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/lines",
+          "eq": {
+            "state": "range",
+            "from": 4,
+            "to": 4
+          }
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "CommonModules/Probe/Ext/Module.bsl"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Body#L1-L3"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/sourceText",
+          "eq": "#Область A\n#Область Inner\nПроцедура Ping() Экспорт\n"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Method.Ping.Body#L1"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: Body line selector is outside this Body; use absolute file lines within its bounds"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.hit",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "text": "    Сообщить(\"range-fixed\");"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: Body line ranges are read-only; replace a whole containing Method or use the module Body",
+      "assertions": [
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:CommonModule.Probe.Method.Ping"
+        }
+      ],
+      "captures": {
+        "method": {
+          "pointer": "/next/0/args/at"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "06e6740a8b5bf78f00bebb76e0f91956a97d690e5b78aaa088858b0487cee937"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.method"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Method"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.method",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "text": "Процедура Ping() Экспорт\n    Сообщить(\"range-fixed\");\nКонецПроцедуры\n"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "06e6740a8b5bf78f00bebb76e0f91956a97d690e5b78aaa088858b0487cee937"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "79ce82ca53cea06daac57b6b73a2a574fd60b12015f3951dd19f3afb4b922594"
+        }
+      ]
+    },
+    {
+      "tool": "unica.search",
+      "args": {
+        "query": "range-fixed",
+        "scope": "main:CommonModule.Probe"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/matches/0/at",
+          "eq": "main:CommonModule.Probe.Method.Ping.Body#L4"
+        },
+        {
+          "pointer": "/data/matches/0/line",
+          "eq": 4
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Method.Ping.Body#L4"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/sourceText",
+          "eq": "    Сообщить(\"range-fixed\");\n"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "79ce82ca53cea06daac57b6b73a2a574fd60b12015f3951dd19f3afb4b922594"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Method.Ping.Body#L4-L5"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/sourceText",
+          "eq": "    Сообщить(\"range-fixed\");\nКонецПроцедуры\n"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "at": "main:CommonModule.Probe.Method.Ping.Body#L4-L5"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/lines",
+          "eq": {
+            "state": "range",
+            "from": 4,
+            "to": 5
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Body#L9999"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: Body line selector exceeds the file's last line"
+    }
+  ]
+}
