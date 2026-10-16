@@ -141,7 +141,8 @@ jobs:
           test "$(git -C research-fixtures rev-parse HEAD)" = "$RESEARCH_SHA"
           fixture=scripts/research/1523-recovery-unexpected-record-red.patch
           git -C research-fixtures ls-files --error-unmatch -- "$fixture"
-          patch="research-fixtures/$fixture"
+          patch=.session-temp/v014-native/windows-1523-recovery-fixture.patch
+          git -C research-fixtures show "$RESEARCH_SHA:$fixture" > "$patch"
           echo "25d141741fd4ad7cba17cffa35205efb919cde6394f73745e43abe17c0bf1389  $patch" | sha256sum --check
           git apply --check "$patch"
           git apply "$patch"
