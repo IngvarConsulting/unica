@@ -1617,7 +1617,7 @@ function renderTools(catalog, tool, args) {
   const schema = tool.inputSchema || {};
   const props = schema.properties || {};
   const required = new Set(schema.required || []);
-  html += `<h2 class="at">${esc(tool.name)}</h2><details><summary class="cnt">описание</summary><p>${esc(tool.description || "")}</p></details>`;
+  html += `<h2 class="at">${esc(tool.name)}</h2><p class="tool-description">${esc(tool.description || "")}</p>`;
   if (!tool.policy) html += `<p class="note bad">Политика наблюдателя не знает этот инструмент: вызов отклоняется до unica.</p>`;
   if (tool.policy === "plan") html += `<p class="note">Только планирование {at, ops}: executionToken наблюдатель не отправляет.</p>`;
   if (tool.policy === "preview") html += `<p class="note">Без op — словарь операций. С op — только предпросмотр (dryRun: true) операций ${esc(catalog.runPreviewOps.join(", "))}; ${esc(Object.keys(catalog.runDeniedOps).join(", "))} отклоняются.</p>`;
