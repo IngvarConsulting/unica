@@ -1038,7 +1038,11 @@ main { display: grid; grid-template-columns: var(--tree-w, 38%) 6px minmax(0, 1f
 #tabs { display: flex; gap: 4px; padding: 6px 12px 0; border-bottom: 1px solid var(--line); background: var(--panel); }
 #tabs button { border-bottom: none; border-radius: 6px 6px 0 0; }
 #tabs button.on { background: var(--accent-bg); border-color: var(--accent); }
-.toollist { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 10px; }
+.tool-layout { display: grid; grid-template-columns: minmax(180px, 240px) minmax(0, 1fr); gap: 16px; align-items: start; }
+.toollist { display: flex; flex-direction: column; gap: 4px; }
+.toollist button { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px; text-align: left; }
+.tool-content { min-width: 0; }
+@media (max-width: 760px) { .tool-layout { grid-template-columns: 1fr; } }
 .toollist button.on { background: var(--accent-bg); border-color: var(--accent); }
 .badge.read { color: var(--ok); border-color: var(--ok); }
 .badge.plan, .badge.preview, .badge.own-task { color: var(--warn); border-color: var(--warn); }
@@ -1487,14 +1491,14 @@ async function openTool(name, args) {
 
 function renderTools(catalog, tool, args) {
   const panel = $("tools");
-  let html = `<div class="toollist">`;
+  let html = `<div class="tool-layout"><div class="toollist">`;
   for (const t of catalog.tools) {
     const policy = t.policy ? `<span class="badge ${t.policy}">${esc(POLICY_LABEL[t.policy] || t.policy)}</span>` : `<span class="badge deny">запрещён</span>`;
     html += `<button data-tool="${esc(t.name)}"${tool && t.name === tool.name ? ' class="on"' : ""}>${esc(t.name)} ${policy}</button>`;
   }
-  html += `</div>`;
+  html += `</div><div class="tool-content">`;
   if (!tool) {
-    panel.innerHTML = html + `<p class="cnt">Выберите инструмент. Формы строятся по inputSchema из tools/list.</p>`;
+    panel.innerHTML = html + `<p class="cnt">Выберите инструмент. Формы строятся по inputSchema из tools/list.</p></div></div>`;
     bindToolList(panel, catalog);
     return;
   }
@@ -1514,7 +1518,7 @@ function renderTools(catalog, tool, args) {
   }
   html += `</div><h3>arguments</h3><textarea id="toolArgs" spellcheck="false"></textarea>`;
   html += `<p><button class="primary" id="toolCall">Вызвать</button> <span class="err" id="toolErrors"></span></p><div id="toolOut"></div>`;
-  panel.innerHTML = html;
+  panel.innerHTML = html + `</div></div>`;
   bindToolList(panel, catalog);
   const fields = $("toolFields");
   const initial = args === undefined ? toolPrefill(tool) : args;
