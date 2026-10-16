@@ -1173,6 +1173,13 @@ function ticking(element, label) {
   return () => clearInterval(timer);
 }
 
+function markLeaf(row) {
+  const tog = row && row.querySelector(".tog");
+  if (!tog) return;
+  tog.textContent = "";
+  row.nextElementSibling.hidden = true;
+}
+
 function makeRow(label, at, meta) {
   const wrap = document.createElement("div");
   const row = document.createElement("div");
@@ -1191,17 +1198,30 @@ function makeRow(label, at, meta) {
   wrap.append(row, kids);
   if (at !== undefined) {
     let loaded = false;
-    tog.onclick = async (event) => {
-      event.stopPropagation();
+    let loading = false;
+    const toggle = async () => {
+      if (!tog.textContent || loading) return;
       if (!loaded) {
-        loaded = true;
+        loading = true;
         try { await fill(kids, at); }
         catch (error) { kids.insertAdjacentHTML("beforeend", `<div class="err">ошибка страницы: ${esc(error.message)}</div>`); }
+        finally { loading = false; }
+        loaded = true;
       }
+      if (!tog.textContent) return;
       kids.hidden = !kids.hidden;
       tog.textContent = kids.hidden ? "▸" : "▾";
     };
-    row.onclick = () => select(at, row);
+    tog.onclick = (event) => {
+      event.stopPropagation();
+      if (event.detail <= 1) toggle();
+    };
+    row.onclick = (event) => { if (event.detail <= 1) select(at, row); };
+    row.ondblclick = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.target !== tog) toggle();
+    };
   }
   return wrap;
 }
@@ -1249,12 +1269,6 @@ async function fill(container, at, cursor) {
       container.appendChild(makeRow(JSON.stringify(item).slice(0, 160)));
     }
   }
-  if (!(data.branches || []).length && !(data.items || []).length && !(data.sourceSets || []).length) {
-    const empty = document.createElement("div");
-    empty.className = "cnt";
-    empty.textContent = "нет ветвей и элементов";
-    container.appendChild(empty);
-  }
   if (result.cursor) {
     const more = document.createElement("div");
     more.className = "row more";
@@ -1263,6 +1277,7 @@ async function fill(container, at, cursor) {
     more.onclick = async () => { more.remove(); await fill(container, at, result.cursor); };
     container.appendChild(more);
   }
+  if (!container.childElementCount) markLeaf(container.previousElementSibling);
 }
 
 function sourceTextHtml(answer) {
@@ -1335,7 +1350,14 @@ async function select(at, row, fresh) {
   if (row) { row.classList.add("sel"); selectedRow = row; }
   $("node").innerHTML = `<p class="cnt" id="nodeLoading"></p>`;
   const stop = ticking($("nodeLoading"), `загрузка ${at || "(корень)"}…`);
-  try { const answer = await view(at, undefined, fresh); stop(); renderNode(at, answer); }
+  try {
+    const answer = await view(at, undefined, fresh);
+    stop();
+    renderNode(at, answer);
+    const result = answer.result || {};
+    const data = result.data || {};
+    if (result.ok && !result.cursor && !["branches", "items", "sourceSets"].some((key) => (data[key] || []).length)) markLeaf(row);
+  }
   catch (error) { stop(); $("node").innerHTML = `<p class="err">${esc(error.message)}</p>`; }
 }
 
