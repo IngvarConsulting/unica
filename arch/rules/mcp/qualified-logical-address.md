@@ -1,6 +1,9 @@
 ---
 id: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
 check:
+  - crates/unica-coder/src/domain/address.rs::body_line_suffix_keeps_the_bsl_node_and_round_trips
+  - crates/unica-coder/src/domain/address.rs::body_line_suffix_rejects_malformed_ranges_and_other_nodes
+  - crates/unica-coder/src/domain/address.rs::a_hash_inside_a_free_text_dcs_item_is_not_a_body_line_selector
   - crates/unica-coder/src/domain/address.rs::metadata_is_a_terminal_nameless_form_descriptor_and_keeps_operation_queries
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::form_metadata_has_its_own_descriptor_properties_and_resource_identity
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::form_metadata_rejects_orphans_and_does_not_follow_descriptor_links
@@ -75,3 +78,9 @@ check:
 Разрешение входного адреса в контексте проекта может подставить пропущенный
 набор, только если доступен ровно один. Результат всё равно содержит набор;
 строгий разбор канонического адреса его не подставляет.
+
+К `Body` модуля BSL и `Method.<имя>.Body` можно добавить терминальный
+селектор `#L<n>` или `#L<a>-L<b>`. Это положительные абсолютные номера строк
+файла, диапазон включителен и не убывает. У других узлов селектора нет;
+`Can` после диапазона тоже недопустим. `#` внутри свободного имени элемента
+структуры СКД сохраняет смысл имени, в том числе `Item.Body#L1`.

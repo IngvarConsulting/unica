@@ -46,6 +46,10 @@ impl Drop for OwnedProcess {
 }
 
 pub fn spawn_owned_daemon(state: &Path) -> OwnedProcess {
+    spawn_owned_daemon_with_idle_grace(state, 20_000)
+}
+
+pub fn spawn_owned_daemon_with_idle_grace(state: &Path, idle_grace_ms: u64) -> OwnedProcess {
     std::fs::create_dir_all(state).unwrap();
     let process = OwnedProcess(
         Command::new(env!("CARGO_BIN_EXE_unica"))
@@ -55,7 +59,7 @@ pub fn spawn_owned_daemon(state: &Path) -> OwnedProcess {
                 "--core-identity",
                 production_identity(),
                 "--idle-grace-ms",
-                "20000",
+                &idle_grace_ms.to_string(),
             ])
             .stdin(Stdio::null())
             .stdout(Stdio::null())

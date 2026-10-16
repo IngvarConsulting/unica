@@ -5,6 +5,20 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+#[cfg(target_os = "macos")]
+mod macos_acl;
+
+/// A nonblocking fs2 lock refusal is expected contention. Other I/O errors
+/// remain failures, including a Windows file-sharing violation.
+pub(crate) fn is_file_lock_contended(error: &io::Error) -> bool {
+    let expected = fs2::lock_contended_error();
+    error.kind() == io::ErrorKind::WouldBlock
+        || error
+            .raw_os_error()
+            .zip(expected.raw_os_error())
+            .is_some_and(|(actual, expected)| actual == expected)
+}
+
 #[cfg(windows)]
 pub(crate) fn is_file_sharing_violation(error: &io::Error) -> bool {
     error.raw_os_error() == Some(windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION as i32)
@@ -2369,6 +2383,8 @@ pub(crate) fn verify_owner_only_acl(file: &fs::File) -> io::Result<()> {
             "state object must be owned by the current user and owner-only",
         ));
     }
+    #[cfg(target_os = "macos")]
+    macos_acl::verify_owner_only_acl(file, current_uid)?;
     Ok(())
 }
 
@@ -4248,9 +4264,9 @@ pub(crate) fn create_owner_only_directory_child(
     use std::os::unix::fs::PermissionsExt;
 
     let encoded_name = unix_child_name(name)?;
-    // SAFETY: the retained parent descriptor and validated child name remain live. 0700 is
-    // owner-only even before the process umask is applied, so there is no permissive creation
-    // window before the retained handle is normalized below.
+    // SAFETY: the retained parent descriptor and validated child name remain live.
+    // POSIX permissions start at 0700; the retained handle's verifier also rejects
+    // inherited ACL grants before the directory is returned to its caller.
     let status = unsafe { libc::mkdirat(parent.as_raw_fd(), encoded_name.as_ptr(), 0o700) };
     if status != 0 {
         return Err(io::Error::last_os_error());
@@ -4270,7 +4286,8 @@ pub(crate) fn create_owner_only_file_child(
 
     let name = unix_child_name(name)?;
     // SAFETY: parent and name remain live, and a successful result transfers one newly owned
-    // descriptor. Mode 0600 is private before umask filtering and O_NOFOLLOW rejects links.
+    // descriptor. POSIX permissions start at 0600 and O_NOFOLLOW rejects links;
+    // the retained handle's verifier checks inherited ACLs before returning a writer.
     let descriptor = unsafe {
         libc::openat(
             parent.as_raw_fd(),
@@ -6352,6 +6369,51 @@ fn path_lock_identity_text(path: &str) -> String {
     path.to_string()
 }
 
+/// Preserve ordinary byte snapshots except for a Windows marker whose exact
+/// live owner's file identity and length zero prove its complete bytes.
+#[cfg(test)]
+pub(crate) fn read_snapshot_file_with_empty_owner(
+    path: &Path,
+    owner_identity: FileIdentity,
+) -> Vec<u8> {
+    #[cfg(windows)]
+    {
+        let named_metadata = std::fs::symlink_metadata(path).unwrap();
+        assert!(named_metadata.is_file() && !metadata_is_link_or_reparse_point(&named_metadata));
+        let named = std::fs::File::open(path).unwrap();
+        assert_eq!(file_identity(&named).unwrap(), owner_identity);
+        assert_eq!(
+            named.metadata().unwrap().len(),
+            0,
+            "owned marker is not empty"
+        );
+        Vec::new()
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = owner_identity;
+        fs::read(path).unwrap()
+    }
+}
+
+/// Unix owns directory handles, so its ordinary tree contains no child lock
+/// markers. Windows owns the exact marker files, which must all be present.
+#[cfg(test)]
+pub(crate) fn assert_owned_snapshot_markers_present(
+    snapshot: &std::collections::BTreeMap<PathBuf, Vec<u8>>,
+    owners: &std::collections::BTreeMap<PathBuf, FileIdentity>,
+) {
+    #[cfg(windows)]
+    for expected in owners.keys() {
+        assert!(
+            snapshot.contains_key(expected),
+            "owned marker disappeared: {expected:?}"
+        );
+    }
+    #[cfg(not(windows))]
+    let _ = (snapshot, owners);
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
@@ -6364,6 +6426,39 @@ mod tests {
     use std::io;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn file_lock_contention_classifier_preserves_real_errors() {
+        use super::is_file_lock_contended;
+
+        assert!(is_file_lock_contended(&fs2::lock_contended_error()));
+        assert!(is_file_lock_contended(&io::Error::from(
+            io::ErrorKind::WouldBlock
+        )));
+        for kind in [io::ErrorKind::PermissionDenied, io::ErrorKind::Other] {
+            assert!(!is_file_lock_contended(&io::Error::from(kind)), "{kind:?}");
+        }
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::Foundation::{
+                ERROR_ACCESS_DENIED, ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION,
+            };
+
+            assert!(is_file_lock_contended(&io::Error::from_raw_os_error(
+                ERROR_LOCK_VIOLATION as i32
+            )));
+            for code in [ERROR_SHARING_VIOLATION, ERROR_ACCESS_DENIED] {
+                assert!(
+                    !is_file_lock_contended(&io::Error::from_raw_os_error(code as i32)),
+                    "{code}"
+                );
+            }
+        }
+        #[cfg(not(windows))]
+        for code in [32, 33] {
+            assert!(!is_file_lock_contended(&io::Error::from_raw_os_error(code)));
+        }
+    }
 
     #[cfg(windows)]
     use super::strip_windows_extended_length_prefix;
@@ -8812,5 +8907,61 @@ mod tests {
         assert!(error.contains("sourceDir must be inside workspace root"));
         let _ = std::fs::remove_dir_all(workspace);
         let _ = std::fs::remove_dir_all(outside);
+    }
+    #[cfg(windows)]
+    #[test]
+    fn empty_owned_snapshot_preserves_bytes_and_rejects_unproven_lock_files() {
+        use crate::infrastructure::platform::filesystem::file_identity;
+        use crate::test_support::tree_snapshot_with_empty_owned_files;
+        use fs2::FileExt;
+        use std::collections::BTreeMap;
+        use std::fs::File;
+        use std::io::Write;
+        use std::path::{Path, PathBuf};
+
+        let root = tempfile::tempdir().unwrap();
+        let mut owner = File::options()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(root.path().join("owned.lock"))
+            .unwrap();
+        owner.lock_exclusive().unwrap();
+        std::fs::write(root.path().join("record.json"), b"unchanged record").unwrap();
+        let proofs =
+            BTreeMap::from([(PathBuf::from("owned.lock"), file_identity(&owner).unwrap())]);
+        let snapshot = tree_snapshot_with_empty_owned_files(root.path(), &proofs);
+        assert_eq!(snapshot[Path::new("owned.lock")], b"");
+        assert_eq!(snapshot[Path::new("record.json")], b"unchanged record");
+
+        owner.write_all(b"unexpected bytes").unwrap();
+        owner.flush().unwrap();
+        assert!(
+            std::panic::catch_unwind(|| tree_snapshot_with_empty_owned_files(root.path(), &proofs))
+                .is_err()
+        );
+        owner.set_len(0).unwrap();
+
+        let other = File::create(root.path().join("other.lock")).unwrap();
+        let wrong = BTreeMap::from([(PathBuf::from("owned.lock"), file_identity(&other).unwrap())]);
+        assert!(
+            std::panic::catch_unwind(|| tree_snapshot_with_empty_owned_files(root.path(), &wrong))
+                .is_err()
+        );
+
+        let unknown_path = root.path().join("unknown.lock");
+        std::fs::write(&unknown_path, b"must still be read").unwrap();
+        let unknown = File::options()
+            .read(true)
+            .write(true)
+            .open(unknown_path)
+            .unwrap();
+        unknown.lock_exclusive().unwrap();
+        assert!(
+            std::panic::catch_unwind(|| tree_snapshot_with_empty_owned_files(root.path(), &proofs))
+                .is_err()
+        );
+        unknown.unlock().unwrap();
+        owner.unlock().unwrap();
     }
 }

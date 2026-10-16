@@ -2,7 +2,7 @@
 //! и `Method.<имя>.Body`, и предел его объёма.
 
 use crate::application::v13::view::ViewError;
-use crate::domain::address::{NodeKind, QualifiedAddress};
+use crate::domain::address::{BodyLineRange, NodeKind, QualifiedAddress};
 use crate::domain::invocation::DomainResult;
 use crate::domain::refusal::RefusalCode;
 use serde_json::{json, Value};
@@ -27,7 +27,11 @@ pub(crate) enum ModuleText {
     /// Файл без начальных U+FEFF; разделители строк — как в файле.
     Text(String),
     /// Текст длиннее [`MAX_SOURCE_TEXT_BYTES`]; `bytes` — его полный размер.
-    TooLarge { bytes: u64 },
+    TooLarge {
+        bytes: u64,
+        prefix: String,
+        lines: usize,
+    },
 }
 
 /// Собирает текст модуля из потока байтов, не удерживая больше предела:
@@ -38,9 +42,23 @@ pub(crate) struct ModuleTextAccumulator {
     past_bom: bool,
     text: Vec<u8>,
     bytes: u64,
+    range: Option<BodyLineRange>,
+    newlines: usize,
+    last: Option<u8>,
 }
 
 impl ModuleTextAccumulator {
+    pub(crate) fn with_range(range: BodyLineRange) -> Self {
+        Self {
+            range: Some(range),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn line_count(&self) -> usize {
+        self.newlines + usize::from(self.last.is_some_and(|last| last != b'\n'))
+    }
+
     const BOM: [u8; 3] = [0xef, 0xbb, 0xbf];
 
     pub(crate) fn push(&mut self, chunk: &[u8]) {
@@ -63,6 +81,15 @@ impl ModuleTextAccumulator {
     }
 
     fn keep(&mut self, byte: u8) {
+        let line = self.newlines + 1;
+        self.newlines += usize::from(byte == b'\n');
+        self.last = Some(byte);
+        if self
+            .range
+            .is_some_and(|range| line < range.from || line > range.to)
+        {
+            return;
+        }
         self.bytes += 1;
         if self.text.len() <= MAX_SOURCE_TEXT_BYTES {
             self.text.push(byte);
@@ -84,7 +111,16 @@ impl ModuleTextAccumulator {
             }
         }
         if self.bytes > MAX_SOURCE_TEXT_BYTES as u64 {
-            return Ok(ModuleText::TooLarge { bytes: self.bytes });
+            let end = self.text[..MAX_SOURCE_TEXT_BYTES]
+                .iter()
+                .rposition(|byte| *byte == b'\n')
+                .map_or(0, |last| last + 1);
+            let prefix = String::from_utf8(self.text[..end].to_vec()).map_err(|_| ())?;
+            return Ok(ModuleText::TooLarge {
+                bytes: self.bytes,
+                prefix,
+                lines: self.line_count(),
+            });
         }
         String::from_utf8(self.text)
             .map(ModuleText::Text)
@@ -168,6 +204,101 @@ pub(crate) fn oversized_body(body_at: &str, bytes: u64) -> ViewError {
     }
 }
 
+/// The exact constructor shared by a real Body read and its budget preview.
+pub(crate) fn body_text_result(
+    at: &QualifiedAddress,
+    node: serde_json::Map<String, Value>,
+    revision: Option<String>,
+) -> DomainResult {
+    let mut result = DomainResult::success("logical node text resolved");
+    result.at = Some(at.to_string());
+    result.data = Some(Value::Object(node));
+    result.rev = revision;
+    result
+}
+
+/// A bounded prefix ending at a whole source line. No partial UTF-8/line is
+/// advertised when the first line alone exceeds the largest host budget.
+pub(crate) fn complete_prefix(text: &str) -> &str {
+    if text.len() <= MAX_SOURCE_TEXT_BYTES {
+        return text;
+    }
+    text.as_bytes()[..MAX_SOURCE_TEXT_BYTES]
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or("", |last| &text[..last + 1])
+}
+
+fn body_fits(result: &DomainResult, budget: usize) -> bool {
+    let Some(text) = result.source_text.as_deref() else {
+        return false;
+    };
+    let mut envelope = result.clone();
+    envelope.source_text = None;
+    envelope.source_text_read_hint = None;
+    let bytes = serde_json::to_vec(&envelope).map_or(usize::MAX, |bytes| bytes.len());
+    text_fits(text.len() as u64, budget) && bytes.saturating_add(text.len()) <= budget
+}
+
+fn first_body_chunk(result: &DomainResult, budget: usize) -> Option<Value> {
+    let hint = result.source_text_read_hint.as_ref()?;
+    if hint.from_line == 0 || hint.to_line < hint.from_line {
+        return None;
+    }
+    let prefix = result.source_text.as_deref().or(hint.prefix.as_deref())?;
+    let at = QualifiedAddress::parse(result.at.as_deref()?)
+        .ok()?
+        .without_line_range();
+    let node = result.data.as_ref()?.as_object()?;
+    let revision = result.rev.clone();
+    let preview = |count: usize| -> Option<DomainResult> {
+        let end = prefix
+            .split_inclusive('\n')
+            .take(count)
+            .map(str::len)
+            .sum::<usize>();
+        let to = hint.from_line.checked_add(count.checked_sub(1)?)?;
+        if to > hint.to_line {
+            return None;
+        }
+        let ranged = QualifiedAddress::parse(&format!("{at}#L{}-L{to}", hint.from_line)).ok()?;
+        let mut data = node.clone();
+        data.insert("at".into(), json!(ranged.to_string()));
+        data.insert(
+            "props".into(),
+            json!({"lines": {"state": "range", "from": hint.from_line, "to": to}}),
+        );
+        if data.contains_key("can") {
+            data.insert("can".into(), json!([]));
+        }
+        let mut candidate = body_text_result(&ranged, data, revision.clone());
+        candidate.source_text = Some(prefix[..end].to_string());
+        Some(candidate)
+    };
+    // Binary search complete line prefixes; no per-line envelope allocation
+    // and no second source read. The predicate is the real Body fit check.
+    let (mut low, mut high) = (
+        0,
+        prefix
+            .split_inclusive('\n')
+            .count()
+            .min(hint.to_line - hint.from_line + 1),
+    );
+    while low < high {
+        let middle = low + (high - low).div_ceil(2);
+        if preview(middle).is_some_and(|candidate| body_fits(&candidate, budget)) {
+            low = middle;
+        } else {
+            high = middle - 1;
+        }
+    }
+    let candidate = preview(low)?;
+    Some(view_next(
+        candidate.at.as_deref()?,
+        "первый диапазон полных строк Body в бюджете этого клиента",
+    ))
+}
+
 /// Ответ в бюджете клиента. Исходный текст, не помещающийся в бюджет вместе
 /// с конвертом, заменяется отказом `result_too_large` с маршрутом к структуре
 /// модуля; ветвь с размером `bytes`, чей текст не поместится, получает
@@ -175,14 +306,7 @@ pub(crate) fn oversized_body(body_at: &str, bytes: u64) -> ViewError {
 /// клиента, а не предмета.
 pub(crate) fn apply_response_budget(result: &DomainResult, budget: usize) -> Cow<'_, DomainResult> {
     if let (true, Some(text)) = (result.ok, result.source_text.as_deref()) {
-        let mut envelope = result.clone();
-        envelope.source_text = None;
-        let envelope_bytes = serde_json::to_vec(&envelope).map_or(usize::MAX, |bytes| bytes.len());
-        // Отказ и пометка в сводке считают конверт одинаково — запасом;
-        // настоящий конверт сверх запаса тоже не проходит.
-        if !text_fits(text.len() as u64, budget)
-            || envelope_bytes.saturating_add(text.len()) > budget
-        {
+        if !body_fits(result, budget) {
             let error = match result.at.as_deref() {
                 Some(at) => oversized_body(at, text.len() as u64),
                 None => ViewError::new(
@@ -198,10 +322,20 @@ pub(crate) fn apply_response_budget(result: &DomainResult, budget: usize) -> Cow
                     text.len()
                 ),
             );
+            if let Some(chunk) = first_body_chunk(result, budget) {
+                refused.next.push(chunk);
+            }
             refused.next.extend(error.next().iter().cloned());
             return Cow::Owned(refused);
         }
         return Cow::Borrowed(result);
+    }
+    if !result.ok && result.source_text_read_hint.is_some() {
+        if let Some(chunk) = first_body_chunk(result, budget) {
+            let mut refused = result.clone();
+            refused.next.insert(0, chunk);
+            return Cow::Owned(refused);
+        }
     }
     let over = |branch: &Value| {
         branch
@@ -373,7 +507,9 @@ mod tests {
         assert_eq!(
             text.finish(),
             Ok(super::ModuleText::TooLarge {
-                bytes: 320 * 64 * 1024
+                bytes: 320 * 64 * 1024,
+                prefix: String::new(),
+                lines: 1
             })
         );
     }
@@ -405,7 +541,9 @@ mod tests {
         assert_eq!(
             accumulate(&[&bom, &exact, b"a"]),
             Ok(super::ModuleText::TooLarge {
-                bytes: MAX_SOURCE_TEXT_BYTES as u64 + 1
+                bytes: MAX_SOURCE_TEXT_BYTES as u64 + 1,
+                prefix: String::new(),
+                lines: 1
             })
         );
     }
@@ -433,5 +571,115 @@ mod tests {
                 format!("{module}.Method")
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod body_chunks {
+    use super::*;
+    use crate::domain::invocation::SourceTextReadHint;
+
+    fn body(text: &str, first: usize) -> DomainResult {
+        let at = QualifiedAddress::parse("main:CommonModule.Probe.Method.Ping.Body").unwrap();
+        let mut result = body_text_result(&at, serde_json::from_value(json!({"at":at.to_string(),"kind":"Body","title":"Body","can":[{"op":"code.replace"}]})).unwrap(), Some("revision".into()));
+        result.source_text = Some(text.into());
+        result.source_text_read_hint = Some(Box::new(SourceTextReadHint {
+            from_line: first,
+            to_line: first + text.lines().count().saturating_sub(1),
+            prefix: None,
+        }));
+        result
+    }
+
+    #[test]
+    fn continuation_fits_the_real_ranged_envelope_at_each_host_budget() {
+        let line = format!("{}\r\n", "ю".repeat(100));
+        let text = format!("{}конец", line.repeat(40));
+        let original = body(&text, 97);
+        for budget in [2500, 3000, 4000, 8192] {
+            let refused = apply_response_budget(&original, budget).into_owned();
+            assert!(!refused.ok, "{budget}");
+            let first = &refused.next[0]["args"]["at"];
+            let at = QualifiedAddress::parse(first.as_str().unwrap()).unwrap();
+            let range = at.line_range().unwrap();
+            assert_eq!(range.from, 97);
+            let prefix = text
+                .split_inclusive('\n')
+                .take(range.to - range.from + 1)
+                .collect::<String>();
+            let mut node = original.data.clone().unwrap().as_object().unwrap().clone();
+            node.insert("at".into(), json!(at.to_string()));
+            node.insert("can".into(), json!([]));
+            node.insert(
+                "props".into(),
+                json!({"lines":{"state":"range","from":range.from,"to":range.to}}),
+            );
+            let mut actual = body_text_result(&at, node, Some("revision".into()));
+            actual.source_text = Some(prefix);
+            assert!(body_fits(&actual, budget));
+            assert!(apply_response_budget(&actual, budget).ok);
+            let next_text = text
+                .split_inclusive('\n')
+                .take(range.to - range.from + 2)
+                .collect::<String>();
+            let next_at = QualifiedAddress::parse(&format!(
+                "{}#L{}-L{}",
+                at.without_line_range(),
+                range.from,
+                range.to + 1
+            ))
+            .unwrap();
+            actual.at = Some(next_at.to_string());
+            actual.data.as_mut().unwrap()["at"] = json!(next_at.to_string());
+            actual.data.as_mut().unwrap()["props"]["lines"]["to"] = json!(range.to + 1);
+            actual.source_text = Some(next_text);
+            assert!(
+                !body_fits(&actual, budget),
+                "must be the largest first prefix for {budget}"
+            );
+        }
+        assert_eq!(original.source_text.as_deref(), Some(text.as_str()));
+        assert_eq!(
+            original.source_text_read_hint.as_ref().unwrap().from_line,
+            97
+        );
+    }
+
+    #[test]
+    fn no_first_fitting_line_means_no_false_range_continuation() {
+        for text in ["a".repeat(4096), format!("{}\nshort\n", "я".repeat(4096))] {
+            let result = body(&text, 12);
+            let refused = apply_response_budget(&result, 2048).into_owned();
+            assert!(!refused.ok);
+            assert!(refused
+                .next
+                .iter()
+                .all(|next| !next["args"]["at"].as_str().unwrap_or("").contains("#L")));
+        }
+        let empty = body("", 1);
+        assert!(first_body_chunk(&empty, 2048).is_none());
+    }
+
+    #[test]
+    fn oversized_read_keeps_only_a_complete_bounded_prefix() {
+        let line = "я\r\n";
+        let text = line.repeat(MAX_SOURCE_TEXT_BYTES / line.len() + 10);
+        let mut accumulator = ModuleTextAccumulator::default();
+        for chunk in text.as_bytes().chunks(13) {
+            accumulator.push(chunk);
+        }
+        let ModuleText::TooLarge {
+            bytes,
+            prefix,
+            lines,
+        } = accumulator.finish().unwrap()
+        else {
+            panic!("oversized");
+        };
+        assert_eq!(bytes, text.len() as u64);
+        assert!(prefix.len() <= MAX_SOURCE_TEXT_BYTES);
+        assert!(prefix.ends_with("\r\n"));
+        assert_eq!(lines, text.lines().count());
+        assert_eq!(prefix, complete_prefix(&text));
     }
 }

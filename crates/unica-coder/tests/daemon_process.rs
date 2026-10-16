@@ -2,6 +2,11 @@
 mod frontend_process;
 use frontend_process::*;
 
+#[path = "daemon_process/endpoint_ownership.rs"]
+mod endpoint_ownership;
+#[path = "platform/daemon_endpoint_security.rs"]
+mod endpoint_security;
+
 use serde_json::Value;
 use std::fs::OpenOptions;
 use std::io::Write;

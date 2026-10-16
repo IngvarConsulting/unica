@@ -402,7 +402,10 @@ impl<'a> LogicalViewReadAuthority<'a> {
                         "the BSL module source file does not exist",
                     )
                 })?;
-            return Ok((NodeKind::Body.as_str().to_string(), line_range(1, count)));
+            return Ok((
+                NodeKind::Body.as_str().to_string(),
+                selected_lines(at, line_range(1, count))?,
+            ));
         }
         let projections = self.module_projection(&module_at, capability, admitted)?;
         let (kind, lines) = if region {
@@ -431,7 +434,105 @@ impl<'a> LogicalViewReadAuthority<'a> {
             }
         };
         self.read_checkpoint()?;
-        Ok((kind.as_str().to_string(), lines))
+        Ok((kind.as_str().to_string(), selected_lines(at, lines)?))
+    }
+
+    /// Inspect containment and source bytes in one retained projection, with
+    /// one final source identity/cancellation fence for the entire answer.
+    fn with_body_line_projection<T>(
+        &self,
+        module: &QualifiedAddress,
+        from: usize,
+        to: usize,
+        inspect: impl FnOnce(QualifiedAddress, &ModuleProjectionSet) -> T,
+    ) -> Result<T, ViewError> {
+        self.read_checkpoint()?;
+        let admitted = self.snapshot(module)?;
+        let route = route_logical_address(module, self.profile)
+            .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
+        let capability = route.module().ok_or_else(|| {
+            ViewError::new(
+                RefusalCode::BadValue,
+                "search hit does not name a BSL module",
+            )
+        })?;
+        let (module_at, _) = module_prefix(module, self.profile, capability)?;
+        self.verify_module_owner(&module_at, capability, &admitted)?;
+        let projections = self.module_projection(&module_at, capability, &admitted)?;
+        let body = projections
+            .methods()
+            .iter()
+            .filter(|method| from >= method.text_from_line && to <= method.to_line)
+            .min_by_key(|method| method.to_line - method.text_from_line)
+            .map_or_else(
+                || format!("{module_at}.Body"),
+                |method| format!("{}.Body", method.at),
+            );
+        let body = QualifiedAddress::parse(&body)
+            .map_err(|error| ViewError::new(RefusalCode::BadValue, error.to_string()))?;
+        let result = inspect(body, &projections);
+        self.read_checkpoint()?;
+        if self.snapshot(module)? != admitted {
+            return Err(ViewError::new(
+                RefusalCode::ConcurrentChange,
+                "source changed while search hit boundaries were read",
+            ));
+        }
+        Ok(result)
+    }
+
+    /// Resolves semantic containment from the same projection as Method
+    /// views. Provider symbols are never accepted as boundary evidence.
+    pub(crate) fn narrowest_body_for_lines(
+        &self,
+        module: &QualifiedAddress,
+        from: usize,
+        to: usize,
+    ) -> Result<QualifiedAddress, ViewError> {
+        self.with_body_line_projection(module, from, to, |body, _| body)
+    }
+
+    pub(crate) fn module_address_for_source_target(
+        &self,
+        target: &MetadataAddress,
+    ) -> Option<QualifiedAddress> {
+        let path = crate::infrastructure::logical_event_source::module_relative(
+            target,
+            self.read.source_set_kind(),
+        )
+        .ok()?;
+        crate::infrastructure::logical_event_source::module_address_for_relative(
+            self.read.source_set(),
+            self.read.source_set_kind(),
+            self.profile,
+            &path,
+        )
+    }
+
+    pub(crate) fn body_for_search_hit(
+        &self,
+        module: &QualifiedAddress,
+        from: usize,
+        to: usize,
+        snippet: &str,
+    ) -> Result<Option<QualifiedAddress>, ViewError> {
+        self.with_body_line_projection(module, from, to, |body, projection| {
+            let source = projection.source_text();
+            if from == 0 || to < from || to > source.lines().count() {
+                return None;
+            }
+            let start = source
+                .split_inclusive('\n')
+                .take(from - 1)
+                .map(str::len)
+                .sum::<usize>();
+            let end = source
+                .split_inclusive('\n')
+                .take(to)
+                .map(str::len)
+                .sum::<usize>();
+            source[start..end].contains(snippet).then_some(body)
+        })
     }
 
     #[cfg(test)]
@@ -1544,9 +1645,14 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
             ));
         }
         let target = module_source_address(&module_at, capability)?;
-        let text = self
-            .read
-            .module_text_within_limit(&target, || self.read_checkpoint())?;
+        let text = match at.line_range() {
+            Some(range) => self
+                .read
+                .module_text_range(&target, range, || self.read_checkpoint())?,
+            None => self
+                .read
+                .module_text_within_limit(&target, || self.read_checkpoint())?,
+        };
         Ok(Some(text))
     }
 
@@ -2539,7 +2645,11 @@ fn module_projection_view_data(
             if detail.name().is_none() && detail.kind() == NodeKind::Body =>
         {
             let method = find_method(projections, name)?;
-            Ok(module_text(requested, projections.method_text(method)))
+            module_text(
+                requested,
+                projections.method_text(method),
+                method.text_from_line,
+            )
         }
         (NodeKind::Method, Some(name), Some(detail))
             if detail.name().is_none() && detail.kind() == NodeKind::Compilation =>
@@ -2616,7 +2726,7 @@ fn module_projection_view_data(
                 .map(|range| serde_json::to_value(range).unwrap_or(Value::Null))
                 .collect(),
         ),
-        (NodeKind::Body, None, None) => Ok(module_text(requested, projections.source_text())),
+        (NodeKind::Body, None, None) => module_text(requested, projections.source_text(), 1),
         _ => Err(ViewError::new(
             RefusalCode::NotFound,
             "module projection suffix is not available",
@@ -2625,23 +2735,79 @@ fn module_projection_view_data(
 }
 
 /// Узел `Body` с текстом; предел проверяет тот, кто отдаёт сам текст.
-fn module_text(requested: &QualifiedAddress, text: &str) -> NodeViewData {
+fn module_text(
+    requested: &QualifiedAddress,
+    text: &str,
+    first_line: usize,
+) -> Result<NodeViewData, ViewError> {
+    let count = text.lines().count();
+    let (from, to) = requested.line_range().map_or(
+        (first_line, first_line + count.saturating_sub(1)),
+        |range| (range.from, range.to),
+    );
+    let text = if let Some(range) = requested.line_range() {
+        selected_lines(
+            requested,
+            line_range(first_line, first_line + count.saturating_sub(1)),
+        )?;
+        let start = range.from - first_line;
+        let end = range.to - first_line;
+        let mut offset = 0;
+        let mut first = 0;
+        let mut last = 0;
+        for (line, fragment) in text.split_inclusive('\n').enumerate() {
+            if line == start {
+                first = offset;
+            }
+            offset += fragment.len();
+            if line == end {
+                last = offset;
+                break;
+            }
+        }
+        &text[first..last]
+    } else {
+        text
+    };
     let text = if admit_text(text).is_ok() {
         SourceText::Whole(text.to_string())
     } else {
         SourceText::Oversized {
             bytes: text.len() as u64,
+            prefix: crate::application::v13::source_text::complete_prefix(text).to_string(),
         }
     };
-    NodeViewData::Text(TextView::new(
+    Ok(NodeViewData::Text(TextView::new(
         NodeView::new(
             requested.to_string(),
             NodeKind::Body.as_str(),
             NodeKind::Body.as_str(),
             Map::new(),
         ),
-        text,
-    ))
+        SourceText::Window {
+            text: Box::new(text),
+            from,
+            to,
+        },
+    )))
+}
+
+fn selected_lines(at: &QualifiedAddress, full: ResolvedLines) -> Result<ResolvedLines, ViewError> {
+    let Some(range) = at.line_range() else {
+        return Ok(full);
+    };
+    match full {
+        ResolvedLines::Range { from, to } if range.from >= from && range.to <= to => {
+            Ok(ResolvedLines::Range {
+                from: range.from,
+                to: range.to,
+            })
+        }
+        _ => Err(ViewError::new(
+            RefusalCode::BadValue,
+            "Body line selector is outside this Body; use absolute file lines within its bounds",
+        )),
+    }
 }
 
 fn module_collection(

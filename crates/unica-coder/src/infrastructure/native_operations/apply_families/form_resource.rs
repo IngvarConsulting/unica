@@ -395,6 +395,7 @@ fn parse_command_interface_operation(
         ));
     }
     let interface = QualifiedAddress {
+        line_range: None,
         source_set: target.source_set().to_string(),
         segments: segments.to_vec(),
     };

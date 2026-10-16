@@ -32,6 +32,15 @@ const CODEX_RESPONSE_BUDGET: usize = 46 * 1024;
 /// в файл; с объявлением 500 000 символов целиком доходят 800 КБ.
 const CLAUDE_RESPONSE_BUDGET: usize = 72 * 1024;
 
+/// ZCode 3.14.1 (клиент 0.16.9) обрезает ответ на 50 000 байтах:
+/// maxModelBytes=50000, strategy=truncate. Зонд 16.10.2026 в #1473
+/// подтвердил потерю конечного маркера сверх границы и его сохранность у
+/// 49 152 байт текста с конвертом: ASCII и кириллица с TAB, CRLF и escaping,
+/// в том числе два content-блока, как у Body. 48 КиБ всего ответа оставляют
+/// 848 байт до наблюдаемого предела. Бюджет относится к существующему пути
+/// исходного текста; общие structured-ответы и страницы им не ограничены.
+const ZCODE_RESPONSE_BUDGET: usize = 48 * 1024;
+
 /// Предел символов текстового ответа, который объявляют `unica.view`
 /// и `unica.task.result`. Он относится к любому их ответу, не только
 /// к тексту `Body`: страницы коллекций у этого хоста тоже доходят до модели
@@ -52,6 +61,7 @@ const CLAUDE_LAUNCH_ENV: &str = "CLAUDE_PLUGIN_DATA";
 /// `clientInfo.name` из `initialize`.
 const CODEX_CLIENT: &str = "codex-mcp-client";
 const CLAUDE_CLIENT: &str = "claude-code";
+const ZCODE_CLIENT: &str = "zcode";
 
 /// Бюджет ответа одного клиента в байтах UTF-8.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,10 +102,11 @@ pub fn source_text_tool_meta() -> (&'static str, u64) {
 
 /// Клиенты с измеренным бюджетом: имя из `initialize` и бюджет в байтах.
 /// Для проверок по проводу, которым нельзя называть хосты самим.
-pub fn known_client_budgets() -> [(&'static str, usize); 2] {
+pub fn known_client_budgets() -> [(&'static str, usize); 3] {
     [
         (CODEX_CLIENT, CODEX_RESPONSE_BUDGET),
         (CLAUDE_CLIENT, CLAUDE_RESPONSE_BUDGET),
+        (ZCODE_CLIENT, ZCODE_RESPONSE_BUDGET),
     ]
 }
 
@@ -136,11 +147,12 @@ fn resolve_response_budget(
         return match name {
             CODEX_CLIENT => ResponseBudget(CODEX_RESPONSE_BUDGET),
             CLAUDE_CLIENT => ResponseBudget(CLAUDE_RESPONSE_BUDGET),
+            ZCODE_CLIENT => ResponseBudget(ZCODE_RESPONSE_BUDGET),
             _ => ResponseBudget::default(),
         };
     }
     if read_env(ZCODE_LAUNCH_ENV).is_some() {
-        return ResponseBudget::default();
+        return ResponseBudget(ZCODE_RESPONSE_BUDGET);
     }
     if read_env(CLAUDE_LAUNCH_ENV).is_some() {
         return ResponseBudget(CLAUDE_RESPONSE_BUDGET);
@@ -171,7 +183,7 @@ mod tests {
             resolve_response_budget(Some("claude-code"), &none).bytes(),
             73_728
         );
-        for other in [None, Some("zcode"), Some("inspector"), Some("")] {
+        for other in [None, Some("inspector"), Some("")] {
             assert_eq!(
                 resolve_response_budget(other, &none).bytes(),
                 16_384,
@@ -189,6 +201,52 @@ mod tests {
             MAX_RESPONSE_BUDGET,
             CLAUDE_RESPONSE_BUDGET.max(CODEX_RESPONSE_BUDGET)
         );
+    }
+
+    #[test]
+    fn zcode_measured_budget_preserves_client_and_environment_precedence() {
+        let inherited = environment(&[
+            ("CLAUDE_PLUGIN_DATA", "/claude"),
+            ("ZCODE_PLUGIN_DATA", "/zcode"),
+        ]);
+        for (client, expected) in [
+            (Some("zcode"), 49_152),
+            (None, 49_152),
+            (Some("codex-mcp-client"), 47_104),
+            (Some("claude-code"), 73_728),
+            (Some("inspector"), 16_384),
+            (Some("ZCode"), 16_384),
+            (Some(""), 16_384),
+        ] {
+            assert_eq!(
+                resolve_response_budget(client, &inherited).bytes(),
+                expected,
+                "{client:?}"
+            );
+        }
+        let explicit = environment(&[
+            ("UNICA_RESPONSE_BUDGET", "20000"),
+            ("ZCODE_PLUGIN_DATA", "/zcode"),
+        ]);
+        assert_eq!(
+            resolve_response_budget(Some("zcode"), &explicit).bytes(),
+            20_000
+        );
+        let invalid = environment(&[
+            ("UNICA_RESPONSE_BUDGET", "0"),
+            ("ZCODE_PLUGIN_DATA", "/zcode"),
+        ]);
+        assert_eq!(
+            resolve_response_budget(Some("zcode"), &invalid).bytes(),
+            49_152
+        );
+        assert_eq!(
+            known_client_budgets()
+                .into_iter()
+                .find(|(name, _)| *name == "zcode"),
+            Some(("zcode", 49_152))
+        );
+        assert_eq!(MAX_RESPONSE_BUDGET, 73_728);
     }
 
     #[test]
@@ -225,12 +283,12 @@ mod tests {
             resolve_response_budget(None, &claude_launch).bytes(),
             CLAUDE_RESPONSE_BUDGET
         );
-        // ZCode повторяет переменные Claude Code, но его предел не измерен.
+        // ZCode повторяет переменные Claude Code и проверяется первым.
         let zcode_launch =
             environment(&[("CLAUDE_PLUGIN_DATA", "/d"), ("ZCODE_PLUGIN_DATA", "/z")]);
         assert_eq!(
             resolve_response_budget(None, &zcode_launch).bytes(),
-            DEFAULT_RESPONSE_BUDGET
+            ZCODE_RESPONSE_BUDGET
         );
     }
 }

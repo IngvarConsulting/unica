@@ -457,6 +457,51 @@ impl AddressSegment {
 pub(crate) struct QualifiedAddress {
     pub(crate) source_set: String,
     pub(crate) segments: Vec<AddressSegment>,
+    pub(crate) line_range: Option<BodyLineRange>,
+}
+
+/// Inclusive absolute file lines; a single-line selector keeps its spelling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct BodyLineRange {
+    pub(crate) from: usize,
+    pub(crate) to: usize,
+    single: bool,
+}
+
+impl BodyLineRange {
+    fn parse(raw: &str) -> Result<Self, AddressError> {
+        let bad = || {
+            AddressError::new(AddressErrorCode::InvalidName, "Body line selector must be #L<n> or #L<a>-L<b>, with positive ascending file lines")
+        };
+        let (from, to, single) = match raw.strip_prefix('L').and_then(|raw| raw.split_once("-L")) {
+            Some((from, to)) => (from, to, false),
+            None => {
+                let from = raw.strip_prefix('L').ok_or_else(bad)?;
+                (from, from, true)
+            }
+        };
+        let number = |s: &str| {
+            if s.is_empty() || !s.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err(bad());
+            }
+            s.parse::<usize>().ok().filter(|n| *n > 0).ok_or_else(bad)
+        };
+        let (from, to) = (number(from)?, number(to)?);
+        if to < from {
+            return Err(bad());
+        }
+        Ok(Self { from, to, single })
+    }
+}
+
+impl fmt::Display for BodyLineRange {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.single {
+            write!(f, "#L{}", self.from)
+        } else {
+            write!(f, "#L{}-L{}", self.from, self.to)
+        }
+    }
 }
 
 impl QualifiedAddress {
@@ -490,6 +535,35 @@ impl QualifiedAddress {
     }
 
     pub(crate) fn parse(raw: &str) -> Result<Self, AddressError> {
+        // A free-text DCS Item can itself end in #L1. Only a proven nameless
+        // Body treats # as a selector; other names retain their old grammar.
+        if let Some((owner, selector)) = raw.split_once('#') {
+            if let Ok(mut body) = Self::parse(owner) {
+                if body
+                    .segments
+                    .last()
+                    .is_some_and(|s| s.kind == NodeKind::Body && s.name.is_none())
+                {
+                    if body.line_range.is_some() {
+                        return Err(AddressError::new(
+                            AddressErrorCode::InvalidName,
+                            "Body accepts one line selector",
+                        ));
+                    }
+                    if crate::domain::platform_profile::PlatformProfile::v8_3_27()
+                        .module_prefix_capability(&body)
+                        .is_none()
+                    {
+                        return Err(AddressError::new(
+                            AddressErrorCode::InvalidName,
+                            "line selectors address only a BSL module Body or Method Body",
+                        ));
+                    }
+                    body.line_range = Some(BodyLineRange::parse(selector)?);
+                    return Ok(body);
+                }
+            }
+        }
         let Some((source_set, logical_path)) = raw.split_once(':') else {
             return Err(AddressError::new(
                 AddressErrorCode::SourceSetRequired,
@@ -636,6 +710,7 @@ impl QualifiedAddress {
         }
 
         let address = Self {
+            line_range: None,
             source_set: source_set.to_string(),
             segments,
         };
@@ -689,13 +764,26 @@ impl QualifiedAddress {
     /// Адрес из первых `len` сегментов: владелец узла по его адресу.
     pub(crate) fn prefix(&self, len: usize) -> Self {
         Self {
+            line_range: None,
             source_set: self.source_set.clone(),
             segments: self.segments[..len.min(self.segments.len())].to_vec(),
         }
     }
 
     pub(crate) fn logical_path(&self) -> String {
-        render_segments(&self.segments)
+        let mut rendered = render_segments(&self.segments);
+        if let Some(range) = self.line_range {
+            rendered.push_str(&range.to_string());
+        }
+        rendered
+    }
+
+    pub(crate) fn line_range(&self) -> Option<BodyLineRange> {
+        self.line_range
+    }
+
+    pub(crate) fn without_line_range(&self) -> Self {
+        self.prefix(self.segments.len())
     }
 
     /// Член коллекции `self` с именем `name`: адрес ветви и имя, где точка
@@ -713,6 +801,7 @@ impl QualifiedAddress {
         }
         Some((
             Self {
+                line_range: None,
                 source_set: self.source_set.clone(),
                 segments: owner.to_vec(),
             },
@@ -1422,6 +1511,67 @@ mod form_metadata_addresses {
             "main:CommonForm.Main.Metadata.Metadata",
         ] {
             assert!(QualifiedAddress::parse(raw).is_err(), "{raw}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod body_line_addresses {
+    use super::{NodeKind, QualifiedAddress};
+
+    #[test]
+    fn body_line_suffix_keeps_the_bsl_node_and_round_trips() {
+        for raw in [
+            "main:CommonModule.Probe.Body#L1",
+            "main:CommonModule.Probe.Body#L2-L5",
+            "main:Catalog.Items.Module.Object.Method.Ping.Body#L4-L5",
+            "ext:Catalog.Items.Form.Main.Module.Form.Body#L12",
+            "main:ExternalDataProcessor.Import.Form.Main.Module.Form.Body#L12-L15",
+        ] {
+            let at = QualifiedAddress::parse(raw).unwrap_or_else(|error| panic!("{raw}: {error}"));
+            assert_eq!(at.to_string(), raw);
+            let last = at.segments().last().unwrap();
+            assert_eq!(last.kind(), NodeKind::Body);
+            assert!(
+                last.name().is_none(),
+                "the line selector is not an application name"
+            );
+            assert_eq!(QualifiedAddress::parse(&at.to_string()).unwrap(), at);
+        }
+    }
+
+    #[test]
+    fn body_line_suffix_rejects_malformed_ranges_and_other_nodes() {
+        for raw in [
+            "main:CommonModule.Probe.Body#L0",
+            "main:CommonModule.Probe.Body#L5-L3",
+            "main:CommonModule.Probe.Body#L",
+            "main:CommonModule.Probe.Body#L1-2",
+            "main:CommonModule.Probe.Body#L-1",
+            "main:CommonModule.Probe.Body#L+1",
+            "main:CommonModule.Probe.Body#L1#L2",
+            "main:CommonModule.Probe.Body#L1-L2.Method.Ping",
+            "main:CommonModule.Probe.Body#L184467440737095516160",
+            "main:CommonModule.Probe#L1",
+            "main:CommonModule.Probe.Method.Ping#L1",
+            "main:CommonModule.Probe.Body.Can.code.replace#L1",
+            "main:CommonModule.Probe.Body#L1.Can.code.replace",
+            "main:Catalog.Items.Attribute.Code#L1",
+        ] {
+            assert!(QualifiedAddress::parse(raw).is_err(), "{raw}");
+        }
+    }
+
+    #[test]
+    fn a_hash_inside_a_free_text_dcs_item_is_not_a_body_line_selector() {
+        for raw in [
+            "main:Report.R.Template.S.Setting.V.Item.Итоги #1",
+            "main:Report.R.Template.S.Setting.V.Item.Body#L1",
+            "main:Report.R.Template.S.Setting.V.Item.Группа#L1-L2",
+        ] {
+            let at = QualifiedAddress::parse(raw).unwrap();
+            assert_eq!(at.to_string(), raw);
+            assert_eq!(at.segments().last().unwrap().kind(), NodeKind::Item);
         }
     }
 }

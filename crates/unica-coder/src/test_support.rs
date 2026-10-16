@@ -51,7 +51,19 @@ impl Drop for ProcessCwdGuard {
 }
 
 pub(crate) fn tree_snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
-    fn visit(root: &Path, current: &Path, output: &mut BTreeMap<PathBuf, Vec<u8>>) {
+    tree_snapshot_with(root, &|path| std::fs::read(path).unwrap())
+}
+
+fn tree_snapshot_with(
+    root: &Path,
+    read_file: &impl Fn(&Path) -> Vec<u8>,
+) -> BTreeMap<PathBuf, Vec<u8>> {
+    fn visit(
+        root: &Path,
+        current: &Path,
+        output: &mut BTreeMap<PathBuf, Vec<u8>>,
+        read_file: &impl Fn(&Path) -> Vec<u8>,
+    ) {
         let mut entries = std::fs::read_dir(current)
             .unwrap()
             .map(|entry| entry.unwrap())
@@ -61,17 +73,40 @@ pub(crate) fn tree_snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
             let path = entry.path();
             let metadata = entry.metadata().unwrap();
             if metadata.is_dir() {
-                visit(root, &path, output);
+                visit(root, &path, output, read_file);
             } else if metadata.is_file() {
                 output.insert(
                     path.strip_prefix(root).unwrap().to_path_buf(),
-                    std::fs::read(path).unwrap(),
+                    read_file(&path),
                 );
             }
         }
     }
 
     let mut snapshot = BTreeMap::new();
-    visit(root, root, &mut snapshot);
+    visit(root, root, &mut snapshot, read_file);
+    snapshot
+}
+
+/// Windows mandatory byte-range locks also reject a new reader in the owning
+/// process. An exact retained-owner identity and current length zero prove the
+/// complete bytes of that marker without another byte read or unlocking it.
+pub(crate) fn tree_snapshot_with_empty_owned_files(
+    root: &Path,
+    owners: &BTreeMap<PathBuf, crate::infrastructure::platform::filesystem::FileIdentity>,
+) -> BTreeMap<PathBuf, Vec<u8>> {
+    let snapshot = tree_snapshot_with(root, &|path| {
+        let relative = path.strip_prefix(root).unwrap();
+        let Some(owner_identity) = owners.get(relative) else {
+            return std::fs::read(path).unwrap();
+        };
+        crate::infrastructure::platform::filesystem::read_snapshot_file_with_empty_owner(
+            path,
+            *owner_identity,
+        )
+    });
+    crate::infrastructure::platform::filesystem::assert_owned_snapshot_markers_present(
+        &snapshot, owners,
+    );
     snapshot
 }

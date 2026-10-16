@@ -2643,6 +2643,7 @@ mod tests {
             cursor: Some("cursor-2".into()),
             page: None,
             source_text: None,
+            source_text_read_hint: None,
         }
     }
 

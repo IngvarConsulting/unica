@@ -1230,7 +1230,9 @@ impl OperationDescriptor {
     /// Применима ли операция к месту: вид набора, маршрут и форма адреса.
     /// Формат макета этим ответом не проверяется — см. `admits_template_format`.
     pub(crate) fn applies_at(self, site: &OperationSite<'_>) -> bool {
-        site.source.writes(self.family) && self.applicability.matches(site)
+        site.at.line_range().is_none()
+            && site.source.writes(self.family)
+            && self.applicability.matches(site)
     }
 
     /// Фильтр формата макета. Операции СКД применимы к макету-схеме,
@@ -1308,6 +1310,7 @@ impl OperationDescriptor {
         let mut candidates = query
             .into_iter()
             .chain((1..segments.len()).rev().map(|length| QualifiedAddress {
+                line_range: None,
                 source_set: site.at.source_set().to_string(),
                 segments: segments[..length].to_vec(),
             }))
@@ -1357,6 +1360,7 @@ impl OperationDescriptor {
         }
         let name = segments[position].name()?;
         let template = QualifiedAddress {
+            line_range: None,
             source_set: site.at.source_set().to_string(),
             segments: segments[..position].to_vec(),
         };
@@ -2219,6 +2223,7 @@ fn prefix_through(
         .rposition(|segment| kind(segment.kind()))?
         + 1;
     Some(QualifiedAddress {
+        line_range: None,
         source_set: at.source_set().to_string(),
         segments: at.segments()[..length].to_vec(),
     })
@@ -2260,6 +2265,7 @@ fn named_data_set(
         .rposition(|segment| segment.kind() == NodeKind::DataSet && segment.name() == Some(name))
     {
         return Some(NamedNode::Found(QualifiedAddress {
+            line_range: None,
             source_set: at.source_set().to_string(),
             segments: segments[..=index].to_vec(),
         }));
@@ -2303,6 +2309,7 @@ fn without_event(at: &QualifiedAddress) -> QualifiedAddress {
     match at.segments() {
         [owner @ .., last] if last.kind() == NodeKind::Event && !owner.is_empty() => {
             QualifiedAddress {
+                line_range: None,
                 source_set: at.source_set().to_string(),
                 segments: owner.to_vec(),
             }
@@ -2326,6 +2333,7 @@ fn expand_anchor(template: &str, at: &QualifiedAddress) -> Option<String> {
     };
     let length = at.segments().iter().rposition(matches)? + 1;
     let anchor = QualifiedAddress {
+        line_range: None,
         source_set: at.source_set().to_string(),
         segments: at.segments()[..length].to_vec(),
     };
@@ -2483,6 +2491,7 @@ impl RetiredOperation {
             .rposition(|segment| segment.kind() == creates)
         {
             Some(index) if index > 0 => QualifiedAddress {
+                line_range: None,
                 source_set: at.source_set().to_string(),
                 segments: at.segments()[..index].to_vec(),
             },

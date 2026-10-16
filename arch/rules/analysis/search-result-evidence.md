@@ -13,6 +13,9 @@ check:
   - crates/unica-coder/src/application/mod.rs::code_search_schema_accepts_a_real_partial_provider_section
   - crates/unica-coder/src/application/code_intelligence.rs::malformed_provider_subset_remains_useful_without_claiming_complete_coverage
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::public_role_search_surfaces_partial_provider_warning_and_hit
+  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::a_text_search_hit_opens_the_narrowest_body_line_address
+  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::body_line_provider_search_uses_current_spans_and_preserves_evidence
+  - crates/unica-coder/tests/v13_search_integration.rs::public_body_line_ranges_open_search_hits_and_refuse_line_edits
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::canonical_role_search_preserves_typed_failure_without_private_provider_text
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::provider_search_failure_requires_one_selected_section_and_yields_to_cancellation
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::provider_limit_remains_visible_after_the_last_received_page
@@ -73,6 +76,13 @@ check:
 наиболее подходящие совпадения; поиск имён — точные совпадения перед близкими;
 буквальный поиск — места в порядке файлов. Неполнота результата обозначается
 явно. Сводка не заменяет первую страницу полезных совпадений.
+Адрес текстового совпадения открывает абсолютный диапазон строк `Body`.
+Если текущая структура модуля подтверждает содержащий метод, адрес ведёт
+в его `Body`; иначе модульный адрес сохраняет полезное совпадение, а предел
+установления границ метода обозначается явно. Строка, колонка, фрагмент
+и ранг поставщика сохраняются. Адрес для провайдерного фрагмента выдаётся,
+только если текущий текст подтверждает этот фрагмент в указанном диапазоне;
+имя символа поставщика само по себе границу метода не доказывает.
 Общий [предел страницы](../mcp/read-page-budget.md) сохраняется.
 Провайдерный поиск выдаёт страницы полученного окна, сохраняя его роль,
 поставщика и полноту. Курсор не доказывает, что поставщик нашёл всё: при

@@ -5545,9 +5545,9 @@ fn main() {
                 found.aliases
             ));
         }
-        if found.capability_path_references != 5 {
+        if found.capability_path_references != 6 {
             return Err(format!(
-                "actor read capability must have exactly five production path references (impl, three closed issuance signatures, singleton construction), found {}",
+                "actor read capability must have exactly six production path references (impl, four closed issuance signatures, singleton construction), found {}",
                 found.capability_path_references
             ));
         }
@@ -5595,6 +5595,39 @@ fn main() {
             }
             "#,
             r#"
+    pub(in crate::infrastructure::daemon) fn apply_range_refusal_source(
+        &self,
+        at: &QualifiedAddress,
+    ) -> Result<ActorReadSourceCapability, String> {
+        let ActorExecutionRevision::UnpublishedApply(confirmed) = &self.revision else {
+            return Err("range-refusal reads require an unpublished apply invocation".into());
+        };
+        if confirmed.load(std::sync::atomic::Ordering::Acquire)
+            || at.line_range().is_none()
+            || !self.original_body_line_targets().contains(at)
+        {
+            return Err(
+                "range-refusal read must name an original read-only Body range before mutation"
+                    .into(),
+            );
+        }
+        let binding = &self
+            .invocation
+            .read_sources
+            .iter()
+            .find(|source| source.binding.source_set_name() == at.source_set())
+            .ok_or_else(|| "range-refusal source was not admitted".to_string())?
+            .binding;
+        let source = ActorLogicalReadSourceLease {
+            binding: binding.clone(),
+            read_identity: uuid::Uuid::new_v4().to_string(),
+            registration_cache: self.invocation.actor.source_artifacts(binding)?,
+        };
+        self.issue_read_source(&source, ProviderDeadline::no_deadline())
+    }
+
+            "#,
+            r#"
             fn issue_read_source(
                 &self,
                 source: &ActorLogicalReadSourceLease,
@@ -5621,7 +5654,7 @@ fn main() {
         });
         if found.function_references.len() != expected_issuance_methods.len() {
             return Err(format!(
-                "actor read capability may appear only in the three closed issuance signatures, found {}",
+                "actor read capability may appear only in the four closed issuance signatures, found {}",
                 found.function_references.len()
             ));
         }
@@ -5662,9 +5695,9 @@ fn main() {
             }
         }
 
-        if found.issuer_path_references != 0 || found.issuance_calls.len() != 2 {
+        if found.issuer_path_references != 0 || found.issuance_calls.len() != 3 {
             return Err(
-                "the private issuer may only be called directly by the two closed read entries"
+                "the private issuer may only be called directly by the three closed read entries"
                     .to_string(),
             );
         }
@@ -5672,7 +5705,12 @@ fn main() {
             let expected = match function.as_deref() {
                 Some("read_sources") => "self.issue_read_source(source, lease.deadline)",
                 Some("layout_read_source") => "self.issue_read_source(&source, lease.deadline)",
-                _ => return Err("private issuance escaped the two closed read entries".to_string()),
+                Some("apply_range_refusal_source") => {
+                    "self.issue_read_source(&source, ProviderDeadline::no_deadline())"
+                }
+                _ => {
+                    return Err("private issuance escaped the three closed read entries".to_string())
+                }
             };
             if owner.as_deref() != Some("ActorBoundExecution")
                 || !expression_is(&syn::Expr::MethodCall((*call).clone()), expected)
@@ -6937,6 +6975,11 @@ struct ActorLogicalReadLease {"#,
         // demonstrate that any of these individual boundary mutations is caught.
         audit_actor_read_source_capability_api(source).unwrap();
         let substitutions = [
+            ("|| !self.original_body_line_targets().contains(at)", "|| false"),
+            ("if confirmed.load(std::sync::atomic::Ordering::Acquire)", "if false"),
+            (".find(|source| source.binding.source_set_name() == at.source_set())", ".find(|source| source.binding.source_set_name() == \"foreign\")"),
+            ("self.issue_read_source(&source, ProviderDeadline::no_deadline())", "self.issue_read_source(&source, ProviderDeadline::from_budget(Duration::from_secs(120)))"),
+
             ("    fn issue_read_source(", "    pub(super) fn issue_read_source("),
             ("    fn issue_read_source(", "    pub fn issue_read_source("),
             (
@@ -7621,8 +7664,11 @@ struct ActorLogicalReadLease {"#,
         let first_match = &object_search.data.as_ref().unwrap()["matches"][0];
         assert_eq!(first_match["scope"], "main:Catalog.Items");
         assert!(first_match.get("file").is_none());
-        // Область поиска и модуль совпадения — разные поля (#1298).
-        assert_eq!(first_match["at"], "main:Catalog.Items.Module.Object");
+        // Область поиска и читаемый адрес совпадения — разные поля (#1298).
+        assert_eq!(
+            first_match["at"],
+            "main:Catalog.Items.Module.Object.Method.Проверка.Body#L2"
+        );
         assert!(
             !std::fs::read_to_string(source.join("Catalogs/Items.xml"))
                 .unwrap()
