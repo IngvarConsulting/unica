@@ -1015,6 +1015,7 @@ PAGE = r"""<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Наблюдатель адресов</title>
 <style>
+#tree .row { -webkit-user-select: none; user-select: none; }
 :root {
   --bg: #fbfbfa; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66; --line: #e3e2dd;
   --accent: #2f5fb3; --accent-bg: #e8eefa; --ok: #1f7a3f; --bad: #b3261e; --warn: #8a5a00;
