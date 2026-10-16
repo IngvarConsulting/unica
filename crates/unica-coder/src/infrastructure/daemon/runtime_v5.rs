@@ -6106,7 +6106,11 @@ impl V5ReceiptRuntime {
                 HolderReplyProjection::Retired => return Err(ReceiptLedgerError::ReceiptNotFound),
                 HolderReplyProjection::Unchanged => {}
                 HolderReplyProjection::Normalize => {
-                    let fresh = self.resolve_task(snapshot.task_id(), deadline)?;
+                    // The canonical body already committed its Task. Observe
+                    // that decision under one fresh read-step bound, including
+                    // every Reload; the original response cutoff is unchanged.
+                    let read_deadline = committed_decision_step_deadline(deadline);
+                    let fresh = self.resolve_task(snapshot.task_id(), read_deadline)?;
                     if fresh.invocation_id() != snapshot.invocation_id()
                         || fresh.receipt_key_digest() != snapshot.receipt_key_digest()
                     {

@@ -6717,6 +6717,160 @@ fn an_unjoined_task_reply_does_not_read_its_canonical_store_again() {
         0,
         "an unrelated canonical handoff must not acquire another Task read"
     );
+    change_unrelated_holder_membership(&runtime);
+    let error = runtime
+        .project_holder_reply(
+            &before,
+            V5RuntimeReply::Json(V5ServerResponse::Task {
+                snapshot: canonical,
+            }),
+            Instant::now() - Duration::from_millis(1),
+        )
+        .err()
+        .expect("a required fresh observation must propagate its actual store failure");
+    assert!(
+        matches!(error, ReceiptLedgerError::StoreUnavailable),
+        "normalization cannot return the old snapshot or replace a store failure with expiry: {error:?}"
+    );
+    assert_eq!(hooks.reads.load(Ordering::SeqCst), 1);
+}
+
+fn change_unrelated_holder_membership(runtime: &V5ReceiptRuntime) {
+    let request = RequestIdentity::new(
+        runtime.core_identity.digest().clone(),
+        V5ToolIdentity::View,
+        normalized_arguments_hash(&serde_json::Map::new()),
+        request_scope_hash("normalization-neighbor").unwrap(),
+    );
+    let leader = ReceiptKey::new(InvocationId::new(), TaskId::new(), request.clone());
+    let joiner = ReceiptKey::new(InvocationId::new(), TaskId::new(), request);
+    assert!(runtime.joins.register_leader(
+        &leader,
+        crate::application::invocation::InvocationResponseDeadline::capture(Arc::new(
+            crate::application::ports::TokioClock,
+        )),
+        runtime.joins.mutation_epoch(),
+    ));
+    runtime
+        .joins
+        .attach(
+            &leader.request_identity(),
+            leader.reserved_task_id(),
+            &joiner,
+        )
+        .expect("attach a different call, without changing the observed Task");
+}
+
+#[derive(Default)]
+struct HolderNormalizationReadHooks {
+    runtime: Mutex<std::sync::Weak<V5ReceiptRuntime>>,
+    armed: AtomicBool,
+    deadlines: Mutex<Vec<Instant>>,
+}
+
+impl V5RuntimeHooks for HolderNormalizationReadHooks {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn runtime_opened(&self, runtime: &Arc<V5ReceiptRuntime>) {
+        *self.runtime.lock().unwrap() = Arc::downgrade(runtime);
+    }
+
+    fn pause(&self, point: V5PausePoint, deadline: Instant) -> Result<(), ReceiptLedgerError> {
+        if point == V5PausePoint::BeforeRetirementSnapshot && self.armed.load(Ordering::SeqCst) {
+            let first = {
+                let mut deadlines = self.deadlines.lock().unwrap();
+                deadlines.push(deadline);
+                deadlines.len() == 1
+            };
+            if first {
+                let runtime = self.runtime.lock().unwrap().upgrade().unwrap();
+                // Change membership after resolve_task captured its context.
+                // The real canonical read must finish, then Reload must use
+                // the same read-step deadline rather than start a new clock.
+                change_unrelated_holder_membership(&runtime);
+            }
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn a_committed_task_reply_gets_one_read_step_after_the_request_deadline() {
+    let root = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(root.path()).unwrap();
+    let identity = CoreIdentity::production_v5();
+    let clock = Arc::new(ManualEpochClock::new(1_000));
+    let hooks = Arc::new(HolderNormalizationReadHooks::default());
+    let config = DaemonServerConfig::new(
+        state_root.clone(),
+        identity.clone(),
+        Duration::from_millis(80),
+    )
+    .with_v5_epoch_clock_for_test(clock.clone())
+    .with_runtime_hooks_for_test(hooks.clone());
+    let state = DaemonStateDirectory::open(&state_root, &identity).unwrap();
+    let runtime = Arc::new(V5ReceiptRuntime::open(&state, &config).unwrap());
+    hooks.runtime_opened(&runtime);
+    let task = materialize_completed_task(
+        &runtime,
+        &identity,
+        &clock,
+        "normalization-target",
+        1_000,
+        1_001,
+        "durable result before reply normalization",
+    );
+    let before = runtime.joins.capture_reply(task);
+    let canonical = runtime
+        .resolve_receipt_task(task, Instant::now() + Duration::from_secs(5))
+        .expect("read the Task completed through real receipt/link/Task stores");
+    assert!(matches!(&canonical, V5DaemonTaskSnapshot::Completed { .. }));
+    change_unrelated_holder_membership(&runtime);
+    assert_eq!(
+        runtime.joins.reply_projection(&before),
+        HolderReplyProjection::Normalize,
+        "a different group's attach requires conservative fresh observation"
+    );
+    hooks.armed.store(true, Ordering::SeqCst);
+
+    // Put the existing production normalizer at D < now < response D+125ms
+    // by choosing its input anchor, without delaying a real commit or sleeping.
+    let observed_at = Instant::now();
+    let request_deadline = observed_at - Duration::from_millis(1);
+    let response_deadline = request_deadline + RESPONSE_SERIALIZATION_MARGIN;
+    assert!(request_deadline < observed_at && observed_at < response_deadline);
+    let reply = runtime.project_holder_reply(
+        &before,
+        V5RuntimeReply::Json(V5ServerResponse::Invocation {
+            outcome: V5InvocationResponse::Task {
+                snapshot: canonical.clone(),
+            },
+        }),
+        request_deadline,
+    );
+    let reply = reply.expect(
+        "a committed Task must not become Overloaded only because its original request deadline elapsed",
+    );
+    let V5RuntimeReply::Json(V5ServerResponse::Invocation {
+        outcome: V5InvocationResponse::Task { snapshot },
+    }) = reply
+    else {
+        panic!("normalization must preserve the Task reply envelope");
+    };
+    assert_eq!(snapshot, canonical);
+    let reads = hooks.deadlines.lock().unwrap();
+    assert_eq!(
+        reads.len(),
+        2,
+        "the unrelated attach must force one real Reload"
+    );
+    assert!(reads[0] > request_deadline);
+    assert_eq!(
+        reads[0], reads[1],
+        "Reload must not extend its read-step budget"
+    );
 }
 
 fn retirement_link(runtime: &V5ReceiptRuntime, task_id: TaskId) -> Option<TaskLifecycleLinkRecord> {

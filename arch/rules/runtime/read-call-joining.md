@@ -14,6 +14,7 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/runtime_v5/joining.rs::retired_or_foreign_holder_contexts_never_project_or_cancel_a_new_alias
   - crates/unica-coder/src/infrastructure/daemon/runtime_v5/joining.rs::reply_membership_capture_detects_attach_retire_aba_and_revision_overflow
   - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::an_unjoined_task_reply_does_not_read_its_canonical_store_again
+  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::a_committed_task_reply_gets_one_read_step_after_the_request_deadline
   - crates/unica-coder/src/interfaces/daemon_router.rs::an_exact_repeat_of_a_call_with_its_own_receipt_never_becomes_a_joiner
   - crates/unica-coder/src/interfaces/daemon_router.rs::a_frame_that_arrives_cancelled_never_leads_identical_reads
   - crates/unica-coder/src/infrastructure/daemon/runtime_v5/joining.rs::only_tools_that_change_nothing_are_joinable
