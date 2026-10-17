@@ -68,12 +68,6 @@ source-set paths are resolved from the directory containing the primary config.
 v8-runner 0.15 has no partial-load threshold and chooses the mode itself; request
 a full load with `push` `full:true`. Unica refuses a config with this key; remove it.
 
-A file infobase is held by one working copy. The runner records the holder next
-to the infobase directory. A write from another working copy is not refused: it
-changes that copy's infobase, and the answer warns
-`infobase_of_another_copy`. Give each working copy its own infobase
-(`infobase.create`).
-
 `execution_timeout` is not supported. v8-runner 0.15 has no overall command
 deadline: a command runs to its terminal outcome, and limits belong to the
 steps that need them (`tools.edt_cli.command_timeout_ms`,
@@ -89,6 +83,28 @@ connections also require the documented `infobases.origin.dbms` block.
 may override local-only `workPath`, `infobases` (or legacy `infobase`), `providers`, `tools`, `tests`, and `mcp`
 settings. It is not selectable by a call and must not redefine shared
 `source-set` or `format`.
+
+## File infobase holder
+
+A file infobase is held by one working copy. The runner records the holder next
+to the infobase directory. A write from another working copy is not refused: it
+changes that copy's infobase, and the answer warns
+`infobase_of_another_copy`. Give each working copy its own infobase
+(`infobase.create`).
+
+When Unica projects the config, its stable private directory becomes the holder:
+`.build/unica/runner-project/`, or `runner-project/<working-copy-root-key>/`
+under `UNICA_CACHE_DIR`. Removing this directory makes the holder appear gone;
+another working copy can then take the infobase without a warning. A command
+that needs no projection removes the old projection directory and uses the
+working-copy root as its holder.
+
+The reverse transition has a limitation: if the holder is already the
+working-copy root and a later config needs projection, the runner treats the
+projection as another live copy, warns and keeps the old holder. To transfer
+ownership to the projection, confirm that the recorded root is this working
+copy and manually remove that root's entry from the holder marker beside the
+infobase. The adapter does not perform this recovery itself.
 
 ## Runner migration
 
