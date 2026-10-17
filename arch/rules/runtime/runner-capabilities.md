@@ -1,7 +1,6 @@
 ---
 id: INV.RUNTIME.RUNNER-ONE-CAPABILITIES
 check:
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::v5_run_rejects_if_rev_before_workspace_or_provider_admission
   - crates/unica-coder/src/infrastructure/daemon/v13_run_dictionary.rs::development_cycle_admits_the_explicit_compatibility_subset
   - crates/unica-coder/src/infrastructure/daemon/server.rs::v5_infobase_create_prepares_before_source_admission_and_runs_without_a_revision_gate
   - crates/unica-coder/src/infrastructure/daemon/server.rs::v5_unavailable_runner_operations_are_refused_at_bind_without_a_runner
@@ -29,7 +28,5 @@ check:
 операций описывает [совместимый цикл разработки](compatible-development-cycle.md).
 Старые имена не становятся алиасами.
 Верхнеуровневый `infobase` поддерживает только `origin`; другая цель
-не заменяется им молча. `run` не принимает `ifRev` и не выдаёт `rev`.
-Плановые операции требуют явный boolean `dryRun`; словарь сообщает
-`dryRunRequired: true` и `previewRequired: false`. Для `launch`
-`dryRunRequired: false`. Preview не фиксирует поколение базы.
+не заменяется им молча. Общие поля режима и условия исполнения задаёт
+[словарь run](../mcp/run-operation-names.md).

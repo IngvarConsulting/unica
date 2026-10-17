@@ -3,15 +3,9 @@ id: INV.APP.EVENT-SOURCE
 check:
   - crates/unica-coder/src/infrastructure/metadata_operations.rs::meta_add_event_subscription_source_replace_needs_no_catalog_and_round_trips
   - crates/unica-coder/src/application/metadata.rs::source_parser_accepts_the_closed_nonempty_logical_event_source_algebra
-  - crates/unica-coder/src/infrastructure/native_operations/meta/edit.rs::typed_event_source_semantic_noop_is_order_insensitive_and_preserves_exact_bytes
-  - crates/unica-coder/src/infrastructure/native_operations/meta/edit.rs::typed_event_source_add_remove_preserve_old_order_bytes_and_repeat_as_noop
-  - crates/unica-coder/src/infrastructure/native_operations/meta/edit.rs::typed_event_source_incremental_edits_keep_aliases_type_ids_and_distinct_manager_classes
-  - crates/unica-coder/src/infrastructure/native_operations/meta/edit.rs::typed_event_source_incremental_add_declares_namespaces_and_preserves_bom_eol
-  - crates/unica-coder/src/infrastructure/native_operations/meta/edit.rs::typed_event_source_incremental_edits_refuse_invalid_and_empty_results_without_writes
-  - crates/unica-coder/src/infrastructure/native_operations/meta/xml_model.rs::event_source_removal_range_includes_whitespace_before_self_closing_last_element
 ---
 
-# Источник подписки задаётся логическим типом, а не произвольным XML
+# Источник подписки задаётся логическим типом
 
 Типизированное описание источника различает объект, менеджер, набор записей,
 определяемый тип и семейство объектов. Например, `catalogObject` означает
@@ -22,19 +16,7 @@ check:
 Для остальных менеджеров дополнительный выбор класса запрещён.
 
 Типизированная запись сохраняет выбор в XML, а чтение возвращает тот же
-источник. Перестановка уже выбранных источников ничего не меняет и сохраняет
-байты файла. Проверки относятся к внутреннему типизированному контракту;
+источник. Проверки относятся к внутреннему типизированному контракту;
 они не возвращают прежний публичный инструмент `unica.meta.edit`.
-
-Точечные `relation.add` и `relation.remove` со связью `source` сохраняют
-байты и относительный порядок прежних узлов, кроме явно удаляемых.
-Новые источники сортируются только между собой и дополняют свою группу XML:
-`Type` перед `TypeSet`/`TypeId`. Добавление уже имеющихся и удаление отсутствующих
-целей не меняет файл. Полная замена сохраняет прежний детерминированный порядок
-при изменении состава.
-
-Точечная правка требует читаемого состава в логическом наборе источников.
-Повреждённый или неподдержанный состав отклоняется до записи. После всех
-операций одного вызова должен остаться хотя бы один логический источник;
-промежуточное пустое состояние допустимо и наружу не публикуется. Сохранённые
-`TypeId` не заменяют логическую цель своего набора исходников.
+[Локальная правка состава](event-subscription-source-local-change.md)
+сохраняет логический выбор при изменении XML.
