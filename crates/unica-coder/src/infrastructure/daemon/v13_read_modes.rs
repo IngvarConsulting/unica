@@ -341,18 +341,27 @@ mod operation_dictionary_tests {
     #[test]
     fn a_shared_operation_name_publishes_the_contract_of_the_addressed_node() {
         use crate::domain::apply::{OperationFamily, OperationRegistry, OperationSite};
-        use crate::domain::operation_contract::OperationContract;
+        use crate::domain::form_operation::FormOperation;
         let context = super::configuration_context();
-        for op in ["attribute.add", "command.add"] {
+        for operation in [FormOperation::AttributeAdd, FormOperation::CommandAdd] {
+            let op = operation.name();
             let form = "cf:Catalog.Items.Form.Choice";
             let data = json!({"at": form, "kind": "Form"});
             let answer = operation_node(&data, op, &format!("{form}.Can.{op}"), context)
                 .unwrap_or_else(|error| panic!("{op} at the form: {error}"));
             assert_eq!(
                 answer["props"]["contract"],
-                OperationContract::form(op).unwrap().details(),
+                operation.contract().details(),
                 "{op} at the form"
             );
+            assert_eq!(
+                answer["props"]["contract"]["help"]["path"],
+                "skills/form-edit/SKILL.md"
+            );
+            assert!(answer["props"]["contract"]["target"]
+                .as_str()
+                .unwrap()
+                .contains("The form itself:"));
             let owner = "cf:Catalog.Items";
             let data = json!({"at": owner, "kind": "Catalog"});
             let answer = operation_node(&data, op, &format!("{owner}.Can.{op}"), context)
@@ -368,9 +377,17 @@ mod operation_dictionary_tests {
                 metadata.argument_contract_at(&site).unwrap().details(),
                 "{op} at the catalog"
             );
+            assert_eq!(
+                answer["props"]["contract"]["help"]["path"],
+                "skills/meta-edit/SKILL.md"
+            );
+            assert!(answer["props"]["contract"]["target"]
+                .as_str()
+                .unwrap()
+                .starts_with("A metadata object"));
             assert_ne!(
                 answer["props"]["contract"],
-                OperationContract::form(op).unwrap().details(),
+                operation.contract().details(),
                 "{op}"
             );
         }

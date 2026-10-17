@@ -1,6 +1,8 @@
 use crate::domain::address::{escape_name, AddressSegment, NodeKind, QualifiedAddress};
+use crate::domain::form_operation::FormOperation;
 use crate::domain::logical_route::{classify_route, RouteClass};
 use crate::domain::metadata::{metadata_kind_collections, MetaCollection, MetadataKind};
+use crate::domain::metadata_operation::MetadataOperation;
 use crate::domain::node_view::OperationRef;
 use crate::domain::platform_profile::PlatformProfile;
 use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
@@ -1030,6 +1032,8 @@ impl FormItemRole {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TypedOperation {
+    Metadata(MetadataOperation),
+    Form(FormOperation),
     Role(RoleOperation),
     Support(SupportOperation),
 }
@@ -1204,6 +1208,40 @@ pub(crate) const IMPLEMENTED_APPLY_OPERATIONS: &[&str] = &[
 ];
 
 impl OperationDescriptor {
+    const fn metadata(operation: MetadataOperation) -> Self {
+        Self {
+            name: operation.name(),
+            family: OperationFamily::Metadata,
+            applicability: operation.applicability(),
+            skeleton: operation.skeleton(),
+            typed_operation: Some(TypedOperation::Metadata(operation)),
+        }
+    }
+
+    pub(crate) const fn metadata_operation(self) -> Option<MetadataOperation> {
+        match self.typed_operation {
+            Some(TypedOperation::Metadata(operation)) => Some(operation),
+            _ => None,
+        }
+    }
+
+    const fn form(operation: FormOperation) -> Self {
+        Self {
+            name: operation.name(),
+            family: OperationFamily::Form,
+            applicability: operation.applicability(),
+            skeleton: operation.skeleton(),
+            typed_operation: Some(TypedOperation::Form(operation)),
+        }
+    }
+
+    pub(crate) const fn form_operation(self) -> Option<FormOperation> {
+        match self.typed_operation {
+            Some(TypedOperation::Form(operation)) => Some(operation),
+            _ => None,
+        }
+    }
+
     const fn role(operation: RoleOperation) -> Self {
         Self {
             name: operation.name(),
@@ -1433,12 +1471,16 @@ impl OperationDescriptor {
             OperationFamily::Metadata if self.name == "template.add" => {
                 super::operation_contract::OperationContract::mxl(self.name)
             }
-            OperationFamily::Metadata => {
-                super::operation_contract::OperationContract::metadata(self.name)
-            }
+            OperationFamily::Metadata => match self.metadata_operation() {
+                Some(operation) => Some(operation.contract_at(None)),
+                None => super::operation_contract::OperationContract::metadata(self.name),
+            },
             OperationFamily::Role => self.role_operation().map(RoleOperation::contract),
             OperationFamily::Support => self.support_operation().map(SupportOperation::contract),
-            OperationFamily::Form => super::operation_contract::OperationContract::form(self.name),
+            OperationFamily::Form => match self.form_operation() {
+                Some(operation) => Some(operation.contract()),
+                None => super::operation_contract::OperationContract::form(self.name),
+            },
             OperationFamily::Event => {
                 super::operation_contract::OperationContract::event(self.name)
             }
@@ -1462,10 +1504,15 @@ impl OperationDescriptor {
                 .segments()
                 .iter()
                 .any(|segment| segment.kind() == NodeKind::TabularSection);
-            return super::operation_contract::OperationContract::metadata_at(
-                self.name,
-                owner.map(|owner| super::operation_contract::MetadataSite { owner, in_section }),
-            );
+            let metadata_site =
+                owner.map(|owner| super::operation_contract::MetadataSite { owner, in_section });
+            return match self.metadata_operation() {
+                Some(operation) => Some(operation.contract_at(metadata_site)),
+                None => super::operation_contract::OperationContract::metadata_at(
+                    self.name,
+                    metadata_site,
+                ),
+            };
         }
         self.argument_contract()
     }
@@ -1479,6 +1526,24 @@ impl OperationDescriptor {
         args.insert("at".to_string(), Value::String(at.into()));
         OperationRef::new(self.name, args)
     }
+}
+
+/// Const equality for the registration gate; operation names remain owned by
+/// each typed declaration table.
+pub(super) const fn operation_names_equal(left: &str, right: &str) -> bool {
+    let left = left.as_bytes();
+    let right = right.as_bytes();
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut index = 0;
+    while index < left.len() {
+        if left[index] != right[index] {
+            return false;
+        }
+        index += 1;
+    }
+    true
 }
 
 macro_rules! operation_descriptor {
@@ -1498,7 +1563,26 @@ macro_rules! operation_descriptor {
     ((SupportOperation::$variant:ident)) => {
         OperationDescriptor::support(SupportOperation::$variant)
     };
-    (($name:literal, $family:ident, $applicability:ident, $skeleton:ident)) => {
+    ((MetadataOperation::$variant:ident)) => {
+        OperationDescriptor::metadata(MetadataOperation::$variant)
+    };
+    ((FormOperation::$variant:ident)) => {
+        OperationDescriptor::form(FormOperation::$variant)
+    };
+    (($name:literal, $family:ident, $applicability:ident, $skeleton:ident)) => {{
+        const {
+            match OperationFamily::$family {
+                OperationFamily::Metadata => assert!(
+                    !MetadataOperation::is_named($name),
+                    "Metadata attribute.add and command.add must register a typed MetadataOperation with a mandatory contextual contract"
+                ),
+                OperationFamily::Form => assert!(
+                    !FormOperation::is_named($name),
+                    "Form attribute.add and command.add must register a typed FormOperation with a mandatory contract"
+                ),
+                _ => (),
+            }
+        }
         OperationDescriptor {
             name: $name,
             family: OperationFamily::$family,
@@ -1506,7 +1590,7 @@ macro_rules! operation_descriptor {
             skeleton: OperationSkeleton::$skeleton,
             typed_operation: None,
         }
-    };
+    }};
 }
 
 macro_rules! operation_descriptors {
@@ -1526,7 +1610,7 @@ operation_descriptors!(
     ("relation.remove", Metadata, Metadata, Values),
     ("relation.replace", Metadata, Metadata, Values),
     ("help.create", Metadata, Metadata, Values),
-    ("attribute.add", Metadata, MetadataAttributeContainer, Items),
+    (MetadataOperation::AttributeAdd),
     ("attribute.set", Metadata, MetadataAttribute, Values),
     ("attribute.remove", Metadata, MetadataAttribute, Target),
     (
@@ -1565,7 +1649,7 @@ operation_descriptors!(
     ("template.add", Metadata, MetadataTemplates, Items),
     ("template.set", Metadata, MetadataTemplate, Values),
     ("template.remove", Metadata, MetadataTemplate, Target),
-    ("command.add", Metadata, MetadataCommands, Items),
+    (MetadataOperation::CommandAdd),
     ("command.set", Metadata, MetadataCommand, Values),
     ("command.remove", Metadata, MetadataCommand, Target),
     (
@@ -1589,8 +1673,8 @@ operation_descriptors!(
     ("item.add", Form, FormItemContainer, Items),
     ("item.remove", Form, FormItem, Target),
     ("item.move", Form, FormItem, Values),
-    ("attribute.add", Form, Form, Items),
-    ("command.add", Form, Form, Items),
+    (FormOperation::AttributeAdd),
+    (FormOperation::CommandAdd),
     ("event.bind", Form, FormEvent, Values),
     (RoleOperation::Create),
     (RoleOperation::RightAdd),
@@ -2724,9 +2808,10 @@ impl OperationRegistry {
 #[cfg(test)]
 mod tests {
     use super::{
-        ApplyRequest, OperationApplicability, OperationDescriptor, OperationFamily,
-        OperationRegistry, OperationSite, OperationSkeleton, RoleOperation, SourceSetTraits,
-        SupportOperation, TemplateFormat, TypedOperation, RETIRED_ARGUMENTS,
+        ApplyRequest, FormOperation, MetadataOperation, OperationApplicability,
+        OperationDescriptor, OperationFamily, OperationRegistry, OperationSite, OperationSkeleton,
+        RoleOperation, SourceSetTraits, SupportOperation, TemplateFormat, TypedOperation,
+        RETIRED_ARGUMENTS,
     };
     use crate::domain::address::QualifiedAddress;
     use crate::domain::platform_profile::PlatformProfile;
@@ -3024,11 +3109,25 @@ mod tests {
                 operation.applicability(),
                 operation.skeleton(),
             ),
+            Some(TypedOperation::Metadata(operation)) => (
+                OperationFamily::Metadata,
+                operation.name(),
+                operation.applicability(),
+                operation.skeleton(),
+            ),
+            Some(TypedOperation::Form(operation)) => (
+                OperationFamily::Form,
+                operation.name(),
+                operation.applicability(),
+                operation.skeleton(),
+            ),
             None => {
-                return !matches!(
-                    descriptor.family(),
-                    OperationFamily::Role | OperationFamily::Support
-                )
+                return match descriptor.family() {
+                    OperationFamily::Role | OperationFamily::Support => false,
+                    OperationFamily::Metadata => !MetadataOperation::is_named(descriptor.name()),
+                    OperationFamily::Form => !FormOperation::is_named(descriptor.name()),
+                    _ => true,
+                }
             }
         };
         descriptor.family() == family
@@ -3118,6 +3217,106 @@ mod tests {
             },
         ] {
             assert!(!typed_registration_is_consistent(invalid), "{invalid:?}");
+        }
+    }
+
+    #[test]
+    fn contextual_member_contracts_keep_owner_and_section_discriminators() {
+        let registry = OperationRegistry::closed();
+        let traits =
+            SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+        for (at, allows_fill) in [
+            ("main:Document.Order", true),
+            ("main:Document.Order.TabularSection.Lines", false),
+            ("main:Report.Sales", false),
+            ("main:Report.Sales.TabularSection.Lines", true),
+        ] {
+            let at = QualifiedAddress::parse(at).unwrap();
+            let site = OperationSite::new(&at, traits).unwrap();
+            let descriptor = registry.lookup_at("attribute.add", &site).unwrap();
+            assert_eq!(
+                descriptor.metadata_operation(),
+                Some(MetadataOperation::AttributeAdd)
+            );
+            assert_eq!(descriptor.form_operation(), None);
+            let contract = descriptor.argument_contract_at(&site).unwrap();
+            assert_eq!(contract.help, "skills/meta-edit/SKILL.md");
+            let fields = &contract.schema["properties"]["items"]["items"]["properties"];
+            assert_eq!(fields.get("fillValue").is_some(), allows_fill, "{at}");
+            assert!(fields.get("savedData").is_none());
+        }
+        for (name, expected) in [
+            ("attribute.add", FormOperation::AttributeAdd),
+            ("command.add", FormOperation::CommandAdd),
+        ] {
+            let at = QualifiedAddress::parse("main:Document.Order.Form.Main").unwrap();
+            let site = OperationSite::new(&at, traits).unwrap();
+            let descriptor = registry.lookup_at(name, &site).unwrap();
+            assert_eq!(descriptor.form_operation(), Some(expected));
+            assert_eq!(descriptor.metadata_operation(), None);
+            let contract = descriptor.argument_contract_at(&site).unwrap();
+            assert_eq!(contract.help, "skills/form-edit/SKILL.md");
+            assert!(
+                contract.schema["properties"]["items"]["items"]["properties"]
+                    .get("fillValue")
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn contextual_registration_rejects_missing_and_mismatched_typed_operations() {
+        for valid in [
+            OperationDescriptor::metadata(MetadataOperation::AttributeAdd),
+            OperationDescriptor::metadata(MetadataOperation::CommandAdd),
+            OperationDescriptor::form(FormOperation::AttributeAdd),
+            OperationDescriptor::form(FormOperation::CommandAdd),
+        ] {
+            assert!(typed_registration_is_consistent(valid));
+            let other = if valid.family() == OperationFamily::Metadata {
+                TypedOperation::Form(FormOperation::AttributeAdd)
+            } else {
+                TypedOperation::Metadata(MetadataOperation::AttributeAdd)
+            };
+            for invalid in [
+                OperationDescriptor {
+                    typed_operation: None,
+                    ..valid
+                },
+                OperationDescriptor {
+                    typed_operation: Some(other),
+                    ..valid
+                },
+                OperationDescriptor {
+                    family: OperationFamily::Properties,
+                    ..valid
+                },
+                OperationDescriptor {
+                    name: "member.uncontracted",
+                    ..valid
+                },
+                OperationDescriptor {
+                    applicability: OperationApplicability::Configuration,
+                    ..valid
+                },
+                OperationDescriptor {
+                    skeleton: OperationSkeleton::Values,
+                    ..valid
+                },
+            ] {
+                assert!(!typed_registration_is_consistent(invalid), "{invalid:?}");
+            }
+        }
+        for (name, family) in [
+            ("attribute.set", OperationFamily::Metadata),
+            ("item.add", OperationFamily::Form),
+        ] {
+            let descriptor = OperationRegistry::closed()
+                .named(name)
+                .find(|d| d.family() == family)
+                .unwrap();
+            assert_eq!(descriptor.typed_operation, None);
+            assert!(typed_registration_is_consistent(descriptor));
         }
     }
 

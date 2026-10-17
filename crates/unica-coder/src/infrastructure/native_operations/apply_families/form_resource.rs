@@ -3,6 +3,7 @@ use super::validate_platform_xml_binding;
 use crate::domain::address::{member_address, NodeKind, QualifiedAddress};
 use crate::domain::apply::{FormItemRole, OperationDescriptor, OperationFamily};
 use crate::domain::events::{DomainEvent, DomainEventKind};
+use crate::domain::form_operation::FormOperation;
 use crate::domain::role_operation::RoleOperation;
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use crate::domain::support_operation::SupportOperation;
@@ -759,7 +760,13 @@ pub(crate) fn parse_form_resource_plan_operation_in(
                 None => return Err(hidden_apply_family_unimplemented(op_index)),
             }
         }
-        Some(OperationFamily::Form) => parse_form_operation(operation, object, op_index, binding)?,
+        Some(OperationFamily::Form) => parse_form_operation(
+            descriptor.and_then(OperationDescriptor::form_operation),
+            operation,
+            object,
+            op_index,
+            binding,
+        )?,
         _ => FormResourcePlanKind::Unsupported,
     };
     Ok(FormResourcePlanOperation {
@@ -1526,7 +1533,72 @@ fn check_element_cross_fields(
     Ok(())
 }
 
+fn parse_typed_form_operation(
+    operation: FormOperation,
+    target: FormTarget,
+    args: &Map<String, Value>,
+    op_index: usize,
+) -> Result<FormResourcePlanKind, ApplyPlanError> {
+    let form = target.form.ok_or_else(|| {
+        bad(
+            op_index,
+            "at",
+            "this operation addresses one form: `Owner.Name.Form.F`",
+        )
+    })?;
+    let items = args
+        .get("items")
+        .and_then(Value::as_array)
+        .ok_or_else(|| bad(op_index, "items", "`items` must be an array"))?;
+    let mut entries = Vec::new();
+    for (index, item) in items.iter().enumerate() {
+        let location = format!("items[{index}]");
+        let item = item
+            .as_object()
+            .ok_or_else(|| bad(op_index, &location, "each item must be an object"))?;
+        let name = required_string(item, "name", op_index, &location)?.to_string();
+        let mut entry = item.clone();
+        entry.insert("name".to_string(), Value::String(name.clone()));
+        match operation {
+            FormOperation::AttributeAdd => {
+                if let Some(type_name) = item.get("type").and_then(Value::as_str) {
+                    entry.insert(
+                        "type".to_string(),
+                        Value::String(form_attribute_type(type_name)),
+                    );
+                }
+            }
+            FormOperation::CommandAdd => {
+                if !entry.contains_key("action") {
+                    entry.insert("action".to_string(), Value::String(name));
+                }
+            }
+        }
+        entries.push(Value::Object(entry));
+    }
+    if entries.is_empty() {
+        return Err(bad(
+            op_index,
+            &format!("ops[{op_index}].args.items"),
+            "`items` must list at least one entry",
+        ));
+    }
+    let key = match operation {
+        FormOperation::AttributeAdd => "attributes",
+        FormOperation::CommandAdd => "commands",
+    };
+    let mut wrapper = Map::new();
+    wrapper.insert(key.to_string(), Value::Array(entries));
+    Ok(FormResourcePlanKind::FormEdit {
+        owner: target.owner,
+        form,
+        subject: FormEditSubject::Node(Vec::new()),
+        definitions: vec![FormEditStep::Definition(Value::Object(wrapper))],
+    })
+}
+
 fn parse_form_operation(
+    typed_operation: Option<FormOperation>,
     operation: &str,
     args: &Map<String, Value>,
     op_index: usize,
@@ -1575,7 +1647,10 @@ fn parse_form_operation(
     // Опубликованный контракт и разбор планировщиком принимают одну форму
     // аргументов: ключ, которого писатель не пишет, отказывает до записи,
     // а не теряется молча (#1447).
-    if let Some(contract) = crate::domain::operation_contract::OperationContract::form(operation) {
+    let contract = typed_operation
+        .map(FormOperation::contract)
+        .or_else(|| crate::domain::operation_contract::OperationContract::form(operation));
+    if let Some(contract) = contract {
         let mut checked = args.clone();
         // `at` операции уже разобран в адрес; контракт сверяет остальное.
         checked.insert("at".to_string(), Value::String(address.to_string()));
@@ -1597,6 +1672,9 @@ fn parse_form_operation(
                     "reason": "аргументы, которые операция записывает на этом узле",
                 }))
             })?;
+    }
+    if let Some(operation) = typed_operation {
+        return parse_typed_form_operation(operation, target, args, op_index);
     }
     let items_path = format!("ops[{op_index}].args.items");
     let form_of = |target: &FormTarget| -> Result<String, ApplyPlanError> {
@@ -1806,54 +1884,6 @@ fn parse_form_operation(
                 definitions: vec![FormEditStep::Definition(
                     serde_json::json!({"removeElements": [{"name": name}]}),
                 )],
-            })
-        }
-        "attribute.add" | "command.add" => {
-            let form = form_of(&target)?;
-            let items = args
-                .get("items")
-                .and_then(Value::as_array)
-                .ok_or_else(|| bad(op_index, "items", "`items` must be an array"))?;
-            let mut entries = Vec::new();
-            for (index, item) in items.iter().enumerate() {
-                let location = format!("items[{index}]");
-                let item = item
-                    .as_object()
-                    .ok_or_else(|| bad(op_index, &location, "each item must be an object"))?;
-                let name = required_string(item, "name", op_index, &location)?.to_string();
-                let mut entry = item.clone();
-                entry.insert("name".to_string(), Value::String(name.clone()));
-                if operation == "attribute.add" {
-                    if let Some(type_name) = item.get("type").and_then(Value::as_str) {
-                        entry.insert(
-                            "type".to_string(),
-                            Value::String(form_attribute_type(type_name)),
-                        );
-                    }
-                } else if !entry.contains_key("action") {
-                    entry.insert("action".to_string(), Value::String(name));
-                }
-                entries.push(Value::Object(entry));
-            }
-            if entries.is_empty() {
-                return Err(bad(
-                    op_index,
-                    &items_path,
-                    "`items` must list at least one entry",
-                ));
-            }
-            let key = if operation == "attribute.add" {
-                "attributes"
-            } else {
-                "commands"
-            };
-            let mut wrapper = Map::new();
-            wrapper.insert(key.to_string(), Value::Array(entries));
-            Ok(FormResourcePlanKind::FormEdit {
-                owner: target.owner,
-                form,
-                subject: FormEditSubject::Node(Vec::new()),
-                definitions: vec![FormEditStep::Definition(Value::Object(wrapper))],
             })
         }
         "event.bind" => {
@@ -5622,6 +5652,84 @@ mod tests {
             );
             let path = format!("ops[0].args.items[0].{field}");
             assert_eq!(error.path(), Some(path.as_str()), "{field} {value}");
+        }
+    }
+
+    #[test]
+    fn typed_form_additions_keep_target_precedence_and_entry_transformations() {
+        use crate::domain::apply::{OperationFamily, OperationRegistry};
+        let fixture = ApplySeamFixture::new();
+        for operation in ["attribute.add", "command.add"] {
+            let descriptor = OperationRegistry::closed()
+                .named(operation)
+                .find(|d| d.family() == OperationFamily::Form)
+                .unwrap();
+            for at in [json!(42), json!(null)] {
+                let error = super::parse_form_resource_plan_operation_in(
+                    Some(descriptor),
+                    operation,
+                    &json!({"at":at,"items":false,"unknown":true}),
+                    3,
+                    &fixture.binding,
+                )
+                .unwrap_err();
+                assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
+                assert_eq!(error.path(), Some("ops[3].args.at"));
+                assert_eq!(error.to_string(), "`at` must be a logical address");
+            }
+            let error = super::parse_form_resource_plan_operation_in(
+                Some(descriptor),
+                operation,
+                &json!({"at":"main:Document.First.Form.Main.Item.A","items":false}),
+                3,
+                &fixture.binding,
+            )
+            .unwrap_err();
+            assert_eq!(error.path(), Some("ops[3].args.at"));
+            assert_eq!(
+                error.to_string(),
+                format!("{operation} targets the form `Owner.Name.Form.F`")
+            );
+        }
+        for (operation, item, expected) in [
+            (
+                "attribute.add",
+                json!({"name":" Added ","type":"String"}),
+                json!({"attributes":[{"name":"Added","type":"xs:string"}]}),
+            ),
+            (
+                "command.add",
+                json!({"name":" Added "}),
+                json!({"commands":[{"name":"Added","action":"Added"}]}),
+            ),
+            (
+                "command.add",
+                json!({"name":" Added ","action":" Existing "}),
+                json!({"commands":[{"name":"Added","action":" Existing "}]}),
+            ),
+        ] {
+            let parsed = parse_form_resource_plan_operation(
+                operation,
+                &json!({"at":"Document.First.Form.Main","items":[item]}),
+                3,
+                &fixture.binding,
+            )
+            .unwrap();
+            let super::FormResourcePlanKind::FormEdit {
+                owner,
+                form,
+                definitions,
+                ..
+            } = parsed.kind
+            else {
+                panic!("{operation} must plan a form edit")
+            };
+            assert_eq!(owner.as_str(), "Document.First");
+            assert_eq!(form, "Main");
+            let [super::FormEditStep::Definition(definition)] = definitions.as_slice() else {
+                panic!("expected one definition")
+            };
+            assert_eq!(definition, &expected);
         }
     }
 

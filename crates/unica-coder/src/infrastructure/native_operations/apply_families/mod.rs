@@ -585,7 +585,8 @@ fn parse_family_operation(
     }
     let parsed = match descriptor.family() {
         OperationFamily::Metadata | OperationFamily::Properties => {
-            let parsed = metadata::parse_metadata_plan_operation(
+            let parsed = metadata::parse_metadata_plan_operation_in(
+                Some(descriptor),
                 operation.name(),
                 &args,
                 op_index,

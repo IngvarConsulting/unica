@@ -633,6 +633,42 @@ impl OperationContract {
         Self::metadata_at(op, None)
     }
 
+    pub(super) fn metadata_member_add(
+        collection: crate::domain::metadata::MetaCollection,
+        site: Option<MetadataSite>,
+    ) -> Self {
+        use crate::domain::metadata::MetaCollection;
+        let target = if collection == MetaCollection::Attributes {
+            "A metadata object with attributes: <source-set>:<Kind>.<Name> adds header attributes; <source-set>:<Kind>.<Name>.TabularSection.<T> adds attributes of that tabular section."
+        } else {
+            "A metadata object with this collection: <source-set>:<Kind>.<Name>."
+        };
+        let example_args = match collection {
+            MetaCollection::Attributes | MetaCollection::Dimensions => {
+                json!({"items":[{"name":"Sample",
+                "type":{"variants":[{"kind":"string","length":50,"allowedLength":"variable"}]}}]})
+            }
+            // Ресурс регистра накопления числовой: пример годится всем регистрам.
+            MetaCollection::Resources => json!({"items":[{"name":"Sample",
+                "type":{"variants":[{"kind":"number","digits":15,"fraction":2,"sign":"any"}]}}]}),
+            _ => json!({"items":[{"name":"Sample"}]}),
+        };
+        Self {
+            schema: object(
+                &[
+                    ("at", text(true)),
+                    ("items", json!({"type":"array","minItems":1,"items":metadata_element_schema(collection, false, site)})),
+                ],
+                &["items"],
+            ),
+            target,
+            effect: "Add new members after the existing ones, or at position.before/position.after an existing sibling. A name already used in the collection is refused.",
+            notes: "Read the collection branch of the target before choosing a new valid 1C identifier. A new node is addressable only after the plan is executed; within one apply call a later operation may already address it. Cross-field rules — fillValue needs an explicit type and must match it — are checked by the planner, not by this schema.",
+            example_args,
+            help: METADATA_HELP,
+        }
+    }
+
     /// The contract on a concrete node: fields whose legality depends on the
     /// owner kind or on the tabular section are narrowed to that node.
     pub(crate) fn metadata_at(op: &str, site: Option<MetadataSite>) -> Option<Self> {
@@ -697,27 +733,8 @@ impl OperationContract {
         }
         let collection = metadata_member_collection(family)?;
         let (schema, target, effect, notes, example_args) = match verb {
-            "add" => {
-                let target = if family == "attribute" {
-                    "A metadata object with attributes: <source-set>:<Kind>.<Name> adds header attributes; <source-set>:<Kind>.<Name>.TabularSection.<T> adds attributes of that tabular section."
-                } else {
-                    "A metadata object with this collection: <source-set>:<Kind>.<Name>."
-                };
-                let example = match family {
-                    "attribute" | "dimension" => json!({"items":[{"name":"Sample",
-                        "type":{"variants":[{"kind":"string","length":50,"allowedLength":"variable"}]}}]}),
-                    // Ресурс регистра накопления числовой: пример годится всем регистрам.
-                    "resource" => json!({"items":[{"name":"Sample",
-                        "type":{"variants":[{"kind":"number","digits":15,"fraction":2,"sign":"any"}]}}]}),
-                    _ => json!({"items":[{"name":"Sample"}]}),
-                };
-                (
-                    object(&[at(), ("items", json!({"type":"array","minItems":1,"items":metadata_element_schema(collection, false, site)}))], &["items"]),
-                    target,
-                    "Add new members after the existing ones, or at position.before/position.after an existing sibling. A name already used in the collection is refused.",
-                    "Read the collection branch of the target before choosing a new valid 1C identifier. A new node is addressable only after the plan is executed; within one apply call a later operation may already address it. Cross-field rules — fillValue needs an explicit type and must match it — are checked by the planner, not by this schema.",
-                    example,
-                )
+            "add" if !matches!(collection, crate::domain::metadata::MetaCollection::Attributes | crate::domain::metadata::MetaCollection::Commands) => {
+                return Some(Self::metadata_member_add(collection, site));
             }
             "set" => (
                 object(&[at(), ("values", metadata_element_schema(collection, true, site))], &["values"]),

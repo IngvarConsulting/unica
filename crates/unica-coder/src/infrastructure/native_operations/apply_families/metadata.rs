@@ -1,8 +1,10 @@
 use super::validate_platform_xml_binding;
 use crate::application::metadata::{parse_metadata_request, MetadataOperation, MetadataRequest};
 use crate::domain::address::{NodeKind, QualifiedAddress};
+use crate::domain::apply::OperationDescriptor;
 use crate::domain::events::{DomainEvent, DomainEventKind};
 use crate::domain::metadata::{MetaDiagnosticCode, MetaEditOperation, MetadataKind};
+use crate::domain::metadata_operation::MetadataOperation as RegisteredMetadataOperation;
 use crate::domain::project_sources::SourceSetKind;
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use crate::infrastructure::logical_event_source::metadata_descriptor_relative;
@@ -135,7 +137,23 @@ pub(crate) struct MetadataPlanOperation {
     kind: MetadataPlanKind,
 }
 
+#[cfg(test)]
 pub(crate) fn parse_metadata_plan_operation(
+    operation: &str,
+    args: &Value,
+    op_index: usize,
+    binding: &ProviderRootBinding,
+) -> Result<MetadataPlanOperation, ApplyPlanError> {
+    let at = args
+        .get("at")
+        .and_then(Value::as_str)
+        .and_then(|raw| QualifiedAddress::resolve_input(raw, &[binding.source_set_name()]).ok());
+    let descriptor = super::resolved_descriptor(operation, at.as_ref(), binding);
+    parse_metadata_plan_operation_in(descriptor, operation, args, op_index, binding)
+}
+
+pub(crate) fn parse_metadata_plan_operation_in(
+    descriptor: Option<OperationDescriptor>,
     operation: &str,
     args: &Value,
     op_index: usize,
@@ -149,9 +167,19 @@ pub(crate) fn parse_metadata_plan_operation(
         )
         .at_path(format!("ops[{op_index}].args"))
     })?;
+    if let Some(operation) = descriptor.and_then(OperationDescriptor::metadata_operation) {
+        let kind = match operation {
+            RegisteredMetadataOperation::AttributeAdd => {
+                parse_attribute_add(object, op_index, binding)?
+            }
+            RegisteredMetadataOperation::CommandAdd => {
+                parse_member_add(operation.name(), "commands", object, op_index, binding)?
+            }
+        };
+        return Ok(MetadataPlanOperation { kind });
+    }
     let kind = match operation {
         "props.set" => parse_props_set(object, op_index, binding)?,
-        "attribute.add" => parse_attribute_add(object, op_index, binding)?,
         "attribute.set" => parse_attribute_set(object, op_index, binding)?,
         "attribute.remove" => parse_attribute_remove(object, op_index, binding)?,
         "tabularSection.add" => {
@@ -176,7 +204,6 @@ pub(crate) fn parse_metadata_plan_operation(
         "template.add" => parse_template_add(object, op_index, binding)?,
         "template.set" => parse_template_set(object, op_index, binding)?,
         "template.remove" => parse_template_remove(object, op_index, binding)?,
-        "command.add" => parse_member_add(operation, "commands", object, op_index, binding)?,
         "predefinedItem.add" => parse_predefined_add(object, op_index, binding)?,
         "predefinedItem.set" => parse_predefined_set(object, op_index, binding)?,
         "predefinedItem.remove" => parse_predefined_remove(object, op_index, binding)?,
@@ -3089,6 +3116,102 @@ mod tests {
         .unwrap_err();
         assert_eq!(misplaced.kind(), ApplyPlanErrorKind::BadValue);
         assert_eq!(misplaced.path(), Some("ops[4].args.items"));
+    }
+
+    #[test]
+    fn typed_member_additions_keep_the_owner_collection_and_section() {
+        use super::{AddressedFields, MetadataPlanKind};
+        use crate::domain::metadata::{MetaCollection, MetaEditOperation};
+        let fixture = MetadataFixture::new();
+        for (operation, at, collection, section) in [
+            (
+                "attribute.add",
+                "Document.Order",
+                MetaCollection::Attributes,
+                None,
+            ),
+            (
+                "attribute.add",
+                "main:Document.Order.TabularSection.Lines",
+                MetaCollection::Attributes,
+                Some("Lines"),
+            ),
+            (
+                "command.add",
+                "Document.Order",
+                MetaCollection::Commands,
+                None,
+            ),
+        ] {
+            let parsed = parse_metadata_plan_operation(
+                operation,
+                &json!({"at":at,"items":[{"name":"Added"}]}),
+                3,
+                &fixture.binding,
+            )
+            .unwrap();
+            let MetadataPlanKind::Edit {
+                target,
+                operation:
+                    MetaEditOperation::Add {
+                        collection: actual,
+                        scope,
+                        elements,
+                    },
+                addressed,
+            } = parsed.kind
+            else {
+                panic!("{operation} must plan a typed metadata addition");
+            };
+            assert_eq!(target.as_str(), "Document.Order");
+            assert_eq!(actual, collection);
+            assert_eq!(
+                scope.as_ref().map(|scope| scope.tabular_section.as_str()),
+                section
+            );
+            assert_eq!(elements.len(), 1);
+            assert_eq!(elements[0].name, "Added");
+            assert_eq!(addressed, section.map(|_| AddressedFields::Items));
+        }
+    }
+
+    #[test]
+    fn typed_metadata_additions_keep_writer_parser_refusal_order() {
+        let fixture = MetadataFixture::new();
+        for operation in ["attribute.add", "command.add"] {
+            let error = parse_metadata_plan_operation(
+                operation,
+                &json!({"at":null,"items":false,"unknown":true}),
+                3,
+                &fixture.binding,
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
+            assert_eq!(error.path(), Some("ops[3].args.unknown"));
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "operation does not accept argument `unknown`; `{operation}` expects `items`"
+                )
+            );
+            let error = parse_metadata_plan_operation(
+                operation,
+                &json!({"at":42,"items":false}),
+                3,
+                &fixture.binding,
+            )
+            .unwrap_err();
+            assert_eq!(error.path(), Some("ops[3].args.at"));
+            assert_eq!(error.to_string(), "`at` must be a logical address");
+            let error = parse_metadata_plan_operation(
+                operation,
+                &json!({"at":"main:Document.Order","items":[{"name":" spaced "}]}),
+                3,
+                &fixture.binding,
+            )
+            .unwrap_err();
+            assert_eq!(error.path(), Some("ops[3].args.items[0].name"));
+        }
     }
 
     #[test]

@@ -472,7 +472,7 @@ const FORM_SLOTS: [&str; 13] = [
 ];
 
 impl OperationContract {
-    /// Контракты операций формы; `command.add` — из #1439.
+    /// Контракты ещё не типизированных операций формы.
     pub(crate) fn form(op: &str) -> Option<Self> {
         if op == "item.move" {
             return Some(Self::form_move());
@@ -527,44 +527,6 @@ impl OperationContract {
                 "The item is named by its address; the operation takes no other arguments.",
                 json!({}),
             ),
-            "attribute.add" => (
-                object(&[at(), ("items", json!({"type":"array","minItems":1,"items":attribute_item_schema()}))], &["items"]),
-                "The form itself: <source-set>:<Kind>.<Name>.Form.<Form>. Read its Attribute branch before choosing names.",
-                "Add form attributes with the listed properties.",
-                "View, edit, functional options, use-always fields, save, value type, dynamic-list settings and role-specific visibility are not written by this operation and are refused.",
-                json!({"items":[{"name":"Sample","type":"String"}]}),
-            ),
-            "command.add" => (
-                object(
-                    &[
-                        at(),
-                        (
-                            "items",
-                            json!({"type":"array","minItems":1,"items":object(&[
-                                ("name",json!({"type":"string","pattern":r"\S",
-                                    "description":"New command name, unused in the form."})),
-                                ("title",json!({"type":"string","pattern":r"\S",
-                                    "description":"Title in the configuration language."})),
-                                ("tooltip",json!({"type":"string","pattern":r"\S",
-                                    "description":"Tooltip in the configuration language."})),
-                                ("action",json!({"type":"string","pattern":r"\S",
-                                    "description":"Handler procedure in the form module; defaults to the command name."})),
-                                ("shortcut",json!({"type":"string","pattern":r"\S",
-                                    "description":"Keyboard shortcut as the platform writes it, e.g. F5."})),
-                                ("picture",json!({"type":"string","pattern":r"^(StdPicture|CommonPicture)\.[^.\s]+$",
-                                    "description":"Picture reference StdPicture.<Name> or CommonPicture.<Name>; written with LoadTransparent=true."})),
-                                ("representation",json!({"type":"string","enum":["Auto","Text","Picture","TextPicture"],
-                                    "description":"Command DefaultRepresentation; the button set (PictureAndText, None, Compact) is not valid for a command."})),
-                            ], &["name"])}),
-                        ),
-                    ],
-                    &["items"],
-                ),
-                "The form itself: <source-set>:<Kind>.<Name>.Form.<Form>. Read its Command branch before choosing names.",
-                "Add form commands with the listed properties, written in the platform's FormCommand order. Place a button bound to the command with item.add.",
-                "A property outside this schema is refused before any write; use, functionalOptions, currentRowUse, modifiesSavedData and the associated table are not written by this operation.",
-                json!({"items":[{"name":"Refresh","title":"Refresh","tooltip":"Refresh the list","shortcut":"F5","picture":"StdPicture.Refresh","representation":"TextPicture"}]}),
-            ),
             "event.bind" => (
                 object(&[at(), ("values", object(&[
                     ("handler",json!({"type":"string","pattern":r"\S","description":"Handler procedure in the form module."})),
@@ -586,6 +548,66 @@ impl OperationContract {
             example_args,
             help: FORM_HELP,
         })
+    }
+
+    pub(crate) fn form_attribute_add() -> Self {
+        let (schema, target, effect, notes, example_args) = (
+            object(&[("at", text(true)), ("items", json!({"type":"array","minItems":1,"items":attribute_item_schema()}))], &["items"]),
+            "The form itself: <source-set>:<Kind>.<Name>.Form.<Form>. Read its Attribute branch before choosing names.",
+            "Add form attributes with the listed properties.",
+            "View, edit, functional options, use-always fields, save, value type, dynamic-list settings and role-specific visibility are not written by this operation and are refused.",
+            json!({"items":[{"name":"Sample","type":"String"}]}),
+        );
+        Self {
+            schema,
+            target,
+            effect,
+            notes,
+            example_args,
+            help: FORM_HELP,
+        }
+    }
+
+    pub(crate) fn form_command_add() -> Self {
+        let (schema, target, effect, notes, example_args) = (
+            object(
+                &[
+                    ("at", text(true)),
+                    (
+                        "items",
+                        json!({"type":"array","minItems":1,"items":object(&[
+                            ("name",json!({"type":"string","pattern":r"\S",
+                                "description":"New command name, unused in the form."})),
+                            ("title",json!({"type":"string","pattern":r"\S",
+                                "description":"Title in the configuration language."})),
+                            ("tooltip",json!({"type":"string","pattern":r"\S",
+                                "description":"Tooltip in the configuration language."})),
+                            ("action",json!({"type":"string","pattern":r"\S",
+                                "description":"Handler procedure in the form module; defaults to the command name."})),
+                            ("shortcut",json!({"type":"string","pattern":r"\S",
+                                "description":"Keyboard shortcut as the platform writes it, e.g. F5."})),
+                            ("picture",json!({"type":"string","pattern":r"^(StdPicture|CommonPicture)\.[^.\s]+$",
+                                "description":"Picture reference StdPicture.<Name> or CommonPicture.<Name>; written with LoadTransparent=true."})),
+                            ("representation",json!({"type":"string","enum":["Auto","Text","Picture","TextPicture"],
+                                "description":"Command DefaultRepresentation; the button set (PictureAndText, None, Compact) is not valid for a command."})),
+                        ], &["name"])}),
+                    ),
+                ],
+                &["items"],
+            ),
+            "The form itself: <source-set>:<Kind>.<Name>.Form.<Form>. Read its Command branch before choosing names.",
+            "Add form commands with the listed properties, written in the platform's FormCommand order. Place a button bound to the command with item.add.",
+            "A property outside this schema is refused before any write; use, functionalOptions, currentRowUse, modifiesSavedData and the associated table are not written by this operation.",
+            json!({"items":[{"name":"Refresh","title":"Refresh","tooltip":"Refresh the list","shortcut":"F5","picture":"StdPicture.Refresh","representation":"TextPicture"}]}),
+        );
+        Self {
+            schema,
+            target,
+            effect,
+            notes,
+            example_args,
+            help: FORM_HELP,
+        }
     }
 
     /// Контракт `item.add` на командной панели: она принимает только
@@ -731,9 +753,7 @@ mod tests {
             "item.add",
             "item.remove",
             "item.move",
-            "attribute.add",
             "event.bind",
-            "command.add",
         ] {
             let contract = OperationContract::form(op).unwrap();
             assert!(
@@ -747,7 +767,7 @@ mod tests {
 
     #[test]
     fn form_attribute_add_refuses_properties_it_does_not_write() {
-        let contract = OperationContract::form("attribute.add").unwrap();
+        let contract = crate::domain::form_operation::FormOperation::AttributeAdd.contract();
         for key in [
             "view",
             "edit",

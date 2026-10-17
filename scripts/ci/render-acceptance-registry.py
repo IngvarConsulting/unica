@@ -163,8 +163,10 @@ def load_apply_registry() -> tuple[list[tuple[str, str, str, str]], set[str]]:
         r'|([A-Za-z_]\w*)::([A-Za-z_]\w*))\s*\)'
     )
     entries = []
-    typed_families = ("Role", "Support")
+    fully_typed_families = ("Role", "Support")
+    typed_families = (*fully_typed_families, "Metadata", "Form")
     typed = {f"{family}Operation": _registration_metadata(family) for family in typed_families}
+    typed_names = {(entry[1], entry[0]) for metadata in typed.values() for entry in metadata.values()}
     registered = {operation_type: [] for operation_type in typed}
     position = 0
     for match in pattern.finditer(table):
@@ -178,7 +180,7 @@ def load_apply_registry() -> tuple[list[tuple[str, str, str, str]], set[str]]:
             entries.append(typed[operation_type][variant])
         else:
             entry = match.group(1, 2, 3, 4)
-            if entry[1] in typed_families:
+            if entry[1] in fully_typed_families or (entry[1], entry[0]) in typed_names:
                 raise RuntimeError(f"{entry[1]} registrations must use their typed operation")
             entries.append(entry)
         position = match.end()

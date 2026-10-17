@@ -13,6 +13,7 @@ pub mod documentation;
 pub mod engine;
 pub mod events;
 pub mod form_edit;
+pub(crate) mod form_operation;
 pub mod format_profile;
 // This seam is intentionally dormant while production remains on v0.12.
 #[allow(dead_code)]
@@ -21,6 +22,7 @@ pub mod long_work;
 // Hidden v0.13 module projection remains unreachable from the package-selected v0.12 surface.
 pub(crate) mod logical_route;
 pub(crate) mod metadata;
+pub(crate) mod metadata_operation;
 #[allow(dead_code)]
 pub(crate) mod module_projection;
 pub(crate) mod node_view;
