@@ -3182,6 +3182,27 @@
           "name": "ЦеныНоменклатуры"
          }
         }
+       },
+       {
+        "op": "resource.add",
+        "args": {
+         "at": "main:InformationRegister.ЦеныНоменклатуры",
+         "items": [
+          {
+           "name": "Количество",
+           "type": {
+            "variants": [
+             {
+              "kind": "number",
+              "digits": 10,
+              "fraction": 0,
+              "sign": "any"
+             }
+            ]
+           }
+          }
+         ]
+        }
        }
       ]
      },
@@ -3691,6 +3712,27 @@
           "kind": "AccumulationRegister",
           "name": "ОстаткиТоваров"
          }
+        }
+       },
+       {
+        "op": "resource.add",
+        "args": {
+         "at": "main:AccumulationRegister.ОстаткиТоваров",
+         "items": [
+          {
+           "name": "Количество",
+           "type": {
+            "variants": [
+             {
+              "kind": "number",
+              "digits": 10,
+              "fraction": 0,
+              "sign": "any"
+             }
+            ]
+           }
+          }
+         ]
         }
        }
       ]
@@ -20079,6 +20121,27 @@
           "name": "CorpusTurnovers"
          }
         }
+       },
+       {
+        "op": "resource.add",
+        "args": {
+         "at": "main:AccumulationRegister.CorpusTurnovers",
+         "items": [
+          {
+           "name": "Количество",
+           "type": {
+            "variants": [
+             {
+              "kind": "number",
+              "digits": 10,
+              "fraction": 0,
+              "sign": "any"
+             }
+            ]
+           }
+          }
+         ]
+        }
        }
       ]
      },
@@ -33036,6 +33099,27 @@
         }
        },
        {
+        "op": "resource.add",
+        "args": {
+         "at": "main:AccumulationRegister.Продажи",
+         "items": [
+          {
+           "name": "Количество",
+           "type": {
+            "variants": [
+             {
+              "kind": "number",
+              "digits": 10,
+              "fraction": 0,
+              "sign": "any"
+             }
+            ]
+           }
+          }
+         ]
+        }
+       },
+       {
         "op": "object.create",
         "args": {
          "values": {
@@ -33045,12 +33129,54 @@
         }
        },
        {
+        "op": "resource.add",
+        "args": {
+         "at": "main:AccumulationRegister.Остатки",
+         "items": [
+          {
+           "name": "Количество",
+           "type": {
+            "variants": [
+             {
+              "kind": "number",
+              "digits": 10,
+              "fraction": 0,
+              "sign": "any"
+             }
+            ]
+           }
+          }
+         ]
+        }
+       },
+       {
         "op": "object.create",
         "args": {
          "values": {
           "kind": "AccumulationRegister",
           "name": "Обороты"
          }
+        }
+       },
+       {
+        "op": "resource.add",
+        "args": {
+         "at": "main:AccumulationRegister.Обороты",
+         "items": [
+          {
+           "name": "Количество",
+           "type": {
+            "variants": [
+             {
+              "kind": "number",
+              "digits": 10,
+              "fraction": 0,
+              "sign": "any"
+             }
+            ]
+           }
+          }
+         ]
         }
        }
       ]
@@ -33249,6 +33375,27 @@
           "kind": "AccumulationRegister",
           "name": "Резервы"
          }
+        }
+       },
+       {
+        "op": "resource.add",
+        "args": {
+         "at": "main:AccumulationRegister.Резервы",
+         "items": [
+          {
+           "name": "Количество",
+           "type": {
+            "variants": [
+             {
+              "kind": "number",
+              "digits": 10,
+              "fraction": 0,
+              "sign": "any"
+             }
+            ]
+           }
+          }
+         ]
         }
        },
        {
