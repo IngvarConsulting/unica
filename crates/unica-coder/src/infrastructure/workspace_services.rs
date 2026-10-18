@@ -1979,7 +1979,8 @@ impl WorkspaceServiceRuntime {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let mut stale_session = None;
-        if self.analyzer_invalidated().swap(false, Ordering::AcqRel) {
+        let invalidated = self.analyzer_invalidated().swap(false, Ordering::AcqRel);
+        if invalidated {
             stale_session = analyzer.take();
         }
         if stale_session.is_none()
@@ -1989,13 +1990,26 @@ impl WorkspaceServiceRuntime {
         {
             stale_session = analyzer.take();
         }
-        if let Some(stale_session) = stale_session {
+        if let Some(mut stale_session) = stale_session {
             drop(analyzer);
-            self.retire_session(stale_session);
-            analyzer = self
-                .analyzer()
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
+            if invalidated {
+                let retirement = stale_session.retire_for_replacement(&deadline, cancellation);
+                analyzer = self
+                    .analyzer()
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                if let Err(error) = retirement {
+                    *analyzer = Some(stale_session);
+                    self.analyzer_invalidated().store(true, Ordering::Release);
+                    return ServiceResponse::error(error);
+                }
+            } else {
+                self.retire_session(stale_session);
+                analyzer = self
+                    .analyzer()
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+            }
         }
         let result = self.actor.read(&binding, |source_root| {
             deadline.remaining_cancellable(cancellation)?;
@@ -2808,7 +2822,7 @@ pub enum WorkspaceServiceRlmCall {
 
 struct PersistentMcpSession {
     child: ManagedChild,
-    writer: mpsc::SyncSender<BslWriteRequest>,
+    writer: Option<mpsc::SyncSender<BslWriteRequest>>,
     rx: mpsc::Receiver<BslReaderEvent>,
     stderr_tail: Arc<Mutex<BoundedByteTail>>,
     reader_terminal: Arc<AtomicBool>,
@@ -2944,7 +2958,7 @@ impl PersistentMcpSession {
 
         let mut session = Self {
             child,
-            writer,
+            writer: Some(writer),
             rx,
             stderr_tail,
             reader_terminal,
@@ -3055,8 +3069,48 @@ impl PersistentMcpSession {
 
     fn is_reusable(&mut self) -> bool {
         self.valid
+            && self.writer.is_some()
             && !self.reader_terminal.load(Ordering::Acquire)
             && self.child.is_running().unwrap_or(false)
+    }
+
+    fn retire_for_replacement(
+        &mut self,
+        deadline: &ElapsedBudgetDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<(), String> {
+        if self.writer.is_none() || !self.valid {
+            return self.terminate_for_replacement();
+        }
+        // EOF lets the direct provider release its supported cache ownership.
+        // A replacement must not race that shutdown with the same cache path.
+        drop(self.writer.take());
+        let retired = (|| loop {
+            let remaining = deadline.remaining_cancellable(cancellation)?;
+            if self.child.poll_owned_leader_exit()? {
+                self.valid = false;
+                return Ok(());
+            }
+            thread::sleep(remaining.min(Duration::from_millis(10)));
+        })();
+        match retired {
+            Ok(()) => Ok(()),
+            Err(error) => match self.terminate_for_replacement() {
+                Ok(()) => Err(error),
+                Err(cleanup) => Err(format!(
+                    "{error}; analyzer retirement remains unconfirmed: {cleanup}"
+                )),
+            },
+        }
+    }
+
+    fn terminate_for_replacement(&mut self) -> Result<(), String> {
+        self.child.terminate()?;
+        if !self.child.poll_owned_leader_exit()? {
+            return Err("analyzer leader termination is still pending".to_string());
+        }
+        self.valid = false;
+        Ok(())
     }
 
     fn send_json_cancellable(
@@ -3074,7 +3128,10 @@ impl PersistentMcpSession {
             if deadline.remaining().is_none() {
                 return self.fail("timeout: persistent MCP write timed out".to_string());
             }
-            match self.writer.try_send(request) {
+            let Some(writer) = &self.writer else {
+                return self.fail("persistent MCP stdin writer stopped".to_string());
+            };
+            match writer.try_send(request) {
                 Ok(()) => break,
                 Err(mpsc::TrySendError::Full(returned)) => request = returned,
                 Err(mpsc::TrySendError::Disconnected(_)) => {
@@ -4437,6 +4494,9 @@ fn bsl_analyzer_command(
         .arg(cache_dir)
         .arg("--mode")
         .arg("stdio")
+        // Workspace profile otherwise promotes stdio to a persistent broker.
+        // The helper must own the analyzer it retires after invalidation.
+        .env("BSL_MCP_BROKER", "0")
         .current_dir(&context.cwd);
     configure_bsl_analyzer_runtime_dir(&mut command)?;
     Ok(command)
@@ -4463,7 +4523,11 @@ fn bsl_analyzer_cache_dir(
     let source_root = normalize_path_identity(source_root)?;
     let cache_root = normalize_path_identity(&context.cache_root)?;
     let key = provider_state_key(&workspace_root, &source_root)?;
-    let preferred = cache_root.join("providers").join("bsl-analyzer").join(&key);
+    let preferred = cache_root
+        .join("providers")
+        .join("bsl-analyzer")
+        .join("owned-stdio")
+        .join(&key);
     let preferred = normalize_path_identity(&preferred)?;
     if !crate::infrastructure::platform::filesystem::path_starts_with_host_root(
         &preferred,
@@ -4486,6 +4550,7 @@ fn bsl_analyzer_cache_dir(
         .join("cache")
         .join("providers")
         .join("bsl-analyzer")
+        .join("owned-stdio")
         .join(key);
     let external = normalize_path_identity(&external)?;
     if crate::infrastructure::platform::filesystem::path_starts_with_host_root(
@@ -4510,6 +4575,666 @@ mod tests {
     use std::path::Path;
     use std::sync::OnceLock;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    const SNAPSHOT_MODULE: &str = "CommonModules/SearchProbe/Ext/Module.bsl";
+    const SNAPSHOT_AFTER: &str = "Procedure AcceptanceChangedSymbol978() Export\nEndProcedure\n";
+
+    struct CanonicalInvalidationHelper {
+        record: WorkspaceServiceRecord,
+        runtime: Arc<WorkspaceServiceRuntime>,
+        notifications: Arc<Mutex<Vec<Vec<DomainEvent>>>>,
+        connections: Arc<AtomicUsize>,
+        pid_file: PathBuf,
+        server: Option<thread::JoinHandle<Result<(), String>>>,
+    }
+
+    impl CanonicalInvalidationHelper {
+        fn start(context: &WorkspaceContext, source_root: &Path, executable: &Path) -> Self {
+            Self::start_with_cleanup_gate(context, source_root, executable, None)
+        }
+
+        fn start_with_cleanup_gate(
+            context: &WorkspaceContext,
+            source_root: &Path,
+            executable: &Path,
+            cleanup_gate: Option<PathBuf>,
+        ) -> Self {
+            let identity = WorkspaceServiceIdentity::new(context, source_root).unwrap();
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let record = test_record(
+                &identity,
+                listener.local_addr().unwrap().port(),
+                CoreIdentity::production().as_str(),
+            );
+            write_record(&identity, record.clone());
+            let pid_file = identity.service_dir.join("snapshot-pids.txt");
+            let mut runtime = WorkspaceServiceRuntime::new(identity, &record);
+            runtime.runtime_mut_for_test().analyzer_starter = Arc::new({
+                let executable = executable.to_path_buf();
+                let pid_file = pid_file.clone();
+                move |_, source_root, cancellation| {
+                    let mut command = Command::new(&executable);
+                    command
+                        .args([source_root.join(SNAPSHOT_MODULE), pid_file.clone()])
+                        .arg("analyzer")
+                        .arg(pid_file.with_extension("lease"));
+                    if let Some(cleanup_gate) = &cleanup_gate {
+                        command.arg(cleanup_gate);
+                    }
+                    PersistentMcpSession::start_with_command(command, cancellation)
+                }
+            });
+            runtime.runtime_mut_for_test().rlm_starter = Arc::new({
+                let executable = executable.to_path_buf();
+                let pid_file = pid_file.with_extension("rlm-pids");
+                move |_, source_root, _, build_id, cancellation| {
+                    let mut command = Command::new(&executable);
+                    command
+                        .args([source_root.join(SNAPSHOT_MODULE), pid_file.clone()])
+                        .arg("rlm");
+                    Ok(RlmMcpSession {
+                        transport: PersistentMcpSession::start_with_command(command, cancellation)?,
+                        source_root: source_root.to_path_buf(),
+                        build_id: build_id.to_owned(),
+                        session_id: None,
+                    })
+                }
+            });
+            let notifications = Arc::new(Mutex::new(Vec::new()));
+            let connections = Arc::new(AtomicUsize::new(0));
+            *runtime.handler_started_hook().lock().unwrap() = Some(Arc::new({
+                let connections = Arc::clone(&connections);
+                move || {
+                    connections.fetch_add(1, Ordering::AcqRel);
+                }
+            }));
+            *runtime
+                .runtime_mut_for_test()
+                .authenticated_request_hook
+                .lock()
+                .unwrap() = Some(Arc::new({
+                let notifications = Arc::clone(&notifications);
+                move |_, request| {
+                    if let ServiceRequestKind::Invalidate { events } = request {
+                        notifications.lock().unwrap().push(events.clone());
+                    }
+                }
+            }));
+            let runtime = Arc::new(runtime);
+            let server_runtime = Arc::clone(&runtime);
+            let server = thread::spawn(move || {
+                serve_workspace_service(
+                    listener,
+                    server_runtime,
+                    Arc::new(SystemWorkspaceServiceOperationExecutor),
+                    Duration::from_secs(120),
+                    SERVICE_REQUEST_HEADER_TIMEOUT,
+                    SERVICE_SHUTDOWN_GRACE,
+                )
+            });
+            Self {
+                record,
+                runtime,
+                notifications,
+                connections,
+                pid_file,
+                server: Some(server),
+            }
+        }
+
+        fn notifications(&self) -> Vec<Vec<DomainEvent>> {
+            self.notifications.lock().unwrap().clone()
+        }
+
+        fn snapshot(&self) -> String {
+            let response = send_test_request(
+                &self.record,
+                ServiceRequestKind::BslMcp {
+                    operation_id: Uuid::new_v4().to_string(),
+                    tool_name: "search".into(),
+                    tool_args: json!({"action": "search_code", "query": "Acceptance"}),
+                    timeout_seconds: 10,
+                    timeout_nanos: 0,
+                },
+            );
+            assert!(response.ok, "{response:?}");
+            response.result_text.unwrap()
+        }
+
+        fn pids(&self) -> Vec<u32> {
+            fs::read_to_string(&self.pid_file)
+                .unwrap()
+                .lines()
+                .map(|line| line.parse().unwrap())
+                .collect()
+        }
+    }
+
+    impl Drop for CanonicalInvalidationHelper {
+        fn drop(&mut self) {
+            self.runtime.begin_shutdown();
+            if let Some(server) = self.server.take() {
+                let _ = server.join();
+            }
+        }
+    }
+
+    struct CanonicalInvalidationFixture {
+        context: WorkspaceContext,
+        executable: PathBuf,
+        daemon: Option<crate::infrastructure::daemon::server::actor_capacity_tests::LiveV5Daemon>,
+        owner: Option<crate::infrastructure::daemon::client_v5::V5DaemonProcessOwner>,
+        _directory: tempfile::TempDir,
+    }
+
+    impl CanonicalInvalidationFixture {
+        fn new() -> Self {
+            use crate::infrastructure::daemon::server::actor_capacity_tests::{
+                canonical_v13_service, LiveV5Daemon,
+            };
+            let directory = tempfile::tempdir().unwrap();
+            let workspace = crate::test_support::canonical_path(directory.path()).join("workspace");
+            let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/acceptance/workspace-symbol");
+            for relative in [
+                "v8project.yaml",
+                "src/Configuration.xml",
+                "src/CommonModules/SearchProbe.xml",
+                "src/CommonModules/SearchProbe/Ext/Module.bsl",
+            ] {
+                let target = workspace.join(relative);
+                fs::create_dir_all(target.parent().unwrap()).unwrap();
+                fs::copy(fixture.join(relative), target).unwrap();
+            }
+            let context =
+                crate::infrastructure::workspace::discover_workspace(Some(workspace)).unwrap();
+            assert_eq!(
+                context.cache_root,
+                context.workspace_root.join(".build/unica")
+            );
+            let executable =
+                testing::fixture_executable_path(directory.path(), "snapshot-provider");
+            let status = Command::new("rustc")
+                .arg("--edition=2021")
+                .arg(
+                    Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("../../tests/fixtures/analyzer/workspace-snapshot-producer.rs"),
+                )
+                .arg("-o")
+                .arg(&executable)
+                .status()
+                .unwrap();
+            assert!(status.success(), "compile controlled resident provider");
+            let daemon = LiveV5Daemon::start_with_owned_stop(canonical_v13_service());
+            let owner = daemon.owner();
+            Self {
+                context,
+                executable,
+                daemon: Some(daemon),
+                owner: Some(owner),
+                _directory: directory,
+            }
+        }
+
+        fn apply(&self, arguments: Value) -> crate::domain::invocation::DomainResult {
+            use crate::infrastructure::daemon::protocol_v5::V5DaemonTaskSnapshot;
+            use crate::infrastructure::daemon::server::actor_capacity_tests::V5Submission;
+            let request = crate::infrastructure::daemon::protocol::InvocationRequest::new(
+                crate::application::invocation_store::ToolIdentity::Apply,
+                arguments,
+                self.context.workspace_root.to_string_lossy(),
+                7_000,
+            )
+            .unwrap();
+            let daemon = self.daemon.as_ref().unwrap();
+            let owner = self.owner.as_ref().unwrap();
+            match daemon.submit(owner, &request) {
+                V5Submission::Direct(result) => *result,
+                V5Submission::Task(task) => {
+                    match daemon.wait_terminal(owner, task, Duration::from_secs(15)) {
+                        V5DaemonTaskSnapshot::Completed { result, .. } => *result,
+                        other => panic!("canonical apply did not complete: {other:?}"),
+                    }
+                }
+            }
+        }
+
+        fn plan(&self, text: &str) -> crate::domain::invocation::DomainResult {
+            self.apply(json!({
+                "at": "main:CommonModule.SearchProbe",
+                "ops": [{"op": "code.replace", "args": {
+                    "at": "main:CommonModule.SearchProbe.Body", "text": text,
+                }}],
+            }))
+        }
+
+        fn helper(&self) -> CanonicalInvalidationHelper {
+            CanonicalInvalidationHelper::start(
+                &self.context,
+                &self.context.workspace_root.join("src"),
+                &self.executable,
+            )
+        }
+    }
+
+    impl Drop for CanonicalInvalidationFixture {
+        fn drop(&mut self) {
+            if let (Some(mut daemon), Some(owner)) = (self.daemon.take(), self.owner.take()) {
+                daemon.stop(owner);
+            }
+        }
+    }
+
+    #[test]
+    fn canonical_saved_apply_notifies_live_helpers_once_and_restarts_the_warmed_analyzer() {
+        let fixture = CanonicalInvalidationFixture::new();
+        let helper = fixture.helper();
+        let module = fixture
+            .context
+            .workspace_root
+            .join("src")
+            .join(SNAPSHOT_MODULE);
+        let before = fs::read(&module).unwrap();
+        assert!(helper.snapshot().contains("AcceptanceExistingSymbol1306"));
+        let first_pid = helper.pids()[0];
+
+        let mut neighbor_context = fixture.context.clone();
+        neighbor_context.workspace_root = fixture._directory.path().join("neighbor");
+        neighbor_context.cwd = neighbor_context.workspace_root.clone();
+        let neighbor_source = neighbor_context.workspace_root.join("src");
+        fs::create_dir_all(neighbor_source.join(SNAPSHOT_MODULE).parent().unwrap()).unwrap();
+        fs::write(neighbor_source.join(SNAPSHOT_MODULE), &before).unwrap();
+        let neighbor = CanonicalInvalidationHelper::start(
+            &neighbor_context,
+            &neighbor_source,
+            &fixture.executable,
+        );
+        assert!(neighbor.snapshot().contains("AcceptanceExistingSymbol1306"));
+
+        let preview = fixture.plan(SNAPSHOT_AFTER);
+        assert!(preview.ok, "{preview:?}");
+        assert_eq!(fs::read(&module).unwrap(), before);
+        assert!(helper.notifications().is_empty());
+        assert!(helper.snapshot().contains("AcceptanceExistingSymbol1306"));
+        assert_eq!(helper.pids(), [first_pid]);
+
+        let token = preview.data.as_ref().unwrap()["executionToken"]
+            .as_str()
+            .unwrap();
+        let published = fixture.apply(json!({"executionToken": token}));
+        assert!(published.ok, "{published:?}");
+        assert_eq!(fs::read_to_string(&module).unwrap(), SNAPSHOT_AFTER);
+        let notifications = helper.notifications();
+        assert_eq!(
+            notifications.len(),
+            1,
+            "the canonical commit must reach the actual helper"
+        );
+        assert_eq!(notifications[0].len(), 1, "{notifications:?}");
+        assert_eq!(
+            notifications[0][0],
+            DomainEvent::new(
+                DomainEventKind::ModuleChanged,
+                "main:CommonModule.SearchProbe"
+            )
+        );
+        assert!(helper
+            .runtime
+            .analyzer_invalidated()
+            .load(Ordering::Acquire));
+        assert!(helper.runtime.rlm_invalidated().load(Ordering::Acquire));
+        assert!(
+            neighbor.notifications().is_empty(),
+            "a neighbor sharing services must stay isolated"
+        );
+        assert!(helper.snapshot().contains("AcceptanceChangedSymbol978"));
+        let pids = helper.pids();
+        assert_eq!(pids.len(), 2);
+        assert_ne!(pids[0], pids[1]);
+        assert!(wait_for_process_exit(first_pid, Duration::from_secs(5)));
+
+        let replay = fixture.apply(json!({"executionToken": token}));
+        assert_eq!(
+            serde_json::to_value(replay).unwrap(),
+            serde_json::to_value(&published).unwrap()
+        );
+        assert_eq!(helper.notifications(), notifications);
+        assert!(helper.snapshot().contains("AcceptanceChangedSymbol978"));
+        assert_eq!(helper.pids(), pids);
+
+        let no_op = fixture.plan(SNAPSHOT_AFTER);
+        assert!(no_op.ok, "{no_op:?}");
+        let no_op_token = no_op.data.as_ref().unwrap()["executionToken"]
+            .as_str()
+            .unwrap();
+        assert!(fixture.apply(json!({"executionToken": no_op_token})).ok);
+        assert_eq!(
+            helper.notifications(),
+            notifications,
+            "empty effects must not invalidate"
+        );
+
+        let stale = fixture.plan("Procedure NeverPublished978() Export\nEndProcedure\n");
+        assert!(stale.ok, "{stale:?}");
+        let stale_token = stale.data.as_ref().unwrap()["executionToken"]
+            .as_str()
+            .unwrap();
+        fs::write(
+            &module,
+            "Procedure ExternalEdit978() Export\nEndProcedure\n",
+        )
+        .unwrap();
+        let state_before = fs::read(fixture.context.cache_root.join("state.json")).unwrap();
+        let refused = fixture.apply(json!({"executionToken": stale_token}));
+        assert!(!refused.ok, "{refused:?}");
+        assert!(fs::read_to_string(&module)
+            .unwrap()
+            .contains("ExternalEdit978"));
+        assert_eq!(
+            fs::read(fixture.context.cache_root.join("state.json")).unwrap(),
+            state_before
+        );
+        assert_eq!(helper.notifications(), notifications);
+        assert_eq!(
+            serde_json::to_value(fixture.apply(json!({"executionToken": stale_token}))).unwrap(),
+            serde_json::to_value(refused).unwrap()
+        );
+        let invalid = fixture.apply(json!({"at": "main:CommonModule.SearchProbe", "ops": [{"op": "code.replace", "args": {"text": 42}}]}));
+        assert!(!invalid.ok);
+        assert_eq!(helper.notifications(), notifications);
+        assert_eq!(helper.pids(), pids);
+    }
+
+    #[test]
+    fn invalidated_analyzer_retirement_observes_cancellation_and_budget_before_replacement() {
+        for cancel in [false, true] {
+            let fixture = CanonicalInvalidationFixture::new();
+            let cleanup_gate = fixture._directory.path().join("hold-analyzer-cleanup");
+            fs::write(&cleanup_gate, b"hold").unwrap();
+            let helper = CanonicalInvalidationHelper::start_with_cleanup_gate(
+                &fixture.context,
+                &fixture.context.workspace_root.join("src"),
+                &fixture.executable,
+                Some(cleanup_gate.clone()),
+            );
+            assert!(helper.snapshot().contains("AcceptanceExistingSymbol1306"));
+            let first_pid = helper.pids()[0];
+            write_ready_rlm_status_for_current_source(
+                &fixture.context,
+                &fixture.context.workspace_root.join("src"),
+            );
+            let rlm = || {
+                send_test_request(
+                    &helper.record,
+                    ServiceRequestKind::RlmMcp {
+                        operation_id: Uuid::new_v4().to_string(),
+                        operation: WorkspaceRlmOperation::Search {
+                            query: "Acceptance".into(),
+                            limit: 20,
+                        },
+                        timeout_seconds: 10,
+                        timeout_nanos: 0,
+                    },
+                )
+            };
+            let initial_rlm = rlm();
+            assert!(initial_rlm.ok);
+            assert!(initial_rlm
+                .result_text
+                .unwrap()
+                .contains("AcceptanceExistingSymbol1306"));
+            let preview = fixture.plan(SNAPSHOT_AFTER);
+            assert!(preview.ok);
+            let token = preview.data.as_ref().unwrap()["executionToken"]
+                .as_str()
+                .unwrap();
+            assert!(fixture.apply(json!({"executionToken": token})).ok);
+
+            let mut response = open_test_request(
+                &helper.record,
+                ServiceRequestKind::BslMcp {
+                    operation_id: "waiting-for-analyzer-exit".into(),
+                    tool_name: "search".into(),
+                    tool_args: json!({"action": "search_code", "query": "Acceptance"}),
+                    timeout_seconds: if cancel { 10 } else { 0 },
+                    timeout_nanos: if cancel { 0 } else { 500_000_000 },
+                },
+            );
+            let closing = PathBuf::from(format!("{}.closing", cleanup_gate.display()));
+            wait_for_file(&closing, Duration::from_secs(2));
+            assert_eq!(
+                helper.pids(),
+                [first_pid],
+                "replacement waits for old EOF cleanup"
+            );
+            assert!(send_test_request(&helper.record, ServiceRequestKind::Ping).ok);
+            let pinned_rlm = rlm();
+            assert!(
+                pinned_rlm.ok,
+                "analyzer shutdown must leave pinned RLM reads independent"
+            );
+            assert!(pinned_rlm
+                .result_text
+                .unwrap()
+                .contains("AcceptanceExistingSymbol1306"));
+            assert_eq!(pinned_rlm.index_freshness.as_deref(), Some("unknown"));
+            if cancel {
+                assert!(
+                    send_test_request(
+                        &helper.record,
+                        ServiceRequestKind::Cancel {
+                            operation_id: "waiting-for-analyzer-exit".into(),
+                        },
+                    )
+                    .ok
+                );
+            }
+            let response = read_test_response(&mut response);
+            assert!(
+                !response.ok,
+                "unfinished retirement cannot claim a replacement"
+            );
+            let error = response.error.as_deref().unwrap();
+            assert!(error.starts_with(if cancel { "cancelled:" } else { "timeout:" }));
+            assert_eq!(helper.pids(), [first_pid]);
+            assert!(wait_for_process_exit(first_pid, Duration::from_secs(5)));
+            assert!(
+                helper.pid_file.with_extension("lease").exists(),
+                "forced stop does not claim the provider released its lease"
+            );
+            fs::remove_file(cleanup_gate).unwrap();
+            // Recover only the fixture's witness after the owned process has
+            // actually exited; no provider-private state is edited by Unica.
+            fs::remove_file(helper.pid_file.with_extension("lease")).unwrap();
+            assert!(helper.snapshot().contains("AcceptanceChangedSymbol978"));
+            assert_eq!(helper.pids().len(), 2);
+        }
+    }
+
+    #[test]
+    fn invalidated_analyzer_preserves_its_owner_after_exit_observation_is_lost() {
+        use crate::infrastructure::platform::{
+            inject_unix_waitid_error_for_test, reap_runtime_authority_test_child,
+        };
+
+        if !crate::infrastructure::platform::unix_runtime_authority_tests_supported() {
+            return;
+        }
+
+        struct ExactChildCleanup(u32);
+        impl Drop for ExactChildCleanup {
+            fn drop(&mut self) {
+                reap_runtime_authority_test_child(self.0);
+            }
+        }
+
+        let fixture = CanonicalInvalidationFixture::new();
+        let cleanup_gate = fixture._directory.path().join("hold-lost-owner-cleanup");
+        fs::write(&cleanup_gate, b"hold").unwrap();
+        let helper = CanonicalInvalidationHelper::start_with_cleanup_gate(
+            &fixture.context,
+            &fixture.context.workspace_root.join("src"),
+            &fixture.executable,
+            Some(cleanup_gate.clone()),
+        );
+        assert!(helper.snapshot().contains("AcceptanceExistingSymbol1306"));
+        let first_pid = helper.pids()[0];
+        let preview = fixture.plan(SNAPSHOT_AFTER);
+        assert!(preview.ok);
+        let token = preview.data.as_ref().unwrap()["executionToken"]
+            .as_str()
+            .unwrap();
+        assert!(fixture.apply(json!({"executionToken": token})).ok);
+
+        // The fault is thread-local: call the real component in this thread,
+        // after the public TCP apply delivered the actual invalidation.
+        inject_unix_waitid_error_for_test();
+        let cleanup = ExactChildCleanup(first_pid);
+        let call = || {
+            helper.runtime.handle_bsl_mcp(
+                "search",
+                json!({"action": "search_code", "query": "Acceptance"}),
+                10,
+                0,
+                &CancellationToken::new(),
+            )
+        };
+        let first = call();
+        assert!(!first.ok);
+        assert!(first
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("injected Unix waitid failure"));
+        for _ in 0..2 {
+            let retained = helper.runtime.analyzer().lock().unwrap();
+            assert_eq!(retained.as_ref().unwrap().child.id(), first_pid);
+            assert!(helper
+                .runtime
+                .analyzer_invalidated()
+                .load(Ordering::Acquire));
+            drop(retained);
+            let next = call();
+            assert!(
+                !next.ok,
+                "an unknown old owner cannot authorize replacement"
+            );
+            assert!(next
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("authority was lost"));
+            assert_eq!(helper.pids(), [first_pid]);
+        }
+        fs::remove_file(cleanup_gate).unwrap();
+        drop(cleanup);
+    }
+
+    #[test]
+    fn failed_helper_invalidation_preserves_the_published_receipt_and_unknown_old_results() {
+        use crate::domain::code_intelligence::{
+            CodeIntelligenceContext, CodeIntelligenceProvider, ProviderDeadline, SearchRequest,
+        };
+        let fixture = CanonicalInvalidationFixture::new();
+        let helper = fixture.helper();
+        let source_root = fixture.context.workspace_root.join("src");
+        let context = CodeIntelligenceContext::new(
+            fixture.context.clone(),
+            crate::domain::source_roots::ResolvedSourceRoot {
+                source_set: Some("main".into()),
+                path: source_root.clone(),
+            },
+        );
+        let symbol = || {
+            crate::infrastructure::code_intelligence::BslAnalyzerProvider::new().search(
+                &SearchRequest {
+                    query: "Acceptance".into(),
+                    limit: 20,
+                },
+                &context,
+                ProviderDeadline::from_budget(Duration::from_secs(10)),
+                &CancellationToken::new(),
+            )
+        };
+        let before = symbol();
+        assert_eq!(before.hits.len(), 1, "{before:?}");
+        assert_eq!(before.index_freshness.as_deref(), Some("unknown"));
+        let first_pid = helper.pids()[0];
+        write_ready_rlm_status_for_current_source(&fixture.context, &source_root);
+        let rlm = || {
+            WorkspaceServiceManager::new()
+                .call_rlm_cancellable(
+                    &fixture.context,
+                    &source_root,
+                    WorkspaceRlmOperation::Search {
+                        query: "Acceptance".into(),
+                        limit: 20,
+                    },
+                    Duration::from_secs(10),
+                    &CancellationToken::new(),
+                )
+                .unwrap()
+        };
+        let WorkspaceServiceRlmCall::Output(initial_rlm) = rlm() else {
+            panic!("ready pinned build must stay readable")
+        };
+        assert!(initial_rlm
+            .result_text
+            .contains("AcceptanceExistingSymbol1306"));
+        assert_eq!(initial_rlm.freshness.as_deref(), Some("unknown"));
+
+        let preview = fixture.plan(SNAPSHOT_AFTER);
+        assert!(preview.ok, "{preview:?}");
+        let token = preview.data.as_ref().unwrap()["executionToken"]
+            .as_str()
+            .unwrap();
+        let mut wrong_token = helper.record.clone();
+        wrong_token.token = "rejected-invalidation-token".into();
+        write_record(helper.runtime.identity(), wrong_token);
+        let connections_before = helper.connections.load(Ordering::Acquire);
+        let published = fixture.apply(json!({"executionToken": token}));
+        write_record(helper.runtime.identity(), helper.record.clone());
+        assert!(
+            published.ok,
+            "delivery failure must not change a committed apply: {published:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(source_root.join(SNAPSHOT_MODULE)).unwrap(),
+            SNAPSHOT_AFTER
+        );
+        assert!(
+            helper.notifications().is_empty(),
+            "the original helper rejects the token before invalidation"
+        );
+        assert_eq!(helper.connections.load(Ordering::Acquire), connections_before + 1, "the committed apply makes one real notification attempt even when authentication rejects it");
+        let state = fs::read_to_string(fixture.context.cache_root.join("state.json")).unwrap();
+        let state: Value = serde_json::from_str(&state).unwrap();
+        assert_eq!(state["caches"]["bsl_index"]["status"], "stale");
+        assert_eq!(state["caches"]["bsl_diagnostics"]["status"], "stale");
+        assert_eq!(
+            serde_json::to_value(fixture.apply(json!({"executionToken": token}))).unwrap(),
+            serde_json::to_value(published).unwrap()
+        );
+        assert!(
+            helper.notifications().is_empty(),
+            "replay must not retry a publication's notification"
+        );
+        assert_eq!(
+            helper.connections.load(Ordering::Acquire),
+            connections_before + 1
+        );
+        let old_symbol = symbol();
+        assert_eq!(old_symbol.hits, before.hits);
+        assert_eq!(old_symbol.index_freshness.as_deref(), Some("unknown"));
+        assert_eq!(helper.pids(), [first_pid]);
+        let WorkspaceServiceRlmCall::Output(old_rlm) = rlm() else {
+            panic!("the previous usable build must remain readable")
+        };
+        assert_eq!(old_rlm.result_text, initial_rlm.result_text);
+        assert_eq!(old_rlm.build_id, initial_rlm.build_id);
+        assert_eq!(old_rlm.freshness.as_deref(), Some("unknown"));
+    }
 
     #[test]
     fn legacy_workspace_service_runtime_is_owned_by_the_workspace_actor_adapter() {
@@ -4960,6 +5685,10 @@ mod tests {
             Some(std::ffi::OsStr::new(&expected_key)),
             "the fallback must preserve the normalized source identity"
         );
+        assert_eq!(
+            cache.parent().unwrap().file_name(),
+            Some(std::ffi::OsStr::new("owned-stdio"))
+        );
 
         cleanup(&context);
     }
@@ -4971,6 +5700,21 @@ mod tests {
         let context = test_context("bsl-provider-command");
         let source_root = context.workspace_root.join("src");
         let expected_cache = bsl_analyzer_cache_dir(&context, &source_root).unwrap();
+        let expected_key = provider_state_key(
+            &normalize_path_identity(&context.workspace_root).unwrap(),
+            &normalize_path_identity(&source_root).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            expected_cache,
+            normalize_path_identity(
+                &context
+                    .cache_root
+                    .join("providers/bsl-analyzer/owned-stdio")
+                    .join(expected_key)
+            )
+            .unwrap()
+        );
         let command =
             bsl_analyzer_command(Path::new("bsl-analyzer"), &context, &source_root).unwrap();
         let args = command.get_args().map(OsString::from).collect::<Vec<_>>();
@@ -4991,6 +5735,14 @@ mod tests {
                 "--mode".into(),
                 "stdio".into(),
             ]
+        );
+        assert_eq!(
+            command.get_envs().find(|(key, _)| *key == "BSL_MCP_BROKER"),
+            Some((
+                std::ffi::OsStr::new("BSL_MCP_BROKER"),
+                Some(std::ffi::OsStr::new("0"))
+            )),
+            "retiring the persistent session must retire its backend, not only a broker proxy"
         );
 
         cleanup(&context);
@@ -9663,7 +10415,7 @@ fn main() {
         assert!(repeated.starts_with(
             normalize_path_identity(&context.cache_root)
                 .unwrap()
-                .join("providers/bsl-analyzer")
+                .join("providers/bsl-analyzer/owned-stdio")
         ));
         assert!(!repeated.starts_with(&source_root));
         assert!(!repeated.starts_with(context.cache_root.join("services")));
@@ -9721,6 +10473,7 @@ fn main() {
             Path::new("relative-unica-cache")
                 .join("providers")
                 .join("bsl-analyzer")
+                .join("owned-stdio")
                 .join(cache_dir.file_name().unwrap())
         ));
 

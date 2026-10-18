@@ -40,6 +40,7 @@ import queue
 import re
 import threading
 import time
+from contextlib import ExitStack
 import os
 import shutil
 import subprocess
@@ -1311,7 +1312,7 @@ class DeliveredAcceptanceServer(AcceptanceServer):
             self._closed = True
 
 
-def run_corpus(test_case, corpus, plugin=None, scenario_driver=None):
+def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cleanup=None):
     default_workspace = corpus["workspace"]
     mismatches = []
     with tempfile.TemporaryDirectory(
@@ -1420,7 +1421,11 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None):
                     server.close()
                     server = fresh_server(current_workspace)
         finally:
-            server.close()
+            try:
+                server.close()
+            finally:
+                if fixture_cleanup is not None:
+                    fixture_cleanup()
     test_case.assertEqual(
         mismatches,
         [],
@@ -1448,7 +1453,11 @@ class AcceptanceDeliveryCorpusRunTests(unittest.TestCase):
             subprocess.run([sys.executable, "-m", "tests.ci.acceptance_profiles", "--stage-analyzer", str(plugin)],
                            cwd=REPO_ROOT, timeout=90, check=True)
             from tests.ci.acceptance_diagnostics import prepare_diagnostic_case
-            run_corpus(self, corpus, plugin, scenario_driver=prepare_diagnostic_case)
+            with ExitStack() as fixtures:
+                def prepare(server, scenario):
+                    return prepare_diagnostic_case(server, scenario, plugin=plugin, fixtures=fixtures)
+                run_corpus(self, corpus, plugin, scenario_driver=prepare,
+                           fixture_cleanup=fixtures.close)
     def test_pinned_resident_reports_real_baseline_author_and_scope_facts(self):
         from tests.ci.acceptance_profiles import stage_analyzer, host_target
         from tests.ci.acceptance_diagnostics import resident_filter_evidence

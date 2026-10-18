@@ -2850,6 +2850,7 @@ pub(crate) mod actor_capacity_tests {
         state_root: std::path::PathBuf,
         canonical: Arc<V5CanonicalInvocationRuntime>,
         thread: Option<std::thread::JoinHandle<Result<(), String>>>,
+        owned_stop: Option<Arc<AtomicBool>>,
     }
 
     impl LiveV5Daemon {
@@ -2859,6 +2860,14 @@ pub(crate) mod actor_capacity_tests {
                 Arc::new(TokioClock),
             ));
             Self::over(canonical, service)
+        }
+
+        pub(crate) fn start_with_owned_stop(service: Arc<dyn CanonicalInvocationService>) -> Self {
+            let canonical = Arc::new(V5CanonicalInvocationRuntime::new(
+                Arc::clone(&service),
+                Arc::new(TokioClock),
+            ));
+            Self::over_with_owned_stop(canonical, service, Some(Arc::new(AtomicBool::new(false))))
         }
 
         pub(crate) fn start_with_delivery_downloader(
@@ -2876,6 +2885,14 @@ pub(crate) mod actor_capacity_tests {
             canonical: Arc<V5CanonicalInvocationRuntime>,
             service: Arc<dyn CanonicalInvocationService>,
         ) -> Self {
+            Self::over_with_owned_stop(canonical, service, None)
+        }
+
+        fn over_with_owned_stop(
+            canonical: Arc<V5CanonicalInvocationRuntime>,
+            service: Arc<dyn CanonicalInvocationService>,
+            owned_stop: Option<Arc<AtomicBool>>,
+        ) -> Self {
             let state = tempfile::tempdir().unwrap();
             let state_root = std::fs::canonicalize(state.path()).unwrap();
             let config = DaemonServerConfig::new(
@@ -2885,13 +2902,24 @@ pub(crate) mod actor_capacity_tests {
             )
             .with_invocation_service(service)
             .with_canonical_runtime_for_test(Arc::clone(&canonical));
-            let thread = std::thread::spawn(move || super::super::runtime_v5::run_daemon(config));
+            let thread = Self::spawn(config, owned_stop.clone());
             Self {
                 _state: state,
                 state_root,
                 canonical,
                 thread: Some(thread),
+                owned_stop,
             }
+        }
+
+        fn spawn(
+            config: DaemonServerConfig,
+            owned_stop: Option<Arc<AtomicBool>>,
+        ) -> std::thread::JoinHandle<Result<(), String>> {
+            std::thread::spawn(move || match owned_stop {
+                Some(stop) => super::super::runtime_v5::run_daemon_until_for_test(config, stop),
+                None => super::super::runtime_v5::run_daemon(config),
+            })
         }
 
         fn runtime(&self) -> &V5CanonicalInvocationRuntime {
@@ -3024,6 +3052,9 @@ pub(crate) mod actor_capacity_tests {
 
         /// Ends one life of the daemon; the state root stays for the next.
         pub(crate) fn stop(&mut self, owner: V5DaemonProcessOwner) {
+            if let Some(stop) = &self.owned_stop {
+                stop.store(true, Ordering::Release);
+            }
             drop(owner);
             self.thread
                 .take()
@@ -3052,9 +3083,10 @@ pub(crate) mod actor_capacity_tests {
             .with_invocation_service(service)
             .with_canonical_runtime_for_test(Arc::clone(&canonical));
             self.canonical = canonical;
-            self.thread = Some(std::thread::spawn(move || {
-                super::super::runtime_v5::run_daemon(config)
-            }));
+            if let Some(stop) = &self.owned_stop {
+                stop.store(false, Ordering::Release);
+            }
+            self.thread = Some(Self::spawn(config, self.owned_stop.clone()));
         }
     }
 

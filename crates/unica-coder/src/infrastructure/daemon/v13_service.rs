@@ -204,6 +204,15 @@ impl CanonicalV13ReadService {
             return invocation.execute_saved_apply(token.as_str().unwrap(), cancellation, |mut result, publication| {
                 match publication {
                     Ok(publication) => {
+                        if publication.effects().disposition() == ApplyEffectDisposition::Committed
+                            && !publication.effects().events().is_empty()
+                        {
+                            use crate::application::ports::ApplicationPorts;
+                            self.ports.notify_invalidation(
+                                invocation.workspace_context(),
+                                publication.effects().events(),
+                            );
+                        }
                         result.summary = "metadata apply published atomically".into();
                         result.rev = Some(publication.rev().to_owned());
                         if let Some(data) = result.data.as_mut() {
