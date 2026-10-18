@@ -743,6 +743,8 @@ fn public_view_budget_belongs_to_the_client_and_the_summary_marks_the_body() {
     wide.finish();
 }
 
+#[path = "platform/v13_command_lifecycle.rs"]
+mod command_lifecycle;
 #[path = "platform/v13_resolve_resources.rs"]
 mod resolve_resources;
 #[path = "platform/v13_resolve_target_isolation.rs"]
