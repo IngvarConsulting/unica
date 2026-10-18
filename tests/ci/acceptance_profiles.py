@@ -14,6 +14,7 @@ from tests.ci.acceptance_controls import tool_result
 REPO = Path(__file__).resolve().parents[2]
 SYMBOL_WORKSPACE = "tests/fixtures/acceptance/workspace-symbol"
 DIAGNOSTICS_WORKSPACE = "tests/fixtures/acceptance/workspace-diagnostics"
+KB_BOUNDARY_WORKSPACE = "tests/fixtures/acceptance/workspace-kb-boundary"
 FAULT_CASES = {"empty", "invalid-event", "unknown-severity", "exit-failure", "missing-engine", "checksum-mismatch"}
 DIAGNOSTIC_CASES = {"plain", "authors-toml", "authors-json", "diff-base", "precedence"}
 # A call graph branch orders the missing analyzer in the same call; the
@@ -35,6 +36,7 @@ EXTERNAL_CHECK_ADDRESSES = {
 }
 AGENT_EVALUATIONS = {"dcs-contract": DCS_WORKSPACE, "mxl-contract": MXL_WORKSPACE}
 SOURCE_WORKSPACES = {
+    KB_BOUNDARY_WORKSPACE,
     "tests/fixtures/acceptance/workspace-resolve-resources",
     "tests/fixtures/acceptance/workspace-nested-check",
     "tests/fixtures/acceptance/workspace-support-form",
