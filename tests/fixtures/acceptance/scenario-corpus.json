@@ -3388,6 +3388,34 @@
       "at": "main:Enum.LanguageAware",
       "ops": [
        {
+        "op": "supportRule.set",
+        "args": {
+         "values": {
+          "rule": "off-support"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.LanguageAware",
+      "ops": [
+       {
         "op": "object.remove"
        }
       ]
@@ -3403,6 +3431,34 @@
    "area": "Создание и удаление объектов",
    "task": "Удалить справочник, на который ссылаются права роли — поверхность отказывает и называет ссылающийся файл",
    "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "supportRule.set",
+        "args": {
+         "values": {
+          "rule": "off-support"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
     {
      "tool": "unica.apply",
      "args": {
@@ -7695,7 +7751,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` first"
+     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; set `off-support` with `supportRule.set` in a separate apply before removal"
     }
    ]
   },
@@ -7923,6 +7979,34 @@
       "at": "main:Catalog.Валюты",
       "ops": [
        {
+        "op": "supportRule.set",
+        "args": {
+         "values": {
+          "rule": "off-support"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
         "op": "object.remove",
         "args": {
          "force": true
@@ -7986,6 +8070,34 @@
    "area": "Объекты метаданных",
    "task": "Опубликовать удаление объекта без ссылок — результат несёт событие и влияние на кеш",
    "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.LanguageAware",
+      "ops": [
+       {
+        "op": "supportRule.set",
+        "args": {
+         "values": {
+          "rule": "off-support"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
     {
      "tool": "unica.apply",
      "args": {
