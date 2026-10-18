@@ -1622,7 +1622,7 @@ fn stage_command_module_lifecycle(
                     ApplyPlanErrorKind::InvalidState,
                     format!(
                         "the command module destination already exists: {}",
-                        new_relative.display()
+                        new_relative.to_string_lossy().replace('\\', "/")
                     ),
                 )
                 .at_path(new_name_path));
