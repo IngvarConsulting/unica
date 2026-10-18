@@ -118,7 +118,10 @@ fn catalog_standard_attribute_properties_reach_collection_and_detail() {
 #[test]
 fn catalog_standard_attribute_empty_absent_and_damaged_properties_stay_distinct() {
     for key in ["Synonym", "ToolTip", "FillChecking"] {
-        for state in ["empty", "absent", "damaged"] {
+        for state in ["empty", "absent", "damaged", "bare-text"] {
+            if state == "bare-text" && key == "FillChecking" {
+                continue;
+            }
             let fixture = RealReaderFixture::new();
             let path = fixture.source.join("Catalogs/Items.xml");
             let base =
@@ -135,6 +138,7 @@ fn catalog_standard_attribute_empty_absent_and_damaged_properties_stay_distinct(
                     "empty" => format!("<xr:{key}/>"),
                     "absent" => String::new(),
                     "damaged" => format!("<xr:{key}><xr:Unexpected/></xr:{key}>"),
+                    "bare-text" => format!("<xr:{key}>broken</xr:{key}>"),
                     _ => unreachable!(),
                 };
                 xml.replace_range(range, &replacement);
@@ -143,7 +147,7 @@ fn catalog_standard_attribute_empty_absent_and_damaged_properties_stay_distinct(
             let service = fixture.view_service();
             let collection =
                 service.view(ViewRequest::new("main:Catalog.Items.StandardAttribute").unwrap());
-            if state == "damaged" {
+            if matches!(state, "damaged" | "bare-text") {
                 assert!(!collection.ok, "{key}: {collection:?}");
                 assert_eq!(collection.diagnostics[0]["detailCode"], "source_unreadable");
                 for name in ["Code", "Description"] {
