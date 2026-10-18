@@ -17,7 +17,6 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs::root_check_resumes_inside_working_file_without_losing_attribute_failure
   - crates/unica-coder/src/infrastructure/project_health/resources.rs::continued_staged_eol_malformed_protocol_keeps_attribute_findings
   - crates/unica-coder/src/infrastructure/project_health/resources.rs::final_index_change_invalidates_earlier_attribute_findings
-gap: https://github.com/IngvarConsulting/unica/issues/970
 ---
 
 # Факты о рабочем пространстве и его готовность запрашиваются отдельно
