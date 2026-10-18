@@ -35,6 +35,7 @@ EXTERNAL_CHECK_ADDRESSES = {
 }
 AGENT_EVALUATIONS = {"dcs-contract": DCS_WORKSPACE, "mxl-contract": MXL_WORKSPACE}
 SOURCE_WORKSPACES = {
+    "tests/fixtures/acceptance/workspace-docs-locator",
     "tests/fixtures/acceptance/workspace-resolve-resources",
     "tests/fixtures/acceptance/workspace-nested-check",
     "tests/fixtures/acceptance/workspace-support-form",
