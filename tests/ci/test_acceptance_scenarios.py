@@ -749,22 +749,39 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
     built; it is not committed, so two added scenarios never edit its counts
     and coverage lists in the same lines."""
 
+    METADATA_CONTEXT = [
+        ("AttributeAdd", "attribute.add", "MetadataAttributeContainer", "Items"),
+        ("AttributeSet", "attribute.set", "MetadataAttribute", "Values"),
+        ("AttributeRemove", "attribute.remove", "MetadataAttribute", "Target"),
+        ("TabularSectionAdd", "tabularSection.add", "MetadataTabularSections", "Items"),
+        ("TabularSectionSet", "tabularSection.set", "MetadataTabularSection", "Values"),
+        ("TabularSectionRemove", "tabularSection.remove", "MetadataTabularSection", "Target"),
+        ("DimensionAdd", "dimension.add", "MetadataDimensions", "Items"),
+        ("DimensionSet", "dimension.set", "MetadataDimension", "Values"),
+        ("DimensionRemove", "dimension.remove", "MetadataDimension", "Target"),
+        ("ResourceAdd", "resource.add", "MetadataResources", "Items"),
+        ("ResourceSet", "resource.set", "MetadataResource", "Values"),
+        ("ResourceRemove", "resource.remove", "MetadataResource", "Target"),
+        ("EnumValueAdd", "enumValue.add", "MetadataEnumValues", "Items"),
+        ("EnumValueSet", "enumValue.set", "MetadataEnumValue", "Values"),
+        ("EnumValueRemove", "enumValue.remove", "MetadataEnumValue", "Target"),
+        ("ColumnAdd", "column.add", "MetadataColumns", "Items"),
+        ("ColumnSet", "column.set", "MetadataColumn", "Values"),
+        ("ColumnRemove", "column.remove", "MetadataColumn", "Target"),
+        ("CommandAdd", "command.add", "MetadataCommands", "Items"),
+        ("CommandSet", "command.set", "MetadataCommand", "Values"),
+        ("CommandRemove", "command.remove", "MetadataCommand", "Target"),
+    ]
     CONTEXT_ROWS = [
-        ("attribute.add", "Metadata", "MetadataAttributeContainer", "Items"),
-        ("attribute.set", "Metadata", "MetadataAttribute", "Values"),
-        ("attribute.remove", "Metadata", "MetadataAttribute", "Target"),
-        ("command.add", "Metadata", "MetadataCommands", "Items"),
-        ("command.set", "Metadata", "MetadataCommand", "Values"),
-        ("command.remove", "Metadata", "MetadataCommand", "Target"),
+        (name, "Metadata", applicability, skeleton)
+        for _, name, applicability, skeleton in METADATA_CONTEXT
+    ] + [
         ("attribute.add", "Form", "Form", "Items"),
         ("command.add", "Form", "Form", "Items"),
     ]
-    CONTEXT_REGISTRATIONS = (
-        "(MetadataOperation::AttributeAdd), (MetadataOperation::AttributeSet),"
-        "(MetadataOperation::AttributeRemove), (MetadataOperation::CommandAdd),"
-        "(MetadataOperation::CommandSet), (MetadataOperation::CommandRemove),"
-        "(FormOperation::AttributeAdd), (FormOperation::CommandAdd),"
-    )
+    CONTEXT_REGISTRATIONS = "".join(
+        f"(MetadataOperation::{variant})," for variant, _, _, _ in METADATA_CONTEXT
+    ) + "(FormOperation::AttributeAdd), (FormOperation::CommandAdd),"
 
     def renderer(self):
         module_path = REPO_ROOT / "scripts" / "ci" / "render-acceptance-registry.py"
@@ -923,7 +940,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         module = self.renderer()
         registry, implemented = module.load_apply_registry()
         for family, migrated_names, remaining in [
-            ("Metadata", {"attribute.add", "attribute.set", "attribute.remove", "command.add", "command.set", "command.remove"}, 28),
+            ("Metadata", {name for _, name, _, _ in self.METADATA_CONTEXT}, 13),
             ("Form", {"attribute.add", "command.add"}, 7),
         ]:
             self.assertEqual(
@@ -939,6 +956,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         role_metadata = (REPO_ROOT / "crates/unica-coder/src/domain/role_operation.rs").read_text(encoding="utf-8")
         roles = "(RoleOperation::Create), (RoleOperation::RightAdd), (RoleOperation::RightSet),\n"
         table = roles + self.CONTEXT_REGISTRATIONS
+        self.registration_fixture(table, role_metadata, complete_context=False)
         for family, applicability in [("Metadata", "MetadataCommands"), ("Form", "Form")]:
             filename = f"{family.lower()}_operation.rs"
             table_name = f"{family.lower()}_operations"
@@ -948,7 +966,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             self.assertIn(last_row, metadata)
             raw = f'("command.add", {family}, {applicability}, Items),'
             other_type = "FormOperation" if family == "Metadata" else "MetadataOperation"
-            variants = ["AttributeAdd", "AttributeSet", "AttributeRemove", "CommandAdd", "CommandSet", "CommandRemove"] if family == "Metadata" else ["AttributeAdd", "CommandAdd"]
+            variants = [variant for variant, _, _, _ in self.METADATA_CONTEXT] if family == "Metadata" else ["AttributeAdd", "CommandAdd"]
             without_family = table
             for variant in variants:
                 without_family = without_family.replace(f"({operation_type}::{variant}),", "")
@@ -975,12 +993,9 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
                 "duplicate metadata name": (table, metadata.replace(last_row, f'    CommandAdd => ("attribute.add", {applicability}, Items),\n')),
             }
             if family == "Metadata":
-                for variant, name, applicability, skeleton in [
-                    ("AttributeSet", "attribute.set", "MetadataAttribute", "Values"),
-                    ("AttributeRemove", "attribute.remove", "MetadataAttribute", "Target"),
-                    ("CommandSet", "command.set", "MetadataCommand", "Values"),
-                    ("CommandRemove", "command.remove", "MetadataCommand", "Target"),
-                ]:
+                for variant, name, applicability, skeleton in self.METADATA_CONTEXT:
+                    if variant == "CommandAdd":
+                        continue  # The common cases above already mutate this variant.
                     registration = f"({operation_type}::{variant}),"
                     raw_attribute = f'("{name}", Metadata, {applicability}, {skeleton}),'
                     cases[f"missing {name} registration"] = (table.replace(registration, ""), metadata)

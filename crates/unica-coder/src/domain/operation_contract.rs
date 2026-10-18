@@ -488,19 +488,6 @@ fn fill_value_allowed(
 
 const IDENTIFIER_PATTERN: &str = r"^[_A-Za-zА-Яа-яЁё][_A-Za-zА-Яа-яЁё0-9]*$";
 
-/// Typed collection of a member operation of a metadata object.
-fn metadata_member_collection(family: &str) -> Option<crate::domain::metadata::MetaCollection> {
-    use crate::domain::metadata::MetaCollection;
-    Some(match family {
-        "tabularSection" => MetaCollection::TabularSections,
-        "dimension" => MetaCollection::Dimensions,
-        "resource" => MetaCollection::Resources,
-        "enumValue" => MetaCollection::EnumValues,
-        "column" => MetaCollection::Columns,
-        _ => return None,
-    })
-}
-
 /// JSON Schema of one collection element: exactly the fields the typed
 /// metadata writer accepts for this collection. `update` describes the
 /// changed fields of an existing member, named by the address.
@@ -764,13 +751,7 @@ impl OperationContract {
                 help: METADATA_HELP,
             });
         }
-        let collection = metadata_member_collection(family)?;
-        match verb {
-            "add" => Some(Self::metadata_member_add(collection, site)),
-            "set" => Some(Self::metadata_member_set(collection, site)),
-            "remove" => Some(Self::metadata_member_remove()),
-            _ => None,
-        }
+        None
     }
 }
 
@@ -1011,7 +992,7 @@ mod tests {
     use crate::domain::role_operation::RoleOperation;
 
     #[test]
-    fn typed_attribute_and_command_contracts_have_no_legacy_string_fallback() {
+    fn typed_member_contracts_have_no_legacy_string_fallback() {
         for site in [
             None,
             Some(MetadataSite {
@@ -1023,6 +1004,21 @@ mod tests {
                 "attribute.add",
                 "attribute.set",
                 "attribute.remove",
+                "tabularSection.add",
+                "tabularSection.set",
+                "tabularSection.remove",
+                "dimension.add",
+                "dimension.set",
+                "dimension.remove",
+                "resource.add",
+                "resource.set",
+                "resource.remove",
+                "enumValue.add",
+                "enumValue.set",
+                "enumValue.remove",
+                "column.add",
+                "column.set",
+                "column.remove",
                 "command.add",
                 "command.set",
                 "command.remove",
@@ -1031,7 +1027,7 @@ mod tests {
                 let descriptor = OperationRegistry::closed().lookup(operation).unwrap();
                 assert!(descriptor.argument_contract().is_some());
             }
-            for operation in ["dimension.set", "column.remove"] {
+            for operation in ["template.set", "predefinedItem.remove"] {
                 assert!(OperationContract::metadata_at(operation, site).is_some());
             }
         }

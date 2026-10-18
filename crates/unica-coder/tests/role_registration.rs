@@ -85,6 +85,9 @@ fn compile_registration_with_declarations(entry: &str, metadata: &str, form: &st
         pub(super) enum OperationApplicability {{
             Configuration, SupportRule, MetadataAttributeContainer,
             MetadataAttribute, MetadataCommands, MetadataCommand, Form, FormItemContainer,
+            MetadataTabularSections, MetadataTabularSection,
+            MetadataDimensions, MetadataDimension, MetadataResources, MetadataResource,
+            MetadataEnumValues, MetadataEnumValue, MetadataColumns, MetadataColumn,
         }}
         pub(super) enum OperationSkeleton {{ Values, Items, Target }}
         enum RoleOperation {{ Create }}
@@ -251,6 +254,100 @@ fn typed_contextual_registrations_compile_and_migrated_raw_tuples_are_rejected()
 }
 
 #[test]
+fn inline_metadata_member_registrations_require_their_typed_variants() {
+    let operations = [
+        (
+            "TabularSectionAdd",
+            "tabularSection.add",
+            "MetadataTabularSections",
+            "Items",
+        ),
+        (
+            "TabularSectionSet",
+            "tabularSection.set",
+            "MetadataTabularSection",
+            "Values",
+        ),
+        (
+            "TabularSectionRemove",
+            "tabularSection.remove",
+            "MetadataTabularSection",
+            "Target",
+        ),
+        (
+            "DimensionAdd",
+            "dimension.add",
+            "MetadataDimensions",
+            "Items",
+        ),
+        (
+            "DimensionSet",
+            "dimension.set",
+            "MetadataDimension",
+            "Values",
+        ),
+        (
+            "DimensionRemove",
+            "dimension.remove",
+            "MetadataDimension",
+            "Target",
+        ),
+        ("ResourceAdd", "resource.add", "MetadataResources", "Items"),
+        ("ResourceSet", "resource.set", "MetadataResource", "Values"),
+        (
+            "ResourceRemove",
+            "resource.remove",
+            "MetadataResource",
+            "Target",
+        ),
+        (
+            "EnumValueAdd",
+            "enumValue.add",
+            "MetadataEnumValues",
+            "Items",
+        ),
+        (
+            "EnumValueSet",
+            "enumValue.set",
+            "MetadataEnumValue",
+            "Values",
+        ),
+        (
+            "EnumValueRemove",
+            "enumValue.remove",
+            "MetadataEnumValue",
+            "Target",
+        ),
+        ("ColumnAdd", "column.add", "MetadataColumns", "Items"),
+        ("ColumnSet", "column.set", "MetadataColumn", "Values"),
+        ("ColumnRemove", "column.remove", "MetadataColumn", "Target"),
+    ];
+    let typed = operations
+        .iter()
+        .map(|(variant, ..)| format!("(MetadataOperation::{variant})"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let result = compile_registration(&typed);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    for (_, name, applicability, skeleton) in operations {
+        let result = compile_registration(&format!(
+            r#"("{name}", Metadata, {applicability}, {skeleton})"#
+        ));
+        assert!(
+            !result.status.success(),
+            "{name} must require its typed registration"
+        );
+        assert!(String::from_utf8_lossy(&result.stderr).contains(
+            "Typed Metadata operations must register a MetadataOperation with a mandatory contextual contract"
+        ), "{name}: {}", String::from_utf8_lossy(&result.stderr));
+    }
+}
+
+#[test]
 fn raw_contextual_registration_guards_follow_the_actual_literal_table() {
     let metadata = metadata_declaration(
         include_str!("../src/domain/metadata_operation.rs"),
@@ -260,18 +357,23 @@ fn raw_contextual_registration_guards_follow_the_actual_literal_table() {
         include_str!("../src/domain/form_operation.rs"),
         "form_operations",
     );
-    for (family, applicability) in [("Metadata", "MetadataAttributeContainer"), ("Form", "Form")] {
+    for (family, applicability, original) in [
+        ("Metadata", "MetadataAttributeContainer", "attribute.add"),
+        ("Metadata", "MetadataResources", "resource.add"),
+        ("Form", "Form", "attribute.add"),
+    ] {
+        let probe = format!("{}.probe", original.split_once('.').unwrap().0);
         let changed_metadata = if family == "Metadata" {
-            metadata.replace("\"attribute.add\"", "\"attribute.probe\"")
+            metadata.replace(&format!("\"{original}\""), &format!("\"{probe}\""))
         } else {
             metadata.clone()
         };
         let changed_form = if family == "Form" {
-            form.replace("\"attribute.add\"", "\"attribute.probe\"")
+            form.replace(&format!("\"{original}\""), &format!("\"{probe}\""))
         } else {
             form.clone()
         };
-        for (name, allowed) in [("attribute.probe", false), ("attribute.add", true)] {
+        for (name, allowed) in [(probe.as_str(), false), (original, true)] {
             let result = compile_registration_with_declarations(
                 &format!(r#"("{name}", {family}, {applicability}, Items)"#),
                 &changed_metadata,

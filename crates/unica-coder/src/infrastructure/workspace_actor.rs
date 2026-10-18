@@ -5705,6 +5705,118 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn typed_metadata_members_roll_back_source_neighbors_and_cache_on_publication_failure() {
+        use crate::domain::apply::ApplyRequest;
+        use crate::infrastructure::native_operations::apply_families::plan_hidden_v13_apply;
+        use crate::infrastructure::native_operations::compile_transaction::{
+            set_retained_apply_failpoint, take_retained_apply_observed_events,
+            RetainedApplyFailpoint, RetainedApplyObservedEvent,
+        };
+
+        for (family, owner, item) in [
+            (
+                "tabularSection",
+                "Catalog.Items",
+                serde_json::json!({"name":"NewSection"}),
+            ),
+            (
+                "dimension",
+                "InformationRegister.CorpusRegister",
+                serde_json::json!({"name":"NewDimension","type":{"variants":[{"kind":"string","length":20,"allowedLength":"variable"}]}}),
+            ),
+            (
+                "resource",
+                "InformationRegister.CorpusRegister",
+                serde_json::json!({"name":"NewResource","type":{"variants":[{"kind":"number","digits":10,"fraction":2,"sign":"any"}]}}),
+            ),
+            (
+                "enumValue",
+                "Enum.LanguageAware",
+                serde_json::json!({"name":"NewValue"}),
+            ),
+            (
+                "column",
+                "DocumentJournal.ДокументыОрганизации",
+                serde_json::json!({"name":"NewColumn"}),
+            ),
+        ] {
+            let fixture = actor_fixture(&format!("typed-member-rollback-{family}"), &["src"]);
+            let source = &fixture.roots[0];
+            let corpus = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/acceptance/workspace-metadata-members/src");
+            for (relative, bytes) in snapshot_tree(&corpus) {
+                let target = source.join(relative);
+                match bytes {
+                    Some(bytes) => std::fs::write(target, bytes).unwrap(),
+                    None => std::fs::create_dir_all(target).unwrap(),
+                }
+            }
+            let cache = fixture.root.join(".build/unica");
+            std::fs::create_dir_all(&cache).unwrap();
+            std::fs::write(cache.join("witness.bin"), b"existing cache bytes").unwrap();
+            let binding = fixture.actor.bind_provider_root("src", source).unwrap();
+            let cancellation = CancellationToken::new();
+            let admission = fixture
+                .actor
+                .admit_apply(
+                    &binding,
+                    None,
+                    false,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &cancellation,
+                )
+                .unwrap();
+            let input = serde_json::json!({
+                "at": format!("src:{owner}"),
+                "ops": [{"op":format!("{family}.add"),"args":{"items":[item]}}],
+                "dryRun": true,
+            });
+            let request = ApplyRequest::parse(input.as_object().unwrap(), &["src"]).unwrap();
+            let before_source = snapshot_tree(source);
+            let before_cache = snapshot_tree(&cache);
+            let (staged, effects) = plan_hidden_v13_apply(&request, &binding, &admission).unwrap();
+            assert_eq!(
+                staged.planned_changes().len(),
+                1,
+                "{family}: inline owner only"
+            );
+            let prepared = admission.prepare_with_effects(staged, effects).unwrap();
+            assert_eq!(snapshot_tree(source), before_source);
+            assert_eq!(snapshot_tree(&cache), before_cache);
+            let _ = take_retained_apply_observed_events();
+            set_retained_apply_failpoint(RetainedApplyFailpoint::EagerMetadata(1));
+
+            let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+
+            assert_eq!(
+                error.kind(),
+                super::ApplyPublicationErrorKind::ProviderPostvalidation,
+                "{family}: {error}"
+            );
+            let observed = take_retained_apply_observed_events();
+            assert!(
+                observed
+                    .iter()
+                    .any(|event| matches!(event, RetainedApplyObservedEvent::Source(_))),
+                "{family}: a real source postimage must precede cache failure: {observed:?}"
+            );
+            assert!(
+                observed
+                    .iter()
+                    .any(|event| matches!(event, RetainedApplyObservedEvent::Rollback(_))),
+                "{family}: {observed:?}"
+            );
+            assert_eq!(
+                snapshot_tree(source),
+                before_source,
+                "{family} source and neighbors"
+            );
+            assert_eq!(snapshot_tree(&cache), before_cache, "{family} cache");
+            fixture.cleanup();
+        }
+    }
+
+    #[test]
     fn command_module_lifecycle_failures_roll_back_owner_module_neighbors_and_cache() {
         use crate::domain::apply::ApplyRequest;
         use crate::infrastructure::native_operations::apply_families::plan_hidden_v13_apply;
