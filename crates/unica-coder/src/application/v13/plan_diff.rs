@@ -211,6 +211,33 @@ mod tests {
     }
 
     #[test]
+    fn saved_source_pages_report_count_bytes_and_completion() {
+        let body = vec![0; 100000];
+        let images = [SourceImage { path: "Module.bsl".into(), before: None, after: Some(&body) }];
+        let layout = PlanDiffLayout::new(&images, || Ok(())).unwrap();
+        let limited = layout.page(&images, "limit1", 1, None, || Ok(())).unwrap();
+        assert_eq!(limited["stoppedBy"], "limit");
+        assert!(limited["cursor"].is_string());
+        let bytes = layout.page(&images, "limit50", 50, None, || Ok(())).unwrap();
+        assert_eq!(bytes["stoppedBy"], "bytes");
+        assert!(bytes["cursor"].is_string());
+        let mut cursor = bytes["cursor"].as_str().map(str::to_owned);
+        while let Some(current) = cursor {
+            let page = layout.page(&images, "limit50", 50, Some(&current), || Ok(())).unwrap();
+            assert_eq!(page, layout.page(&images, "limit50", 50, Some(&current), || Ok(())).unwrap());
+            cursor = page["cursor"].as_str().map(str::to_owned);
+            if cursor.is_none() { assert_eq!(page["stoppedBy"], "complete"); }
+        }
+        let small = [SourceImage { path: "small".into(), before: None, after: Some(b"a") }];
+        let exact = PlanDiffLayout::new(&small, || Ok(())).unwrap().page(&small, "two", 2, None, || Ok(())).unwrap();
+        assert_eq!(exact["stoppedBy"], "complete");
+        assert!(exact["cursor"].is_null());
+        let empty = PlanDiffLayout::new(&[], || Ok(())).unwrap().page(&[], "empty", 2, None, || Ok(())).unwrap();
+        assert_eq!(empty["stoppedBy"], "complete");
+        assert!(empty["cursor"].is_null());
+    }
+
+    #[test]
     fn saved_source_pages_preserve_bom_crlf_indentation_and_no_final_newline() {
         let before = "\u{feff}Процедура Тест()\r\n\tПервый();\r\nКонецПроцедуры";
         let after = "\u{feff}Процедура Тест()\r\n\tПервый();\r\n\tВторой();\r\nКонецПроцедуры";

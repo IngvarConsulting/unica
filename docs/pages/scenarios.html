@@ -147,6 +147,7 @@
           опишите её и цепочку, которой она должна проходить.
         </p>
         <a class="btn btn-ghost" href="https://github.com/IngvarConsulting/unica/issues/new?template=new_operation.yml" target="_blank" rel="noopener noreferrer">Добавить сценарий</a>
+        <a class="btn btn-ghost" href="acceptance-scenarios.html">Реестр и покрытие операций</a>
       </div>
     </div>
   </section>
@@ -509,7 +510,7 @@
   function render() {
     const rows = scenarios.filter(matches);
     const direction = sortDown ? -1 : 1;
-    rows.sort((a, b) => direction * (number(a.id) - number(b.id)));
+    rows.sort((a, b) => direction * (number(a.id) - number(b.id) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)));
     body.replaceChildren(...rows.map(row));
 
     for (const header of document.querySelectorAll('.col-sort[data-sort]')) {

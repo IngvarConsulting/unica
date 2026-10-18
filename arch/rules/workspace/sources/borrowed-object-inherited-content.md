@@ -1,6 +1,7 @@
 ---
 id: INV.SOURCE.BORROWED-OBJECT-INHERITED-CONTENT
 check:
+  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::inherited_form_metadata_is_local_without_claiming_a_local_form_payload
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::borrowed_objects_without_companion_files_read_their_content_as_inherited
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::missing_companion_file_stays_a_source_error_outside_borrowing
   - crates/unica-coder/src/infrastructure/metadata_operations.rs::borrowed_children_of_a_borrowed_owner_validate_without_payload
@@ -31,6 +32,10 @@ check:
 Адрес внутри содержимого, в том числе модуль такой формы, который платформа
 без `Form.xml` не хранит, отвечает `not_found` и называет объект расширения,
 чей `props.extends` указывает родителя.
+
+У формы отдельный адрес `Metadata` читает локальный дескриптор и доступен
+из корня формы без файлов содержимого. Эта ветвь декларации не обещает
+локальных элементов, реквизитов, команд или модуля формы.
 
 `apply` не пишет в унаследованное содержимое: права, элементы и модуль
 формы, тело макета, типы пакета. Отказ `not_found` называет файл и ведёт

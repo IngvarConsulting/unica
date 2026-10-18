@@ -1,8 +1,6 @@
 use crate::domain::metadata::{metadata_kind_collections, MetaCollection, MetadataKind};
 use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
 use crate::infrastructure::metadata_kinds::{supports_nested_form_or_command, METADATA_KINDS};
-#[cfg(test)]
-use crate::infrastructure::workspace_actor::ActorRevisionServiceAuthority;
 use std::ffi::OsStr;
 use std::path::Path;
 
@@ -20,8 +18,6 @@ enum PlatformXmlSerializationFormat {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RevisionArtifactProfile {
-    #[cfg(test)]
-    LegacyV12,
     ActorPlatformXml8_3_27 {
         source_kind: SourceSetKind,
         serialization_format: PlatformXmlSerializationFormat,
@@ -36,41 +32,11 @@ pub(crate) struct RevisionArtifactPolicy {
 }
 
 impl RevisionArtifactPolicy {
-    #[cfg(test)]
-    pub(crate) const fn legacy_v12() -> Self {
-        Self {
-            profile: RevisionArtifactProfile::LegacyV12,
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn from_authenticated_actor(
-        authority: &ActorRevisionServiceAuthority,
-    ) -> Result<Self, String> {
-        Self::from_source_profile(
-            authority.source_kind(),
-            authority.source_format(),
-            authority.source_profile(),
-        )
-    }
-
     pub(crate) fn from_source_profile(
         source_kind: SourceSetKind,
         source_format: SourceFormat,
         source_profile: SourceProfile,
     ) -> Result<Self, String> {
-        #[cfg(test)]
-        // Synthetic future profiles exist only to exercise the downstream
-        // actor-authority rejection; revision capture must not intercept them.
-        if source_format == SourceFormat::PlatformXml
-            && matches!(
-                source_profile,
-                SourceProfile::TestPlatform8_3_28Format2_20
-                    | SourceProfile::TestPlatform8_3_27Format2_21
-            )
-        {
-            return Ok(Self::legacy_v12());
-        }
         if source_format != SourceFormat::PlatformXml
             || source_profile != SourceProfile::platform_xml_8_3_27_format_2_20()
         {
@@ -87,16 +53,6 @@ impl RevisionArtifactPolicy {
         })
     }
 
-    #[cfg(test)]
-    pub(crate) fn platform_xml_for_test(source_kind: SourceSetKind) -> Self {
-        Self::from_source_profile(
-            source_kind,
-            SourceFormat::PlatformXml,
-            SourceProfile::platform_xml_8_3_27_format_2_20(),
-        )
-        .expect("active test profile is supported")
-    }
-
     pub(crate) fn classify(self, relative: &Path) -> RevisionArtifactDisposition {
         if has_legacy_content_extension(relative) {
             return RevisionArtifactDisposition::Content;
@@ -106,8 +62,6 @@ impl RevisionArtifactPolicy {
                 source_kind,
                 serialization_format: PlatformXmlSerializationFormat::Format2_20,
             } => source_kind,
-            #[cfg(test)]
-            RevisionArtifactProfile::LegacyV12 => return RevisionArtifactDisposition::Ignored,
         };
         let components = relative
             .components()
@@ -277,24 +231,7 @@ pub(crate) mod tests {
     use super::*;
 
     #[test]
-    pub(crate) fn platform_xml_revision_artifact_profile_is_closed_and_legacy_is_unchanged() {
-        let legacy = RevisionArtifactPolicy::legacy_v12();
-        assert_eq!(
-            legacy.classify(Path::new("Catalogs/Items/Ext/ObjectModule.bsl")),
-            RevisionArtifactDisposition::Content
-        );
-        for ignored in [
-            "scratch.bin",
-            "XDTOPackages/Sample/Ext/Package.bin",
-            "Ext/ParentConfigurations/Vendor.cf",
-        ] {
-            assert_eq!(
-                legacy.classify(Path::new(ignored)),
-                RevisionArtifactDisposition::Ignored,
-                "legacy widened for {ignored}"
-            );
-        }
-
+    pub(crate) fn platform_xml_revision_artifact_profile_is_closed() {
         let configuration = RevisionArtifactPolicy::from_source_profile(
             SourceSetKind::Configuration,
             SourceFormat::PlatformXml,
@@ -537,127 +474,11 @@ pub(crate) mod tests {
             SourceProfile::legacy_workspace_service_compatibility(),
         )
         .is_err());
-        let synthetic_unsupported = RevisionArtifactPolicy::from_source_profile(
+        assert!(RevisionArtifactPolicy::from_source_profile(
             SourceSetKind::Configuration,
             SourceFormat::PlatformXml,
             SourceProfile::TestPlatform8_3_28Format2_20,
         )
-        .unwrap();
-        assert_eq!(
-            synthetic_unsupported.classify(Path::new("XDTOPackages/Sample/Ext/Package.bin")),
-            RevisionArtifactDisposition::Ignored
-        );
-    }
-
-    #[test]
-    pub(crate) fn actor_revision_policy_has_no_raw_issuer_or_scoped_service_bypass() {
-        use quote::ToTokens as _;
-
-        fn inherent_methods(source: &str, target: &str) -> Vec<String> {
-            let file = syn::parse_file(source).expect("production Rust must parse");
-            file.items
-                .into_iter()
-                .filter_map(|item| match item {
-                    syn::Item::Impl(item) => Some(item),
-                    _ => None,
-                })
-                .filter(|item| {
-                    item.trait_.is_none()
-                        && matches!(
-                            item.self_ty.as_ref(),
-                            syn::Type::Path(path)
-                                if path.path.segments.last().is_some_and(|segment| segment.ident == target)
-                        )
-                })
-                .flat_map(|item| item.items)
-                .filter_map(|item| match item {
-                    syn::ImplItem::Fn(function) => Some(function.sig.ident.to_string()),
-                    _ => None,
-                })
-                .collect()
-        }
-
-        let policy_methods = inherent_methods(
-            include_str!("revision_artifact_policy.rs"),
-            "RevisionArtifactPolicy",
-        );
-        let service_methods =
-            inherent_methods(include_str!("source_revision.rs"), "SourceRevisionService");
-        let service_file = syn::parse_file(include_str!("source_revision.rs"))
-            .expect("source revision production Rust must parse");
-        let actor_file = syn::parse_file(include_str!("workspace_actor.rs"))
-            .expect("workspace actor production Rust must parse");
-        let service_root_capability = service_file.items.iter().any(|item| {
-            let syn::Item::Struct(item) = item else {
-                return false;
-            };
-            item.ident == "SourceRevisionService"
-                && item.fields.iter().any(|field| {
-                    let ty = field.ty.to_token_stream().to_string();
-                    ty.contains("Arc < RetainedDirectoryCapability >")
-                })
-        });
-        let new_actor_body = service_file
-            .items
-            .iter()
-            .filter_map(|item| match item {
-                syn::Item::Impl(item) if item.trait_.is_none() => Some(item),
-                _ => None,
-            })
-            .flat_map(|item| item.items.iter())
-            .find_map(|item| match item {
-                syn::ImplItem::Fn(function) if function.sig.ident == "new_actor" => {
-                    Some(function.block.to_token_stream().to_string())
-                }
-                _ => None,
-            })
-            .expect("actor service constructor must exist");
-        let legacy_body = actor_file
-            .items
-            .iter()
-            .filter_map(|item| match item {
-                syn::Item::Impl(item) if item.trait_.is_none() => Some(item),
-                _ => None,
-            })
-            .flat_map(|item| item.items.iter())
-            .find_map(|item| match item {
-                syn::ImplItem::Fn(function) if function.sig.ident == "with_legacy_runtime" => {
-                    Some(function.block.to_token_stream().to_string())
-                }
-                _ => None,
-            })
-            .expect("legacy adapter must exist");
-
-        assert!(
-            !policy_methods.iter().any(|method| method == "for_actor"),
-            "raw source kind/format/profile policy issuer remains available"
-        );
-        assert!(
-            !service_methods.iter().any(|method| method == "new_scoped"),
-            "raw scope/root/policy scoped-service bypass remains available"
-        );
-        assert!(
-            policy_methods
-                .iter()
-                .any(|method| method == "from_authenticated_actor"),
-            "policy is not issued from authenticated actor authority"
-        );
-        assert!(
-            service_methods.iter().any(|method| method == "new_actor"),
-            "scoped service is not constructed from one actor authority"
-        );
-        assert!(
-            service_root_capability,
-            "actor service discards its exact retained root capability"
-        );
-        assert!(
-            !new_actor_body.contains("fs :: canonicalize")
-                && !new_actor_body.contains("RetainedDirectoryCapability :: open"),
-            "actor service constructor reopens the ambient root instead of consuming authority"
-        );
-        assert!(
-            legacy_body.contains("validate_legacy_workspace_identity"),
-            "legacy actor adapter does not prove the exact legacy source tuple"
-        );
+        .is_err());
     }
 }

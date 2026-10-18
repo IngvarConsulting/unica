@@ -287,6 +287,7 @@ impl TaskLifecycleLinkCapacitySnapshot {
 }
 
 #[cfg(test)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct TaskLifecycleLinkMemoryForTest(StoreCatalog);
 
 #[derive(Debug, Clone, Copy)]
@@ -900,6 +901,13 @@ pub(crate) struct TaskLifecycleLinkStoreV5 {
 }
 
 impl TaskLifecycleLinkStoreV5 {
+    #[cfg(test)]
+    pub(crate) fn ownership_file_identity_for_test(
+        &self,
+    ) -> crate::infrastructure::platform::filesystem::FileIdentity {
+        file_identity(&self._ownership_lock).expect("retained Task lifecycle owner identity")
+    }
+
     #[cfg(feature = "receipt-ledger-test-support")]
     pub(crate) fn seed_task_terminal_bounds_bulk_for_test(
         &self,
@@ -2944,9 +2952,31 @@ mod tests {
             .begin_task_retirement(&terminal, 64, 64, deadline())
             .expect("commit pending retirement");
 
+        let mut catalog = store.lock_writer(deadline()).unwrap().clone();
+        assert_eq!(
+            catalog.task_index.get(&key.reserved_task_id()),
+            Some(pending.key_digest())
+        );
+        assert_eq!(
+            catalog.invocation_index.get(&key.invocation_id()),
+            Some(pending.key_digest())
+        );
+        // Publication rebuilds indexes from entries. Observe the removal itself
+        // before that readback can hide an index left behind in memory.
+        catalog
+            .remove_exact_pending(&pending)
+            .expect("remove exact pending catalog entry");
+        assert!(catalog.entries.is_empty());
+        assert!(catalog.task_index.is_empty());
+        assert!(catalog.invocation_index.is_empty());
+
         store
             .finalize_task_retirement(&pending, deadline())
             .expect("finalize exact retirement");
+        let catalog = store.lock_writer(deadline()).unwrap();
+        assert!(catalog.task_index.is_empty());
+        assert!(catalog.invocation_index.is_empty());
+        drop(catalog);
         assert!(matches!(
             store.read_by_task_id(key.reserved_task_id(), deadline()),
             Err(TaskLifecycleLinkStoreError::NotFound { .. })
@@ -2956,6 +2986,10 @@ mod tests {
 
         let reopened =
             TaskLifecycleLinkStoreV5::open(&root_path, deadline()).expect("reopen store");
+        let catalog = reopened.lock_writer(deadline()).unwrap();
+        assert!(catalog.task_index.is_empty());
+        assert!(catalog.invocation_index.is_empty());
+        drop(catalog);
         assert!(matches!(
             reopened.read_by_task_id(key.reserved_task_id(), deadline()),
             Err(TaskLifecycleLinkStoreError::NotFound { .. })

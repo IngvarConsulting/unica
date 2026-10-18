@@ -6,6 +6,8 @@ import re
 import unittest
 from pathlib import Path
 
+from tests.ci.acceptance_controls import load_acceptance_corpus
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 HISTORICAL_SKILLS = {"dcs-compile", "dcs-edit"}
@@ -68,9 +70,7 @@ class DcsNamingContractTests(unittest.TestCase):
         # Owner-approved scope of #1310: deleting both implementation and wire
         # must not silently narrow the promised set.
         self.assertEqual(len(registered), 53)
-        scenarios = json.loads(
-            (REPO_ROOT / "tests/fixtures/acceptance/scenario-corpus.json").read_text(encoding="utf-8")
-        )["scenarios"]
+        scenarios = load_acceptance_corpus()["scenarios"]
         self.assertEqual(registered - operations_with_checked_publication(scenarios), set())
 
     def test_publication_coverage_rejects_disconnected_or_unchecked_wires(self) -> None:

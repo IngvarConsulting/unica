@@ -1,0 +1,584 @@
+{
+  "id": "S-1508-resolve-form-and-module-paths",
+  "name": "resolve-the-exact-form-and-module-file",
+  "issue": 1508,
+  "area": "Навигация по исходникам",
+  "task": "Разрешить физические пути Form.xml, BSL формы и модулей владельца по ролям, допустимым профилем платформы, в точные логические цели, сохраняя запрошенный файл; недопустимую роль и незарегистрированные цели — отказывать.",
+  "workspace": "tests/fixtures/acceptance/workspace-resolve-resources",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DataProcessor.Processor.Form.Main"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "src/DataProcessors/Processor/Forms/Main/Ext/Form.xml"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:DataProcessor.Processor.Form.Main"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "DataProcessors/Processor/Forms/Main/Ext/Form.xml"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Form"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "$workspace/src/DataProcessors/Processor/Forms/Main/Ext/Form.xml"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:DataProcessor.Processor.Form.Main"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "DataProcessors/Processor/Forms/Main/Ext/Form.xml"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Form"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "DataProcessors/Processor/Forms/Main/Ext/Form.xml"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:DataProcessor.Processor.Form.Main"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "DataProcessors/Processor/Forms/Main/Ext/Form.xml"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Form"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DataProcessor.Processor.Form.Main.Module.Form"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "src/DataProcessors/Processor/Forms/Main/Ext/Form/Module.bsl"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:DataProcessor.Processor.Form.Main.Module.Form"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "DataProcessors/Processor/Forms/Main/Ext/Form/Module.bsl"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Module"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "$workspace/src/DataProcessors/Processor/Forms/Main/Ext/Form/Module.bsl"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:DataProcessor.Processor.Form.Main.Module.Form"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "DataProcessors/Processor/Forms/Main/Ext/Form/Module.bsl"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Module"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "DataProcessors/Processor/Forms/Main/Ext/Form/Module.bsl"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:DataProcessor.Processor.Form.Main.Module.Form"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "DataProcessors/Processor/Forms/Main/Ext/Form/Module.bsl"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Module"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DataProcessor.Processor.Module.Manager"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "src/DataProcessors/Processor/Ext/ManagerModule.bsl"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:DataProcessor.Processor.Module.Manager"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "DataProcessors/Processor/Ext/ManagerModule.bsl"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Module"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "$workspace/src/DataProcessors/Processor/Ext/ManagerModule.bsl"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:DataProcessor.Processor.Module.Manager"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "DataProcessors/Processor/Ext/ManagerModule.bsl"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Module"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "DataProcessors/Processor/Ext/ManagerModule.bsl"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:DataProcessor.Processor.Module.Manager"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "DataProcessors/Processor/Ext/ManagerModule.bsl"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Module"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Invoice.Form.Main"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "src/Documents/Invoice/Forms/Main/Ext/Form.xml"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Document.Invoice.Form.Main"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "Documents/Invoice/Forms/Main/Ext/Form.xml"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Form"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "$workspace/src/Documents/Invoice/Forms/Main/Ext/Form.xml"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Document.Invoice.Form.Main"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "Documents/Invoice/Forms/Main/Ext/Form.xml"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Form"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "Documents/Invoice/Forms/Main/Ext/Form.xml"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Document.Invoice.Form.Main"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "Documents/Invoice/Forms/Main/Ext/Form.xml"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Form"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Invoice.Form.Main.Module.Form"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "src/Documents/Invoice/Forms/Main/Ext/Form/Module.bsl"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Document.Invoice.Form.Main.Module.Form"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "Documents/Invoice/Forms/Main/Ext/Form/Module.bsl"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Module"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "$workspace/src/Documents/Invoice/Forms/Main/Ext/Form/Module.bsl"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Document.Invoice.Form.Main.Module.Form"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "Documents/Invoice/Forms/Main/Ext/Form/Module.bsl"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Module"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "Documents/Invoice/Forms/Main/Ext/Form/Module.bsl"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Document.Invoice.Form.Main.Module.Form"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "Documents/Invoice/Forms/Main/Ext/Form/Module.bsl"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Module"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Invoice.Module.Manager"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "src/Documents/Invoice/Ext/ManagerModule.bsl"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Document.Invoice.Module.Manager"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "Documents/Invoice/Ext/ManagerModule.bsl"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Module"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "$workspace/src/Documents/Invoice/Ext/ManagerModule.bsl"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Document.Invoice.Module.Manager"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "Documents/Invoice/Ext/ManagerModule.bsl"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Module"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "Documents/Invoice/Ext/ManagerModule.bsl"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Document.Invoice.Module.Manager"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "Documents/Invoice/Ext/ManagerModule.bsl"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Module"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "src/Documents/Invoice/Ext/ObjectModule.bsl"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Document.Invoice.Module.Object"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "Documents/Invoice/Ext/ObjectModule.bsl"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Module"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "src/DataProcessors/Orphan/Ext/ManagerModule.bsl"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: metadata owner `DataProcessor.Orphan` is not registered",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "src/DataProcessors/Processor/Forms/Ghost/Ext/Form.xml"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: metadata owner `DataProcessor.Processor` does not register `Form.Ghost`",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "src/Ext/ExternalConnectionModule.bsl"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: no admitted source set places `src/Ext/ExternalConnectionModule.bsl`",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "src/Documents/Invoice/Ext/RecordSetModule.bsl"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: no admitted source set places `src/Documents/Invoice/Ext/RecordSetModule.bsl`",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "src/CommonModules/Probe/Ext/Module.bsl"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:CommonModule.Probe"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "CommonModules/Probe/Ext/Module.bsl"
+        }
+      ]
+    }
+  ]
+}

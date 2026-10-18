@@ -2288,9 +2288,6 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
         ToolHandler::Documentation { .. } => names.extend(DOCUMENTATION_GET_ARGS),
         ToolHandler::CodeAdapter { .. } => names.extend(code_args_for(tool.name)),
     }
-    if tool.name == "unica.mxl.decompile" {
-        names.retain(|name| *name != "OutputPath" && *name != "outputPath");
-    }
     names.sort_unstable();
     names.dedup();
     names
@@ -2777,7 +2774,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "jsonPath",
-        "Path to the JSON DSL file, relative to `cwd`, for `unica.form.compile`, `unica.form.edit`, `unica.mxl.compile` and `unica.role.compile`",
+        "Path to the JSON DSL file, relative to `cwd`, for `unica.form.compile` and `unica.form.edit`",
     ),
     ("kind", "Declared string argument that no tool handler reads"),
     (
@@ -2863,7 +2860,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ("noRole", "`unica.cfe.init` only: boolean, skip scaffolding the extension's main role"),
     (
         "noValidate",
-        "Boolean for `unica.cf.edit`, `interface.edit`, `subsystem.edit`: hide the verbose auto-validation report; the mandatory 8.3.27 check before commit still runs. `unica.subsystem.compile` accepts the argument but ignores it.",
+        "Boolean for `unica.cf.edit`, `interface.edit`, `subsystem.edit`: hide the verbose auto-validation report; the mandatory 8.3.27 check before commit still runs.",
     ),
     (
         "object",
@@ -2895,16 +2892,13 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "outputDir",
-        "Destination root directory relative to `cwd`: the new dump for `cf.init`/`cfe.init`/`epf.init`/`erf.init`, or the existing dump root holding `Configuration.xml` for `role.compile`/`subsystem.compile`",
+        "Destination root directory relative to `cwd`: the new dump for `cf.init`/`cfe.init`/`epf.init`/`erf.init`",
     ),
     (
         "outputPath",
-        "Path of the single file to generate: the `Form.xml` for `unica.form.compile` or the `Template.xml` for `unica.mxl.compile`",
+        "Path of the single file to generate: the `Form.xml` for `unica.form.compile`",
     ),
-    (
-        "parent",
-        "`unica.subsystem.compile` only: path to the parent subsystem's XML when creating a nested subsystem; omit it to register the new subsystem in `Configuration.xml`",
-    ),
+    ("parent", "Declared string argument that no tool handler reads"),
     (
         "password",
         "String forwarded to unica.build.* as --password and redacted in reported commands; undocumented in the skills, and credentials belong in v8project.local.yaml, not tool arguments",
@@ -3095,7 +3089,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "value",
-        "Payload for `operation`: a shorthand string batched with `;;`, a JSON string, or the whole inline JSON definition for `unica.subsystem.compile`",
+        "Payload for `operation`: a shorthand string batched with `;;` or a JSON string",
     ),
     (
         "vendor",
@@ -3754,17 +3748,6 @@ pub(crate) mod tests {
             .filter(|name| name.starts_with(char::is_uppercase))
             .collect();
         assert!(pascal.is_empty(), "keys must be camelCase: {pascal:?}");
-    }
-
-    #[test]
-    fn output_path_description_excludes_read_only_mxl_decompile() {
-        let (_, description) = ARG_DESCRIPTIONS
-            .iter()
-            .find(|(name, _)| *name == "outputPath")
-            .expect("outputPath must have a shared description");
-
-        assert!(description.contains("mxl.compile"));
-        assert!(!description.contains("mxl.decompile"));
     }
 
     #[test]
@@ -4610,27 +4593,15 @@ pub(crate) mod tests {
             ),
             (
                 "unica.meta.add",
-                entry("metadata:Add", "30540:271ad9cd1a66af00"),
+                entry("metadata:Add", "30555:67ce7953465405cf"),
             ),
             (
                 "unica.meta.edit",
-                entry("metadata:Edit", "31160:556747418adad47f"),
-            ),
-            (
-                "unica.mxl.compile",
-                entry("mxl-compile", "3961:ecbb35dae574f5e2"),
-            ),
-            (
-                "unica.role.compile",
-                entry("role-compile", "3961:ed99afdd2ffe1362"),
+                entry("metadata:Edit", "31175:13227ef4139ec9fc"),
             ),
             (
                 "unica.role.edit",
                 entry("role-edit", "2037:bd64c73af768496a"),
-            ),
-            (
-                "unica.subsystem.compile",
-                entry("subsystem-compile", "3917:e025205c160a8052"),
             ),
             (
                 "unica.subsystem.edit",

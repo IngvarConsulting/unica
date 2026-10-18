@@ -1,0 +1,193 @@
+{
+  "id": "S-1532-unica-dev-entry-route",
+  "issue": 1532,
+  "area": "Навигация и чтение",
+  "task": "С неизвестным набором найти объект, открыть возвращённый адрес, прочитать исполнимый контракт реквизита, подготовить правку без записи, исполнить сохранённый план и проверить результат.",
+  "workspace": "tests/fixtures/acceptance/workspace",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/sourceSets/0/name",
+          "eq": "main"
+        },
+        {
+          "pointer": "/data/sourceSets/0/sourceFormat",
+          "eq": "platform_xml"
+        }
+      ]
+    },
+    {
+      "tool": "unica.search",
+      "args": {
+        "corpus": "names",
+        "query": "Валюты",
+        "kind": "Catalog",
+        "limit": 1
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/matches/0/at",
+          "eq": "main:Catalog.Валюты"
+        }
+      ],
+      "captures": {
+        "owner": {
+          "pointer": "/data/matches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "$capture.owner"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Attribute.Наценка"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Catalog.Валюты.Attribute.Наценка"
+        },
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "attribute.set",
+            "args": "values",
+            "implemented": true
+          }
+        }
+      ],
+      "captures": {
+        "attribute": {
+          "pointer": "/data/at"
+        },
+        "before": {
+          "file": "src/Catalogs/Валюты.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Attribute.Наценка.Can.attribute.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/op",
+          "eq": "attribute.set"
+        },
+        {
+          "pointer": "/data/props/implemented",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/comment/type",
+          "eq": "string"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.attribute",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "comment": "unica-dev-result"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "notEq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.attribute"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "$capture.attribute"
+        },
+        {
+          "pointer": "/data/props/comment",
+          "eq": "unica-dev-result"
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "meta"
+      ]
+    }
+  ]
+}

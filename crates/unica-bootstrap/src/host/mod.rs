@@ -4,12 +4,17 @@
 
 mod descriptor;
 mod plugin_manifest;
+mod response_budget;
 mod runtime_cache;
 mod skill_package;
 mod tool_deadline;
 mod workspace_context;
 
 pub use plugin_manifest::verify_installed_plugin_metadata;
+pub use response_budget::{
+    host_response_budget, known_client_budgets, response_budget_environment_keys,
+    source_text_tool_meta, ResponseBudget, DEFAULT_RESPONSE_BUDGET, MAX_RESPONSE_BUDGET,
+};
 pub use runtime_cache::{provider_state_root, runtime_cache_root};
 pub use skill_package::verify_installed_skill_package;
 pub use tool_deadline::host_tool_deadline;

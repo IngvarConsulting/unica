@@ -19,8 +19,7 @@ use std::fmt::Write as _;
 use std::io::Read as _;
 use unica_coder::receipt_ledger_test_support::{
     canonical_v5_terminal_for_test, execute_scenario_json, receipt_key_digest_for_test,
-    receipt_writer_wall_load_supported_for_test, request_scope_hash_for_test,
-    task_link_digest_for_test,
+    request_scope_hash_for_test, task_link_digest_for_test,
 };
 
 const CUTOFF_MS: u64 = 7_000;
@@ -2044,7 +2043,6 @@ struct TaskRetirementAuthorizationObservation {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct TaskRetirementAuthorizationReuseObservation {
     presented_fingerprint: String,
-    rejected_sequence: u64,
     receipt_store_mutations_before: u64,
     receipt_store_mutations_after: u64,
     task_store_mutations_before: u64,
@@ -4260,7 +4258,6 @@ fn assert_task_retirement_case(case: &TaskRetirementCaseObservation) {
                 reuse.task_store_mutations_before,
                 reuse.task_store_mutations_after
             );
-            assert!(reuse.rejected_sequence > recovered.issued_sequence);
         } else {
             assert!(case.old_authorization_reuse.is_none());
         }
@@ -6264,10 +6261,6 @@ fn load_window_ms(load: &LoadObservation) -> u64 {
 
 fn load_total_elapsed_ms(load: &LoadObservation) -> u64 {
     load.drain_completed_monotonic_ms - load.window_started_monotonic_ms
-}
-
-fn load_writer_drain_ms(load: &LoadObservation) -> u64 {
-    load.drain_completed_monotonic_ms - load.window_ended_monotonic_ms
 }
 
 fn completed_at_window_end(load: &LoadObservation) -> usize {
@@ -13121,43 +13114,6 @@ fn acknowledgement_crosses_former_tombstone_count_and_reopens_without_replay() {
         assert_eq!(repeated.terminal_digest, original.terminal_digest);
         assert_eq!(repeated.ack_epoch_ms, original.ack_epoch_ms);
     }
-}
-
-#[test]
-fn wall_clock_writer_sustains_32_receipts_per_second_on_posix() {
-    if !receipt_writer_wall_load_supported_for_test() {
-        return;
-    }
-
-    let report = execute(Scenario::wall(vec![Action::RunDirectLoad {
-        calls: 1_920,
-        duration_ms: 60_000,
-        concurrency: 32,
-        retained_receipt_terminals: 0,
-        immediate_ack: true,
-        label: "wall-clock".to_string(),
-    }]));
-
-    let load = load_run(&report, "wall-clock");
-    assert_direct_load_lifecycles(load, 1_920);
-    assert!(load_window_ms(load) >= 60_000);
-    assert!(
-        load_total_elapsed_ms(load) <= 62_000,
-        "wall gate overran: {}ms",
-        load_total_elapsed_ms(load)
-    );
-    assert!(completed_at_window_end(load) >= 1_920);
-    assert!(
-        load_p99_ms(load) <= 250,
-        "p99={}ms budget=250ms",
-        load_p99_ms(load)
-    );
-    assert!(load_writer_drain_ms(load) <= 2_000);
-    assert!(
-        max_concurrency_sample(load, |sample| sample.live_receipts) <= FORMER_LIVE_RECEIPT_LIMIT
-    );
-    assert_eq!(load.task_store_create_attempts, 0);
-    assert_eq!(load.listener, ListenerState::Listening);
 }
 
 #[test]

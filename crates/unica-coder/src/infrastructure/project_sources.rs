@@ -2523,11 +2523,16 @@ pub(crate) mod tests {
             .expect("actor admission must retain valid YAML input past8MiB");
         assert_health_leaf_main(admission.map());
         let evidence = admission.into_evidence();
-        let deadline = crate::domain::code_intelligence::ProviderDeadline::from_budget(
-            std::time::Duration::from_secs(5),
-        );
+        // Срок — у каждой проверки свой: общий срок съедала бы работа между
+        // ними, и на медленном раннере вторая проверка отвечала бы `Deadline`
+        // раньше, чем дошла бы до изменённых байтов.
+        let deadline = || {
+            crate::domain::code_intelligence::ProviderDeadline::from_budget(
+                std::time::Duration::from_secs(5),
+            )
+        };
         let cancellation = crate::domain::cancellation::CancellationToken::new();
-        evidence.validate(deadline, &cancellation).unwrap();
+        evidence.validate(deadline(), &cancellation).unwrap();
 
         use std::io::{Seek, SeekFrom, Write};
         let mut file = fs::OpenOptions::new()
@@ -2540,7 +2545,7 @@ pub(crate) mod tests {
         let unchanged_map =
             discover_project_source_map_controlled(fixture.path(), &mut || Ok(())).unwrap();
         assert_health_leaf_main(&unchanged_map);
-        let error = evidence.validate(deadline, &cancellation).unwrap_err();
+        let error = evidence.validate(deadline(), &cancellation).unwrap_err();
         assert_eq!(
             error.kind(),
             crate::infrastructure::source_selection_evidence::SourceSelectionEvidenceErrorKind::Changed,
@@ -2893,11 +2898,16 @@ pub(crate) mod tests {
             .unwrap();
         assert_large_reserved_descriptor_is_observed(admission.map());
         let evidence = admission.into_evidence();
-        let deadline = crate::domain::code_intelligence::ProviderDeadline::from_budget(
-            std::time::Duration::from_secs(5),
-        );
+        // Срок — у каждой проверки свой: общий срок съедала бы работа между
+        // ними, и на медленном раннере вторая проверка отвечала бы `Deadline`
+        // раньше, чем дошла бы до изменённых байтов.
+        let deadline = || {
+            crate::domain::code_intelligence::ProviderDeadline::from_budget(
+                std::time::Duration::from_secs(5),
+            )
+        };
         let cancellation = crate::domain::cancellation::CancellationToken::new();
-        evidence.validate(deadline, &cancellation).unwrap();
+        evidence.validate(deadline(), &cancellation).unwrap();
 
         // Change a comment byte after the former boundary without changing the
         // XML kind, file identity or length. Exact selection evidence must notice.
@@ -2909,7 +2919,7 @@ pub(crate) mod tests {
         file.seek(SeekFrom::Start(8 * 1024 * 1024 + 1)).unwrap();
         file.write_all(b"y").unwrap();
         drop(file);
-        let error = evidence.validate(deadline, &cancellation).unwrap_err();
+        let error = evidence.validate(deadline(), &cancellation).unwrap_err();
         assert_eq!(
             error.kind(),
             crate::infrastructure::source_selection_evidence::SourceSelectionEvidenceErrorKind::Changed,

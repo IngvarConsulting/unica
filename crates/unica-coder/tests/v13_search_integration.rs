@@ -19,17 +19,27 @@ struct McpProcess {
 
 impl McpProcess {
     fn start(workspace: &std::path::Path) -> Self {
+        Self::start_with(workspace, &[])
+    }
+
+    fn start_with(workspace: &std::path::Path, environment: &[(&str, &str)]) -> Self {
         let state = workspace.join(".unica-test-state");
         std::fs::create_dir_all(&state).expect("create isolated search state");
         let state = std::fs::canonicalize(state).expect("canonical isolated search state");
         let workspace = std::fs::canonicalize(workspace).expect("canonical search workspace");
-        let mut child = Command::new(env!("CARGO_BIN_EXE_unica"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_unica"));
+        // Бюджет ответа задаёт только сама проверка, не окружение прогона.
+        for key in unica_bootstrap::response_budget_environment_keys() {
+            command.env_remove(key);
+        }
+        let mut child = command
             .current_dir(&workspace)
             .env("UNICA_PROVIDER_STATE_DIR", &state)
             // Демон переживает MCP: без назначенной паузы он остаётся на
             // четверть часа, и к концу прогона их набирается столько же,
             // сколько было тестов.
             .env("UNICA_DAEMON_IDLE_GRACE_MS", "5000")
+            .envs(environment.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -427,150 +437,316 @@ fn body_workspace(workspace: &std::path::Path, module_bytes: &[u8]) {
 }
 
 fn initialize_body_mcp(mcp: &mut McpProcess) {
+    initialize_body_mcp_as(mcp, "body-large-test");
+}
+
+fn initialize_body_mcp_as(mcp: &mut McpProcess, client: &str) {
     let response = mcp.exchange(json!({
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
         "params": {"protocolVersion": "2025-06-18", "capabilities": {},
-                   "clientInfo": {"name": "body-large-test", "version": "1"}}
+                   "clientInfo": {"name": client, "version": "1"}}
     }));
     assert_eq!(response["result"]["serverInfo"]["name"], "unica");
     mcp.notify(json!({"jsonrpc":"2.0", "method":"notifications/initialized", "params":{}}));
 }
 
-fn assert_large_body_line(item: &Value) -> u64 {
-    let line = item["line"].as_u64().unwrap();
-    if (2..=10).contains(&line) {
-        let text = item["text"].as_str().unwrap();
-        assert_eq!(text.len(), 3 + 1024 * 1024);
-        assert!(text.starts_with(&format!("//{}", line - 2)));
-        assert!(text[3..].bytes().all(|byte| byte == b'a'));
-    } else {
-        assert!(!item["text"].as_str().unwrap().contains('\n'));
-    }
-    line
+#[test]
+fn public_body_line_ranges_open_search_hits_and_refuse_line_edits() {
+    let root = tempfile::tempdir().unwrap();
+    body_workspace(root.path(), "\u{feff}// outside\r\n\r\nProcedure Ping() Export\r\n    Message(\"Needle\");\r\nEndProcedure".as_bytes());
+    let mut mcp = McpProcess::start(root.path());
+    initialize_body_mcp(&mut mcp);
+    let found = mcp.completed_tool_call(call_tool(
+        2,
+        "unica.search",
+        json!({"query":"Needle","scope":"main:CommonModule.Main"}),
+    ));
+    assert_eq!(found["ok"], true, "{found:#}");
+    let at = found["data"]["matches"][0]["at"].as_str().unwrap();
+    assert_eq!(at, "main:CommonModule.Main.Method.Ping.Body#L4");
+    let response = mcp.exchange(call_tool(3, "unica.view", json!({"at":at})));
+    assert!(
+        response["result"].get("structuredContent").is_none(),
+        "{response:#}"
+    );
+    assert_eq!(
+        response["result"]["content"][1]["text"],
+        "    Message(\"Needle\");\r\n"
+    );
+    let envelope: Value =
+        serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        envelope["data"]["props"]["lines"],
+        json!({"state":"range","from":4,"to":4})
+    );
+    assert_eq!(envelope["data"]["can"], json!([]));
+    assert!(!response.to_string().contains("sourceTextReadHint"));
+    let resolved = mcp.completed_tool_call(call_tool(4, "unica.resolve", json!({"at":at})));
+    assert_eq!(resolved["ok"], true, "{resolved:#}");
+    assert_eq!(
+        resolved["data"]["lines"],
+        json!({"state":"range","from":4,"to":4})
+    );
+    let refused = mcp.completed_tool_call(call_tool(
+        5,
+        "unica.apply",
+        json!({"at":at,"ops":[{"op":"code.replace","args":{"text":"    Return;"}}]}),
+    ));
+    assert_eq!(refused["ok"], false, "{refused:#}");
+    assert_eq!(refused["diagnostics"][0]["code"], "bad_value");
+    assert_eq!(
+        refused["next"][0]["args"]["at"],
+        "main:CommonModule.Main.Method.Ping"
+    );
+    let plan = mcp.completed_tool_call(call_tool(6,"unica.apply",json!({"at":"main:CommonModule.Main.Method.Ping","ops":[{"op":"code.replace","args":{"text":"Procedure Ping() Export\r\n    Message(\"Changed\");\r\nEndProcedure"}}]})));
+    assert_eq!(plan["ok"], true, "{plan:#}");
+    let applied = mcp.completed_tool_call(call_tool(
+        7,
+        "unica.apply",
+        json!({"executionToken":plan["data"]["executionToken"]}),
+    ));
+    assert_eq!(applied["ok"], true, "{applied:#}");
+    let after = mcp.exchange(call_tool(8, "unica.view", json!({"at":at})));
+    assert_eq!(
+        after["result"]["content"][1]["text"],
+        "    Message(\"Changed\");\r\n"
+    );
+    mcp.finish();
 }
 
 #[test]
-fn public_view_pages_large_bsl_body_and_replays_disk_cursor() {
+fn public_view_refuses_bsl_text_over_the_default_budget_whole_with_structural_next() {
     let root = tempfile::tempdir().unwrap();
-    let mut source = Vec::new();
-    source.extend_from_slice(b"Procedure A()\n");
-    for index in 0..9 {
-        source.extend_from_slice(format!("//{index}").as_bytes());
-        source.extend(std::iter::repeat_n(b'a', 1024 * 1024));
-        source.push(b'\n');
+    let mut source = String::from(
+        "// Документирует малый метод.\nProcedure Small() Export\n    Value = 1;\nEndProcedure\n\nProcedure Large()\n",
+    );
+    // Метод сверх бюджета клиента по умолчанию (16 КиБ), а с ним и модуль.
+    while source.len() <= 17 * 1024 {
+        source.push_str("    // заполнение строки кириллицей\n");
     }
-    source.extend_from_slice(b"EndProcedure\n");
-    body_workspace(root.path(), &source);
+    source.push_str("EndProcedure\n");
+    body_workspace(root.path(), source.as_bytes());
     let mut mcp = McpProcess::start(root.path());
     initialize_body_mcp(&mut mcp);
-    let at = "main:CommonModule.Main.Body";
-    let first = mcp.completed_tool_call(call_tool(2, "unica.view", json!({"at":at, "limit":2})));
-    assert_eq!(first["ok"], true, "{first:#}");
+    let module = "main:CommonModule.Main";
+    let next_targets = |result: &Value| {
+        result["next"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|next| next["args"]["at"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>()
+    };
+
+    let body = mcp.completed_tool_call(call_tool(
+        2,
+        "unica.view",
+        json!({"at": format!("{module}.Body")}),
+    ));
+    assert_eq!(body["ok"], false, "{body:#}");
     assert_eq!(
-        first["data"]["items"][0],
-        json!({"line":1,"text":"Procedure A()"})
+        body["diagnostics"][0]["code"], "result_too_large",
+        "{body:#}"
     );
-    let mut seen = first["data"]["items"]
+    assert!(body.get("data").is_none(), "no partial text: {body:#}");
+    assert!(body.get("cursor").is_none(), "{body:#}");
+    assert_eq!(
+        next_targets(&body)[1..],
+        [format!("{module}.Region"), format!("{module}.Method")]
+    );
+
+    let first = body["next"][0]["args"]["at"].as_str().unwrap();
+    assert!(
+        first.starts_with(&format!("{module}.Body#L1-L")),
+        "{body:#}"
+    );
+    let chunk = mcp.exchange(call_tool(90, "unica.view", json!({"at":first})));
+    assert_eq!(chunk["result"]["isError"], false, "{chunk:#}");
+    let raw = chunk["result"]["content"][1]["text"].as_str().unwrap();
+    assert!(source.starts_with(raw));
+    assert!(raw.ends_with('\n'));
+    assert!(!chunk.to_string().contains("sourceTextReadHint"));
+    let end = first.rsplit_once("-L").unwrap().1.parse::<usize>().unwrap();
+    let one_more = mcp.completed_tool_call(call_tool(
+        91,
+        "unica.view",
+        json!({"at":format!("{module}.Body#L1-L{}",end+1)}),
+    ));
+    assert_eq!(one_more["ok"], false, "{one_more:#}");
+    assert_eq!(one_more["diagnostics"][0]["code"], "result_too_large");
+
+    // Прямой ответ на проводе: конверт JSON первым блоком, сырой текст вторым,
+    // без `structuredContent`.
+    let small = mcp.exchange(call_tool(
+        3,
+        "unica.view",
+        json!({"at": format!("{module}.Method.Small.Body")}),
+    ));
+    assert!(
+        small["result"].get("structuredContent").is_none(),
+        "{small:#}"
+    );
+    assert_eq!(small["result"]["isError"], false, "{small:#}");
+    let envelope: Value =
+        serde_json::from_str(small["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(envelope["ok"], true, "{envelope:#}");
+    assert_eq!(
+        envelope["data"]["at"],
+        format!("{module}.Method.Small.Body")
+    );
+    assert_eq!(envelope["data"]["kind"], "Body");
+    assert!(envelope["data"].get("items").is_none());
+    assert_eq!(
+        small["result"]["content"][1]["text"],
+        "// Документирует малый метод.\nProcedure Small() Export\n    Value = 1;\nEndProcedure\n"
+    );
+
+    let large = mcp.completed_tool_call(call_tool(
+        4,
+        "unica.view",
+        json!({"at": format!("{module}.Method.Large.Body")}),
+    ));
+    assert_eq!(large["ok"], false, "{large:#}");
+    assert_eq!(large["diagnostics"][0]["code"], "result_too_large");
+    assert!(large.get("data").is_none(), "{large:#}");
+    assert_eq!(
+        next_targets(&large)[1..],
+        [
+            format!("{module}.Method.Large"),
+            format!("{module}.Region"),
+            format!("{module}.Method")
+        ]
+    );
+
+    // Контракт операции того же узла текста не несёт и предела не касается.
+    for (id, at, op) in [
+        (5, format!("{module}.Body"), "code.insert"),
+        (6, format!("{module}.Method.Large.Body"), "code.replace"),
+    ] {
+        let contract = mcp.completed_tool_call(call_tool(
+            id,
+            "unica.view",
+            json!({"at": format!("{at}.Can.{op}")}),
+        ));
+        // Подробного контракта у операций кода пока нет: ответ — тот же
+        // отказ `unsupported_section`, что и у малого модуля, а не предел.
+        assert_eq!(contract["at"], format!("{at}.Can.{op}"), "{contract:#}");
+        assert_ne!(
+            contract["diagnostics"][0]["code"], "result_too_large",
+            "{contract:#}"
+        );
+        assert!(contract.get("sourceText").is_none(), "{contract:#}");
+    }
+    mcp.finish();
+}
+
+/// Бюджет ответа — свойство клиента: тот же текст один клиент получает
+/// целиком, другой — отказом; сводка модуля называет размер `Body` и
+/// помечает ветвь, не помещающуюся в бюджет. Наибольший бюджет известных
+/// хостов ограничивает текст для всех.
+#[test]
+fn public_view_budget_belongs_to_the_client_and_the_summary_marks_the_body() {
+    let root = tempfile::tempdir().unwrap();
+    let mut method = String::from("Procedure Large()\n");
+    while method.len() <= 30 * 1024 {
+        method.push_str("    // заполнение строки кириллицей\n");
+    }
+    method.push_str("EndProcedure\n");
+    let mut source = method.clone();
+    while source.len() <= 80 * 1024 {
+        source.push_str("// хвост модуля сверх наибольшего бюджета\n");
+    }
+    body_workspace(root.path(), source.as_bytes());
+    let module = "main:CommonModule.Main";
+    let read = |mcp: &mut McpProcess, id: u64, at: String| {
+        mcp.exchange(call_tool(id, "unica.view", json!({"at": at})))
+    };
+
+    let mut narrow = McpProcess::start(root.path());
+    initialize_body_mcp(&mut narrow);
+    let summary = narrow.completed_tool_call(call_tool(2, "unica.view", json!({"at": module})));
+    let body = summary["data"]["branches"]
         .as_array()
         .unwrap()
         .iter()
-        .map(assert_large_body_line)
-        .collect::<Vec<_>>();
-    let mut cursor = first["cursor"]
-        .as_str()
-        .expect("disk continuation")
-        .to_string();
-    // The issued Body is immutable and does not read the live source again.
-    std::fs::remove_file(root.path().join("CommonModules/Main/Ext/Module.bsl")).unwrap();
-    let second = mcp.completed_tool_call(call_tool(
+        .find(|branch| branch["at"] == format!("{module}.Body"))
+        .unwrap_or_else(|| panic!("{summary:#}"))
+        .clone();
+    assert_eq!(body["bytes"], source.len(), "{summary:#}");
+    assert_eq!(body["overBudget"], true, "{summary:#}");
+    let refused = narrow.completed_tool_call(call_tool(
         3,
         "unica.view",
-        json!({"at":at,"limit":2,"cursor":cursor}),
-    ));
-    let replay = mcp.completed_tool_call(call_tool(
-        4,
-        "unica.view",
-        json!({"at":at,"limit":2,"cursor":cursor}),
-    ));
-    assert_eq!(second, replay, "cursor replay must be byte-stable");
-    for item in second["data"]["items"].as_array().unwrap() {
-        seen.push(assert_large_body_line(item));
-    }
-    cursor = second["cursor"].as_str().unwrap().to_string();
-    let mut id = 5;
-    loop {
-        let page = mcp.completed_tool_call(call_tool(
-            id,
-            "unica.view",
-            json!({"at":at,"limit":2,"cursor":cursor}),
-        ));
-        assert_eq!(page["ok"], true, "{page:#}");
-        for item in page["data"]["items"].as_array().unwrap() {
-            seen.push(assert_large_body_line(item));
-        }
-        match page["cursor"].as_str() {
-            Some(next) => cursor = next.to_string(),
-            None => break,
-        }
-        id += 1;
-    }
-    assert_eq!(seen, (1..=11).collect::<Vec<_>>());
-    std::fs::write(
-        root.path().join("CommonModules/Main/Ext/Module.bsl"),
-        "Procedure Changed()\nEndProcedure\n",
-    )
-    .unwrap();
-    let stale = mcp.completed_tool_call(call_tool(
-        id + 1,
-        "unica.view",
-        json!({"at":at,"limit":2,"cursor":first["cursor"]}),
+        json!({"at": format!("{module}.Method.Large.Body")}),
     ));
     assert_eq!(
-        stale, second,
-        "issued Body must replay its saved page after replacement"
+        refused["diagnostics"][0]["code"], "result_too_large",
+        "{refused:#}"
     );
-    mcp.finish();
-}
+    assert_eq!(
+        refused["next"][1]["args"]["at"],
+        format!("{module}.Method.Large")
+    );
+    narrow.finish();
 
-#[test]
-fn public_view_starts_body_over_sixty_four_mib_and_splits_one_long_line() {
-    let root = tempfile::tempdir().unwrap();
-    let mut source = Vec::with_capacity(70 * 1024 * 1024);
-    source.extend_from_slice(b"//");
-    source.extend(std::iter::repeat_n(b'x', 9 * 1024 * 1024));
-    source.push(b'\n');
-    for _ in 0..62 {
-        source.extend_from_slice(b"//");
-        source.extend(std::iter::repeat_n(b'y', 1024 * 1024));
-        source.push(b'\n');
+    // Известный клиент получает весь текст по своему имени из `initialize`,
+    // без настройки; явная настройка даёт то же любому клиенту.
+    let mut wide = None;
+    for (client, budget) in unica_bootstrap::known_client_budgets() {
+        assert!(budget > method.len() + 2048, "{client}");
+        let mut known = McpProcess::start(root.path());
+        initialize_body_mcp_as(&mut known, client);
+        let answer = read(&mut known, 2, format!("{module}.Method.Large.Body"));
+        assert!(
+            answer["result"].get("structuredContent").is_none(),
+            "{client}: {answer:#}"
+        );
+        assert_eq!(answer["result"]["content"][1]["text"], method, "{client}");
+        // Настоящий конверт меньше запаса на него, которым решаются отказ
+        // и пометка `overBudget` (2 КиБ).
+        let envelope = answer["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(envelope.len() < 2048, "{client}: {envelope}");
+        match wide {
+            None => wide = Some(known),
+            Some(_) => known.finish(),
+        }
     }
-    body_workspace(root.path(), &source);
-    let mut mcp = McpProcess::start(root.path());
-    initialize_body_mcp(&mut mcp);
-    let at = "main:CommonModule.Main.Body";
-    let first = mcp.completed_tool_call(call_tool(2, "unica.view", json!({"at":at,"limit":50})));
-    assert_eq!(first["ok"], true, "{first:#}");
-    assert_eq!(first["data"]["items"][0]["line"], 1, "{first:#}");
-    assert_eq!(first["data"]["items"][0]["byteOffset"], 0);
-    assert_eq!(first["data"]["items"][0]["endOfLine"], false);
-    assert_eq!(first["data"]["items"].as_array().unwrap().len(), 1);
-    assert_eq!(first["page"]["stoppedBy"], "bytes");
-    assert_eq!(
-        first["data"]["items"][0]["text"].as_str().unwrap().len(),
-        65536
-    );
-    let cursor = first["cursor"].as_str().expect("long-line continuation");
-    let next = mcp.completed_tool_call(call_tool(
+    let mut wide = wide.expect("known clients");
+    let mut explicit = McpProcess::start_with(root.path(), &[("UNICA_RESPONSE_BUDGET", "47104")]);
+    initialize_body_mcp(&mut explicit);
+    let answer = read(&mut explicit, 2, format!("{module}.Method.Large.Body"));
+    assert_eq!(answer["result"]["content"][1]["text"], method);
+    explicit.finish();
+    // Модуль больше наибольшего бюджета известных хостов не отдаётся никому.
+    let whole = wide.completed_tool_call(call_tool(
         3,
         "unica.view",
-        json!({"at":at,"limit":50,"cursor":cursor}),
+        json!({"at": format!("{module}.Body")}),
     ));
-    assert_eq!(next["ok"], true, "{next:#}");
-    assert_eq!(next["data"]["items"][0]["line"], 1, "{next:#}");
-    assert_eq!(next["data"]["items"][0]["byteOffset"], 65536);
-    mcp.finish();
+    assert_eq!(
+        whole["diagnostics"][0]["code"], "result_too_large",
+        "{whole:#}"
+    );
+    assert!(!whole.to_string().contains("sourceTextReadHint"));
+    let first = whole["next"][0]["args"]["at"].as_str().unwrap();
+    assert!(
+        first.starts_with(&format!("{module}.Body#L1-L")),
+        "{whole:#}"
+    );
+    let reopened = read(&mut wide, 4, first.to_owned());
+    assert_eq!(reopened["result"]["isError"], false, "{reopened:#}");
+    let prefix = reopened["result"]["content"][1]["text"].as_str().unwrap();
+    assert!(source.starts_with(prefix));
+    assert!(prefix.ends_with('\n'));
+    assert!(prefix.len() < source.len());
+    assert!(!reopened.to_string().contains("sourceTextReadHint"));
+    wide.finish();
 }
 
+#[path = "platform/v13_command_lifecycle.rs"]
+mod command_lifecycle;
+#[path = "platform/v13_resolve_resources.rs"]
+mod resolve_resources;
 #[path = "platform/v13_resolve_target_isolation.rs"]
 mod target_isolation;
 
@@ -1682,33 +1858,43 @@ fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
     }
 }
 
-/// Reads a whole module body through `view`, page by page.
+/// Opens either a module Body or an exact search range; the raw block uses
+/// the absolute starting line declared by the ranged envelope.
 fn view_body_lines(
     mcp: &mut McpProcess,
     id: &mut u64,
     at: &str,
 ) -> std::collections::BTreeMap<u64, String> {
-    let mut lines = std::collections::BTreeMap::new();
-    let mut cursor: Option<String> = None;
-    loop {
-        let mut args = json!({"at": format!("{at}.Body"), "limit": 50});
-        if let Some(cursor) = &cursor {
-            args["cursor"] = json!(cursor);
-        }
-        let page = mcp.completed_tool_call(call_tool(*id, "unica.view", args));
-        *id += 1;
-        assert_eq!(page["ok"], true, "{at}: {page:#}");
-        for item in page["data"]["items"].as_array().expect("body lines") {
-            lines.insert(
-                item["line"].as_u64().expect("body line number"),
-                item["text"].as_str().expect("body line text").to_owned(),
-            );
-        }
-        match page["cursor"].as_str() {
-            Some(next) => cursor = Some(next.to_owned()),
-            None => return lines,
-        }
-    }
+    let response = mcp.exchange(call_tool(
+        *id,
+        "unica.view",
+        json!({"at": if at.contains("#L") { at.to_owned() } else { format!("{at}.Body") }}),
+    ));
+    *id += 1;
+    assert!(
+        response["result"].get("structuredContent").is_none(),
+        "{at}: {response:#}"
+    );
+    let text = response["result"]["content"][1]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{at}: Body text block: {response:#}"));
+    let envelope: Value =
+        serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let from = envelope["data"]["props"]["lines"]["from"]
+        .as_u64()
+        .unwrap_or(1);
+    text.lines()
+        .enumerate()
+        .map(|(index, line)| (index as u64 + from, line.to_owned()))
+        .collect()
+}
+
+fn hit_module(at: &str) -> &str {
+    let body = at.split_once('#').map_or(at, |(body, _)| body);
+    let owner = body.strip_suffix(".Body").unwrap_or(body);
+    owner
+        .rsplit_once(".Method.")
+        .map_or(owner, |(module, _)| module)
 }
 
 /// #1298: a text hit names the logical module it was found in, and `view` of
@@ -1819,7 +2005,7 @@ fn text_hits_name_their_module_and_view_reads_the_same_line() {
             let at = hit["at"]
                 .as_str()
                 .unwrap_or_else(|| panic!("hit has no module: {hit:#}"));
-            modules.insert(at.to_owned());
+            modules.insert(hit_module(at).to_owned());
         }
         let mut expected = expected.to_vec();
         expected.sort_unstable();
@@ -1827,23 +2013,26 @@ fn text_hits_name_their_module_and_view_reads_the_same_line() {
             modules.iter().map(String::as_str).collect::<Vec<_>>(),
             expected
         );
-        for at in &modules {
+        for hit in matches {
+            let at = hit["at"].as_str().unwrap();
+            assert!(
+                at.contains(".Body#L"),
+                "a textual hit is an executable Body line address: {hit:#}"
+            );
             let lines = view_body_lines(&mut mcp, &mut id, at);
-            for hit in matches.iter().filter(|hit| hit["at"] == at.as_str()) {
-                let line = hit["line"].as_u64().expect("hit line");
-                let text = lines.get(&line).map(String::as_str);
-                assert_eq!(text, hit["snippet"].as_str(), "{at} line {line}");
-                let column = usize::try_from(hit["column"].as_u64().expect("hit column"))
-                    .expect("column fits");
-                let tail = text
-                    .expect("hit line")
-                    .chars()
-                    .skip(column - 1)
-                    .collect::<String>();
-                assert!(tail.starts_with(query), "{at} line {line}: {hit:#}");
-                if line == 1 {
-                    first_line_hits += 1;
-                }
+            let line = hit["line"].as_u64().expect("hit line");
+            let text = lines.get(&line).map(String::as_str);
+            assert_eq!(text, hit["snippet"].as_str(), "{at} line {line}");
+            let column =
+                usize::try_from(hit["column"].as_u64().expect("hit column")).expect("column fits");
+            let tail = text
+                .expect("hit line")
+                .chars()
+                .skip(column - 1)
+                .collect::<String>();
+            assert!(tail.starts_with(query), "{at} line {line}: {hit:#}");
+            if line == 1 {
+                first_line_hits += 1;
             }
         }
     }
@@ -1886,7 +2075,7 @@ fn text_hits_name_their_module_and_view_reads_the_same_line() {
         reasons,
         std::collections::BTreeMap::from([
             (
-                "ext:CommonModule.Свой".to_owned(),
+                "ext:CommonModule.Свой.Body#L1".to_owned(),
                 "ext:Configuration".to_owned()
             ),
             (
@@ -1907,6 +2096,102 @@ fn text_hits_name_their_module_and_view_reads_the_same_line() {
     assert_eq!(
         own.get(&1).map(String::as_str),
         Some("// НичейнаяСтрока в своём модуле")
+    );
+    mcp.finish();
+}
+
+/// #1416: however broad the request scope — a metadata kind, an object with
+/// several modules, the whole source set or no scope at all — every text hit
+/// names the module it was found in. The broad answer gives the same `at`,
+/// line, column and snippet as the search scoped to that very module, keeps
+/// full coverage, and `scope` still echoes the request.
+#[test]
+fn broad_text_search_scopes_name_the_module_of_every_hit() {
+    let root = tempfile::tempdir().expect("search integration root");
+    let workspace = root.path();
+    copy_tree(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/acceptance/workspace"),
+        workspace,
+    );
+    for args in [["init", "-q"].as_slice(), ["add", "."].as_slice()] {
+        assert!(Command::new("git")
+            .args(args)
+            .current_dir(workspace)
+            .status()
+            .expect("prepare fixture repository")
+            .success());
+    }
+    let mut mcp = McpProcess::start(workspace);
+    initialize_body_mcp(&mut mcp);
+    let mut id = 2;
+    let mut search = |mcp: &mut McpProcess, args: Value| {
+        let found = mcp.completed_tool_call(call_tool(id, "unica.search", args));
+        id += 1;
+        assert_eq!(found["ok"], true, "{found:#}");
+        assert_eq!(found["page"]["stoppedBy"], "complete", "{found:#}");
+        assert_eq!(found["data"]["fileCoverage"]["complete"], true, "{found:#}");
+        found["data"]["matches"]
+            .as_array()
+            .expect("text matches")
+            .clone()
+    };
+
+    let declaration = "Функция НастройкиАвторизации(";
+    let module = "main:CommonModule.GoogleПереводчик";
+    let narrow = search(
+        &mut mcp,
+        json!({"query": declaration, "corpus": "text", "scope": module, "limit": 5}),
+    );
+    assert_eq!(narrow.len(), 1, "{narrow:#?}");
+    assert!(
+        narrow[0]["at"]
+            .as_str()
+            .unwrap()
+            .starts_with(&format!("{module}.Method.НастройкиАвторизации.Body#L")),
+        "{narrow:#?}"
+    );
+    for scope in [Some("main:CommonModule"), Some("main:Configuration"), None] {
+        let mut args = json!({"query": declaration, "corpus": "text", "limit": 5});
+        if let Some(scope) = scope {
+            args["scope"] = json!(scope);
+        }
+        let broad = search(&mut mcp, args);
+        assert_eq!(broad.len(), 1, "{scope:?}: {broad:#?}");
+        let hit = &broad[0];
+        assert_eq!(
+            hit["scope"],
+            scope.unwrap_or("main:Configuration"),
+            "{hit:#}"
+        );
+        for field in ["at", "line", "column", "snippet"] {
+            assert_eq!(hit[field], narrow[0][field], "{scope:?} {field}: {hit:#}");
+        }
+        assert!(hit.get("unaddressed").is_none() && hit.get("fileId").is_none());
+    }
+
+    // An object scope spans several modules; each hit names its own.
+    let object = search(
+        &mut mcp,
+        json!({"query": "Возврат", "scope": "main:Catalog.Валюты", "limit": 50}),
+    );
+    let modules = object
+        .iter()
+        .map(|hit| {
+            assert_eq!(hit["scope"], "main:Catalog.Валюты", "{hit:#}");
+            hit["at"]
+                .as_str()
+                .unwrap_or_else(|| panic!("hit has no module: {hit:#}"))
+                .to_owned()
+        })
+        .map(|at| hit_module(&at).to_owned())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        modules.iter().map(String::as_str).collect::<Vec<_>>(),
+        [
+            "main:Catalog.Валюты.Module.Manager",
+            "main:Catalog.Валюты.Module.Object",
+        ]
     );
     mcp.finish();
 }

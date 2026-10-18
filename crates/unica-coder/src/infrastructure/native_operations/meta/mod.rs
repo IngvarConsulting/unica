@@ -73,7 +73,9 @@ fn run_before_meta_remove_subsystem_child_inspection_hook(path: &Path) {
 }
 
 mod edit;
+mod form_metadata;
 mod format_contract;
+pub(crate) use form_metadata::parse_form_metadata_properties;
 mod help_facet;
 mod info;
 mod info_projection;
@@ -98,9 +100,9 @@ mod validation_context;
 mod xml_model;
 
 pub(crate) use edit::{
-    meta_edit_object_identity, prepare_typed_edit, resolve_typed_edit_object,
-    resolve_typed_metadata_object, typed_operations_write_multilingual_text,
-    EXTERNAL_SOURCE_TEXT_LANGUAGE,
+    canonical_typed_command_name, meta_edit_object_identity, prepare_typed_edit,
+    resolve_typed_edit_object, resolve_typed_metadata_object, typed_command_module_path,
+    typed_operations_write_multilingual_text, EXTERNAL_SOURCE_TEXT_LANGUAGE,
 };
 pub(crate) use xml_model::{
     first_top_child_object_offset, meta_default_text_language, meta_mltext_property_replacement,
@@ -142,7 +144,7 @@ pub(crate) use predefined::{
     predefined_item_id, predefined_post_image, read_complete_predefined_items_for_code_type,
     require_predefined_code_type, PredefinedCodeType, MISSING_PREDEFINED_CODE_TYPE,
 };
-pub(crate) use publisher::{fresh_metadata_uuid, prepare_meta_add};
+pub(crate) use publisher::prepare_meta_add;
 #[cfg(test)]
 pub(crate) use publisher::{
     with_meta_add_after_authorization_hook, with_meta_edit_before_reauthorization_hook,

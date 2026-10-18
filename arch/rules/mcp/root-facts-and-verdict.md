@@ -5,6 +5,7 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_view_bootstrap_recognizes_an_infobase_only_workspace
   - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_view_without_at_bootstraps_an_empty_workspace
   - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_view_bootstrap_does_not_equate_git_presence_with_repository_readiness
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_view_bootstrap_leaves_project_health_to_the_root_check
   - crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs::root_inspection_discovers_sources_after_response_handoff
   - crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs::root_check_repeats_after_eol_timeout_and_finishes_with_shared_checkpoint
   - crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs::root_check_does_not_recommend_repeat_for_fixed_failure_or_full_checkpoint
@@ -40,19 +41,15 @@ preview-вызовы `download` и `dump`, затем корневой `check`.
 ссылку на чтение. Корневая проверка сообщает `source_set.logical_name_invalid`
 и `ready: false`.
 
-Проверка готовности использует оставшийся срок запроса. Неполный обход
-не объявляется полной проверкой: ответ отмечает `readinessState: incomplete`.
-Если незавершённый EOL-обход превысил срок и ёмкость сохранённого состояния
-позволяет продолжить, ответ предлагает повторить `unica.check {}`. Статический
-сбой такой рекомендации не получает. При исчерпании ёмкости ответ сообщает об
-этом диагностикой и не обещает прогресс от повторения того же вызова. Новый
-вызов получает собственный срок и может продолжить ограниченный по памяти
-обход ресурсов.
-До полного вердикта он заново сверяет Git index, атрибуты и изменяемые
+Корневой `check` выполняет обход без автоматического срока операции;
+долгая проверка продолжается в задании. Новый срок запроса и повторный вызов
+не требуются для завершения такой проверки.
+
+Неполный обход не объявляется полной проверкой: ответ отмечает
+`readinessState: incomplete`. Сохранённое состояние позволяет продолжить
+незавершённый обход с ограниченной памятью. При исчерпании его ёмкости ответ
+сообщает об этом диагностикой и не обещает прогресс от повторения того же
+вызова. Статический сбой также не получает рекомендации повтора.
+До полного вердикта проверка заново сверяет Git index, атрибуты и изменяемые
 рабочие файлы; утрата или устаревание сохранённого состояния не означает
 готовности репозитория.
-Проверка истечения срока через текущий публичный маршрут остаётся в `gap`.
-
-Проверка готовности не расходует запас времени, оставленный на сериализацию
-и передачу ответа. Проверка этого ограничения на полном маршруте указана
-в `gap`.

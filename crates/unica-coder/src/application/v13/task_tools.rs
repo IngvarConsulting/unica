@@ -537,6 +537,8 @@ mod tests {
             rev: Some("rev-7".into()),
             cursor: None,
             page: None,
+            source_text: None,
+            source_text_read_hint: None,
         };
         let mut completed = snapshot(InvocationStatus::Completed);
         completed.result = Some(subject.clone());

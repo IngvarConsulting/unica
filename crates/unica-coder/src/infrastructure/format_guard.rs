@@ -32,7 +32,7 @@ use crate::infrastructure::native_operations::interface::{
     interface_metadata_owner_path, resolve_interface_validate_path,
 };
 use crate::infrastructure::native_operations::mxl::{
-    resolve_mxl_decompile_path, resolve_mxl_info_path, resolve_mxl_validate_path,
+    resolve_mxl_info_path, resolve_mxl_validate_path,
 };
 use crate::infrastructure::native_operations::role::resolve_role_edit_guard_path;
 use crate::infrastructure::native_operations::role::role_read_format_dependency_paths;
@@ -239,6 +239,20 @@ pub(crate) fn evaluate_prepared_subsystem_info_format_guard(
     spec: ToolSpec,
     documents: &[SubsystemInfoFormatDocument],
 ) -> Result<FormatGuardCheck, FormatGuardError> {
+    evaluate_prepared_subsystem_format_guard(spec.name, spec.execution.is_mutating(), documents)
+}
+
+pub(crate) fn evaluate_prepared_subsystem_validation_format_guard(
+    documents: &[SubsystemInfoFormatDocument],
+) -> Result<FormatGuardCheck, FormatGuardError> {
+    evaluate_prepared_subsystem_format_guard("subsystem-validate", false, documents)
+}
+
+fn evaluate_prepared_subsystem_format_guard(
+    tool_name: &str,
+    mutating: bool,
+    documents: &[SubsystemInfoFormatDocument],
+) -> Result<FormatGuardCheck, FormatGuardError> {
     let mut owners = Vec::with_capacity(documents.len());
     let mut paths = HashSet::new();
     for document in documents {
@@ -251,7 +265,8 @@ pub(crate) fn evaluate_prepared_subsystem_info_format_guard(
                 document.path.display()
             ))
         })?;
-        let parsed = match Document::parse(source.trim_start_matches('\u{feff}')) {
+        let source = source.trim_start_matches('\u{feff}');
+        let parsed = match Document::parse(source) {
             Ok(parsed) => parsed,
             Err(error) => {
                 let warning = format!(
@@ -266,12 +281,7 @@ pub(crate) fn evaluate_prepared_subsystem_info_format_guard(
                     "compatibility": "invalid",
                     "root": document.path.display().to_string(),
                 });
-                return Ok(format_check(
-                    spec.name,
-                    spec.execution.is_mutating(),
-                    warning,
-                    diagnostic,
-                ));
+                return Ok(format_check(tool_name, mutating, warning, diagnostic));
             }
         };
         let root = parsed.root_element();
@@ -288,7 +298,7 @@ pub(crate) fn evaluate_prepared_subsystem_info_format_guard(
             raw: document.bytes.clone(),
         });
     }
-    evaluate_resolved_format_owners(spec.name, spec.execution.is_mutating(), owners, None)
+    evaluate_resolved_format_owners(tool_name, mutating, owners, None)
 }
 
 fn evaluate_resolved_format_owners(
@@ -396,7 +406,6 @@ fn declared_output_root_expectation(
 ) -> Option<PlatformXmlRootExpectation> {
     let (output, expected_root) = match operation {
         "dcs-validate" => (resolve_dcs_validate_path(args, context).ok(), DCS_ROOT),
-        "mxl-compile" => (output_path_arg(args, context), MXL_ROOT),
         "mxl-validate" => (resolve_mxl_validate_path(args, context).ok(), MXL_ROOT),
         "form-compile" => (
             form_compile_format_paths(args, context).into_iter().next(),
@@ -407,13 +416,6 @@ fn declared_output_root_expectation(
     output
         .filter(|output| output == target)
         .map(|_| expected_root)
-}
-
-fn output_path_arg(args: &Map<String, Value>, context: &WorkspaceContext) -> Option<PathBuf> {
-    ["OutputPath", "outputPath"]
-        .iter()
-        .find_map(|name| args.get(*name).and_then(Value::as_str))
-        .map(|path| absolutize(path, &context.cwd))
 }
 
 fn format_check(
@@ -704,9 +706,7 @@ fn add_operation_format_dependencies(
                 paths.extend(dependencies);
             }
         }
-        "subsystem-compile" => add_subsystem_compile_format_dependencies(args, context, paths)?,
         "subsystem-edit" => add_subsystem_edit_format_dependencies(args, context, paths)?,
-        "role-compile" => add_role_compile_format_dependencies(args, context, paths),
         _ => {}
     }
     Ok(())
@@ -925,141 +925,6 @@ fn add_subsystem_edit_format_dependencies(
     Ok(())
 }
 
-fn add_subsystem_compile_format_dependencies(
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-    paths: &mut Vec<PathBuf>,
-) -> Result<(), String> {
-    let Some(definition) = subsystem_compile_definition(args, context) else {
-        return Ok(());
-    };
-    let Some(name) = definition.get("name").and_then(Value::as_str) else {
-        return Ok(());
-    };
-    if !is_safe_single_path_component(name) {
-        return Ok(());
-    }
-    let Some(output_dir) = ["outputDir", "OutputDir"]
-        .iter()
-        .find_map(|argument| args.get(*argument).and_then(Value::as_str))
-        .map(|raw| absolutize(raw, &context.cwd))
-    else {
-        return Ok(());
-    };
-    let parent = ["parent", "Parent"]
-        .iter()
-        .find_map(|argument| args.get(*argument).and_then(Value::as_str))
-        .map(|raw| absolutize(raw, &context.cwd));
-    let mut validation_descriptors = Vec::new();
-    let subsystems_dir = if let Some(parent) = parent.as_ref() {
-        paths.push(parent.clone());
-        validation_descriptors.push(parent.clone());
-        let parent_dir = parent.parent().unwrap_or(output_dir.as_path());
-        let parent_name = parent.file_stem().and_then(|value| value.to_str());
-        let Some(parent_name) = parent_name else {
-            return Ok(());
-        };
-        parent_dir.join(parent_name).join("Subsystems")
-    } else {
-        let configuration = output_dir.join("Configuration.xml");
-        paths.push(configuration.clone());
-        validation_descriptors.push(configuration);
-        output_dir.join("Subsystems")
-    };
-    let target = subsystems_dir.join(name);
-    let target = target.with_extension("xml");
-    paths.push(target.clone());
-    validation_descriptors.push(target.clone());
-    if let Some(children) = definition.get("children").and_then(Value::as_array) {
-        for child in children.iter().filter_map(Value::as_str) {
-            if is_safe_single_path_component(child) {
-                let child = target
-                    .with_extension("")
-                    .join("Subsystems")
-                    .join(child)
-                    .with_extension("xml");
-                paths.push(child.clone());
-                validation_descriptors.push(child);
-            }
-        }
-    }
-    let descriptor_refs = validation_descriptors
-        .iter()
-        .map(PathBuf::as_path)
-        .collect::<Vec<_>>();
-    paths.extend(subsystem_validation_format_dependency_paths(
-        &descriptor_refs,
-    ));
-    Ok(())
-}
-
-fn subsystem_compile_definition(
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-) -> Option<Value> {
-    let text = if let Some(raw) = ["definitionFile", "DefinitionFile"]
-        .iter()
-        .find_map(|name| args.get(*name).and_then(Value::as_str))
-    {
-        fs::read_to_string(absolutize(raw, &context.cwd)).ok()?
-    } else {
-        ["value", "Value"]
-            .iter()
-            .find_map(|name| args.get(*name).and_then(Value::as_str))?
-            .to_string()
-    };
-    serde_json::from_str(text.trim_start_matches('\u{feff}')).ok()
-}
-
-fn add_role_compile_format_dependencies(
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-    paths: &mut Vec<PathBuf>,
-) {
-    let Some(output_dir) = ["outputDir", "OutputDir"]
-        .iter()
-        .find_map(|name| args.get(*name).and_then(Value::as_str))
-        .map(|raw| absolutize(raw, &context.cwd))
-    else {
-        return;
-    };
-    let config_dir = if output_dir.file_name().and_then(|name| name.to_str()) == Some("Roles") {
-        output_dir.parent().unwrap_or(context.cwd.as_path())
-    } else {
-        output_dir.as_path()
-    };
-    paths.push(config_dir.join("Configuration.xml"));
-    let Some(definition) = load_json_file_argument(args, context, &["jsonPath", "JsonPath"]) else {
-        return;
-    };
-    let Some(role_name) = definition.get("name").and_then(Value::as_str) else {
-        return;
-    };
-    if !is_safe_single_path_component(role_name) {
-        return;
-    }
-    let roles_dir = if output_dir.file_name().and_then(|name| name.to_str()) == Some("Roles") {
-        output_dir
-    } else {
-        output_dir.join("Roles")
-    };
-    let role_base = roles_dir.join(role_name);
-    paths.push(role_base.with_extension("xml"));
-    paths.push(role_base.join("Ext").join("Rights.xml"));
-}
-
-fn load_json_file_argument(
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-    names: &[&str],
-) -> Option<Value> {
-    let raw = names
-        .iter()
-        .find_map(|name| args.get(*name).and_then(Value::as_str))?;
-    let text = fs::read_to_string(absolutize(raw, &context.cwd)).ok()?;
-    serde_json::from_str(text.trim_start_matches('\u{feff}')).ok()
-}
-
 fn is_safe_single_path_component(value: &str) -> bool {
     let mut components = Path::new(value).components();
     matches!(components.next(), Some(std::path::Component::Normal(component)) if component == value)
@@ -1137,7 +1002,6 @@ fn handler_resolved_format_paths(
         // dependency would silently be empty.
         "mxl-validate" => resolve_mxl_validate_path(args, context).ok(),
         "mxl-info" => resolve_mxl_info_path(args, context).ok(),
-        "mxl-decompile" => resolve_mxl_decompile_path(args, context).ok(),
         "role-info" | "role-validate" => resolve_role_read_rights_path(args, context).ok(),
         "role-edit" => {
             Some(resolve_role_edit_guard_path(args, context).map_err(FormatGuardError::internal)?)
@@ -2641,54 +2505,6 @@ mod tests {
     }
 
     #[test]
-    fn standalone_compile_does_not_inherit_unrelated_workspace_configuration() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-standalone-output-{}-{}",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
-        config(&root, Some("2.19"));
-        let standalone = root.join("generated/report.xml");
-        let mut args = Map::new();
-        args.insert(
-            "OutputPath".into(),
-            Value::String(standalone.display().to_string()),
-        );
-
-        assert!(matches!(
-            evaluate_format_guard(spec("unica.mxl.compile"), &args, &context(&root)).unwrap(),
-            FormatGuardCheck::Allow
-        ));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn mxl_compile_blocks_write_inside_older_dump() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-format-guard-mxl-compile-old-{}-{}",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
-        config(&root, Some("2.19"));
-        let output = root.join("src/Reports/Sales/Templates/Print/Ext/Template.xml");
-        std::fs::create_dir_all(output.parent().unwrap()).unwrap();
-        std::fs::write(&output, b"original bytes").unwrap();
-        let before = std::fs::read(&output).unwrap();
-        let mut args = Map::new();
-        args.insert(
-            "OutputPath".into(),
-            Value::String(output.display().to_string()),
-        );
-
-        assert!(matches!(
-            evaluate_format_guard(spec("unica.mxl.compile"), &args, &context(&root)).unwrap(),
-            FormatGuardCheck::Block { .. }
-        ));
-        assert_eq!(std::fs::read(&output).unwrap(), before);
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn form_compile_blocks_old_external_source_set_before_create() {
         let root = std::env::temp_dir().join(format!(
             "unica-format-guard-form-compile-old-external-{}-{}",
@@ -2784,7 +2600,7 @@ mod tests {
         );
 
         let check =
-            evaluate_format_guard(spec("unica.mxl.compile"), &args, &context(&root)).unwrap();
+            evaluate_format_guard(spec("unica.form.compile"), &args, &context(&root)).unwrap();
         let FormatGuardCheck::Block { diagnostic, .. } = check else {
             panic!("malformed existing standalone XML must not be treated as a new output");
         };
@@ -2808,7 +2624,7 @@ mod tests {
         );
 
         let check =
-            evaluate_format_guard(spec("unica.mxl.compile"), &args, &context(&root)).unwrap();
+            evaluate_format_guard(spec("unica.form.compile"), &args, &context(&root)).unwrap();
         let FormatGuardCheck::Block { diagnostic, .. } = check else {
             panic!("external source root with one descriptor must resolve its owner");
         };
@@ -3003,10 +2819,7 @@ mod tests {
             "unica.interface.edit",
             "unica.meta.add",
             "unica.meta.edit",
-            "unica.mxl.compile",
-            "unica.role.compile",
             "unica.role.edit",
-            "unica.subsystem.compile",
             "unica.subsystem.edit",
         ]);
         let actual = tools()

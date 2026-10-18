@@ -1,0 +1,132 @@
+{
+  "id": "S-1396-borrow-enum-value",
+  "area": "Расширения конфигурации",
+  "task": "Заимствовать отдельное значение перечисления вместе с владельцем и повторить без изменений",
+  "workspace": "tests/fixtures/acceptance/workspace-format",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "ext:Configuration",
+        "ops": [
+          {
+            "op": "object.borrow",
+            "args": {
+              "from": "nosupport:Enum.ВажностьПроблемыУчета.EnumValue.Ошибка"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "exists",
+          "path": "src-ext/Enums/ВажностьПроблемыУчета.xml",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "publishedEnum": {
+          "kind": "sha256",
+          "file": "src-ext/Enums/ВажностьПроблемыУчета.xml"
+        }
+      },
+      "fileAssertions": [
+        {
+          "kind": "xml",
+          "path": "src-ext/Enums/ВажностьПроблемыУчета.xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "Ошибка"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src-ext/Enums/ВажностьПроблемыУчета.xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}EnumValue/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}ObjectBelonging",
+          "eq": [
+            "Adopted"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src-ext/Enums/ВажностьПроблемыУчета.xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}EnumValue/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}ExtendedConfigurationObject",
+          "eq": [
+            "5d990585-02dd-4a13-8dfa-920df7d1dbb0"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "ext:Configuration",
+        "ops": [
+          {
+            "op": "object.borrow",
+            "args": {
+              "from": "nosupport:Enum.ВажностьПроблемыУчета.EnumValue.Ошибка"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src-ext/Enums/ВажностьПроблемыУчета.xml",
+          "eq": "$capture.publishedEnum"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src-ext/Enums/ВажностьПроблемыУчета.xml",
+          "eq": "$capture.publishedEnum"
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "ext:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "cfe"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/diagnostics",
+          "eq": []
+        }
+      ]
+    }
+  ]
+}

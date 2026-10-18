@@ -6,6 +6,14 @@ check:
   - crates/unica-coder/src/interfaces/daemon_router.rs::an_external_edit_after_the_leader_started_makes_the_repeat_run_fresh
   - crates/unica-coder/src/interfaces/daemon_router.rs::one_holder_cancelling_leaves_the_shared_work_to_the_others_until_all_cancel
   - crates/unica-coder/src/interfaces/daemon_router.rs::a_joined_holder_keeps_the_result_after_another_holder_cancelled
+  - crates/unica-coder/src/interfaces/daemon_router.rs::holder_cancel_before_completion_stays_cancelled_at_the_same_epoch
+  - crates/unica-coder/src/interfaces/daemon_router.rs::shared_completion_before_holder_cancel_keeps_result_at_the_same_epoch
+  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/joining.rs::a_stale_working_read_cannot_replace_an_observed_shared_terminal_with_cancelled
+  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/joining.rs::a_stale_alias_read_keeps_the_holder_cancellation_after_shared_completion
+  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/joining.rs::a_working_snapshot_from_before_the_cancel_request_must_reload
+  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/joining.rs::retired_or_foreign_holder_contexts_never_project_or_cancel_a_new_alias
+  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/joining.rs::reply_membership_capture_detects_attach_retire_aba_and_revision_overflow
+  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::an_unjoined_task_reply_does_not_read_its_canonical_store_again
   - crates/unica-coder/src/interfaces/daemon_router.rs::an_exact_repeat_of_a_call_with_its_own_receipt_never_becomes_a_joiner
   - crates/unica-coder/src/interfaces/daemon_router.rs::a_frame_that_arrives_cancelled_never_leads_identical_reads
   - crates/unica-coder/src/infrastructure/daemon/runtime_v5/joining.rs::only_tools_that_change_nothing_are_joinable

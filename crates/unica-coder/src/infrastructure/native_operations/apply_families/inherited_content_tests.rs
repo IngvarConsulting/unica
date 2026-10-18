@@ -106,7 +106,7 @@ fn content_operations() -> Vec<(&'static str, Value, &'static str)> {
         ),
         (
             FORM,
-            json!({"op":"element.add","args":{"items":[{"name":"Н1"}]}}),
+            json!({"op":"item.add","args":{"items":[{"name":"Н1"}]}}),
             "ext:DataProcessor.Обработка",
         ),
         (
@@ -175,7 +175,7 @@ fn inherited_refusal_needs_a_borrowed_object_without_its_file() {
         (
             &own_owner as &dyn Fn(&Path),
             FORM,
-            json!({"op":"element.add","args":{"items":[{"name":"Н1"}]}}),
+            json!({"op":"item.add","args":{"items":[{"name":"Н1"}]}}),
         ),
         (
             &own_role,

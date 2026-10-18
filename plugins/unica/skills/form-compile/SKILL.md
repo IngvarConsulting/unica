@@ -13,8 +13,8 @@ allowed-tools:
 ## MCP routing
 
 - Preferred path: use MCP `unica` tool `unica.apply`: форма заводится
-  операцией `form.add` на объекте-владельце, наполняется `element.add`,
-  `formAttribute.add`, `formCommand.add`, `event.bind`.
+  операцией `form.add` на объекте-владельце, наполняется `item.add`,
+  `attribute.add`, `command.add`, `event.bind`.
 - Не зови внутренние адаптеры напрямую: они спрятаны за MCP `unica`.
 - Сначала вызови `unica.apply` с `at` и `ops`: это план без записи.
   Когда пользователь поручил внести эту правку, вызови `unica.apply` только
@@ -60,13 +60,18 @@ allowed-tools:
     "arguments": {
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
-        {"op": "formAttribute.add", "args": {"items": [{"name": "Объект", "type": "CatalogObject.Валюты", "main": true}]}},
-        {"op": "element.add", "args": {"items": [{"name": "Наименование", "type": "InputField", "path": "Объект.Наименование"}]}}
+        {"op": "attribute.add", "args": {"items": [{"name": "Объект", "type": "CatalogObject.Валюты", "main": true}]}},
+        {"op": "item.add", "args": {"items": [{"name": "Наименование", "type": "InputField", "path": "Объект.Наименование"}]}}
       ]
     }
   }
 }
 ```
+
+Элементы внутрь группы добавляет `item.add` на адресе группы
+(`….Form.ФормаЭлемента.Item.<Группа>`), обработчик события — `event.bind`
+на адресе события (`….Item.<Поле>.Event.OnChange`). Группа, созданная
+в том же вызове, принимает элементы следующей операции с этим `args.at`.
 
 Точечные правки готовой формы держит `form-edit`; DSL ниже описывает, как
 выражать внутреннее описание элементов. На публичной поверхности `items[]`

@@ -1,6 +1,9 @@
 ---
 id: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
 check:
+  - crates/unica-coder/src/infrastructure/workspace_services.rs::real_index_queue_and_worker_state_reach_serialized_search_and_navigation
+  - crates/unica-coder/src/infrastructure/workspace_services.rs::maintenance_queue_execution_and_failure_keep_the_published_index_readable
+  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::maintenance_transition_invalidates_the_cursor_for_the_previous_answer
   - crates/unica-coder/src/application/code_intelligence.rs::coordinator_preserves_the_replaceable_provider_identity_for_a_role
   - crates/unica-coder/src/application/code_intelligence.rs::coordinator_preserves_provider_local_ranks_and_limit_claim
   - crates/unica-coder/src/domain/code_intelligence.rs::search_section_serializes_role_provenance_completeness_and_logical_location
@@ -13,10 +16,12 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::canonical_role_search_preserves_typed_failure_without_private_provider_text
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::provider_search_failure_requires_one_selected_section_and_yields_to_cancellation
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::provider_limit_remains_visible_after_the_last_received_page
+  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::provider_search_pages_all_received_hits_and_rejects_changed_answers
+  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::late_oversized_provider_hit_refuses_before_first_cursor
   - crates/unica-coder/src/infrastructure/code_intelligence.rs::bsl_analyzer_at_requested_limit_does_not_claim_exhaustion
   - crates/unica-coder/src/infrastructure/code_intelligence.rs::bsl_analyzer_at_its_internal_cap_does_not_claim_exhaustion
   - crates/unica-coder/src/infrastructure/code_intelligence.rs::bsl_analyzer_output_budget_truncation_does_not_claim_exhaustion
-  - crates/unica-coder/src/infrastructure/code_intelligence.rs::bsl_analyzer_empty_results_with_ready_indexing_footer_are_empty
+  - crates/unica-coder/src/infrastructure/code_intelligence.rs::bsl_analyzer_empty_results_with_index_ready_footer_are_empty
   - crates/unica-coder/src/infrastructure/code_intelligence.rs::bsl_analyzer_empty_marker_does_not_hide_untrusted_tail
   - crates/unica-coder/src/infrastructure/code_intelligence.rs::rlm_at_requested_limit_does_not_claim_exhaustion
   - crates/unica-coder/src/infrastructure/code_intelligence.rs::rlm_at_one_source_quota_does_not_claim_exhaustion
@@ -53,10 +58,11 @@ check:
 занятость рабочих исполнителей допускает повтор без изменения запроса.
 Произвольные сообщения, пути и артефакты поставщика в данные отказа не входят.
 Уточнение ожидания индекса передаётся только для известных состояний
-`buildingIndex` и `updatingIndex`; неизвестное уточнение не отменяет
+`buildingIndex`, `updatingIndex` и `indexQueued`; неизвестное уточнение не отменяет
 типизированную причину ожидания и возможность повтора.
-Сохранённый идентификатор сборки индекса не доказывает свежесть исходников:
-в отказе `indexFreshness` остаётся `unknown`.
+Состояние [обслуживания RLM](rlm-maintenance-status.md) передаётся отдельно
+от причины завершения поиска. Сохранённая сборка и
+[актуальность данных](rlm-stale-results.md) также различаются.
 
 Проверки подтверждают форму секции и передачу данных координатором.
 Выбор поставщика на публичном входе `unica.search` проверен отдельно в #960.
@@ -65,11 +71,19 @@ check:
 наиболее подходящие совпадения; поиск имён — точные совпадения перед близкими;
 буквальный поиск — места в порядке файлов. Неполнота результата обозначается
 явно. Сводка не заменяет первую страницу полезных совпадений.
+Адреса текстовых совпадений выдаются по
+[правилу подтверждённого диапазона](proven-hit-address.md).
 Общий [предел страницы](../mcp/read-page-budget.md) сохраняется.
 Провайдерный поиск выдаёт страницы полученного окна, сохраняя его роль,
-поставщика и полноту. Курсор не доказывает, что поставщик нашёл всё: при
+поставщика и полноту. Перед продолжением он пересобирает ограниченное окно
+и сверяет отпечаток всего ответа, а не общую ревизию исходников. Изменившийся
+ответ даёт `stale_cursor`. До первого курсора проверяется, что каждое
+совпадение окна можно вернуть целиком; неделимый результат за транспортным
+пределом вызывает отказ до первой страницы. Курсор не доказывает,
+что поставщик нашёл всё: при
 достижении его предела последняя страница сохраняет `limitReached` и нижнюю
-оценку. При 200 полученных результатах ответ рекомендует уточнить запрос.
+оценку. Кодовые роли получают окно не более 200 результатов.
+При 200 полученных результатах ответ рекомендует уточнить запрос.
 Если окно неполно, он не обещает выдачу его хвоста. Меньшие внутренние квоты
 `bsl-analyzer` и RLM остаются видимой неполнотой, но сами по себе не означают,
 что запрос слишком широк.

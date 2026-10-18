@@ -179,6 +179,32 @@ pub(crate) struct DomainResult {
     pub(crate) cursor: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) page: Option<Value>,
+    /// Исходный текст предмета (`Body` модуля или метода BSL). Хранится и
+    /// подписывается вместе с результатом, но наружу идёт отдельным текстовым
+    /// блоком MCP, а не полем конверта.
+    #[serde(
+        default,
+        rename = "sourceText",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) source_text: Option<String>,
+    /// Private, digest-covered coordinates and bounded prefix used by the
+    /// host projection. Old completed records omit it without changing bytes.
+    #[serde(
+        default,
+        rename = "sourceTextReadHint",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) source_text_read_hint: Option<Box<SourceTextReadHint>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub(crate) struct SourceTextReadHint {
+    pub(crate) from_line: usize,
+    pub(crate) to_line: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) prefix: Option<String>,
 }
 
 impl DomainResult {
@@ -196,6 +222,8 @@ impl DomainResult {
             rev: None,
             cursor: None,
             page: None,
+            source_text: None,
+            source_text_read_hint: None,
         }
     }
 
@@ -324,6 +352,8 @@ mod tests {
             rev: Some("rev-2".to_string()),
             cursor: Some("cursor-2".to_string()),
             page: Some(json!({"stoppedBy": "limit"})),
+            source_text: None,
+            source_text_read_hint: None,
         };
 
         let serialized = serde_json::to_value(result).expect("serialize domain result");

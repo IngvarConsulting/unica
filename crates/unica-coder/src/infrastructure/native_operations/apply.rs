@@ -16,6 +16,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 const MAX_APPLY_FILE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_APPLY_NAMESPACE_ENTRIES: usize = 1_000_000;
 
 /// A filesystem call on the planned route failed: access denied, I/O, or
 /// a retained name that no longer resolves. The source cannot be read, which
@@ -339,14 +340,15 @@ pub(crate) struct StagedApplyChange {
 #[derive(Debug)]
 struct StagedEntry {
     relative_path: PathBuf,
-    ancestor: RetainedDirectoryCapability,
+    route_identities: Vec<FileIdentity>,
     missing_parent_chain: Vec<OsString>,
     name: OsString,
     target_identity: StagedTargetIdentity,
     original: StagedFileState,
     current: StagedFileState,
-    original_file:
-        Option<crate::infrastructure::platform::filesystem::RetainedRegularFileCapability>,
+    original_file_identity: Option<FileIdentity>,
+    original_len: Option<u64>,
+    original_sha256: Option<[u8; 32]>,
 }
 
 #[derive(Debug)]
@@ -583,12 +585,150 @@ impl RetainedNamespaceGuard {
     }
 }
 
+/// The spelling a surviving file creation needs in a case-sensitive checkout.
+/// This is independent of the overlay entry's first, possibly aliased path.
+#[derive(Debug)]
+pub(super) struct RetainedPathSpellingGuard {
+    root: Arc<RetainedDirectoryCapability>,
+    relative: PathBuf,
+    entry_limit: usize,
+    deadline: ProviderDeadline,
+    cancellation: CancellationToken,
+}
+
+impl RetainedPathSpellingGuard {
+    pub(super) fn rebind_execution_context(
+        &mut self,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) {
+        self.deadline = deadline;
+        self.cancellation = cancellation.clone();
+    }
+
+    fn checkpoint(&self) -> Result<(), ApplyStagingError> {
+        if self.cancellation.is_cancelled() {
+            return Err(ApplyStagingError::new(
+                ApplyStagingErrorKind::Cancelled,
+                "destination spelling check cancelled",
+            ));
+        }
+        if self.deadline.is_elapsed() {
+            return Err(ApplyStagingError::new(
+                ApplyStagingErrorKind::Deadline,
+                "destination spelling check deadline elapsed",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_initial(&self) -> Result<(), ApplyStagingError> {
+        self.validate_with_mismatch_kind(ApplyStagingErrorKind::UnsupportedProvider)
+    }
+
+    pub(super) fn validate(&self) -> Result<(), ApplyStagingError> {
+        self.validate_with_mismatch_kind(ApplyStagingErrorKind::ConcurrentRevision)
+    }
+
+    fn validate_with_mismatch_kind(
+        &self,
+        mismatch_kind: ApplyStagingErrorKind,
+    ) -> Result<(), ApplyStagingError> {
+        self.checkpoint()?;
+        let mut parent = self.root.as_ref().clone();
+        parent
+            .validate_named_identity()
+            .map_err(source_route_io_error)?;
+        let mut entries = 0usize;
+        let mut components = self.relative.components().peekable();
+        while let Some(component) = components.next() {
+            self.checkpoint()?;
+            let Component::Normal(name) = component else {
+                return Err(ApplyStagingError::new(
+                    ApplyStagingErrorKind::Invariant,
+                    "destination spelling guard path is not relative",
+                ));
+            };
+            let child = match parent.retain_immediate_child_nofollow(name) {
+                Ok(child) => child,
+                Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+                Err(error) => return Err(source_route_io_error(error)),
+            };
+            let mut exact_name_found = false;
+            let mut stopped = None;
+            parent
+                .visit_immediate_names::<std::io::Error>(|candidate| {
+                    self.checkpoint().map_err(|error| {
+                        stopped = Some(error);
+                        std::io::Error::other("destination spelling enumeration stopped")
+                    })?;
+                    entries = entries
+                        .checked_add(1)
+                        .filter(|count| *count <= self.entry_limit)
+                        .ok_or_else(|| {
+                            stopped = Some(ApplyStagingError::new(
+                                ApplyStagingErrorKind::UnsupportedProvider,
+                                "destination spelling check exceeds namespace entry bound",
+                            ));
+                            std::io::Error::other("destination spelling entry bound exceeded")
+                        })?;
+                    exact_name_found |= candidate == name;
+                    Ok(())
+                })
+                .map_err(|error| stopped.unwrap_or_else(|| source_route_io_error(error)))?;
+            if !exact_name_found {
+                return Err(ApplyStagingError::new(
+                    mismatch_kind,
+                    format!(
+                        "destination route has no exact spelling for `{}`: {}",
+                        name.to_string_lossy(),
+                        self.relative.to_string_lossy().replace('\\', "/")
+                    ),
+                ));
+            }
+            match child {
+                RetainedChildCapability::Directory(directory) if components.peek().is_some() => {
+                    parent = directory;
+                }
+                RetainedChildCapability::RegularFile(_) if components.peek().is_none() => {
+                    self.checkpoint()?;
+                    return Ok(());
+                }
+                RetainedChildCapability::ReparsePoint => {
+                    return Err(ApplyStagingError::new(
+                        ApplyStagingErrorKind::ContainmentIdentity,
+                        "destination spelling route contains a link/reparse point",
+                    ));
+                }
+                _ => {
+                    return Err(ApplyStagingError::new(
+                        ApplyStagingErrorKind::AbsentChainOccupied,
+                        "destination spelling route has an incompatible entry kind",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn fingerprint(&self, hash: &mut sha2::Sha256) -> Result<(), ApplyStagingError> {
+        self.checkpoint()?;
+        let path =
+            crate::infrastructure::platform::filesystem::stable_path_identity_bytes(&self.relative)
+                .map_err(path_identity_error)?;
+        hash.update((path.len() as u64).to_be_bytes());
+        hash.update(path);
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct ApplyStagedState {
     root: Arc<RetainedDirectoryCapability>,
     entries: Vec<StagedEntry>,
     read_guards: std::collections::BTreeMap<FileIdentity, RetainedApplyReadGuardBinding>,
     namespaces: std::collections::BTreeMap<PathBuf, RetainedNamespaceGuard>,
+    path_spellings: std::collections::BTreeMap<usize, RetainedPathSpellingGuard>,
     deadline: ProviderDeadline,
     cancellation: CancellationToken,
     writer_authority: crate::infrastructure::workspace_actor::ApplyWriterAuthority,
@@ -609,6 +749,7 @@ impl ApplyStagedState {
             entries: Vec::new(),
             read_guards: Default::default(),
             namespaces: Default::default(),
+            path_spellings: Default::default(),
             deadline,
             cancellation,
             writer_authority,
@@ -628,7 +769,7 @@ impl ApplyStagedState {
         &mut self,
         relative: &Path,
     ) -> Result<Vec<PathBuf>, ApplyStagingError> {
-        self.enumerate_tree_with_limits(relative, 256, 1_000_000)
+        self.enumerate_tree_with_limits(relative, 256, MAX_APPLY_NAMESPACE_ENTRIES)
     }
 
     fn enumerate_tree_with_limits(
@@ -690,6 +831,40 @@ impl ApplyStagedState {
         self.read_bounded(relative, MAX_APPLY_FILE_BYTES)
     }
 
+    /// The path that identifies this retained overlay entry in final changes.
+    /// Filesystem aliases keep the first retained spelling, so events must use
+    /// it when the caller reached that same entry through another spelling.
+    pub(crate) fn retained_relative_path(
+        &mut self,
+        relative: &Path,
+    ) -> Result<PathBuf, ApplyStagingError> {
+        let relative = strict_relative(relative)?;
+        let index = self.ensure_loaded(&relative)?;
+        Ok(self.entries[index].relative_path.clone())
+    }
+
+    /// Register the destination intended by this creation. Later creations of
+    /// the same retained entry replace it; a final removal makes it inactive.
+    /// Validation waits for the final batch, including byte-neutral aliases.
+    pub(crate) fn require_exact_path_spelling(
+        &mut self,
+        relative: &Path,
+    ) -> Result<(), ApplyStagingError> {
+        let relative = strict_relative(relative)?;
+        let index = self.ensure_loaded(&relative)?;
+        self.path_spellings.insert(
+            index,
+            RetainedPathSpellingGuard {
+                root: Arc::clone(&self.root),
+                relative,
+                entry_limit: MAX_APPLY_NAMESPACE_ENTRIES,
+                deadline: self.deadline,
+                cancellation: self.cancellation.clone(),
+            },
+        );
+        Ok(())
+    }
+
     pub(crate) fn read_bounded(
         &mut self,
         relative: &Path,
@@ -740,6 +915,7 @@ impl ApplyStagedState {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let mut parent = self.root.as_ref().clone();
+        let mut route_identities = Vec::with_capacity(components.len() - 1);
         for component in &components[..components.len() - 1] {
             self.checkpoint("apply reference input route")?;
             if self.generated_subtree_forbidden {
@@ -749,7 +925,10 @@ impl ApplyStagedState {
                 reject_generated_component(Some(&policy), component)?;
             }
             parent = match parent.retain_immediate_child_nofollow(component) {
-                Ok(RetainedChildCapability::Directory(child)) => child,
+                Ok(RetainedChildCapability::Directory(child)) => {
+                    route_identities.push(child.identity());
+                    child
+                }
                 Err(error) if error.kind() == ErrorKind::NotFound => {
                     return self.read_bounded(&relative, limit);
                 }
@@ -860,9 +1039,8 @@ impl ApplyStagedState {
                 RetainedApplyReadGuardBinding {
                     root: Arc::clone(&self.root),
                     relative_path: relative,
-                    ancestor: parent,
-                    name,
-                    original_file: file,
+                    route_identities,
+                    file_identity: id,
                     expected_len: bytes.len() as u64,
                     expected_sha256: digest,
                     deadline: self.deadline,
@@ -891,6 +1069,9 @@ impl ApplyStagedState {
             ));
         }
         entry.current = StagedFileState::Bytes(bytes);
+        if let Some(guard) = self.path_spellings.get_mut(&index) {
+            guard.relative = relative;
+        }
         Ok(())
     }
 
@@ -982,6 +1163,17 @@ impl ApplyStagedState {
         for guard in self.namespaces.values() {
             guard.fingerprint(hash)?;
         }
+        let mut path_spellings = self
+            .path_spellings
+            .iter()
+            .filter(|(index, _)| matches!(self.entries[**index].current, StagedFileState::Bytes(_)))
+            .map(|(_, guard)| guard)
+            .collect::<Vec<_>>();
+        path_spellings.sort_by(|left, right| left.relative.cmp(&right.relative));
+        hash.update((path_spellings.len() as u64).to_be_bytes());
+        for guard in path_spellings {
+            guard.fingerprint(hash)?;
+        }
         Ok(())
     }
 
@@ -1020,6 +1212,16 @@ impl ApplyStagedState {
             .map_err(|error| ApplyStagingError::new(ApplyStagingErrorKind::Invariant, error))?;
         transaction.bind_retained_namespaces(self.namespaces.into_values().collect());
         transaction.bind_retained_apply_read_guards(self.read_guards.into_values().collect());
+        let path_spellings = self
+            .path_spellings
+            .into_iter()
+            .filter(|(index, _)| matches!(self.entries[*index].current, StagedFileState::Bytes(_)))
+            .map(|(_, guard)| guard)
+            .collect::<Vec<_>>();
+        for guard in &path_spellings {
+            guard.validate_initial()?;
+        }
+        transaction.bind_retained_path_spellings(path_spellings);
         let mut entries = self.entries;
         entries.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
         for entry in entries {
@@ -1028,12 +1230,16 @@ impl ApplyStagedState {
                     RetainedApplyChangeBinding {
                         root: Arc::clone(&self.root),
                         relative_path: entry.relative_path,
-                        ancestor: entry.ancestor,
+                        route_identities: entry.route_identities,
                         missing_parent_chain: entry.missing_parent_chain,
                         name: entry.name,
                         original: entry.original.as_option(),
                         current: entry.current.as_option(),
-                        original_file: entry.original_file,
+                        original_file_identity: entry.original_file_identity,
+                        original_len: entry.original_len,
+                        original_sha256: entry.original_sha256,
+                        deadline: self.deadline,
+                        cancellation: self.cancellation.clone(),
                     },
                     &self.writer_authority,
                 )
@@ -1101,6 +1307,7 @@ impl ApplyStagedState {
             .expect("strict non-empty relative path has a terminal name")
             .clone();
         let mut ancestor = self.root.as_ref().clone();
+        let mut route_identities = Vec::new();
         let mut missing_parent_chain = Vec::new();
         let mut generated_name_comparator = self
             .generated_subtree_forbidden
@@ -1112,6 +1319,7 @@ impl ApplyStagedState {
             match ancestor.retain_immediate_child_nofollow(component) {
                 Ok(RetainedChildCapability::Directory(directory)) => {
                     ancestor = directory;
+                    route_identities.push(ancestor.identity());
                     generated_name_comparator = self
                         .generated_subtree_forbidden
                         .then(|| ancestor.child_name_comparator())
@@ -1208,8 +1416,9 @@ impl ApplyStagedState {
                 }
             }
         }
-        let (original, original_file) = match retained_child {
-            None => (StagedFileState::Absent, None),
+        let (original, original_file_identity, original_len, original_sha256) = match retained_child
+        {
+            None => (StagedFileState::Absent, None, None, None),
             Some(Ok(RetainedChildCapability::RegularFile(file))) => {
                 if file.hard_link_count().map_err(|error| {
                     ApplyStagingError::new(
@@ -1232,7 +1441,15 @@ impl ApplyStagedState {
                         format!("staged target fixed read bound failed: {error}"),
                     )
                 })?;
-                (StagedFileState::Bytes(bytes), Some(file))
+                let identity = file.identity();
+                let len = bytes.len() as u64;
+                let sha256 = sha2::Sha256::digest(&bytes).into();
+                (
+                    StagedFileState::Bytes(bytes),
+                    Some(identity),
+                    Some(len),
+                    Some(sha256),
+                )
             }
             Some(Ok(RetainedChildCapability::ReparsePoint)) => {
                 return Err(ApplyStagingError::new(
@@ -1255,7 +1472,7 @@ impl ApplyStagedState {
                 ))
             }
             Some(Err(error)) if error.kind() == ErrorKind::NotFound => {
-                (StagedFileState::Absent, None)
+                (StagedFileState::Absent, None, None, None)
             }
             Some(Err(error)) => {
                 return Err(ApplyStagingError::new(
@@ -1269,15 +1486,32 @@ impl ApplyStagedState {
             .expect("regular or absent target has an identity")
         {
             if let Some(guard) = self.read_guards.get(identity) {
-                guard
-                    .original_file
-                    .validate_named_identity()
-                    .map_err(|error| {
-                        ApplyStagingError::new(
-                            ApplyStagingErrorKind::ConcurrentRevision,
-                            format!("reference input changed before write staging: {error}"),
-                        )
-                    })?;
+                let observed = guard.retain_named_route().map_err(|error| {
+                    // A stop request keeps its own kind; any route change stales the plan.
+                    let kind = match error.kind() {
+                        RetainedApplyValidationErrorKind::Cancelled => {
+                            ApplyStagingErrorKind::Cancelled
+                        }
+                        RetainedApplyValidationErrorKind::Deadline => {
+                            ApplyStagingErrorKind::Deadline
+                        }
+                        _ => ApplyStagingErrorKind::ConcurrentRevision,
+                    };
+                    ApplyStagingError::new(
+                        kind,
+                        format!("reference input changed before write staging: {error}"),
+                    )
+                })?;
+                if observed.identity() != guard.file_identity {
+                    return Err(ApplyStagingError::new(
+                        ApplyStagingErrorKind::ConcurrentRevision,
+                        format!(
+                            "reference input changed before write staging: {}",
+                            relative.display()
+                        ),
+                    ));
+                }
+                drop(observed);
                 let StagedFileState::Bytes(bytes) = &original else {
                     unreachable!("guarded target was a regular file")
                 };
@@ -1296,13 +1530,15 @@ impl ApplyStagedState {
         }
         self.entries.push(StagedEntry {
             relative_path: relative.to_path_buf(),
-            ancestor,
+            route_identities,
             missing_parent_chain,
             name,
             target_identity: target_identity.expect("regular or absent target has an identity"),
             current: original.clone(),
             original,
-            original_file,
+            original_file_identity,
+            original_len,
+            original_sha256,
         });
         Ok(self.entries.len() - 1)
     }
@@ -1408,7 +1644,15 @@ pub(crate) mod tests {
     use std::cell::Cell;
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    thread_local! {
+        static REFERENCE_SCAN_TEST_NOW: Cell<Instant> = Cell::new(Instant::now());
+    }
+
+    fn reference_scan_test_now() -> Instant {
+        REFERENCE_SCAN_TEST_NOW.get()
+    }
 
     fn staged(root: &Path) -> ApplyStagedState {
         staged_with_authority(
@@ -1421,10 +1665,22 @@ pub(crate) mod tests {
         root: &Path,
         authority: crate::infrastructure::workspace_actor::ApplyWriterAuthority,
     ) -> ApplyStagedState {
+        staged_with_authority_and_deadline(
+            root,
+            authority,
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+        )
+    }
+
+    fn staged_with_authority_and_deadline(
+        root: &Path,
+        authority: crate::infrastructure::workspace_actor::ApplyWriterAuthority,
+        deadline: ProviderDeadline,
+    ) -> ApplyStagedState {
         let canonical = std::fs::canonicalize(root).unwrap();
         ApplyStagedState::from_retained_root(
             Arc::new(RetainedDirectoryCapability::open(&canonical).unwrap()),
-            ProviderDeadline::from_budget(Duration::from_secs(5)),
+            deadline,
             CancellationToken::new(),
             authority,
         )
@@ -1805,6 +2061,185 @@ pub(crate) mod tests {
         );
     }
 
+    /// A reference scan over a whole configuration (issue #1466) must not
+    /// keep a descriptor per inspected file or directory: the saved guard is
+    /// an identity and a fingerprint, re-proved by walking the route again.
+    /// This resource invariant has no operation cutoff; the finite-deadline
+    /// refusal is checked separately below.
+    #[test]
+    fn reference_scan_descriptor_count_does_not_grow_with_inputs() {
+        use crate::infrastructure::platform::testing::open_handle_count_for_test;
+        const DIRECTORIES: usize = 32;
+        const FILES_PER_DIRECTORY: usize = 16;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let mut inputs = Vec::new();
+        for directory in 0..DIRECTORIES {
+            let parent = Path::new("Catalogs")
+                .join(format!("Item{directory}"))
+                .join("Ext");
+            std::fs::create_dir_all(root.join(&parent)).unwrap();
+            for file in 0..FILES_PER_DIRECTORY {
+                let relative = parent.join(format!("Module{file}.bsl"));
+                std::fs::write(root.join(&relative), b"Procedure A()\nEndProcedure\n").unwrap();
+                inputs.push(relative);
+            }
+        }
+        std::fs::write(root.join("Owner.bsl"), b"before").unwrap();
+        let authority = crate::infrastructure::workspace_actor::apply_writer_authority_for_test();
+        let mut state = staged_with_authority_and_deadline(
+            root,
+            authority.clone(),
+            ProviderDeadline::no_deadline(),
+        );
+        let before = open_handle_count_for_test().unwrap();
+        for relative in &inputs {
+            assert!(state
+                .read_guarded_bounded(relative, 1024)
+                .unwrap()
+                .is_some());
+        }
+        assert_eq!(state.read_guards.len(), inputs.len());
+        let after_scan = open_handle_count_for_test().unwrap();
+        state
+            .replace("Owner.bsl", b"before", b"after!".to_vec())
+            .unwrap();
+        let transaction = state.finalize().unwrap();
+        let after_finalize = open_handle_count_for_test().unwrap();
+        // The old guard kept the file and every directory of its route open:
+        // more than three descriptors per input here. A fixed allowance
+        // absorbs descriptors of concurrently running tests.
+        let allowance = 32;
+        assert!(
+            after_scan.saturating_sub(before) < allowance,
+            "scan of {} inputs kept {} descriptors open",
+            inputs.len(),
+            after_scan.saturating_sub(before)
+        );
+        assert!(
+            after_finalize.saturating_sub(before) < allowance,
+            "saved plan of {} inputs keeps {} descriptors open",
+            inputs.len(),
+            after_finalize.saturating_sub(before)
+        );
+        transaction
+            .commit_retained_apply_with(authority, || Ok(()), || Ok(()))
+            .unwrap();
+        assert_eq!(std::fs::read(root.join("Owner.bsl")).unwrap(), b"after!");
+    }
+
+    #[test]
+    fn reference_guard_preserves_finite_deadline_after_capture_without_writing() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::write(root.join("Reference.bsl"), b"abcdef").unwrap();
+        std::fs::write(root.join("Owner.bsl"), b"before").unwrap();
+        let authority = crate::infrastructure::workspace_actor::apply_writer_authority_for_test();
+        let started = Instant::now();
+        REFERENCE_SCAN_TEST_NOW.set(started);
+        let mut state = staged_with_authority_and_deadline(
+            root,
+            authority.clone(),
+            ProviderDeadline::with_clock(started + Duration::from_secs(5), reference_scan_test_now),
+        );
+        assert_eq!(
+            state
+                .read_guarded_bounded(Path::new("Reference.bsl"), 16)
+                .unwrap(),
+            Some(b"abcdef".to_vec())
+        );
+        state
+            .replace("Owner.bsl", b"before", b"after!".to_vec())
+            .unwrap();
+        let transaction = state.finalize().unwrap();
+        REFERENCE_SCAN_TEST_NOW.set(started + Duration::from_secs(6));
+        assert_eq!(
+            transaction
+                .validate_retained_for_apply_typed()
+                .unwrap_err()
+                .kind(),
+            super::RetainedApplyValidationErrorKind::Deadline
+        );
+        assert!(transaction
+            .commit_retained_apply_with(authority, || Ok(()), || Ok(()))
+            .is_err());
+        assert_eq!(std::fs::read(root.join("Owner.bsl")).unwrap(), b"before");
+        assert_eq!(
+            std::fs::read(root.join("Reference.bsl")).unwrap(),
+            b"abcdef"
+        );
+    }
+
+    /// Without a held descriptor the saved plan still refuses a nested input
+    /// that changed in place, was replaced by another file or lost its parent
+    /// directory to another directory with the same bytes.
+    #[test]
+    fn reference_guard_without_descriptors_rejects_nested_input_substitution() {
+        enum Substitution {
+            InPlaceEdit,
+            FileReplacedByRename,
+            ParentDirectoryReplaced,
+        }
+        for substitution in [
+            Substitution::InPlaceEdit,
+            Substitution::FileReplacedByRename,
+            Substitution::ParentDirectoryReplaced,
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path();
+            std::fs::create_dir_all(root.join("Catalogs/Item/Ext")).unwrap();
+            std::fs::write(root.join("Catalogs/Item/Ext/Module.bsl"), b"abcdef").unwrap();
+            std::fs::write(root.join("Owner.bsl"), b"before").unwrap();
+            let authority =
+                crate::infrastructure::workspace_actor::apply_writer_authority_for_test();
+            let mut state = staged_with_authority(root, authority.clone());
+            assert_eq!(
+                state
+                    .read_guarded_bounded(Path::new("Catalogs/Item/Ext/Module.bsl"), 16)
+                    .unwrap(),
+                Some(b"abcdef".to_vec())
+            );
+            state
+                .replace("Owner.bsl", b"before", b"after!".to_vec())
+                .unwrap();
+            let transaction = state.finalize().unwrap();
+            let expected = match substitution {
+                Substitution::InPlaceEdit => {
+                    std::fs::write(root.join("Catalogs/Item/Ext/Module.bsl"), b"abcdeg").unwrap();
+                    b"abcdeg".as_slice()
+                }
+                Substitution::FileReplacedByRename => {
+                    std::fs::write(root.join("Catalogs/Item/Ext/Next.bsl"), b"abcdef").unwrap();
+                    std::fs::rename(
+                        root.join("Catalogs/Item/Ext/Next.bsl"),
+                        root.join("Catalogs/Item/Ext/Module.bsl"),
+                    )
+                    .unwrap();
+                    b"abcdef".as_slice()
+                }
+                Substitution::ParentDirectoryReplaced => {
+                    std::fs::rename(root.join("Catalogs/Item"), root.join("Catalogs/Moved"))
+                        .unwrap();
+                    std::fs::create_dir_all(root.join("Catalogs/Item/Ext")).unwrap();
+                    std::fs::write(root.join("Catalogs/Item/Ext/Module.bsl"), b"abcdef").unwrap();
+                    b"abcdef".as_slice()
+                }
+            };
+            let error = transaction
+                .commit_retained_apply_with(authority, || Ok(()), || Ok(()))
+                .expect_err("substituted reference input must stale the plan");
+            assert!(
+                error.contains("reference input"),
+                "the refusal names the substituted reference input: {error}"
+            );
+            assert_eq!(std::fs::read(root.join("Owner.bsl")).unwrap(), b"before");
+            assert_eq!(
+                std::fs::read(root.join("Catalogs/Item/Ext/Module.bsl")).unwrap(),
+                expected
+            );
+        }
+    }
+
     #[test]
     fn reference_guard_rejects_late_change_and_rolls_back_own_write() {
         let temp = tempfile::tempdir().unwrap();
@@ -1970,6 +2405,90 @@ pub(crate) mod tests {
             .commit_retained_apply_with(authority, || Ok(()), || Ok(()))
             .unwrap();
         assert_eq!(std::fs::read(root.join("Owner.bsl")).unwrap(), b"after!");
+    }
+
+    #[test]
+    fn write_target_recheck_uses_execution_cancellation_context() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let original = vec![b'x'; 128 * 1024];
+        std::fs::write(root.join("Owner.bsl"), &original).unwrap();
+        let authority = crate::infrastructure::workspace_actor::apply_writer_authority_for_test();
+        let old_cancellation = CancellationToken::new();
+        let canonical = std::fs::canonicalize(root).unwrap();
+        let retained = Arc::new(RetainedDirectoryCapability::open(&canonical).unwrap());
+        let mut state = ApplyStagedState::from_retained_root(
+            retained,
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+            old_cancellation.clone(),
+            authority.clone(),
+        );
+        state
+            .replace("Owner.bsl", &original, b"after".to_vec())
+            .unwrap();
+        let mut transaction = state.finalize().unwrap();
+        old_cancellation.cancel();
+        assert_eq!(
+            transaction
+                .validate_retained_for_apply_typed()
+                .unwrap_err()
+                .kind(),
+            super::RetainedApplyValidationErrorKind::Cancelled
+        );
+        let execution_cancellation = CancellationToken::new();
+        transaction.rebind_retained_apply_execution_context(
+            ProviderDeadline::from_budget(Duration::ZERO),
+            &execution_cancellation,
+        );
+        assert_eq!(
+            transaction
+                .validate_retained_for_apply_typed()
+                .unwrap_err()
+                .kind(),
+            super::RetainedApplyValidationErrorKind::Deadline
+        );
+        transaction.rebind_retained_apply_execution_context(
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+            &execution_cancellation,
+        );
+        transaction
+            .commit_retained_apply_with(authority, || Ok(()), || Ok(()))
+            .unwrap();
+        assert_eq!(std::fs::read(root.join("Owner.bsl")).unwrap(), b"after");
+    }
+
+    #[test]
+    fn write_target_recheck_stops_between_hash_blocks_before_any_write() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let original = vec![b'x'; 128 * 1024];
+        std::fs::write(root.join("Owner.bsl"), &original).unwrap();
+        let authority = crate::infrastructure::workspace_actor::apply_writer_authority_for_test();
+        let cancellation = CancellationToken::new();
+        let mut state = ApplyStagedState::from_retained_root(
+            Arc::new(
+                RetainedDirectoryCapability::open(&std::fs::canonicalize(root).unwrap()).unwrap(),
+            ),
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+            cancellation.clone(),
+            authority,
+        );
+        state
+            .replace("Owner.bsl", &original, b"after".to_vec())
+            .unwrap();
+        let transaction = state.finalize().unwrap();
+        let stop = cancellation.clone();
+        crate::infrastructure::native_operations::compile_transaction::
+            set_retained_apply_after_write_target_chunk_hook(move || stop.cancel());
+
+        assert_eq!(
+            transaction
+                .validate_retained_for_apply_typed()
+                .unwrap_err()
+                .kind(),
+            super::RetainedApplyValidationErrorKind::Cancelled
+        );
+        assert_eq!(std::fs::read(root.join("Owner.bsl")).unwrap(), original);
     }
 
     #[test]
@@ -2187,7 +2706,8 @@ pub(crate) mod tests {
                             b"must not redirect".to_vec(),
                         )
                         .unwrap();
-                    assert!(raced.finalize().unwrap_err().contains("link/reparse"));
+                    let error = raced.finalize().unwrap_err();
+                    assert!(error.contains("link/reparse"), "{error:?}");
                     assert_eq!(
                         std::fs::read(displaced.join("Module.bsl")).unwrap(),
                         b"original race bytes"
@@ -2525,6 +3045,12 @@ pub(crate) mod tests {
             state.read(Path::new("Ext/module.bsl")).unwrap(),
             Some(b"first-postimage".to_vec())
         );
+        assert_eq!(
+            state
+                .retained_relative_path(Path::new("Ext/module.bsl"))
+                .unwrap(),
+            Path::new("Ext/Module.bsl")
+        );
         state
             .replace(
                 "Ext/module.bsl",
@@ -2541,6 +3067,236 @@ pub(crate) mod tests {
             StagedFileState::Bytes(b"second-postimage".to_vec())
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn move_guarded_staged_file(state: &mut ApplyStagedState, from: &str, to: &str) {
+        let bytes = state.read(Path::new(from)).unwrap().unwrap();
+        state.remove(from, &bytes).unwrap();
+        assert_eq!(state.read(Path::new(to)).unwrap(), None);
+        state.create(to, bytes).unwrap();
+        state.require_exact_path_spelling(Path::new(to)).unwrap();
+    }
+
+    #[test]
+    fn retained_spelling_guard_checks_ancestors_and_leaf_of_byte_neutral_entries() {
+        for (before, after, module_after) in [
+            ("Payload", "payload", "payload/Ext/CommandModule.bsl"),
+            (
+                "Payload/Ext",
+                "Payload/ext",
+                "Payload/ext/CommandModule.bsl",
+            ),
+            (
+                "Payload/Ext/CommandModule.bsl",
+                "Payload/Ext/commandmodule.bsl",
+                "Payload/Ext/commandmodule.bsl",
+            ),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path();
+            std::fs::create_dir_all(root.join("Payload/Ext")).unwrap();
+            std::fs::write(root.join("Payload/Ext/CommandModule.bsl"), b"original").unwrap();
+            let mut state = staged(root);
+            state
+                .read(Path::new("Payload/Ext/CommandModule.bsl"))
+                .unwrap();
+            state
+                .require_exact_path_spelling(Path::new("Payload/Ext/CommandModule.bsl"))
+                .unwrap();
+            assert!(state.planned_changes().is_empty());
+            let transaction = state.finalize().unwrap();
+            std::fs::rename(root.join(before), root.join(after)).unwrap();
+            assert!(
+                transaction.validate_retained_for_apply_typed().is_err(),
+                "{before}"
+            );
+            assert_eq!(std::fs::read(root.join(module_after)).unwrap(), b"original");
+        }
+    }
+
+    #[test]
+    fn retained_spelling_guard_rejects_existing_aliases_before_any_publication() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::create_dir_all(root.join("Payload/Ext")).unwrap();
+        std::fs::write(root.join("Payload/Ext/CommandModule.bsl"), b"original").unwrap();
+        let case_alias = root.join("payload").is_dir();
+        let mut state = staged(root);
+        state
+            .read(Path::new("pAyLoAd/Ext/CommandModule.bsl"))
+            .unwrap();
+        move_guarded_staged_file(
+            &mut state,
+            "Payload/Ext/CommandModule.bsl",
+            "payload/Ext/CommandModule.bsl",
+        );
+        if case_alias {
+            assert!(state.planned_changes().is_empty());
+            let error = state.finalize().unwrap_err();
+            assert_eq!(error.kind(), ApplyStagingErrorKind::UnsupportedProvider);
+            assert!(error
+                .to_string()
+                .contains("no exact spelling for `payload`"));
+        } else {
+            let authority = state.writer_authority.clone();
+            state
+                .finalize()
+                .unwrap()
+                .commit_retained_apply_with(authority, || Ok(()), || Ok(()))
+                .unwrap();
+            assert_eq!(
+                std::fs::read(root.join("payload/Ext/CommandModule.bsl")).unwrap(),
+                b"original"
+            );
+        }
+        assert!(!root.join("Payload/Ext/CommandModule.bsl").exists() || case_alias);
+    }
+
+    #[test]
+    fn retained_spelling_guard_tracks_only_the_latest_surviving_creation() {
+        for finish in ["roundtrip", "remove", "chain"] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path();
+            std::fs::create_dir_all(root.join("Payload/Ext")).unwrap();
+            std::fs::create_dir_all(root.join("transient/Ext")).unwrap();
+            std::fs::write(root.join("Payload/Ext/CommandModule.bsl"), b"original").unwrap();
+            let mut state = staged(root);
+            let first_destination = if finish == "chain" {
+                "Transient/Ext/CommandModule.bsl"
+            } else {
+                "payload/Ext/CommandModule.bsl"
+            };
+            move_guarded_staged_file(
+                &mut state,
+                "Payload/Ext/CommandModule.bsl",
+                first_destination,
+            );
+            let expected_module = match finish {
+                "roundtrip" => {
+                    move_guarded_staged_file(
+                        &mut state,
+                        first_destination,
+                        "Payload/Ext/CommandModule.bsl",
+                    );
+                    assert!(state.planned_changes().is_empty());
+                    Some("Payload/Ext/CommandModule.bsl")
+                }
+                "remove" => {
+                    state.remove(first_destination, b"original").unwrap();
+                    None
+                }
+                "chain" => {
+                    move_guarded_staged_file(
+                        &mut state,
+                        first_destination,
+                        "Final/Ext/CommandModule.bsl",
+                    );
+                    Some("Final/Ext/CommandModule.bsl")
+                }
+                _ => unreachable!(),
+            };
+            let authority = state.writer_authority.clone();
+            state
+                .finalize()
+                .unwrap()
+                .commit_retained_apply_with(authority, || Ok(()), || Ok(()))
+                .unwrap();
+            if let Some(relative) = expected_module {
+                assert_eq!(std::fs::read(root.join(relative)).unwrap(), b"original");
+            } else {
+                assert!(!root.join("Payload/Ext/CommandModule.bsl").exists());
+                assert!(!root.join(first_destination).exists());
+            }
+        }
+    }
+
+    #[test]
+    fn retained_spelling_guard_rolls_back_an_aliased_first_destination_spelling() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::create_dir_all(root.join("Payload/Ext")).unwrap();
+        std::fs::write(root.join("Payload/Ext/CommandModule.bsl"), b"original").unwrap();
+        let case_alias = root.join("payload").is_dir();
+        let mut state = staged(root);
+        state
+            .read(Path::new("uPdAtEd/Ext/CommandModule.bsl"))
+            .unwrap();
+        move_guarded_staged_file(
+            &mut state,
+            "Payload/Ext/CommandModule.bsl",
+            "Updated/Ext/CommandModule.bsl",
+        );
+        let authority = state.writer_authority.clone();
+        let result =
+            state
+                .finalize()
+                .unwrap()
+                .commit_retained_apply_with(authority, || Ok(()), || Ok(()));
+        if case_alias {
+            assert!(result
+                .unwrap_err()
+                .contains("no exact spelling for `Updated`"));
+            assert_eq!(
+                std::fs::read(root.join("Payload/Ext/CommandModule.bsl")).unwrap(),
+                b"original"
+            );
+            assert!(!root.join("uPdAtEd").exists());
+        } else {
+            result.unwrap();
+            assert_eq!(
+                std::fs::read(root.join("Updated/Ext/CommandModule.bsl")).unwrap(),
+                b"original"
+            );
+        }
+    }
+
+    #[test]
+    fn retained_spelling_guard_binds_its_desired_path_and_keeps_bounded_stop_checks() {
+        use sha2::Digest;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::write(root.join("CommandModule.bsl"), b"original").unwrap();
+        std::fs::write(root.join("Other.bsl"), b"neighbor").unwrap();
+        let mut state = staged(root);
+        state.read(Path::new("CommandModule.bsl")).unwrap();
+        let mut before = sha2::Sha256::new();
+        state.fingerprint_inputs(&mut before).unwrap();
+        state
+            .require_exact_path_spelling(Path::new("CommandModule.bsl"))
+            .unwrap();
+        let mut after = sha2::Sha256::new();
+        state.fingerprint_inputs(&mut after).unwrap();
+        assert_ne!(before.finalize(), after.finalize());
+        let guard = state.path_spellings.values_mut().next().unwrap();
+        guard.entry_limit = 1;
+        assert_eq!(
+            guard.validate_initial().unwrap_err().kind(),
+            ApplyStagingErrorKind::UnsupportedProvider
+        );
+        guard.entry_limit = super::MAX_APPLY_NAMESPACE_ENTRIES;
+        guard.rebind_execution_context(
+            ProviderDeadline::from_budget(Duration::ZERO),
+            &CancellationToken::new(),
+        );
+        assert_eq!(
+            guard.validate().unwrap_err().kind(),
+            ApplyStagingErrorKind::Deadline
+        );
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        guard.rebind_execution_context(
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+            &cancelled,
+        );
+        assert_eq!(
+            guard.validate().unwrap_err().kind(),
+            ApplyStagingErrorKind::Cancelled
+        );
+        guard.rebind_execution_context(
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+            &CancellationToken::new(),
+        );
+        guard.validate().unwrap();
     }
 
     #[test]

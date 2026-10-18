@@ -8,8 +8,6 @@ use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::events::DomainEvent;
 use crate::domain::invocation::{DomainResult, SafeIdentityHash};
 use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
-#[cfg(test)]
-use crate::domain::source_revision::SourceRevision;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::deadline_lock::{
     DeadlineLock, DeadlineLockError, DeadlineLockErrorKind, FailClosed,
@@ -22,10 +20,6 @@ use crate::infrastructure::native_operations::event::PlannedApplyEffects;
 use crate::infrastructure::platform::filesystem::{
     path_starts_with_host_root, stable_path_identity_bytes, RetainedChildCapability,
     RetainedDirectoryCapability,
-};
-#[cfg(test)]
-use crate::infrastructure::source_revision::{
-    RetainedRevisionError, RetainedRevisionErrorKind, RetainedRevisionLease, SourceRevisionService,
 };
 use crate::infrastructure::source_roots::{normalize_path_identity, GENERATED_DIR_NAME};
 use crate::infrastructure::source_selection_evidence::{
@@ -81,32 +75,10 @@ pub(crate) fn with_actor_retention_time_for_test<T>(
 
 #[cfg(test)]
 thread_local! {
-    static LOGICAL_PUBLICATION_AFTER_CONFIRMATION_HOOK: std::cell::RefCell<
-        Option<Box<dyn FnOnce()>>,
-    > = std::cell::RefCell::new(None);
     static APPLY_BEFORE_INPUT_CONFIRMATION_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = std::cell::RefCell::new(None);
     static APPLY_DRY_RUN_AFTER_CONFIRMATION_HOOK: std::cell::RefCell<
         Option<Box<dyn FnOnce()>>,
     > = std::cell::RefCell::new(None);
-    static REVISION_SERVICE_AFTER_BINDING_VALIDATION_HOOK: std::cell::RefCell<
-        Option<Box<dyn FnOnce()>>,
-    > = std::cell::RefCell::new(None);
-}
-
-#[cfg(test)]
-pub(crate) fn set_logical_publication_after_confirmation_hook(hook: impl FnOnce() + 'static) {
-    LOGICAL_PUBLICATION_AFTER_CONFIRMATION_HOOK.with(|slot| {
-        *slot.borrow_mut() = Some(Box::new(hook));
-    });
-}
-
-#[cfg(test)]
-fn run_logical_publication_after_confirmation_hook() {
-    LOGICAL_PUBLICATION_AFTER_CONFIRMATION_HOOK.with(|slot| {
-        if let Some(hook) = slot.borrow_mut().take() {
-            hook();
-        }
-    });
 }
 
 #[cfg(test)]
@@ -133,22 +105,6 @@ fn set_apply_dry_run_after_confirmation_hook(hook: impl FnOnce() + 'static) {
 #[cfg(test)]
 fn run_apply_dry_run_after_confirmation_hook() {
     APPLY_DRY_RUN_AFTER_CONFIRMATION_HOOK.with(|slot| {
-        if let Some(hook) = slot.borrow_mut().take() {
-            hook();
-        }
-    });
-}
-
-#[cfg(test)]
-fn set_revision_service_after_binding_validation_hook(hook: impl FnOnce() + 'static) {
-    REVISION_SERVICE_AFTER_BINDING_VALIDATION_HOOK.with(|slot| {
-        *slot.borrow_mut() = Some(Box::new(hook));
-    });
-}
-
-#[cfg(test)]
-fn run_revision_service_after_binding_validation_hook() {
-    REVISION_SERVICE_AFTER_BINDING_VALIDATION_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
             hook();
         }
@@ -198,12 +154,6 @@ assert_not_impl_production!(FormResourceApplyAuthority<'static>: serde::de::Dese
 assert_not_impl_production!(DcsMxlApplyAuthority<'static>: Clone);
 assert_not_impl_production!(DcsMxlApplyAuthority<'static>: serde::Serialize);
 assert_not_impl_production!(DcsMxlApplyAuthority<'static>: serde::de::DeserializeOwned);
-#[cfg(test)]
-assert_not_impl_production!(ActorRevisionServiceAuthority: Clone);
-#[cfg(test)]
-assert_not_impl_production!(ActorRevisionServiceAuthority: serde::Serialize);
-#[cfg(test)]
-assert_not_impl_production!(ActorRevisionServiceAuthority: serde::de::DeserializeOwned);
 assert_not_impl_production!(PlannedApplyEffects: Clone);
 assert_not_impl_production!(PlannedApplyEffects: serde::Serialize);
 assert_not_impl_production!(PlannedApplyEffects: serde::de::DeserializeOwned);
@@ -433,60 +383,6 @@ impl ProviderRootBinding {
     }
 }
 
-/// One actor-issued construction authority for one scoped revision service.
-/// Its private fields bind the retained root, actor state namespace and source
-/// profile together; infrastructure consumers may use the proof but cannot
-/// assemble or replay a mismatched tuple.
-#[cfg(test)]
-pub(in crate::infrastructure) struct ActorRevisionServiceAuthority {
-    source_root: Arc<RetainedDirectoryCapability>,
-    state_scope: WorkspaceStateScope,
-    source_kind: SourceSetKind,
-    source_format: SourceFormat,
-    source_profile: SourceProfile,
-}
-
-#[cfg(test)]
-impl ActorRevisionServiceAuthority {
-    pub(super) fn source_root(&self) -> &Path {
-        self.source_root.path()
-    }
-
-    pub(super) fn state_scope(&self) -> &WorkspaceStateScope {
-        &self.state_scope
-    }
-
-    pub(super) const fn source_kind(&self) -> SourceSetKind {
-        self.source_kind
-    }
-
-    pub(super) const fn source_format(&self) -> SourceFormat {
-        self.source_format
-    }
-
-    pub(super) const fn source_profile(&self) -> SourceProfile {
-        self.source_profile
-    }
-
-    pub(super) fn into_parts(
-        self,
-    ) -> (
-        Arc<RetainedDirectoryCapability>,
-        WorkspaceStateScope,
-        SourceSetKind,
-        SourceFormat,
-        SourceProfile,
-    ) {
-        (
-            self.source_root,
-            self.state_scope,
-            self.source_kind,
-            self.source_format,
-            self.source_profile,
-        )
-    }
-}
-
 /// Unforgeable admission token for the retained apply publisher. Low-level
 /// transaction methods require the same token that created the staged state;
 /// infrastructure callers can name the type but cannot construct a value.
@@ -502,34 +398,6 @@ impl ApplyWriterAuthority {
 #[cfg(test)]
 pub(in crate::infrastructure) fn apply_writer_authority_for_test() -> ApplyWriterAuthority {
     ApplyWriterAuthority::issue()
-}
-
-#[derive(Clone)]
-#[cfg(test)]
-pub(crate) struct WorkspaceRevisionFence {
-    actor_identity: WorkspaceIdentity,
-    actor_instance: ActorInstanceId,
-    source_set: WorkspaceSourceSetIdentity,
-    revision: SourceRevision,
-}
-
-/// Actor-issued retained revision authority for one V13 logical source set.
-/// The caller can copy its revision identity into typed readers, but cannot
-/// substitute a root, revision service or actor identity at publication.
-#[derive(Clone)]
-#[cfg(test)]
-pub(crate) struct WorkspaceLogicalReadFence {
-    actor_identity: WorkspaceIdentity,
-    actor_instance: ActorInstanceId,
-    source_set: WorkspaceSourceSetIdentity,
-    revision: RetainedRevisionLease,
-}
-
-#[cfg(test)]
-impl WorkspaceLogicalReadFence {
-    pub(crate) fn revision(&self) -> RetainedRevisionLease {
-        self.revision.clone()
-    }
 }
 
 /// Admission failures describe root, policy and layout authority. The plan
@@ -1485,20 +1353,6 @@ impl ApplyPublicationResult {
     }
 }
 
-/// Exclusive, revision-fenced permission to make one staged mutation result
-/// observable.  It intentionally exposes neither an ambient source-root path
-/// nor a generic publication callback.  Task 15 can add descriptor-relative
-/// writer operations to this capability when writers are routed through the
-/// actor; until then there is no production validate-then-unchecked escape.
-#[cfg(test)]
-pub(crate) struct WorkspacePublicationLease<'actor, R> {
-    actor: &'actor WorkspaceActor<R>,
-    binding: ProviderRootBinding,
-    issued_revision: SourceRevision,
-    revision_service: Arc<SourceRevisionService>,
-    _lane: MutexGuard<'actor, ()>,
-}
-
 /// Actor-owned runtime payloads expose only a payload-defined projection.
 ///
 /// This prevents the generic actor from returning `&R` in production while
@@ -1519,39 +1373,6 @@ pub(super) trait WorkspaceActorRuntimeTestProjection {
         Self: 'a;
 
     fn project_mut_for_actor_test(&mut self) -> Self::ProjectionMut<'_>;
-}
-
-#[cfg(test)]
-impl<R> std::fmt::Debug for WorkspacePublicationLease<'_, R> {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("WorkspacePublicationLease")
-            .field("binding", &self.binding)
-            .finish_non_exhaustive()
-    }
-}
-
-#[cfg(test)]
-impl<R> WorkspacePublicationLease<'_, R> {
-    pub(crate) fn publish<T>(
-        self,
-        staged_result: T,
-        deadline: ProviderDeadline,
-        cancellation: &CancellationToken,
-    ) -> Result<T, String> {
-        self.actor.validate_binding(&self.binding)?;
-        let current = self.revision_service.snapshot_retained(
-            &self.binding.source_root,
-            deadline,
-            cancellation,
-        );
-        self.actor.validate_binding(&self.binding)?;
-        let current = current?;
-        if current != self.issued_revision {
-            return Err("source revision changed before staged result publication".to_string());
-        }
-        Ok(staged_result)
-    }
 }
 
 /// Failures retaining an already prepared plan describe internal service state.
@@ -1612,8 +1433,14 @@ pub(crate) struct WorkspaceActor<R = ()> {
     state_scope: WorkspaceStateScope,
     mutation_lane: DeadlineLock<FailClosed>,
     saved_apply_plans: Mutex<SavedApplyPlans>,
-    #[cfg(test)]
-    source_revisions: Mutex<HashMap<WorkspaceSourceSetIdentity, Arc<SourceRevisionService>>>,
+    /// Parsed root artifacts of each admitted source set, retained across
+    /// calls and revalidated by file stamp on every use.
+    source_artifacts: Mutex<
+        HashMap<
+            WorkspaceSourceSetIdentity,
+            Arc<crate::infrastructure::v13_large_configuration::RegistrationCache>,
+        >,
+    >,
     index_work: SharedWork<(), LongWorkFailure>,
     runtime: R,
 }
@@ -1637,6 +1464,21 @@ impl WorkspaceActor<()> {
     ) -> Result<Self, String> {
         Self::with_runtime(identity, context, ())
     }
+}
+
+fn aggregate_named_root_matches(
+    matches: impl IntoIterator<Item = std::io::Result<bool>>,
+) -> std::io::Result<bool> {
+    let mut unavailable = None;
+    for matches in matches {
+        match matches {
+            Ok(true) => {}
+            Ok(false) => return Ok(false),
+            Err(error) if unavailable.is_none() => unavailable = Some(error),
+            Err(_) => {}
+        }
+    }
+    unavailable.map_or(Ok(true), Err)
 }
 
 fn validate_legacy_workspace_identity(identity: &WorkspaceIdentity) -> Result<(), String> {
@@ -1720,8 +1562,7 @@ impl<R> WorkspaceActor<R> {
             state_scope,
             mutation_lane: DeadlineLock::fail_closed("workspace actor mutation lane is poisoned"),
             saved_apply_plans: Mutex::new(SavedApplyPlans::default()),
-            #[cfg(test)]
-            source_revisions: Mutex::new(HashMap::new()),
+            source_artifacts: Mutex::new(HashMap::new()),
             index_work: SharedWork::new(SharedWorkLifetime::ProducerBound),
             runtime,
         })
@@ -1743,10 +1584,12 @@ impl<R> WorkspaceActor<R> {
     /// Whether every retained source-set root is still the directory its
     /// name resolves to. A warm actor whose root was replaced while idle
     /// must not be handed to the next admission.
-    pub(crate) fn retains_named_roots(&self) -> bool {
-        self.source_roots
-            .values()
-            .all(|root| root.validate_named_identity().is_ok())
+    pub(crate) fn retains_named_roots(&self) -> std::io::Result<bool> {
+        aggregate_named_root_matches(
+            self.source_roots
+                .values()
+                .map(|root| root.named_identity_matches()),
+        )
     }
 
     pub(crate) fn workspace_identity(&self) -> &WorkspaceIdentity {
@@ -1839,50 +1682,6 @@ impl<R> WorkspaceActor<R> {
             .map_err(|error| format!("actor-bound relative read failed: {error}"));
         self.validate_binding(binding)?;
         result
-    }
-
-    #[cfg(test)]
-    pub(crate) fn capture_revision(
-        &self,
-        binding: &ProviderRootBinding,
-        deadline: ProviderDeadline,
-        cancellation: &CancellationToken,
-    ) -> Result<WorkspaceRevisionFence, String> {
-        self.validate_binding(binding)?;
-        let revision = self.source_revision_service(binding).and_then(|service| {
-            service.snapshot_retained(&binding.source_root, deadline, cancellation)
-        });
-        self.validate_binding(binding)?;
-        let revision = revision?;
-        Ok(WorkspaceRevisionFence {
-            actor_identity: self.identity.clone(),
-            actor_instance: self.instance_id.clone(),
-            source_set: binding.source_set.clone(),
-            revision,
-        })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn capture_logical_read_revision(
-        &self,
-        binding: &ProviderRootBinding,
-        deadline: ProviderDeadline,
-        cancellation: &CancellationToken,
-    ) -> Result<WorkspaceLogicalReadFence, RetainedRevisionError> {
-        self.validate_binding(binding)
-            .map_err(logical_read_binding_error)?;
-        let revision = self
-            .source_revision_service(binding)
-            .map_err(logical_read_binding_error)?
-            .begin_retained_operation(&binding.source_root, deadline, cancellation);
-        self.validate_binding(binding)
-            .map_err(logical_read_binding_error)?;
-        Ok(WorkspaceLogicalReadFence {
-            actor_identity: self.identity.clone(),
-            actor_instance: self.instance_id.clone(),
-            source_set: binding.source_set.clone(),
-            revision: revision?,
-        })
     }
 
     pub(crate) fn admit_apply(
@@ -2446,8 +2245,6 @@ impl<R> WorkspaceActor<R> {
         let report = prepared
             .transaction
             .commit_retained_apply(prepared.writer_authority, final_gate)?;
-        #[cfg(test)]
-        self.mark_source_revisions_dirty();
         debug_assert_eq!(
             report.cleanup_warnings.len(),
             report.retained_apply_cleanup_diagnostics.len(),
@@ -2473,79 +2270,6 @@ impl<R> WorkspaceActor<R> {
             commit_count: 1,
             cleanup_diagnostics,
         })
-    }
-
-    /// Makes one staged logical-read result observable while holding the
-    /// actor's single mutation lane across validation of every selected source
-    /// and every retained final confirmation.
-    #[cfg(test)]
-    pub(crate) fn publish_logical_read<T>(
-        &self,
-        fences: &[WorkspaceLogicalReadFence],
-        staged_result: T,
-        deadline: ProviderDeadline,
-        cancellation: &CancellationToken,
-    ) -> Result<T, RetainedRevisionError> {
-        if fences.is_empty() {
-            return Err(logical_read_binding_error(
-                "logical read publication requires an admitted source fence".to_string(),
-            ));
-        }
-        let _publication = self
-            .mutation_lane
-            .acquire_before(
-                deadline,
-                cancellation,
-                "workspace actor logical read publication wait",
-            )
-            .map_err(RetainedRevisionError::from_deadline_lock)?;
-        let mut confirmations = Vec::with_capacity(fences.len());
-        let mut source_sets = HashSet::with_capacity(fences.len());
-        for fence in fences {
-            if fence.actor_identity != self.identity
-                || fence.actor_instance != self.instance_id
-                || !source_sets.insert(fence.source_set.clone())
-            {
-                return Err(logical_read_binding_error(
-                    "logical read revision fence belongs to another or duplicate workspace source"
-                        .to_string(),
-                ));
-            }
-            let source_root = self
-                .source_roots
-                .get(&fence.source_set)
-                .cloned()
-                .ok_or_else(|| {
-                    logical_read_binding_error(
-                        "workspace actor retained root is unavailable".to_string(),
-                    )
-                })?;
-            let binding = ProviderRootBinding {
-                actor_identity: fence.actor_identity.clone(),
-                actor_instance: fence.actor_instance.clone(),
-                source_set: fence.source_set.clone(),
-                source_root,
-            };
-            self.validate_binding(&binding)
-                .map_err(logical_read_binding_error)?;
-            confirmations.push((
-                self.source_revision_service(&binding)
-                    .map_err(logical_read_binding_error)?,
-                binding,
-                &fence.revision,
-            ));
-        }
-        for (revisions, binding, revision) in confirmations {
-            revisions.confirm_retained_operation(
-                &binding.source_root,
-                revision,
-                deadline,
-                cancellation,
-            )?;
-            #[cfg(test)]
-            run_logical_publication_after_confirmation_hook();
-        }
-        Ok(staged_result)
     }
 
     /// Shared index work is keyed by the concrete build generation and selected
@@ -2594,49 +2318,26 @@ impl<R> WorkspaceActor<R> {
         Ok((identity, lease))
     }
 
+    /// Holds the exclusive mutation lane, as a concurrent apply publication does.
     #[cfg(test)]
-    pub(crate) fn begin_publication(
+    pub(crate) fn hold_mutation_lane_for_test(&self) -> MutexGuard<'_, ()> {
+        self.mutation_lane.hold_for_test()
+    }
+
+    /// The root-artifact cache this actor retains for one bound source set.
+    pub(crate) fn source_artifacts(
         &self,
-        fence: &WorkspaceRevisionFence,
-        deadline: ProviderDeadline,
-        cancellation: &CancellationToken,
-    ) -> Result<WorkspacePublicationLease<'_, R>, String> {
-        let publication = self
-            .mutation_lane
-            .acquire_before(deadline, cancellation, "workspace actor mutation lane wait")
-            .map_err(|error| error.to_string())?;
-        if fence.actor_identity != self.identity
-            || fence.actor_instance != self.instance_id
-            || !self.identity.source_sets.contains(&fence.source_set)
-        {
-            return Err("source revision fence belongs to another workspace actor".to_string());
-        }
-        let binding = ProviderRootBinding {
-            actor_identity: fence.actor_identity.clone(),
-            actor_instance: fence.actor_instance.clone(),
-            source_root: self
-                .source_roots
-                .get(&fence.source_set)
-                .cloned()
-                .ok_or_else(|| "workspace actor retained root is unavailable".to_string())?,
-            source_set: fence.source_set.clone(),
-        };
-        self.validate_binding(&binding)?;
-        let revision_service = self.source_revision_service(&binding)?;
-        let current =
-            revision_service.snapshot_retained(&binding.source_root, deadline, cancellation);
-        self.validate_binding(&binding)?;
-        let current = current?;
-        if current != fence.revision {
-            return Err("source revision changed before publication".to_string());
-        }
-        Ok(WorkspacePublicationLease {
-            actor: self,
-            binding,
-            issued_revision: fence.revision.clone(),
-            revision_service,
-            _lane: publication,
-        })
+        binding: &ProviderRootBinding,
+    ) -> Result<Arc<crate::infrastructure::v13_large_configuration::RegistrationCache>, String>
+    {
+        self.validate_binding(binding)?;
+        let mut artifacts = self
+            .source_artifacts
+            .lock()
+            .map_err(|_| "workspace actor source-artifact cache is poisoned".to_string())?;
+        Ok(Arc::clone(
+            artifacts.entry(binding.source_set.clone()).or_default(),
+        ))
     }
 
     pub(crate) fn index_service<'a>(
@@ -2648,73 +2349,6 @@ impl<R> WorkspaceActor<R> {
         Ok(WorkspaceIndexService::with_runner(runner)
             .with_bound_source_root(Arc::clone(&binding.source_root))
             .with_state_scope(self.state_scope.clone()))
-    }
-
-    #[cfg(test)]
-    pub(crate) fn source_revision_service(
-        &self,
-        binding: &ProviderRootBinding,
-    ) -> Result<Arc<SourceRevisionService>, String> {
-        self.validate_binding(binding)?;
-        let mut revisions = self
-            .source_revisions
-            .lock()
-            .map_err(|_| "workspace actor revision registry is poisoned".to_string())?;
-        if let Some(service) = revisions.get(&binding.source_set) {
-            return Ok(Arc::clone(service));
-        }
-        let service = Arc::new(match self.state_scope.scoped_digest() {
-            None => SourceRevisionService::new(&self.context, binding.source_root.path())?,
-            Some(_) => {
-                let authority = self.issue_revision_service_authority(binding)?;
-                #[cfg(test)]
-                run_revision_service_after_binding_validation_hook();
-                SourceRevisionService::new_actor(&self.context, authority)?
-            }
-        });
-        revisions.insert(binding.source_set.clone(), Arc::clone(&service));
-        Ok(service)
-    }
-
-    #[cfg(test)]
-    fn issue_revision_service_authority(
-        &self,
-        binding: &ProviderRootBinding,
-    ) -> Result<ActorRevisionServiceAuthority, String> {
-        self.validate_binding(binding)?;
-        if self.state_scope.scoped_digest().is_none() {
-            return Err("actor revision authority requires a scoped actor state".to_string());
-        }
-        Ok(ActorRevisionServiceAuthority {
-            source_root: Arc::clone(&binding.source_root),
-            state_scope: self.state_scope.clone(),
-            source_kind: binding.source_kind(),
-            source_format: binding.source_format(),
-            source_profile: binding.source_profile(),
-        })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn mark_source_revisions_dirty(&self) {
-        if let Ok(revisions) = self.source_revisions.lock() {
-            for revision in revisions.values() {
-                revision.mark_dirty();
-            }
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn install_source_revision_service_for_test(
-        &self,
-        binding: &ProviderRootBinding,
-        service: Arc<SourceRevisionService>,
-    ) -> Result<(), String> {
-        self.validate_binding(binding)?;
-        self.source_revisions
-            .lock()
-            .map_err(|_| "workspace actor revision registry is poisoned".to_string())?
-            .insert(binding.source_set.clone(), service);
-        Ok(())
     }
 
     pub(crate) fn validate_binding(&self, binding: &ProviderRootBinding) -> Result<(), String> {
@@ -2890,11 +2524,6 @@ fn deadline_lock_publication_error(error: DeadlineLockError) -> ApplyPublication
     ApplyPublicationError::new(kind, error.to_string())
 }
 
-#[cfg(test)]
-fn logical_read_binding_error(error: String) -> RetainedRevisionError {
-    RetainedRevisionError::new(RetainedRevisionErrorKind::ContainmentIdentity, error)
-}
-
 fn apply_validation_publication_error(
     error: crate::infrastructure::native_operations::compile_transaction::RetainedApplyValidationError,
 ) -> ApplyPublicationError {
@@ -2992,6 +2621,7 @@ fn digest_index_component(digest: &mut Sha256, bytes: &[u8]) -> Result<(), Strin
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WorkspaceActorRegistryError {
     InvalidIdentity(String),
+    NamedRootUnavailable,
     Poisoned,
 }
 
@@ -2999,6 +2629,9 @@ impl std::fmt::Display for WorkspaceActorRegistryError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidIdentity(message) => formatter.write_str(message),
+            Self::NamedRootUnavailable => {
+                formatter.write_str("workspace actor named root is temporarily unavailable")
+            }
             Self::Poisoned => formatter.write_str("workspace actor registry is poisoned"),
         }
     }
@@ -3014,6 +2647,8 @@ pub(crate) struct WorkspaceActorRegistry {
     /// Only unowned actors without such state may be released after idle.
     warm: Mutex<VecDeque<WarmWorkspaceActor>>,
     warm_ttl: Duration,
+    #[cfg(test)]
+    named_root_validation_error: Mutex<Option<ErrorKind>>,
 }
 
 #[derive(Debug)]
@@ -3036,6 +2671,8 @@ impl Default for WorkspaceActorRegistry {
             actors: Mutex::new(HashMap::new()),
             warm: Mutex::new(VecDeque::new()),
             warm_ttl: WARM_WORKSPACE_ACTOR_TTL,
+            #[cfg(test)]
+            named_root_validation_error: Mutex::new(None),
         }
     }
 }
@@ -3061,9 +2698,13 @@ impl WorkspaceActorRegistry {
         self.evict_expired_warm(now)?;
         actors.retain(|_, actor| actor.strong_count() > 0);
         if let Some(actor) = actors.get(&identity).and_then(Weak::upgrade) {
-            if actor.retains_named_roots() {
-                self.touch_warm(&actor, now)?;
-                return Ok(actor);
+            match self.retains_named_roots(&actor) {
+                Ok(true) => {
+                    self.touch_warm(&actor, now)?;
+                    return Ok(actor);
+                }
+                Err(_) => return Err(WorkspaceActorRegistryError::NamedRootUnavailable),
+                Ok(false) => {}
             }
             // The named root was replaced while the actor idled. Forget the
             // warm copy; an actor still held by a live invocation keeps its
@@ -3122,6 +2763,19 @@ impl WorkspaceActorRegistry {
         self.warm
             .lock()
             .map_err(|_| WorkspaceActorRegistryError::Poisoned)
+    }
+
+    fn retains_named_roots(&self, actor: &WorkspaceActor) -> std::io::Result<bool> {
+        #[cfg(test)]
+        if let Some(kind) = self
+            .named_root_validation_error
+            .lock()
+            .expect("named-root validation test seam must not be poisoned")
+            .take()
+        {
+            return Err(std::io::Error::from(kind));
+        }
+        actor.retains_named_roots()
     }
 
     fn touch_warm(
@@ -3209,6 +2863,19 @@ impl WorkspaceActorRegistry {
     }
 
     #[cfg(test)]
+    pub(crate) fn fail_next_named_root_validation_for_test(&self, kind: ErrorKind) {
+        let replaced = self
+            .named_root_validation_error
+            .lock()
+            .expect("named-root validation test seam must not be poisoned")
+            .replace(kind);
+        assert!(
+            replaced.is_none(),
+            "named-root validation failure already set"
+        );
+    }
+
+    #[cfg(test)]
     fn prune_dead_for_test(&self) -> Result<(), String> {
         self.actors
             .lock()
@@ -3220,8 +2887,8 @@ impl WorkspaceActorRegistry {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::{
-        set_apply_before_input_confirmation_hook, set_apply_dry_run_after_confirmation_hook,
-        set_revision_service_after_binding_validation_hook, ApplyAdmission, ApplyEffectDisposition,
+        aggregate_named_root_matches, set_apply_before_input_confirmation_hook,
+        set_apply_dry_run_after_confirmation_hook, ApplyAdmission, ApplyEffectDisposition,
         ApplyEffectReceipt, PreparedApplyBatch, WorkspaceActorRegistry, WorkspaceIdentity,
         WorkspaceSourceSetInput,
     };
@@ -3238,25 +2905,21 @@ pub(crate) mod tests {
     use crate::infrastructure::native_operations::event::{
         plan_event_implement_batch, EventImplementArgs, EventPlanError, PlannedApplyEffects,
     };
-    use crate::infrastructure::platform::source_revision_fence::{
-        expected_platform_fence_capability_for_test, FenceCapability, FenceError, FenceOutcome,
-        SourceRevisionFence,
-    };
     use crate::infrastructure::platform::testing::{
         attempt_retained_directory_replacement_for_test,
         can_swap_named_child_behind_retained_handle_for_test, create_file_link_fixture_for_test,
         path_identity_for_test, set_unix_mode_for_test, FileLinkFixtureOutcome,
         RetainedDirectoryReplacementOutcome,
     };
-    use crate::infrastructure::source_revision::SourceRevisionService;
     use crate::infrastructure::support_policy_evidence::SupportPolicyMode;
     use crate::infrastructure::support_policy_evidence::{
         set_support_policy_capture_hook, set_support_policy_read_chunk_hook_once,
         set_support_policy_validation_hook, SupportPolicyTestStateGuard,
     };
     use std::cell::Cell;
+    use std::io::ErrorKind;
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
     use std::sync::Arc;
     use std::thread;
@@ -3270,6 +2933,32 @@ pub(crate) mod tests {
             SourceFormat::PlatformXml,
             SourceProfile::platform_xml_8_3_27_format_2_20(),
         )
+    }
+
+    #[test]
+    fn replaced_named_root_outweighs_unavailable_root_in_any_iteration_order() {
+        for unavailable_first in [false, true] {
+            let unavailable = Err(std::io::Error::new(
+                ErrorKind::PermissionDenied,
+                "injected temporary root validation failure",
+            ));
+            let matches = if unavailable_first {
+                vec![unavailable, Ok(false)]
+            } else {
+                vec![Ok(false), unavailable]
+            };
+            assert!(!aggregate_named_root_matches(matches).unwrap());
+        }
+
+        let unavailable = aggregate_named_root_matches([
+            Ok(true),
+            Err(std::io::Error::new(
+                ErrorKind::PermissionDenied,
+                "injected temporary root validation failure",
+            )),
+        ])
+        .unwrap_err();
+        assert_eq!(unavailable.kind(), ErrorKind::PermissionDenied);
     }
 
     thread_local! {
@@ -3318,323 +3007,43 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn workspace_actor_serializes_mutation_publication() {
-        let fixture = actor_fixture("serialized-mutations", &["src"]);
+    fn workspace_actor_poisoned_mutation_lane_fails_closed_before_publication() {
+        let fixture = actor_fixture("poisoned-mutation-lane", &["src"]);
+        std::fs::write(fixture.roots[0].join("Module.bsl"), b"before").unwrap();
         let binding = fixture
             .actor
             .bind_provider_root("src", &fixture.roots[0])
             .unwrap();
-        let fence = fixture
+        let admitted = fixture
             .actor
-            .capture_revision(
+            .admit_apply(
                 &binding,
+                None,
+                false,
                 ProviderDeadline::from_budget(Duration::from_secs(5)),
                 &CancellationToken::new(),
             )
             .unwrap();
-        let (entered_tx, entered_rx) = mpsc::channel();
-        let (attempted_tx, attempted_rx) = mpsc::channel();
-        let (first_release_tx, first_release_rx) = mpsc::channel();
-        let (second_release_tx, second_release_rx) = mpsc::channel();
-
-        let first_actor = Arc::clone(&fixture.actor);
-        let first_fence = fence.clone();
-        let first_entered = entered_tx.clone();
-        let first = thread::spawn(move || {
-            let lease = first_actor.begin_publication(
-                &first_fence,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )?;
-            first_entered.send("first").unwrap();
-            first_release_rx.recv().unwrap();
-            lease.publish(
-                (),
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
+        let mut state = admitted.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"before", b"POISONED-STAGED-TEXT".to_vec())
+            .unwrap();
+        let prepared = admitted.prepare(state).unwrap();
+        let poison_actor = Arc::clone(&fixture.actor);
+        let poison = thread::spawn(move || {
+            let _lane = poison_actor.mutation_lane.hold_for_test();
+            panic!("poison workspace actor mutation lane");
         });
-        assert_eq!(
-            entered_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
-            "first"
-        );
+        assert!(poison.join().is_err());
+        let source_before = snapshot_tree(&fixture.roots[0]);
 
-        let second_actor = Arc::clone(&fixture.actor);
-        let second = thread::spawn(move || {
-            attempted_tx.send(()).unwrap();
-            let lease = second_actor.begin_publication(
-                &fence,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )?;
-            entered_tx.send("second").unwrap();
-            second_release_rx.recv().unwrap();
-            lease.publish(
-                (),
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
-        });
-        attempted_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        assert!(
-            entered_rx.recv_timeout(Duration::from_millis(100)).is_err(),
-            "a second mutation crossed the first actor publication lease"
-        );
-        first_release_tx.send(()).unwrap();
-        assert_eq!(
-            entered_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
-            "second"
-        );
-        second_release_tx.send(()).unwrap();
-        first.join().unwrap().unwrap();
-        second.join().unwrap().unwrap();
+        let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+
+        assert_eq!(error.kind(), super::ApplyPublicationErrorKind::Invariant);
+        assert!(error.contains("poisoned"), "{error}");
+        assert!(!error.contains("POISONED-STAGED-TEXT"), "{error}");
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
         fixture.cleanup();
-    }
-
-    #[test]
-    fn workspace_actor_pre_cancelled_publication_does_not_wait_for_mutation_lane() {
-        let fixture = actor_fixture("pre-cancelled-mutation-lane", &["src"]);
-        let binding = fixture
-            .actor
-            .bind_provider_root("src", &fixture.roots[0])
-            .unwrap();
-        let cancellation = CancellationToken::new();
-        let fence = fixture
-            .actor
-            .capture_revision(
-                &binding,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &cancellation,
-            )
-            .unwrap();
-        let owner = fixture
-            .actor
-            .begin_publication(
-                &fence,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &cancellation,
-            )
-            .unwrap();
-        let waiter_cancellation = CancellationToken::new();
-        waiter_cancellation.cancel();
-        let waiter_actor = Arc::clone(&fixture.actor);
-        let (result_tx, result_rx) = mpsc::channel();
-        let waiter = thread::spawn(move || {
-            let result = waiter_actor
-                .begin_publication(
-                    &fence,
-                    ProviderDeadline::from_budget(Duration::from_secs(5)),
-                    &waiter_cancellation,
-                )
-                .map(drop);
-            result_tx.send(result).unwrap();
-        });
-
-        let result_before_release = result_rx.recv_timeout(Duration::from_millis(250));
-        let returned_before_release = result_before_release.is_ok();
-        drop(owner);
-        let result = result_before_release.unwrap_or_else(|_| {
-            result_rx
-                .recv_timeout(Duration::from_secs(2))
-                .expect("waiter must finish after the owner releases the lane")
-        });
-        waiter.join().unwrap();
-
-        assert!(
-            returned_before_release,
-            "pre-cancelled publication waited for the held mutation lane"
-        );
-        assert!(result.unwrap_err().starts_with("cancelled:"));
-        fixture.cleanup();
-    }
-
-    #[test]
-    pub(crate) fn logical_read_publication_lane_wait_honors_existing_cancellation_and_deadline() {
-        let fixture = actor_fixture("logical-read-lane-bounds", &["src"]);
-        std::fs::write(
-            fixture.roots[0].join("Configuration.xml"),
-            "<Configuration/>",
-        )
-        .unwrap();
-        let binding = fixture
-            .actor
-            .bind_provider_root("src", &fixture.roots[0])
-            .unwrap();
-        let logical_fence = fixture
-            .actor
-            .capture_logical_read_revision(
-                &binding,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
-            .unwrap();
-        let legacy_fence = fixture
-            .actor
-            .capture_revision(
-                &binding,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
-            .unwrap();
-        let owner = fixture
-            .actor
-            .begin_publication(
-                &legacy_fence,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
-            .unwrap();
-
-        let cancellation = CancellationToken::new();
-        cancellation.cancel();
-        let cancelled = fixture.actor.publish_logical_read(
-            std::slice::from_ref(&logical_fence),
-            (),
-            ProviderDeadline::from_budget(Duration::ZERO),
-            &cancellation,
-        );
-        assert_eq!(
-            cancelled.unwrap_err().kind(),
-            super::RetainedRevisionErrorKind::Cancelled
-        );
-
-        let deadline = fixture.actor.publish_logical_read(
-            &[logical_fence],
-            (),
-            ProviderDeadline::from_budget(Duration::ZERO),
-            &CancellationToken::new(),
-        );
-        assert_eq!(
-            deadline.unwrap_err().kind(),
-            super::RetainedRevisionErrorKind::Deadline
-        );
-        drop(owner);
-        fixture.cleanup();
-    }
-
-    #[test]
-    fn workspace_actor_late_cancellation_stops_mutation_lane_wait() {
-        let fixture = actor_fixture("late-cancelled-mutation-lane", &["src"]);
-        let binding = fixture
-            .actor
-            .bind_provider_root("src", &fixture.roots[0])
-            .unwrap();
-        let cancellation = CancellationToken::new();
-        let fence = fixture
-            .actor
-            .capture_revision(
-                &binding,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &cancellation,
-            )
-            .unwrap();
-        let owner = fixture
-            .actor
-            .begin_publication(
-                &fence,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &cancellation,
-            )
-            .unwrap();
-        let waiter_cancellation = CancellationToken::new();
-        let waiter_signal = waiter_cancellation.clone();
-        let waiter_actor = Arc::clone(&fixture.actor);
-        let (started_tx, started_rx) = mpsc::channel();
-        let (result_tx, result_rx) = mpsc::channel();
-        let waiter = thread::spawn(move || {
-            started_tx.send(()).unwrap();
-            let result = waiter_actor
-                .begin_publication(
-                    &fence,
-                    ProviderDeadline::from_budget(Duration::from_secs(5)),
-                    &waiter_cancellation,
-                )
-                .map(drop);
-            result_tx.send(result).unwrap();
-        });
-        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        assert!(
-            result_rx.recv_timeout(Duration::from_millis(50)).is_err(),
-            "waiter unexpectedly crossed the held mutation lane"
-        );
-        waiter_signal.cancel();
-
-        let result_before_release = result_rx.recv_timeout(Duration::from_millis(250));
-        let returned_before_release = result_before_release.is_ok();
-        drop(owner);
-        let result = result_before_release.unwrap_or_else(|_| {
-            result_rx
-                .recv_timeout(Duration::from_secs(2))
-                .expect("waiter must finish after the owner releases the lane")
-        });
-        waiter.join().unwrap();
-
-        assert!(
-            returned_before_release,
-            "late cancellation did not stop the held mutation-lane wait"
-        );
-        assert!(result.unwrap_err().starts_with("cancelled:"));
-        fixture.cleanup();
-    }
-
-    #[test]
-    fn workspace_actor_deadline_bounds_mutation_lane_wait() {
-        for (label, budget) in [
-            ("expired", Duration::ZERO),
-            ("elapsed", Duration::from_millis(40)),
-        ] {
-            let fixture = actor_fixture(&format!("{label}-mutation-lane"), &["src"]);
-            let binding = fixture
-                .actor
-                .bind_provider_root("src", &fixture.roots[0])
-                .unwrap();
-            let cancellation = CancellationToken::new();
-            let fence = fixture
-                .actor
-                .capture_revision(
-                    &binding,
-                    ProviderDeadline::from_budget(Duration::from_secs(5)),
-                    &cancellation,
-                )
-                .unwrap();
-            let owner = fixture
-                .actor
-                .begin_publication(
-                    &fence,
-                    ProviderDeadline::from_budget(Duration::from_secs(5)),
-                    &cancellation,
-                )
-                .unwrap();
-            let waiter_actor = Arc::clone(&fixture.actor);
-            let (result_tx, result_rx) = mpsc::channel();
-            let waiter = thread::spawn(move || {
-                let result = waiter_actor
-                    .begin_publication(
-                        &fence,
-                        ProviderDeadline::from_budget(budget),
-                        &CancellationToken::new(),
-                    )
-                    .map(drop);
-                result_tx.send(result).unwrap();
-            });
-
-            let result_before_release = result_rx.recv_timeout(Duration::from_millis(250));
-            let returned_before_release = result_before_release.is_ok();
-            drop(owner);
-            let result = result_before_release.unwrap_or_else(|_| {
-                result_rx
-                    .recv_timeout(Duration::from_secs(2))
-                    .expect("waiter must finish after the owner releases the lane")
-            });
-            waiter.join().unwrap();
-
-            assert!(
-                returned_before_release,
-                "{label} deadline did not bound the held mutation-lane wait"
-            );
-            assert!(result.unwrap_err().contains("deadline exceeded"));
-            fixture.cleanup();
-        }
     }
 
     #[test]
@@ -3674,212 +3083,6 @@ pub(crate) mod tests {
 
         assert_eq!(error.kind(), super::ApplyPublicationErrorKind::Deadline);
         drop(owner);
-        fixture.cleanup();
-    }
-
-    #[test]
-    fn workspace_actor_poisoned_mutation_lane_fails_closed_before_publication() {
-        let fixture = actor_fixture("poisoned-mutation-lane", &["src"]);
-        std::fs::write(fixture.roots[0].join("Module.bsl"), "test").unwrap();
-        let binding = fixture
-            .actor
-            .bind_provider_root("src", &fixture.roots[0])
-            .unwrap();
-        let fence_calls = Arc::new(AtomicUsize::new(0));
-        let revision_service = Arc::new(
-            SourceRevisionService::new_with_fence_for_test(
-                fixture.actor.context(),
-                &fixture.roots[0],
-                fixture.actor.state_scope.clone(),
-                Arc::new(CountingActorFence {
-                    calls: Arc::clone(&fence_calls),
-                }),
-            )
-            .unwrap(),
-        );
-        fixture
-            .actor
-            .install_source_revision_service_for_test(&binding, revision_service)
-            .unwrap();
-        let fence = fixture
-            .actor
-            .capture_revision(
-                &binding,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
-            .unwrap();
-        let poison_actor = Arc::clone(&fixture.actor);
-        let poison_fence = fence.clone();
-        let poison = thread::spawn(move || {
-            let _lease = poison_actor
-                .begin_publication(
-                    &poison_fence,
-                    ProviderDeadline::from_budget(Duration::from_secs(5)),
-                    &CancellationToken::new(),
-                )
-                .unwrap();
-            panic!("poison workspace actor mutation lane");
-        });
-        assert!(poison.join().is_err());
-        let calls_after_poison = fence_calls.load(Ordering::Acquire);
-
-        let result = fixture
-            .actor
-            .begin_publication(
-                &fence,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
-            .and_then(|lease| {
-                lease.publish(
-                    "POISONED-STAGED-TEXT",
-                    ProviderDeadline::from_budget(Duration::from_secs(5)),
-                    &CancellationToken::new(),
-                )
-            });
-        let error = result.unwrap_err();
-
-        assert_eq!(error, "workspace actor mutation lane is poisoned");
-        assert!(!error.contains("POISONED-STAGED-TEXT"), "{error}");
-        assert_eq!(
-            fence_calls.load(Ordering::Acquire),
-            calls_after_poison,
-            "poisoned mutation lane executed a source revision fence"
-        );
-        fixture.cleanup();
-    }
-
-    struct CountingActorFence {
-        calls: Arc<AtomicUsize>,
-    }
-
-    impl SourceRevisionFence for CountingActorFence {
-        fn capability(&self) -> FenceCapability {
-            FenceCapability::ProvenFast
-        }
-
-        fn flush(
-            &self,
-            _deadline: ProviderDeadline,
-            _cancellation: &CancellationToken,
-        ) -> Result<FenceOutcome, FenceError> {
-            self.calls.fetch_add(1, Ordering::AcqRel);
-            Ok(FenceOutcome::Proven {
-                changed_paths: Vec::new(),
-            })
-        }
-    }
-
-    struct UnsupportedActorFence {
-        flush_calls: Arc<AtomicUsize>,
-    }
-
-    impl SourceRevisionFence for UnsupportedActorFence {
-        fn capability(&self) -> FenceCapability {
-            FenceCapability::Unsupported
-        }
-
-        fn flush(
-            &self,
-            _deadline: ProviderDeadline,
-            _cancellation: &CancellationToken,
-        ) -> Result<FenceOutcome, FenceError> {
-            self.flush_calls.fetch_add(1, Ordering::AcqRel);
-            Err(FenceError::Provider(
-                "unsupported actor fence must never be flushed".to_string(),
-            ))
-        }
-    }
-
-    #[test]
-    fn actor_owned_legacy_revision_lifecycle_uses_retained_fallback_when_platform_fence_is_unsupported(
-    ) {
-        let fixture = actor_fixture("unsupported-actor-revision-fence", &["src"]);
-        std::fs::write(fixture.roots[0].join("Module.bsl"), "test").unwrap();
-        let binding = fixture
-            .actor
-            .bind_provider_root("src", &fixture.roots[0])
-            .unwrap();
-        let flush_calls = Arc::new(AtomicUsize::new(0));
-        let revision_service = Arc::new(
-            SourceRevisionService::new_with_fence_for_test(
-                fixture.actor.context(),
-                &fixture.roots[0],
-                fixture.actor.state_scope.clone(),
-                Arc::new(UnsupportedActorFence {
-                    flush_calls: Arc::clone(&flush_calls),
-                }),
-            )
-            .unwrap(),
-        );
-        fixture
-            .actor
-            .install_source_revision_service_for_test(&binding, revision_service)
-            .unwrap();
-        let cancellation = CancellationToken::new();
-        let revision = fixture
-            .actor
-            .capture_revision(
-                &binding,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &cancellation,
-            )
-            .unwrap();
-
-        let (producer_entered, producer_entered_wait) = mpsc::channel();
-        let (_, index_work) = fixture
-            .actor
-            .join_index_work(&binding, "test-build", "rlm", "bsl-1", move |_| {
-                producer_entered.send(()).unwrap();
-                Ok(())
-            })
-            .unwrap();
-        producer_entered_wait
-            .recv_timeout(Duration::from_secs(2))
-            .expect("retained index producer must start within the bounded wait");
-        assert!(matches!(
-            index_work.wait_timeout(Duration::from_secs(2)),
-            crate::application::shared_work::SharedWorkSnapshot::Ready(_)
-        ));
-
-        let publication = fixture
-            .actor
-            .begin_publication(
-                &revision,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &cancellation,
-            )
-            .unwrap();
-        assert_eq!(
-            publication
-                .publish(
-                    "retained-publication",
-                    ProviderDeadline::from_budget(Duration::from_secs(5)),
-                    &cancellation,
-                )
-                .unwrap(),
-            "retained-publication"
-        );
-
-        let second = super::WorkspaceActor::new(
-            fixture.actor.identity.clone(),
-            fixture.actor.context.clone(),
-        )
-        .unwrap();
-        assert!(second.read(&binding, |_| Ok(())).is_err());
-        assert!(second
-            .begin_publication(
-                &revision,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &cancellation,
-            )
-            .is_err());
-        assert_eq!(
-            flush_calls.load(Ordering::Acquire),
-            0,
-            "an unsupported fence must not be flushed as a source of trust"
-        );
         fixture.cleanup();
     }
 
@@ -3927,253 +3130,6 @@ pub(crate) mod tests {
         first.join().unwrap().unwrap();
         second.join().unwrap().unwrap();
         fixture.cleanup();
-    }
-
-    #[test]
-    fn workspace_actor_rejects_a_stale_revision_before_publication() {
-        let fixture = actor_fixture("revision-fence", &["src"]);
-        let binding = fixture
-            .actor
-            .bind_provider_root("src", &fixture.roots[0])
-            .unwrap();
-        let module = fixture.roots[0].join("Module.bsl");
-        std::fs::write(&module, "Процедура До()\nКонецПроцедуры\n").unwrap();
-        let fence = fixture
-            .actor
-            .capture_revision(
-                &binding,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
-            .unwrap();
-        std::fs::write(&module, "Процедура После()\nКонецПроцедуры\n").unwrap();
-        let error = fixture
-            .actor
-            .begin_publication(
-                &fence,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
-            .unwrap_err();
-
-        assert!(
-            error.contains("source revision changed before publication"),
-            "{error}"
-        );
-        fixture.cleanup();
-    }
-
-    #[test]
-    fn workspace_actor_rejects_a_revision_changed_after_lease_before_publish() {
-        let fixture = actor_fixture("revision-after-lease", &["src"]);
-        let binding = fixture
-            .actor
-            .bind_provider_root("src", &fixture.roots[0])
-            .unwrap();
-        let module = fixture.roots[0].join("Module.bsl");
-        std::fs::write(&module, "Процедура До()\nКонецПроцедуры\n").unwrap();
-        let cancellation = CancellationToken::new();
-        let fence = fixture
-            .actor
-            .capture_revision(
-                &binding,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &cancellation,
-            )
-            .unwrap();
-        let lease = fixture
-            .actor
-            .begin_publication(
-                &fence,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &cancellation,
-            )
-            .unwrap();
-        std::fs::write(&module, "Процедура После()\nКонецПроцедуры\n").unwrap();
-
-        let error = lease
-            .publish(
-                "FOREIGN-STAGED-PROVIDER-TEXT",
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &cancellation,
-            )
-            .unwrap_err();
-
-        assert!(error.contains("source revision changed"), "{error}");
-        assert!(!error.contains("FOREIGN-STAGED-PROVIDER-TEXT"), "{error}");
-        fixture.cleanup();
-    }
-
-    #[test]
-    fn workspace_actor_rejects_root_replacement_after_lease_before_publish() {
-        let fixture = actor_fixture("root-after-lease", &["src"]);
-        let binding = fixture
-            .actor
-            .bind_provider_root("src", &fixture.roots[0])
-            .unwrap();
-        std::fs::write(fixture.roots[0].join("Module.bsl"), "test").unwrap();
-        let cancellation = CancellationToken::new();
-        let fence = fixture
-            .actor
-            .capture_revision(
-                &binding,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &cancellation,
-            )
-            .unwrap();
-        let lease = fixture
-            .actor
-            .begin_publication(
-                &fence,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &cancellation,
-            )
-            .unwrap();
-        let displaced = fixture.root.join("src-displaced-after-lease");
-        std::fs::rename(&fixture.roots[0], &displaced).unwrap();
-        std::fs::create_dir_all(&fixture.roots[0]).unwrap();
-
-        let error = lease
-            .publish(
-                "FOREIGN-STAGED-PROVIDER-TEXT",
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &cancellation,
-            )
-            .unwrap_err();
-
-        assert!(error.contains("physical identity changed"), "{error}");
-        assert!(!error.contains("FOREIGN-STAGED-PROVIDER-TEXT"), "{error}");
-        fixture.cleanup();
-    }
-
-    #[test]
-    fn workspace_actor_publish_honors_cancellation_and_masks_staged_text() {
-        let fixture = actor_fixture("cancelled-publish", &["src"]);
-        let binding = fixture
-            .actor
-            .bind_provider_root("src", &fixture.roots[0])
-            .unwrap();
-        std::fs::write(fixture.roots[0].join("Module.bsl"), "test").unwrap();
-        let cancellation = CancellationToken::new();
-        let fence = fixture
-            .actor
-            .capture_revision(
-                &binding,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &cancellation,
-            )
-            .unwrap();
-        let lease = fixture
-            .actor
-            .begin_publication(
-                &fence,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &cancellation,
-            )
-            .unwrap();
-        cancellation.cancel();
-
-        let error = lease
-            .publish(
-                "FOREIGN-STAGED-PROVIDER-TEXT",
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &cancellation,
-            )
-            .unwrap_err();
-
-        assert!(error.starts_with("cancelled:"), "{error}");
-        assert!(!error.contains("FOREIGN-STAGED-PROVIDER-TEXT"), "{error}");
-        fixture.cleanup();
-    }
-
-    #[test]
-    fn workspace_actor_publish_cancellation_bounds_revision_lane_contention() {
-        let (error, returned_before_owner_release) =
-            publish_while_revision_operation_is_held(Duration::from_secs(5), true);
-
-        assert!(returned_before_owner_release);
-        assert!(error.starts_with("cancelled:"), "{error}");
-        assert!(!error.contains("FOREIGN-STAGED-PROVIDER-TEXT"), "{error}");
-    }
-
-    #[test]
-    fn workspace_actor_publish_deadline_bounds_revision_lane_contention() {
-        let (error, returned_before_owner_release) =
-            publish_while_revision_operation_is_held(Duration::from_millis(40), false);
-
-        assert!(returned_before_owner_release);
-        assert!(error.contains("deadline exceeded"), "{error}");
-        assert!(!error.contains("FOREIGN-STAGED-PROVIDER-TEXT"), "{error}");
-    }
-
-    fn publish_while_revision_operation_is_held(
-        budget: Duration,
-        cancel_before_publish: bool,
-    ) -> (String, bool) {
-        let fixture = actor_fixture("contended-publish-revision", &["src"]);
-        let binding = fixture
-            .actor
-            .bind_provider_root("src", &fixture.roots[0])
-            .unwrap();
-        std::fs::write(fixture.roots[0].join("Module.bsl"), "test").unwrap();
-        let cancellation = CancellationToken::new();
-        let fence = fixture
-            .actor
-            .capture_revision(
-                &binding,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &cancellation,
-            )
-            .unwrap();
-        let lease = fixture
-            .actor
-            .begin_publication(
-                &fence,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &cancellation,
-            )
-            .unwrap();
-        let revision_service = fixture.actor.source_revision_service(&binding).unwrap();
-        let owner_released = Arc::new(AtomicBool::new(false));
-        let owner_released_signal = Arc::clone(&owner_released);
-        let (owner_held_tx, owner_held_rx) = mpsc::channel();
-        let (owner_release_tx, owner_release_rx) = mpsc::channel();
-        let owner = thread::spawn(move || {
-            let guard = revision_service.hold_operation_for_test();
-            owner_held_tx.send(()).unwrap();
-            owner_release_rx.recv().unwrap();
-            owner_released_signal.store(true, Ordering::Release);
-            drop(guard);
-        });
-        owner_held_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        let (watchdog_done_tx, watchdog_done_rx) = mpsc::channel();
-        let emergency_release = owner_release_tx.clone();
-        let watchdog = thread::spawn(move || {
-            if watchdog_done_rx
-                .recv_timeout(Duration::from_millis(500))
-                .is_err()
-            {
-                let _ = emergency_release.send(());
-            }
-        });
-        if cancel_before_publish {
-            cancellation.cancel();
-        }
-
-        let error = lease
-            .publish(
-                "FOREIGN-STAGED-PROVIDER-TEXT",
-                ProviderDeadline::from_budget(budget),
-                &cancellation,
-            )
-            .unwrap_err();
-        let returned_before_owner_release = !owner_released.load(Ordering::Acquire);
-        let _ = watchdog_done_tx.send(());
-        let _ = owner_release_tx.send(());
-        watchdog.join().unwrap();
-        owner.join().unwrap();
-        fixture.cleanup();
-        (error, returned_before_owner_release)
     }
 
     #[test]
@@ -4305,22 +3261,25 @@ pub(crate) mod tests {
         let first = super::WorkspaceActor::new(identity.clone(), context.clone()).unwrap();
         let second = super::WorkspaceActor::new(identity, context).unwrap();
         let binding = first.bind_provider_root("main", &source).unwrap();
-        let fence = first
-            .capture_revision(
-                &binding,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
-            .unwrap();
 
         assert!(second.read(&binding, |_| Ok(())).is_err());
+        assert!(second.validate_binding(&binding).is_err());
         assert!(second
-            .begin_publication(
-                &fence,
+            .admit_apply(
+                &binding,
+                None,
+                true,
                 ProviderDeadline::from_budget(Duration::from_secs(5)),
                 &CancellationToken::new(),
             )
             .is_err());
+        assert!(second
+            .index_service(
+                &binding,
+                &crate::infrastructure::workspace_index::SYSTEM_INDEX_RUNNER,
+            )
+            .is_err());
+        assert!(first.validate_binding(&binding).is_ok());
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -4352,38 +3311,9 @@ pub(crate) mod tests {
         let first = super::WorkspaceActor::new(identity.clone(), context.clone()).unwrap();
         let second = super::WorkspaceActor::new(identity, context).unwrap();
         let binding = first.bind_provider_root("main", &source).unwrap();
-        let fence = first
-            .capture_revision(
-                &binding,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
-            .unwrap();
 
         assert!(second.read(&binding, |_| Ok(())).is_err());
-        assert!(second
-            .begin_publication(
-                &fence,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
-            .is_err());
-
-        let publication = first
-            .begin_publication(
-                &fence,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
-            .unwrap();
-        std::fs::write(source.join("Module.bsl"), "changed after lease").unwrap();
-        assert!(publication
-            .publish(
-                "must not escape",
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
-            .is_err());
+        assert!(second.validate_binding(&binding).is_err());
 
         let nested = source.join("Nested");
         if matches!(
@@ -4405,28 +3335,17 @@ pub(crate) mod tests {
             Ok(output)
         });
         assert!(external.is_err());
+        assert!(first.validate_binding(&binding).is_err());
         assert!(first
-            .begin_publication(
-                &fence,
+            .admit_apply(
+                &binding,
+                None,
+                true,
                 ProviderDeadline::from_budget(Duration::from_secs(5)),
                 &CancellationToken::new(),
             )
             .is_err());
         let _ = std::fs::remove_dir_all(root);
-
-        workspace_actor_pre_cancelled_publication_does_not_wait_for_mutation_lane();
-        workspace_actor_late_cancellation_stops_mutation_lane_wait();
-        workspace_actor_deadline_bounds_mutation_lane_wait();
-
-        for (budget, cancel_before_publish) in [
-            (Duration::from_secs(5), true),
-            (Duration::from_millis(40), false),
-        ] {
-            let (error, returned_before_owner_release) =
-                publish_while_revision_operation_is_held(budget, cancel_before_publish);
-            assert!(returned_before_owner_release, "{error}");
-            assert!(!error.contains("FOREIGN-STAGED-PROVIDER-TEXT"), "{error}");
-        }
     }
 
     #[test]
@@ -4475,14 +3394,12 @@ pub(crate) mod tests {
     }
 
     #[test]
-    pub(crate) fn remapped_names_and_profiles_do_not_share_revision_index_or_coordination_state() {
+    pub(crate) fn remapped_names_and_profiles_do_not_share_index_or_coordination_state() {
         let root = temp_root("state-scope-separation");
         let source = root.join("src");
         std::fs::create_dir_all(&source).unwrap();
         std::fs::write(source.join("Module.bsl"), "test").unwrap();
         let context = context(&root);
-        let deadline = || ProviderDeadline::from_budget(Duration::from_secs(5));
-        let cancellation = CancellationToken::new();
         let mut state_roots = Vec::new();
 
         for (name, profile) in [
@@ -4494,9 +3411,6 @@ pub(crate) mod tests {
                 WorkspaceIdentity::new(&context, [source_input(name, &source)], profile).unwrap();
             let actor = super::WorkspaceActor::new(identity, context.clone()).unwrap();
             let binding = actor.bind_provider_root(name, &source).unwrap();
-            actor
-                .capture_revision(&binding, deadline(), &cancellation)
-                .unwrap();
             let service = actor
                 .index_service(
                     &binding,
@@ -4509,31 +3423,10 @@ pub(crate) mod tests {
                     .unwrap(),
             );
         }
-        let records = std::fs::read_dir(context.cache_root.join("source-revisions"))
-            .unwrap()
-            .count();
-
-        assert_eq!(
-            records, 3,
-            "logical actor scopes collapsed persisted revisions"
-        );
         assert_ne!(state_roots[0], state_roots[1]);
         assert_ne!(state_roots[0], state_roots[2]);
         assert_ne!(state_roots[1], state_roots[2]);
 
-        let legacy_direct = crate::infrastructure::source_revision::SourceRevisionService::new_reconciling_for_test(
-            &context,
-            &source,
-        )
-        .unwrap();
-        legacy_direct.snapshot(deadline(), &cancellation).unwrap();
-        assert_eq!(
-            std::fs::read_dir(context.cache_root.join("source-revisions"))
-                .unwrap()
-                .count(),
-            records + 1,
-            "direct legacy revision did not publish exactly one physical-scope record"
-        );
         let legacy_identity = WorkspaceIdentity::new(
             &context,
             [WorkspaceSourceSetInput::new(
@@ -4550,16 +3443,6 @@ pub(crate) mod tests {
             super::WorkspaceActor::with_legacy_runtime(legacy_identity, context.clone(), ())
                 .unwrap();
         let legacy_binding = legacy_actor.bind_provider_root("main", &source).unwrap();
-        legacy_actor
-            .capture_revision(&legacy_binding, deadline(), &cancellation)
-            .unwrap();
-        assert_eq!(
-            std::fs::read_dir(context.cache_root.join("source-revisions"))
-                .unwrap()
-                .count(),
-            records + 1,
-            "legacy adapter moved the v0.12 revision namespace"
-        );
         let direct_index = crate::infrastructure::workspace_index::WorkspaceIndexService::new()
             .provider_state_root_for_test(&context, &source)
             .unwrap();
@@ -4982,7 +3865,7 @@ pub(crate) mod tests {
             first.upgrade().is_none(),
             "a warm actor whose root directory was replaced must be released and rebuilt"
         );
-        assert!(second.retains_named_roots());
+        assert!(second.retains_named_roots().unwrap());
         assert_eq!(registry.warm_len_for_test().unwrap(), 1);
     }
 
@@ -5290,22 +4173,13 @@ pub(crate) mod tests {
             .unwrap();
         let runner = &crate::infrastructure::workspace_index::SYSTEM_INDEX_RUNNER;
         let service = fixture.actor.index_service(&binding, runner).unwrap();
-        let args = serde_json::json!({
-            "sourceDir": fixture.roots[1].display().to_string()
-        })
-        .as_object()
-        .unwrap()
-        .clone();
-
-        let readiness = service.ready_index(fixture.actor.context(), &args);
+        let error = service
+            .active_build(fixture.actor.context(), &fixture.roots[1])
+            .unwrap_err();
 
         assert!(
-            matches!(
-                readiness,
-                crate::infrastructure::workspace_index::IndexReadiness::Unavailable(ref message)
-                    if message.contains("escaped its actor-bound source root")
-            ),
-            "{readiness:?}"
+            error.contains("escaped its actor-bound source root"),
+            "{error}"
         );
         fixture.cleanup();
     }
@@ -5562,7 +4436,6 @@ pub(crate) mod tests {
             .unwrap();
         std::fs::write(fixture.roots[0].join("Module.bsl"), b"before").unwrap();
         std::fs::write(fixture.roots[0].join("Dependency.bsl"), b"dependency").unwrap();
-        let revisions = fixture.actor.source_revision_service(&binding).unwrap();
         let cancellation = CancellationToken::new();
         let stage = |dry_run, expected: Option<&str>| {
             let admission = fixture
@@ -5619,11 +4492,6 @@ pub(crate) mod tests {
         assert_eq!(
             std::fs::read(fixture.roots[0].join("Module.bsl")).unwrap(),
             b"after"
-        );
-        assert_eq!(
-            revisions.retained_scan_count(),
-            0,
-            "preview, prepare and commit must not scan the source tree"
         );
         fixture.cleanup();
     }
@@ -5896,28 +4764,9 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn actor_scoped_logical_revision_service_keeps_the_platform_fence_capability() {
-        let fixture = actor_fixture("actor-scoped-platform-fence", &["src"]);
-        let binding = fixture
-            .actor
-            .bind_provider_root("src", &fixture.roots[0])
-            .unwrap();
-        let service = fixture.actor.source_revision_service(&binding).unwrap();
-
-        assert_eq!(
-            service.fence_capability_for_test(),
-            expected_platform_fence_capability_for_test(&fixture.roots[0])
-        );
-        fixture.cleanup();
-    }
-
-    #[test]
-    pub(crate) fn active_platform_actor_cannot_select_the_legacy_revision_corpus() {
-        let fixture = actor_fixture("revision-active-legacy-bypass", &["src"]);
+    pub(crate) fn active_platform_actor_cannot_select_the_legacy_state_scope() {
+        let fixture = actor_fixture("active-actor-legacy-bypass", &["src"]);
         let source = &fixture.roots[0];
-        let package = source.join("XDTOPackages/Sample/Ext/Package.bin");
-        std::fs::create_dir_all(package.parent().unwrap()).unwrap();
-        std::fs::write(&package, b"before").unwrap();
         let identity = WorkspaceIdentity::new(
             &context(&fixture.root),
             [source_input("src", source)],
@@ -5927,110 +4776,10 @@ pub(crate) mod tests {
 
         let bypass =
             super::WorkspaceActor::with_legacy_runtime(identity, context(&fixture.root), ());
-        let mut failure = None;
-        if let Ok(actor) = bypass {
-            let binding = actor.bind_provider_root("src", source).unwrap();
-            let service = actor.source_revision_service(&binding).unwrap();
-            let root = binding.retained_root();
-            let before = service
-                .observe_retained_operation(
-                    &root,
-                    ProviderDeadline::from_budget(Duration::from_secs(5)),
-                    &CancellationToken::new(),
-                )
-                .unwrap()
-                .revision_identity();
-            std::fs::write(&package, b"after").unwrap();
-            let after = service
-                .observe_retained_operation(
-                    &root,
-                    ProviderDeadline::from_budget(Duration::from_secs(5)),
-                    &CancellationToken::new(),
-                )
-                .unwrap()
-                .revision_identity();
-            failure = Some(format!(
-                "active Platform actor selected LegacyV12: Package.bin revisions {before} / {after}"
-            ));
-        }
-
-        assert!(failure.is_none(), "{}", failure.unwrap_or_default());
-        fixture.cleanup();
-    }
-
-    #[test]
-    pub(crate) fn actor_revision_service_construction_retains_the_validated_root_across_substitution(
-    ) {
-        if !can_swap_named_child_behind_retained_handle_for_test() {
-            return;
-        }
-        let fixture = actor_fixture("revision-service-root-substitution", &["src"]);
-        let source = fixture.roots[0].clone();
-        let displaced = fixture.root.join("src-displaced");
-        let package_relative = Path::new("XDTOPackages/Sample/Ext/Package.bin");
-        let package = source.join(package_relative);
-        std::fs::create_dir_all(package.parent().unwrap()).unwrap();
-        std::fs::write(&package, b"before").unwrap();
-        let binding = fixture.actor.bind_provider_root("src", &source).unwrap();
-
-        let source_for_race = source.clone();
-        let displaced_for_race = displaced.clone();
-        set_revision_service_after_binding_validation_hook(move || {
-            std::fs::rename(&source_for_race, &displaced_for_race).unwrap();
-            std::fs::create_dir_all(&source_for_race).unwrap();
-            std::fs::write(source_for_race.join("Configuration.xml"), b"<replacement/>").unwrap();
-        });
-        let raced = fixture.actor.source_revision_service(&binding);
-
-        std::fs::remove_dir_all(&source).unwrap();
-        std::fs::rename(&displaced, &source).unwrap();
-        let mut failures = Vec::new();
-        if raced.is_ok() {
-            failures.push(
-                "root substitution registered a service for ambient replacement identity"
-                    .to_string(),
-            );
-        }
-
-        match fixture.actor.source_revision_service(&binding) {
-            Ok(service) if raced.is_err() => {
-                let root = binding.retained_root();
-                let before = service
-                    .observe_retained_operation(
-                        &root,
-                        ProviderDeadline::from_budget(Duration::from_secs(5)),
-                        &CancellationToken::new(),
-                    )
-                    .unwrap()
-                    .revision_identity();
-                std::fs::write(&package, b"after").unwrap();
-                let after = service
-                    .observe_retained_operation(
-                        &root,
-                        ProviderDeadline::from_budget(Duration::from_secs(5)),
-                        &CancellationToken::new(),
-                    )
-                    .unwrap()
-                    .revision_identity();
-                if before == after {
-                    failures.push(
-                        "restored actor service omitted Package.bin from its exact corpus"
-                            .to_string(),
-                    );
-                }
-            }
-            Ok(_) => failures.push(
-                "raced service remained registered after the original root was restored"
-                    .to_string(),
-            ),
-            Err(error) => failures.push(format!(
-                "validated retained root could not construct a service after restoration: {error}"
-            )),
-        }
 
         assert!(
-            failures.is_empty(),
-            "actor revision root authority failures: {failures:?}"
+            bypass.is_err(),
+            "active Platform actor selected the LegacyPhysical state scope"
         );
         fixture.cleanup();
     }
@@ -6272,8 +5021,6 @@ pub(crate) mod tests {
             .actor
             .bind_provider_root("src", &fixture.roots[0])
             .unwrap();
-        let service = fixture.actor.source_revision_service(&binding).unwrap();
-        let machine_before = service.machine_state_for_test();
         let admitted = fixture
             .actor
             .admit_apply(
@@ -6311,7 +5058,6 @@ pub(crate) mod tests {
             super::ApplyPublicationErrorKind::RollbackIncomplete
         );
         assert!(error.contains("recovery"), "{error}");
-        assert_eq!(service.machine_state_for_test(), machine_before);
         assert_eq!(std::fs::read(&moved).unwrap(), b"before");
         fixture.cleanup();
     }
@@ -6327,8 +5073,6 @@ pub(crate) mod tests {
             .actor
             .bind_provider_root("src", &fixture.roots[0])
             .unwrap();
-        let service = fixture.actor.source_revision_service(&binding).unwrap();
-        let machine_before = service.machine_state_for_test();
         let admitted = fixture
             .actor
             .admit_apply(
@@ -6365,7 +5109,6 @@ pub(crate) mod tests {
             super::ApplyPublicationErrorKind::RollbackIncomplete
         );
         assert!(error.contains("hard-link"), "{error}");
-        assert_eq!(service.machine_state_for_test(), machine_before);
         assert_eq!(std::fs::read(alias).unwrap(), b"before");
         fixture.cleanup();
     }
@@ -6390,7 +5133,6 @@ pub(crate) mod tests {
                 .actor
                 .bind_provider_root("src", &fixture.roots[0])
                 .unwrap();
-            let service = fixture.actor.source_revision_service(&binding).unwrap();
             let admitted = fixture
                 .actor
                 .admit_apply(
@@ -6408,7 +5150,6 @@ pub(crate) mod tests {
             let prepared = admitted.prepare(state).unwrap();
             let source_before = snapshot_tree(&fixture.roots[0]);
             let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
-            let machine_before = service.machine_state_for_test();
             crate::infrastructure::native_operations::compile_transaction::set_retained_apply_failpoint(
                 failpoint,
             );
@@ -6425,7 +5166,6 @@ pub(crate) mod tests {
                 cache_before,
                 "{label}"
             );
-            assert_eq!(service.machine_state_for_test(), machine_before, "{label}");
             fixture.cleanup();
         }
     }
@@ -6682,135 +5422,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    pub(crate) fn actor_logical_revision_tracks_classified_resource_drift() {
-        let content_rows = [
-            ("xdto", "XDTOPackages/Sample/Ext/Package.bin"),
-            ("support", "Ext/ParentConfigurations.bin"),
-            (
-                "template-bin",
-                "Catalogs/Items/Templates/Print/Ext/Template.bin",
-            ),
-            (
-                "template-txt",
-                "Catalogs/Items/Templates/Text/Ext/Template.txt",
-            ),
-            ("help-html", "Catalogs/Items/Ext/Help/ru.html"),
-            (
-                "form-png",
-                "Catalogs/Items/Forms/Main/Ext/Form/Items/logo.png",
-            ),
-            ("dcs-xml", "Reports/Sales/Templates/Dcs/Ext/Template.xml"),
-            ("mxl-xml", "Reports/Sales/Templates/Print/Ext/Template.xml"),
-            ("form-xml", "Catalogs/Items/Forms/Main/Ext/Form.xml"),
-            ("form-bsl", "Catalogs/Items/Forms/Main/Ext/Form/Module.bsl"),
-            ("role-xml", "Roles/Seller/Ext/Rights.xml"),
-        ];
-        let mut unchanged = Vec::new();
-        for (label, relative) in content_rows {
-            let fixture = actor_fixture(&format!("revision-drift-{label}"), &["src"]);
-            let path = fixture.roots[0].join(relative);
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(&path, b"before").unwrap();
-            let binding = fixture
-                .actor
-                .bind_provider_root("src", &fixture.roots[0])
-                .unwrap();
-            let before = fixture
-                .actor
-                .source_revision_service(&binding)
-                .unwrap()
-                .observe_retained_operation(
-                    &binding.retained_root(),
-                    ProviderDeadline::from_budget(Duration::from_secs(5)),
-                    &CancellationToken::new(),
-                )
-                .unwrap()
-                .revision_identity();
-            std::fs::write(&path, b"after").unwrap();
-            let after = fixture
-                .actor
-                .source_revision_service(&binding)
-                .unwrap()
-                .observe_retained_operation(
-                    &binding.retained_root(),
-                    ProviderDeadline::from_budget(Duration::from_secs(5)),
-                    &CancellationToken::new(),
-                )
-                .unwrap()
-                .revision_identity();
-            if before == after {
-                unchanged.push(label);
-            }
-            fixture.cleanup();
-        }
-
-        for (label, initially_present) in [("vendor-add", false), ("vendor-remove", true)] {
-            let fixture = actor_fixture(&format!("revision-drift-{label}"), &["src"]);
-            let vendor = fixture.roots[0].join("Ext/ParentConfigurations/Vendor.cf");
-            std::fs::create_dir_all(vendor.parent().unwrap()).unwrap();
-            if initially_present {
-                std::fs::write(&vendor, b"vendor bytes are not hashed").unwrap();
-            }
-            let binding = fixture
-                .actor
-                .bind_provider_root("src", &fixture.roots[0])
-                .unwrap();
-            let before = fixture
-                .actor
-                .source_revision_service(&binding)
-                .unwrap()
-                .observe_retained_operation(
-                    &binding.retained_root(),
-                    ProviderDeadline::from_budget(Duration::from_secs(5)),
-                    &CancellationToken::new(),
-                )
-                .unwrap()
-                .revision_identity();
-            if initially_present {
-                std::fs::write(&vendor, b"different vendor bytes are still not hashed").unwrap();
-                let after_byte_rewrite = fixture
-                    .actor
-                    .source_revision_service(&binding)
-                    .unwrap()
-                    .observe_retained_operation(
-                        &binding.retained_root(),
-                        ProviderDeadline::from_budget(Duration::from_secs(5)),
-                        &CancellationToken::new(),
-                    )
-                    .unwrap()
-                    .revision_identity();
-                assert_eq!(
-                    before, after_byte_rewrite,
-                    "presence-only vendor bytes rotated the revision"
-                );
-                std::fs::remove_file(&vendor).unwrap();
-            } else {
-                std::fs::write(&vendor, b"vendor bytes are not hashed").unwrap();
-            }
-            let after = fixture
-                .actor
-                .source_revision_service(&binding)
-                .unwrap()
-                .observe_retained_operation(
-                    &binding.retained_root(),
-                    ProviderDeadline::from_budget(Duration::from_secs(5)),
-                    &CancellationToken::new(),
-                )
-                .unwrap()
-                .revision_identity();
-            if before == after {
-                unchanged.push(label);
-            }
-            fixture.cleanup();
-        }
-
-        assert!(
-            unchanged.is_empty(),
-            "resource drift omitted from actor revision: {unchanged:?}"
-        );
-    }
-
-    #[test]
     pub(crate) fn actor_revision_unknown_staged_artifact_is_rejected_before_publication() {
         let fixture = actor_fixture("revision-unknown-stage", &["src"]);
         let target = fixture.roots[0].join("Loose/random.bin");
@@ -6820,7 +5431,6 @@ pub(crate) mod tests {
             .actor
             .bind_provider_root("src", &fixture.roots[0])
             .unwrap();
-        let service = fixture.actor.source_revision_service(&binding).unwrap();
         let admitted = fixture
             .actor
             .admit_apply(
@@ -6837,7 +5447,6 @@ pub(crate) mod tests {
             .unwrap();
         let source_before = snapshot_tree(&fixture.roots[0]);
         let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
-        let machine_before = service.machine_state_for_test();
 
         let error = match admitted.prepare(state) {
             Err(error) => error,
@@ -6854,7 +5463,6 @@ pub(crate) mod tests {
             snapshot_tree(&fixture.root.join(".build/unica")),
             cache_before
         );
-        assert_eq!(service.machine_state_for_test(), machine_before);
         fixture.cleanup();
     }
 
@@ -6869,7 +5477,6 @@ pub(crate) mod tests {
             .actor
             .bind_provider_root("src", &fixture.roots[0])
             .unwrap();
-        let service = fixture.actor.source_revision_service(&binding).unwrap();
         let admitted = fixture
             .actor
             .admit_apply(
@@ -6886,7 +5493,6 @@ pub(crate) mod tests {
             .unwrap();
         let source_before = snapshot_tree(&fixture.roots[0]);
         let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
-        let machine_before = service.machine_state_for_test();
 
         let error = match admitted.prepare(state) {
             Err(error) => error,
@@ -6903,7 +5509,6 @@ pub(crate) mod tests {
             snapshot_tree(&fixture.root.join(".build/unica")),
             cache_before
         );
-        assert_eq!(service.machine_state_for_test(), machine_before);
         fixture.cleanup();
     }
 
@@ -6927,7 +5532,6 @@ pub(crate) mod tests {
                 .actor
                 .bind_provider_root("src", &fixture.roots[0])
                 .unwrap();
-            let service = fixture.actor.source_revision_service(&binding).unwrap();
             let admitted = fixture
                 .actor
                 .admit_apply(
@@ -6949,7 +5553,6 @@ pub(crate) mod tests {
             let prepared = admitted.prepare(state).unwrap();
             let source_before = snapshot_tree(&fixture.roots[0]);
             let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
-            let machine_before = service.machine_state_for_test();
             crate::infrastructure::native_operations::compile_transaction::set_retained_apply_failpoint(
                 failpoint,
             );
@@ -6969,7 +5572,6 @@ pub(crate) mod tests {
                 cache_before,
                 "{label}"
             );
-            assert_eq!(service.machine_state_for_test(), machine_before, "{label}");
             fixture.cleanup();
         }
 
@@ -6980,7 +5582,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    pub(crate) fn actor_revision_platform_commit_preserves_legacy_and_surface_contracts() {
+    pub(crate) fn actor_platform_commit_accepts_a_classified_binary_resource() {
         let fixture = actor_fixture("revision-platform-compatibility", &["src"]);
         let package = fixture.roots[0].join("XDTOPackages/Sample/Ext/Package.bin");
         std::fs::create_dir_all(package.parent().unwrap()).unwrap();
@@ -7011,44 +5613,9 @@ pub(crate) mod tests {
             .actor
             .publish_prepared_apply(admitted.prepare(state).unwrap());
 
-        let legacy_root = temp_root("revision-legacy-compatibility");
-        let legacy_source = legacy_root.join("src");
-        std::fs::create_dir_all(&legacy_source).unwrap();
-        std::fs::write(legacy_source.join("Module.bsl"), b"module").unwrap();
-        std::fs::write(legacy_source.join("scratch.bin"), b"one").unwrap();
-        let legacy_context = context(&legacy_root);
-        let legacy_service = SourceRevisionService::new(&legacy_context, &legacy_source).unwrap();
-        let retained =
-            crate::infrastructure::platform::filesystem::RetainedDirectoryCapability::open(
-                &std::fs::canonicalize(&legacy_source).unwrap(),
-            )
-            .unwrap();
-        let legacy_before = legacy_service
-            .observe_retained_operation(
-                &retained,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
-            .unwrap()
-            .revision_identity();
-        std::fs::write(legacy_source.join("scratch.bin"), b"two").unwrap();
-        let legacy_after = legacy_service
-            .observe_retained_operation(
-                &retained,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
-            .unwrap()
-            .revision_identity();
-        assert_eq!(
-            legacy_before, legacy_after,
-            "legacy V12 digest widened to .bin"
-        );
-
         let result = platform_commit
             .expect("classified Platform resource commit must precede compatibility guards");
         assert_eq!(result.commit_count_for_test(), 1);
-        let _ = std::fs::remove_dir_all(legacy_root);
         fixture.cleanup();
     }
 
@@ -7165,7 +5732,6 @@ pub(crate) mod tests {
                 .actor
                 .bind_provider_root("src", &fixture.roots[0])
                 .unwrap();
-            let service = fixture.actor.source_revision_service(&binding).unwrap();
             let admitted = fixture
                 .actor
                 .admit_apply(
@@ -7194,7 +5760,6 @@ pub(crate) mod tests {
                 .unwrap();
             let source_before = snapshot_tree(&fixture.roots[0]);
             let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
-            let machine_before = service.machine_state_for_test();
             crate::infrastructure::native_operations::compile_transaction::set_retained_apply_failpoint(failpoint);
 
             let error = fixture
@@ -7217,7 +5782,231 @@ pub(crate) mod tests {
                 cache_before,
                 "{name}"
             );
-            assert_eq!(service.machine_state_for_test(), machine_before, "{name}");
+            fixture.cleanup();
+        }
+    }
+
+    #[test]
+    fn command_module_lifecycle_failures_roll_back_owner_module_neighbors_and_cache() {
+        use crate::domain::apply::ApplyRequest;
+        use crate::infrastructure::native_operations::apply_families::plan_hidden_v13_apply;
+        use crate::infrastructure::native_operations::compile_transaction::{
+            set_retained_apply_before_post_validation_hook, set_retained_apply_failpoint,
+            take_retained_apply_observed_events, RetainedApplyFailpoint,
+            RetainedApplyObservedEvent,
+        };
+
+        for operation in ["command.set", "command.remove"] {
+            for phase in ["second-source", "cache", "postimages", "cancelled"] {
+                let fixture = actor_fixture(
+                    &format!("command-module-rollback-{operation}-{phase}"),
+                    &["src"],
+                );
+                let source = &fixture.roots[0];
+                let corpus = Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../tests/fixtures/acceptance/workspace-metadata-commands/src");
+                for relative in [
+                    "Configuration.xml",
+                    "Catalogs/Items.xml",
+                    "Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+                    "Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+                ] {
+                    let target = source.join(relative);
+                    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+                    std::fs::copy(corpus.join(relative), target).unwrap();
+                }
+                std::fs::write(
+                    source.join("Catalogs/Items/Commands/Refresh/Ext/untouched.bin"),
+                    b"opaque neighboring bytes\0\xff",
+                )
+                .unwrap();
+                let cache = fixture.root.join(".build/unica");
+                std::fs::create_dir_all(&cache).unwrap();
+                std::fs::write(cache.join("witness.bin"), b"existing cache bytes").unwrap();
+                let binding = fixture.actor.bind_provider_root("src", source).unwrap();
+                let cancellation = CancellationToken::new();
+                let admission = fixture
+                    .actor
+                    .admit_apply(
+                        &binding,
+                        None,
+                        false,
+                        ProviderDeadline::from_budget(Duration::from_secs(5)),
+                        &cancellation,
+                    )
+                    .unwrap();
+                let input = serde_json::json!({
+                    "at": "src:Catalog.Items.Command.Refresh",
+                    "ops": [{
+                        "op": operation,
+                        "args": if operation == "command.set" {
+                            serde_json::json!({"values": {"newName": "Renamed"}})
+                        } else {
+                            serde_json::json!({})
+                        },
+                    }],
+                    "dryRun": true,
+                });
+                let request = ApplyRequest::parse(input.as_object().unwrap(), &["src"]).unwrap();
+                let before_source = snapshot_tree(source);
+                let before_cache = snapshot_tree(&cache);
+                let (staged, effects) =
+                    plan_hidden_v13_apply(&request, &binding, &admission).unwrap();
+                assert_eq!(
+                    staged.planned_changes().len(),
+                    if operation == "command.set" { 3 } else { 2 },
+                    "the real planner must include the module lifecycle"
+                );
+                let prepared = admission.prepare_with_effects(staged, effects).unwrap();
+                assert_eq!(snapshot_tree(source), before_source);
+                assert_eq!(snapshot_tree(&cache), before_cache);
+                let _ = take_retained_apply_observed_events();
+                match phase {
+                    "second-source" => {
+                        set_retained_apply_failpoint(RetainedApplyFailpoint::Source(2));
+                    }
+                    "cache" => {
+                        set_retained_apply_failpoint(RetainedApplyFailpoint::EagerMetadata(1));
+                    }
+                    "postimages" => {
+                        set_retained_apply_failpoint(RetainedApplyFailpoint::AfterAllPostimages);
+                    }
+                    "cancelled" => {
+                        let cancel = cancellation.clone();
+                        set_retained_apply_before_post_validation_hook(move || cancel.cancel());
+                    }
+                    _ => unreachable!(),
+                }
+
+                let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+
+                assert_eq!(
+                    error.kind(),
+                    if phase == "cancelled" {
+                        super::ApplyPublicationErrorKind::Cancelled
+                    } else {
+                        super::ApplyPublicationErrorKind::ProviderPostvalidation
+                    },
+                    "{operation}/{phase}: {error}"
+                );
+                let observed = take_retained_apply_observed_events();
+                assert!(
+                    observed.iter().any(|event| matches!(
+                        event,
+                        RetainedApplyObservedEvent::Source(path)
+                            if path.ends_with("CommandModule.bsl")
+                    )),
+                    "{operation}/{phase} must publish a module before rollback: {observed:?}"
+                );
+                assert_eq!(snapshot_tree(source), before_source, "{operation}/{phase}");
+                assert_eq!(snapshot_tree(&cache), before_cache, "{operation}/{phase}");
+                fixture.cleanup();
+            }
+        }
+    }
+
+    #[test]
+    fn command_module_lifecycle_late_case_rename_rolls_back_owned_files_and_cache() {
+        use crate::domain::apply::ApplyRequest;
+        use crate::infrastructure::native_operations::apply_families::plan_hidden_v13_apply;
+        use crate::infrastructure::native_operations::compile_transaction::{
+            set_retained_apply_before_post_validation_hook, take_retained_apply_observed_events,
+            RetainedApplyObservedEvent,
+        };
+
+        if !crate::infrastructure::platform::testing::can_swap_named_child_behind_retained_handle_for_test() {
+            eprintln!("[SKIPPED FIXTURE] host prevents relocation behind retained handles");
+            return;
+        }
+
+        for phase in ["existing-ancestor", "created-ancestor", "created-leaf"] {
+            let fixture = actor_fixture(&format!("command-spelling-late-{phase}"), &["src"]);
+            let source = &fixture.roots[0];
+            let corpus = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/acceptance/workspace-metadata-commands/src");
+            for relative in [
+                "Configuration.xml",
+                "Catalogs/Items.xml",
+                "Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+                "Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+            ] {
+                let target = source.join(relative);
+                std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+                std::fs::copy(corpus.join(relative), target).unwrap();
+            }
+            if !source.join("Catalogs/Items/Commands/refresh").exists() {
+                eprintln!("[SKIPPED FIXTURE] source filesystem has no case aliases for the late spelling race");
+                fixture.cleanup();
+                continue;
+            }
+            let destination = source.join("Catalogs/Items/Commands/Renamed/Ext");
+            if phase == "existing-ancestor" {
+                std::fs::create_dir_all(&destination).unwrap();
+                std::fs::write(destination.join("foreign.bin"), b"foreign\0\xff").unwrap();
+            }
+            let cache = fixture.root.join(".build/unica");
+            std::fs::create_dir_all(&cache).unwrap();
+            std::fs::write(cache.join("witness.bin"), b"existing cache bytes").unwrap();
+            let binding = fixture.actor.bind_provider_root("src", source).unwrap();
+            let admission = fixture
+                .actor
+                .admit_apply(
+                    &binding,
+                    None,
+                    false,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            let input = serde_json::json!({
+                "at":"src:Catalog.Items.Command.Refresh", "dryRun":true,
+                "ops":[{"op":"command.set", "args":{"values":{"newName":"Renamed"}}}]
+            });
+            let request = ApplyRequest::parse(input.as_object().unwrap(), &["src"]).unwrap();
+            let before_source = snapshot_tree(source);
+            let before_cache = snapshot_tree(&cache);
+            let (staged, effects) = plan_hidden_v13_apply(&request, &binding, &admission).unwrap();
+            let prepared = admission.prepare_with_effects(staged, effects).unwrap();
+            let raced = match phase {
+                "existing-ancestor" => destination.clone(),
+                "created-ancestor" => destination.parent().unwrap().to_path_buf(),
+                "created-leaf" => destination.join("CommandModule.bsl"),
+                _ => unreachable!(),
+            };
+            let renamed =
+                raced.with_file_name(raced.file_name().unwrap().to_str().unwrap().to_lowercase());
+            let renamed_for_hook = renamed.clone();
+            let _ = take_retained_apply_observed_events();
+            set_retained_apply_before_post_validation_hook(move || {
+                std::fs::rename(raced, renamed_for_hook).unwrap();
+            });
+
+            let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+
+            assert_eq!(
+                error.kind(),
+                super::ApplyPublicationErrorKind::ConcurrentRevision,
+                "{phase}: {error}"
+            );
+            assert_eq!(snapshot_tree(&cache), before_cache, "{phase}");
+            if phase == "existing-ancestor" {
+                // The external actor owns this spelling change; rollback owns only our files.
+                std::fs::rename(&renamed, &destination).unwrap();
+            }
+            assert_eq!(snapshot_tree(source), before_source, "{phase}");
+            let events = take_retained_apply_observed_events();
+            assert!(
+                events
+                    .iter()
+                    .any(|event| matches!(event, RetainedApplyObservedEvent::StateMarker(_))),
+                "{phase}: {events:?}"
+            );
+            assert!(
+                events
+                    .iter()
+                    .any(|event| matches!(event, RetainedApplyObservedEvent::Rollback(_))),
+                "{phase}: {events:?}"
+            );
             fixture.cleanup();
         }
     }
@@ -7319,7 +6108,6 @@ pub(crate) mod tests {
             .actor
             .bind_provider_root("src", &fixture.roots[0])
             .unwrap();
-        let service = fixture.actor.source_revision_service(&binding).unwrap();
         let cancellation = CancellationToken::new();
         let admitted = fixture
             .actor
@@ -7346,7 +6134,6 @@ pub(crate) mod tests {
             .unwrap();
         let source_before = snapshot_tree(&fixture.roots[0]);
         let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
-        let machine_before = service.machine_state_for_test();
         let cancel_at_gate = cancellation.clone();
         crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook(
             move || cancel_at_gate.cancel(),
@@ -7361,7 +6148,6 @@ pub(crate) mod tests {
             snapshot_tree(&fixture.root.join(".build/unica")),
             cache_before
         );
-        assert_eq!(service.machine_state_for_test(), machine_before);
         fixture.cleanup();
     }
 
@@ -7375,7 +6161,6 @@ pub(crate) mod tests {
             .actor
             .bind_provider_root("src", &fixture.roots[0])
             .unwrap();
-        let service = fixture.actor.source_revision_service(&binding).unwrap();
         let admitted = fixture
             .actor
             .admit_apply(
@@ -7407,7 +6192,6 @@ pub(crate) mod tests {
         );
         let source_before = snapshot_tree(&fixture.roots[0]);
         let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
-        let machine_before = service.machine_state_for_test();
         let _ = crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events();
         crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook(
             move || RETAINED_APPLY_DEADLINE_TEST_NOW.set(started + Duration::from_secs(2)),
@@ -7434,7 +6218,6 @@ pub(crate) mod tests {
             snapshot_tree(&fixture.root.join(".build/unica")),
             cache_before
         );
-        assert_eq!(service.machine_state_for_test(), machine_before);
         fixture.cleanup();
     }
 
@@ -7503,59 +6286,6 @@ pub(crate) mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(rollback, forward.into_iter().rev().collect::<Vec<_>>());
-        fixture.cleanup();
-    }
-
-    #[test]
-    fn retained_apply_global_revision_dirtiness_does_not_veto_prepared_plan() {
-        let fixture = actor_fixture("retained-trust-epoch-race", &["src"]);
-        std::fs::write(fixture.roots[0].join("Module.bsl"), b"before").unwrap();
-        let binding = fixture
-            .actor
-            .bind_provider_root("src", &fixture.roots[0])
-            .unwrap();
-        let service = fixture.actor.source_revision_service(&binding).unwrap();
-        let admitted = fixture
-            .actor
-            .admit_apply(
-                &binding,
-                None,
-                false,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
-            .unwrap();
-        let mut state = admitted.staged_state().unwrap();
-        state
-            .replace("Module.bsl", b"before", b"after".to_vec())
-            .unwrap();
-        let prepared = admitted
-            .prepare_with_cache_effects(
-                state,
-                &[crate::domain::events::DomainEvent::new(
-                    crate::domain::events::DomainEventKind::MetadataChanged,
-                    "Catalog.Products",
-                )],
-            )
-            .unwrap();
-        let race_service = Arc::clone(&service);
-        crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook(
-            move || race_service.mark_dirty(),
-        );
-
-        let result = fixture.actor.publish_prepared_apply(prepared).unwrap();
-        assert_eq!(result.commit_count_for_test(), 1);
-        assert_eq!(
-            std::fs::read(fixture.roots[0].join("Module.bsl")).unwrap(),
-            b"after"
-        );
-        assert!(matches!(
-            service.machine_state_for_test().state(),
-            crate::domain::source_revision::SourceRevisionState::Untrusted {
-                reason: crate::domain::source_revision::SourceRevisionTrustLoss::WatcherGap,
-                ..
-            }
-        ));
         fixture.cleanup();
     }
 
@@ -8241,7 +6971,6 @@ pub(crate) mod tests {
             .actor
             .bind_provider_root("src/cf", &fixture.roots[0])
             .unwrap();
-        let service = fixture.actor.source_revision_service(&binding).unwrap();
         let admitted = fixture
             .actor
             .admit_apply(
@@ -8267,7 +6996,6 @@ pub(crate) mod tests {
             .unwrap();
         let source_before = snapshot_tree(&fixture.roots[0]);
         let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
-        let machine_before = service.machine_state_for_test();
         std::fs::write(
             fixture.root.join("v8project.yaml"),
             "format: DESIGNER\nsource-set:\n  - name: src/cf\n    type: EXTENSION\n    path: src/cf\n",
@@ -8288,7 +7016,6 @@ pub(crate) mod tests {
             snapshot_tree(&fixture.root.join(".build/unica")),
             cache_before
         );
-        assert_eq!(service.machine_state_for_test(), machine_before);
         fixture.cleanup();
     }
 
@@ -8306,7 +7033,6 @@ pub(crate) mod tests {
             .actor
             .bind_provider_root("main", &fixture.roots[0])
             .unwrap();
-        let service = fixture.actor.source_revision_service(&binding).unwrap();
         let admitted = fixture
             .actor
             .admit_apply(
@@ -8332,7 +7058,6 @@ pub(crate) mod tests {
             .unwrap();
         let source_before = snapshot_tree(&fixture.roots[0]);
         let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
-        let machine_before = service.machine_state_for_test();
         std::fs::write(
             fixture.root.join("v8project.yaml"),
             "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src/cf\n",
@@ -8352,7 +7077,6 @@ pub(crate) mod tests {
             snapshot_tree(&fixture.root.join(".build/unica")),
             cache_before
         );
-        assert_eq!(service.machine_state_for_test(), machine_before);
         fixture.cleanup();
     }
 
@@ -8371,7 +7095,6 @@ pub(crate) mod tests {
             .actor
             .bind_provider_root("main", &fixture.roots[0])
             .unwrap();
-        let service = fixture.actor.source_revision_service(&binding).unwrap();
         let admitted = fixture
             .actor
             .admit_apply(
@@ -8397,7 +7120,6 @@ pub(crate) mod tests {
             .unwrap();
         let source_before = snapshot_tree(&fixture.roots[0]);
         let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
-        let machine_before = service.machine_state_for_test();
         std::fs::create_dir_all(fixture.root.join("src/cfe/late")).unwrap();
         std::fs::write(
             fixture.root.join("src/cfe/late/Configuration.xml"),
@@ -8418,7 +7140,6 @@ pub(crate) mod tests {
             snapshot_tree(&fixture.root.join(".build/unica")),
             cache_before
         );
-        assert_eq!(service.machine_state_for_test(), machine_before);
         fixture.cleanup();
     }
 
@@ -8451,7 +7172,6 @@ pub(crate) mod tests {
             .actor
             .bind_provider_root("main", &fixture.roots[0])
             .unwrap();
-        let service = fixture.actor.source_revision_service(&binding).unwrap();
         let admitted = fixture
             .actor
             .admit_apply(
@@ -8476,7 +7196,6 @@ pub(crate) mod tests {
             )
             .unwrap();
         let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
-        let machine_before = service.machine_state_for_test();
         std::fs::create_dir_all(fixture.root.join("optional/edt")).unwrap();
         std::fs::write(
             fixture.root.join("optional/edt/Configuration.xml"),
@@ -8499,7 +7218,6 @@ pub(crate) mod tests {
             snapshot_tree(&fixture.root.join(".build/unica")),
             cache_before
         );
-        assert_eq!(service.machine_state_for_test(), machine_before);
         fixture.cleanup();
     }
 
@@ -8533,7 +7251,6 @@ pub(crate) mod tests {
             .actor
             .bind_provider_root("main", &fixture.roots[0])
             .unwrap();
-        let service = fixture.actor.source_revision_service(&binding).unwrap();
         let admitted = fixture
             .actor
             .admit_apply(
@@ -8559,7 +7276,6 @@ pub(crate) mod tests {
             .unwrap();
         let source_before = snapshot_tree(&fixture.roots[0]);
         let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
-        let machine_before = service.machine_state_for_test();
         std::fs::write(
             fixture.root.join("src/edt/Configuration.xml"),
             b"<MetaDataObject/>",
@@ -8579,7 +7295,6 @@ pub(crate) mod tests {
             snapshot_tree(&fixture.root.join(".build/unica")),
             cache_before
         );
-        assert_eq!(service.machine_state_for_test(), machine_before);
         fixture.cleanup();
     }
 
@@ -8615,7 +7330,6 @@ pub(crate) mod tests {
             .actor
             .bind_provider_root("main", &fixture.roots[0])
             .unwrap();
-        let service = fixture.actor.source_revision_service(&binding).unwrap();
         let admitted = fixture
             .actor
             .admit_apply(
@@ -8641,7 +7355,6 @@ pub(crate) mod tests {
             .unwrap();
         let source_before = snapshot_tree(&fixture.roots[0]);
         let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
-        let machine_before = service.machine_state_for_test();
         std::fs::write(
             descriptor,
             b"<MetaDataObject><ExternalDataProcessor/></MetaDataObject>",
@@ -8662,7 +7375,6 @@ pub(crate) mod tests {
             snapshot_tree(&fixture.root.join(".build/unica")),
             cache_before
         );
-        assert_eq!(service.machine_state_for_test(), machine_before);
         fixture.cleanup();
     }
 
@@ -8675,7 +7387,6 @@ pub(crate) mod tests {
             .actor
             .bind_provider_root("src/cf", &fixture.roots[0])
             .unwrap();
-        let service = fixture.actor.source_revision_service(&binding).unwrap();
         let admitted = fixture
             .actor
             .admit_apply(
@@ -8701,7 +7412,6 @@ pub(crate) mod tests {
             .unwrap();
         let source_before = snapshot_tree(&fixture.roots[0]);
         let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
-        let machine_before = service.machine_state_for_test();
         let map = fixture.root.join("v8project.yaml");
         set_apply_dry_run_after_confirmation_hook(move || {
             std::fs::write(
@@ -8725,7 +7435,6 @@ pub(crate) mod tests {
             snapshot_tree(&fixture.root.join(".build/unica")),
             cache_before
         );
-        assert_eq!(service.machine_state_for_test(), machine_before);
         fixture.cleanup();
     }
 
@@ -8759,7 +7468,6 @@ pub(crate) mod tests {
             .actor
             .bind_provider_root("main", &fixture.roots[0])
             .unwrap();
-        let service = fixture.actor.source_revision_service(&binding).unwrap();
         let admitted = fixture
             .actor
             .admit_apply(
@@ -8785,7 +7493,6 @@ pub(crate) mod tests {
             .unwrap();
         let source_before = snapshot_tree(&fixture.roots[0]);
         let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
-        let machine_before = service.machine_state_for_test();
         let late_marker = fixture.root.join("src/edt/Configuration.xml");
         crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook(
             move || std::fs::write(late_marker, b"<MetaDataObject/>").unwrap(),
@@ -8804,7 +7511,6 @@ pub(crate) mod tests {
             snapshot_tree(&fixture.root.join(".build/unica")),
             cache_before
         );
-        assert_eq!(service.machine_state_for_test(), machine_before);
         fixture.cleanup();
     }
 
@@ -8824,7 +7530,6 @@ pub(crate) mod tests {
             .actor
             .bind_provider_root("main", &fixture.roots[0])
             .unwrap();
-        let service = fixture.actor.source_revision_service(&binding).unwrap();
         let admitted = fixture
             .actor
             .admit_apply(
@@ -8850,7 +7555,6 @@ pub(crate) mod tests {
             .unwrap();
         let source_before = snapshot_tree(&fixture.roots[0]);
         let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
-        let machine_before = service.machine_state_for_test();
         std::fs::rename(&container, fixture.root.join("src/cfe-displaced")).unwrap();
         std::fs::create_dir(&container).unwrap();
 
@@ -8867,7 +7571,6 @@ pub(crate) mod tests {
             snapshot_tree(&fixture.root.join(".build/unica")),
             cache_before
         );
-        assert_eq!(service.machine_state_for_test(), machine_before);
         fixture.cleanup();
     }
 
@@ -9885,11 +8588,9 @@ pub(crate) mod tests {
             .actor
             .bind_provider_root("main", &fixture.roots[0])
             .unwrap();
-        let service = fixture.actor.source_revision_service(&binding).unwrap();
         let source_before = snapshot_tree(&fixture.roots[0]);
         let cache_root = fixture.root.join(".build/unica");
         let cache_before = snapshot_tree(&cache_root);
-        let machine_before = service.machine_state_for_test();
         let admitted = fixture
             .actor
             .admit_apply(
@@ -9918,7 +8619,6 @@ pub(crate) mod tests {
         assert_eq!(result.commit_count_for_test(), 0);
         assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
         assert_eq!(snapshot_tree(&cache_root), cache_before);
-        assert_eq!(service.machine_state_for_test(), machine_before);
         assert!(std::ptr::eq(receipt, result.effects()));
         assert!(
             !cache_root.exists(),
@@ -10157,11 +8857,9 @@ pub(crate) mod tests {
                 .actor
                 .bind_provider_root("main", &fixture.roots[0])
                 .unwrap();
-            let service = fixture.actor.source_revision_service(&binding).unwrap();
             let source_before = snapshot_tree(&fixture.roots[0]);
             let cache_root = fixture.root.join(".build/unica");
             let cache_before = snapshot_tree(&cache_root);
-            let machine_before = service.machine_state_for_test();
             let admitted = fixture
                 .actor
                 .admit_apply(
@@ -10186,7 +8884,6 @@ pub(crate) mod tests {
             );
             assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
             assert_eq!(snapshot_tree(&cache_root), cache_before);
-            assert_eq!(service.machine_state_for_test(), machine_before);
             assert!(!cache_root.exists());
             fixture.cleanup();
         }
@@ -10211,7 +8908,6 @@ pub(crate) mod tests {
                 .actor
                 .bind_provider_root("main", &fixture.roots[0])
                 .unwrap();
-            let service = fixture.actor.source_revision_service(&binding).unwrap();
             let prepared =
                 prepare_property_effect_batch(&fixture, &binding, false, &CancellationToken::new());
             let prepared_receipt = &prepared.effects;
@@ -10227,7 +8923,6 @@ pub(crate) mod tests {
             let source_before = snapshot_tree(&fixture.roots[0]);
             let cache_root = fixture.root.join(".build/unica");
             let cache_before = snapshot_tree(&cache_root);
-            let machine_before = service.machine_state_for_test();
             crate::infrastructure::native_operations::compile_transaction::set_retained_apply_failpoint(
                 failpoint,
             );
@@ -10241,7 +8936,6 @@ pub(crate) mod tests {
             );
             assert_eq!(snapshot_tree(&fixture.roots[0]), source_before, "{name}");
             assert_eq!(snapshot_tree(&cache_root), cache_before, "{name}");
-            assert_eq!(service.machine_state_for_test(), machine_before, "{name}");
             fixture.cleanup();
         }
 
@@ -10493,24 +9187,13 @@ pub(crate) mod tests {
             .actor
             .bind_provider_root("main", &first.roots[0])
             .unwrap();
-        let second_binding = second
-            .actor
-            .bind_provider_root("main", &second.roots[0])
-            .unwrap();
-        let first_service = first.actor.source_revision_service(&first_binding).unwrap();
-        let second_service = second
-            .actor
-            .source_revision_service(&second_binding)
-            .unwrap();
         let prepared =
             prepare_property_effect_batch(&first, &first_binding, false, &CancellationToken::new());
         assert_prepared_form_module_effect_subject(&prepared);
         let first_source_before = snapshot_tree(&first.roots[0]);
         let first_cache_before = snapshot_tree(&first.root.join(".build/unica"));
-        let first_machine_before = first_service.machine_state_for_test();
         let second_source_before = snapshot_tree(&second.roots[0]);
         let second_cache_before = snapshot_tree(&second.root.join(".build/unica"));
-        let second_machine_before = second_service.machine_state_for_test();
 
         let error = second.actor.publish_prepared_apply(prepared).unwrap_err();
 
@@ -10521,15 +9204,10 @@ pub(crate) mod tests {
             snapshot_tree(&first.root.join(".build/unica")),
             first_cache_before
         );
-        assert_eq!(first_service.machine_state_for_test(), first_machine_before);
         assert_eq!(snapshot_tree(&second.roots[0]), second_source_before);
         assert_eq!(
             snapshot_tree(&second.root.join(".build/unica")),
             second_cache_before
-        );
-        assert_eq!(
-            second_service.machine_state_for_test(),
-            second_machine_before
         );
         first.cleanup();
         second.cleanup();
@@ -10543,13 +9221,11 @@ pub(crate) mod tests {
             .actor
             .bind_provider_root("main", &fixture.roots[0])
             .unwrap();
-        let service = fixture.actor.source_revision_service(&binding).unwrap();
         let cancellation = CancellationToken::new();
         let prepared = prepare_property_effect_batch(&fixture, &binding, false, &cancellation);
         assert_prepared_form_module_effect_subject(&prepared);
         let source_before = snapshot_tree(&fixture.roots[0]);
         let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
-        let machine_before = service.machine_state_for_test();
         let _ = crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events();
         let owner = fixture.actor.mutation_lane.hold_for_test();
         let actor = Arc::clone(&fixture.actor);
@@ -10583,7 +9259,6 @@ pub(crate) mod tests {
             snapshot_tree(&fixture.root.join(".build/unica")),
             cache_before
         );
-        assert_eq!(service.machine_state_for_test(), machine_before);
         drop(owner);
         publisher.join().unwrap();
         fixture.cleanup();
@@ -10597,14 +9272,12 @@ pub(crate) mod tests {
             .actor
             .bind_provider_root("main", &fixture.roots[0])
             .unwrap();
-        let service = fixture.actor.source_revision_service(&binding).unwrap();
         let cancellation = CancellationToken::new();
         let mut prepared = prepare_property_effect_batch(&fixture, &binding, false, &cancellation);
         assert_prepared_form_module_effect_subject(&prepared);
         prepared.deadline = ProviderDeadline::from_budget(Duration::from_millis(40));
         let source_before = snapshot_tree(&fixture.roots[0]);
         let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
-        let machine_before = service.machine_state_for_test();
         let _ = crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events();
         let owner = fixture.actor.mutation_lane.hold_for_test();
         let cancel_after_deadline = cancellation.clone();
@@ -10628,7 +9301,6 @@ pub(crate) mod tests {
             snapshot_tree(&fixture.root.join(".build/unica")),
             cache_before
         );
-        assert_eq!(service.machine_state_for_test(), machine_before);
         drop(owner);
         fixture.cleanup();
     }
@@ -10641,13 +9313,11 @@ pub(crate) mod tests {
             .actor
             .bind_provider_root("main", &fixture.roots[0])
             .unwrap();
-        let service = fixture.actor.source_revision_service(&binding).unwrap();
         let cancellation = CancellationToken::new();
         let prepared = prepare_property_effect_batch(&fixture, &binding, false, &cancellation);
         assert_prepared_form_module_effect_subject(&prepared);
         let source_before = snapshot_tree(&fixture.roots[0]);
         let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
-        let machine_before = service.machine_state_for_test();
         let _ = crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events();
         let cancel_during_confirmation = cancellation.clone();
         set_apply_before_input_confirmation_hook(move || cancel_during_confirmation.cancel());
@@ -10664,7 +9334,6 @@ pub(crate) mod tests {
             snapshot_tree(&fixture.root.join(".build/unica")),
             cache_before
         );
-        assert_eq!(service.machine_state_for_test(), machine_before);
         fixture.cleanup();
     }
 
@@ -10676,14 +9345,12 @@ pub(crate) mod tests {
             .actor
             .bind_provider_root("main", &fixture.roots[0])
             .unwrap();
-        let service = fixture.actor.source_revision_service(&binding).unwrap();
         let mut prepared =
             prepare_property_effect_batch(&fixture, &binding, false, &CancellationToken::new());
         assert_prepared_form_module_effect_subject(&prepared);
         prepared.deadline = ProviderDeadline::from_budget(Duration::from_millis(200));
         let source_before = snapshot_tree(&fixture.roots[0]);
         let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
-        let machine_before = service.machine_state_for_test();
         let _ = crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events();
         let now = Instant::now();
         RETAINED_APPLY_DEADLINE_TEST_NOW.set(now);
@@ -10707,7 +9374,6 @@ pub(crate) mod tests {
             snapshot_tree(&fixture.root.join(".build/unica")),
             cache_before
         );
-        assert_eq!(service.machine_state_for_test(), machine_before);
         fixture.cleanup();
     }
 
@@ -10721,13 +9387,11 @@ pub(crate) mod tests {
             .actor
             .bind_provider_root("main", &fixture.roots[0])
             .unwrap();
-        let service = fixture.actor.source_revision_service(&binding).unwrap();
         let cancellation = CancellationToken::new();
         let prepared = prepare_property_effect_batch(&fixture, &binding, false, &cancellation);
         assert_prepared_form_module_effect_subject(&prepared);
         let source_before = snapshot_tree(&fixture.roots[0]);
         let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
-        let machine_before = service.machine_state_for_test();
         let _ = crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events();
         let cancel_after_postimages = cancellation.clone();
         crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook(
@@ -10752,7 +9416,6 @@ pub(crate) mod tests {
             snapshot_tree(&fixture.root.join(".build/unica")),
             cache_before
         );
-        assert_eq!(service.machine_state_for_test(), machine_before);
         fixture.cleanup();
     }
 
@@ -10766,7 +9429,6 @@ pub(crate) mod tests {
             .actor
             .bind_provider_root("main", &fixture.roots[0])
             .unwrap();
-        let service = fixture.actor.source_revision_service(&binding).unwrap();
         let mut prepared =
             prepare_property_effect_batch(&fixture, &binding, false, &CancellationToken::new());
         assert_prepared_form_module_effect_subject(&prepared);
@@ -10778,7 +9440,6 @@ pub(crate) mod tests {
         );
         let source_before = snapshot_tree(&fixture.roots[0]);
         let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
-        let machine_before = service.machine_state_for_test();
         let _ = crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events();
         crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook(
             move || RETAINED_APPLY_DEADLINE_TEST_NOW.set(started + Duration::from_secs(2)),
@@ -10802,7 +9463,6 @@ pub(crate) mod tests {
             snapshot_tree(&fixture.root.join(".build/unica")),
             cache_before
         );
-        assert_eq!(service.machine_state_for_test(), machine_before);
         fixture.cleanup();
     }
 
@@ -10826,27 +9486,12 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn saved_apply_survives_unchanged_read_with_unsupported_platform_fence() {
+    fn saved_apply_survives_unchanged_read_and_rejects_same_byte_replacement() {
         let fixture = actor_fixture("saved-plan-read-fallback", &["main"]);
         write_actor_event_fixture(&fixture.roots[0]);
         let binding = fixture
             .actor
             .bind_provider_root("main", &fixture.roots[0])
-            .unwrap();
-        let service = Arc::new(
-            SourceRevisionService::new_with_fence_for_test(
-                fixture.actor.context(),
-                &fixture.roots[0],
-                fixture.actor.state_scope.clone(),
-                Arc::new(UnsupportedActorFence {
-                    flush_calls: Arc::new(AtomicUsize::new(0)),
-                }),
-            )
-            .unwrap(),
-        );
-        fixture
-            .actor
-            .install_source_revision_service_for_test(&binding, Arc::clone(&service))
             .unwrap();
         let form_relative = Path::new("Catalogs/Products/Forms/Main/Ext/Form.xml");
         let form_path = fixture.roots[0].join(form_relative);
@@ -10942,7 +9587,97 @@ pub(crate) mod tests {
             snapshot_tree(&fixture.root.join(".build/unica")),
             cache_before
         );
-        assert_eq!(service.retained_scan_count(), 0);
+        fixture.cleanup();
+    }
+
+    /// Issue #1483: ожидающие токены удерживают корни и отпечатки, но не
+    /// дескриптор исходника, кеша или родительского маршрута каждой замены.
+    #[test]
+    fn saved_apply_plans_do_not_retain_per_change_descriptors() {
+        use crate::infrastructure::platform::testing::open_handle_count_for_test;
+
+        const PLAN_COUNT: usize = 8;
+        const CHANGES_PER_PLAN: usize = 16;
+
+        let fixture = actor_fixture("saved-plan-bounded-write-descriptors", &["main"]);
+        let source = &fixture.roots[0];
+        for index in 0..CHANGES_PER_PLAN {
+            let relative = PathBuf::from(format!("Nested/Item{index}/Ext/Module.bsl"));
+            std::fs::create_dir_all(source.join(relative.parent().unwrap())).unwrap();
+            std::fs::write(source.join(relative), b"before").unwrap();
+        }
+        let cache_state = fixture.root.join(".build/unica/state.json");
+        std::fs::create_dir_all(cache_state.parent().unwrap()).unwrap();
+        std::fs::write(
+            &cache_state,
+            serde_json::to_vec(&serde_json::json!({
+                "workspace_root": fixture.root.display().to_string(),
+                "workspace_epoch": 1,
+                "caches": {}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let binding = fixture.actor.bind_provider_root("main", source).unwrap();
+        let before = open_handle_count_for_test().unwrap();
+
+        let mut tokens = Vec::new();
+        let mut after_one_change_plan = before;
+        for plan in 0..=PLAN_COUNT {
+            let admission = fixture
+                .actor
+                .admit_apply(
+                    &binding,
+                    None,
+                    true,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            let mut state = admission.staged_state().unwrap();
+            let mut effects = PlannedApplyEffects::default();
+            let change_count = if plan == 0 { 1 } else { CHANGES_PER_PLAN };
+            for index in 0..change_count {
+                let relative = PathBuf::from(format!("Nested/Item{index}/Ext/Module.bsl"));
+                state
+                    .replace(
+                        &relative,
+                        b"before",
+                        format!("after-{plan}-{index}").into_bytes(),
+                    )
+                    .unwrap();
+                effects.append(crate::domain::events::DomainEvent::new(
+                    DomainEventKind::ModuleChanged,
+                    format!("main:{}", relative.display()),
+                ));
+            }
+            let batch = admission.prepare_with_effects(state, effects).unwrap();
+            let preview = fixture.actor.preview_prepared_apply(&batch).unwrap();
+            tokens.push(
+                fixture
+                    .actor
+                    .save_prepared_apply(
+                        batch,
+                        crate::domain::invocation::DomainResult::success(format!(
+                            "preview-{}",
+                            preview.rev()
+                        )),
+                    )
+                    .unwrap(),
+            );
+            if plan == 0 {
+                after_one_change_plan = open_handle_count_for_test().unwrap();
+            }
+        }
+
+        let after = open_handle_count_for_test().unwrap();
+        let fixed_plan_cost = after_one_change_plan.saturating_sub(before);
+        let many_change_plan_cost = after.saturating_sub(after_one_change_plan);
+        assert!(
+            many_change_plan_cost <= PLAN_COUNT * fixed_plan_cost,
+            "{PLAN_COUNT} pending plans with {CHANGES_PER_PLAN} changes retained {many_change_plan_cost} handles after one-change plan cost {fixed_plan_cost}"
+        );
+        assert_eq!(tokens.len(), PLAN_COUNT + 1);
         fixture.cleanup();
     }
 
@@ -11358,17 +10093,20 @@ pub(crate) mod tests {
             .1;
         assert_ne!(*expected_state, Some(state_after_a.clone()));
         *expected_state = Some(state_after_a);
-        // B still owns A's former marker. Windows can expose its delete-pending
-        // recovery name until B releases the handle; it cannot be reopened.
-        // This effect writes only state.json, so check every existing entry now
-        // and compare the complete, unfiltered namespace after B is consumed.
-        for (relative, bytes) in &expected_cache_after_a {
-            let path = cache_root.join(relative);
-            match bytes {
-                Some(bytes) => assert_eq!(std::fs::read(&path).unwrap(), *bytes),
-                None => assert!(path.is_dir(), "{}", path.display()),
-            }
-        }
+        // B is still pending and holds A's former marker. A's recovery copy
+        // of that marker must leave the namespace now: a delete-pending name
+        // cannot be reopened and broke reading the tree on Windows (#1463).
+        assert_eq!(snapshot_tree(cache_root), expected_cache_after_a);
+        assert_eq!(
+            snapshot_tree(source)
+                .into_iter()
+                .filter(|(relative, _)| relative
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with(".unica-apply-")))
+                .count(),
+            0,
+            "a successful apply leaves no recovery names in the source tree"
+        );
         let second_kind = std::cell::Cell::new(None);
         let second = fixture
             .actor
@@ -11457,6 +10195,7 @@ pub(crate) mod tests {
         changed.extend_from_slice(b"\n");
         std::fs::write(&form, changed).unwrap();
         let before = snapshot_tree(&fixture.roots[0]);
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
         let result = fixture
             .actor
             .execute_saved_apply(
@@ -11479,6 +10218,10 @@ pub(crate) mod tests {
             result.summary
         );
         assert_eq!(snapshot_tree(&fixture.roots[0]), before);
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
         let replay = fixture
             .actor
             .execute_saved_apply(
@@ -11489,6 +10232,127 @@ pub(crate) mod tests {
             )
             .unwrap();
         assert_eq!(replay, result);
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn saved_apply_rechecks_same_inode_same_length_hash_before_first_write() {
+        use crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events;
+        use crate::infrastructure::platform::filesystem::file_identity;
+
+        let fixture = actor_fixture("saved-plan-same-inode-hash", &["main"]);
+        write_actor_event_fixture(&fixture.roots[0]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let batch =
+            prepare_property_effect_batch(&fixture, &binding, true, &CancellationToken::new());
+        fixture.actor.preview_prepared_apply(&batch).unwrap();
+        let token = fixture
+            .actor
+            .save_prepared_apply(
+                batch,
+                crate::domain::invocation::DomainResult::success("preview"),
+            )
+            .unwrap();
+        let form = fixture.roots[0].join("Catalogs/Products/Forms/Main/Ext/Form.xml");
+        let before = std::fs::read(&form).unwrap();
+        let identity_before = file_identity(&std::fs::File::open(&form).unwrap()).unwrap();
+        let mut changed = before.clone();
+        changed[0] ^= 1;
+        std::fs::write(&form, &changed).unwrap();
+        let identity_after = file_identity(&std::fs::File::open(&form).unwrap()).unwrap();
+        assert_eq!(
+            identity_after, identity_before,
+            "правка должна сохранить inode"
+        );
+        assert_eq!(changed.len(), before.len(), "правка должна сохранить длину");
+        assert_ne!(changed, before, "правка должна изменить байты");
+
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+        let _ = take_retained_apply_observed_events();
+        let refusal_kind = std::cell::Cell::new(None);
+        let result = fixture
+            .actor
+            .execute_saved_apply(
+                &token,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+                |result, publication| {
+                    refusal_kind.set(publication.as_ref().err().map(|error| error.kind()));
+                    finish_saved_apply_test(result, publication)
+                },
+            )
+            .unwrap();
+
+        assert!(
+            !result.ok,
+            "изменённый хеш должен устарить сохранённый план"
+        );
+        assert_eq!(
+            refusal_kind.get(),
+            Some(super::ApplyPublicationErrorKind::ConcurrentRevision)
+        );
+        assert!(result.summary.contains("Form.xml"), "{}", result.summary);
+        assert!(
+            result.summary.contains("source write target"),
+            "{}",
+            result.summary
+        );
+        assert!(
+            take_retained_apply_observed_events().is_empty(),
+            "проверка хеша должна завершиться до первой записи исходников или кеша"
+        );
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn saved_apply_refuses_a_disappeared_write_target_without_writing_cache() {
+        let fixture = actor_fixture("saved-plan-missing-write-target", &["main"]);
+        write_actor_event_fixture(&fixture.roots[0]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let batch =
+            prepare_property_effect_batch(&fixture, &binding, true, &CancellationToken::new());
+        fixture.actor.preview_prepared_apply(&batch).unwrap();
+        let token = fixture
+            .actor
+            .save_prepared_apply(
+                batch,
+                crate::domain::invocation::DomainResult::success("preview"),
+            )
+            .unwrap();
+        let form = fixture.roots[0].join("Catalogs/Products/Forms/Main/Ext/Form.xml");
+        std::fs::remove_file(&form).unwrap();
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+
+        let result = fixture
+            .actor
+            .execute_saved_apply(
+                &token,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+                finish_saved_apply_test,
+            )
+            .unwrap();
+
+        assert!(!result.ok, "исчезнувшая цель должна устарить план");
+        assert!(result.summary.contains("Form.xml"), "{}", result.summary);
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
         fixture.cleanup();
     }
 
@@ -12439,7 +11303,6 @@ pub(crate) mod tests {
             .actor
             .bind_provider_root("src", &fixture.roots[0])
             .unwrap();
-        let service = fixture.actor.source_revision_service(&binding).unwrap();
         let admission = fixture
             .actor
             .admit_apply(
@@ -12457,7 +11320,6 @@ pub(crate) mod tests {
         let prepared = admission.prepare(state).unwrap();
         let source_before = snapshot_tree(&fixture.roots[0]);
         let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
-        let machine_before = service.machine_state_for_test();
         let raced_policy = policy.clone();
         crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook(
             move || {
@@ -12476,7 +11338,6 @@ pub(crate) mod tests {
             snapshot_tree(&fixture.root.join(".build/unica")),
             cache_before
         );
-        assert_eq!(service.machine_state_for_test(), machine_before);
         fixture.cleanup();
     }
 
@@ -12499,7 +11360,6 @@ pub(crate) mod tests {
             .actor
             .bind_provider_root("src", &fixture.roots[0])
             .unwrap();
-        let service = fixture.actor.source_revision_service(&binding).unwrap();
         let admission = fixture
             .actor
             .admit_apply(
@@ -12517,7 +11377,6 @@ pub(crate) mod tests {
         let prepared = admission.prepare(state).unwrap();
         let source_before = snapshot_tree(&fixture.roots[0]);
         let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
-        let machine_before = service.machine_state_for_test();
         let hook_policy = policy.clone();
         crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook(
             move || {
@@ -12543,7 +11402,6 @@ pub(crate) mod tests {
             snapshot_tree(&fixture.root.join(".build/unica")),
             cache_before
         );
-        assert_eq!(service.machine_state_for_test(), machine_before);
         fixture.cleanup();
     }
 
@@ -12734,10 +11592,8 @@ pub(crate) mod tests {
                 .actor
                 .bind_provider_root("src", &fixture.roots[0])
                 .unwrap();
-            let service = fixture.actor.source_revision_service(&binding).unwrap();
             let source_before = snapshot_tree(&fixture.roots[0]);
             let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
-            let machine_before = service.machine_state_for_test();
             let cancellation = CancellationToken::new();
             let started = Instant::now();
             set_support_policy_actor_test_now(started);
@@ -12779,7 +11635,6 @@ pub(crate) mod tests {
                 cache_before,
                 "{gate}"
             );
-            assert_eq!(service.machine_state_for_test(), machine_before, "{gate}");
             fixture.cleanup();
         }
 
@@ -12878,7 +11733,6 @@ pub(crate) mod tests {
                 .actor
                 .bind_provider_root("src", &fixture.roots[0])
                 .unwrap();
-            let service = fixture.actor.source_revision_service(&binding).unwrap();
             let cancellation = CancellationToken::new();
             let started = Instant::now();
             set_support_policy_actor_test_now(started);
@@ -12906,7 +11760,6 @@ pub(crate) mod tests {
             let prepared = admission.prepare(state).unwrap();
             let source_before = snapshot_tree(&fixture.roots[0]);
             let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
-            let machine_before = service.machine_state_for_test();
             if gate == "cancelled" {
                 let cancel = cancellation.clone();
                 crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook(
@@ -12939,7 +11792,6 @@ pub(crate) mod tests {
                 snapshot_tree(&fixture.root.join(".build/unica")),
                 cache_before
             );
-            assert_eq!(service.machine_state_for_test(), machine_before);
             fixture.cleanup();
         }
     }
@@ -12961,7 +11813,6 @@ pub(crate) mod tests {
                 .actor
                 .bind_provider_root("src", &fixture.roots[0])
                 .unwrap();
-            let service = fixture.actor.source_revision_service(&binding).unwrap();
             let cancellation = CancellationToken::new();
             let started = Instant::now();
             set_support_policy_actor_test_now(started);
@@ -12984,7 +11835,6 @@ pub(crate) mod tests {
             let prepared = admission.prepare(state).unwrap();
             let source_before = snapshot_tree(&fixture.roots[0]);
             let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
-            let machine_before = service.machine_state_for_test();
             let chunks = Arc::new(AtomicUsize::new(0));
             let observed_chunks = Arc::clone(&chunks);
             if gate == "cancelled" {
@@ -13022,7 +11872,6 @@ pub(crate) mod tests {
                 cache_before,
                 "{gate}"
             );
-            assert_eq!(service.machine_state_for_test(), machine_before, "{gate}");
             fixture.cleanup();
         }
 

@@ -34,9 +34,7 @@ sha2 = "0.10"
 aes-siv = { version = "0.8.0", default-features = false, features = ["alloc", "zeroize"] }
 getrandom = "0.4.3"
 zeroize = { version = "1.9", default-features = false, features = ["alloc"] }
-objc2-core-services = { version = "0.3.2", default-features = false, features = ["std", "FSEvents", "dispatch2"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFArray", "CFString"] }
-dispatch2 = { version = "0.3", default-features = false, features = ["alloc"] }
 tar = "0.4"
 # Политика сетевого выхода поставщиков документации (`unica.toml`,
 # ADR-0032). Разбор строгий, через toml::Value, а не derive: файл запрета
@@ -66,6 +64,7 @@ webpki-roots = "1"
 # Только для стендов TLS в тестах: корень и сертификат сервера на лету.
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
 url = "2.5.4"
+percent-encoding = "2.3"
 uuid = { version = "1", features = ["v4"] }
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
@@ -75,8 +74,10 @@ windows-sys = { version = "0.59", features = [
   "Win32_Storage_FileSystem",
   "Win32_System_Console",
   "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_IO",
   "Win32_System_JobObjects",
   "Win32_System_ProcessStatus",
+  "Win32_System_SystemServices",
   "Win32_System_Threading",
 ] }
 cap-primitives = "4.0.2"

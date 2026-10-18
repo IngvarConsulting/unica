@@ -1,0 +1,521 @@
+{
+  "id": "S-1468-role-can",
+  "name": "role-family-can-preview-without-source-writes",
+  "issue": 1468,
+  "area": "Роли и права",
+  "task": "Прочитать подробные контракты всех трёх операций Role, построить preview создания роли и изменений прав без записи; проверить пакет создания с начальными правами и закрытые аргументы.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration.Can.role.create"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Can"
+        },
+        {
+          "pointer": "/data/props/op",
+          "eq": "role.create"
+        },
+        {
+          "pointer": "/data/props/implemented",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/additionalProperties",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/contract/exampleArgs/at",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "createArgs": {
+          "pointer": "/data/props/contract/exampleArgs"
+        },
+        "before0": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "before1": {
+          "file": "src/Roles/SalesReader/Ext/Rights.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "role.create",
+            "args": "$capture.createArgs"
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/executionToken",
+          "notEq": null
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        }
+      ],
+      "captures": {
+        "preview1Token": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0"
+        },
+        {
+          "path": "src/Roles/SalesReader/Ext/Rights.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1"
+        },
+        {
+          "path": "src/Roles/ContractRole.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Roles/ContractRole/Ext/Rights.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Roles/RoleCanBatch.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Roles/RoleCanBatch/Ext/Rights.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Role.SalesReader.Can.right.add"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Can"
+        },
+        {
+          "pointer": "/data/props/op",
+          "eq": "right.add"
+        },
+        {
+          "pointer": "/data/props/implemented",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/additionalProperties",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/contract/exampleArgs/at",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Role.SalesReader",
+        "ops": [
+          {
+            "op": "right.add",
+            "args": {
+              "items": [
+                {
+                  "object": "Report.АнализВерсийОбъектов",
+                  "rights": {
+                    "Read": true
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/executionToken",
+          "notEq": null
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        }
+      ],
+      "captures": {
+        "preview3Token": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0"
+        },
+        {
+          "path": "src/Roles/SalesReader/Ext/Rights.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1"
+        },
+        {
+          "path": "src/Roles/ContractRole.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Roles/ContractRole/Ext/Rights.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Roles/RoleCanBatch.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Roles/RoleCanBatch/Ext/Rights.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Role.SalesReader.Right.Catalog_Валюты.Can.right.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Can"
+        },
+        {
+          "pointer": "/data/props/op",
+          "eq": "right.set"
+        },
+        {
+          "pointer": "/data/props/implemented",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/additionalProperties",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/contract/exampleArgs/at",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Role.SalesReader.Right.Catalog_Валюты",
+        "ops": [
+          {
+            "op": "right.set",
+            "args": {
+              "values": {
+                "right": "View",
+                "value": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/executionToken",
+          "notEq": null
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        }
+      ],
+      "captures": {
+        "preview5Token": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0"
+        },
+        {
+          "path": "src/Roles/SalesReader/Ext/Rights.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1"
+        },
+        {
+          "path": "src/Roles/ContractRole.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Roles/ContractRole/Ext/Rights.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Roles/RoleCanBatch.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Roles/RoleCanBatch/Ext/Rights.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "role.create",
+            "args": {
+              "values": {
+                "name": "RoleCanBatch"
+              }
+            }
+          },
+          {
+            "op": "right.add",
+            "args": {
+              "at": "main:Role.RoleCanBatch",
+              "items": [
+                {
+                  "object": "Catalog.Валюты",
+                  "rights": {
+                    "Read": true,
+                    "View": true
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/executionToken",
+          "notEq": null
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        }
+      ],
+      "captures": {
+        "preview6Token": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0"
+        },
+        {
+          "path": "src/Roles/SalesReader/Ext/Rights.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1"
+        },
+        {
+          "path": "src/Roles/ContractRole.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Roles/ContractRole/Ext/Rights.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Roles/RoleCanBatch.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Roles/RoleCanBatch/Ext/Rights.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "role.create",
+            "args": {
+              "values": {
+                "name": "Role.Reader"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: ops[0].args.values.name: text does not match the supported argument grammar",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.name"
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0"
+        },
+        {
+          "path": "src/Roles/SalesReader/Ext/Rights.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1"
+        },
+        {
+          "path": "src/Roles/ContractRole.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Roles/ContractRole/Ext/Rights.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Roles/RoleCanBatch.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Roles/RoleCanBatch/Ext/Rights.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "role.create",
+            "args": {
+              "values": {
+                "name": "RoleReader"
+              },
+              "ignored": true
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: ops[0].args.ignored: unknown argument",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.ignored"
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0"
+        },
+        {
+          "path": "src/Roles/SalesReader/Ext/Rights.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1"
+        },
+        {
+          "path": "src/Roles/ContractRole.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Roles/ContractRole/Ext/Rights.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Roles/RoleCanBatch.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Roles/RoleCanBatch/Ext/Rights.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    }
+  ]
+}

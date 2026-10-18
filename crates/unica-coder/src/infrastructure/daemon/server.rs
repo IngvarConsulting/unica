@@ -1,5 +1,5 @@
 use super::identity::CoreIdentity;
-use crate::domain::refusal::RefusalCode;
+use crate::domain::refusal::{RefusalCode, RefusalDetail};
 #[path = "invocation_service.rs"]
 mod invocation_service;
 #[cfg(test)]
@@ -107,6 +107,13 @@ fn reject_workspace_admission(
             "the initialization dictionary: source, CF/DT, and existing-infobase routes",
         )
     };
+    let retry = || {
+        super::v13_workspace_bootstrap::next_action(
+            &format!("unica.{}", request.tool().catalog_name()),
+            serde_json::Value::Object(request.arguments().clone()),
+            "retry the same call after the source root becomes available",
+        )
+    };
 
     let mut payload = serde_json::Map::new();
     payload.insert(
@@ -191,6 +198,21 @@ fn reject_workspace_admission(
             format!("workspace actor admission failed: {stage}"),
             vec![facts(), verdict()],
         ),
+        UnadmittedCause::ActorRootUnavailable => {
+            let mut result = DomainResult::canonical_rejection_detailed(
+                None,
+                RefusalDetail::SourceTemporarilyUnavailable,
+                "workspace actor source root is temporarily unavailable; the retained actor and its saved plans were preserved",
+            );
+            result.data = Some(serde_json::Value::Object(payload));
+            result.next = vec![retry()];
+            super::v13_workspace_bootstrap::annotate_workspace_origin(
+                &mut result,
+                request.workspace_hint(),
+                request.workspace_origin(),
+            );
+            return V5CanonicalPrepareError::Rejected(Box::new(result));
+        }
     };
 
     let mut result = DomainResult::canonical_rejection(None, code, summary);
@@ -1266,13 +1288,17 @@ impl DaemonServerConfig {
 }
 
 #[cfg(test)]
+#[path = "form_move_tests.rs"]
+mod form_move_tests;
+
+#[cfg(test)]
 pub(crate) mod actor_capacity_tests {
     use super::super::client_v5::V5DaemonProcessOwner;
     use super::super::identity::DaemonStateDirectory;
     use super::super::protocol_v5::{
         V5DaemonTaskSnapshot, V5InvocationRequest, V5InvocationResponse, V5ServerResponse,
     };
-    use super::super::runner_014::VERSION as RUNNER_VERSION;
+    use super::super::runner_015::VERSION as RUNNER_VERSION;
     use super::*;
     use crate::application::invocation::INVOCATION_HANDOFF_WINDOW;
     use crate::application::invocation_store::ToolIdentity;
@@ -1284,6 +1310,9 @@ pub(crate) mod actor_capacity_tests {
     use crate::domain::code_intelligence::ProviderDeadline;
     use crate::domain::invocation::InvocationStatus;
     use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
+    use crate::infrastructure::platform::filesystem::retained_read_probe::{
+        RetainedRead, RetainedReadProbe,
+    };
     use crate::infrastructure::runtime_jobs::{
         RuntimeJobOperation, RuntimeJobRequest, RuntimeJobService,
     };
@@ -1743,7 +1772,7 @@ pub(crate) mod actor_capacity_tests {
         let cases = [
             Case {
                 op: "commandOrder.set",
-                at: administration_at,
+                at: "main:Subsystem.Администрирование.Interface.Group.NavigationPanelImportant",
                 key: "commands",
                 group: Some("NavigationPanelImportant"),
                 relative: ADMINISTRATION_INTERFACE,
@@ -1776,10 +1805,8 @@ pub(crate) mod actor_capacity_tests {
         ];
         for case in cases {
             let values = |names: Vec<String>| {
+                // Группа порядка команд — в адресе, а не в аргументах.
                 let mut values = serde_json::Map::new();
-                if let Some(group) = case.group {
-                    values.insert("group".to_string(), serde_json::json!(group));
-                }
                 values.insert(case.key.to_string(), serde_json::json!(names));
                 serde_json::Value::Object(values)
             };
@@ -1875,8 +1902,8 @@ pub(crate) mod actor_capacity_tests {
             workspace.path(),
             interface_op(
                 "commandOrder.set",
-                "main:Subsystem.Администрирование.Interface",
-                serde_json::json!({"group": "NavigationPanelImportant", "commands": reordered}),
+                "main:Subsystem.Администрирование.Interface.Group.NavigationPanelImportant",
+                serde_json::json!({"commands": reordered}),
             ),
         );
         assert!(preview.ok, "{preview:?}");
@@ -2030,7 +2057,7 @@ pub(crate) mod actor_capacity_tests {
         let ops = [
             serde_json::json!({"op": "commandVisibility.set", "args": {"at": NESTED_CONTROL_AT, "items": [{"command": commands[0], "visible": false}]}}),
             serde_json::json!({"op": "commandPlacement.set", "args": {"at": NESTED_CONTROL_AT, "items": [{"command": commands[1], "group": "NavigationPanelImportant"}]}}),
-            serde_json::json!({"op": "commandOrder.set", "args": {"at": NESTED_CONTROL_AT, "values": {"group": "NavigationPanelOrdinary", "commands": reversed(&commands)}}}),
+            serde_json::json!({"op": "commandOrder.set", "args": {"at": format!("{NESTED_CONTROL_AT}.Group.NavigationPanelOrdinary"), "values": {"commands": reversed(&commands)}}}),
             serde_json::json!({"op": "groupOrder.set", "args": {"at": NESTED_CONTROL_AT, "values": {"groups": ["NavigationPanelSeeAlso", "NavigationPanelOrdinary", "NavigationPanelImportant"]}}}),
         ];
         let preview = interface_apply_call(
@@ -2124,7 +2151,7 @@ pub(crate) mod actor_capacity_tests {
             (
                 "commandOrder.set",
                 "values",
-                serde_json::json!({"group": "NavigationPanelOrdinary", "commands": commands}),
+                serde_json::json!({"commands": commands}),
             ),
             (
                 "groupOrder.set",
@@ -2139,7 +2166,13 @@ pub(crate) mod actor_capacity_tests {
                 ),
                 (
                     "main:Interface",
-                    "it addresses `Subsystem.Name[.Subsystem.Child].Interface`".to_string(),
+                    // Порядок команд адресует группу этого интерфейса.
+                    if op == "commandOrder.set" {
+                        "it addresses `Subsystem.Name[.Subsystem.Child].Interface.Group.G`"
+                    } else {
+                        "it addresses `Subsystem.Name[.Subsystem.Child].Interface`"
+                    }
+                    .to_string(),
                 ),
             ] {
                 let refused = interface_apply_call(
@@ -2175,8 +2208,8 @@ pub(crate) mod actor_capacity_tests {
             workspace.path(),
             interface_op(
                 "commandOrder.set",
-                NESTED_CONTROL_AT,
-                serde_json::json!({"group": "NavigationPanelOrdinary", "commands": commands}),
+                &format!("{NESTED_CONTROL_AT}.Group.NavigationPanelOrdinary"),
+                serde_json::json!({"commands": commands}),
             ),
         );
         assert!(preview.ok, "{preview:?}");
@@ -2202,11 +2235,37 @@ pub(crate) mod actor_capacity_tests {
             workspace.path(),
             interface_op(
                 "commandOrder.set",
-                NESTED_CONTROL_AT,
-                serde_json::json!({"group": "NavigationPanelOrdinary", "commands": commands}),
+                &format!("{NESTED_CONTROL_AT}.Group.NavigationPanelOrdinary"),
+                serde_json::json!({"commands": commands}),
             ),
         );
         assert_refused_without_trace(&replanned, "bad_value", "CommonCommand.НоваяКоманда");
+    }
+
+    /// Группа — узел адреса: порядок команд правит только группу, которую
+    /// интерфейс объявляет, как её видит чтение. Неизвестная группа отвечает
+    /// `not_found` без записи, а не заводится порядком.
+    #[test]
+    fn canonical_command_order_refuses_an_undeclared_group_without_writing() {
+        let workspace = interface_order_workspace();
+        let runtime =
+            V5CanonicalInvocationRuntime::new(canonical_v13_service(), Arc::new(TokioClock));
+        let before = crate::test_support::tree_snapshot(workspace.path());
+        let refused = interface_apply_call(
+            &runtime,
+            workspace.path(),
+            interface_op(
+                "commandOrder.set",
+                &format!("{NESTED_CONTROL_AT}.Group.CommandGroup\\.НетТакой"),
+                serde_json::json!({"commands": ["CommonCommand.Любая"]}),
+            ),
+        );
+        assert_refused_without_trace(
+            &refused,
+            "not_found",
+            "declares no group `CommandGroup.НетТакой`",
+        );
+        assert_eq!(crate::test_support::tree_snapshot(workspace.path()), before);
     }
 
     #[test]
@@ -2699,7 +2758,7 @@ pub(crate) mod actor_capacity_tests {
     /// One canonical Direct call on the shared v5 runtime: bind, prepare and
     /// execute in the calling thread, exactly the path the daemon takes before
     /// its cutoff. A known-long class is a Task, never a Direct outcome.
-    fn direct_v5(
+    pub(super) fn direct_v5(
         runtime: &V5CanonicalInvocationRuntime,
         request: InvocationRequest,
     ) -> Result<DomainResult, V5CanonicalPrepareError> {
@@ -3501,7 +3560,7 @@ fn main() {
         assert!(args.iter().any(|argument| argument == "--dry-run"));
         assert!(args.iter().any(|argument| argument == "main"));
         std::fs::write(marker.join("push"), "v8-runner push preview invoked").unwrap();
-        println!("{}", r#"{"ok":true,"command":"push","data":{"ok":true,"provider_dispatched":false,"steps":[{"source_set":"main","mode":"full","ok":true}]}}"#);
+        println!("{}", r#"{"ok":true,"command":"push","data":{"ok":true,"provider_dispatched":false,"steps":[{"source_set":"main","mode":"full","ok":true,"applied":false}]}}"#);
         return;
     }
     if args.iter().any(|argument| argument == "extensions") {
@@ -3874,11 +3933,40 @@ fn main() {
             ])
             .stdout(stdout)
             .stderr(stderr);
+        // The test harness exports this package's identity (`CARGO_MANIFEST_DIR`,
+        // `CARGO_PKG_*`, …). Build scripts such as ring's declare some of these
+        // names in `rerun-if-env-changed`, and Cargo compares them with its own
+        // environment: an inherited value would rerun those scripts and make
+        // the outer test build recompile everything above them.
+        for (name, _) in std::env::vars_os() {
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if name == "OUT_DIR"
+                || name == "CARGO_CRATE_NAME"
+                || name == "CARGO_BIN_NAME"
+                || name == "CARGO_PRIMARY_PACKAGE"
+                || name == "CARGO_TARGET_TMPDIR"
+                || name.starts_with("CARGO_MANIFEST_")
+                || name.starts_with("CARGO_PKG_")
+                || name.starts_with("CARGO_CFG_")
+                || name.starts_with("CARGO_FEATURE_")
+            {
+                command.env_remove(name);
+            }
+        }
         if let Some(target_dir) = std::env::var_os("CARGO_TARGET_DIR") {
             command.env("CARGO_TARGET_DIR", target_dir);
         }
         let mut child = command.spawn().unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+        // Сборка — подготовка, а не предмет теста. `-p unica-coder --bin unica`
+        // собирается с другим набором признаков, чем `--workspace` у nextest,
+        // и на двухъядерном Windows-раннере под нагрузкой соседних тестов
+        // пересборка шла 122 с и больше 180 с (#1441). Срок держит зависшую
+        // сборку, оставляя запас до остановки теста по сроку `medium`
+        // (2 × 300 с в `.config/nextest.toml`) на сам дочерний прогон.
+        const BUILD_BUDGET: std::time::Duration = std::time::Duration::from_secs(420);
+        let deadline = std::time::Instant::now() + BUILD_BUDGET;
         let status = loop {
             if let Some(status) = child.try_wait().unwrap() {
                 break status;
@@ -3886,7 +3974,10 @@ fn main() {
             if std::time::Instant::now() >= deadline {
                 child.kill().unwrap();
                 child.wait().unwrap();
-                panic!("offline Unica binary build exceeded 180 seconds");
+                panic!(
+                    "offline Unica binary build exceeded {} seconds",
+                    BUILD_BUDGET.as_secs()
+                );
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         };
@@ -4503,6 +4594,78 @@ fn main() {
         assert!(data["diagnostics"].is_array(), "{data}");
     }
 
+    /// `view {}` reports facts: it starts no repository process, runs no
+    /// project-health inspection and opens no object descriptor, while
+    /// `check {}` on the same workspace still computes the verdict (#1457).
+    #[test]
+    fn canonical_view_bootstrap_leaves_project_health_to_the_root_check() {
+        use crate::infrastructure::internal_adapters::process_launch_probe::launches_under_for_test;
+        use crate::infrastructure::project_health::health_inspection_probe::inspections_for_test;
+
+        let (workspace, source) = source_selection_read_fixture();
+        add_unrelated_catalogs(&source, 3);
+        for args in [&["init", "--quiet"][..], &["add", "."][..]] {
+            assert!(std::process::Command::new("git")
+                .args(args)
+                .current_dir(workspace.path())
+                .status()
+                .unwrap()
+                .success());
+        }
+        let runtime = bootstrap_runtime();
+        let reads = RetainedReadProbe::watch(workspace.path());
+
+        let view = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
+
+        assert!(view.ok, "{view:?}");
+        let data = view.data.as_ref().unwrap();
+        for field in [
+            "ready",
+            "discoveredReady",
+            "repositoryReady",
+            "readinessState",
+            "checks",
+            "diagnostics",
+        ] {
+            assert!(data.get(field).is_none(), "view leaked {field}: {data}");
+        }
+        assert!(view
+            .next
+            .iter()
+            .any(|next| next["tool"] == "unica.check" && next["args"] == serde_json::json!({})));
+        assert!(
+            view.next
+                .iter()
+                .any(|next| next["tool"] == "unica.view"
+                    && next["args"]["at"] == "main:Configuration"),
+            "a selected Platform XML source keeps its root link: {view:?}"
+        );
+        assert_eq!(inspections_for_test(workspace.path()), 0);
+        assert_eq!(
+            launches_under_for_test(workspace.path()),
+            Vec::<String>::new()
+        );
+        let view_reads = reads.take();
+        assert!(
+            view_reads
+                .iter()
+                .all(|read| !format!("{read:?}").contains("Catalogs")),
+            "view {{}} read object descriptors: {view_reads:?}"
+        );
+
+        let verdict = submit_root_verdict(&runtime, workspace.path());
+
+        assert!(verdict.ok, "{verdict:?}");
+        assert!(verdict.data.as_ref().unwrap()["checks"].is_array());
+        assert_eq!(inspections_for_test(workspace.path()), 1);
+        assert!(
+            launches_under_for_test(workspace.path())
+                .iter()
+                .any(|program| program.ends_with("git") || program.ends_with("git.exe")),
+            "the root check must still inspect the repository"
+        );
+    }
+
     #[test]
     fn canonical_invalid_view_address_points_back_to_bootstrap() {
         let workspace = tempfile::tempdir().unwrap();
@@ -4543,6 +4706,15 @@ fn main() {
         use syn::visit::Visit;
 
         const CAPABILITY: &str = "ActorReadSourceCapability";
+
+        fn semantic_name(identifier: &syn::Ident) -> String {
+            use syn::ext::IdentExt;
+            identifier.unraw().to_string()
+        }
+
+        fn identifier_is(identifier: &syn::Ident, expected: &str) -> bool {
+            semantic_name(identifier) == expected
+        }
 
         fn tokens(node: &impl ToTokens) -> String {
             node.to_token_stream().to_string()
@@ -4944,7 +5116,7 @@ fn main() {
                 "PartialEq",
             ];
             let is_proven_name =
-                |name: &syn::Ident| PROVEN_ATTRIBUTE_NAMES.contains(&name.to_string().as_str());
+                |name: &syn::Ident| PROVEN_ATTRIBUTE_NAMES.contains(&semantic_name(name).as_str());
             match tree {
                 syn::UseTree::Name(name) => is_proven_name(&name.ident),
                 syn::UseTree::Rename(rename) => {
@@ -4968,7 +5140,7 @@ fn main() {
 
         impl<'ast> Visit<'ast> for CapabilityPathFinder {
             fn visit_path_segment(&mut self, segment: &'ast syn::PathSegment) {
-                if segment.ident == CAPABILITY {
+                if identifier_is(&segment.ident, CAPABILITY) {
                     self.found = true;
                 }
                 syn::visit::visit_path_segment(self, segment);
@@ -4995,12 +5167,14 @@ fn main() {
 
         fn use_tree_mentions_capability(tree: &syn::UseTree) -> bool {
             match tree {
-                syn::UseTree::Name(name) => name.ident == CAPABILITY,
+                syn::UseTree::Name(name) => identifier_is(&name.ident, CAPABILITY),
                 syn::UseTree::Rename(rename) => {
-                    rename.ident == CAPABILITY || rename.rename == CAPABILITY
+                    identifier_is(&rename.ident, CAPABILITY)
+                        || identifier_is(&rename.rename, CAPABILITY)
                 }
                 syn::UseTree::Path(path) => {
-                    path.ident == CAPABILITY || use_tree_mentions_capability(path.tree.as_ref())
+                    identifier_is(&path.ident, CAPABILITY)
+                        || use_tree_mentions_capability(path.tree.as_ref())
                 }
                 syn::UseTree::Group(group) => group.items.iter().any(use_tree_mentions_capability),
                 syn::UseTree::Glob(_) => false,
@@ -5010,13 +5184,15 @@ fn main() {
         fn use_tree_can_shadow_inert_macro(tree: &syn::UseTree) -> bool {
             const INERT_MACROS: [&str; 3] = ["format", "matches", "vec"];
             match tree {
-                syn::UseTree::Name(name) => INERT_MACROS.contains(&name.ident.to_string().as_str()),
+                syn::UseTree::Name(name) => {
+                    INERT_MACROS.contains(&semantic_name(&name.ident).as_str())
+                }
                 syn::UseTree::Rename(rename) => {
-                    INERT_MACROS.contains(&rename.ident.to_string().as_str())
-                        || INERT_MACROS.contains(&rename.rename.to_string().as_str())
+                    INERT_MACROS.contains(&semantic_name(&rename.ident).as_str())
+                        || INERT_MACROS.contains(&semantic_name(&rename.rename).as_str())
                 }
                 syn::UseTree::Path(path) => {
-                    INERT_MACROS.contains(&path.ident.to_string().as_str())
+                    INERT_MACROS.contains(&semantic_name(&path.ident).as_str())
                         || use_tree_can_shadow_inert_macro(path.tree.as_ref())
                 }
                 syn::UseTree::Group(group) => {
@@ -5027,8 +5203,9 @@ fn main() {
         }
 
         fn inert_macro_payload_is_closed(mac: &syn::Macro) -> bool {
-            const FORBIDDEN_IDENTIFIERS: [&str; 14] = [
+            const FORBIDDEN_IDENTIFIERS: [&str; 15] = [
                 CAPABILITY,
+                "issue_read_source",
                 "const",
                 "enum",
                 "extern",
@@ -5043,11 +5220,17 @@ fn main() {
                 "type",
                 "use",
             ];
-            let payload = tokens(&mac.tokens);
-            !payload.contains('!')
-                && !payload
-                    .split_whitespace()
-                    .any(|token| FORBIDDEN_IDENTIFIERS.contains(&token))
+            fn tokens_are_closed(stream: proc_macro2::TokenStream) -> bool {
+                stream.into_iter().all(|token| match token {
+                    proc_macro2::TokenTree::Ident(identifier) => {
+                        !FORBIDDEN_IDENTIFIERS.contains(&semantic_name(&identifier).as_str())
+                    }
+                    proc_macro2::TokenTree::Punct(punctuation) => punctuation.as_char() != '!',
+                    proc_macro2::TokenTree::Group(group) => tokens_are_closed(group.stream()),
+                    proc_macro2::TokenTree::Literal(_) => true,
+                })
+            }
+            tokens_are_closed(mac.tokens.clone())
         }
 
         fn macro_is_proven_inert(mac: &syn::Macro) -> bool {
@@ -5068,9 +5251,10 @@ fn main() {
             function: Option<String>,
         }
 
-        struct CapabilityFunctionReference {
+        struct CapabilityFunctionReference<'ast> {
             owner_impl: Option<String>,
             signature: String,
+            method: Option<&'ast syn::ImplItemFn>,
         }
 
         #[derive(Default)]
@@ -5081,9 +5265,11 @@ fn main() {
             macro_references: Vec<String>,
             attribute_references: Vec<String>,
             item_references: Vec<String>,
-            function_references: Vec<CapabilityFunctionReference>,
+            function_references: Vec<CapabilityFunctionReference<'ast>>,
             constructions: Vec<CapabilityConstruction<'ast>>,
             capability_path_references: usize,
+            issuer_path_references: usize,
+            issuance_calls: Vec<(Option<String>, Option<String>, &'ast syn::ExprMethodCall)>,
             current_impl: Option<String>,
             current_function: Option<String>,
             item_macro_depth: usize,
@@ -5100,7 +5286,7 @@ fn main() {
                 if is_exact_cfg_test(&item.attrs) {
                     return;
                 }
-                if item.ident == CAPABILITY {
+                if identifier_is(&item.ident, CAPABILITY) {
                     self.declarations.push(item);
                 }
                 syn::visit::visit_item_struct(self, item);
@@ -5127,6 +5313,7 @@ fn main() {
                     self.function_references.push(CapabilityFunctionReference {
                         owner_impl: None,
                         signature: tokens(&item.sig),
+                        method: None,
                     });
                 }
                 let previous = self.current_function.replace(item.sig.ident.to_string());
@@ -5142,6 +5329,7 @@ fn main() {
                     self.function_references.push(CapabilityFunctionReference {
                         owner_impl: self.current_impl.clone(),
                         signature: tokens(&item.sig),
+                        method: Some(item),
                     });
                 }
                 let previous = self.current_function.replace(item.sig.ident.to_string());
@@ -5157,6 +5345,7 @@ fn main() {
                     self.function_references.push(CapabilityFunctionReference {
                         owner_impl: None,
                         signature: tokens(&item.sig),
+                        method: None,
                     });
                 }
                 syn::visit::visit_trait_item_fn(self, item);
@@ -5170,6 +5359,7 @@ fn main() {
                     self.function_references.push(CapabilityFunctionReference {
                         owner_impl: None,
                         signature: tokens(&item.sig),
+                        method: None,
                     });
                 }
                 syn::visit::visit_foreign_item_fn(self, item);
@@ -5247,9 +5437,9 @@ fn main() {
                     "Eq",
                     "PartialEq",
                 ];
-                if PROVEN_ATTRIBUTE_NAMES.contains(&item.ident.to_string().as_str())
+                if PROVEN_ATTRIBUTE_NAMES.contains(&semantic_name(&item.ident).as_str())
                     || item.rename.as_ref().is_some_and(|(_, rename)| {
-                        PROVEN_ATTRIBUTE_NAMES.contains(&rename.to_string().as_str())
+                        PROVEN_ATTRIBUTE_NAMES.contains(&semantic_name(rename).as_str())
                     })
                 {
                     self.attribute_references.push(tokens(item));
@@ -5296,7 +5486,7 @@ fn main() {
                     .path
                     .segments
                     .iter()
-                    .any(|segment| segment.ident == CAPABILITY);
+                    .any(|segment| identifier_is(&segment.ident, CAPABILITY));
                 let qualified_mentions = expression
                     .qself
                     .as_ref()
@@ -5311,9 +5501,23 @@ fn main() {
                 syn::visit::visit_expr_struct(self, expression);
             }
 
+            fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+                if identifier_is(&call.method, "issue_read_source") {
+                    self.issuance_calls.push((
+                        self.current_impl.clone(),
+                        self.current_function.clone(),
+                        call,
+                    ));
+                }
+                syn::visit::visit_expr_method_call(self, call);
+            }
+
             fn visit_path_segment(&mut self, segment: &'ast syn::PathSegment) {
-                if segment.ident == CAPABILITY {
+                if identifier_is(&segment.ident, CAPABILITY) {
                     self.capability_path_references += 1;
+                }
+                if identifier_is(&segment.ident, "issue_read_source") {
+                    self.issuer_path_references += 1;
                 }
                 syn::visit::visit_path_segment(self, segment);
             }
@@ -5341,9 +5545,9 @@ fn main() {
                 found.aliases
             ));
         }
-        if found.capability_path_references != 3 {
+        if found.capability_path_references != 6 {
             return Err(format!(
-                "actor read capability must have exactly three production path references (impl, read_sources return, singleton construction), found {}",
+                "actor read capability must have exactly six production path references (impl, four closed issuance signatures, singleton construction), found {}",
                 found.capability_path_references
             ));
         }
@@ -5353,25 +5557,169 @@ fn main() {
                 found.item_references
             ));
         }
-        let expected_read_sources_signature = tokens(
-            &syn::parse_str::<syn::Signature>(
-                "fn read_sources(&self,) -> Result<Vec<ActorReadSourceCapability>, String>",
-            )
-            .expect("the one actor capability return signature parses"),
-        );
-        let [read_sources_reference] = found.function_references.as_slice() else {
+        let expected_issuance_methods = [
+            r#"
+            #[allow(dead_code)]
+            pub(in crate::infrastructure::daemon) fn read_sources(
+                &self,
+            ) -> Result<Vec<ActorReadSourceCapability>, String> {
+                let ActorExecutionRevision::LogicalRead(lease) = &self.revision else {
+                    return Err("logical read sources are unavailable to a legacy invocation".to_string());
+                };
+                let parents = lease
+                    .parent_sources
+                    .lock()
+                    .map_err(|_| "parent read leases are poisoned")?;
+                lease.sources.iter().chain(parents.iter())
+                    .map(|source| self.issue_read_source(source, lease.deadline))
+                    .collect()
+            }
+            "#,
+            r#"
+            pub(in crate::infrastructure::daemon) fn layout_read_source(
+                &self,
+                name: &str,
+            ) -> Result<ActorReadSourceCapability, String> {
+                let ActorExecutionRevision::LayoutRead(lease) = &self.revision else {
+                    return Err("typed layout reads require a layout invocation".into());
+                };
+                let binding = lease.bindings.iter()
+                    .find(|binding| binding.source_set_name() == name)
+                    .ok_or_else(|| "the selected layout source was not admitted".to_string())?;
+                let source = ActorLogicalReadSourceLease {
+                    binding: binding.clone(),
+                    read_identity: uuid::Uuid::new_v4().to_string(),
+                    registration_cache: self.invocation.actor.source_artifacts(binding)?,
+                };
+                self.issue_read_source(&source, lease.deadline)
+            }
+            "#,
+            r#"
+    pub(in crate::infrastructure::daemon) fn apply_range_refusal_source(
+        &self,
+        at: &QualifiedAddress,
+    ) -> Result<ActorReadSourceCapability, String> {
+        let ActorExecutionRevision::UnpublishedApply(confirmed) = &self.revision else {
+            return Err("range-refusal reads require an unpublished apply invocation".into());
+        };
+        if confirmed.load(std::sync::atomic::Ordering::Acquire)
+            || at.line_range().is_none()
+            || !self.original_body_line_targets().contains(at)
+        {
+            return Err(
+                "range-refusal read must name an original read-only Body range before mutation"
+                    .into(),
+            );
+        }
+        let binding = &self
+            .invocation
+            .read_sources
+            .iter()
+            .find(|source| source.binding.source_set_name() == at.source_set())
+            .ok_or_else(|| "range-refusal source was not admitted".to_string())?
+            .binding;
+        let source = ActorLogicalReadSourceLease {
+            binding: binding.clone(),
+            read_identity: uuid::Uuid::new_v4().to_string(),
+            registration_cache: self.invocation.actor.source_artifacts(binding)?,
+        };
+        self.issue_read_source(&source, ProviderDeadline::no_deadline())
+    }
+
+            "#,
+            r#"
+            fn issue_read_source(
+                &self,
+                source: &ActorLogicalReadSourceLease,
+                read_deadline: ProviderDeadline,
+            ) -> Result<ActorReadSourceCapability, String> {
+                self.invocation.actor.validate_binding(&source.binding)?;
+                Ok(ActorReadSourceCapability {
+                    binding: source.binding.clone(),
+                    identity: format!(
+                        "{}:{}",
+                        self.invocation.workspace_identity_hash.as_str(),
+                        source.binding.source_set_name()
+                    ),
+                    read_identity: source.read_identity.clone(),
+                    deadline: read_deadline,
+                    registration_cache: Arc::clone(&source.registration_cache),
+                })
+            }
+            "#,
+        ]
+        .map(|expected| {
+            syn::parse_str::<syn::ImplItemFn>(expected)
+                .expect("the closed issuance method fixture parses")
+        });
+        if found.function_references.len() != expected_issuance_methods.len() {
             return Err(format!(
-                "actor read capability must appear in exactly one production function signature, found {}",
+                "actor read capability may appear only in the four closed issuance signatures, found {}",
                 found.function_references.len()
             ));
-        };
-        if read_sources_reference.owner_impl.as_deref() != Some("ActorBoundExecution")
-            || read_sources_reference.signature != expected_read_sources_signature
-        {
-            return Err(format!(
-                "only ActorBoundExecution::read_sources may return the capability; found owner={:?}, signature=`{}`",
-                read_sources_reference.owner_impl, read_sources_reference.signature
-            ));
+        }
+        for expected in &expected_issuance_methods {
+            let references = found
+                .function_references
+                .iter()
+                .filter(|reference| {
+                    reference.owner_impl.as_deref() == Some("ActorBoundExecution")
+                        && reference.signature == tokens(&expected.sig)
+                })
+                .collect::<Vec<_>>();
+            let [reference] = references.as_slice() else {
+                return Err(format!(
+                    "missing or duplicate closed issuance method `{}`",
+                    expected.sig.ident
+                ));
+            };
+            let Some(actual) = reference.method else {
+                return Err("capability issuance must be an inherent method".to_string());
+            };
+            // Visibility belongs to ImplItemFn, not syn::Signature. Comparing the
+            // signature alone would let a sibling call the private issuer.
+            if tokens(&actual.vis) != tokens(&expected.vis)
+                || actual
+                    .attrs
+                    .iter()
+                    .filter(|attribute| !attribute.path().is_ident("doc"))
+                    .map(tokens)
+                    .collect::<Vec<_>>()
+                    != expected.attrs.iter().map(tokens).collect::<Vec<_>>()
+                || tokens(&actual.block) != tokens(&expected.block)
+            {
+                return Err(format!(
+                    "issuance method `{}` changed its closed visibility, attributes or authority dataflow",
+                    expected.sig.ident
+                ));
+            }
+        }
+
+        if found.issuer_path_references != 0 || found.issuance_calls.len() != 3 {
+            return Err(
+                "the private issuer may only be called directly by the three closed read entries"
+                    .to_string(),
+            );
+        }
+        for (owner, function, call) in &found.issuance_calls {
+            let expected = match function.as_deref() {
+                Some("read_sources") => "self.issue_read_source(source, lease.deadline)",
+                Some("layout_read_source") => "self.issue_read_source(&source, lease.deadline)",
+                Some("apply_range_refusal_source") => {
+                    "self.issue_read_source(&source, ProviderDeadline::no_deadline())"
+                }
+                _ => {
+                    return Err("private issuance escaped the three closed read entries".to_string())
+                }
+            };
+            if owner.as_deref() != Some("ActorBoundExecution")
+                || !expression_is(&syn::Expr::MethodCall((*call).clone()), expected)
+            {
+                return Err(
+                    "private issuance must preserve the exact selected lease and deadline"
+                        .to_string(),
+                );
+            }
         }
 
         let [construction] = found.constructions.as_slice() else {
@@ -5382,14 +5730,14 @@ fn main() {
         };
         let expression = construction.expression;
         if construction.owner_impl.as_deref() != Some("ActorBoundExecution")
-            || construction.function.as_deref() != Some("read_sources")
+            || construction.function.as_deref() != Some("issue_read_source")
             || expression.qself.is_some()
             || !expression.path.is_ident(CAPABILITY)
             || !expression.attrs.is_empty()
             || expression.rest.is_some()
         {
             return Err(format!(
-                "only ActorBoundExecution::read_sources may construct the capability; found owner={:?}, function={:?}, expression=`{}`",
+                "only private ActorBoundExecution::issue_read_source may construct the capability; found owner={:?}, function={:?}, expression=`{}`",
                 construction.owner_impl,
                 construction.function,
                 tokens(expression)
@@ -5415,7 +5763,7 @@ fn main() {
         }
         let expected_construction_fields = std::collections::BTreeMap::from([
             ("binding", "source.binding.clone()"),
-            ("deadline", "lease.deadline"),
+            ("deadline", "read_deadline"),
             ("read_identity", "source.read_identity.clone()"),
             (
                 "registration_cache",
@@ -5658,6 +6006,8 @@ fn main() {
         actor_read_source_capability_ast_audit_rejects_replenished_deadline();
         actor_read_source_capability_ast_audit_rejects_side_effecting_profile_error_closure();
         actor_read_source_capability_ast_audit_rejects_substituted_construction_fields();
+        actor_read_source_capability_ast_audit_rejects_issuance_visibility_and_lazy_substitution();
+        actor_read_source_capability_issuer_privacy_is_enforced_by_rustc();
         actor_read_source_capability_ast_audit_skips_only_exact_cfg_test_scope();
     }
 
@@ -6577,15 +6927,15 @@ struct ActorLogicalReadLease {"#,
         let source = include_str!("invocation_service.rs");
         let hostile_fields = [
             (
-                "Ok(ActorReadSourceCapability {\n                    binding: source.binding.clone(),",
-                "Ok(ActorReadSourceCapability {\n                    binding: self.invocation.provider_root.clone(),",
+                "Ok(ActorReadSourceCapability {\n            binding: source.binding.clone(),",
+                "Ok(ActorReadSourceCapability {\n            binding: self.invocation.provider_root.clone(),",
             ),
             (
                 r#"identity: format!(
-                        "{}:{}",
-                        self.invocation.workspace_identity_hash.as_str(),
-                        source.binding.source_set_name()
-                    ),"#,
+                "{}:{}",
+                self.invocation.workspace_identity_hash.as_str(),
+                source.binding.source_set_name()
+            ),"#,
                 "identity: String::from(\"caller-supplied\"),",
             ),
             (
@@ -6593,7 +6943,7 @@ struct ActorLogicalReadLease {"#,
                 "read_identity: lease.sources[0].read_identity.clone(),",
             ),
             (
-                "deadline: lease.deadline,",
+                "deadline: read_deadline,",
                 "deadline: ProviderDeadline::from_budget(Duration::from_secs(120)),",
             ),
             (
@@ -6615,6 +6965,216 @@ struct ActorLogicalReadLease {"#,
         assert!(
             accepted.is_empty(),
             "substituted actor capability construction fields escaped: {accepted:?}"
+        );
+    }
+
+    #[test]
+    fn actor_read_source_capability_ast_audit_rejects_issuance_visibility_and_lazy_substitution() {
+        let source = include_str!("invocation_service.rs");
+        // First prove the valid source passes: a permanently red audit cannot
+        // demonstrate that any of these individual boundary mutations is caught.
+        audit_actor_read_source_capability_api(source).unwrap();
+        let substitutions = [
+            ("|| !self.original_body_line_targets().contains(at)", "|| false"),
+            ("if confirmed.load(std::sync::atomic::Ordering::Acquire)", "if false"),
+            (".find(|source| source.binding.source_set_name() == at.source_set())", ".find(|source| source.binding.source_set_name() == \"foreign\")"),
+            ("self.issue_read_source(&source, ProviderDeadline::no_deadline())", "self.issue_read_source(&source, ProviderDeadline::from_budget(Duration::from_secs(120)))"),
+
+            ("    fn issue_read_source(", "    pub(super) fn issue_read_source("),
+            ("    fn issue_read_source(", "    pub fn issue_read_source("),
+            (
+                "self.invocation.actor.validate_binding(&source.binding)?;\n        Ok(ActorReadSourceCapability",
+                "Ok(ActorReadSourceCapability",
+            ),
+            (
+                ".map(|source| self.issue_read_source(source, lease.deadline))",
+                ".map(|source| self.issue_read_source(source, ProviderDeadline::no_deadline()))",
+            ),
+            (
+                ".find(|binding| binding.source_set_name() == name)",
+                ".find(|binding| binding.source_set_name() == \"other\")",
+            ),
+            (
+                "let binding = lease\n            .bindings",
+                "let binding = self.invocation\n            .read_sources",
+            ),
+            (
+                "let source = ActorLogicalReadSourceLease {\n            binding: binding.clone(),",
+                "let source = ActorLogicalReadSourceLease {\n            binding: self.invocation.provider_root.clone(),",
+            ),
+            (
+                "registration_cache: self.invocation.actor.source_artifacts(binding)?,",
+                "registration_cache: self.invocation.actor.source_artifacts(&self.invocation.provider_root)?,",
+            ),
+            (
+                "registration_cache: self.invocation.actor.source_artifacts(binding)?,",
+                "registration_cache: Arc::new(RegistrationCache::default()),",
+            ),
+            (
+                "self.issue_read_source(&source, lease.deadline)",
+                "self.issue_read_source(&source, ProviderDeadline::no_deadline())",
+            ),
+            (
+                "self.issue_read_source(&source, lease.deadline)",
+                "self.issue_read_source(&lease.sources[0], lease.deadline)",
+            ),
+            (
+                "read_identity: uuid::Uuid::new_v4().to_string(),\n            registration_cache: self.invocation.actor.source_artifacts(binding)?,",
+                "read_identity: String::from(\"foreign\"),\n            registration_cache: self.invocation.actor.source_artifacts(binding)?,",
+            ),
+        ];
+        let escapes = [
+            r#"impl ActorBoundExecution {
+                fn foreign_issuance(&self, source: &ActorLogicalReadSourceLease) {
+                    let _ = self.issue_read_source(source, ProviderDeadline::no_deadline());
+                }
+            }"#,
+            r#"impl ActorBoundExecution {
+                fn foreign_issuance(&self, source: &ActorLogicalReadSourceLease) {
+                    let issue = ActorBoundExecution::issue_read_source;
+                    let _ = issue(self, source, ProviderDeadline::no_deadline());
+                }
+            }"#,
+            r#"impl ActorBoundExecution {
+                fn foreign_issuance(&self, source: &ActorLogicalReadSourceLease) {
+                    let _ = vec![self.issue_read_source(source, ProviderDeadline::no_deadline())];
+                }
+            }"#,
+            r#"impl ActorBoundExecution {
+                fn foreign_issuance(&self, source: &ActorLogicalReadSourceLease) {
+                    let _ = vec![self.r#issue_read_source(source, ProviderDeadline::no_deadline())];
+                }
+            }"#,
+            r#"impl ActorBoundExecution {
+                fn foreign_issuance(&self, source: &ActorLogicalReadSourceLease) {
+                    let _ = vec![r#ActorReadSourceCapability {
+                        binding: source.binding.clone(),
+                        identity: String::from("foreign"),
+                        read_identity: source.read_identity.clone(),
+                        deadline: ProviderDeadline::no_deadline(),
+                        registration_cache: Arc::clone(&source.registration_cache),
+                    }];
+                }
+            }"#,
+            r#"impl ActorBoundExecution {
+                fn foreign_issuance(&self, source: &ActorLogicalReadSourceLease) {
+                    let _ = self.r#issue_read_source(source, ProviderDeadline::no_deadline());
+                }
+            }"#,
+            r#"impl ActorBoundExecution {
+                fn foreign_issuance(&self, source: &ActorLogicalReadSourceLease) {
+                    let issue = ActorBoundExecution::r#issue_read_source;
+                    let _ = issue(self, source, ProviderDeadline::no_deadline());
+                }
+            }"#,
+            r#"impl ActorBoundExecution {
+                fn foreign_issuance(&self, source: &ActorLogicalReadSourceLease) {
+                    let _ = r#ActorReadSourceCapability {
+                        binding: source.binding.clone(),
+                        identity: String::from("foreign"),
+                        read_identity: source.read_identity.clone(),
+                        deadline: ProviderDeadline::no_deadline(),
+                        registration_cache: Arc::clone(&source.registration_cache),
+                    };
+                }
+            }"#,
+            r#"use external::x as r#vec;"#,
+            r#"use external::x as r#Clone;"#,
+        ];
+        for escape in escapes {
+            let hostile = format!("{source}\n{escape}");
+            syn::parse_file(&hostile).expect("an issuance escape is valid Rust syntax");
+            assert!(
+                audit_actor_read_source_capability_api(&hostile).is_err(),
+                "an inferred capability escaped the closed issuer calls: {escape}"
+            );
+        }
+        for (original, replacement) in substitutions {
+            let hostile = source.replacen(original, replacement, 1);
+            assert_ne!(hostile, source, "mutation must alter `{original}`");
+            syn::parse_file(&hostile).expect("each hostile dataflow must remain valid Rust syntax");
+            assert!(
+                audit_actor_read_source_capability_api(&hostile).is_err(),
+                "issuance mutation escaped the AST boundary: `{replacement}`"
+            );
+        }
+    }
+
+    #[test]
+    fn actor_read_source_capability_issuer_privacy_is_enforced_by_rustc() {
+        use quote::ToTokens;
+
+        let source = include_str!("invocation_service.rs");
+        audit_actor_read_source_capability_api(source).unwrap();
+        let file = syn::parse_file(source).unwrap();
+        let mut issuer = file
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                syn::Item::Impl(item) => Some(item),
+                _ => None,
+            })
+            .flat_map(|item| item.items.iter())
+            .find_map(|item| match item {
+                syn::ImplItem::Fn(method) if method.sig.ident == "issue_read_source" => {
+                    Some(method.clone())
+                }
+                _ => None,
+            })
+            .expect("the audited private issuer exists");
+        // Keep the production signature and real visibility; unrelated actor
+        // dependencies in the body are not needed to ask rustc about privacy.
+        issuer.block = syn::parse_quote!({ unimplemented!() });
+        let fixture = |issuer: &syn::ImplItemFn| {
+            format!(
+                r#"
+mod owner {{
+    pub(super) struct ActorBoundExecution;
+    pub(super) struct ActorLogicalReadSourceLease;
+    pub(super) struct ProviderDeadline;
+    pub(super) struct ActorReadSourceCapability;
+    impl ActorBoundExecution {{ {} }}
+}}
+mod sibling {{
+    fn forge(execution: &super::owner::ActorBoundExecution) {{
+        let _ = execution.issue_read_source(
+            &super::owner::ActorLogicalReadSourceLease,
+            super::owner::ProviderDeadline,
+        );
+    }}
+}}
+fn main() {{}}
+"#,
+                issuer.to_token_stream()
+            )
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("actor_issuer_privacy.rs");
+        let compile = |source: String| {
+            std::fs::write(&path, source).unwrap();
+            std::process::Command::new("rustc")
+                .arg("--edition=2021")
+                .arg("--emit=metadata")
+                .arg("--out-dir")
+                .arg(directory.path())
+                .arg(&path)
+                .output()
+                .expect("rustc is available to the Rust test suite")
+        };
+        let private = compile(fixture(&issuer));
+        let stderr = String::from_utf8_lossy(&private.stderr);
+        assert!(
+            !private.status.success()
+                && stderr.contains("E0624")
+                && stderr.contains("issue_read_source"),
+            "a sibling could call the actual private issuer: {stderr}"
+        );
+        issuer.vis = syn::parse_quote!(pub(super));
+        let exposed = compile(fixture(&issuer));
+        assert!(
+            exposed.status.success(),
+            "the visibility counterexample must compile: {}",
+            String::from_utf8_lossy(&exposed.stderr)
         );
     }
 
@@ -6756,16 +7316,12 @@ struct ActorLogicalReadLease {"#,
             )
             .unwrap();
         let binding = actor.bind_provider_root("main", &source).unwrap();
-        let cancellation = CancellationToken::new();
-        let fence = actor
-            .capture_logical_read_revision(&binding, deadline, &cancellation)
-            .unwrap();
         let identity = format!(
             "{}:{}",
             actor.safe_identity_hash().unwrap().as_str(),
             binding.source_set_name()
         );
-        let capability = actor_read_source_capability_for_test(binding, identity, fence, deadline);
+        let capability = actor_read_source_capability_for_test(binding, identity, deadline);
         (workspace, actor, capability)
     }
 
@@ -7108,8 +7664,11 @@ struct ActorLogicalReadLease {"#,
         let first_match = &object_search.data.as_ref().unwrap()["matches"][0];
         assert_eq!(first_match["scope"], "main:Catalog.Items");
         assert!(first_match.get("file").is_none());
-        // Область поиска и модуль совпадения — разные поля (#1298).
-        assert_eq!(first_match["at"], "main:Catalog.Items.Module.Object");
+        // Область поиска и читаемый адрес совпадения — разные поля (#1298).
+        assert_eq!(
+            first_match["at"],
+            "main:Catalog.Items.Module.Object.Method.Проверка.Body#L2"
+        );
         assert!(
             !std::fs::read_to_string(source.join("Catalogs/Items.xml"))
                 .unwrap()
@@ -7427,7 +7986,7 @@ struct ActorLogicalReadLease {"#,
             (ToolIdentity::View, serde_json::json!({}), false),
             (
                 ToolIdentity::View,
-                serde_json::json!({"at": "main:Catalog.Items.Module.Object.Body", "limit": 1}),
+                serde_json::json!({"at": "main:Catalog.Items.Module.Object.Event", "limit": 1}),
                 true,
             ),
             (
@@ -8965,6 +9524,66 @@ struct ActorLogicalReadLease {"#,
         );
     }
 
+    #[test]
+    fn saved_apply_token_survives_temporary_named_root_validation_failure() {
+        let workspace = subsystem_picture_workspace("", true);
+        let source = workspace.path().join("src");
+        let before = crate::test_support::tree_snapshot(&source);
+        let runtime = bootstrap_runtime();
+        let preview = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Apply,
+            serde_json::json!({
+                "at": "main:Subsystem.Sales",
+                "ops": [{"op": "props.set", "args": {"values": {"Comment": "retained after temporary root failure"}}}]
+            }),
+        );
+        assert!(preview.ok, "{preview:?}");
+        let token = preview.data.as_ref().unwrap()["executionToken"].clone();
+
+        runtime
+            .workspace_actors
+            .fail_next_named_root_validation_for_test(std::io::ErrorKind::PermissionDenied);
+        let unavailable = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Apply,
+            serde_json::json!({"executionToken": token}),
+        );
+        assert!(!unavailable.ok, "{unavailable:?}");
+        assert_eq!(
+            unavailable.diagnostics[0]["code"], "provider_unavailable",
+            "временная ошибка открытия корня не должна превращать токен в неизвестный: {unavailable:?}"
+        );
+        assert_eq!(
+            unavailable.diagnostics[0]["detailCode"],
+            "source_temporarily_unavailable"
+        );
+        assert_eq!(unavailable.diagnostics[0]["outcome"], "retry");
+        assert_eq!(unavailable.next[0]["tool"], "unica.apply");
+        assert_eq!(unavailable.next[0]["args"]["executionToken"], token);
+        assert_eq!(
+            crate::test_support::tree_snapshot(&source),
+            before,
+            "отказ допуска не должен публиковать сохранённый план"
+        );
+
+        let executed = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Apply,
+            serde_json::json!({"executionToken": token}),
+        );
+        assert!(
+            executed.ok,
+            "повтор после временной ошибки должен исполнить прежний токен: {executed:?}"
+        );
+        assert!(std::fs::read_to_string(source.join("Subsystems/Sales.xml"))
+            .unwrap()
+            .contains("retained after temporary root failure"));
+    }
+
     fn saved_apply_survives_retention_age(age: Duration) {
         use crate::infrastructure::workspace_actor::with_actor_retention_time_for_test;
 
@@ -9895,22 +10514,33 @@ struct ActorLogicalReadLease {"#,
         apply_pair(
             at,
             serde_json::json!([
-                {"op": "formAttribute.add", "args": {"items": [
+                {"op": "attribute.add", "args": {"items": [
                     {"name": "HtmlSource", "type": "String"}
                 ]}},
-                {"op": "element.add", "args": {"items": [
-                    {"name": "Content", "type": "Group"}, {
-                    "name": "Html", "type": "HTMLDocumentField", "path": "HtmlSource", "into": "Content",
-                    "titleLocation": "none", "width": 1, "height": 1,
-                    "autoMaxWidth": false, "skipOnInput": true, "on": ["OnClick"]
+                {"op": "item.add", "args": {"items": [
+                    {"name": "Content", "type": "Group"}
+                ]}},
+                {"op": "item.add", "args": {"at": "main:Document.Order.Form.Main.Item.Content", "items": [{
+                    "name": "Html", "type": "HTMLDocumentField", "path": "HtmlSource",
+                    "titleLocation": "None", "width": 1, "height": 1,
+                    "autoMaxWidth": false, "skipOnInput": true
                 }]}}
             ]),
         );
+        // События нового элемента привязывает `event.bind` на их адресах с
+        // явным именем обработчика (Р2, Р4 #1447).
         apply_pair(
-            at,
-            serde_json::json!([{"op": "event.bind", "args": {"values": {
-                "element": "Html", "event": "DocumentComplete", "handler": "HtmlDocumentComplete"
-            }}}]),
+            item_at,
+            serde_json::json!([
+                {"op": "event.bind", "args": {
+                    "at": format!("{item_at}.Event.DocumentComplete"),
+                    "values": {"handler": "HtmlDocumentComplete"}
+                }},
+                {"op": "event.bind", "args": {
+                    "at": format!("{item_at}.Event.OnClick"),
+                    "values": {"handler": "HtmlOnClick"}
+                }}
+            ]),
         );
 
         let form_path = source.join("Documents/Order/Forms/Main/Ext/Form.xml");
@@ -9922,7 +10552,7 @@ struct ActorLogicalReadLease {"#,
             .find(|node| {
                 node.has_tag_name("HTMLDocumentField") && node.attribute("name") == Some("Html")
             })
-            .expect("typed element.add creates the platform HTML element");
+            .expect("typed item.add creates the platform HTML element");
         let group = html.parent().unwrap().parent().unwrap();
         assert!(group.has_tag_name("UsualGroup"), "{xml}");
         assert_eq!(group.attribute("name"), Some("Content"));
@@ -9959,7 +10589,7 @@ struct ActorLogicalReadLease {"#,
             events
                 .iter()
                 .any(|node| node.attribute("name") == Some("OnClick")
-                    && node.text().is_some_and(|handler| !handler.is_empty())),
+                    && node.text() == Some("HtmlOnClick")),
             "{xml}"
         );
         assert!(
@@ -9992,9 +10622,9 @@ struct ActorLogicalReadLease {"#,
 
         // A later operation must not discard an HTML field it did not create.
         apply_pair(
-            at,
-            serde_json::json!([{"op": "element.add", "args": {"items": [
-                {"name": "Neighbor", "type": "InputField", "path": "HtmlSource", "into": "Content", "after": "Html"}
+            "main:Document.Order.Form.Main.Item.Content",
+            serde_json::json!([{"op": "item.add", "args": {"items": [
+                {"name": "Neighbor", "type": "InputField", "path": "HtmlSource", "after": "Html"}
             ]}}]),
         );
         let with_neighbor = std::fs::read_to_string(&form_path).unwrap();
@@ -10032,8 +10662,8 @@ struct ActorLogicalReadLease {"#,
                 serde_json::json!({
                     "at": at,
                     "ops": [
-                        {"op": "element.add", "args": {"items": [{"name": "MustNotAppear", "type": "InputField", "path": "HtmlSource"}]}},
-                        {"op": "event.bind", "args": {"values": {"element": "Html", "event": "OnChange", "handler": "InvalidHandler"}}}
+                        {"op": "item.add", "args": {"items": [{"name": "MustNotAppear", "type": "InputField", "path": "HtmlSource"}]}},
+                        {"op": "event.bind", "args": {"at": format!("{item_at}.Event.OnChange"), "values": {"handler": "InvalidHandler"}}}
                     ]
                 }),
             );
@@ -10068,7 +10698,7 @@ struct ActorLogicalReadLease {"#,
                     ToolIdentity::Apply,
                     serde_json::json!({
                         "at": at,
-                        "ops": [{"op": "element.add", "args": {"items": [invalid_item]}}]
+                        "ops": [{"op": "item.add", "args": {"items": [invalid_item]}}]
                     }),
                 );
                 assert!(
@@ -10102,7 +10732,7 @@ struct ActorLogicalReadLease {"#,
                 ToolIdentity::Apply,
                 serde_json::json!({
                     "at": at,
-                    "ops": [{"op": "element.add", "args": {"items": [{
+                    "ops": [{"op": "item.add", "args": {"items": [{
                         "name": "OverflowHtml", "type": "HTMLDocumentField", "path": "HtmlSource"
                     }]}}]
                 }),
@@ -10319,7 +10949,7 @@ struct ActorLogicalReadLease {"#,
     }
 
     #[test]
-    fn public_metadata_apply_keeps_dry_run_and_real_plans_identical_for_four_supported_ops() {
+    fn public_metadata_apply_preview_is_index_write_free_and_matches_real_plan() {
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("src");
         std::fs::create_dir_all(source.join("Documents")).unwrap();
@@ -10352,6 +10982,65 @@ struct ActorLogicalReadLease {"#,
             Arc::new(TokioClock),
         );
         let workspace_hint = std::fs::canonicalize(workspace.path()).unwrap();
+        let index_context = crate::domain::workspace::WorkspaceContext {
+            cwd: workspace_hint.clone(),
+            workspace_root: workspace_hint.clone(),
+            cache_root: workspace_hint.join(".build/unica"),
+            workspace_epoch: 0,
+        };
+        let index_state_root = crate::infrastructure::workspace_index::rlm_provider_state_root(
+            &index_context,
+            &source,
+        )
+        .unwrap();
+        let index_status =
+            crate::infrastructure::workspace_index::status_path(&index_context, &source).unwrap();
+        let index_lock = index_state_root.join("locks/rlm-bsl/index-v17/bsl_index.lock");
+        std::fs::create_dir_all(index_status.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(index_lock.parent().unwrap()).unwrap();
+        std::fs::write(
+            &index_status,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "status": "building",
+                "source_root": source.display().to_string(),
+                "db_path": null,
+                "message": "preview state trap",
+                "failure_class": null,
+                "build_id": null,
+                "next_action": null,
+                "updated_at": 0,
+                "last_run": null
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            &index_lock,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schema_version": 1,
+                "lock_id": "preview-state-trap",
+                "owner_pid": std::process::id(),
+                "action": "build",
+                "source_root": source.display().to_string(),
+                "started_at": 0,
+                "updated_at": 0,
+                "state": "active"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        // Эта ловушка изменилась бы при любой проверке готовности индекса:
+        // устаревшая блокировка стала бы recovered, а состояние — failed.
+        let index_state_before = crate::test_support::tree_snapshot(&index_state_root);
+
+        struct IndexBuildObserverReset;
+        impl Drop for IndexBuildObserverReset {
+            fn drop(&mut self) {
+                crate::infrastructure::workspace_index::set_isolated_build_start_observer_for_test(
+                    None,
+                );
+            }
+        }
         let call = |arguments| {
             let request = InvocationRequest::new(
                 ToolIdentity::Apply,
@@ -10364,16 +11053,36 @@ struct ActorLogicalReadLease {"#,
         };
         let apply_pair = |operation: serde_json::Value| {
             let before = std::fs::read(&descriptor).unwrap();
-            let dry = call(serde_json::json!({
-                "at": "main:Document.Order",
-                "ops": [operation.clone()],
-            }));
+            let index_starts = std::rc::Rc::new(std::cell::Cell::new(0));
+            let observed_starts = std::rc::Rc::clone(&index_starts);
+            let (dry, repeated_dry) = {
+                // Наблюдатель стоит на первой строке start_isolated_build и
+                // видит вызов даже до раннего отказа доставки RLM или записи.
+                crate::infrastructure::workspace_index::set_isolated_build_start_observer_for_test(
+                    Some(Box::new(move |_| {
+                        observed_starts.set(observed_starts.get() + 1)
+                    })),
+                );
+                let _reset = IndexBuildObserverReset;
+                (
+                    call(serde_json::json!({
+                        "at": "main:Document.Order",
+                        "ops": [operation.clone()],
+                    })),
+                    call(serde_json::json!({
+                        "at": "main:Document.Order",
+                        "ops": [operation.clone()],
+                    })),
+                )
+            };
             assert!(dry.ok, "dry-run failed: {dry:?}");
             assert_eq!(std::fs::read(&descriptor).unwrap(), before);
-            let repeated_dry = call(serde_json::json!({
-                "at": "main:Document.Order",
-                "ops": [operation.clone()],
-            }));
+            assert_eq!(index_starts.get(), 0, "preview started RLM indexing");
+            assert_eq!(
+                crate::test_support::tree_snapshot(&index_state_root),
+                index_state_before,
+                "preview wrote RLM index state"
+            );
             assert_eq!(
                 dry.data.as_ref().unwrap()["planHash"],
                 repeated_dry.data.as_ref().unwrap()["planHash"],
@@ -10613,38 +11322,135 @@ struct ActorLogicalReadLease {"#,
     }
 
     #[test]
-    fn logical_read_admission_does_not_scan_source_revisions() {
-        assert_logical_read_does_not_scan(LogicalReadScanCase::Admission);
+    fn logical_read_of_one_object_opens_only_its_own_files() {
+        assert_logical_read_files_do_not_grow_with_unrelated_objects(false);
+    }
+
+    /// The configuration root proves only `Configuration.xml`: it opens no
+    /// object descriptor and lists no collection, however many are registered.
+    #[test]
+    fn configuration_root_view_opens_no_object_descriptor() {
+        let (workspace, source) = source_selection_read_fixture();
+        add_unrelated_catalogs(&source, 6);
+        let runtime = bootstrap_runtime();
+        let reads = RetainedReadProbe::watch(&source);
+
+        let root = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::View,
+            serde_json::json!({"at": "main:Configuration"}),
+        );
+
+        assert!(root.ok, "the configuration root view must succeed");
+        let root_reads = reads.take();
+        assert!(
+            root_reads
+                .iter()
+                .any(|read| *read == RetainedRead::Opened("Configuration.xml".into())),
+            "the probe must observe the root read: {root_reads:?}"
+        );
+        assert!(
+            root_reads.iter().all(|read| match read {
+                RetainedRead::Opened(path) => !path.starts_with("Catalogs"),
+                RetainedRead::Listed(_) => false,
+            }),
+            "the configuration root read object descriptors: {root_reads:?}"
+        );
+    }
+
+    /// The streamed root of a `Configuration.xml` above 8 MiB proves only the
+    /// file itself, like the ordinary root.
+    #[test]
+    fn streamed_configuration_root_view_opens_no_object_descriptor() {
+        let (workspace, source) = source_selection_read_fixture();
+        add_unrelated_catalogs(&source, 6);
+        let configuration = source.join("Configuration.xml");
+        let text = std::fs::read_to_string(&configuration).unwrap();
+        std::fs::write(
+            &configuration,
+            text.replace(
+                "</MetaDataObject>",
+                &format!("<!--{}--></MetaDataObject>", "x".repeat(9 * 1024 * 1024)),
+            ),
+        )
+        .unwrap();
+        let runtime = bootstrap_runtime();
+        let reads = RetainedReadProbe::watch(&source);
+
+        let root = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::View,
+            serde_json::json!({"at": "main:Configuration"}),
+        );
+
+        assert!(root.ok, "the streamed configuration root view must succeed");
+        assert_eq!(root.data.as_ref().unwrap()["props"]["totalObjects"], 7);
+        let root_reads = reads.take();
+        assert!(
+            root_reads.iter().all(|read| match read {
+                RetainedRead::Opened(path) => !path.starts_with("Catalogs"),
+                RetainedRead::Listed(_) => false,
+            }),
+            "the streamed configuration root read object descriptors: {root_reads:?}"
+        );
     }
 
     #[test]
-    fn logical_read_publication_does_not_scan_source_revisions() {
-        assert_logical_read_does_not_scan(LogicalReadScanCase::Publication);
+    fn borrowed_logical_read_admits_and_publishes_without_unrelated_objects() {
+        assert_logical_read_files_do_not_grow_with_unrelated_objects(true);
     }
 
-    #[test]
-    fn logical_read_parent_publication_does_not_scan_source_revisions() {
-        assert_logical_read_does_not_scan(LogicalReadScanCase::ParentPublication);
+    /// Registers `count` catalogs the read never addresses, each with its own
+    /// descriptor, so a tree scan or a read of every descriptor grows with it.
+    fn add_unrelated_catalogs(source: &std::path::Path, count: usize) {
+        let configuration = source.join("Configuration.xml");
+        let registrations = (0..count)
+            .map(|index| format!("<Catalog>Unrelated{index}</Catalog>"))
+            .collect::<String>();
+        let text = std::fs::read_to_string(&configuration).unwrap();
+        assert!(text.contains("<ChildObjects>"), "{text}");
+        std::fs::write(
+            &configuration,
+            text.replacen(
+                "<ChildObjects>",
+                &format!("<ChildObjects>{registrations}"),
+                1,
+            ),
+        )
+        .unwrap();
+        for index in 0..count {
+            std::fs::write(
+                source.join(format!("Catalogs/Unrelated{index}.xml")),
+                format!(
+                    r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="dddddddd-dddd-4ddd-8ddd-{index:012}"><Properties><Name>Unrelated{index}</Name></Properties><ChildObjects/></Catalog></MetaDataObject>"#
+                ),
+            )
+            .unwrap();
+        }
     }
 
-    #[derive(Clone, Copy)]
-    enum LogicalReadScanCase {
-        Admission,
-        Publication,
-        ParentPublication,
+    struct LogicalReadPhases {
+        admission: Vec<RetainedRead>,
+        execution: Vec<RetainedRead>,
+        publication: Vec<RetainedRead>,
     }
 
-    /// The probe clock moves only when a retained revision scan starts, so an
-    /// unchanged reading proves that no scan ran. The read itself goes
-    /// through the production admission, which gives it no deadline (#1251).
-    fn assert_logical_read_does_not_scan(case: LogicalReadScanCase) {
-        let parent_publication = matches!(case, LogicalReadScanCase::ParentPublication);
+    /// Runs one logical `view` through production admission, execution and
+    /// publication and records the source files each phase opens or lists.
+    fn observe_logical_read(parent_publication: bool, unrelated: usize) -> LogicalReadPhases {
         let workspace = if parent_publication {
             borrowing_view_fixture("normal")
         } else {
             source_selection_read_fixture().0
         };
+        add_unrelated_catalogs(&workspace.path().join("src"), unrelated);
+        if parent_publication {
+            add_unrelated_catalogs(&workspace.path().join("ext"), unrelated);
+        }
         let runtime = bootstrap_runtime();
+        let probe = RetainedReadProbe::watch(workspace.path());
         let request = InvocationRequest::new(
             ToolIdentity::View,
             serde_json::json!({"at": if parent_publication { "ext:Catalog.Items" } else { "main:Catalog.Items" }}),
@@ -10664,21 +11470,9 @@ struct ActorLogicalReadLease {"#,
             runtime.capture_response_deadline_for_test(),
         )
         .unwrap();
-        let started = Instant::now();
-        let scanned = started + Duration::from_secs(120);
-        set_logical_read_now(started);
         let cancellation = CancellationToken::new();
-        let _admission_scan = matches!(
-            case,
-            LogicalReadScanCase::Admission | LogicalReadScanCase::ParentPublication
-        )
-        .then(|| {
-            crate::infrastructure::source_revision::set_retained_scan_test_mutation(
-                crate::infrastructure::source_revision::RetainedScanTestMutationPoint::ScanStart,
-                move || set_logical_read_now(scanned),
-            )
-        });
         let execution = invocation.begin_execution(&cancellation).unwrap();
+        let admission = probe.take();
         let service =
             crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default();
         let staged = service.execute(&execution, cancellation.clone()).unwrap();
@@ -10693,25 +11487,75 @@ struct ActorLogicalReadLease {"#,
                 "resolved"
             );
         }
-        let _publication_scan = matches!(case, LogicalReadScanCase::Publication).then(|| {
-            crate::infrastructure::source_revision::set_retained_scan_test_mutation(
-                crate::infrastructure::source_revision::RetainedScanTestMutationPoint::ScanStart,
-                move || set_logical_read_now(scanned),
-            )
-        });
+        let execution_reads = probe.take();
         let result = execution
             .publish(Ok(staged), &cancellation)
             .unwrap()
             .expect("a logical read publishes a domain result");
-        assert_eq!(
-            logical_read_now(),
-            started,
-            "logical read invoked a global source revision scan"
-        );
+        let publication = probe.take();
         assert!(result.ok, "{result:?}");
         assert!(
             result.data.is_some(),
             "successful read must keep source data"
+        );
+        LogicalReadPhases {
+            admission,
+            execution: execution_reads,
+            publication,
+        }
+    }
+
+    /// A read admits, stages and publishes from the addressed node: the set of
+    /// opened and listed source entries is the same for one and for many
+    /// unrelated registered objects, and never touches their descriptors.
+    /// A borrowed read still resolves its parent by reading the parent's
+    /// descriptors while staging (#1457); its admission and publication
+    /// remain bounded by the addressed nodes.
+    fn assert_logical_read_files_do_not_grow_with_unrelated_objects(parent_publication: bool) {
+        let few = observe_logical_read(parent_publication, 1);
+        let many = observe_logical_read(parent_publication, 6);
+        let mut phases = vec![
+            ("admission", &few.admission, &many.admission),
+            ("publication", &few.publication, &many.publication),
+        ];
+        if !parent_publication {
+            phases.push(("execution", &few.execution, &many.execution));
+        }
+        for (phase, few, many) in phases {
+            assert_eq!(
+                few, many,
+                "{phase} source work grows with unrelated objects"
+            );
+            assert!(
+                !many
+                    .iter()
+                    .any(|read| format!("{read:?}").contains("Unrelated")),
+                "{phase} read an unaddressed object: {many:?}"
+            );
+            assert!(
+                !many
+                    .iter()
+                    .any(|read| matches!(read, RetainedRead::Listed(_))),
+                "{phase} enumerated a source directory: {many:?}"
+            );
+        }
+        assert!(
+            few.execution
+                .iter()
+                .any(|read| format!("{read:?}").contains("Items.xml")),
+            "the probe must observe the addressed descriptor read: {:?}",
+            few.execution
+        );
+        // A borrowed read revalidates the source selection at publication:
+        // the project file and each selected root marker, never an object.
+        assert!(
+            few.publication.iter().all(|read| {
+                parent_publication
+                    && matches!(read, RetainedRead::Opened(path)
+                        if path.ends_with("v8project.yaml") || path.ends_with("Configuration.xml"))
+            }),
+            "publication must not reopen source files: {:?}",
+            few.publication
         );
     }
 
@@ -10922,6 +11766,95 @@ struct ActorLogicalReadLease {"#,
             assert!(message.contains(cause), "{kind:?}");
             assert!(!checked_text_leaks(&checked), "{kind:?}");
         }
+    }
+
+    /// #1460: платформа не компилирует модуль, где `Перем` стоит после
+    /// методов, а анализатор такой модуль пропускает. `check` модуля через
+    /// настоящий сервис вызова проваливается находкой с текстом платформы и
+    /// местом объявления; тот же модуль с объявлением в начале проходит.
+    #[test]
+    fn module_check_fails_a_variable_declared_after_methods() {
+        let checked = |source: &str| {
+            let workspace = scheduled_handler_workspace("CONFIGURATION", source);
+            let runtime = bootstrap_runtime();
+            let service =
+                crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default();
+            let cancellation = CancellationToken::new();
+            let request = InvocationRequest::new(
+                ToolIdentity::Check,
+                serde_json::json!({"at": "main:CommonModule.Handlers.Body"}),
+                std::fs::canonicalize(workspace.path())
+                    .unwrap()
+                    .to_string_lossy(),
+                7_000,
+            )
+            .unwrap();
+            let check = bind_workspace_invocation(
+                &request,
+                &runtime.workspace_actors,
+                Arc::clone(&runtime.deliveries),
+                Arc::clone(&runtime.provider_hosts),
+                Arc::clone(&runtime.runtime_resources),
+                None,
+                runtime.capture_response_deadline_for_test(),
+            )
+            .unwrap()
+            .begin_execution(&cancellation)
+            .unwrap();
+            let (provider, _analyzer) =
+                crate::infrastructure::diagnostics::analyze_timeout_probe::recording_provider();
+            crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
+                .with(|slot| *slot.borrow_mut() = Some(provider));
+            let checked = service.execute(&check, cancellation.clone());
+            crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
+                .with(|slot| *slot.borrow_mut() = None);
+            let checked = checked.unwrap();
+            // Сообщения проверок — постоянные строки: ответ несёт данные
+            // поддержки, и CodeQL считает их вывод утечкой.
+            assert!(checked.ok, "module check must answer a verdict");
+            checked.data.unwrap()
+        };
+
+        let late = checked("Procedure Run() Export\n    Cache = 1;\nEndProcedure\n\nVar Cache;\n");
+        assert!(
+            late["status"] == "failed",
+            "a late declaration fails the check"
+        );
+        let diagnostics = late["diagnostics"].as_array().unwrap();
+        assert!(
+            diagnostics.len() == 1,
+            "exactly one finding names the declaration"
+        );
+        let finding = &diagnostics[0];
+        assert!(
+            finding["validator"] == "bsl",
+            "the finding belongs to the bsl step"
+        );
+        assert!(
+            finding["code"] == "VariableDeclarationPlacement",
+            "the finding names the placement rule"
+        );
+        assert!(finding["severity"] == "error", "the finding is an error");
+        assert!(
+            finding["message"]
+                == "Объявления переменных должны быть расположены в начале модуля, процедуры или функции",
+            "the finding carries the platform message"
+        );
+        assert!(
+            finding["location"]["targetKind"] == "module",
+            "the finding belongs to the module"
+        );
+        assert!(
+            finding["focus"]["range"]["startLine"] == 4,
+            "the finding points at the declaration line"
+        );
+
+        let early = checked("Var Cache;\n\nProcedure Run() Export\n    Cache = 1;\nEndProcedure\n");
+        assert!(early["status"] == "passed", "an early declaration passes");
+        assert!(
+            early["diagnostics"] == serde_json::json!([]),
+            "an early declaration has no findings"
+        );
     }
 
     /// #1338: an addressed module `check` whose analyzer is still being
@@ -11512,7 +12445,7 @@ struct ActorLogicalReadLease {"#,
     }
 
     #[test]
-    pub(crate) fn logical_reads_run_without_deadline_source_scans_or_mutation_lane_wait() {
+    pub(crate) fn logical_reads_run_without_deadline_tree_scans_or_mutation_lane_wait() {
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("src");
         let sibling = workspace.path().join("dep");
@@ -11538,6 +12471,19 @@ struct ActorLogicalReadLease {"#,
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><Properties><Name>Items</Name></Properties><ChildObjects/></Catalog></MetaDataObject>"#,
         )
         .unwrap();
+        add_unrelated_catalogs(&source, 3);
+        let sibling_reads = RetainedReadProbe::watch(&sibling);
+        let selected_reads = RetainedReadProbe::watch(&source);
+        let assert_no_unrelated_object_or_listing = |label: &str| {
+            let reads = selected_reads.take();
+            assert!(
+                !reads.iter().any(|read| {
+                    matches!(read, RetainedRead::Listed(_))
+                        || format!("{read:?}").contains("Unrelated")
+                }),
+                "{label} scanned the selected source tree: {reads:?}"
+            );
+        };
         let runtime = V5CanonicalInvocationRuntime::new(
             Arc::new(
                 crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
@@ -11563,29 +12509,15 @@ struct ActorLogicalReadLease {"#,
             runtime.capture_response_deadline_for_test(),
         )
         .unwrap();
-        let sibling_binding = invocation
-            .read_source_binding_for_test("dep")
-            .unwrap()
-            .clone();
-        let sibling_revisions = invocation
-            .actor_for_test()
-            .source_revision_service(&sibling_binding)
-            .unwrap();
-        let selected_revisions = invocation
-            .actor_for_test()
-            .source_revision_service(invocation.read_source_binding_for_test("main").unwrap())
-            .unwrap();
-        let started = Instant::now();
-        set_logical_read_now(started);
-        // Only the actor mutation lane below still needs a finite fixture
-        // deadline; the reads themselves are admitted by production code.
-        let deadline = ProviderDeadline::from_budget(Duration::from_secs(120));
         let cancellation = CancellationToken::new();
         let execution = invocation.begin_execution(&cancellation).unwrap();
-        assert_eq!(
-            sibling_revisions.retained_scan_count(),
-            0,
-            "qualified view must not admit or scan an unrelated source set"
+        assert!(execution.layout_read_source("main").is_err());
+        let sibling_admission = sibling_reads.take();
+        assert!(
+            sibling_admission
+                .iter()
+                .all(|read| *read == RetainedRead::Opened("Configuration.xml".into())),
+            "source selection may prove the sibling root marker, but a qualified view must not read the unrelated source set: {sibling_admission:?}"
         );
         std::fs::write(
             sibling.join("Configuration.xml"),
@@ -11593,7 +12525,6 @@ struct ActorLogicalReadLease {"#,
         )
         .unwrap();
 
-        set_logical_read_now(started + Duration::from_secs(8));
         let sources = execution.read_sources().unwrap();
         assert_eq!(sources.len(), 1);
         assert_eq!(
@@ -11608,11 +12539,7 @@ struct ActorLogicalReadLease {"#,
             .expect("canonical v0.13 execution");
         assert!(result.ok, "canonical v0.13 execution must succeed");
         assert!(result.rev.is_none());
-        assert_eq!(
-            selected_revisions.retained_scan_count(),
-            0,
-            "view admission and execution must not scan even the selected source tree"
-        );
+        assert_no_unrelated_object_or_listing("view admission and execution");
         for (tool, arguments) in [
             (
                 ToolIdentity::Resolve,
@@ -11664,29 +12591,45 @@ struct ActorLogicalReadLease {"#,
                 .unwrap()
                 .unwrap();
             assert!(published.ok);
-            assert_eq!(
-                selected_revisions.retained_scan_count(),
-                0,
-                "{tool:?} must not scan the selected source tree"
-            );
-            assert_eq!(
-                sibling_revisions.retained_scan_count(),
-                0,
-                "{tool:?} must not scan the unrelated source tree"
+            match tool {
+                // A text search reads its scope by contract.
+                ToolIdentity::Search => {
+                    selected_reads.take();
+                }
+                // Resolve proves the target's place: it may enumerate the
+                // directories on the target's own path to match names, but it
+                // opens no other descriptor (#1457).
+                ToolIdentity::Resolve => {
+                    let reads = selected_reads.take();
+                    assert!(
+                        reads.iter().all(|read| match read {
+                            RetainedRead::Listed(path) => {
+                                path.as_os_str().is_empty()
+                                    || path == std::path::Path::new("Catalogs")
+                            }
+                            RetainedRead::Opened(path) => {
+                                path == std::path::Path::new("Configuration.xml")
+                                    || path == std::path::Path::new("Catalogs/Items.xml")
+                            }
+                        }),
+                        "Resolve read beyond the addressed object: {reads:?}"
+                    );
+                }
+                _ => assert_no_unrelated_object_or_listing(&format!("{tool:?}")),
+            }
+            let sibling = sibling_reads.take();
+            assert!(
+                sibling
+                    .iter()
+                    .all(|read| *read == RetainedRead::Opened("Configuration.xml".into())),
+                "{tool:?} must not read the unrelated source tree beyond its root marker: {sibling:?}"
             );
         }
         let actor = Arc::clone(execution.actor_for_test());
-        let legacy_fence = actor
-            .capture_revision(execution.provider_root_for_test(), deadline, &cancellation)
-            .expect("capture a fence for the actor mutation lane");
-        let held_publication = actor
-            .begin_publication(&legacy_fence, deadline, &cancellation)
-            .expect("hold the actor mutation lane");
-        let scans_before_publish = selected_revisions.retained_scan_count();
+        let held_lane = actor.hold_mutation_lane_for_test();
         let (published_tx, published_rx) = mpsc::channel();
         let publish_cancellation = cancellation.clone();
         std::thread::spawn(move || {
-            set_logical_read_now(started + Duration::from_secs(8));
             published_tx
                 .send(execution.publish(Ok(result), &publish_cancellation))
                 .unwrap();
@@ -11696,17 +12639,17 @@ struct ActorLogicalReadLease {"#,
             .expect("logical publication must not wait on the mutation lane")
             .unwrap()
             .unwrap();
-        drop(held_publication);
+        drop(held_lane);
         assert!(published.ok);
         assert!(published.rev.is_none());
         assert_eq!(
-            selected_revisions.retained_scan_count(),
-            scans_before_publish,
-            "read publication must not scan the selected source tree"
+            selected_reads.take(),
+            Vec::new(),
+            "read publication must not reopen the selected source tree"
         );
         assert_eq!(
-            sibling_revisions.retained_scan_count(),
-            0,
+            sibling_reads.take(),
+            Vec::new(),
             "an unrelated source mutation must not invalidate the qualified view"
         );
 
@@ -11735,6 +12678,11 @@ struct ActorLogicalReadLease {"#,
             2,
             "the find directory must admit every workspace source set"
         );
+        assert!(find_execution.layout_read_source("absent").is_err());
+        let layout_capability = find_execution.layout_read_source("main").unwrap();
+        assert!(layout_capability
+            .logical_view_read_authority(&cancellation)
+            .is_ok());
         let find_result = service
             .execute(&find_execution, cancellation.clone())
             .expect("canonical v0.13 find execution");
@@ -11743,32 +12691,28 @@ struct ActorLogicalReadLease {"#,
             "canonical v0.13 find execution must succeed"
         );
         // A layout directory publishes no revision state: `find` confirms
-        // nothing and never holds the actor mutation lane, so a competing
-        // publication is free while its result stands.
+        // nothing and never waits for the actor mutation lane, so it publishes
+        // while a competing apply holds that lane.
         let find_actor = Arc::clone(find_execution.actor_for_test());
-        let legacy_fence = find_actor
-            .capture_revision(
-                find_execution.provider_root_for_test(),
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &cancellation,
-            )
-            .unwrap();
-        let published = find_execution
-            .publish(Ok(find_result), &cancellation)
+        let held_lane = find_actor.hold_mutation_lane_for_test();
+        let (published_tx, published_rx) = mpsc::channel();
+        let publish_cancellation = cancellation.clone();
+        std::thread::spawn(move || {
+            published_tx
+                .send(find_execution.publish(Ok(find_result), &publish_cancellation))
+                .unwrap();
+        });
+        let published = published_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("find publication must not wait on the mutation lane")
             .expect("find publication")
             .expect("find result");
+        drop(held_lane);
         assert!(published.ok);
         assert!(
             published.rev.is_none(),
             "a find directory is not a revision snapshot and must publish no rev"
         );
-        find_actor
-            .begin_publication(
-                &legacy_fence,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &cancellation,
-            )
-            .expect("find must not hold the actor mutation lane");
 
         let find_invocation = bind_workspace_invocation(
             &find_request,
@@ -11806,7 +12750,6 @@ struct ActorLogicalReadLease {"#,
             runtime.capture_response_deadline_for_test(),
         )
         .unwrap();
-        set_logical_read_now(started + Duration::from_secs(9));
         let execution = invocation.begin_execution(&cancellation).unwrap();
         let result = service
             .execute(&execution, cancellation.clone())
@@ -11820,16 +12763,51 @@ struct ActorLogicalReadLease {"#,
             execution.publish(Ok(result), &cancellation).is_ok(),
             "a completed read remains usable after source content changes"
         );
+        let layout_execution = || {
+            bind_workspace_invocation(
+                &find_request,
+                &runtime.workspace_actors,
+                Arc::clone(&runtime.deliveries),
+                Arc::clone(&runtime.provider_hosts),
+                Arc::clone(&runtime.runtime_resources),
+                None,
+                runtime.capture_response_deadline_for_test(),
+            )
+            .unwrap()
+            .begin_execution(&cancellation)
+            .unwrap()
+        };
+        let cancelled_execution = layout_execution();
+        assert!(cancelled_execution.layout_read_source("main").is_ok());
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        let result = cancelled_execution
+            .publish(
+                Ok(DomainResult::success("staged resource location")),
+                &cancelled,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(!result.ok);
+        assert_eq!(result.diagnostics[0]["code"], "cancelled");
+        if crate::infrastructure::platform::filesystem::supports_retained_root_replacement_test() {
+            let remapped_execution = layout_execution();
+            assert!(remapped_execution.layout_read_source("main").is_ok());
+            std::fs::rename(&source, workspace.path().join("retained-src")).unwrap();
+            std::fs::create_dir_all(&source).unwrap();
+            assert!(remapped_execution.layout_read_source("main").is_err());
+            assert!(remapped_execution
+                .publish(
+                    Ok(DomainResult::success("staged resource location")),
+                    &cancellation,
+                )
+                .is_err());
+        }
     }
 
     fn rejected_hidden_v13_view_execution(
         at: &str,
-    ) -> (
-        tempfile::TempDir,
-        ActorBoundExecution,
-        Arc<crate::infrastructure::source_revision::SourceRevisionService>,
-        usize,
-    ) {
+    ) -> (tempfile::TempDir, ActorBoundExecution, RetainedReadProbe) {
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("src");
         std::fs::create_dir_all(&source).unwrap();
@@ -11868,27 +12846,22 @@ struct ActorLogicalReadLease {"#,
             runtime.capture_response_deadline_for_test(),
         )
         .unwrap();
-        let revisions = invocation
-            .actor_for_test()
-            .source_revision_service(invocation.read_source_binding_for_test("main").unwrap())
-            .unwrap();
-        let scans_before = revisions.retained_scan_count();
+        let reads = RetainedReadProbe::watch(&source);
         let cancellation = CancellationToken::new();
 
         let execution = invocation
             .begin_execution(&cancellation)
             .expect("ordinary rejected address must reach the typed view handler");
         assert_eq!(
-            revisions.retained_scan_count(),
-            scans_before,
-            "an address rejected before source selection must not scan a source corpus"
+            reads.take(),
+            Vec::new(),
+            "an address rejected before source selection must not read a source corpus"
         );
-        (workspace, execution, revisions, scans_before)
+        (workspace, execution, reads)
     }
 
     fn execute_rejected_hidden_v13_view_address(at: &str) -> DomainResult {
-        let (_workspace, execution, revisions, scans_before) =
-            rejected_hidden_v13_view_execution(at);
+        let (_workspace, execution, reads) = rejected_hidden_v13_view_execution(at);
         let cancellation = CancellationToken::new();
         let result = crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default()
             .execute(&execution, cancellation.clone())
@@ -11898,16 +12871,15 @@ struct ActorLogicalReadLease {"#,
             .unwrap()
             .unwrap();
         assert_eq!(
-            revisions.retained_scan_count(),
-            scans_before,
-            "zero-fence typed rejection publication must not scan a source corpus"
+            reads.take(),
+            Vec::new(),
+            "zero-fence typed rejection must not read a source corpus"
         );
         result
     }
 
     fn zero_fence_accepts_forged_result(at: &str, mutate: impl FnOnce(&mut DomainResult)) -> bool {
-        let (_workspace, execution, revisions, scans_before) =
-            rejected_hidden_v13_view_execution(at);
+        let (_workspace, execution, reads) = rejected_hidden_v13_view_execution(at);
         let cancellation = CancellationToken::new();
         let mut result =
             crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default()
@@ -11916,9 +12888,9 @@ struct ActorLogicalReadLease {"#,
         mutate(&mut result);
         let accepted = execution.publish(Ok(result), &cancellation).is_ok();
         assert_eq!(
-            revisions.retained_scan_count(),
-            scans_before,
-            "forged rejected-path result must not scan a source corpus"
+            reads.take(),
+            Vec::new(),
+            "forged rejected-path result must not read a source corpus"
         );
         accepted
     }
@@ -12000,8 +12972,7 @@ struct ActorLogicalReadLease {"#,
                 }
             );
 
-            let (_workspace, execution, revisions, scans_before) =
-                rejected_hidden_v13_view_execution(at);
+            let (_workspace, execution, reads) = rejected_hidden_v13_view_execution(at);
             let cancellation = CancellationToken::new();
             if execution
                 .publish(
@@ -12012,17 +12983,16 @@ struct ActorLogicalReadLease {"#,
             {
                 accepted.push(format!("{at}:InvocationFailure"));
             }
-            assert_eq!(revisions.retained_scan_count(), scans_before);
+            assert_eq!(reads.take(), Vec::new());
 
-            let (_workspace, execution, revisions, scans_before) =
-                rejected_hidden_v13_view_execution(at);
+            let (_workspace, execution, reads) = rejected_hidden_v13_view_execution(at);
             if execution
                 .publish(Ok(DomainResult::success("forged success")), &cancellation)
                 .is_ok()
             {
                 accepted.push(format!("{at}:success"));
             }
-            assert_eq!(revisions.retained_scan_count(), scans_before);
+            assert_eq!(reads.take(), Vec::new());
         }
         assert!(
             accepted.is_empty(),
@@ -12618,8 +13588,8 @@ struct ActorLogicalReadLease {"#,
         assert_eq!(preparations.load(Ordering::SeqCst), 0);
     }
 
-    /// Раннер 0.12 не умеет загрузить CF/CFE без применения и не знает `apply` и
-    /// `reset` (#1246): операции остаются в словаре недоступными, и вызов получает
+    /// Адаптер раннера 0.15 не загружает CF/CFE без применения и не исполняет `apply`
+    /// и `reset` (#1246): операции остаются в словаре недоступными, и вызов получает
     /// типизированный отказ при bind — до рабочего пространства, PlatformXml и
     /// раннера.
     #[test]
@@ -12946,7 +13916,6 @@ struct ActorLogicalReadLease {"#,
                     .expect("dirty signal")
                     .recv()
                     .expect("dirty request");
-                invocation.mark_source_revision_dirty_for_test();
                 self.dirty_done.send(()).expect("dirty acknowledgement");
             }
             lease

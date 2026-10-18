@@ -64,6 +64,13 @@ pub(crate) fn validate_mxl_input(
     })
 }
 
+pub(crate) fn subsystem_validation_outcome(
+    guard: Result<FormatGuardCheck, crate::application::ports::FormatGuardError>,
+    outcome: crate::application::AdapterOutcome,
+) -> NativeCheckOutcome {
+    with_format_guard(guard, || outcome)
+}
+
 fn validate_with_format_guard(
     validator: CheckValidator,
     args: &Map<String, Value>,
@@ -247,10 +254,32 @@ pub(crate) fn node_facts(
         .and_then(|props| props.get("content"))
         .and_then(Value::as_str)
         == Some(crate::infrastructure::v13_read::INHERITED_CONTENT);
+    let segments = address.segments();
+    let owners = match segments.last() {
+        Some(last) if last.name().is_none() => &segments[..segments.len() - 1],
+        _ => segments,
+    };
+    let subsystem_owned = !owners.is_empty()
+        && owners
+            .iter()
+            .all(|segment| segment.kind() == crate::domain::address::NodeKind::Subsystem);
+    let in_template = segments.iter().any(|segment| {
+        matches!(
+            segment.kind(),
+            crate::domain::address::NodeKind::Template
+                | crate::domain::address::NodeKind::CommonTemplate
+        )
+    });
     NodeFacts {
         extension: source_set_is_extension(address, context),
         template,
         inherited,
+        subsystem_owned,
+        in_template,
+        named: address
+            .segments()
+            .last()
+            .is_some_and(|segment| segment.name().is_some()),
     }
 }
 
@@ -496,6 +525,9 @@ mod tests {
                 extension: false,
                 template: Some(TemplateFlavour::DataCompositionSchema),
                 inherited: false,
+                subsystem_owned: false,
+                in_template: true,
+                named: true,
             }
         );
         let mxl =

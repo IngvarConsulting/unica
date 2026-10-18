@@ -4,7 +4,7 @@ pub(crate) mod form_resource;
 pub(crate) mod metadata;
 mod request;
 
-use crate::domain::apply::{ApplyRequest, OperationFamily};
+use crate::domain::apply::{ApplyRequest, OperationDescriptor, OperationFamily};
 use crate::domain::project_sources::SourceSetKind;
 use crate::infrastructure::native_operations::apply::{
     hidden_apply_family_unimplemented, ApplyPlanError, ApplyPlanErrorKind, ApplyStagedState,
@@ -46,7 +46,15 @@ fn refuse_targets_outside_writable_profile(
 
 /// Operations that change the vendor-support state itself: they are the way
 /// to unlock an object, so the lock they edit never refuses them.
-const SUPPORT_STATE_OPERATIONS: &[&str] = &["supportCapability.set", "supportRule.set"];
+fn changes_support_state(
+    operation: &str,
+    at: Option<&crate::domain::address::QualifiedAddress>,
+    binding: &ProviderRootBinding,
+) -> bool {
+    resolved_descriptor(operation, at, binding)
+        .and_then(OperationDescriptor::support_operation)
+        .is_some_and(|operation| operation.changes_support_state())
+}
 
 /// Vendor-support gate of the canonical mutation path. When the actor's
 /// support policy is `deny`, a request whose owner is a vendor object with
@@ -72,7 +80,7 @@ fn refuse_targets_on_locked_vendor_objects(
     if request
         .ops()
         .iter()
-        .all(|operation| SUPPORT_STATE_OPERATIONS.contains(&operation.name()))
+        .all(|operation| changes_support_state(operation.name(), Some(operation.at()), binding))
     {
         return Ok(());
     }
@@ -411,6 +419,26 @@ fn batch_effects_as_provisional(
 /// Пишет ли семейство операции в допущенный набор — ответ единственного
 /// владельца признака (`SourceSetTraits::writes`), общий с предварительной
 /// проверкой `apply` и словарём `can`.
+/// Запись реестра для вызова: общее имя (`attribute.add` и `command.add`
+/// объекта и формы, #1465) выбирает её адрес вызова, как предварительная
+/// проверка `apply`.
+pub(super) fn resolved_descriptor(
+    operation: &str,
+    at: Option<&crate::domain::address::QualifiedAddress>,
+    binding: &ProviderRootBinding,
+) -> Option<crate::domain::apply::OperationDescriptor> {
+    use crate::domain::apply::{OperationRegistry, OperationSite, SourceSetTraits};
+    let registry = OperationRegistry::closed();
+    let traits = SourceSetTraits::of_source(
+        binding.source_kind(),
+        binding.source_format(),
+        binding.source_profile(),
+    );
+    at.and_then(|at| OperationSite::new(at, traits))
+        .and_then(|site| registry.lookup_at(operation, &site))
+        .or_else(|| registry.lookup(operation))
+}
+
 fn validate_platform_xml_binding(
     binding: &ProviderRootBinding,
     operation: &str,
@@ -443,8 +471,9 @@ fn refuse_misplaced_operation(
     operation: &crate::domain::apply::ApplyOp,
     binding: &ProviderRootBinding,
 ) -> Result<(), ApplyPlanError> {
-    use crate::domain::apply::{OperationRegistry, OperationSite, SourceSetTraits};
-    let Some(descriptor) = OperationRegistry::closed().lookup(operation.name()) else {
+    use crate::domain::apply::{OperationSite, SourceSetTraits};
+    let Some(descriptor) = resolved_descriptor(operation.name(), Some(operation.at()), binding)
+    else {
         return Ok(());
     };
     validate_platform_xml_binding(binding, operation.name(), op_index)?;
@@ -500,8 +529,7 @@ fn refuse_inherited_content(
     binding: &ProviderRootBinding,
 ) -> Result<(), ApplyPlanError> {
     use crate::infrastructure::v13_read_port::{companion_owner, inherited_companion};
-    let Some(resource) = crate::domain::apply::OperationRegistry::closed()
-        .lookup(operation.name())
+    let Some(resource) = resolved_descriptor(operation.name(), Some(operation.at()), binding)
         .and_then(|descriptor| descriptor.content_resource())
     else {
         return Ok(());
@@ -547,16 +575,18 @@ fn parse_family_operation(
     operation: &crate::domain::apply::ApplyOp,
     binding: &ProviderRootBinding,
 ) -> Result<ParsedApplyOperation, ApplyPlanError> {
-    let Some(family) = crate::application::v13::apply::dispatch_family(operation.name()) else {
+    let Some(descriptor) = resolved_descriptor(operation.name(), Some(operation.at()), binding)
+    else {
         return Err(hidden_apply_family_unimplemented(op_index));
     };
     let args = serde_json::Value::Object(operation.args().clone());
     if operation.name() == "object.borrow" {
         return borrow::parse(&args, op_index, binding).map(ParsedApplyOperation::Borrow);
     }
-    let parsed = match family {
+    let parsed = match descriptor.family() {
         OperationFamily::Metadata | OperationFamily::Properties => {
-            let parsed = metadata::parse_metadata_plan_operation(
+            let parsed = metadata::parse_metadata_plan_operation_in(
+                Some(descriptor),
                 operation.name(),
                 &args,
                 op_index,
@@ -572,7 +602,8 @@ fn parse_family_operation(
         | OperationFamily::Subsystem
         | OperationFamily::Interface
         | OperationFamily::Support => {
-            let parsed = form_resource::parse_form_resource_plan_operation(
+            let parsed = form_resource::parse_form_resource_plan_operation_in(
+                Some(descriptor),
                 operation.name(),
                 &args,
                 op_index,
@@ -617,11 +648,10 @@ fn parse_family_operation(
     Ok(parsed)
 }
 
-/// Разбор операции планировщиком без стадирования: проверка, что разбор цели
-/// и аргументов семейства принимает вызов. Им двусторонняя проверка `can`
-/// сверяет словарь узла с планировщиком.
-/// Разбор семейством в обход реестра: двусторонняя проверка ищет адреса,
-/// которые семейство приняло бы, а реестр — нет.
+/// Разбор семейством без проверки места реестром: семейство выбирает запись
+/// реестра для адреса вызова (общее имя `attribute.add` объекта и формы,
+/// #1465), но применимость не проверяется. Двусторонняя проверка `can`
+/// ищет так адреса, которые семейство приняло бы, а реестр — нет.
 #[cfg(test)]
 pub(crate) fn parse_family_operation_for_test(
     op_index: usize,
@@ -688,27 +718,123 @@ pub(crate) fn staged_template_format(
     dcs_mxl::template_type_of(&bytes).map(|raw| crate::domain::apply::TemplateFormat::parse(&raw))
 }
 
-/// Путь набора с именем `name` в стадированной схеме макета `template`:
-/// по нему снятый `dataSet` ведёт к настоящему, в том числе вложенному,
-/// набору (#1353). `None` — схемы нет или набор не найден однозначно.
-pub(crate) fn staged_data_set_path(
+/// Поиск узла схемы по имени в стадированном макете: владелец — адрес
+/// макета (набор данных, в том числе член объединения, #1353) или его
+/// варианта настроек (именованный элемент структуры, #1357). Схемы нет —
+/// `Missing`.
+fn staged_schema_lookup(
     admission: &ApplyAdmission,
     binding: &ProviderRootBinding,
-    template: &crate::domain::address::QualifiedAddress,
+    owner: &crate::domain::address::QualifiedAddress,
     name: &str,
-) -> Option<Vec<String>> {
-    let (address, covered) = descriptor_node(template)?;
+) -> crate::domain::apply::NamedLookup {
+    use crate::domain::address::NodeKind;
+    use crate::domain::apply::NamedLookup;
+    let segments = owner.segments();
+    let (template, variant) = match segments.last() {
+        Some(last) if last.kind() == NodeKind::Template => (owner.clone(), None),
+        Some(last) if last.kind() == NodeKind::Setting && segments.len() > 1 => (
+            crate::domain::address::QualifiedAddress {
+                line_range: None,
+                source_set: owner.source_set().to_string(),
+                segments: segments[..segments.len() - 1].to_vec(),
+            },
+            last.name(),
+        ),
+        _ => return NamedLookup::Missing,
+    };
+    let Some((address, covered)) = descriptor_node(&template) else {
+        return NamedLookup::Missing;
+    };
     if covered != template.segments().len() {
-        return None;
+        return NamedLookup::Missing;
     }
-    let relative = crate::infrastructure::logical_event_source::attached_resource_relative(
+    let Some(bytes) = crate::infrastructure::logical_event_source::attached_resource_relative(
         &address,
         "Template.xml",
         binding.source_kind(),
     )
+    .ok()
+    .and_then(|relative| admission.staged_state().ok()?.read(&relative).ok()?) else {
+        return NamedLookup::Missing;
+    };
+    match variant {
+        Some(variant) => dcs_mxl::structure_item_path_in_schema(&bytes, variant, name),
+        None => dcs_mxl::data_set_path_in_schema(&bytes, name),
+    }
+}
+
+/// Путь узла с именем `name` под контейнером в стадированном состоянии:
+/// набора схемы под макетом, элемента структуры под вариантом настроек или
+/// элемента под формой. Им снятый аргумент, называвший узел по имени, ведёт
+/// к его настоящему адресу (#1353, #1355, #1357).
+pub(crate) fn staged_member_path(
+    admission: &ApplyAdmission,
+    binding: &ProviderRootBinding,
+    container: &crate::domain::address::QualifiedAddress,
+    name: &str,
+) -> crate::domain::apply::NamedLookup {
+    match container.segments().last().map(|segment| segment.kind()) {
+        Some(crate::domain::address::NodeKind::Form) => {
+            match staged_form_items(admission, binding, container) {
+                Some(items) => form_resource::form_item_path(&items, name),
+                None => crate::domain::apply::NamedLookup::Missing,
+            }
+        }
+        _ => staged_schema_lookup(admission, binding, container, name),
+    }
+}
+
+/// Роль элемента стадированной формы по его адресу
+/// `Owner.X.Form.F.Item.A[.Item.B…]`. `None` — элемента или формы нет.
+pub(crate) fn staged_form_item_role(
+    admission: &ApplyAdmission,
+    binding: &ProviderRootBinding,
+    item: &crate::domain::address::QualifiedAddress,
+) -> Option<crate::domain::apply::FormItemRole> {
+    use crate::domain::address::NodeKind;
+    let segments = item.segments();
+    if segments.len() < 3
+        || segments[1].kind() != NodeKind::Form
+        || !segments[2..]
+            .iter()
+            .all(|segment| segment.kind() == NodeKind::Item && segment.name().is_some())
+    {
+        return None;
+    }
+    let form = crate::domain::address::QualifiedAddress {
+        line_range: None,
+        source_set: item.source_set().to_string(),
+        segments: segments[..2].to_vec(),
+    };
+    let items = staged_form_items(admission, binding, &form)?;
+    let chain = segments[2..]
+        .iter()
+        .filter_map(|segment| segment.name().map(str::to_string))
+        .collect::<Vec<_>>();
+    form_resource::form_item_at(&items, &chain)
+        .map(|element| crate::domain::apply::FormItemRole::from_tag(&element.tag))
+}
+
+/// Дерево элементов стадированной формы `Owner.X.Form.F`, как его читает
+/// `view`. `None` — формы или её `Form.xml` нет.
+fn staged_form_items(
+    admission: &ApplyAdmission,
+    binding: &ProviderRootBinding,
+    form: &crate::domain::address::QualifiedAddress,
+) -> Option<Vec<crate::infrastructure::native_operations::form::FormInfoElement>> {
+    let (address, covered) = descriptor_node(form)?;
+    if covered != 2 {
+        return None;
+    }
+    let relative = crate::infrastructure::logical_event_source::attached_resource_relative(
+        &address,
+        "Form.xml",
+        binding.source_kind(),
+    )
     .ok()?;
     let bytes = admission.staged_state().ok()?.read(&relative).ok()??;
-    dcs_mxl::data_set_path_in_schema(&bytes, name)
+    form_resource::form_items_of(std::str::from_utf8(&bytes).ok()?).ok()
 }
 
 /// Есть ли узел `at` в стадированном состоянии допуска. Узел с собственным
@@ -774,6 +900,33 @@ pub(crate) fn staged_node_existence(
         (RouteClass::Mxl, NodeKind::Area, 1) => {
             dcs_mxl::spreadsheet_area_exists(&resource("Template.xml")?, terminal.name()?)
         }
+        // Элемент формы и его событие: есть, когда цепочка `Item` ведёт к
+        // элементу формы; имя события проверяет матрица событий.
+        (RouteClass::Form, NodeKind::Item | NodeKind::Event, _) if covered == 2 => {
+            let tail = &at.segments()[covered..];
+            let chain = match tail {
+                [items @ .., last] if last.kind() == NodeKind::Event => items,
+                items => items,
+            };
+            if chain.is_empty()
+                || !chain
+                    .iter()
+                    .all(|segment| segment.kind() == NodeKind::Item && segment.name().is_some())
+            {
+                return None;
+            }
+            let form = crate::domain::address::QualifiedAddress {
+                line_range: None,
+                source_set: at.source_set().to_string(),
+                segments: at.segments()[..covered].to_vec(),
+            };
+            let items = staged_form_items(admission, binding, &form)?;
+            let chain = chain
+                .iter()
+                .filter_map(|segment| segment.name().map(str::to_string))
+                .collect::<Vec<_>>();
+            Some(form_resource::form_item_at(&items, &chain).is_some())
+        }
         _ => None,
     }
 }
@@ -795,6 +948,18 @@ pub(crate) fn plan_hidden_v13_apply(
         .map_err(|error| ApplyPlanError::staging(error, "ops"))?;
     refuse_targets_outside_writable_profile(request, binding, &mut staged)?;
     refuse_targets_on_locked_vendor_objects(request, binding, admission, &mut staged)?;
+    let support_operations = request
+        .ops()
+        .iter()
+        .filter(|op| changes_support_state(op.name(), Some(op.at()), binding))
+        .count();
+    if support_operations > 0 && support_operations < request.ops().len() {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidState,
+            "support changes require a separate apply before ordinary edits",
+        )
+        .at_path("ops"));
+    }
     let mut provisional = Vec::new();
     let mut borrowing = Vec::new();
     let mut cursor = 0;
@@ -1181,6 +1346,32 @@ mod tests {
             text.contains("Total") && text.contains("Sum"),
             "both cells are written"
         );
+        // Точка в имени области экранируется в адресе: созданную область
+        // `mxl.set` находит по `Area.Head\.er`.
+        let (staged, _) = plan_hidden_v13_apply(
+            &request(serde_json::json!([area("Head.er"), set("Head\\.er")])),
+            &fixture.binding,
+            &admission,
+        )
+        .unwrap_or_else(|error| panic!("an area with a dot is addressable: {error}"));
+        let written = staged
+            .planned_changes()
+            .into_iter()
+            .find(|change| change.relative_path.ends_with("Print/Ext/Template.xml"))
+            .expect("the spreadsheet body is staged");
+        let crate::infrastructure::native_operations::apply::StagedFileState::Bytes(bytes) =
+            written.current
+        else {
+            panic!("the spreadsheet keeps bytes");
+        };
+        assert_eq!(
+            super::dcs_mxl::spreadsheet_area_exists(&bytes, "Head.er"),
+            Some(true)
+        );
+        assert!(
+            String::from_utf8_lossy(&bytes).contains("Sum"),
+            "the cell is written"
+        );
         for (ops, kind, path) in [
             (
                 serde_json::json!([area("Header"), set("Headr")]),
@@ -1191,11 +1382,6 @@ mod tests {
                 serde_json::json!([area("Header"), area("Header")]),
                 ApplyPlanErrorKind::BadValue,
                 "ops[2].args.items[0].name",
-            ),
-            (
-                serde_json::json!([area("Head.er")]),
-                ApplyPlanErrorKind::BadValue,
-                "ops[1].args.items[0].name",
             ),
             (
                 serde_json::json!([area("1Header")]),
@@ -1267,13 +1453,23 @@ mod tests {
         let fixture = ApplySeamFixture::new();
         for (at, op, args) in [
             (
-                "main:Document.First.Form.Main.Item.Header",
-                "element.add",
+                "main:Document.First.Form.Main.Item.Header.Event.OnChange",
+                "item.add",
                 serde_json::json!({"items": [{"name": "Comment"}]}),
             ),
             (
+                "main:Document.First.Form.Main",
+                "item.remove",
+                serde_json::json!({}),
+            ),
+            (
                 "main:Document.First.Form.Main.Item.Header",
-                "formAttribute.add",
+                "event.bind",
+                serde_json::json!({"values": {"handler": "H"}}),
+            ),
+            (
+                "main:Document.First.Form.Main.Item.Header",
+                "attribute.add",
                 serde_json::json!({"items": [{"name": "Comment"}]}),
             ),
             (
@@ -1297,40 +1493,184 @@ mod tests {
         // Неизвестное свойство элемента — отказ, а не молча потерянный ключ.
         let request = seam_request(
             "main:Document.First.Form.Main",
-            "element.add",
+            "item.add",
             serde_json::json!({"items": [{"name": "Comment", "titel": "typo"}]}),
         );
         let error = super::parse_apply_operation(0, &request.ops()[0], &fixture.binding)
             .err()
             .expect("an unknown element property refuses");
         assert_eq!(error.path(), Some("ops[0].args.items[0].titel"), "{error}");
-        // Путь привязки, который генератор знает, проходит разбор: его
-        // предметный отказ (`headerDataPath` у обычной группы) даёт генератор.
+        // Путь привязки, которого писатель вида не пишет (`headerDataPath`
+        // у обычной группы), отказывает по контракту вида до записи (#1447).
         let request = seam_request(
             "main:Document.First.Form.Main",
-            "element.add",
+            "item.add",
             serde_json::json!({"items": [{"name": "Header", "type": "Group", "headerDataPath": "Object.Ref"}]}),
         );
-        assert!(super::parse_apply_operation(0, &request.ops()[0], &fixture.binding).is_ok());
-        // Элемент назван адресом: перенаправить событие или удаление на другой
-        // элемент аргументом нельзя.
-        for (op, args, path) in [
+        let error = super::parse_apply_operation(0, &request.ops()[0], &fixture.binding)
+            .err()
+            .expect("a binding path the group writer does not write refuses");
+        assert_eq!(
+            error.path(),
+            Some("ops[0].args.items[0].headerDataPath"),
+            "{error}"
+        );
+        // Элемент и событие названы адресом: перенаправить событие или
+        // удаление на другой узел аргументом нельзя (#1355).
+        for (at, op, args, path) in [
             (
+                "main:Document.First.Form.Main.Item.Header.Event.OnChange",
                 "event.bind",
-                serde_json::json!({"values": {"event": "OnChange", "handler": "H", "element": "Other"}}),
+                serde_json::json!({"values": {"handler": "H", "element": "Other"}}),
                 "ops[0].args.values.element",
             ),
             (
-                "element.remove",
+                "main:Document.First.Form.Main.Item.Header",
+                "item.remove",
                 serde_json::json!({"items": ["Other"]}),
                 "ops[0].args.items",
             ),
         ] {
-            let request = seam_request("main:Document.First.Form.Main.Item.Header", op, args);
+            let request = seam_request(at, op, args);
             let error = super::parse_apply_operation(0, &request.ops()[0], &fixture.binding)
                 .err()
                 .unwrap_or_else(|| panic!("{op} must not redirect to another element"));
             assert_eq!(error.path(), Some(path), "{op}: {error}");
+        }
+    }
+
+    #[test]
+    fn support_state_classification_preserves_names_across_targets_and_profiles() {
+        use crate::domain::address::QualifiedAddress;
+        use crate::domain::apply::OperationRegistry;
+        let fixture = ApplySeamFixture::new();
+        let source = fixture.source_dir();
+        let workspace = source.parent().unwrap().to_path_buf();
+        let mut names = OperationRegistry::closed().names();
+        names.extend(["", "supportCapability.set.extra", "supportRule.unknown"]);
+        for (kind, format, profile) in [
+            (
+                SourceSetKind::Configuration,
+                SourceFormat::PlatformXml,
+                SourceProfile::platform_xml_8_3_27_format_2_20(),
+            ),
+            (
+                SourceSetKind::Extension,
+                SourceFormat::PlatformXml,
+                SourceProfile::platform_xml_8_3_27_format_2_20(),
+            ),
+            (
+                SourceSetKind::ExternalProcessor,
+                SourceFormat::PlatformXml,
+                SourceProfile::platform_xml_8_3_27_format_2_20(),
+            ),
+            (
+                SourceSetKind::ExternalReport,
+                SourceFormat::PlatformXml,
+                SourceProfile::platform_xml_8_3_27_format_2_20(),
+            ),
+            (
+                SourceSetKind::Configuration,
+                SourceFormat::Edt,
+                SourceProfile::legacy_workspace_service_compatibility(),
+            ),
+            (
+                SourceSetKind::Configuration,
+                SourceFormat::PlatformXml,
+                SourceProfile::legacy_workspace_service_compatibility(),
+            ),
+            (
+                SourceSetKind::Configuration,
+                SourceFormat::PlatformXml,
+                SourceProfile::TestPlatform8_3_28Format2_20,
+            ),
+            (
+                SourceSetKind::Configuration,
+                SourceFormat::PlatformXml,
+                SourceProfile::TestPlatform8_3_27Format2_21,
+            ),
+        ] {
+            let context = WorkspaceContext {
+                cwd: workspace.clone(),
+                workspace_root: workspace.clone(),
+                cache_root: workspace.join(".build/unica"),
+                workspace_epoch: 1,
+            };
+            let identity = WorkspaceIdentity::new(
+                &context,
+                [WorkspaceSourceSetInput::new(
+                    "main", &source, kind, format, profile,
+                )],
+                "support-state-classification",
+            )
+            .unwrap();
+            let actor = WorkspaceActor::new(identity, context).unwrap();
+            let binding = actor.bind_provider_root("main", &source).unwrap();
+            for raw_target in [
+                None,
+                Some("main:Configuration"),
+                Some("main:Document.First"),
+                Some("main:Document.First.Form.Card"),
+                Some("main:Role.Reader"),
+                Some("other:Configuration"),
+                Some("not a logical address"),
+                Some("main:Document."),
+            ] {
+                let target = raw_target.and_then(|raw| QualifiedAddress::parse(raw).ok());
+                for name in &names {
+                    // The previous name-only gate exempted exactly these two operations.
+                    let expected = matches!(*name, "supportCapability.set" | "supportRule.set");
+                    assert_eq!(
+                        super::changes_support_state(name, target.as_ref(), &binding),
+                        expected,
+                        "{name} at {raw_target:?}, {kind:?}/{format:?}/{profile:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn support_and_ordinary_edits_require_separate_batches_under_every_policy() {
+        for policy in ["deny", "warn", "off"] {
+            let fixture = ApplySeamFixture::new();
+            std::fs::write(
+                fixture
+                    .source_dir()
+                    .parent()
+                    .unwrap()
+                    .join(".v8-project.json"),
+                serde_json::json!({"editingAllowedCheck": policy}).to_string(),
+            )
+            .unwrap();
+            let request = ApplyRequest::parse(
+                serde_json::json!({
+                    "at": "main:Document.First.Form.Card",
+                    "ops": [
+                        {"op": "supportRule.set", "args": {"values": {"rule": "editable"}}},
+                        {"op": "item.add", "args": {"items": [{
+                            "name": "Field",
+                            "type": "InputField",
+                            "path": "Object.Field"
+                        }]}}
+                    ], "dryRun": true
+                })
+                .as_object()
+                .unwrap(),
+                &["main"],
+            )
+            .unwrap();
+            let result = plan_hidden_v13_apply(&request, &fixture.binding, &fixture.admission());
+            let error = result.unwrap_err();
+            assert_eq!(
+                error.kind(),
+                ApplyPlanErrorKind::InvalidState,
+                "{policy}: {error}"
+            );
+            assert!(
+                error.to_string().contains("separate apply"),
+                "{policy}: {error}"
+            );
         }
     }
 

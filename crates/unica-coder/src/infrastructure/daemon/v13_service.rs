@@ -10,7 +10,7 @@ use super::v13_call_graph::{
     declare_method_branches, fetch_summary, module_file_for_placed, placed_for_module_file,
     unready_branch_result, CallGraphFetchError, CallGraphSummary, CompleteBranchError,
 };
-use super::v13_read_modes::{attach_can, operation_node, search_scope_prefix, source_backed};
+use super::v13_read_modes::{attach_can, operation_node_with, search_scope_prefix, source_backed};
 use crate::application::invocation_store::ToolIdentity;
 use crate::application::operation_descriptors::ExecutionClass;
 use crate::application::result_store::{
@@ -241,6 +241,44 @@ impl CanonicalV13ReadService {
                 )
             }
         };
+        // A line selector is a read address. Refuse before write admission
+        // creates staging, even if an op overrides the top-level target.
+        if let Some(ranged) = std::iter::once(request.at())
+            .chain(request.ops().iter().map(|op| op.at()))
+            .find(|at| at.line_range().is_some())
+        {
+            let mut refusal = error_result(Some(ranged.to_string()), RefusalCode::BadValue, "Body line ranges are read-only; replace a whole containing Method or use the module Body");
+            if let Ok(source) = invocation.apply_range_refusal_source(ranged) {
+                if let Ok(authority) = source.logical_view_read_authority(cancellation) {
+                    let range = ranged.line_range().expect("selected ranged address");
+                    if let Ok(body) =
+                        authority.narrowest_body_for_lines(ranged, range.from, range.to)
+                    {
+                        let segments = body.segments();
+                        let target = if segments.len() >= 2
+                            && segments[segments.len() - 2].kind() == NodeKind::Method
+                        {
+                            body.prefix(segments.len() - 1)
+                        } else {
+                            body
+                        };
+                        refusal.next.push(json!({"tool":"unica.view","args":{"at":target.to_string()},"reason":"прочитать целый метод или Body модуля перед правкой"}));
+                    }
+                }
+            }
+            if refusal.next.is_empty() {
+                let segments = ranged.segments();
+                let module_body = if segments.len() >= 2
+                    && segments[segments.len() - 2].kind() == NodeKind::Method
+                {
+                    format!("{}.Body", ranged.prefix(segments.len() - 2))
+                } else {
+                    ranged.without_line_range().to_string()
+                };
+                refusal.next.push(json!({"tool":"unica.view","args":{"at":module_body},"reason":"прочитать Body модуля и выбрать семантическую цель правки"}));
+            }
+            return refusal;
+        }
         let (binding, mut admission) = match invocation.admit_apply(&request, cancellation) {
             Ok(admitted) => admitted,
             Err(ApplyAdmissionError::Other(error)) => {
@@ -261,14 +299,23 @@ impl CanonicalV13ReadService {
                 &admission, &binding, template,
             )
         };
-        let data_set_path = |template: &QualifiedAddress, name: &str| {
-            crate::infrastructure::native_operations::apply_families::staged_data_set_path(
-                &admission, &binding, template, name,
+        let member_path = |container: &QualifiedAddress, name: &str| {
+            crate::infrastructure::native_operations::apply_families::staged_member_path(
+                &admission, &binding, container, name,
             )
         };
-        if let Err(refusal) =
-            preflight_apply_operations_with(&request, traits, &template_format, &data_set_path)
-        {
+        let form_item = |item: &QualifiedAddress| {
+            crate::infrastructure::native_operations::apply_families::staged_form_item_role(
+                &admission, &binding, item,
+            )
+        };
+        if let Err(refusal) = preflight_apply_operations_with(
+            &request,
+            traits,
+            &template_format,
+            &form_item,
+            &member_path,
+        ) {
             return *refusal;
         }
         admission.bind_request(&request);
@@ -733,15 +780,38 @@ impl CanonicalV13ReadService {
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string();
-                    operation_node(&data, op, &owner_at, can_context).map_err(|error| {
-                        let mut refused = ViewError::new(error.code(), error.to_string());
-                        refused.set_next(json!({
-                            "tool": "unica.view",
-                            "args": {"at": owner_at},
-                            "reason": "операции, применимые к этому узлу",
-                        }));
-                        refused
-                    })
+                    // Роль элемента-предка читается его узлом: маршрут снятой
+                    // операции не ведёт в поле, куда элемент не добавить.
+                    let ancestor_role = |item: &QualifiedAddress| {
+                        if item.segments().last()?.kind() != NodeKind::Item {
+                            return None;
+                        }
+                        let read = service.view(ViewRequest::new(&item.to_string()).ok()?);
+                        read.data?
+                            .get("props")?
+                            .get("tag")?
+                            .as_str()
+                            .map(crate::domain::apply::FormItemRole::from_tag)
+                    };
+                    operation_node_with(&data, op, &owner_at, can_context, &ancestor_role).map_err(
+                        |error| {
+                            let mut refused = ViewError::new(error.code(), error.to_string());
+                            // Снятая операция ведёт к контракту заменившей (#1465).
+                            refused.set_next(match error.next() {
+                                Some(contract) => json!({
+                                    "tool": "unica.view",
+                                    "args": {"at": contract},
+                                    "reason": "контракт операции, заменившей снятую",
+                                }),
+                                None => json!({
+                                    "tool": "unica.view",
+                                    "args": {"at": owner_at},
+                                    "reason": "операции, применимые к этому узлу",
+                                }),
+                            });
+                            refused
+                        },
+                    )
                 }
                 None => {
                     attach_can(&mut data, can_context);
@@ -950,23 +1020,12 @@ impl CanonicalV13ReadService {
         source_set: &str,
         cancellation: &CancellationToken,
     ) -> Result<FindIndex, Box<DomainResult>> {
-        let sources = invocation.read_sources().map_err(|error| {
-            Box::new(error_result(
-                at.clone(),
-                RefusalCode::ProviderUnavailable,
-                error,
-            ))
-        })?;
-        let source = sources
-            .iter()
-            .find(|source| source.source_set_name() == source_set)
-            .ok_or_else(|| {
-                Box::new(error_result(
-                    at.clone(),
-                    RefusalCode::ProviderUnavailable,
-                    format!("source set `{source_set}` was not admitted by the workspace actor"),
-                ))
-            })?;
+        let source = admitted_read_source(
+            invocation.read_sources(),
+            |source| source.source_set_name(),
+            at.as_deref(),
+            source_set,
+        )?;
         let root = source.retained_root();
         let layout = vec![LayoutFindSource::new(
             source.source_set_name(),
@@ -1250,7 +1309,50 @@ impl CanonicalV13ReadService {
                 &scope_at,
                 cancellation,
             ) {
-                Ok(found) => {
+                Ok(mut found) => {
+                    let mut groups = std::collections::BTreeMap::<String, Vec<usize>>::new();
+                    for (index, hit) in found.matches.iter().enumerate() {
+                        if let Some(at) = hit.get("at").and_then(Value::as_str) {
+                            groups.entry(at.to_owned()).or_default().push(index);
+                        }
+                    }
+                    // A page retains its hits, not every full module projection.
+                    // Each module is parsed once and released before the next one.
+                    for (raw, indices) in groups {
+                        let Ok(module) = QualifiedAddress::parse(&raw) else {
+                            continue;
+                        };
+                        let Ok(authority) = source.logical_view_read_authority(cancellation) else {
+                            continue;
+                        };
+                        for index in indices {
+                            let hit = &mut found.matches[index];
+                            let Some(line) = hit
+                                .get("line")
+                                .and_then(Value::as_u64)
+                                .and_then(|line| usize::try_from(line).ok())
+                            else {
+                                continue;
+                            };
+                            let body = match authority.narrowest_body_for_lines(&module, line, line)
+                            {
+                                Ok(body) => body.to_string(),
+                                Err(error) => {
+                                    if matches!(
+                                        error.code(),
+                                        RefusalCode::Cancelled
+                                            | RefusalCode::DeadlineExceeded
+                                            | RefusalCode::ConcurrentChange
+                                    ) {
+                                        return view_error_result(Some(module.to_string()), error);
+                                    }
+                                    hit["limits"] = json!(["Method boundaries could not be established; this address opens the module Body line"]);
+                                    format!("{module}.Body")
+                                }
+                            };
+                            hit["at"] = json!(format!("{body}#L{line}"));
+                        }
+                    }
                     matches.extend(found.matches);
                     uncovered += found.uncovered;
                     uncovered_details.extend(
@@ -1683,13 +1785,55 @@ impl CanonicalV13ReadService {
                 return refusal;
             }
         }
-        provider_search_page(
+        let sources = match invocation.read_sources() {
+            Ok(sources) => sources,
+            Err(error) => {
+                return error_result_detailed(None, RefusalDetail::SourceUnreadable, error)
+            }
+        };
+        let project_hits = |hits: &[crate::domain::code_intelligence::ProviderSearchHit]| -> Result<Vec<Map<String, Value>>, ViewError> {
+            use crate::domain::source_location::SourceLocation;
+            use crate::domain::source_target::TargetKind;
+            let limited = || Map::from_iter([("limits".into(), json!(["The current source does not prove a Body range containing this provider snippet"]))]);
+            let mut projected = vec![Map::new(); hits.len()];
+            let mut groups = std::collections::BTreeMap::<String, (usize,QualifiedAddress,Vec<usize>)>::new();
+            for (index,hit) in hits.iter().enumerate() {
+                let SourceLocation::Addressed { source_set, metadata_path: Some(target), target_kind: TargetKind::Module } = &hit.location else { continue; };
+                projected[index] = limited();
+                let Some(source_index) = sources.iter().position(|source| source.source_set_name() == source_set) else { continue; };
+                let Ok(authority) = sources[source_index].logical_view_read_authority(cancellation) else { continue; };
+                let Some(module) = authority.module_address_for_source_target(target) else { continue; };
+                groups.entry(module.to_string()).or_insert_with(|| (source_index,module,Vec::new())).2.push(index);
+            }
+            // Only the current module's semantic projection is retained.
+            // Enrichment never changes provider order, ranks or snippets.
+            for (_, (source_index,module,indices)) in groups {
+                let Ok(authority) = sources[source_index].logical_view_read_authority(cancellation) else { continue; };
+                for index in indices {
+                    let hit = &hits[index];
+                    if hit.line == 0 || hit.snippet.is_empty() { continue; }
+                    let Some(to) = hit.end_line.or_else(|| hit.line.checked_add(hit.snippet.lines().count().saturating_sub(1))) else { continue; };
+                    match authority.body_for_search_hit(&module, hit.line, to, &hit.snippet) {
+                        Ok(Some(body)) => {
+                            let at = if to == hit.line { format!("{body}#L{}", hit.line) } else { format!("{body}#L{}-L{to}", hit.line) };
+                            projected[index] = Map::from_iter([("at".into(),json!(at))]);
+                        }
+                        Ok(None) => {}
+                        Err(error) if matches!(error.code(), RefusalCode::Cancelled | RefusalCode::DeadlineExceeded | RefusalCode::ConcurrentChange) => return Err(error),
+                        Err(_) => {}
+                    }
+                }
+            }
+            Ok(projected)
+        };
+        provider_search_page_projected(
             &self.search_cursors,
             role,
             execution,
             binding,
             cursor,
             cancellation,
+            &project_hits,
         )
     }
 
@@ -2342,6 +2486,41 @@ impl CanonicalV13ReadService {
                 format!("no admitted source set places `{path}`"),
             );
         };
+        // Кандидаты на присоединённые файлы подтверждаются тем же читателем,
+        // что и view: регистрацию владельца и точный ресурс нельзя вывести
+        // только из правдоподобной раскладки.
+        if matches!(entry.kind(), "Module" | "Metadata")
+            || entry
+                .placed_path()
+                .is_some_and(|path| path.ends_with("/Ext/Form.xml"))
+        {
+            let address = match QualifiedAddress::parse(entry.at()) {
+                Ok(address) => address,
+                Err(error) => return error_result(None, RefusalCode::BadValue, error.to_string()),
+            };
+            let authority = match invocation
+                .layout_read_source(address.source_set())
+                .and_then(|source| source.logical_view_read_authority(cancellation))
+            {
+                Ok(authority) => authority,
+                Err(error) => {
+                    return error_result_detailed(
+                        Some(entry.at().to_owned()),
+                        RefusalDetail::SourceUnreadable,
+                        error,
+                    )
+                }
+            };
+            return match Self::resolve_with_authority(&authority, &address, entry.placed_path()) {
+                Ok(source) if Some(source.path()) == entry.placed_path() => resolve_result(source),
+                Ok(_) => error_result(
+                    Some(entry.at().to_owned()),
+                    RefusalCode::InvalidSource,
+                    "the logical reader does not place the requested resource at this path",
+                ),
+                Err(error) => view_error_result(Some(entry.at().to_owned()), error),
+            };
+        }
         resolve_result(ResolvedSource::new(
             entry.at(),
             entry.kind(),
@@ -2356,10 +2535,26 @@ impl CanonicalV13ReadService {
         address: &QualifiedAddress,
         cancellation: &CancellationToken,
     ) -> DomainResult {
-        if address
-            .segments()
-            .iter()
-            .any(|segment| !segment.kind().is_metadata_kind())
+        let form_owner = address.form_metadata_owner().or_else(|| {
+            matches!(address.segments().last(), Some(last) if last.name().is_some() && matches!(last.kind(), NodeKind::Form | NodeKind::CommonForm))
+                .then(|| address.clone())
+        });
+        if let Some(owner) = form_owner {
+            // Preserve resolve's descriptor/owner identity proof before reading
+            // content. A missing required owner is invalid source; a successful
+            // descriptor proof does not substitute that file for the form body.
+            if let Some(mut proof) = self.resolve_metadata_point(invocation, &owner, cancellation) {
+                if !proof.ok {
+                    proof.at = Some(address.to_string());
+                    return proof;
+                }
+            }
+        }
+        if matches!(address.segments().last(), Some(last) if last.name().is_some() && matches!(last.kind(), NodeKind::Form | NodeKind::CommonForm))
+            || address
+                .segments()
+                .iter()
+                .any(|segment| !segment.kind().is_metadata_kind())
         {
             return match self.resolve_projected_source(invocation, address, cancellation) {
                 Ok(source) => resolve_result(source),
@@ -2367,6 +2562,9 @@ impl CanonicalV13ReadService {
             };
         }
         let at = address.to_string();
+        if let Some(result) = self.resolve_metadata_point(invocation, address, cancellation) {
+            return result;
+        }
         let directory = match self.layout_directory(
             invocation,
             Some(at.clone()),
@@ -2400,6 +2598,66 @@ impl CanonicalV13ReadService {
         ))
     }
 
+    /// Resolves one metadata object by its own layout place: the target file
+    /// and its necessary owners, the same proof as `resolve(path)`. It never
+    /// builds the full name directory, so foreign descriptors are not read and
+    /// their damage does not decide this answer (#1457).
+    fn resolve_metadata_point(
+        &self,
+        invocation: &ActorBoundExecution,
+        address: &QualifiedAddress,
+        cancellation: &CancellationToken,
+    ) -> Option<DomainResult> {
+        let at = address.to_string();
+        let source = match admitted_read_source(
+            invocation.read_sources(),
+            |source| source.source_set_name(),
+            Some(&at),
+            address.source_set(),
+        ) {
+            Ok(source) => source,
+            Err(refusal) => return Some(*refusal),
+        };
+        let relative = metadata_layout_path(address, source.source_kind())?;
+        let relative = relative.as_str();
+        let root = source.retained_root();
+        let layout = [LayoutFindSource::new(
+            source.source_set_name(),
+            source.source_kind(),
+            root.as_ref(),
+        )];
+        let entry =
+            match self
+                .find_builder
+                .locate_path(&layout, relative, source.deadline(), cancellation)
+            {
+                Ok(entry) => entry,
+                Err(error) => return Some(find_build_error_result(Some(at), error)),
+            };
+        let Some((kind, placed)) = entry.as_ref().and_then(|entry| {
+            (entry.at() == at
+                || QualifiedAddress::parse(entry.at())
+                    .ok()
+                    .and_then(|located| located.form_metadata_owner())
+                    .as_ref()
+                    == Some(address))
+            .then(|| entry.placed_path().map(|placed| (entry.kind(), placed)))
+            .flatten()
+        }) else {
+            return Some(error_result(
+                Some(at.clone()),
+                RefusalCode::NotFound,
+                format!("the source layout does not place `{at}`"),
+            ));
+        };
+        Some(resolve_result(ResolvedSource::new(
+            at.clone(),
+            kind.to_string(),
+            placed.to_string(),
+            ResolvedLines::NotLineBased,
+        )))
+    }
+
     fn resolve_projected_source(
         &self,
         invocation: &ActorBoundExecution,
@@ -2417,10 +2675,18 @@ impl CanonicalV13ReadService {
         let authority = source
             .logical_view_read_authority(cancellation)
             .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+        Self::resolve_with_authority(&authority, address, None)
+    }
+
+    fn resolve_with_authority(
+        authority: &crate::infrastructure::v13_read::LogicalViewReadAuthority<'_>,
+        address: &QualifiedAddress,
+        requested_path: Option<&str>,
+    ) -> Result<ResolvedSource, ViewError> {
         let snapshot = authority.snapshot(address)?;
         let canonical = authority.canonical_address(address, &snapshot)?;
         let (kind, lines) = authority.source_lines(&canonical, &snapshot)?;
-        let path = authority.existing_export_path(&canonical)?;
+        let path = authority.existing_export_path(&canonical, requested_path)?;
         if authority.snapshot(&canonical)?.revision != snapshot.revision {
             return Err(ViewError::new(
                 RefusalCode::StaleCursor,
@@ -2435,6 +2701,67 @@ impl CanonicalV13ReadService {
             lines,
         ))
     }
+}
+
+/// The admitted read capability of one source set, or the refusal that the
+/// layout readers answer when the actor did not admit it.
+fn admitted_read_source<T>(
+    sources: Result<Vec<T>, String>,
+    source_set_name: impl Fn(&T) -> &str,
+    at: Option<&str>,
+    source_set: &str,
+) -> Result<T, Box<DomainResult>> {
+    let sources = sources.map_err(|error| {
+        Box::new(error_result(
+            at.map(str::to_string),
+            RefusalCode::ProviderUnavailable,
+            error,
+        ))
+    })?;
+    sources
+        .into_iter()
+        .find(|source| source_set_name(source) == source_set)
+        .ok_or_else(|| {
+            Box::new(error_result(
+                at.map(str::to_string),
+                RefusalCode::ProviderUnavailable,
+                format!("source set `{source_set}` was not admitted by the workspace actor"),
+            ))
+        })
+}
+
+/// The layout place of a metadata object address in its own source set:
+/// `Configuration.xml`, an owner descriptor, or a form, template or command
+/// of a top-level owner. Other shapes keep the full directory lookup.
+fn metadata_layout_path(address: &QualifiedAddress, source_kind: SourceSetKind) -> Option<String> {
+    let segments = address.segments();
+    if let [root] = segments {
+        if root.kind() == NodeKind::Configuration && root.name().is_none() {
+            return matches!(
+                source_kind,
+                SourceSetKind::Configuration | SourceSetKind::Extension
+            )
+            .then(|| "Configuration.xml".to_string());
+        }
+    }
+    let target = address.to_string();
+    let target = target.split_once(':')?.1;
+    let target = crate::domain::source_target::MetadataAddress::parse(
+        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+        target,
+    )
+    .ok()?;
+    let relative = crate::infrastructure::logical_event_source::metadata_descriptor_relative(
+        &target,
+        source_kind,
+    )
+    .ok()?;
+    let relative = relative.to_str()?.replace('\\', "/");
+    // A command has no descriptor: the layout places its directory.
+    if matches!(segments.last(), Some(last) if last.kind() == NodeKind::Command) {
+        return relative.strip_suffix(".xml").map(str::to_string);
+    }
+    Some(relative)
 }
 
 /// Поставить движок маршрута, если его нет, и убедиться, что он на месте.
@@ -2850,7 +3177,10 @@ fn provider_search_failure(
     if let Some(reason) = &mut termination {
         reason.detail_code = reason.detail_code.take().filter(|detail| {
             reason.code == SearchTerminationCode::DependencyPending
-                && matches!(detail.as_str(), "buildingIndex" | "updatingIndex")
+                && matches!(
+                    detail.as_str(),
+                    "buildingIndex" | "updatingIndex" | "indexQueued"
+                )
         });
     }
     let mut evidence = json!({
@@ -2867,18 +3197,47 @@ fn provider_search_failure(
     if let Some(build_id) = section.index_build_id {
         evidence["indexBuildId"] = json!(build_id);
     }
+    if let Some(maintenance) = section.index_maintenance {
+        evidence["indexMaintenance"] = json!(maintenance);
+    }
     result.data = Some(json!({"mode": section.identity.role, "matches": [evidence]}));
     result
 }
 
-fn provider_search_page(
+#[cfg(test)]
+pub(crate) fn provider_search_page(
+    cursors: &SearchCursorStore,
+    role: ProviderRole,
+    execution: crate::application::code_intelligence::CodeSearchExecution,
+    binding: SearchCursorBinding,
+    cursor_token: Option<&str>,
+    cancellation: &CancellationToken,
+) -> DomainResult {
+    provider_search_page_projected(
+        cursors,
+        role,
+        execution,
+        binding,
+        cursor_token,
+        cancellation,
+        &|hits| Ok(vec![Map::new(); hits.len()]),
+    )
+}
+
+fn provider_search_page_projected<F>(
     cursors: &SearchCursorStore,
     role: ProviderRole,
     execution: crate::application::code_intelligence::CodeSearchExecution,
     mut binding: SearchCursorBinding,
     cursor_token: Option<&str>,
     cancellation: &CancellationToken,
-) -> DomainResult {
+    project_hits: &F,
+) -> DomainResult
+where
+    F: Fn(
+        &[crate::domain::code_intelligence::ProviderSearchHit],
+    ) -> Result<Vec<Map<String, Value>>, ViewError>,
+{
     use crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES;
     use crate::application::v13::view::PREFERRED_PAGE_BYTES;
 
@@ -2928,14 +3287,35 @@ fn provider_search_page(
     // Providers expose top-N only. Re-query the same finite window on a later
     // page and bind the cursor to every fact returned by that provider; an
     // index refresh must make the old cursor stale instead of moving hits.
-    let fingerprint_bytes = serde_json::to_vec(&(&section, &warnings))
+    let mut section_value =
+        serde_json::to_value(&section).expect("provider search section is serializable");
+    let projections = match project_hits(&section.hits) {
+        Ok(projections) if projections.len() == section.hits.len() => projections,
+        Ok(_) => {
+            return error_result(
+                None,
+                RefusalCode::InvalidResult,
+                "search hit projection count changed",
+            )
+        }
+        Err(error) => return view_error_result(None, error),
+    };
+    for (extra, value) in projections.into_iter().zip(
+        section_value["hits"]
+            .as_array_mut()
+            .expect("provider hits array"),
+    ) {
+        value
+            .as_object_mut()
+            .expect("provider hit object")
+            .extend(extra);
+    }
+    let fingerprint_bytes = serde_json::to_vec(&(&section_value, &warnings))
         .expect("provider search evidence is serializable");
     let mut hasher = Sha256::new();
     hasher.update(b"unica-v13-provider-search-v1\0");
     hasher.update(&fingerprint_bytes);
     binding.result_fingerprint = Some(format!("provider-sha256-v1:{:x}", hasher.finalize()));
-    let mut section_value =
-        serde_json::to_value(&section).expect("provider search section is serializable");
     let hits = std::mem::take(
         section_value["hits"]
             .as_array_mut()
@@ -3487,15 +3867,17 @@ fn run_bsl_diagnostics(
                     message,
                 )));
             }
+            let structure = bsl_structure_findings(&mapping, address, cancellation)?;
             let findings: Vec<Value> = result
                 .items
                 .iter()
+                .chain(&structure)
                 .map(|item| serde_json::to_value(item).expect("diagnostic items serialize"))
                 .collect();
             // Провалом считается ошибка, а не всякая пометка: подсказка по
             // стилю не ломает модуль, и остальные валидаторы поверхности
             // судят так же.
-            let passed = bsl_findings_passed(&result.items);
+            let passed = bsl_findings_passed(&result.items) && bsl_findings_passed(&structure);
             Ok(CheckStepVerdict {
                 passed,
                 diagnostics: findings,
@@ -3524,6 +3906,69 @@ fn run_bsl_diagnostics(
             ),
         })),
     }
+}
+
+/// Поставщик находок, которые проверяет сам Unica, а не анализатор.
+const UNICA_BSL_STRUCTURE_PROVIDER: &str = "unica";
+
+/// Код находки: объявление переменной не в начале модуля или метода.
+const MISPLACED_VARIABLE_CODE: &str = "VariableDeclarationPlacement";
+
+/// Ошибки компиляции платформы, которых анализатор не видит (#1460).
+///
+/// Анализатор пропускает `Перем` после методов, а платформа такой модуль
+/// не компилирует: `check` отвечал `passed`. Находка принадлежит
+/// проверенному модулю — тому же месту, куда отображение относит находки
+/// анализатора в этом модуле, — и проваливает проверку.
+fn bsl_structure_findings(
+    mapping: &crate::infrastructure::diagnostics::CanonicalModuleDiagnosticMapping,
+    address: &QualifiedAddress,
+    cancellation: &CancellationToken,
+) -> Result<Vec<crate::domain::diagnostics::DiagnosticItem>, Box<DomainResult>> {
+    use crate::domain::diagnostics::{DiagnosticFocus, DiagnosticItem, DiagnosticSeverity};
+    use crate::domain::source_location::SourceLocation;
+    use crate::domain::source_target::TargetKind;
+    use crate::infrastructure::bsl_outline::{
+        misplaced_variable_declarations, MISPLACED_VARIABLE_MESSAGE,
+    };
+
+    let text = match std::fs::read_to_string(mapping.module_scope().module_path) {
+        Ok(text) => text,
+        // Модуля без файла анализатор тоже не судил: судить нечего.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(Box::new(error_result_detailed(
+                Some(address.to_string()),
+                RefusalDetail::SourceUnreadable,
+                format!("BSL module is unreadable: {}", error.kind()),
+            )))
+        }
+    };
+    if cancellation.is_cancelled() {
+        return Err(Box::new(error_result(
+            Some(address.to_string()),
+            RefusalCode::Cancelled,
+            "check was cancelled before the module structure was checked",
+        )));
+    }
+    let target = mapping.target();
+    Ok(misplaced_variable_declarations(&text)
+        .into_iter()
+        .map(|range| DiagnosticItem::Diagnostic {
+            provider: UNICA_BSL_STRUCTURE_PROVIDER,
+            location: SourceLocation::Addressed {
+                source_set: target.source_set.clone(),
+                metadata_path: target.metadata_path.clone(),
+                target_kind: TargetKind::Module,
+            },
+            location_reason: None,
+            focus: DiagnosticFocus::SourceRange { range },
+            code: MISPLACED_VARIABLE_CODE.to_string(),
+            severity: DiagnosticSeverity::Error,
+            message: MISPLACED_VARIABLE_MESSAGE.to_string(),
+            tags: Vec::new(),
+        })
+        .collect())
 }
 
 fn bsl_result_proves_full_verdict(result: &crate::domain::diagnostics::DiagnosticResult) -> bool {
@@ -3809,7 +4254,8 @@ fn run_native_validator(
     let at = address.to_string();
     let native = if matches!(
         validator,
-        crate::application::v13::check::CheckValidator::Dcs
+        crate::application::v13::check::CheckValidator::Subsystem
+            | crate::application::v13::check::CheckValidator::Dcs
             | crate::application::v13::check::CheckValidator::Mxl
     ) {
         let sources = invocation.read_sources().map_err(|error| {
@@ -3838,17 +4284,23 @@ fn run_native_validator(
                     error,
                 ))
             })?;
-        let dcs = validator == crate::application::v13::check::CheckValidator::Dcs;
-        let input = if dcs {
-            authority.dcs_validation_input(address)
+        if validator == crate::application::v13::check::CheckValidator::Subsystem {
+            authority
+                .validate_subsystem(address)
+                .map_err(|error| Box::new(view_error_result(Some(at.clone()), error)))?
         } else {
-            authority.mxl_validation_input(address)
-        }
-        .map_err(|error| Box::new(view_error_result(Some(at.clone()), error)))?;
-        if dcs {
-            crate::infrastructure::native_operations::v13_analysis::validate_dcs_input(input)
-        } else {
-            crate::infrastructure::native_operations::v13_analysis::validate_mxl_input(input)
+            let dcs = validator == crate::application::v13::check::CheckValidator::Dcs;
+            let input = if dcs {
+                authority.dcs_validation_input(address)
+            } else {
+                authority.mxl_validation_input(address)
+            }
+            .map_err(|error| Box::new(view_error_result(Some(at.clone()), error)))?;
+            if dcs {
+                crate::infrastructure::native_operations::v13_analysis::validate_dcs_input(input)
+            } else {
+                crate::infrastructure::native_operations::v13_analysis::validate_mxl_input(input)
+            }
         }
     } else {
         let selector = validator_selector(validator, address, context).map_err(|error| {
@@ -4032,16 +4484,24 @@ pub(super) fn preflight_apply_operations(
     source: SourceSetTraits,
     template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
 ) -> Result<(), Box<DomainResult>> {
-    preflight_apply_operations_with(request, source, template_format, &|_, _| None)
+    preflight_apply_operations_with(
+        request,
+        source,
+        template_format,
+        &|_| None,
+        &crate::domain::apply::no_member_lookup,
+    )
 }
 
-/// То же, что `preflight_apply_operations`, с поиском набора схемы по имени:
-/// снятый `dataSet` ведёт к настоящему, в том числе вложенному, набору.
+/// То же, что `preflight_apply_operations`, с поиском узла по имени: снятый
+/// `dataSet` ведёт к настоящему, в том числе вложенному, набору, а имя
+/// элемента формы — к его пути в форме.
 pub(super) fn preflight_apply_operations_with(
     request: &crate::domain::apply::ApplyRequest,
     source: SourceSetTraits,
     template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
-    data_sets: crate::domain::apply::DataSetLookup<'_>,
+    form_item: &dyn Fn(&QualifiedAddress) -> Option<crate::domain::apply::FormItemRole>,
+    members: crate::domain::apply::MemberPathLookup<'_>,
 ) -> Result<(), Box<DomainResult>> {
     let registry = OperationRegistry::closed();
     for (index, operation) in request.ops().iter().enumerate() {
@@ -4049,17 +4509,13 @@ pub(super) fn preflight_apply_operations_with(
             // Снятая операция ведёт к заменившей на узле-родителе (#1354).
             if let Some(retired) = crate::domain::apply::RetiredOperation::lookup(operation.name())
             {
-                let target = retired.replacement_at(operation.at());
-                return Err(Box::new(with_node_dictionary(
-                    error_result(
-                        Some(format!("ops[{index}].op")),
-                        RefusalCode::BadValue,
-                        format!(
-                            "apply operation `{}` is retired: call `{}` at `{target}`; {}",
-                            retired.op, retired.replacement, retired.arguments
-                        ),
-                    ),
-                    &target.to_string(),
+                return Err(Box::new(retired_operation_refusal(
+                    index,
+                    operation.at(),
+                    retired,
+                    source,
+                    template_format,
+                    form_item,
                 )));
             }
             return Err(Box::new(with_node_dictionary(
@@ -4074,6 +4530,11 @@ pub(super) fn preflight_apply_operations_with(
                 &operation.at().to_string(),
             )));
         };
+        // Общее имя (`attribute.add` объекта и формы, #1465) выбирает
+        // запись по адресу вызова.
+        let descriptor = OperationSite::new(operation.at(), source)
+            .and_then(|site| registry.lookup_at(operation.name(), &site))
+            .unwrap_or(descriptor);
         // Набор, который семейство не пишет, — свойство набора, а не «не тот
         // узел»: тот же отказ даёт разбор планировщиком.
         if !source.writes(descriptor.family()) {
@@ -4099,13 +4560,61 @@ pub(super) fn preflight_apply_operations_with(
                 ),
             )));
         };
-        if let Some(redirect) = registry.retired_argument_redirect_with(
+        if let Some(mut redirect) = registry.retired_argument_redirect_with(
             operation.name(),
             &site,
             operation.args(),
-            data_sets,
+            members,
         ) {
+            // Значение назвало элемент, роль которого операцию не принимает
+            // (`into` поля): `next` ведёт к ближайшему узлу, где она исполнима.
+            if !redirect.listing && !admits_form_item_at(descriptor, &redirect.at, form_item) {
+                if let Some(target) = OperationSite::new(&redirect.at, source).and_then(|target| {
+                    descriptor.nearest_applicable_ancestor_with(&target, template_format, form_item)
+                }) {
+                    redirect.at = target;
+                }
+            }
             let location = Some(format!("ops[{index}].args.{}", redirect.location));
+            if redirect.ambiguous {
+                // Имя повторяется (члены разных объединений, одноимённые
+                // группы в разных ветвях структуры): адрес за вызывающего
+                // не выбирается. `next` — ветвь, где видны все, и словари
+                // совпавших узлов (#1357).
+                let mut refusal = error_result(
+                    location,
+                    RefusalCode::BadValue,
+                    format!(
+                        "`{}` names its subject by address, not by `{}`; the name does not select one addressable node{}; read `{}` and call it at the one you mean",
+                        operation.name(),
+                        redirect.location,
+                        if redirect.candidates.is_empty() {
+                            String::new()
+                        } else {
+                            format!(
+                                ": {}",
+                                redirect
+                                    .candidates
+                                    .iter()
+                                    .map(|candidate| format!("`{candidate}`"))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            )
+                        },
+                        redirect.at
+                    ),
+                );
+                refusal.next.push(json!({
+                    "tool": "unica.view",
+                    "args": {"at": redirect.at.to_string()},
+                    "reason": "одноимённые узлы этого вида: выберите адрес",
+                }));
+                for candidate in &redirect.candidates {
+                    refusal =
+                        with_operation_dictionary(refusal, &candidate.to_string(), descriptor);
+                }
+                return Err(Box::new(refusal));
+            }
             if redirect.listing {
                 // Значение называло подузел не именем: адрес из него не
                 // строится, и `next` ведёт к коллекции, где имя видно.
@@ -4146,6 +4655,7 @@ pub(super) fn preflight_apply_operations_with(
                 .split_last()
                 .expect("a member address has a terminal segment");
             let branch = QualifiedAddress {
+                line_range: None,
                 source_set: redirect.at.source_set().to_string(),
                 segments: owner.to_vec(),
             };
@@ -4185,6 +4695,7 @@ pub(super) fn preflight_apply_operations_with(
             // операции родителя, которая его создаёт (#1354).
             if let Some(creator) = descriptor.creator() {
                 let parent = QualifiedAddress {
+                    line_range: None,
                     source_set: redirect.at.source_set().to_string(),
                     segments: owner.to_vec(),
                 };
@@ -4196,12 +4707,16 @@ pub(super) fn preflight_apply_operations_with(
             }
             return Err(Box::new(refusal));
         }
-        if descriptor.applies_at(&site) {
+        // Роль элемента формы — фильтр поверх места: в поле элемент не
+        // добавить, автоматическую панель отдельно не удалить.
+        if descriptor.applies_at(&site)
+            && admits_form_item_at(descriptor, operation.at(), form_item)
+        {
             continue;
         }
         // Прежний псевдоним запроса `Template.T.Query.D` снят (#1353): отказ
         // называет адрес набора, где операция исполнима.
-        if let Some(target) = descriptor.retired_query_alias_target(&site, data_sets) {
+        if let Some(target) = descriptor.retired_query_alias_target(&site, members) {
             return Err(Box::new(with_operation_dictionary(
                 error_result(
                     Some(format!("ops[{index}].at")),
@@ -4221,8 +4736,14 @@ pub(super) fn preflight_apply_operations_with(
             target_kind.as_str(),
             operation.at()
         );
-        let refusal = match descriptor.nearest_applicable_ancestor(&site, template_format) {
-            Some(target) => with_operation_dictionary(
+        let nearest = registry.nearest_applicable_ancestor_with(
+            operation.name(),
+            &site,
+            template_format,
+            form_item,
+        );
+        let refusal = match nearest {
+            Some((descriptor, target)) => with_operation_dictionary(
                 error_result(
                     Some(format!("ops[{index}].at")),
                     RefusalCode::BadValue,
@@ -4232,7 +4753,13 @@ pub(super) fn preflight_apply_operations_with(
                 descriptor,
             ),
             None => {
-                let message = format!("{refused}; it addresses {}", descriptor.address_shape());
+                // Общее имя (#1465) исполнимо по формам адреса обеих записей.
+                let shapes = registry
+                    .named(operation.name())
+                    .map(|descriptor| descriptor.address_shape())
+                    .collect::<Vec<_>>()
+                    .join(" or ");
+                let message = format!("{refused}; it addresses {shapes}");
                 let refusal = error_result(
                     Some(format!("ops[{index}].at")),
                     RefusalCode::BadValue,
@@ -4258,6 +4785,77 @@ pub(super) fn preflight_apply_operations_with(
         return Err(Box::new(refusal));
     }
     Ok(())
+}
+
+/// Отказ снятой операции без записи (#1354, #1465). Создающая операция
+/// ведёт к словарю родителя; переименованная — к контракту заменившей на
+/// ближайшем узле, где она исполнима, как отказ «не тот узел». Если такого
+/// узла в цепочке адреса нет, отказ называет форму адреса заменившей.
+fn retired_operation_refusal(
+    index: usize,
+    at: &QualifiedAddress,
+    retired: crate::domain::apply::RetiredOperation,
+    source: SourceSetTraits,
+    template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
+    form_item: &dyn Fn(&QualifiedAddress) -> Option<crate::domain::apply::FormItemRole>,
+) -> DomainResult {
+    let location = Some(format!("ops[{index}].op"));
+    let site = OperationSite::new(at, source);
+    let target = site
+        .as_ref()
+        .and_then(|site| retired.replacement_target(site, template_format, form_item));
+    let replacement = retired.descriptor();
+    match (target, replacement) {
+        (Some(target), Some(replacement)) => {
+            let refusal = error_result(
+                location,
+                RefusalCode::BadValue,
+                format!(
+                    "apply operation `{}` is retired: call `{}` at `{target}`; {}",
+                    retired.op, retired.replacement, retired.arguments
+                ),
+            );
+            if retired.creates.is_some() {
+                with_node_dictionary(refusal, &target.to_string())
+            } else {
+                with_operation_dictionary(refusal, &target.to_string(), replacement)
+            }
+        }
+        (_, replacement) => {
+            let shape = replacement.map_or_else(String::new, |replacement| {
+                format!(", which addresses {}", replacement.address_shape())
+            });
+            let refusal = error_result(
+                location,
+                RefusalCode::BadValue,
+                format!(
+                    "apply operation `{}` is retired: call `{}`{shape}; {}",
+                    retired.op, retired.replacement, retired.arguments
+                ),
+            );
+            let readable =
+                crate::infrastructure::logical_tree::route_logical_address(at, source.profile())
+                    .is_ok();
+            if readable {
+                with_node_dictionary(refusal, &at.to_string())
+            } else {
+                with_node_dictionary(refusal, &format!("{}:Configuration", at.source_set()))
+            }
+        }
+    }
+}
+
+/// Принимает ли роль элемента формы по адресу `at` операцию; адрес не
+/// элемента формы фильтр не проходит.
+fn admits_form_item_at(
+    descriptor: crate::domain::apply::OperationDescriptor,
+    at: &QualifiedAddress,
+    form_item: &dyn Fn(&QualifiedAddress) -> Option<crate::domain::apply::FormItemRole>,
+) -> bool {
+    at.segments()
+        .last()
+        .is_none_or(|segment| segment.kind() != NodeKind::Item)
+        || descriptor.admits_form_item(form_item(at))
 }
 
 /// `next` к словарю узла, где операция исполнима. Подробный контракт
@@ -4321,6 +4919,7 @@ pub(super) fn with_missing_target_parent(
     let segments = operation.at().segments();
     let parent = if segments.len() > 1 {
         QualifiedAddress {
+            line_range: None,
             source_set: operation.at().source_set().to_string(),
             segments: segments[..segments.len() - 1].to_vec(),
         }
@@ -4501,9 +5100,7 @@ fn view_error_result(
     // Маршрут переносится вместе с кодом и уточнением: иначе два пути наружу
     // расходятся, и отказ теряет альтернативу в зависимости от того, каким
     // из них он вышел.
-    if let Some(next) = error.next() {
-        result.next.push(next.clone());
-    }
+    result.next.extend(error.next().iter().cloned());
     result
 }
 
@@ -4739,6 +5336,35 @@ mod tests {
             warnings: Vec::new(),
             errors: Vec::new(),
         }
+    }
+
+    #[test]
+    fn maintenance_transition_invalidates_the_cursor_for_the_previous_answer() {
+        use crate::domain::code_intelligence::IndexMaintenanceEvidence;
+        let store = Default::default();
+        let mut queued = provider_search_test_execution(75, 8, false);
+        queued.result.sections[0].index_maintenance = Some(IndexMaintenanceEvidence::Queued);
+        let first = super::provider_search_page(
+            &store,
+            ProviderRole::Semantic,
+            queued,
+            provider_search_test_binding(ProviderRole::Semantic, 20),
+            None,
+            &CancellationToken::new(),
+        );
+        assert!(first.ok, "{first:?}");
+        let mut running = provider_search_test_execution(75, 8, false);
+        running.result.sections[0].index_maintenance = Some(IndexMaintenanceEvidence::Running);
+        let next = super::provider_search_page(
+            &store,
+            ProviderRole::Semantic,
+            running,
+            provider_search_test_binding(ProviderRole::Semantic, 20),
+            first.cursor.as_deref(),
+            &CancellationToken::new(),
+        );
+        assert!(!next.ok, "{next:?}");
+        assert_eq!(next.diagnostics[0]["code"], "stale_cursor");
     }
 
     #[test]
@@ -5400,13 +6026,24 @@ mod tests {
         tool: crate::application::invocation_store::ToolIdentity,
         arguments: serde_json::Value,
     ) -> crate::domain::invocation::DomainResult {
+        invoke_exact_read_with_service(
+            workspace,
+            tool,
+            arguments,
+            Arc::new(super::CanonicalV13ReadService::default()),
+        )
+    }
+
+    fn invoke_exact_read_with_service(
+        workspace: &std::path::Path,
+        tool: crate::application::invocation_store::ToolIdentity,
+        arguments: serde_json::Value,
+        service: Arc<super::CanonicalV13ReadService>,
+    ) -> crate::domain::invocation::DomainResult {
         use crate::application::ports::TokioClock;
         use crate::infrastructure::daemon::protocol::InvocationRequest;
         use crate::infrastructure::daemon::server::V5CanonicalInvocationRuntime;
-        let runtime = V5CanonicalInvocationRuntime::new(
-            Arc::new(super::CanonicalV13ReadService::default()),
-            Arc::new(TokioClock),
-        );
+        let runtime = V5CanonicalInvocationRuntime::new(service, Arc::new(TokioClock));
         runtime
             .bind(
                 InvocationRequest::new(
@@ -5449,7 +6086,7 @@ mod tests {
         ] {
             for (suffix, kind, from, to) in [
                 (".Method.Ping", "Method", 3, 65),
-                (".Method.Ping.Body", "Body", 4, 64),
+                (".Method.Ping.Body", "Body", 3, 65),
                 (".Body", "Body", 1, 72),
                 (".Region.A.Region.Inner", "Region", 2, 66),
                 (".Region.B.Region.Inner", "Region", 69, 71),
@@ -5538,6 +6175,102 @@ mod tests {
         }
     }
 
+    /// Resolving a metadata object by its own place answers exactly what the
+    /// full layout directory answers, for every object shape it handles (#1457).
+    #[test]
+    fn resolve_metadata_point_matches_the_full_layout_directory() {
+        use crate::application::invocation_store::ToolIdentity;
+        use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
+        use crate::infrastructure::v13_find::{LayoutFindSource, WorkspaceFindDirectoryBuilder};
+        let workspace = resolve_exact_workspace();
+        let source = std::fs::canonicalize(workspace.path().join("src")).unwrap();
+        std::fs::create_dir_all(source.join("Catalogs/Items/Commands/Refresh/Ext")).unwrap();
+        std::fs::write(
+            source.join("Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl"),
+            "",
+        )
+        .unwrap();
+        let root = RetainedDirectoryCapability::open(&source).unwrap();
+        let directory = WorkspaceFindDirectoryBuilder::default()
+            .build(
+                &[LayoutFindSource::new(
+                    "main",
+                    crate::domain::project_sources::SourceSetKind::Configuration,
+                    &root,
+                )],
+                ProviderDeadline::no_deadline(),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        for at in [
+            "main:Configuration",
+            "main:CommonModule.Probe",
+            "main:Catalog.Items",
+            "main:Catalog.Items.Form.Main",
+            "main:Catalog.Items.Command.Refresh",
+            "main:CommonForm.Main",
+        ] {
+            let expected = directory
+                .locate_address(at)
+                .unwrap_or_else(|| panic!("the directory places {at}"));
+            let is_form = matches!(expected.kind(), "Form" | "CommonForm");
+            let query = if is_form {
+                format!("{at}.Metadata")
+            } else {
+                at.to_string()
+            };
+            let result =
+                invoke_exact_read(workspace.path(), ToolIdentity::Resolve, json!({"at":query}));
+            assert!(result.ok, "{query}: {result:?}");
+            let data = result.data.as_ref().unwrap();
+            assert_eq!(
+                data["kind"],
+                if is_form { "Metadata" } else { expected.kind() },
+                "{query}"
+            );
+            assert_eq!(data["path"], expected.placed_path().unwrap(), "{query}");
+            if is_form {
+                let content =
+                    invoke_exact_read(workspace.path(), ToolIdentity::Resolve, json!({"at":at}));
+                assert!(content.ok, "{at}: {content:?}");
+                assert_eq!(
+                    content.data.unwrap()["path"],
+                    format!(
+                        "{}/Ext/Form.xml",
+                        expected
+                            .placed_path()
+                            .unwrap()
+                            .strip_suffix(".xml")
+                            .unwrap()
+                    )
+                );
+            }
+        }
+        for at in ["main:Catalog.Missing", "main:Catalog.Items.Command.Missing"] {
+            assert!(directory.locate_address(at).is_none());
+            let result =
+                invoke_exact_read(workspace.path(), ToolIdentity::Resolve, json!({"at":at}));
+            assert!(!result.ok, "{at}: {result:?}");
+            assert_eq!(result.diagnostics[0]["code"], "not_found", "{at}");
+        }
+        std::fs::remove_file(source.join("Catalogs/Items.xml")).unwrap();
+        let orphan = invoke_exact_read(
+            workspace.path(),
+            ToolIdentity::Resolve,
+            json!({"at":"main:Catalog.Items.Form.Main"}),
+        );
+        assert!(!orphan.ok);
+        assert_eq!(orphan.diagnostics[0]["code"], "invalid_source");
+        assert!(
+            orphan.diagnostics[0]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("`Catalogs/Items.xml`")
+                    && message.contains("missing")),
+            "the refusal names the missing owner descriptor: {:?}",
+            orphan.diagnostics[0]["message"]
+        );
+    }
+
     #[test]
     fn resolve_exact_tree_children_use_their_containing_xml() {
         use crate::application::invocation_store::ToolIdentity;
@@ -5618,7 +6351,8 @@ mod tests {
     fn resolve_exact_method_spans_annotations_through_its_closing_line() {
         use crate::application::invocation_store::ToolIdentity;
         let workspace = resolve_exact_workspace();
-        // Документация и пустая строка выше аннотаций методу не принадлежат.
+        // Документация, отделённая пустой строкой, методу не принадлежит;
+        // прилегающая входит в диапазон `Body` — тот же, что текст `view`.
         let module = concat!(
             "// Документация.\n\n&НаСервере\n&Перед(\"Ping\")\nПроцедура Annotated(\n",
             "    Value) Экспорт\n    Сообщить(Value);\nКонецПроцедуры\n\n",
@@ -5644,7 +6378,7 @@ mod tests {
                 (
                     ".Method.Annotated.Body",
                     "Body",
-                    json!({"state":"range","from":7,"to":7}),
+                    json!({"state":"range","from":3,"to":8}),
                 ),
                 (
                     ".Method.Empty",
@@ -5654,7 +6388,7 @@ mod tests {
                 (
                     ".Method.Empty.Body",
                     "Body",
-                    json!({"state":"notLineBased"}),
+                    json!({"state":"range","from":10,"to":11}),
                 ),
                 (
                     ".Method.Inline",
@@ -5676,6 +6410,11 @@ mod tests {
                     "Method",
                     json!({"state":"range","from":21,"to":24}),
                 ),
+                (
+                    ".Method.Documented.Body",
+                    "Body",
+                    json!({"state":"range","from":19,"to":24}),
+                ),
                 (".Body", "Body", json!({"state":"range","from":1,"to":24})),
             ] {
                 let at = format!("main:{prefix}{suffix}");
@@ -5687,7 +6426,7 @@ mod tests {
                 assert_eq!(data["path"], path, "{at}: {result:?}");
                 assert_eq!(data["lines"], lines, "{at}: {result:?}");
             }
-            // View keeps naming the body lines of the method.
+            // View names the same lines as the method text and its resolve.
             let view = invoke_exact_read(
                 workspace.path(),
                 ToolIdentity::View,
@@ -5695,8 +6434,320 @@ mod tests {
             );
             assert!(view.ok, "{view:?}");
             let props = &view.data.as_ref().unwrap()["props"];
-            assert_eq!((&props["line"], &props["endLine"]), (&json!(7), &json!(7)));
+            assert_eq!((&props["line"], &props["endLine"]), (&json!(3), &json!(8)));
         }
+    }
+
+    #[test]
+    fn body_line_view_and_resolve_share_absolute_byte_exact_ranges() {
+        use crate::application::invocation_store::ToolIdentity;
+        let workspace = resolve_exact_workspace();
+        let source = "\u{feff}\u{feff}#Область A\r\n\t// comment\r\nПроцедура Ping() Экспорт\r\n\tСообщить(\"needle\");\r\nКонецПроцедуры\r\n#КонецОбласти";
+        for (prefix, path) in [
+            ("CommonModule.Probe", "CommonModules/Probe/Ext/Module.bsl"),
+            (
+                "Catalog.Items.Module.Object",
+                "Catalogs/Items/Ext/ObjectModule.bsl",
+            ),
+            (
+                "Catalog.Items.Form.Main.Module.Form",
+                "Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+            ),
+        ] {
+            std::fs::write(workspace.path().join("src").join(path), source).unwrap();
+            for (suffix, expected, from, to) in [
+                (".Body#L1", "#Область A\r\n", 1, 1),
+                (
+                    ".Body#L2-L3",
+                    "\t// comment\r\nПроцедура Ping() Экспорт\r\n",
+                    2,
+                    3,
+                ),
+                (
+                    ".Method.Ping.Body#L4-L5",
+                    "\tСообщить(\"needle\");\r\nКонецПроцедуры\r\n",
+                    4,
+                    5,
+                ),
+                (".Body#L6", "#КонецОбласти", 6, 6),
+            ] {
+                let at = format!("main:{prefix}{suffix}");
+                let viewed =
+                    invoke_exact_read(workspace.path(), ToolIdentity::View, json!({"at":at}));
+                assert!(viewed.ok, "{at}: {viewed:?}");
+                assert_eq!(viewed.source_text.as_deref(), Some(expected), "{at}");
+                let resolved =
+                    invoke_exact_read(workspace.path(), ToolIdentity::Resolve, json!({"at":at}));
+                assert!(resolved.ok, "{at}: {resolved:?}");
+                let data = resolved.data.unwrap();
+                assert_eq!(data["at"], at);
+                assert_eq!(data["path"], path);
+                assert_eq!(data["lines"], json!({"state":"range","from":from,"to":to}));
+            }
+        }
+    }
+
+    #[test]
+    fn body_line_ranges_refuse_file_eof_and_method_boundary_crossings() {
+        use crate::application::invocation_store::ToolIdentity;
+        let workspace = resolve_exact_workspace();
+        let file = workspace
+            .path()
+            .join("src/CommonModules/Probe/Ext/Module.bsl");
+        std::fs::write(&file, "// outside\n\nПроцедура Ping()\nКонецПроцедуры\n").unwrap();
+        for suffix in [".Body#L5", ".Body#L3-L5", ".Method.Ping.Body#L1-L3"] {
+            for tool in [ToolIdentity::View, ToolIdentity::Resolve] {
+                let at = format!("main:CommonModule.Probe{suffix}");
+                let result = invoke_exact_read(workspace.path(), tool, json!({"at":at}));
+                assert!(!result.ok, "{at}: {result:?}");
+                assert_eq!(
+                    result.diagnostics[0]["code"], "bad_value",
+                    "{at}: {result:?}"
+                );
+                assert!(result.source_text.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn body_line_apply_refuses_before_staging_and_can_has_no_writes() {
+        use crate::application::invocation_store::ToolIdentity;
+        let workspace = resolve_exact_workspace();
+        let file = workspace
+            .path()
+            .join("src/CommonModules/Probe/Ext/Module.bsl");
+        let source = "// outside\n\nПроцедура Ping()\n\tСообщить(\"needle\");\nКонецПроцедуры\n";
+        std::fs::write(&file, source).unwrap();
+        for (suffix, target) in [
+            (".Body#L4", "main:CommonModule.Probe.Method.Ping"),
+            (
+                ".Method.Ping.Body#L4-L5",
+                "main:CommonModule.Probe.Method.Ping",
+            ),
+            (".Body#L1-L4", "main:CommonModule.Probe.Body"),
+        ] {
+            let at = format!("main:CommonModule.Probe{suffix}");
+            let view = invoke_exact_read(workspace.path(), ToolIdentity::View, json!({"at":at}));
+            assert!(view.ok, "{view:?}");
+            assert_eq!(view.data.as_ref().unwrap()["can"], json!([]));
+            for op in ["code.replace", "code.insert"] {
+                let refused = invoke_exact_read(
+                    workspace.path(),
+                    ToolIdentity::Apply,
+                    json!({"at":at,"ops":[{"op":op,"args":{"text":"Возврат;"}}]}),
+                );
+                assert!(!refused.ok, "{refused:?}");
+                assert_eq!(refused.diagnostics[0]["code"], "bad_value");
+                assert_eq!(refused.next[0]["args"]["at"], target);
+                assert!(refused
+                    .data
+                    .as_ref()
+                    .is_none_or(|data| data.get("executionToken").is_none()));
+                assert_eq!(std::fs::read_to_string(&file).unwrap(), source);
+            }
+        }
+    }
+
+    #[test]
+    fn body_line_read_validates_the_tail_and_continuation_reopens_exact_bytes() {
+        use crate::application::invocation_store::ToolIdentity;
+        let workspace = resolve_exact_workspace();
+        let file = workspace
+            .path()
+            .join("src/CommonModules/Probe/Ext/Module.bsl");
+        let module = format!("{}end", "// юникод\r\n".repeat(12_000));
+        let method = format!(
+            "// outside\r\n\r\nПроцедура Ping()\r\n{}КонецПроцедуры",
+            "\tСообщить(\"юникод\");\r\n".repeat(6_000)
+        );
+        for (source, body, first) in [
+            (&module, "main:CommonModule.Probe.Body", 1),
+            (&method, "main:CommonModule.Probe.Method.Ping.Body", 3),
+            (
+                &method,
+                "main:CommonModule.Probe.Method.Ping.Body#L100-L5000",
+                100,
+            ),
+        ] {
+            std::fs::write(&file, source).unwrap();
+            let whole = invoke_exact_read(workspace.path(), ToolIdentity::View, json!({"at":body}));
+            assert!(!whole.ok, "{whole:?}");
+            let budgeted =
+                crate::application::v13::source_text::apply_response_budget(&whole, 16_384)
+                    .into_owned();
+            let at = budgeted.next[0]["args"]["at"].as_str().unwrap();
+            let address = crate::domain::address::QualifiedAddress::parse(at).unwrap();
+            let range = address.line_range().unwrap();
+            assert_eq!(range.from, first);
+            let part = invoke_exact_read(workspace.path(), ToolIdentity::View, json!({"at":at}));
+            assert!(part.ok, "{part:?}");
+            assert!(crate::application::v13::source_text::apply_response_budget(&part, 16_384).ok);
+            let expected = source
+                .split_inclusive('\n')
+                .skip(range.from - 1)
+                .take(range.to - range.from + 1)
+                .collect::<String>();
+            assert_eq!(part.source_text.as_deref(), Some(expected.as_str()));
+            let next = format!(
+                "{}#L{}-L{}",
+                address.without_line_range(),
+                range.from,
+                range.to + 1
+            );
+            let one_more =
+                invoke_exact_read(workspace.path(), ToolIdentity::View, json!({"at":next}));
+            assert!(one_more.ok, "{one_more:?}");
+            assert!(
+                !crate::application::v13::source_text::apply_response_budget(&one_more, 16_384).ok,
+                "one extra complete line must exceed this host budget: {at}"
+            );
+        }
+        let mut broken = module.into_bytes();
+        broken.push(0xff);
+        std::fs::write(&file, broken).unwrap();
+        let refused = invoke_exact_read(
+            workspace.path(),
+            ToolIdentity::View,
+            json!({"at":"main:CommonModule.Probe.Body#L1"}),
+        );
+        assert!(!refused.ok);
+        assert_ne!(refused.diagnostics[0]["code"], "result_too_large");
+        assert!(refused.source_text.is_none());
+    }
+
+    #[test]
+    fn body_line_provider_search_uses_current_spans_and_preserves_evidence() {
+        use crate::application::invocation_store::ToolIdentity;
+        use crate::domain::code_intelligence::ProviderSearchHit;
+        use crate::domain::source_location::SourceLocation;
+        use crate::domain::source_target::{
+            MetadataAddress, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
+        };
+        let workspace = resolve_exact_workspace();
+        std::fs::write(workspace.path().join("src/CommonModules/Probe/Ext/Module.bsl"), "// outside Needle\n\n// Needle doc\nПроцедура Ping()\n\tСообщить(\"Needle\");\nКонецПроцедуры\n").unwrap();
+        for role in [
+            ProviderRole::Lexical,
+            ProviderRole::Symbol,
+            ProviderRole::Semantic,
+        ] {
+            let hits = [
+                (1, "// outside Needle"),
+                (3, "// Needle doc"),
+                (5, "Сообщить(\"Needle\");"),
+                (5, "stale Needle"),
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(index, (line, snippet))| ProviderSearchHit {
+                rank: Some(index + 1),
+                provider_score: Some(0.5),
+                location: SourceLocation::Addressed {
+                    source_set: "main".into(),
+                    metadata_path: Some(
+                        MetadataAddress::parse(
+                            PLATFORM_XML_8_3_27_FORMAT_2_20,
+                            "CommonModule.Probe.Module",
+                        )
+                        .unwrap(),
+                    ),
+                    target_kind: TargetKind::Module,
+                },
+                line,
+                end_line: None,
+                symbol: Some("InventedMethodName".into()),
+                kind: Some("procedure".into()),
+                snippet: snippet.into(),
+                attributes: serde_json::Map::from_iter([("column".into(), json!(2))]),
+            })
+            .collect();
+            let section = ProviderSearchSection::complete(
+                ProviderIdentity::new(role, "fixture"),
+                SearchRanking::Provider,
+                SearchOrdering::Provider,
+                hits,
+                vec![],
+            )
+            .unwrap();
+            let calls = Arc::new(AtomicUsize::new(0));
+            let service = Arc::new(
+                super::CanonicalV13ReadService::with_search_providers_for_test(vec![Arc::new(
+                    SectionSearchProvider {
+                        section,
+                        calls: calls.clone(),
+                    },
+                )]),
+            );
+            let result = invoke_exact_read_with_service(
+                workspace.path(),
+                ToolIdentity::Search,
+                json!({"query":"Needle","role":role.as_str(),"scope":"main:CommonModule.Probe"}),
+                service,
+            );
+            assert!(result.ok, "{role:?}: {result:?}");
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            let data = result.data.unwrap();
+            let hits = data["matches"][0]["hits"].as_array().unwrap();
+            for (index, at) in [
+                "main:CommonModule.Probe.Body#L1",
+                "main:CommonModule.Probe.Method.Ping.Body#L3",
+                "main:CommonModule.Probe.Method.Ping.Body#L5",
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                assert_eq!(hits[index]["at"], at, "{role:?}: {data:#}");
+                assert_eq!(hits[index]["symbol"], "InventedMethodName");
+                assert_eq!(hits[index]["attributes"]["column"], 2);
+                let view =
+                    invoke_exact_read(workspace.path(), ToolIdentity::View, json!({"at":at}));
+                assert!(view.ok, "{view:?}");
+                assert!(view
+                    .source_text
+                    .unwrap()
+                    .contains(hits[index]["snippet"].as_str().unwrap()));
+            }
+            assert!(hits[3].get("at").is_none());
+            assert!(hits[3]["limits"].is_array());
+            assert_eq!(hits[3]["snippet"], "stale Needle");
+        }
+    }
+
+    #[test]
+    fn a_text_search_hit_opens_the_narrowest_body_line_address() {
+        use crate::application::invocation_store::ToolIdentity;
+        let workspace = resolve_exact_workspace();
+        std::fs::write(
+            workspace
+                .path()
+                .join("src/CommonModules/Probe/Ext/Module.bsl"),
+            "// outside\n\nПроцедура Ping()\n\tСообщить(\"needle\");\nКонецПроцедуры\n",
+        )
+        .unwrap();
+        let result = invoke_exact_read(
+            workspace.path(),
+            ToolIdentity::Search,
+            json!({
+                "query":"needle", "scope":"main:CommonModule.Probe"
+            }),
+        );
+        assert!(result.ok, "{result:?}");
+        let data = result.data.unwrap();
+        let hits = data["matches"].as_array().unwrap();
+        assert_eq!(hits.len(), 1, "{data:?}");
+        let hit = &hits[0];
+        assert_eq!(hit["at"], "main:CommonModule.Probe.Method.Ping.Body#L4");
+        assert_eq!(hit["line"], 4);
+        let opened = invoke_exact_read(
+            workspace.path(),
+            ToolIdentity::View,
+            json!({"at":hit["at"]}),
+        );
+        assert!(opened.ok, "{opened:?}");
+        assert!(opened
+            .source_text
+            .as_deref()
+            .unwrap()
+            .contains(hit["snippet"].as_str().unwrap()));
     }
 
     #[test]
@@ -5718,14 +6769,18 @@ mod tests {
             std::fs::write(&file, source).unwrap();
             let view = invoke_exact_read(workspace.path(), ToolIdentity::View, at.clone());
             assert!(view.ok, "{source:?}: {view:?}");
-            let items = view.data.as_ref().unwrap()["items"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default();
-            let viewed = items.last().map_or(
-                json!({"state":"notLineBased"}),
-                |last| json!({"state":"range","from":1,"to":last["line"]}),
-            );
+            // Строки текста `Body` агент считает сам — так же, как `str::lines`.
+            let lines = view
+                .source_text
+                .as_deref()
+                .unwrap_or_default()
+                .lines()
+                .count();
+            let viewed = if lines == 0 {
+                json!({"state":"notLineBased"})
+            } else {
+                json!({"state":"range","from":1,"to":lines})
+            };
             assert_eq!(viewed, expected, "view numbering of {source:?}");
             let resolved = invoke_exact_read(workspace.path(), ToolIdentity::Resolve, at.clone());
             assert!(resolved.ok, "{source:?}: {resolved:?}");
@@ -6049,7 +7104,7 @@ mod tests {
                 Some("dependency_pending"),
             ),
             (
-                pending("updatingIndex"),
+                pending("indexQueued"),
                 "provider_unavailable",
                 "retry",
                 Some("dependency_pending"),
@@ -6086,6 +7141,8 @@ mod tests {
             ),
         ] {
             section.index_freshness = Some("fresh".into());
+            section.index_maintenance =
+                Some(crate::domain::code_intelligence::IndexMaintenanceEvidence::StartFailed);
             section.index_build_id = Some("known-build".into());
             section.artifacts.push(private.into());
             let expected = serde_json::to_value(&section).unwrap();
@@ -6148,6 +7205,7 @@ mod tests {
                 "searchComplete",
                 "matches",
                 "indexBuildId",
+                "indexMaintenance",
             ] {
                 assert_eq!(data[field], expected[field], "{field}");
             }
@@ -6159,7 +7217,9 @@ mod tests {
             );
             let expected_detail = expected["termination"]["detailCode"]
                 .as_str()
-                .filter(|detail| matches!(*detail, "buildingIndex" | "updatingIndex"));
+                .filter(|detail| {
+                    matches!(*detail, "buildingIndex" | "updatingIndex" | "indexQueued")
+                });
             assert_eq!(
                 data["termination"]
                     .get("detailCode")

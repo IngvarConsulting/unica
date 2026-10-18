@@ -1,0 +1,235 @@
+{
+  "id": "S-1412-plan-diff",
+  "name": "saved-plan-exact-source-pages",
+  "issue": 1412,
+  "workspace": "tests/fixtures/acceptance/workspace-code",
+  "area": "Применение изменений",
+  "task": "Прочитать точные исходные и итоговые диапазоны сохранённого плана по страницам без записи, затем исполнить этот план",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.Пример",
+        "ops": [
+          {
+            "op": "code.insert",
+            "args": {
+              "at": "main:CommonModule.Пример.Method.ОбработатьПример",
+              "position": "after",
+              "text": "\r\nПроцедура НовыйМетод() Экспорт\r\n\tСообщить(\"Предпросмотр\");\r\nКонецПроцедуры\r\n"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "previewRev": {
+          "pointer": "/rev"
+        },
+        "originalBytes": {
+          "kind": "sha256",
+          "file": "src/cf/CommonModules/Пример/Ext/Module.bsl"
+        }
+      }
+    },
+    {
+      "tool": "unica.diff",
+      "args": {
+        "executionToken": "$executionToken",
+        "limit": 51
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: saved-plan diff limit must be an integer from 1 through 50",
+      "fileAssertions": [
+        {
+          "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.originalBytes"
+        }
+      ]
+    },
+    {
+      "tool": "unica.diff",
+      "args": {
+        "executionToken": "$executionToken",
+        "limit": 1
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/planIdentity",
+          "eq": "$capture.previewRev"
+        },
+        {
+          "pointer": "/data/chunks",
+          "eq": [
+            {
+              "path": "CommonModules/Пример/Ext/Module.bsl",
+              "side": "before",
+              "present": true,
+              "totalBytes": 392,
+              "rangeStart": 187,
+              "rangeEnd": 362,
+              "startByte": 187,
+              "endByte": 362,
+              "encoding": "utf8",
+              "content": "\nКонецФункции\r\n\r\n// соседний метод сохраняется\r\nПроцедура Соседний() Экспорт\r\n    Сообщить(\"Сосед\");\r\n"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/truncated",
+          "eq": true
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "limit"
+        }
+      ],
+      "captures": {
+        "nextPage": {
+          "pointer": "/data/cursor"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.originalBytes"
+        }
+      ]
+    },
+    {
+      "tool": "unica.diff",
+      "args": {
+        "executionToken": "$executionToken",
+        "limit": 1
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/planIdentity",
+          "eq": "$capture.previewRev"
+        },
+        {
+          "pointer": "/data/chunks",
+          "eq": [
+            {
+              "path": "CommonModules/Пример/Ext/Module.bsl",
+              "side": "before",
+              "present": true,
+              "totalBytes": 392,
+              "rangeStart": 187,
+              "rangeEnd": 362,
+              "startByte": 187,
+              "endByte": 362,
+              "encoding": "utf8",
+              "content": "\nКонецФункции\r\n\r\n// соседний метод сохраняется\r\nПроцедура Соседний() Экспорт\r\n    Сообщить(\"Сосед\");\r\n"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/truncated",
+          "eq": true
+        },
+        {
+          "pointer": "/data/cursor",
+          "eq": "$capture.nextPage"
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "limit"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.originalBytes"
+        }
+      ]
+    },
+    {
+      "tool": "unica.diff",
+      "args": {
+        "executionToken": "$executionToken",
+        "limit": 1,
+        "cursor": "$capture.nextPage"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/planIdentity",
+          "eq": "$capture.previewRev"
+        },
+        {
+          "pointer": "/data/chunks",
+          "eq": [
+            {
+              "path": "CommonModules/Пример/Ext/Module.bsl",
+              "side": "after",
+              "present": true,
+              "totalBytes": 530,
+              "rangeStart": 187,
+              "rangeEnd": 500,
+              "startByte": 187,
+              "endByte": 500,
+              "encoding": "utf8",
+              "content": "\nКонецФункции\r\n\r\nПроцедура НовыйМетод() Экспорт\r\n\tСообщить(\"Предпросмотр\");\r\nКонецПроцедуры\r\n\r\n// соседний метод сохраняется\r\nПроцедура Соседний() Экспорт\r\n    Сообщить(\"Сосед\");\r\n"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/truncated",
+          "eq": false
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "complete"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.originalBytes"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+          "kind": "sha256",
+          "notEq": "$capture.originalBytes"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Пример.Method.НовыйМетод"
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ]
+}

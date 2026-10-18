@@ -1,7 +1,8 @@
 use crate::application::ports::{MetaLocalInfo, MetadataChildProfile};
-use crate::application::v13::body_snapshot::BodySnapshot;
+use crate::application::v13::source_text::{ModuleText, ModuleTextAccumulator};
 use crate::application::v13::view::ViewError;
 use crate::domain::address::NodeKind;
+use crate::domain::address::QualifiedAddress;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::metadata::{MetaPredefinedItemsData, MetaSupportStatus, MetadataKind};
@@ -44,16 +45,13 @@ use crate::infrastructure::platform_xml_owner::{
     prove_already_read_metadata_owner, prove_already_read_source_set_owner,
     PlatformXmlSourceSetOwnerEvidence,
 };
-#[cfg(test)]
-use crate::infrastructure::source_revision::{RetainedRevisionLease, SourceRevisionService};
 use crate::infrastructure::v13_large_configuration::{
-    read_configuration_registration_index, read_configuration_root, RegistrationIndex,
+    read_configuration_root, RegistrationCache, RegistrationIndex, RetainedSupportState,
     StreamedConfigurationRoot,
 };
 use serde_json::{json, Value};
 #[cfg(test)]
 use std::cell::RefCell;
-use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -89,9 +87,6 @@ pub(crate) struct TemplateValidationInput {
 
 const MAX_CONFIGURATION_BYTES: usize = 8 * 1024 * 1024;
 
-/// One actor-issued read authority for one admitted source set. Hidden v0.13
-/// reads are descriptor-relative to this retained directory and revisions come
-/// from the paired actor-owned service.
 /// Один разбор дескриптора объекта: свойства и заимствование из тех же байтов.
 pub(crate) struct MetadataLocalRead {
     pub(crate) info: MetaLocalInfo,
@@ -99,16 +94,21 @@ pub(crate) struct MetadataLocalRead {
     pub(crate) borrowing: Option<MetaBorrowing>,
 }
 
+/// One actor-issued read authority for one admitted source set. Reads are
+/// descriptor-relative to this retained directory; the snapshot identity is
+/// issued at admission and never derived from a scan of the source tree.
 pub(crate) struct ProviderReadAuthority {
     source_set: String,
     source_set_identity: String,
     source_set_kind: SourceSetKind,
     root: Arc<RetainedDirectoryCapability>,
-    revisions: ProviderRevisionAuthority,
+    snapshot_identity: String,
+    /// Parsed root artifacts retained by the workspace actor across calls.
+    artifacts: Arc<RegistrationCache>,
     /// The parsed `Ext/ParentConfigurations.bin` marker. One authority serves
     /// one admitted operation, so the marker is read and parsed once instead
     /// of once per owner descriptor that asks for its support state.
-    support_state: std::sync::Mutex<Option<Option<Arc<SupportState>>>>,
+    support_state: std::sync::Mutex<Option<RetainedSupportState>>,
     #[cfg(test)]
     module_source_reads: std::sync::Mutex<std::collections::BTreeMap<String, usize>>,
     #[cfg(test)]
@@ -119,14 +119,6 @@ pub(crate) struct ProviderReadAuthority {
     support_state_reads: std::sync::atomic::AtomicUsize,
 }
 
-enum ProviderRevisionAuthority {
-    #[cfg(test)]
-    Live(Arc<SourceRevisionService>),
-    #[cfg(test)]
-    Operation(RetainedRevisionLease),
-    LocalSnapshot(String),
-}
-
 impl ProviderReadAuthority {
     #[cfg(test)]
     pub(crate) fn new(
@@ -134,50 +126,14 @@ impl ProviderReadAuthority {
         source_set_identity: impl Into<String>,
         source_set_kind: SourceSetKind,
         root: Arc<RetainedDirectoryCapability>,
-        revisions: Arc<SourceRevisionService>,
     ) -> Self {
-        Self {
-            source_set: source_set.into(),
-            source_set_identity: source_set_identity.into(),
+        Self::new_local_snapshot(
+            source_set,
+            source_set_identity,
             source_set_kind,
             root,
-            revisions: ProviderRevisionAuthority::Live(revisions),
-            support_state: std::sync::Mutex::new(None),
-            #[cfg(test)]
-            module_source_reads: std::sync::Mutex::new(std::collections::BTreeMap::new()),
-            #[cfg(test)]
-            metadata_descriptor_reads: std::sync::Mutex::new(std::collections::BTreeMap::new()),
-            #[cfg(test)]
-            configuration_payload_reads: std::sync::atomic::AtomicUsize::new(0),
-            #[cfg(test)]
-            support_state_reads: std::sync::atomic::AtomicUsize::new(0),
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn new_with_revision_lease(
-        source_set: impl Into<String>,
-        source_set_identity: impl Into<String>,
-        source_set_kind: SourceSetKind,
-        root: Arc<RetainedDirectoryCapability>,
-        revision: RetainedRevisionLease,
-    ) -> Self {
-        Self {
-            source_set: source_set.into(),
-            source_set_identity: source_set_identity.into(),
-            source_set_kind,
-            root,
-            revisions: ProviderRevisionAuthority::Operation(revision),
-            support_state: std::sync::Mutex::new(None),
-            #[cfg(test)]
-            module_source_reads: std::sync::Mutex::new(std::collections::BTreeMap::new()),
-            #[cfg(test)]
-            metadata_descriptor_reads: std::sync::Mutex::new(std::collections::BTreeMap::new()),
-            #[cfg(test)]
-            configuration_payload_reads: std::sync::atomic::AtomicUsize::new(0),
-            #[cfg(test)]
-            support_state_reads: std::sync::atomic::AtomicUsize::new(0),
-        }
+            "test-local-snapshot".to_string(),
+        )
     }
 
     pub(crate) fn new_local_snapshot(
@@ -192,7 +148,8 @@ impl ProviderReadAuthority {
             source_set_identity: source_set_identity.into(),
             source_set_kind,
             root,
-            revisions: ProviderRevisionAuthority::LocalSnapshot(snapshot_identity),
+            snapshot_identity,
+            artifacts: Arc::new(RegistrationCache::default()),
             support_state: std::sync::Mutex::new(None),
             #[cfg(test)]
             module_source_reads: std::sync::Mutex::new(std::collections::BTreeMap::new()),
@@ -203,6 +160,12 @@ impl ProviderReadAuthority {
             #[cfg(test)]
             support_state_reads: std::sync::atomic::AtomicUsize::new(0),
         }
+    }
+
+    /// Shares the actor-retained root artifacts of this source set.
+    pub(crate) fn with_artifacts(mut self, artifacts: Arc<RegistrationCache>) -> Self {
+        self.artifacts = artifacts;
+        self
     }
 
     pub(crate) fn source_set(&self) -> &str {
@@ -241,52 +204,22 @@ impl ProviderReadAuthority {
                 hook();
             }
         });
-        match &self.revisions {
-            #[cfg(test)]
-            ProviderRevisionAuthority::Live(revisions) => revisions
-                .snapshot_retained(&self.root, deadline, cancellation)
-                .map(|revision| {
-                    format!(
-                        "{}:{}:{}",
-                        revision.algorithm, revision.generation, revision.digest
-                    )
-                })
-                .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error)),
-            ProviderRevisionAuthority::LocalSnapshot(identity) => {
-                if cancellation.is_cancelled() {
-                    Err(ViewError::new(
-                        RefusalCode::Cancelled,
-                        "logical read was cancelled",
-                    ))
-                } else if deadline.is_elapsed() {
-                    Err(ViewError::new(
-                        RefusalCode::DeadlineExceeded,
-                        "logical read operation deadline elapsed",
-                    ))
-                } else {
-                    self.root.validate_named_identity().map_err(|error| {
-                        ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
-                    })?;
-                    Ok(identity.clone())
-                }
-            }
-            #[cfg(test)]
-            ProviderRevisionAuthority::Operation(revision) => {
-                if cancellation.is_cancelled() {
-                    Err(ViewError::new(
-                        RefusalCode::Cancelled,
-                        "logical read was cancelled",
-                    ))
-                } else if deadline.is_elapsed() {
-                    Err(ViewError::new(
-                        RefusalCode::DeadlineExceeded,
-                        "logical read operation deadline elapsed",
-                    ))
-                } else {
-                    Ok(revision.revision_identity())
-                }
-            }
+        if cancellation.is_cancelled() {
+            return Err(ViewError::new(
+                RefusalCode::Cancelled,
+                "logical read was cancelled",
+            ));
         }
+        if deadline.is_elapsed() {
+            return Err(ViewError::new(
+                RefusalCode::DeadlineExceeded,
+                "logical read operation deadline elapsed",
+            ));
+        }
+        self.root.validate_named_identity().map_err(|error| {
+            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+        })?;
+        Ok(self.snapshot_identity.clone())
     }
 
     pub(crate) fn read_relative(
@@ -382,17 +315,28 @@ impl ProviderReadAuthority {
     pub(crate) fn configuration_payload_with_checkpoint(
         &self,
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
-    ) -> Result<Value, ViewError> {
-        #[cfg(test)]
-        self.configuration_payload_reads
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    ) -> Result<Arc<Value>, ViewError> {
         checkpoint()?;
         if matches!(
             self.source_set_kind,
             SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
         ) {
-            return self.external_inventory_payload(checkpoint);
+            #[cfg(test)]
+            self.configuration_payload_reads
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return self.external_inventory_payload(checkpoint).map(Arc::new);
         }
+        self.artifacts
+            .configuration_payload(&self.root, || self.parse_configuration_payload(checkpoint))
+    }
+
+    fn parse_configuration_payload(
+        &self,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<Value, ViewError> {
+        #[cfg(test)]
+        self.configuration_payload_reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // Объявленный, но пустой набор — законное состояние, а не сбой. Без
         // этой ветки отсутствие выгрузки протекало наружу текстом `strerror`
         // («No such file or directory»), то есть файловый слой попадал в
@@ -457,7 +401,6 @@ impl ProviderReadAuthority {
     pub(crate) fn streamed_configuration_root(
         &self,
         checkpoint: &dyn Fn() -> Result<(), ViewError>,
-        verify_owner: impl FnMut(&str, &str) -> Result<(), ViewError>,
     ) -> Result<StreamedConfigurationRoot, ViewError> {
         checkpoint()?;
         let file = match self
@@ -494,14 +437,7 @@ impl ProviderReadAuthority {
         let interface = serde_json::to_value(self.command_interface()?).map_err(|error| {
             ViewError::detailed(RefusalDetail::BackendBroken, error.to_string())
         })?;
-        read_configuration_root(
-            file,
-            support,
-            home_page,
-            interface,
-            checkpoint,
-            verify_owner,
-        )
+        read_configuration_root(file, support, home_page, interface, checkpoint)
     }
 
     /// Build root registration evidence from the complete retained XML once.
@@ -510,15 +446,8 @@ impl ProviderReadAuthority {
     pub(crate) fn streamed_configuration_registration_index(
         &self,
         checkpoint: &dyn Fn() -> Result<(), ViewError>,
-    ) -> Result<RegistrationIndex, ViewError> {
-        checkpoint()?;
-        let file = self
-            .root
-            .open_relative_regular_nofollow(Path::new("Configuration.xml"))
-            .map_err(|error| {
-                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
-            })?;
-        read_configuration_registration_index(file, checkpoint)
+    ) -> Result<Arc<RegistrationIndex>, ViewError> {
+        self.artifacts.registrations(&self.root, checkpoint)
     }
 
     /// Preserve the established parser and its full compatibility behavior
@@ -638,6 +567,34 @@ impl ProviderReadAuthority {
                 .map(|(kind, name)| json!({"kind": kind, "name": name}))
                 .collect::<Vec<_>>()
         }))
+    }
+
+    pub(crate) fn form_metadata_payload(
+        &self,
+        target: &MetadataAddress,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<Value, ViewError> {
+        let bytes = self.metadata_descriptor_with_checkpoint(
+            target,
+            Some(MAX_CONFIGURATION_BYTES),
+            checkpoint,
+        )?;
+        let (mut properties, limits) =
+            crate::infrastructure::native_operations::meta::parse_form_metadata_properties(
+                &bytes, target,
+            )
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+        if self.source_set_kind == SourceSetKind::Extension {
+            let borrowing = parse_meta_borrowing(&bytes)
+                .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+            properties.extend(crate::infrastructure::v13_read_projection::borrowing_props(
+                &borrowing,
+            ));
+        }
+        checkpoint()?;
+        Ok(
+            json!({"kind":"Metadata", "name": properties.get("Name"), "properties":properties, "unreadable": limits.into_iter().map(|message| json!({"field":"formMetadata", "message":message})).collect::<Vec<_>>()}),
+        )
     }
 
     pub(crate) fn form_payload(
@@ -1193,6 +1150,101 @@ impl ProviderReadAuthority {
         Ok((relative, descriptor))
     }
 
+    /// Check the selected descriptor and its direct dependencies under the same
+    /// retained root used by view; legacy metadata paths cannot name this chain.
+    pub(crate) fn validate_subsystem(
+        &self,
+        address: &QualifiedAddress,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<crate::application::v13::check::NativeCheckOutcome, ViewError> {
+        use crate::infrastructure::native_operations::subsystem::{
+            subsystem_validation_outcome, validate_subsystem_content, SubsystemInfoFormatDocument,
+        };
+        let route = crate::infrastructure::logical_tree::route_logical_address(
+            address,
+            crate::domain::platform_profile::PlatformProfile::v8_3_27(),
+        )
+        .map_err(|error| ViewError::new(RefusalCode::BadValue, error.to_string()))?;
+        let target = route.reader_metadata_path().ok_or_else(|| {
+            ViewError::new(RefusalCode::BadValue, "subsystem check has no descriptor")
+        })?;
+        let (relative, bytes) =
+            self.registered_subsystem_descriptor(target, route.nested_subsystems(), checkpoint)?;
+        let text = std::str::from_utf8(&bytes).map_err(|error| {
+            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+        })?;
+        let (data, _) = parse_subsystem_info_xml(&relative, text, false)
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+        let expected = address
+            .segments()
+            .last()
+            .and_then(|segment| segment.name())
+            .unwrap_or_default();
+        if data.name != expected {
+            return Err(ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
+                format!(
+                    "subsystem descriptor names `{}` instead of `{expected}`",
+                    data.name
+                ),
+            ));
+        }
+        let ci_relative = nested_subsystem_resource(&relative, "CommandInterface.xml");
+        let ci = self.read_optional_relative_with_checkpoint(&ci_relative, None, checkpoint)?;
+        let mut documents = vec![SubsystemInfoFormatDocument {
+            path: self.root_path().join(&relative),
+            bytes: bytes.clone(),
+        }];
+        if let Some(bytes) = &ci {
+            documents.push(SubsystemInfoFormatDocument {
+                path: self.root_path().join(&ci_relative),
+                bytes: bytes.clone(),
+            });
+        }
+        let guard = crate::infrastructure::format_guard::evaluate_prepared_subsystem_validation_format_guard(&documents);
+        let mut source_error = None;
+        let result = validate_subsystem_content(
+            text,
+            relative,
+            false,
+            |path| {
+                let result = (|| {
+                    checkpoint()?;
+                    match self.root.open_relative_regular_nofollow(path) {
+                        Ok(_) => Ok(true),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+                        Err(error) => Err(ViewError::detailed(
+                            RefusalDetail::SourceUnreadable,
+                            error.to_string(),
+                        )),
+                    }
+                })();
+                result.map_err(|error| {
+                    let message = error.to_string();
+                    source_error = Some(error);
+                    message
+                })
+            },
+            |_| {
+                ci.as_ref()
+                    .map(|bytes| {
+                        String::from_utf8(bytes.clone()).map_err(|error| error.to_string())
+                    })
+                    .transpose()
+            },
+        );
+        if let Some(error) = source_error {
+            return Err(error);
+        }
+        checkpoint()?;
+        Ok(
+            crate::infrastructure::native_operations::v13_analysis::subsystem_validation_outcome(
+                guard,
+                subsystem_validation_outcome(result),
+            ),
+        )
+    }
+
     pub(crate) fn nested_subsystem_export_path(
         &self,
         target: &MetadataAddress,
@@ -1328,7 +1380,15 @@ impl ProviderReadAuthority {
     /// Only proves that the BSL file is present; the text is not read.
     pub(crate) fn module_source_exists(&self, target: &MetadataAddress) -> Result<bool, ViewError> {
         let relative = self.module_relative(target)?;
-        match self.root.open_relative_regular_nofollow(&relative) {
+        self.relative_source_exists(&relative)
+    }
+
+    pub(crate) fn form_source_exists(&self, target: &MetadataAddress) -> Result<bool, ViewError> {
+        self.relative_source_exists(&self.attached_resource_relative(target, "Form.xml")?)
+    }
+
+    fn relative_source_exists(&self, relative: &Path) -> Result<bool, ViewError> {
+        match self.root.open_relative_regular_nofollow(relative) {
             Ok(_) => Ok(true),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
             Err(error) => Err(ViewError::detailed(
@@ -1372,37 +1432,56 @@ impl ProviderReadAuthority {
         Ok(Some(newlines + usize::from(last != Some(b'\n'))))
     }
 
-    pub(crate) fn module_body_snapshot(
+    /// Текст модуля для `Body`: без начальных U+FEFF и не длиннее
+    /// `MAX_SOURCE_TEXT_BYTES`. Больший файл дочитывается без накопления
+    /// ради проверки UTF-8 и полного размера. Отсутствующий файл — пустой
+    /// текст, как у прежнего `Body`.
+    pub(crate) fn module_text_within_limit(
         &self,
         target: &MetadataAddress,
         checkpoint: impl FnMut() -> Result<(), ViewError>,
-    ) -> Result<BodySnapshot, ViewError> {
-        let mut file = tempfile::tempfile().map_err(|error| {
-            ViewError::detailed(
-                RefusalDetail::BackendBroken,
-                format!("cannot create Body snapshot: {error}"),
-            )
+    ) -> Result<ModuleText, ViewError> {
+        let mut text = ModuleTextAccumulator::default();
+        let len = self.visit_module_utf8_chunks(target, checkpoint, |chunk| {
+            text.push(chunk);
+            Ok(())
         })?;
-        let len = self
-            .visit_module_utf8_chunks(target, checkpoint, |chunk| {
-                file.write_all(chunk).map_err(|error| {
-                    ViewError::detailed(RefusalDetail::BackendBroken, error.to_string())
-                })
-            })?
-            .unwrap_or(0);
-        file.flush().map_err(|error| {
-            ViewError::detailed(
-                RefusalDetail::BackendBroken,
-                format!("Body snapshot write failed: {error}"),
-            )
+        if len.is_none() {
+            return Ok(ModuleText::Text(String::new()));
+        }
+        text.finish().map_err(|_| {
+            ViewError::detailed(RefusalDetail::SourceUnreadable, "BSL module is not UTF-8")
+        })
+    }
+
+    /// Retains only the requested complete file lines, while validating the
+    /// entire stream and preserving retained-source identity/cancellation.
+    pub(crate) fn module_text_range(
+        &self,
+        target: &MetadataAddress,
+        range: crate::domain::address::BodyLineRange,
+        checkpoint: impl FnMut() -> Result<(), ViewError>,
+    ) -> Result<ModuleText, ViewError> {
+        let mut text = ModuleTextAccumulator::with_range(range);
+        let exists = self.visit_module_utf8_chunks(target, checkpoint, |chunk| {
+            text.push(chunk);
+            Ok(())
         })?;
-        file.seek(SeekFrom::Start(0)).map_err(|error| {
-            ViewError::detailed(
-                RefusalDetail::BackendBroken,
-                format!("Body snapshot seek failed: {error}"),
-            )
-        })?;
-        Ok(BodySnapshot::new(file, len))
+        if exists.is_none() {
+            return Err(ViewError::new(
+                RefusalCode::NotFound,
+                "the BSL module source file does not exist",
+            ));
+        }
+        if range.to > text.line_count() {
+            return Err(ViewError::new(
+                RefusalCode::BadValue,
+                "Body line selector exceeds the file's last line",
+            ));
+        }
+        text.finish().map_err(|_| {
+            ViewError::detailed(RefusalDetail::SourceUnreadable, "BSL module is not UTF-8")
+        })
     }
 
     /// Streams the module only after one shared UTF-8 check, so every Body
@@ -1593,42 +1672,31 @@ impl ProviderReadAuthority {
                 "support-state cache is poisoned",
             )
         })?;
-        if let Some(state) = memo.as_ref() {
-            checkpoint()?;
-            return Ok(state.clone());
-        }
-        #[cfg(test)]
-        self.support_state_reads
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let mut parser = SupportStateStreamParser::default();
-        let mut interrupted = None;
-        let result = self.root.visit_relative_regular_chunks(
-            Path::new("Ext/ParentConfigurations.bin"),
-            || {
-                checkpoint().map_err(|error| {
-                    interrupted = Some(error);
-                    std::io::Error::other("support-state read interrupted")
-                })
-            },
-            |chunk| {
-                parser
-                    .feed(chunk)
-                    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
-            },
-        );
-        let state = match result {
-            Ok(_) => Some(Arc::new(parser.finish().map_err(|error| {
-                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
-            })?)),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(error) => {
-                return Err(interrupted.unwrap_or_else(|| {
+        // The memo answers only for the marker stamp it was read under: a
+        // marker replaced during this operation is read again, so a payload
+        // built later never combines a new stamp with an old state.
+        if let Some((stamp, state)) = memo.as_ref() {
+            let current = self
+                .root
+                .relative_file_stamp(Path::new("Ext/ParentConfigurations.bin"))
+                .map_err(|error| {
                     ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
-                }))
+                })?;
+            if current == *stamp {
+                checkpoint()?;
+                return Ok(state.clone());
             }
-        };
+        }
+        let (stamp, state) =
+            self.artifacts
+                .support_state(&self.root, checkpoint, |file, checkpoint| {
+                    #[cfg(test)]
+                    self.support_state_reads
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    parse_support_state(file, checkpoint)
+                })?;
         checkpoint()?;
-        *memo = Some(state.clone());
+        *memo = Some((stamp, state.clone()));
         Ok(state)
     }
 
@@ -1916,6 +1984,36 @@ fn metadata_support_status(support: ObjectSupportData) -> MetaSupportStatus {
             MetaSupportStatus::Supported
         }
     }
+}
+
+/// Streams `Ext/ParentConfigurations.bin` through the support-state parser in
+/// bounded chunks, observing the caller's checkpoint before each chunk.
+fn parse_support_state(
+    mut file: std::fs::File,
+    checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+) -> Result<SupportState, ViewError> {
+    use std::io::Read;
+
+    let mut parser = SupportStateStreamParser::default();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        checkpoint()?;
+        let count = match file.read(&mut buffer) {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            result => result.map_err(|error| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+            })?,
+        };
+        if count == 0 {
+            break;
+        }
+        parser.feed(&buffer[..count]).map_err(|error| {
+            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+        })?;
+    }
+    parser
+        .finish()
+        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))
 }
 
 #[cfg(test)]
