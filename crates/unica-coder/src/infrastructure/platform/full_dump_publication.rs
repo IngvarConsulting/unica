@@ -4054,6 +4054,31 @@ impl PrivateDumpStage {
             .expect("private recovery anchor remains open before cleanup")
     }
 
+    fn bound_root_for_reporting(&self) -> Result<DirectoryAnchor, String> {
+        let root = self
+            .parent_anchor
+            .capture_descendant(Path::new(&self.root_name), &self.root)?;
+        if root.identity != self.root_identity {
+            return Err(format!(
+                "private dump root identity changed at its original name: {}",
+                self.root.display()
+            ));
+        }
+        Ok(root)
+    }
+
+    fn verify_recovery_location(&self) -> Result<(), String> {
+        let root = self.bound_root_for_reporting()?;
+        let identity = root.capture_child_root_identity(OsStr::new("recovery"), &self.recovery)?;
+        if identity != Some(self.recovery_identity) {
+            return Err(format!(
+                "private recovery directory identity changed at its original name: {}",
+                self.recovery.display()
+            ));
+        }
+        Ok(())
+    }
+
     fn begin_execution(&mut self) {
         self.writer_completion_pending = true;
     }
@@ -7372,20 +7397,23 @@ fn finalize_private_outcome(
             );
         }
         outcome.errors.push(error.clone());
-        outcome
-            .warnings
-            .push(if private.effective_config_secret_present {
-                format!(
-                    "Secret-bearing private dump debris may remain at {}",
-                    private.root.display()
-                )
-            } else {
-                format!(
-                    "Private dump debris may remain at {}",
-                    private.root.display()
-                )
-            });
-        outcome.artifacts.push(private.root.display().to_string());
+        let status = if private.effective_config_secret_present {
+            "Secret-bearing private dump debris may remain"
+        } else {
+            "Private dump debris may remain"
+        };
+        match private.bound_root_for_reporting() {
+            Ok(_) => {
+                outcome
+                    .warnings
+                    .push(format!("{status} at {}", private.root.display()));
+                outcome.artifacts.push(private.root.display().to_string());
+            }
+            Err(error) => outcome.warnings.push(format!(
+                "{status}, but its current location is unconfirmed; original name: {} ({error})",
+                private.root.display()
+            )),
+        }
         outcome.stderr = Some(match outcome.stderr.take() {
             Some(stderr) if !stderr.is_empty() => format!("{stderr}\n{error}\n"),
             _ => format!("{error}\n"),
@@ -7412,10 +7440,23 @@ fn finalize_private_outcome(
         } else {
             &private.recovery
         };
-        outcome
-            .warnings
-            .push(format!("{status} at {}", location.display()));
-        outcome.artifacts.push(location.display().to_string());
+        let proof = if private.retention == PrivateRetention::EntireStage {
+            private.bound_root_for_reporting().map(drop)
+        } else {
+            private.verify_recovery_location()
+        };
+        match proof {
+            Ok(()) => {
+                outcome
+                    .warnings
+                    .push(format!("{status} at {}", location.display()));
+                outcome.artifacts.push(location.display().to_string());
+            }
+            Err(error) => outcome.warnings.push(format!(
+                "{status}, but its current location is unconfirmed; original name: {} ({error})",
+                location.display()
+            )),
+        }
     }
     outcome
 }
@@ -8280,7 +8321,7 @@ mod tests {
         #[cfg(unix)]
         Symlink,
         #[cfg(unix)]
-        SwapPrivateRoot,
+        SwapPrivateRoot(std::rc::Rc<std::cell::Cell<Option<super::FileIdentity>>>),
     }
 
     struct DumpRunner {
@@ -8418,13 +8459,19 @@ mod tests {
                     .unwrap();
                 }
                 #[cfg(unix)]
-                RunnerMutation::SwapPrivateRoot => {
+                RunnerMutation::SwapPrivateRoot(original_identity) => {
                     use std::os::unix::fs::PermissionsExt;
 
                     let private_root = config_path
                         .parent()
                         .and_then(Path::parent)
                         .expect("effective config is under the private root");
+                    original_identity.set(Some(
+                        super::file_identity(
+                            &super::open_directory_nofollow(private_root).unwrap(),
+                        )
+                        .unwrap(),
+                    ));
                     let displaced_name = format!(
                         "{}-displaced",
                         private_root.file_name().unwrap().to_string_lossy()
@@ -8440,6 +8487,11 @@ mod tests {
                         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
                             .unwrap();
                     }
+                    std::fs::write(
+                        private_root.join("execution/foreign.txt"),
+                        b"foreign root sentinel",
+                    )
+                    .unwrap();
                 }
             }
             Ok(ProcessOutput {
@@ -10081,6 +10133,40 @@ mod tests {
             .unwrap()
             .filter_map(Result::ok)
             .any(|entry| entry.path().join("before.txt").is_file()));
+        let retained_root_identity = super::file_identity(
+            &super::open_directory_nofollow(&std::fs::canonicalize(&private).unwrap()).unwrap(),
+        )
+        .unwrap();
+        let retained_recovery_identity = super::file_identity(
+            &super::open_directory_nofollow(
+                &std::fs::canonicalize(private.join("recovery")).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let owned_artifacts = result.artifacts.iter().all(|artifact| {
+            std::fs::canonicalize(artifact)
+                .ok()
+                .and_then(|path| super::open_directory_nofollow(&path).ok())
+                .and_then(|directory| super::file_identity(&directory).ok())
+                .is_some_and(|identity| {
+                    identity == retained_root_identity || identity == retained_recovery_identity
+                })
+        });
+        let location_unconfirmed = result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("current location is unconfirmed"));
+        assert!(
+            owned_artifacts && (!result.artifacts.is_empty() || location_unconfirmed),
+            "quarantine recovery must report an owned identity or explicit uncertainty"
+        );
+        if detach_private {
+            assert!(
+                result.artifacts.is_empty() && location_unconfirmed,
+                "a displaced private root must not advertise its missing original name"
+            );
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -11051,9 +11137,10 @@ mod tests {
         )
         .unwrap();
         let platform = fixed_platform(&root);
+        let original_identity = std::rc::Rc::new(std::cell::Cell::new(None));
         let runner = DumpRunner {
             owner_xml: valid_configuration_owner(),
-            mutation: RunnerMutation::SwapPrivateRoot,
+            mutation: RunnerMutation::SwapPrivateRoot(std::rc::Rc::clone(&original_identity)),
             calls: AtomicUsize::new(0),
         };
 
@@ -11107,7 +11194,180 @@ mod tests {
                 || result.warnings.join("\n").contains("debris"),
             "{result:?}"
         );
+        let original_identity = original_identity.get().expect("root swap must run");
+        let displaced = private_roots
+            .iter()
+            .find(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .ends_with("-displaced")
+            })
+            .unwrap();
+        assert_eq!(
+            super::file_identity(
+                &super::open_directory_nofollow(&std::fs::canonicalize(displaced).unwrap())
+                    .unwrap()
+            )
+            .unwrap(),
+            original_identity
+        );
+        let replacement = private_roots
+            .iter()
+            .find(|path| {
+                !path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .ends_with("-displaced")
+            })
+            .unwrap();
+        assert_ne!(
+            super::file_identity(
+                &super::open_directory_nofollow(&std::fs::canonicalize(replacement).unwrap())
+                    .unwrap()
+            )
+            .unwrap(),
+            original_identity
+        );
+        assert_eq!(
+            std::fs::read(replacement.join("execution/foreign.txt")).unwrap(),
+            b"foreign root sentinel"
+        );
+        let owned_artifacts = result.artifacts.iter().all(|artifact| {
+            std::fs::canonicalize(artifact)
+                .ok()
+                .and_then(|path| super::open_directory_nofollow(&path).ok())
+                .and_then(|directory| super::file_identity(&directory).ok())
+                == Some(original_identity)
+        });
+        let location_unconfirmed = result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("current location is unconfirmed"));
+        assert!(owned_artifacts && (!result.artifacts.is_empty() || location_unconfirmed),
+            "recovery must report an owned identity or explicit uncertainty: owned={owned_artifacts}, unconfirmed={location_unconfirmed}");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn private_recovery_artifacts_require_the_retained_directory_identity() {
+        let mut invalid_reports = Vec::new();
+        for case in [
+            "stable",
+            "stable-closed-anchors",
+            "root-missing",
+            "root-replaced",
+            "recovery-missing",
+            "recovery-replaced",
+        ] {
+            let (root, context, _) = workspace("retained-location");
+            let parent = super::DirectoryAnchor::capture_exact(
+                &std::fs::canonicalize(&context.cwd).unwrap(),
+            )
+            .unwrap();
+            let mut private = super::PrivateDumpStage::create(&parent).unwrap();
+            let owned_child = private.recovery.join("owned");
+            std::fs::create_dir(&owned_child).unwrap();
+            std::fs::write(owned_child.join("owned.txt"), b"owned recovery sentinel").unwrap();
+            private.recovery_children.insert(
+                std::ffi::OsString::from("owned"),
+                super::capture_tree_target_nofollow(&owned_child).unwrap(),
+            );
+            private.preserve_for_recovery().unwrap();
+            let owned_before = super::capture_tree_target_nofollow(&private.recovery).unwrap();
+            let owned_identity =
+                super::file_identity(&private.recovery_anchor().directory).unwrap();
+            let mut actual_recovery = private.recovery.clone();
+            let mut foreign = None;
+            if case.starts_with("root-") {
+                let displaced = context.cwd.join("displaced-root");
+                std::fs::rename(&private.root, &displaced).unwrap();
+                actual_recovery = displaced.join("recovery");
+                if case == "root-replaced" {
+                    std::fs::create_dir(&private.root).unwrap();
+                    std::fs::create_dir(&private.recovery).unwrap();
+                    std::fs::write(
+                        private.recovery.join("foreign.txt"),
+                        b"foreign root sentinel",
+                    )
+                    .unwrap();
+                    foreign = Some((
+                        private.root.clone(),
+                        super::capture_tree_target_nofollow(&private.root).unwrap(),
+                    ));
+                }
+            } else if case.starts_with("recovery-") {
+                actual_recovery = private.root.join("displaced-recovery");
+                std::fs::rename(&private.recovery, &actual_recovery).unwrap();
+                if case == "recovery-replaced" {
+                    std::fs::create_dir(&private.recovery).unwrap();
+                    std::fs::write(
+                        private.recovery.join("foreign.txt"),
+                        b"foreign recovery sentinel",
+                    )
+                    .unwrap();
+                    foreign = Some((
+                        private.recovery.clone(),
+                        super::capture_tree_target_nofollow(&private.recovery).unwrap(),
+                    ));
+                }
+            } else if case == "stable-closed-anchors" {
+                private.root_anchor.take();
+                private.recovery_anchor.take();
+            }
+            let result = super::finalize_private_outcome(
+                &mut private,
+                super::dump_failure(
+                    "unica.build.dump",
+                    "fixture caller refused".into(),
+                    None,
+                    None,
+                    None,
+                ),
+            );
+            drop(private);
+            assert_eq!(
+                super::capture_tree_target_nofollow(&actual_recovery).unwrap(),
+                owned_before,
+                "{case}: reporting and Drop must preserve owned identities and bytes"
+            );
+            assert_eq!(
+                std::fs::read(actual_recovery.join("owned/owned.txt")).unwrap(),
+                b"owned recovery sentinel"
+            );
+            if let Some((path, before)) = foreign {
+                assert_eq!(
+                    super::capture_tree_target_nofollow(&path).unwrap(),
+                    before,
+                    "{case}: reporting and Drop must preserve foreign identities and bytes"
+                );
+            }
+            let owned_artifacts = result.artifacts.iter().all(|artifact| {
+                std::fs::canonicalize(artifact)
+                    .ok()
+                    .and_then(|path| super::open_directory_nofollow(&path).ok())
+                    .and_then(|directory| super::file_identity(&directory).ok())
+                    == Some(owned_identity)
+            });
+            let location_unconfirmed = result
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("current location is unconfirmed"));
+            let stable = case.starts_with("stable");
+            if !owned_artifacts
+                || (result.artifacts.is_empty() && !location_unconfirmed)
+                || (stable && (result.artifacts.len() != 1 || location_unconfirmed))
+            {
+                invalid_reports.push(case);
+            }
+            drop(parent);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+        assert!(
+            invalid_reports.is_empty(),
+            "invalid retained locations: {invalid_reports:?}"
+        );
     }
 
     #[cfg(unix)]

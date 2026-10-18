@@ -1,6 +1,8 @@
 ---
 id: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
 check:
+  - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::private_root_swap_cannot_escape_secret_scrubbing_or_anchor_cleanup
+  - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::private_recovery_artifacts_require_the_retained_directory_identity
   - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::effective_config_preparation_failure_reports_retained_foreign_data
   - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::concurrent_target_during_capture_error_quarantine_is_preserved
   - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::concurrent_file_during_capture_error_quarantine_is_preserved

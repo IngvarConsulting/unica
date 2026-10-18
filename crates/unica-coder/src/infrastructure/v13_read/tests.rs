@@ -1,3 +1,5 @@
+mod catalog_tabular_properties;
+
 use super::{
     project_known_suffix, project_typed_payload, resolve_platform_xml_target,
     LogicalViewReadAuthority, MetadataAddress, SourceTarget, TargetKindPolicy,
