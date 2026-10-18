@@ -1349,7 +1349,7 @@ pub fn meta_info_property_value_is_valid(
 
 pub fn direct_meta_info_property<'a, 'input>(
     properties: roxmltree::Node<'a, 'input>,
-    kind: MetadataKind,
+    owner: &str,
     name: &str,
 ) -> Result<Option<roxmltree::Node<'a, 'input>>, ProjectionError> {
     let field = format!("properties.{name}");
@@ -1363,10 +1363,7 @@ pub fn direct_meta_info_property<'a, 'input>(
         _ => {
             return Err(ProjectionError::unsupported(
                 field,
-                format!(
-                    "{} contains a duplicate or foreign property `{name}`",
-                    kind.as_str()
-                ),
+                format!("{owner} contains a duplicate or foreign property `{name}`"),
             ))
         }
     };
@@ -1378,7 +1375,7 @@ pub fn observe_meta_borrowing_property(
     kind: MetadataKind,
     name: &str,
 ) -> Result<Option<String>, ProjectionError> {
-    let Some(node) = direct_meta_info_property(properties, kind, name)? else {
+    let Some(node) = direct_meta_info_property(properties, kind.as_str(), name)? else {
         return Ok(None);
     };
     let value = direct_text_content(node);
@@ -1408,7 +1405,7 @@ pub fn observe_meta_info_property(
 ) -> Result<Option<unica_metadata::MetaInfoPropertyValue>, ProjectionError> {
     use unica_metadata::MetaInfoPropertyValue;
     let field = format!("properties.{name}");
-    let Some(node) = direct_meta_info_property(properties, kind, name)? else {
+    let Some(node) = direct_meta_info_property(properties, kind.as_str(), name)? else {
         return Ok(None);
     };
     let spec = META_INFO_PROPERTY_PROFILE
@@ -1459,6 +1456,22 @@ pub fn observe_meta_info_property(
         ),
     };
     Ok(Some(value))
+}
+
+pub fn observe_collection_item_comment(
+    properties: roxmltree::Node<'_, '_>,
+) -> Result<Option<String>, ProjectionError> {
+    let Some(node) = direct_meta_info_property(properties, "metadata collection item", "Comment")?
+    else {
+        return Ok(None);
+    };
+    if !meta_info_property_value_is_valid(node, MetaInfoPropertyValueKind::String) {
+        return Err(ProjectionError::malformed(
+            "properties.Comment",
+            "metadata collection item contains a malformed Comment",
+        ));
+    }
+    Ok(Some(direct_text_content(node)))
 }
 
 pub fn parsed_typed_meta_info_property_value(
