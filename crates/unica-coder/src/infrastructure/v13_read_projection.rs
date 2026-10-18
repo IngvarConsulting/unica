@@ -2850,6 +2850,15 @@ fn reader_node_props(reader: LogicalReader, kind: NodeKind, value: &Value) -> Ma
         _ => &[],
     };
     let mut props = selected_scalar_props(value, keys);
+    if reader == LogicalReader::Subsystem && kind == NodeKind::Subsystem {
+        if let Some(support) = value.get("support") {
+            for (source, key) in [("state", "support"), ("directEditSafe", "directEditSafe")] {
+                if let Some(value) = support.get(source).filter(|value| safe_prop(key, value)) {
+                    props.insert(key.to_string(), value.clone());
+                }
+            }
+        }
+    }
     if kind == NodeKind::Template {
         let format = match reader {
             LogicalReader::Dcs => Some("DataCompositionSchema"),
