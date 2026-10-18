@@ -511,8 +511,12 @@ cargo clippy --version
 rust-analyzer --version
 ```
 
-Перед pull request выполните полный набор проверок из
-[шаблона PR](.github/PULL_REQUEST_TEMPLATE.md).
+Перед pull request выберите локальные тесты по
+[unica-testing](.agents/skills/unica-testing/SKILL.md#что-запускать)
+и выполните обязательные проверки из
+[порядка подготовки PR](.agents/skills/unica-development/references/pull-requests.md#вливание-через-очередь).
+В [шаблоне PR](.github/PULL_REQUEST_TEMPLATE.md) укажите выполненные команды,
+результаты и ограничения проверки; перед отправкой выполните `git diff --check`.
 
 ### Приёмка агентом Codex
 
