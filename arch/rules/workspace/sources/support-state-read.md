@@ -7,7 +7,10 @@ check:
   - crates/unica-coder/src/infrastructure/support_state.rs::platform_xml_object_support_uses_the_resolved_descriptor_uuid
   - crates/unica-coder/src/infrastructure/application_ports.rs::meta_info_passes_its_resolved_target_to_support_reader
   - crates/unica-coder/src/infrastructure/application_ports.rs::meta_info_maps_support_provider_failure_to_logical_diagnostic
-gap: https://github.com/IngvarConsulting/unica/issues/986
+  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::canonical_subsystem_view_preserves_support_for_own_and_nested_descriptors
+  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::canonical_view_distinguishes_absent_support_from_unreadable_and_invalid_markers
+  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::typed_projection_never_leaks_provider_or_physical_slots
+  - tests/ci/test_acceptance_scenarios.py::AcceptanceCorpusRunTests.test_every_wire_answers_its_frozen_classes
 ---
 
 # Невозможность прочитать поддержку не означает её отсутствие
@@ -21,10 +24,5 @@ gap: https://github.com/IngvarConsulting/unica/issues/986
 него не дают такого ответа: чтение завершается ошибкой. Поддержка объекта
 определяется по UUID его проверенного описания, а не по имени каталога.
 
-Проверки охватывают внутренний читатель поддержки и чтение метаданных через
-порт приложения. Они не доказывают все представления публичного `unica.view`.
-
 Канонический `view` объекта или подсистемы показывает состояние поддержки
-в `props` по логическому адресу. Вызывающий не должен искать физический файл
-состояния поддержки. В проекции подсистемы этот факт пока теряется; разрыв
-и недостающая сквозная проверка сохранены в `gap`.
+в `props` по логическому адресу.

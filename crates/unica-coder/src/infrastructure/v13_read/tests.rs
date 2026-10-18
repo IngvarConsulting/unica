@@ -499,6 +499,12 @@ fn typed_projection_never_leaks_provider_or_physical_slots() {
                 "location": {"path": "/secret/Subsystems/Продажи.xml"},
                 "fileExists": true,
                 "provider": "raw",
+                "support": {
+                    "state": "locked",
+                    "directEditSafe": false,
+                    "location": "/secret/ParentConfigurations.bin",
+                    "provider": {"raw": "x".repeat(4096)}
+                },
                 "content": ["Catalog.Товары"],
                 "commandInterface": {"visibility": []}
             }),
@@ -506,6 +512,16 @@ fn typed_projection_never_leaks_provider_or_physical_slots() {
         .unwrap(),
     )
     .unwrap();
+    assert!(
+        view.get("props")
+            .and_then(serde_json::Value::as_object)
+            .into_iter()
+            .flat_map(|props| props.values())
+            .all(|value| !value.is_object() && !value.is_array()),
+        "subsystem props must contain only scalar values: {view}"
+    );
+    assert_eq!(view["props"]["support"], "locked");
+    assert_eq!(view["props"]["directEditSafe"], false);
     let text = view.to_string();
     for forbidden in ["/secret", "fileExists", "provider", "sourceState", "layout"] {
         assert!(!text.contains(forbidden), "leaked {forbidden}: {text}");
@@ -3451,6 +3467,156 @@ fn subsystem_descriptor(name: &str, content: &[&str], children: &[&str]) -> Stri
   <Subsystem><Properties><Name>{name}</Name><Synonym/><IncludeInCommandInterface>true</IncludeInCommandInterface><UseOneCommand>false</UseOneCommand><Content>{content}</Content></Properties><ChildObjects>{children}</ChildObjects></Subsystem>
 </MetaDataObject>"#
     )
+}
+
+fn install_supported_subsystem_descriptors(fixture: &RealReaderFixture) {
+    for (relative, name, children, uuid) in [
+        (
+            "Subsystems/Sales.xml",
+            "Sales",
+            &["Orders"][..],
+            "11111111-1111-4111-8111-111111111111",
+        ),
+        (
+            "Subsystems/Sales/Subsystems/Orders.xml",
+            "Orders",
+            &[][..],
+            "22222222-2222-4222-8222-222222222222",
+        ),
+    ] {
+        write(
+            &fixture.source.join(relative),
+            &subsystem_descriptor(name, &[], children).replacen(
+                "<Subsystem>",
+                &format!("<Subsystem uuid=\"{uuid}\">"),
+                1,
+            ),
+        );
+    }
+}
+
+#[test]
+fn canonical_subsystem_view_preserves_support_for_own_and_nested_descriptors() {
+    let parent_uuid = "11111111-1111-4111-8111-111111111111";
+    let child_uuid = "22222222-2222-4222-8222-222222222222";
+    let support =
+        |state, direct_edit_safe| json!({"support": state, "directEditSafe": direct_edit_safe});
+    for (case, marker, parent, child) in [
+        (
+            "different object rules",
+            Some(format!("{{6,0,1,0,0,{parent_uuid},1,0,{child_uuid}}}")),
+            support("locked", Some(false)),
+            support("editableWithSupport", Some(true)),
+        ),
+        (
+            "removed object",
+            Some(format!("{{6,0,1,2,0,{parent_uuid},0,0,{child_uuid}}}")),
+            support("removedFromSupport", Some(true)),
+            support("locked", Some(false)),
+        ),
+        (
+            "configuration read only",
+            Some(format!("{{6,1,1,0,0,{parent_uuid},1,0,{child_uuid}}}")),
+            support("configurationReadOnly", Some(false)),
+            support("configurationReadOnly", Some(false)),
+        ),
+        (
+            "configuration removed from support",
+            Some(String::new()),
+            support("removedFromSupport", Some(true)),
+            support("removedFromSupport", Some(true)),
+        ),
+        (
+            "marker absent",
+            None,
+            support("notSupported", None),
+            support("notSupported", None),
+        ),
+        (
+            "UUID absent from marker",
+            Some("{6,0,1,0,0,33333333-3333-4333-8333-333333333333}".to_string()),
+            support("notSupported", None),
+            support("notSupported", None),
+        ),
+    ] {
+        let fixture = RealReaderFixture::new();
+        install_supported_subsystem_descriptors(&fixture);
+        if let Some(marker) = marker {
+            write(
+                &fixture.source.join("Ext/ParentConfigurations.bin"),
+                &marker,
+            );
+        }
+        let service = fixture.view_service();
+        for (at, expected) in [
+            ("main:Subsystem.Sales", &parent),
+            ("main:Subsystem.Sales.Subsystem.Orders", &child),
+            ("main:Subsystem.Sales", &parent),
+        ] {
+            let result = service.view(ViewRequest::new(at).unwrap());
+            assert!(result.ok, "{case} {at}: {:?}", result.diagnostics);
+            let props = &result.data.as_ref().unwrap()["props"];
+            assert_eq!(props["support"], expected["support"], "{case} {at}");
+            assert_eq!(
+                props["directEditSafe"], expected["directEditSafe"],
+                "{case} {at}"
+            );
+            assert!(!serde_json::to_string(&result)
+                .unwrap()
+                .contains(fixture.source.to_str().unwrap()));
+        }
+    }
+}
+
+#[test]
+fn canonical_view_distinguishes_absent_support_from_unreadable_and_invalid_markers() {
+    for marker_kind in ["absent", "invalid", "directory"] {
+        let fixture = RealReaderFixture::new();
+        install_supported_subsystem_descriptors(&fixture);
+        let marker = fixture.source.join("Ext/ParentConfigurations.bin");
+        match marker_kind {
+            "invalid" => write(&marker, "{9,0,1}, invalid support header"),
+            "directory" => fs::create_dir_all(&marker).unwrap(),
+            _ => {}
+        }
+        let service = fixture.view_service();
+        for at in [
+            "main:Catalog.Items",
+            "main:Subsystem.Sales",
+            "main:Subsystem.Sales.Subsystem.Orders",
+        ] {
+            let result = service.view(ViewRequest::new(at).unwrap());
+            if marker_kind == "absent" {
+                assert!(result.ok, "{at}: {:?}", result.diagnostics);
+                let expected = if at == "main:Catalog.Items" {
+                    json!("supported")
+                } else {
+                    json!("notSupported")
+                };
+                assert_eq!(
+                    result.data.as_ref().unwrap()["props"]["support"],
+                    expected,
+                    "{at}"
+                );
+                let props = &result.data.as_ref().unwrap()["props"];
+                if at == "main:Catalog.Items" {
+                    assert!(props.get("directEditSafe").is_none());
+                } else {
+                    assert_eq!(props["directEditSafe"], serde_json::Value::Null);
+                    assert!(props.as_object().unwrap().contains_key("directEditSafe"));
+                }
+            } else {
+                assert!(!result.ok, "{marker_kind} {at}: {result:?}");
+                assert!(result.data.is_none(), "{marker_kind} {at}: {result:?}");
+                assert_eq!(result.diagnostics[0]["code"], "provider_unavailable");
+                assert_eq!(result.diagnostics[0]["detailCode"], "source_unreadable");
+                assert_eq!(result.diagnostics[0]["outcome"], "fixSource");
+            }
+            assert!(!serde_json::to_string(&result)
+                .unwrap()
+                .contains(fixture.source.to_str().unwrap()));
+        }
+    }
 }
 
 fn view_items(result: &crate::domain::invocation::DomainResult) -> Vec<serde_json::Value> {
