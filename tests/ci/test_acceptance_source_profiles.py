@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from tests.ci.acceptance_profiles import REPO, SOURCE_PROFILE_DIR, load_source_workspaces
 
@@ -134,7 +135,8 @@ class IndependentSourceAdditionTests(unittest.TestCase):
         manifest.mkdir()
         (manifest / "S001.steps").write_text("unica.view\n", encoding="utf-8")
         self.environment = {
-            **os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
+            **{key: value for key, value in os.environ.items() if not key.startswith("GIT_")},
+            "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
             "PYTHONPATH": str(self.repo), "PYTHONDONTWRITEBYTECODE": "1",
         }
 
@@ -159,6 +161,64 @@ class IndependentSourceAdditionTests(unittest.TestCase):
         directory.mkdir(exist_ok=True)
         (directory / f"{identifier}.json").write_text(json.dumps(scenario), encoding="utf-8")
         (self.root / "scenario-manifest" / f"{identifier}.steps").write_text("unica.view\n", encoding="utf-8")
+
+    def test_inherited_git_context_cannot_redirect_fixture_operations(self):
+        with tempfile.TemporaryDirectory() as raw:
+            foreign = Path(raw) / "foreign"
+            foreign.mkdir()
+            clean_environment = {
+                **{key: value for key, value in os.environ.items() if not key.startswith("GIT_")},
+                "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
+            }
+
+            def foreign_git(*arguments):
+                return subprocess.run(
+                    ["git", "-c", "user.name=foreign-test",
+                     "-c", "user.email=foreign@example.invalid", "-c", "commit.gpgsign=false",
+                     "-c", "init.defaultBranch=main", *arguments],
+                    cwd=foreign, env=clean_environment, check=True, capture_output=True, text=True,
+                )
+
+            def foreign_files():
+                return {path.relative_to(foreign).as_posix(): path.read_bytes()
+                        for path in foreign.rglob("*")
+                        if ".git" not in path.relative_to(foreign).parts and path.is_file()}
+
+            (foreign / "sentinel.txt").write_text("keep foreign data\n", encoding="utf-8")
+            foreign_git("init", "-q")
+            foreign_git("add", "-A")
+            foreign_git("commit", "-q", "-m", "foreign sentinel")
+            before_head = foreign_git("rev-parse", "HEAD").stdout
+            before_index = (foreign / ".git/index").read_bytes()
+            before_files = foreign_files()
+            alternate = Path(raw) / "alternate-objects"
+            alternate.mkdir()
+            contamination = {
+                "GIT_DIR": str(foreign / ".git"), "GIT_WORK_TREE": str(foreign),
+                "GIT_INDEX_FILE": str(foreign / ".git/index"),
+                "GIT_COMMON_DIR": str(foreign / ".git"),
+                "GIT_OBJECT_DIRECTORY": str(foreign / ".git/objects"),
+                "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(alternate),
+                "GIT_PREFIX": "caller-prefix/", "GIT_CONFIG_COUNT": "1",
+                "GIT_CONFIG_KEY_0": "core.worktree", "GIT_CONFIG_VALUE_0": str(foreign),
+            }
+            fixture = type(self)(self._testMethodName)
+            self.addCleanup(fixture.doCleanups)
+            with patch.dict(os.environ, {**clean_environment, **contamination}, clear=True):
+                fixture.setUp()
+            (fixture.repo / "fixture-only.txt").write_text("fixture data\n", encoding="utf-8")
+            try:
+                fixture.git("init", "-q")
+                actual_root = Path(fixture.git("rev-parse", "--show-toplevel").stdout.strip())
+                self.assertEqual(actual_root.resolve(), fixture.repo.resolve(),
+                                 "inherited Git context redirected the fixture to the foreign repository")
+                fixture.git("add", "-A")
+                fixture.git("commit", "-q", "-m", "fixture data")
+                self.assertEqual(fixture.git("show", "HEAD:fixture-only.txt").stdout, "fixture data\n")
+            finally:
+                self.assertEqual(foreign_git("rev-parse", "HEAD").stdout, before_head)
+                self.assertEqual((foreign / ".git/index").read_bytes(), before_index)
+                self.assertEqual(foreign_files(), before_files)
 
     def test_unregistered_existing_source_fixture_fails_even_in_other_profiles(self):
         (self.root / "workspace-unregistered").mkdir()
