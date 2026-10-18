@@ -5,6 +5,8 @@ use crate::domain::project_sources::SourceSetKind;
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use serde_json::json;
 
+mod catalog_attribute;
+
 // These are retained native platform exports, not output of Unica's writer.
 const CATALOG: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -50,6 +52,15 @@ fn assert_profile_absent(info: &MetaLocalInfo) {
         assert_no_pilot_properties(section);
         for column in &section.attributes {
             assert_no_pilot_properties(column);
+            assert!(
+                !column.properties.iter().any(|property| {
+                    matches!(
+                        property.name.as_str(),
+                        "Indexing" | "FullTextSearch" | "DataHistory"
+                    )
+                }),
+                "unproved attribute properties must remain unpublished"
+            );
         }
     }
 }

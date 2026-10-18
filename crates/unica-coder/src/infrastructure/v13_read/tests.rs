@@ -1,3 +1,4 @@
+mod catalog_attribute_properties;
 mod catalog_tabular_properties;
 
 use super::{

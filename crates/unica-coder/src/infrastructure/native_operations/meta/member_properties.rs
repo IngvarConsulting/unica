@@ -12,6 +12,12 @@ pub(super) fn observe(
     target: &MetadataAddress,
     diagnostics: &mut Vec<MetaDiagnostic>,
 ) -> (Vec<MetaObservedProperty>, Vec<String>) {
+    let Some(context) = profile
+        .context_for_field(field)
+        .filter(|context| context.xml_tag() == node.tag_name().name())
+    else {
+        return (Vec::new(), Vec::new());
+    };
     let containers = node
         .children()
         .filter(|child| child.is_element() && child.tag_name().name() == "Properties")
@@ -27,7 +33,7 @@ pub(super) fn observe(
     };
     let mut observed = Vec::new();
     let mut limits = Vec::new();
-    for spec in profile.properties() {
+    for spec in profile.properties(context) {
         let nodes = properties
             .into_iter()
             .flat_map(|properties| properties.children())

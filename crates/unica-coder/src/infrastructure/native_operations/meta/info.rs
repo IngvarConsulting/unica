@@ -1549,12 +1549,15 @@ fn typed_element(
         None
     };
     let attributes = if nested_attributes {
-        typed_elements_with_diagnostics(
+        typed_elements_profiled(
             xml,
             super::info_projection::direct_md_child(node, "ChildObjects"),
-            "Attribute",
-            false,
-            &format!("{field}.attributes"),
+            ElementReadRoute {
+                tag: "Attribute",
+                nested_attributes: false,
+                field: &format!("{field}.attributes"),
+                profile: member_profile,
+            },
             target,
             diagnostics,
         )

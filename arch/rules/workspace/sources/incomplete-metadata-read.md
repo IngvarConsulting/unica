@@ -1,6 +1,9 @@
 ---
 id: INV.SOURCE.INCOMPLETE-METADATA-READ
 check:
+  - crates/unica-coder/src/infrastructure/v13_read/tests/catalog_attribute_properties.rs::catalog_attribute_profile_damage_limits_only_the_named_fact_in_owner_row_and_detail
+  - crates/unica-coder/src/infrastructure/v13_read/tests/catalog_attribute_properties.rs::catalog_attribute_profile_absence_is_not_filled_from_parent_sibling_or_template
+  - crates/unica-coder/src/domain/metadata/member_read_profile/tests.rs::member_profile_owns_only_exact_context_property_diagnostics
   - crates/unica-coder/src/infrastructure/v13_read/tests/catalog_tabular_properties.rs::catalog_tabular_profile_damage_is_local_to_the_observed_fact
   - crates/unica-coder/src/infrastructure/v13_read/tests/catalog_tabular_properties.rs::catalog_tabular_profile_missing_facts_are_not_filled_from_sibling_or_template
   - crates/unica-coder/src/infrastructure/native_operations/meta/form_metadata.rs::form_use_purposes_preserves_absence_empty_and_malformed_observations
@@ -42,6 +45,12 @@ check:
 доступными. Ограничение видно у объекта, в строке коллекции и в детали
 табличной части. Допустимое отсутствие этих свойств не создаёт значения
 по умолчанию или ошибки.
+
+Для `Indexing`, `FullTextSearch` и `DataHistory` её прямого прикладного
+реквизита действует та же независимость фактов: повреждение одного свойства
+сохраняет реквизит, исправные свойства и тип. Ограничение видно у владельца,
+в строке коллекции и в детали реквизита. Допустимое отсутствие не создаёт
+значение по умолчанию; пустой тег этих enum-свойств считается повреждением.
 
 Проверки идентичности и структуры объекта остаются обязательными. Чтение
 не изменяет исходники.

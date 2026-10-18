@@ -1,6 +1,8 @@
 ---
 id: INV.SOURCE.METADATA-NODE-PROPERTIES
 check:
+  - crates/unica-coder/src/infrastructure/v13_read/tests/catalog_attribute_properties.rs::catalog_attribute_profile_reaches_public_collection_and_detail_without_writes
+  - crates/unica-coder/src/infrastructure/v13_read_projection/member_properties/tests/catalog_attribute.rs::catalog_attribute_provider_keeps_contexts_closed_and_ignores_raw_item_keys
   - crates/unica-coder/src/infrastructure/v13_read/tests/catalog_tabular_properties.rs::catalog_tabular_profile_reaches_public_collection_and_detail_without_writes
   - crates/unica-coder/src/infrastructure/v13_read_projection/member_properties/tests.rs::catalog_tabular_provider_profile_does_not_publish_unknown_names_or_raw_item_keys
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::form_projection_uses_a_positive_nested_scalar_allowlist
@@ -26,6 +28,12 @@ check:
 коллекция и деталь публикуют наблюдённые `LineNumberLength` числом и `Use`
 строкой из закрытого словаря профиля чтения. Этот профиль не определяет
 разрешения на изменение свойств.
+
+У прямого прикладного реквизита такой табличной части коллекция и деталь
+публикуют наблюдённые `Indexing`, `FullTextSearch` и `DataHistory` строками
+из закрытых словарей. Контекст реквизита отделён от контекста самой части:
+одноимённые поля других узлов не получают этот профиль. Наблюдение сохраняет
+действующие разрешения на запись.
 
 Для типизированных дочерних узлов действует закрытый набор допустимых
 свойств: неизвестное поле поставщика не становится свойством элемента формы.

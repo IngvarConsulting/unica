@@ -1982,15 +1982,14 @@ fn metadata_item_node(
             }),
     );
     let (member_props, member_limits) = member_profile
-        .filter(|_| {
-            matches!(address.segments(), [owner, member]
-            if owner.kind() == NodeKind::Catalog && owner.name().is_some()
-                && member.kind() == NodeKind::TabularSection && member.name().is_some()
-                && kind == NodeKind::TabularSection)
+        .and_then(|profile| {
+            profile
+                .context_for_address(address, kind)
+                .map(|context| (profile, context))
         })
         .map_or_else(
             || (Map::new(), Vec::new()),
-            |profile| member_properties::project(profile, item),
+            |(profile, context)| member_properties::project(profile, context, item),
         );
     props.extend(member_props);
     NodeView::new(

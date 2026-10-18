@@ -1,6 +1,6 @@
 use super::bounded_prop;
 use crate::domain::metadata::{
-    MetaMemberReadProfile, MetaObservedProperty, MetaObservedPropertyValue,
+    MetaMemberReadContext, MetaMemberReadProfile, MetaObservedProperty, MetaObservedPropertyValue,
 };
 use serde_json::{Map, Value};
 
@@ -8,6 +8,7 @@ use serde_json::{Map, Value};
 /// A serialized provider property is not, by itself, permission to publish it.
 pub(super) fn project(
     profile: MetaMemberReadProfile,
+    context: MetaMemberReadContext,
     item: &Value,
 ) -> (Map<String, Value>, Vec<String>) {
     let observations = item.get("properties").and_then(Value::as_array);
@@ -20,7 +21,7 @@ pub(super) fn project(
         .filter_map(Value::as_str)
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    for spec in profile.properties() {
+    for spec in profile.properties(context) {
         let matching = observations
             .into_iter()
             .flatten()
