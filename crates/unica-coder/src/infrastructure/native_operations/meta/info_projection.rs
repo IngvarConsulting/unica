@@ -1986,6 +1986,21 @@ pub(super) fn observe_tabular_standard_attributes(
         error.field = format!("{field}{suffix}");
         error
     })?;
+    let mut names = std::collections::HashSet::new();
+    for (index, attribute) in attributes.iter().enumerate() {
+        if !crate::domain::metadata::metadata_identifier_is_valid(&attribute.name) {
+            return Err(ProjectionError::malformed(
+                format!("{field}[{index}].name"),
+                "standard attribute name is not a valid metadata identifier",
+            ));
+        }
+        if !names.insert(attribute.name.as_str()) {
+            return Err(ProjectionError::malformed(
+                format!("{field}[{index}].name"),
+                "standard attribute name is duplicated",
+            ));
+        }
+    }
     for (index, attribute) in container
         .children()
         .filter(roxmltree::Node::is_element)

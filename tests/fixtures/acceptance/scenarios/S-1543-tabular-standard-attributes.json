@@ -49,7 +49,7 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "faa02c7f4c3ed278c785eccc65f544683d6d25559cd7f543dcf52475f4d37acd"
+          "eq": "8903fc521674363ed1cf6b4a9560c501a875f0a42b9044c5f383cde029c8c157"
         },
         {
           "path": "src/Catalogs/Items.xml",
@@ -242,7 +242,7 @@
         {
           "path": "src/Configuration.xml",
           "kind": "sha256",
-          "eq": "faa02c7f4c3ed278c785eccc65f544683d6d25559cd7f543dcf52475f4d37acd"
+          "eq": "8903fc521674363ed1cf6b4a9560c501a875f0a42b9044c5f383cde029c8c157"
         },
         {
           "path": "src/Catalogs/Items.xml",
@@ -273,6 +273,205 @@
           "eq": [
             "StandardAttribute"
           ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.BadNames.TabularSection.Duplicate"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/limits/0",
+          "contains": "duplicated"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.BadNames.TabularSection.Duplicate.StandardAttribute"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "provider_unavailable"
+        },
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "eq": "source_unreadable"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "standardAttributes"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.BadNames.TabularSection.Duplicate.StandardAttribute.LineNumber"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "provider_unavailable"
+        },
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "eq": "source_unreadable"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "standardAttributes"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.BadNames.TabularSection.Duplicate.Attribute.Independent"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/title",
+          "eq": "Independent"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.BadNames.TabularSection.Invalid"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/limits/0",
+          "contains": "valid metadata identifier"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.BadNames.TabularSection.Invalid.StandardAttribute"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "provider_unavailable"
+        },
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "eq": "source_unreadable"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "standardAttributes"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.BadNames.TabularSection.Invalid.Attribute.Independent"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/title",
+          "eq": "Independent"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.BadNames.TabularSection.Whitespace"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/limits/0",
+          "contains": "valid metadata identifier"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.BadNames.TabularSection.Whitespace.StandardAttribute"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "provider_unavailable"
+        },
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "eq": "source_unreadable"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "standardAttributes"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.BadNames.TabularSection.Whitespace.Attribute.Independent"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/title",
+          "eq": "Independent"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "8903fc521674363ed1cf6b4a9560c501a875f0a42b9044c5f383cde029c8c157"
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "03474779f0bb9cedd76cc9e583734fdb1cdcd2432c3ad60b83e2e82e7ccc89b8"
+        },
+        {
+          "path": "src/Catalogs/BadNames.xml",
+          "kind": "sha256",
+          "eq": "b60e503e5e9b37ad0cb2c413c9172f3f9a3c037b27b639b10cb2265c91efaebe"
         }
       ]
     }

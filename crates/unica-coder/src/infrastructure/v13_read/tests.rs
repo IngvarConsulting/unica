@@ -9181,6 +9181,9 @@ fn tabular_standard_attribute_damage_is_local_and_not_an_empty_observation() {
         "foreign-entry",
         "duplicate-property",
         "bare-localized-text",
+        "invalid-name",
+        "whitespace-name",
+        "duplicate-name",
     ] {
         let fixture = RealReaderFixture::new();
         let path = fixture.source.join("Catalogs/Items.xml");
@@ -9201,6 +9204,9 @@ fn tabular_standard_attribute_damage_is_local_and_not_an_empty_observation() {
             "container-attributes" => observed.replace("<StandardAttributes>", "<StandardAttributes unexpected=\"yes\">"),
             "foreign-entry" => observed.replace("<xr:StandardAttribute ", "<xr:StandardAttribute xmlns:xr=\"urn:foreign\" "),
             "bare-localized-text" => observed.replace("<xr:ToolTip/>", "<xr:ToolTip>broken</xr:ToolTip>"),
+            "duplicate-name" => "<StandardAttributes><xr:StandardAttribute name=\"LineNumber\"><xr:Comment>first</xr:Comment></xr:StandardAttribute><xr:StandardAttribute name=\"LineNumber\"><xr:Comment>second</xr:Comment></xr:StandardAttribute></StandardAttributes>".into(),
+            "invalid-name" => observed.replace("name=\"LineNumber\"", "name=\"bad name\""),
+            "whitespace-name" => observed.replace("name=\"LineNumber\"", "name=\"   \""),
             "duplicate-property" => observed.replace("<xr:ToolTip/>", "<xr:ToolTip/><xr:ToolTip/>"),
             _ => unreachable!(),
         };
