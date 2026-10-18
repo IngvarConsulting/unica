@@ -11,6 +11,7 @@ pub enum RequiredEventDirective {
     None,
     Client,
     Server,
+    ServerOrServerNoContext,
 }
 
 impl RequiredEventDirective {
@@ -19,6 +20,7 @@ impl RequiredEventDirective {
             Self::None => None,
             Self::Client => Some("&НаКлиенте"),
             Self::Server => Some("&НаСервере"),
+            Self::ServerOrServerNoContext => Some("&НаСервереБезКонтекста"),
         }
     }
 }
