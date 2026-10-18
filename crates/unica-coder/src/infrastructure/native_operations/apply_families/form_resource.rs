@@ -684,14 +684,14 @@ fn creation_name(
     values: &Map<String, Value>,
     op_index: usize,
 ) -> Result<String, ApplyPlanError> {
-    let name = required_string(values, "name", op_index, "values")?.to_string();
-    if !crate::infrastructure::native_operations::common::is_1c_identifier(&name) {
-        return Err(bad(
+    let raw = required_string(values, "name", op_index, "values")?;
+    let name = crate::domain::metadata::canonical_creation_identifier(raw).ok_or_else(|| {
+        bad(
             op_index,
             "values.name",
-            format!("`{name}` is not a valid 1C identifier"),
-        ));
-    }
+            format!("`{raw}` is not a valid 1C identifier"),
+        )
+    })?;
     // Узел создаёт операция родителя: `at` всегда называет существующий
     // узел, а имя нового — аргумент.
     if !matches!(target.segments(), [root] if root.kind() == NodeKind::Configuration) {
@@ -704,7 +704,7 @@ fn creation_name(
             ),
         ));
     }
-    Ok(name)
+    Ok(name.to_string())
 }
 
 /// Разбор без семейства, выбранного вызывающим: общее имя (`attribute.add`
