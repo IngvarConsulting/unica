@@ -3689,6 +3689,7 @@ struct PrivateDumpStage {
     effective_config: PathBuf,
     effective_config_handle: Option<File>,
     effective_config_secret_present: bool,
+    recovery_required: bool,
     cleanup_on_drop: bool,
 }
 
@@ -3844,6 +3845,7 @@ impl PrivateDumpStage {
             recovery_removed: false,
             effective_config_handle: None,
             effective_config_secret_present: false,
+            recovery_required: false,
             cleanup_on_drop: true,
         })
     }
@@ -3968,6 +3970,7 @@ impl PrivateDumpStage {
 
     #[cfg(not(windows))]
     fn preserve_for_recovery(&mut self) -> Result<(), String> {
+        self.recovery_required = true;
         let mut errors = Vec::new();
         if let Err(error) = self.remove_effective_config() {
             errors.push(error);
@@ -4002,6 +4005,7 @@ impl PrivateDumpStage {
 
     #[cfg(windows)]
     fn preserve_for_recovery(&mut self) -> Result<(), String> {
+        self.recovery_required = true;
         self.remove_effective_config()?;
         let mut errors = Vec::new();
         let root_directory =
@@ -4047,6 +4051,9 @@ impl PrivateDumpStage {
         if !self.cleanup_on_drop {
             return Ok(());
         }
+        if self.recovery_required {
+            return self.preserve_for_recovery();
+        }
         let mut errors = Vec::new();
         if let Err(error) = self.remove_effective_config() {
             errors.push(error);
@@ -4082,6 +4089,9 @@ impl PrivateDumpStage {
     fn cleanup_now(&mut self) -> Result<(), String> {
         if !self.cleanup_on_drop {
             return Ok(());
+        }
+        if self.recovery_required {
+            return self.preserve_for_recovery();
         }
         self.remove_effective_config()?;
         let mut errors = Vec::new();
@@ -5696,13 +5706,12 @@ fn publish_staged_tree(
         }
         return Err(error);
     }
-    // No supported host offers an identity-conditioned source rename. Treat the
-    // move plus the immediate snapshot below as one publication boundary: a
-    // name-swapped source is atomically removed from the Git-visible target into
-    // private quarantine before rollback or lock release.
-    if let Err(error) = rename_child_no_replace(
+    // Refuse a source-name replacement before installation. After the move,
+    // recovery is permitted only for the root identity of this validated stage.
+    if let Err(error) = rename_prechecked_directory_child_no_replace(
         private.recovery_anchor(),
         &sealed_name,
+        staged_identity,
         target_parent,
         target_name,
     ) {
@@ -5725,71 +5734,84 @@ fn publish_staged_tree(
         return Err(primary);
     }
 
-    let installed = match target_parent.capture_child(target_name, target) {
-        Ok(installed) => installed,
-        Err(error) => {
-            let primary = format!(
-                "could not validate the just-installed staged target before commit: {error}"
-            );
-            if let Err(quarantine_error) = quarantine_unverified_install(
-                private,
-                target,
-                target_parent,
-                target_name,
-                &failed_name,
-                &failed,
-                None,
-            ) {
-                return Err(retain_recovery_error(
-                    private,
-                    format!("{primary}; {quarantine_error}"),
-                ));
-            }
-            if had_target {
-                return rollback_before_stage_install(
+    let reject_publication = |private: &mut PrivateDumpStage,
+                              installed: Option<&TreeSnapshot>,
+                              error: String| {
+        let identity = match installed {
+            Some(snapshot) => Ok(snapshot.root_identity()),
+            None => target_parent.capture_child_root_identity(target_name, target),
+        };
+        match identity {
+            Ok(Some(identity)) if identity == staged_identity => {
+                quarantine_unverified_and_rollback(
                     private,
                     target,
                     target_parent,
                     target_name,
+                    &failed_name,
+                    &failed,
+                    staged_identity,
+                    installed,
+                    had_target,
                     &backup_name,
                     original,
-                    primary,
-                );
+                    error,
+                )
             }
-            return Err(primary);
-        }
-    };
-    if &installed != staged {
-        let primary = format!(
-            "sealed staged source identity changed at the atomic publication boundary; unverified tree was not committed: {}",
-            target.display()
-        );
-        if let Err(error) = quarantine_unverified_install(
-            private,
-            target,
-            target_parent,
-            target_name,
-            &failed_name,
-            &failed,
-            Some(&installed),
-        ) {
-            return Err(retain_recovery_error(
-                private,
-                format!("{primary}; {error}"),
-            ));
-        }
-        if had_target {
-            return rollback_before_stage_install(
+            Ok(None) if had_target => rollback_before_stage_install(
                 private,
                 target,
                 target_parent,
                 target_name,
                 &backup_name,
                 original,
-                primary,
+                error,
+            ),
+            Ok(None) => Err(error),
+            Ok(Some(_)) => {
+                let error = format!(
+                    "{error}; a concurrent target with a different root identity now occupies {} and was left untouched",
+                    target.display()
+                );
+                if had_target {
+                    Err(retain_recovery_error(private, error))
+                } else {
+                    Err(error)
+                }
+            }
+            Err(identity_error) => {
+                let error = format!(
+                    "{error}; published target ownership could not be classified: {identity_error}"
+                );
+                if had_target {
+                    Err(retain_recovery_error(private, error))
+                } else {
+                    Err(error)
+                }
+            }
+        }
+    };
+
+    run_publication_hook(PublicationCheckpoint::BeforeInstalledSnapshot);
+    let installed = match target_parent.capture_child(target_name, target) {
+        Ok(installed) => installed,
+        Err(error) => {
+            return reject_publication(
+                private,
+                None,
+                format!("could not verify the published target before commit: {error}"),
             );
         }
-        return Err(primary);
+    };
+    if &installed != staged {
+        return reject_publication(
+            private,
+            Some(&installed),
+            format!(
+                "published dump differs from the validated staged snapshot before commit: {}",
+                target.display()
+            ),
+        );
     }
 
     let checkpoint_error =
@@ -5803,63 +5825,7 @@ fn publish_staged_tree(
                 ),
                 None => format!("could not verify the published target: {capture_error}"),
             };
-            match target_parent.capture_child_root_identity(target_name, target) {
-                Ok(Some(identity)) if identity == staged_identity => {
-                    return quarantine_unverified_and_rollback(
-                        private,
-                        target,
-                        target_parent,
-                        target_name,
-                        &failed_name,
-                        &failed,
-                        None,
-                        had_target,
-                        &backup_name,
-                        original,
-                        error,
-                    );
-                }
-                Ok(None) if had_target => {
-                    return rollback_before_stage_install(
-                        private,
-                        target,
-                        target_parent,
-                        target_name,
-                        &backup_name,
-                        original,
-                        error,
-                    );
-                }
-                Ok(None) => return Err(error),
-                Ok(Some(_)) if had_target => {
-                    return Err(retain_recovery_error(
-                        private,
-                        format!(
-                            "{error}; a concurrent target with a different root identity now occupies {} and was left untouched",
-                            target.display()
-                        ),
-                    ));
-                }
-                Ok(Some(_)) => {
-                    return Err(format!(
-                        "{error}; a concurrent target with a different root identity now occupies {} and was left untouched",
-                        target.display()
-                    ));
-                }
-                Err(identity_error) if had_target => {
-                    return Err(retain_recovery_error(
-                        private,
-                        format!(
-                            "{error}; published target ownership could not be classified: {identity_error}"
-                        ),
-                    ));
-                }
-                Err(identity_error) => {
-                    return Err(format!(
-                        "{error}; published target ownership could not be classified: {identity_error}"
-                    ));
-                }
-            }
+            return reject_publication(private, None, error);
         }
     };
     let validation_error = (&published != staged).then(|| {
@@ -5869,104 +5835,7 @@ fn publish_staged_tree(
         )
     });
     if let Some(error) = checkpoint_error.or(validation_error) {
-        if &published == staged {
-            if let Err(move_error) = rename_child_no_replace(
-                target_parent,
-                target_name,
-                private.recovery_anchor(),
-                &failed_name,
-            ) {
-                return Err(retain_recovery_error(
-                    private,
-                    format!(
-                        "{error}; rollback could not atomically move failed publication {} to {} without clobbering: {move_error}",
-                        target.display(),
-                        failed.display()
-                    ),
-                ));
-            }
-            let failed_snapshot = match private
-                .recovery_anchor()
-                .capture_child(&failed_name, &failed)
-            {
-                Ok(snapshot) => snapshot,
-                Err(snapshot_error) => {
-                    return Err(retain_recovery_error(
-                        private,
-                        format!(
-                            "{error}; could not verify failed-publication recovery {}: {snapshot_error}",
-                            failed.display()
-                        ),
-                    ));
-                }
-            };
-            if &failed_snapshot != staged {
-                return Err(retain_recovery_error(
-                    private,
-                    format!(
-                        "{error}; failed-publication recovery differs from the validated staged snapshot: {}",
-                        failed.display()
-                    ),
-                ));
-            }
-            if had_target {
-                return rollback_before_stage_install(
-                    private,
-                    target,
-                    target_parent,
-                    target_name,
-                    &backup_name,
-                    original,
-                    error,
-                );
-            }
-            return Err(error);
-        }
-
-        if published.root_identity() == Some(staged_identity) {
-            return quarantine_unverified_and_rollback(
-                private,
-                target,
-                target_parent,
-                target_name,
-                &failed_name,
-                &failed,
-                Some(&published),
-                had_target,
-                &backup_name,
-                original,
-                error,
-            );
-        }
-
-        if matches!(published, TreeSnapshot::Absent) && had_target {
-            return rollback_before_stage_install(
-                private,
-                target,
-                target_parent,
-                target_name,
-                &backup_name,
-                original,
-                error,
-            );
-        }
-        if matches!(published, TreeSnapshot::Absent) {
-            return Err(error);
-        }
-
-        if had_target {
-            return Err(retain_recovery_error(
-                private,
-                format!(
-                    "{error}; a concurrent target now occupies {} and was left untouched",
-                    target.display()
-                ),
-            ));
-        }
-        return Err(format!(
-            "{error}; a concurrent target now occupies {} and was left untouched",
-            target.display()
-        ));
+        return reject_publication(private, Some(&published), error);
     }
 
     if let Err(error) = target_parent.verify_path_binding() {
@@ -5981,18 +5850,25 @@ fn publish_staged_tree(
     Ok(Vec::new())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn quarantine_unverified_install(
-    private: &PrivateDumpStage,
+    private: &mut PrivateDumpStage,
     target: &Path,
     target_parent: &DirectoryAnchor,
     target_name: &OsStr,
     quarantine_name: &OsStr,
     quarantine_path: &Path,
+    expected_identity: FileIdentity,
     installed: Option<&TreeSnapshot>,
 ) -> Result<(), String> {
-    rename_child_no_replace(
+    // Protect recovery before a rename whose outcome may be uncertain. Cleanup
+    // may delete it again only after the moved root is proved to be our tree.
+    let was_required = private.recovery_required;
+    private.recovery_required = true;
+    rename_prechecked_directory_child_no_replace(
         target_parent,
         target_name,
+        expected_identity,
         private.recovery_anchor(),
         quarantine_name,
     )
@@ -6003,6 +5879,51 @@ fn quarantine_unverified_install(
             quarantine_path.display()
         )
     })?;
+    match private
+        .recovery_anchor()
+        .capture_child_root_identity(quarantine_name, quarantine_path)
+    {
+        Ok(Some(identity)) if identity == expected_identity => {}
+        Ok(Some(identity)) => {
+            let return_result = rename_prechecked_directory_child_no_replace(
+                private.recovery_anchor(),
+                quarantine_name,
+                identity,
+                target_parent,
+                target_name,
+            )
+            .and_then(|()| {
+                if target_parent.capture_child_root_identity(target_name, target)? == Some(identity)
+                {
+                    Ok(())
+                } else {
+                    Err("returned target identity could not be confirmed".to_string())
+                }
+            });
+            return Err(match return_result {
+                Ok(()) => format!(
+                    "quarantine captured a different root identity; the concurrent target was returned without clobbering: {}",
+                    target.display()
+                ),
+                Err(error) => format!(
+                    "quarantine captured a different root identity; recovery remains protected at {}: {error}",
+                    quarantine_path.display()
+                ),
+            });
+        }
+        Ok(None) => {
+            return Err(format!(
+                "quarantined root is absent; recovery remains protected at {}",
+                quarantine_path.display()
+            ));
+        }
+        Err(error) => {
+            return Err(format!(
+                "could not verify quarantined root identity; recovery remains protected at {}: {error}",
+                quarantine_path.display()
+            ));
+        }
+    }
     if let Some(installed) = installed {
         let quarantined = private
             .recovery_anchor()
@@ -6027,6 +5948,7 @@ fn quarantine_unverified_install(
             ));
         }
     }
+    private.recovery_required = was_required;
     Ok(())
 }
 
@@ -6038,6 +5960,7 @@ fn quarantine_unverified_and_rollback(
     target_name: &OsStr,
     quarantine_name: &OsStr,
     quarantine_path: &Path,
+    expected_identity: FileIdentity,
     installed: Option<&TreeSnapshot>,
     had_target: bool,
     backup_name: &OsStr,
@@ -6051,6 +5974,7 @@ fn quarantine_unverified_and_rollback(
         target_name,
         quarantine_name,
         quarantine_path,
+        expected_identity,
         installed,
     ) {
         return Err(retain_recovery_error(
@@ -6083,9 +6007,22 @@ fn rollback_before_stage_install(
     primary: String,
 ) -> Result<Vec<String>, String> {
     let backup = private.recovery.join(backup_name);
-    if let Err(error) = rename_child_no_replace(
+    let expected_identity = match expected_backup.root_identity() {
+        Some(identity) => identity,
+        None => {
+            return Err(retain_recovery_error(
+                private,
+                format!(
+                    "{primary}; rollback backup has no expected directory identity: {}",
+                    backup.display()
+                ),
+            ))
+        }
+    };
+    if let Err(error) = rename_prechecked_directory_child_no_replace(
         private.recovery_anchor(),
         backup_name,
+        expected_identity,
         target_parent,
         target_name,
     ) {
@@ -6112,6 +6049,7 @@ fn rollback_before_stage_install(
                 target_name,
                 backup_name,
                 &backup,
+                expected_identity,
                 None,
             ) {
                 return Err(retain_recovery_error(
@@ -6137,6 +6075,7 @@ fn rollback_before_stage_install(
             target_name,
             backup_name,
             &backup,
+            expected_identity,
             Some(&restored),
         ) {
             return Err(retain_recovery_error(
@@ -6150,11 +6089,15 @@ fn rollback_before_stage_install(
     match target_parent.verify_path_binding() {
         Ok(()) => Err(primary),
         Err(binding_error) => {
-            let quarantine = rename_child_no_replace(
+            let quarantine = quarantine_unverified_install(
+                private,
+                target,
                 target_parent,
                 target_name,
-                private.recovery_anchor(),
                 backup_name,
+                &backup,
+                expected_identity,
+                Some(expected_backup),
             );
             let detail = match quarantine {
                 Ok(()) => format!(
@@ -6176,7 +6119,7 @@ fn retain_recovery_error(private: &mut PrivateDumpStage, primary: String) -> Str
             private.recovery.display()
         ),
         Err(cleanup_error) => format!(
-            "{primary}; recovery could not be retained safely because {cleanup_error}; private root cleanup will be retried: {}",
+            "{primary}; recovery remains protected; private execution cleanup will be retried after {cleanup_error}: {}",
             private.root.display()
         ),
     }
@@ -6260,6 +6203,7 @@ fn rename_child_no_replace(
 ) -> Result<(), String> {
     source_parent.verify_path_binding()?;
     destination_parent.verify_path_binding()?;
+    run_directory_rename_hook(&source_parent.path.join(source_name));
     let source_name = CString::new(source_name.as_bytes()).map_err(|error| {
         format!(
             "source name contains an embedded NUL byte in {}: {error}",
@@ -6389,6 +6333,7 @@ enum PublicationCheckpoint {
     AfterBackup,
     BeforeStageInstall,
     BeforeSealedPublishRename,
+    BeforeInstalledSnapshot,
     AfterStageInstall,
 }
 
@@ -6409,6 +6354,8 @@ enum PrivateCreationCheckpoint {
 type PublicationHook = (PublicationCheckpoint, Box<dyn FnOnce()>);
 #[cfg(test)]
 type PathHook = Box<dyn FnOnce(&Path)>;
+#[cfg(all(test, unix))]
+type DirectoryRenameHook = Box<dyn FnMut(&Path)>;
 #[cfg(test)]
 type TargetedReadHooks = (
     PathBuf,
@@ -6420,6 +6367,8 @@ type TargetedReadHooks = (
 thread_local! {
     static TEST_PUBLICATION_FAILPOINT: RefCell<Option<PublicationCheckpoint>> = const { RefCell::new(None) };
     static TEST_PUBLICATION_HOOK: RefCell<Option<PublicationHook>> = const { RefCell::new(None) };
+    #[cfg(unix)]
+    static TEST_DIRECTORY_RENAME_HOOK: RefCell<Option<DirectoryRenameHook>> = const { RefCell::new(None) };
     static TEST_SECURE_READ_HOOK: RefCell<Option<PathHook>> = const { RefCell::new(None) };
     static TEST_TARGETED_READ_HOOKS: RefCell<Option<TargetedReadHooks>> = const { RefCell::new(None) };
     static TEST_TREE_OPEN_HOOK: RefCell<Option<PathHook>> = const { RefCell::new(None) };
@@ -6482,6 +6431,24 @@ fn with_secure_read_hook<T>(hook: impl FnOnce(&Path) + 'static, action: impl FnO
         }
     }
     let previous = TEST_SECURE_READ_HOOK.with(|slot| slot.replace(Some(Box::new(hook))));
+    let _reset = Reset(previous);
+    action()
+}
+
+#[cfg(all(test, unix))]
+fn with_directory_rename_hook<T>(
+    hook: impl FnMut(&Path) + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<DirectoryRenameHook>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_DIRECTORY_RENAME_HOOK.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+    let previous = TEST_DIRECTORY_RENAME_HOOK.with(|slot| slot.replace(Some(Box::new(hook))));
     let _reset = Reset(previous);
     action()
 }
@@ -6708,7 +6675,7 @@ fn run_tree_open_hook(_path: &Path) {
     }
 }
 
-fn run_publication_failpoint(checkpoint: PublicationCheckpoint) -> Result<(), String> {
+fn run_publication_hook(checkpoint: PublicationCheckpoint) {
     #[cfg(test)]
     {
         let hook = TEST_PUBLICATION_HOOK.with(|slot| {
@@ -6725,13 +6692,28 @@ fn run_publication_failpoint(checkpoint: PublicationCheckpoint) -> Result<(), St
         if let Some(hook) = hook {
             hook();
         }
-        if TEST_PUBLICATION_FAILPOINT.with(|slot| slot.borrow().as_ref() == Some(&checkpoint)) {
-            return Err(format!(
-                "injected verified dump publication failure at {checkpoint:?}"
-            ));
-        }
     }
     let _ = checkpoint;
+}
+
+#[cfg(unix)]
+fn run_directory_rename_hook(_source: &Path) {
+    #[cfg(test)]
+    TEST_DIRECTORY_RENAME_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().as_mut() {
+            hook(_source);
+        }
+    });
+}
+
+fn run_publication_failpoint(checkpoint: PublicationCheckpoint) -> Result<(), String> {
+    run_publication_hook(checkpoint);
+    #[cfg(test)]
+    if TEST_PUBLICATION_FAILPOINT.with(|slot| slot.borrow().as_ref() == Some(&checkpoint)) {
+        return Err(format!(
+            "injected verified dump publication failure at {checkpoint:?}"
+        ));
+    }
     Ok(())
 }
 
@@ -6776,20 +6758,6 @@ fn finalize_private_outcome(
     private: &mut PrivateDumpStage,
     mut outcome: AdapterOutcome,
 ) -> AdapterOutcome {
-    if !private.cleanup_on_drop {
-        outcome.warnings.retain(|warning| {
-            warning
-                != "Git-visible sources were not published; the private staged dump was discarded"
-        });
-        outcome.warnings.push(format!(
-            "Secret-free recovery was retained at {}",
-            private.recovery.display()
-        ));
-        outcome
-            .artifacts
-            .push(private.recovery.display().to_string());
-        return outcome;
-    }
     if let Err(error) = private.cleanup_now() {
         if outcome.ok {
             outcome.ok = false;
@@ -6817,6 +6785,23 @@ fn finalize_private_outcome(
             Some(stderr) if !stderr.is_empty() => format!("{stderr}\n{error}\n"),
             _ => format!("{error}\n"),
         });
+    }
+    if private.recovery_required {
+        outcome.warnings.retain(|warning| {
+            warning
+                != "Git-visible sources were not published; the private staged dump was discarded"
+        });
+        let status = if private.cleanup_on_drop {
+            "Recovery remains protected; private execution cleanup is incomplete"
+        } else {
+            "Secret-free recovery was retained"
+        };
+        outcome
+            .warnings
+            .push(format!("{status} at {}", private.recovery.display()));
+        outcome
+            .artifacts
+            .push(private.recovery.display().to_string());
     }
     outcome
 }
@@ -8880,6 +8865,286 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn concurrent_target_during_capture_error_quarantine_is_preserved() {
+        assert_concurrent_target_survives_quarantine(QuarantineRace::Directory);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn concurrent_file_during_capture_error_quarantine_is_preserved() {
+        assert_concurrent_target_survives_quarantine(QuarantineRace::File);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn concurrent_target_during_capture_error_quarantine_survives_recovery_failure() {
+        assert_concurrent_target_survives_quarantine(QuarantineRace::DetachedDirectory);
+    }
+
+    #[cfg(unix)]
+    enum QuarantineRace {
+        Directory,
+        File,
+        DetachedDirectory,
+    }
+
+    #[cfg(unix)]
+    fn assert_concurrent_target_survives_quarantine(case: QuarantineRace) {
+        let detach_private = matches!(case, QuarantineRace::DetachedDirectory);
+        let foreign_file = matches!(case, QuarantineRace::File);
+        let (root, context, config) = workspace("quarantine-concurrent-target");
+        std::fs::write(&config,
+            "workPath: .work\nformat: DESIGNER\nbuilder: DESIGNER\ninfobase:\n  connection: 'File=base;Usr=Admin;Pwd=quarantine-secret'\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        ).unwrap();
+        let target = context.cwd.join("src");
+        seed_valid_target(&target);
+        let platform = fixed_platform(&root);
+        let runner = DumpRunner::valid();
+        let displaced_stage = context.cwd.join("externally-displaced-stage");
+        let detached_private = context.cwd.join("externally-displaced-private");
+        let hook_target = std::fs::canonicalize(&target).unwrap();
+        let probe_target = target.clone();
+        let hook_displaced = displaced_stage.clone();
+        let hook_private = detached_private.clone();
+        let hook_cwd = context.cwd.clone();
+        let armed = std::rc::Rc::new(std::cell::Cell::new(false));
+        let probe_armed = armed.clone();
+        let identity = std::rc::Rc::new(std::cell::Cell::new(None));
+        let hook_identity = identity.clone();
+        let result = super::with_directory_rename_hook(
+            move |source| {
+                if source != hook_target || !armed.replace(false) {
+                    return;
+                }
+                std::fs::rename(&hook_target, &hook_displaced).unwrap();
+                let foreign = if foreign_file {
+                    std::fs::write(&hook_target, b"concurrent").unwrap();
+                    std::fs::File::open(&hook_target).unwrap()
+                } else {
+                    std::fs::create_dir(&hook_target).unwrap();
+                    std::fs::write(hook_target.join("concurrent.txt"), b"concurrent").unwrap();
+                    super::open_directory_nofollow(&hook_target).unwrap()
+                };
+                hook_identity.set(Some(super::file_identity(&foreign).unwrap()));
+                if detach_private {
+                    let private = std::fs::read_dir(&hook_cwd)
+                        .unwrap()
+                        .filter_map(Result::ok)
+                        .map(|entry| entry.path())
+                        .find(|path| {
+                            path.file_name().is_some_and(|name| {
+                                name.to_string_lossy().starts_with(".unica-dump-guard-")
+                            })
+                        })
+                        .unwrap();
+                    std::fs::rename(private, &hook_private).unwrap();
+                }
+            },
+            || {
+                with_publication_hook(
+                    PublicationCheckpoint::BeforeInstalledSnapshot,
+                    move || {
+                        std::os::unix::fs::symlink(
+                            probe_target.join("Configuration.xml"),
+                            probe_target.join("unvalidated-link.xml"),
+                        )
+                        .unwrap();
+                        probe_armed.set(true);
+                    },
+                    || invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context),
+                )
+            },
+        );
+        assert!(!result.ok, "{detach_private}: {result:?}");
+        let contents = |path: &Path| {
+            std::fs::read(if foreign_file {
+                path.to_path_buf()
+            } else {
+                path.join("concurrent.txt")
+            })
+        };
+        let foreign = if contents(&target).is_ok_and(|bytes| bytes == b"concurrent") {
+            target.clone()
+        } else {
+            let private = if detach_private {
+                detached_private.clone()
+            } else {
+                std::fs::read_dir(&context.cwd)
+                    .unwrap()
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.path())
+                    .find(|path| {
+                        path.file_name().is_some_and(|name| {
+                            name.to_string_lossy().starts_with(".unica-dump-guard-")
+                        })
+                    })
+                    .expect("foreign target must survive in retained recovery")
+            };
+            std::fs::read_dir(private.join("recovery"))
+                .unwrap()
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .find(|path| contents(path).is_ok_and(|bytes| bytes == b"concurrent"))
+                .expect("foreign target must not be deleted during cleanup")
+        };
+        assert_eq!(contents(&foreign).unwrap(), b"concurrent");
+        let foreign_handle = if foreign_file {
+            std::fs::File::open(&foreign).unwrap()
+        } else {
+            super::open_directory_nofollow(&std::fs::canonicalize(&foreign).unwrap()).unwrap()
+        };
+        assert_eq!(
+            Some(super::file_identity(&foreign_handle).unwrap()),
+            identity.get()
+        );
+        assert!(displaced_stage.join("Configuration.xml").is_file());
+        let private = if detach_private {
+            detached_private
+        } else {
+            std::fs::read_dir(&context.cwd)
+                .unwrap()
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .find(|path| {
+                    path.file_name().is_some_and(|name| {
+                        name.to_string_lossy().starts_with(".unica-dump-guard-")
+                    })
+                })
+                .expect("owned original backup remains recoverable")
+        };
+        assert!(!private.join("execution").exists(), "{result:?}");
+        assert!(std::fs::read_dir(private.join("recovery"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| entry.path().join("before.txt").is_file()));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn concurrent_target_directory_before_first_installed_probe_survives_rollback() {
+        for had_target in [true, false] {
+            assert_foreign_target_survives_first_installed_probe(had_target, "directory");
+        }
+    }
+
+    #[test]
+    fn concurrent_target_file_before_first_installed_probe_survives_rollback() {
+        for had_target in [true, false] {
+            assert_foreign_target_survives_first_installed_probe(had_target, "file");
+        }
+    }
+
+    #[test]
+    fn absent_target_before_first_installed_probe_restores_the_owned_backup() {
+        let (root, context, _) = workspace("first-probe-absent-target");
+        let target = context.cwd.join("src");
+        let displaced_stage = context.cwd.join("externally-displaced-stage");
+        seed_valid_target(&target);
+        let platform = fixed_platform(&root);
+        let runner = DumpRunner::valid();
+        let hook_target = target.clone();
+        let hook_displaced_stage = displaced_stage.clone();
+
+        let result = with_publication_hook(
+            PublicationCheckpoint::BeforeInstalledSnapshot,
+            move || std::fs::rename(&hook_target, &hook_displaced_stage).unwrap(),
+            || invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context),
+        );
+
+        assert!(!result.ok, "{result:?}");
+        assert_eq!(std::fs::read(target.join("before.txt")).unwrap(), b"before");
+        assert!(displaced_stage.join("Configuration.xml").is_file());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn assert_foreign_target_survives_first_installed_probe(had_target: bool, kind: &str) {
+        let (root, context, _) = workspace(&format!("first-probe-{kind}-{had_target}"));
+        let target = context.cwd.join("src");
+        let displaced_stage = context.cwd.join("externally-displaced-stage");
+        if had_target {
+            seed_valid_target(&target);
+        }
+        let platform = fixed_platform(&root);
+        let runner = DumpRunner::valid();
+        let hook_target = target.clone();
+        let hook_displaced_stage = displaced_stage.clone();
+        let foreign_identity = std::rc::Rc::new(std::cell::Cell::new(None));
+        let hook_identity = foreign_identity.clone();
+        let is_directory = kind == "directory";
+
+        let result = with_publication_hook(
+            PublicationCheckpoint::BeforeInstalledSnapshot,
+            move || {
+                std::fs::rename(&hook_target, &hook_displaced_stage).unwrap();
+                let foreign = if is_directory {
+                    std::fs::create_dir(&hook_target).unwrap();
+                    std::fs::write(hook_target.join("concurrent.txt"), b"concurrent").unwrap();
+                    super::open_directory_nofollow(&std::fs::canonicalize(&hook_target).unwrap())
+                        .unwrap()
+                } else {
+                    std::fs::write(&hook_target, b"concurrent").unwrap();
+                    std::fs::File::open(&hook_target).unwrap()
+                };
+                hook_identity.set(Some(super::file_identity(&foreign).unwrap()));
+            },
+            || invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context),
+        );
+
+        assert!(!result.ok, "{kind}/{had_target}: {result:?}");
+        let contents = if is_directory {
+            std::fs::read(target.join("concurrent.txt"))
+        } else {
+            std::fs::read(&target)
+        };
+        assert_eq!(
+            contents.unwrap_or_else(|error| panic!(
+                "{kind}/{had_target}: publication removed the concurrent target: {error}; {result:?}"
+            )),
+            b"concurrent"
+        );
+        let foreign = if is_directory {
+            super::open_directory_nofollow(&std::fs::canonicalize(&target).unwrap()).unwrap()
+        } else {
+            std::fs::File::open(&target).unwrap()
+        };
+        assert_eq!(
+            Some(super::file_identity(&foreign).unwrap()),
+            foreign_identity.get(),
+            "{kind}/{had_target}: publication moved or replaced the concurrent target"
+        );
+        assert!(displaced_stage.join("Configuration.xml").is_file());
+        let recoveries = std::fs::read_dir(&context.cwd)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with(".unica-dump-guard-"))
+            })
+            .collect::<Vec<_>>();
+        if had_target {
+            assert_eq!(recoveries.len(), 1, "{result:?}");
+            let recovery = recoveries[0].join("recovery");
+            let backup = std::fs::read_dir(&recovery)
+                .unwrap()
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .find(|path| {
+                    path.file_name()
+                        .is_some_and(|name| name.to_string_lossy().starts_with("target-backup-"))
+                })
+                .expect("the owned original remains available for recovery");
+            assert_eq!(std::fs::read(backup.join("before.txt")).unwrap(), b"before");
+            assert!(!recoveries[0].join("execution").exists());
+        } else {
+            assert!(recoveries.is_empty(), "{result:?}");
+        }
+        drop(foreign);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn concurrent_target_replacement_after_stage_install_survives_rollback() {
         let (root, context, _) = workspace("rollback-concurrent-after-install");
@@ -8916,81 +9181,91 @@ mod tests {
     }
 
     #[test]
-    fn installed_tree_interior_mutation_after_first_probe_is_quarantined_and_rolled_back() {
-        let (root, context, _) = workspace("installed-tree-interior-mutation");
-        let target = context.cwd.join("src");
-        seed_valid_target(&target);
-        let platform = fixed_platform(&root);
-        let runner = DumpRunner::valid();
-        let hook_target = target.clone();
-
-        let result = with_publication_hook(
+    fn installed_tree_interior_mutation_is_quarantined_and_rolled_back() {
+        for checkpoint in [
+            PublicationCheckpoint::BeforeInstalledSnapshot,
             PublicationCheckpoint::AfterStageInstall,
-            move || {
-                std::fs::write(hook_target.join("unvalidated.txt"), b"unvalidated").unwrap();
-            },
-            || invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context),
-        );
+        ] {
+            let (root, context, _) = workspace("installed-tree-interior-mutation");
+            let target = context.cwd.join("src");
+            seed_valid_target(&target);
+            let platform = fixed_platform(&root);
+            let runner = DumpRunner::valid();
+            let hook_target = target.clone();
 
-        assert!(!result.ok, "{result:?}");
-        assert_eq!(
-            std::fs::read(target.join("before.txt")).unwrap(),
-            b"before",
-            "the original target must be restored after mutation of our installed directory"
-        );
-        assert!(
-            !target.join("unvalidated.txt").exists(),
-            "our installed but mutated directory must be quarantined before lock release"
-        );
-        assert!(
-            result.errors.join("\n").contains("published dump differs")
-                || result.errors.join("\n").contains("quarantine"),
-            "{result:?}"
-        );
-        std::fs::remove_dir_all(root).unwrap();
+            let result = with_publication_hook(
+                checkpoint,
+                move || {
+                    std::fs::write(hook_target.join("unvalidated.txt"), b"unvalidated").unwrap();
+                },
+                || invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context),
+            );
+
+            assert!(!result.ok, "{result:?}");
+            assert_eq!(
+                std::fs::read(target.join("before.txt")).unwrap(),
+                b"before",
+                "the original target must be restored after mutation of our installed directory"
+            );
+            assert!(
+                !target.join("unvalidated.txt").exists(),
+                "our installed but mutated directory must be quarantined before lock release"
+            );
+            assert!(
+                result.errors.join("\n").contains("published dump differs")
+                    || result.errors.join("\n").contains("quarantine"),
+                "{result:?}"
+            );
+            std::fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[cfg(unix)]
     #[test]
     fn installed_tree_capture_error_with_same_root_identity_is_quarantined_and_rolled_back() {
-        let (root, context, _) = workspace("installed-tree-interior-symlink");
-        let target = context.cwd.join("src");
-        seed_valid_target(&target);
-        let platform = fixed_platform(&root);
-        let runner = DumpRunner::valid();
-        let hook_target = target.clone();
-
-        let result = with_publication_hook(
+        for checkpoint in [
+            PublicationCheckpoint::BeforeInstalledSnapshot,
             PublicationCheckpoint::AfterStageInstall,
-            move || {
-                std::os::unix::fs::symlink(
-                    hook_target.join("Configuration.xml"),
-                    hook_target.join("unvalidated-link.xml"),
-                )
-                .unwrap();
-            },
-            || invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context),
-        );
+        ] {
+            let (root, context, _) = workspace("installed-tree-interior-symlink");
+            let target = context.cwd.join("src");
+            seed_valid_target(&target);
+            let platform = fixed_platform(&root);
+            let runner = DumpRunner::valid();
+            let hook_target = target.clone();
 
-        assert!(!result.ok, "{result:?}");
-        assert_eq!(
-            std::fs::read(target.join("before.txt")).unwrap(),
-            b"before",
-            "the original target must be restored after capture failure in our installed directory"
-        );
-        assert!(
-            std::fs::symlink_metadata(target.join("unvalidated-link.xml")).is_err(),
-            "our installed but invalid directory must be quarantined before lock release"
-        );
-        assert!(
-            result
-                .errors
-                .join("\n")
-                .contains("could not verify the published target")
-                || result.errors.join("\n").contains("quarantine"),
-            "{result:?}"
-        );
-        std::fs::remove_dir_all(root).unwrap();
+            let result = with_publication_hook(
+                checkpoint,
+                move || {
+                    std::os::unix::fs::symlink(
+                        hook_target.join("Configuration.xml"),
+                        hook_target.join("unvalidated-link.xml"),
+                    )
+                    .unwrap();
+                },
+                || invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context),
+            );
+
+            assert!(!result.ok, "{result:?}");
+            assert_eq!(
+                std::fs::read(target.join("before.txt")).unwrap(),
+                b"before",
+                "the original target must be restored after capture failure in our installed directory"
+            );
+            assert!(
+                std::fs::symlink_metadata(target.join("unvalidated-link.xml")).is_err(),
+                "our installed but invalid directory must be quarantined before lock release"
+            );
+            assert!(
+                result
+                    .errors
+                    .join("\n")
+                    .contains("could not verify the published target")
+                    || result.errors.join("\n").contains("quarantine"),
+                "{result:?}"
+            );
+            std::fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[cfg(unix)]
@@ -9107,7 +9382,11 @@ mod tests {
         assert!(
             result.errors.join("\n").contains("just-installed")
                 || result.errors.join("\n").contains("unverified")
-                || result.errors.join("\n").contains("quarantine"),
+                || result.errors.join("\n").contains("quarantine")
+                || result
+                    .errors
+                    .join("\n")
+                    .contains("identity changed before atomic rename"),
             "{result:?}"
         );
         std::fs::remove_dir_all(root).unwrap();

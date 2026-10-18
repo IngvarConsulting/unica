@@ -1,6 +1,10 @@
 ---
 id: INV.RUNTIME.FULL-EXPORT-PUBLICATION
-check: []
+check:
+  - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::concurrent_target_directory_before_first_installed_probe_survives_rollback
+  - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::concurrent_target_file_before_first_installed_probe_survives_rollback
+  - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::installed_tree_interior_mutation_is_quarantined_and_rolled_back
+  - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::installed_tree_capture_error_with_same_root_identity_is_quarantined_and_rolled_back
 gap: https://github.com/IngvarConsulting/unica/issues/981
 ---
 

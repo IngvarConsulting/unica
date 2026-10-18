@@ -1,6 +1,9 @@
 ---
 id: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
-check: []
+check:
+  - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::concurrent_target_during_capture_error_quarantine_is_preserved
+  - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::concurrent_file_during_capture_error_quarantine_is_preserved
+  - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::concurrent_target_during_capture_error_quarantine_survives_recovery_failure
 gap: https://github.com/IngvarConsulting/unica/issues/981
 ---
 
