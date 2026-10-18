@@ -172,6 +172,12 @@ pub(crate) fn parse_metadata_plan_operation_in(
             RegisteredMetadataOperation::AttributeAdd => {
                 parse_attribute_add(object, op_index, binding)?
             }
+            RegisteredMetadataOperation::AttributeSet => {
+                parse_attribute_set(object, op_index, binding)?
+            }
+            RegisteredMetadataOperation::AttributeRemove => {
+                parse_attribute_remove(object, op_index, binding)?
+            }
             RegisteredMetadataOperation::CommandAdd => {
                 parse_member_add(operation.name(), "commands", object, op_index, binding)?
             }
@@ -180,8 +186,6 @@ pub(crate) fn parse_metadata_plan_operation_in(
     }
     let kind = match operation {
         "props.set" => parse_props_set(object, op_index, binding)?,
-        "attribute.set" => parse_attribute_set(object, op_index, binding)?,
-        "attribute.remove" => parse_attribute_remove(object, op_index, binding)?,
         "tabularSection.add" => {
             parse_member_add(operation, "tabularSections", object, op_index, binding)?
         }
@@ -3211,6 +3215,138 @@ mod tests {
             )
             .unwrap_err();
             assert_eq!(error.path(), Some("ops[3].args.items[0].name"));
+        }
+    }
+
+    #[test]
+    fn typed_attribute_changes_keep_the_member_owner_scope_and_caller_fields() {
+        use super::{AddressedFields, MetadataPlanKind};
+        use crate::domain::metadata::{MetaCollection, MetaEditOperation};
+        let fixture = MetadataFixture::new();
+        for (at, section) in [
+            ("Document.Order.Attribute.Total", None),
+            (
+                "main:Document.Order.TabularSection.Lines.Attribute.Total",
+                Some("Lines"),
+            ),
+        ] {
+            let parsed = parse_metadata_plan_operation(
+                "attribute.set",
+                &json!({"at":at,"values":{"newName":"Changed","comment":"kept"}}),
+                3,
+                &fixture.binding,
+            )
+            .unwrap();
+            let MetadataPlanKind::Edit {
+                target,
+                operation:
+                    MetaEditOperation::Update {
+                        collection,
+                        scope,
+                        elements,
+                    },
+                addressed,
+            } = parsed.kind
+            else {
+                panic!("attribute.set must plan a typed update");
+            };
+            assert_eq!(target.as_str(), "Document.Order");
+            assert_eq!(collection, MetaCollection::Attributes);
+            assert_eq!(
+                scope.as_ref().map(|scope| scope.tabular_section.as_str()),
+                section
+            );
+            assert_eq!(elements.len(), 1);
+            assert_eq!(elements[0].name, "Total");
+            assert_eq!(elements[0].new_name.as_deref(), Some("Changed"));
+            assert_eq!(elements[0].comment.as_deref(), Some("kept"));
+            assert_eq!(addressed, Some(AddressedFields::Values));
+
+            let parsed = parse_metadata_plan_operation(
+                "attribute.remove",
+                &json!({"at":at}),
+                3,
+                &fixture.binding,
+            )
+            .unwrap();
+            let MetadataPlanKind::Edit {
+                target,
+                operation:
+                    MetaEditOperation::Remove {
+                        collection,
+                        scope,
+                        names,
+                    },
+                addressed,
+            } = parsed.kind
+            else {
+                panic!("attribute.remove must plan a typed removal");
+            };
+            assert_eq!(target.as_str(), "Document.Order");
+            assert_eq!(collection, MetaCollection::Attributes);
+            assert_eq!(
+                scope.as_ref().map(|scope| scope.tabular_section.as_str()),
+                section
+            );
+            assert_eq!(names, ["Total"]);
+            assert_eq!(addressed, Some(AddressedFields::None));
+        }
+    }
+
+    #[test]
+    fn typed_attribute_changes_keep_writer_parser_refusal_order() {
+        let fixture = MetadataFixture::new();
+        for (operation, args, path) in [
+            (
+                "attribute.set",
+                json!({"at":null,"values":false,"unknown":true}),
+                "unknown",
+            ),
+            (
+                "attribute.remove",
+                json!({"at":null,"unknown":true}),
+                "unknown",
+            ),
+            ("attribute.set", json!({"at":42,"values":false}), "at"),
+            ("attribute.remove", json!({"at":42}), "at"),
+            (
+                "attribute.set",
+                json!({"at":"main:Document.Order","values":false}),
+                "at",
+            ),
+            (
+                "attribute.remove",
+                json!({"at":"main:Document.Order"}),
+                "at",
+            ),
+            (
+                "attribute.set",
+                json!({"at":"main:Document.Order.Attribute.Total","values":false}),
+                "values",
+            ),
+            (
+                "attribute.set",
+                json!({"at":"main:Document.Order.Attribute.Total","values":{"name":42,"newName":false}}),
+                "values.name",
+            ),
+            (
+                "attribute.set",
+                json!({"at":"main:Document.Order.Attribute.Total","values":{"newName":false,"unknown":true}}),
+                "values.unknown",
+            ),
+        ] {
+            let error =
+                parse_metadata_plan_operation(operation, &args, 3, &fixture.binding).unwrap_err();
+            assert_eq!(
+                error.kind(),
+                ApplyPlanErrorKind::BadValue,
+                "{operation}: {args}"
+            );
+            assert_eq!(
+                error.path(),
+                Some(format!("ops[3].args.{path}").as_str()),
+                "{operation}: {args}: {error:?}"
+            );
         }
     }
 

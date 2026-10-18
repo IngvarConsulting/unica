@@ -41,16 +41,25 @@ macro_rules! metadata_operations {
 
 metadata_operations!(
     AttributeAdd => ("attribute.add", MetadataAttributeContainer, Items),
+    AttributeSet => ("attribute.set", MetadataAttribute, Values),
+    AttributeRemove => ("attribute.remove", MetadataAttribute, Target),
     CommandAdd => ("command.add", MetadataCommands, Items),
 );
 
 impl MetadataOperation {
     pub(crate) fn contract_at(self, site: Option<MetadataSite>) -> OperationContract {
-        let collection = match self {
-            Self::AttributeAdd => MetaCollection::Attributes,
-            Self::CommandAdd => MetaCollection::Commands,
-        };
-        OperationContract::metadata_member_add(collection, site)
+        match self {
+            Self::AttributeAdd => {
+                OperationContract::metadata_member_add(MetaCollection::Attributes, site)
+            }
+            Self::AttributeSet => {
+                OperationContract::metadata_member_set(MetaCollection::Attributes, site)
+            }
+            Self::AttributeRemove => OperationContract::metadata_member_remove(),
+            Self::CommandAdd => {
+                OperationContract::metadata_member_add(MetaCollection::Commands, site)
+            }
+        }
     }
 }
 
@@ -61,32 +70,119 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn registration_metadata_preserves_the_two_contextual_member_additions() {
-        for (operation, name, applicability) in [
+    fn registration_metadata_preserves_attribute_operations_and_command_addition() {
+        for (operation, name, applicability, skeleton) in [
             (
                 MetadataOperation::AttributeAdd,
                 "attribute.add",
                 OperationApplicability::MetadataAttributeContainer,
+                OperationSkeleton::Items,
+            ),
+            (
+                MetadataOperation::AttributeSet,
+                "attribute.set",
+                OperationApplicability::MetadataAttribute,
+                OperationSkeleton::Values,
+            ),
+            (
+                MetadataOperation::AttributeRemove,
+                "attribute.remove",
+                OperationApplicability::MetadataAttribute,
+                OperationSkeleton::Target,
             ),
             (
                 MetadataOperation::CommandAdd,
                 "command.add",
                 OperationApplicability::MetadataCommands,
+                OperationSkeleton::Items,
             ),
         ] {
             assert_eq!(operation.name(), name);
             assert_eq!(operation.applicability(), applicability);
-            assert_eq!(operation.skeleton(), OperationSkeleton::Items);
+            assert_eq!(operation.skeleton(), skeleton);
             assert!(MetadataOperation::is_named(name));
         }
         for name in [
-            "attribute.set",
+            "attribute.rename",
             "command.remove",
             "attribute.add.extra",
             "ATTRIBUTE.ADD",
             "",
         ] {
             assert!(!MetadataOperation::is_named(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn attribute_set_contract_keeps_owner_and_section_fields_without_selectors() {
+        let string_type = json!({"variants":[{
+            "kind":"string","length":10,"allowedLength":"variable"
+        }]});
+        for (owner, in_section, allows_fill) in [
+            (MetadataKind::Document, false, true),
+            (MetadataKind::Document, true, false),
+            (MetadataKind::Report, false, false),
+            (MetadataKind::Report, true, true),
+        ] {
+            let contract = MetadataOperation::AttributeSet
+                .contract_at(Some(MetadataSite { owner, in_section }));
+            let fields = &contract.schema["properties"]["values"]["properties"];
+            assert_eq!(
+                fields.get("fillValue").is_some(),
+                allows_fill,
+                "{owner:?}, section={in_section}"
+            );
+            assert_eq!(
+                contract
+                    .normalize(
+                        &json!({"values":{
+                            "type":string_type,"fillValue":{"kind":"string","value":"x"}
+                        }}),
+                        "args",
+                    )
+                    .is_ok(),
+                allows_fill,
+                "{owner:?}, section={in_section}"
+            );
+            assert!(fields.get("newName").is_some());
+            assert!(fields.get("name").is_none());
+            assert!(fields.get("attributes").is_none());
+            assert_eq!(contract.help, "skills/meta-edit/SKILL.md");
+            assert!(contract.normalize(&contract.example_args, "args").is_ok());
+            for args in [
+                json!({}),
+                json!({"values":{}}),
+                json!({"values":{"name":"Total"}}),
+                json!({"values":{"synonym":"Sample"},"scope":{"tabularSection":"Lines"}}),
+            ] {
+                assert!(contract.normalize(&args, "args").is_err(), "{args}");
+            }
+        }
+    }
+
+    #[test]
+    fn attribute_remove_contract_is_closed_and_independent_of_metadata_site() {
+        let contract = MetadataOperation::AttributeRemove.contract_at(None);
+        assert_eq!(contract.example_args, json!({}));
+        assert!(contract
+            .normalize(&json!({"at":"Document.Order.Attribute.Total"}), "args")
+            .is_ok());
+        for args in [
+            json!({"values":{}}),
+            json!({"items":["Total"]}),
+            json!({"name":"Total"}),
+        ] {
+            assert!(contract.normalize(&args, "args").is_err(), "{args}");
+        }
+        for owner in [MetadataKind::Document, MetadataKind::Report] {
+            for in_section in [false, true] {
+                assert_eq!(
+                    MetadataOperation::AttributeRemove
+                        .contract_at(Some(MetadataSite { owner, in_section }))
+                        .details(),
+                    contract.details(),
+                );
+            }
         }
     }
 
