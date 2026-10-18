@@ -977,7 +977,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 let field = diagnostic.field.as_deref()?;
                 (field.starts_with("details.")
                     || field.starts_with("properties.")
-                    || field.starts_with("relations."))
+                    || field.starts_with("relations.")
+                    || (field.starts_with("collections.tabularSections[")
+                        && field.contains("].standardAttributes")))
                 .then(|| {
                     json!({
                         "field": field,

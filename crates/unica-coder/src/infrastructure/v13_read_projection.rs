@@ -1533,7 +1533,7 @@ fn project_metadata(
                 first.kind().as_str(),
                 Map::new(),
             ),
-            metadata_items(address, first.kind(), collection),
+            metadata_items(address, first.kind(), collection, payload),
         )));
     }
     let name = first.name().ok_or_else(|| {
@@ -1550,6 +1550,19 @@ fn project_metadata(
     })?;
     let mut kind = first.kind();
     for segment in &suffix[1..] {
+        if kind == NodeKind::TabularSection
+            && segment.kind() == NodeKind::StandardAttribute
+            && item.get("standardAttributes").is_some_and(Value::is_null)
+        {
+            let reasons = tabular_standard_attribute_limits(payload, item);
+            return Err(ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
+                format!(
+                    "tabular section StandardAttributes is unreadable: {}",
+                    reasons.join("; ")
+                ),
+            ));
+        }
         kind = segment.kind();
         let next = match kind {
             NodeKind::Attribute | NodeKind::Column => item.get("attributes"),
@@ -1579,11 +1592,13 @@ fn project_metadata(
                     kind.as_str(),
                     Map::new(),
                 ),
-                metadata_items(address, kind, next),
+                metadata_items(address, kind, next, payload),
             )));
         }
     }
-    Ok(NodeViewData::Node(metadata_item_node(address, kind, item)))
+    Ok(NodeViewData::Node(metadata_item_with_context(
+        address, kind, item, payload,
+    )))
 }
 
 fn metadata_limits(payload: &Value) -> Vec<String> {
@@ -1846,7 +1861,12 @@ fn metadata_details(payload: &Value) -> Option<&Value> {
         .and_then(|adjacent| adjacent.get("details"))
 }
 
-fn metadata_items(address: &QualifiedAddress, kind: NodeKind, value: &Value) -> Vec<Value> {
+fn metadata_items(
+    address: &QualifiedAddress,
+    kind: NodeKind,
+    value: &Value,
+    payload: &Value,
+) -> Vec<Value> {
     value
         .as_array()
         .into_iter()
@@ -1854,12 +1874,52 @@ fn metadata_items(address: &QualifiedAddress, kind: NodeKind, value: &Value) -> 
         .filter_map(|item| {
             let name = item.get("name")?.as_str()?;
             let child = address.member(name).ok()?;
-            serde_json::to_value(metadata_item_node(&child, kind, item)).ok()
+            serde_json::to_value(metadata_item_with_context(&child, kind, item, payload)).ok()
         })
         .collect()
 }
 
+fn metadata_item_with_context(
+    address: &QualifiedAddress,
+    kind: NodeKind,
+    item: &Value,
+    payload: &Value,
+) -> NodeView {
+    let node = metadata_item_node(address, kind, item);
+    if kind == NodeKind::TabularSection {
+        node.with_additional_limits(tabular_standard_attribute_limits(payload, item))
+    } else {
+        node
+    }
+}
+
+fn tabular_standard_attribute_limits(payload: &Value, item: &Value) -> Vec<String> {
+    let Some(sections) =
+        metadata_collection(payload, NodeKind::TabularSection).and_then(Value::as_array)
+    else {
+        return Vec::new();
+    };
+    // Both routes borrow items directly from this array, so the native
+    // diagnostic index belongs to this exact section, even for equal values.
+    let Some(index) = sections
+        .iter()
+        .position(|section| std::ptr::eq(section, item))
+    else {
+        return Vec::new();
+    };
+    let prefix = format!("collections.tabularSections[{index}].standardAttributes");
+    unreadable_entries(payload)
+        .filter(|(field, _)| {
+            field
+                .strip_prefix(&prefix)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '[']))
+        })
+        .map(|(field, message)| format!("source_unreadable: {field}: {message}"))
+        .collect()
+}
+
 fn metadata_item_node(address: &QualifiedAddress, kind: NodeKind, item: &Value) -> NodeView {
+    let mut limits = Vec::new();
     let mut props = selected_scalar_props(
         item,
         &[
@@ -1890,6 +1950,44 @@ fn metadata_item_node(address: &QualifiedAddress, kind: NodeKind, item: &Value) 
             "actionPeriodIsBase",
         ],
     );
+    if kind == NodeKind::StandardAttribute {
+        let tabular = address
+            .segments()
+            .iter()
+            .rev()
+            .nth(1)
+            .is_some_and(|segment| segment.kind() == NodeKind::TabularSection);
+        let allowed = if tabular {
+            crate::domain::metadata::META_STANDARD_ATTRIBUTE_PROPERTY_NAMES
+        } else {
+            &["Synonym", "ToolTip", "FillChecking"]
+        };
+        for property in item
+            .get("properties")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some(key) = property
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|key| allowed.contains(key))
+            else {
+                continue;
+            };
+            let Some(value) = property.get("value") else {
+                continue;
+            };
+            if let Some(value) = bounded_prop(key, value) {
+                props.insert(key.to_string(), value);
+            } else if tabular
+                && (value.is_object() || value.is_array())
+                && value.to_string().len() > MAX_COMPACT_PROP_BYTES
+            {
+                limits.push(format!("metadata standard attribute property {key} exceeds the compact property limit of {MAX_COMPACT_PROP_BYTES} bytes"));
+            }
+        }
+    }
     for key in ["accountingFlags", "extDimensionTypes"] {
         if let Some(value) = item.get(key).and_then(|value| bounded_prop(key, value)) {
             props.insert(key.to_string(), value);
@@ -1948,6 +2046,7 @@ fn metadata_item_node(address: &QualifiedAddress, kind: NodeKind, item: &Value) 
         props,
     )
     .with_branches(branches)
+    .with_limits(limits)
 }
 
 fn project_subsystem(
@@ -3256,5 +3355,47 @@ mod interface_command_tests {
             "повисшая ссылка обязана быть названа, иначе читатель считает, что \
              видел всё: {limits}"
         );
+    }
+}
+
+#[cfg(test)]
+mod tabular_standard_attribute_property_tests {
+    use super::*;
+
+    #[test]
+    fn tabular_standard_properties_keep_a_closed_utf8_bound_and_independent_values() {
+        for extra in [0, 1] {
+            let overhead = json!({"kind":"text","value":""}).to_string().len();
+            let room = MAX_COMPACT_PROP_BYTES + extra - overhead;
+            let text = format!("{}{}", "я".repeat(room / 2), "a".repeat(room % 2));
+            let comment = json!({"kind":"text","value":text});
+            assert_eq!(comment.to_string().len(), MAX_COMPACT_PROP_BYTES + extra);
+            let item = json!({"name":"LineNumber","properties":[
+                {"name":"Comment","value":comment},
+                {"name":"Synonym","value":{"kind":"localizedString","values":[]}},
+                {"name":"MultiLine","value":{"kind":"boolean","value":false}},
+                {"name":"UnknownProviderKey","value":{"kind":"text","value":"x".repeat(3000)}}
+            ]});
+            for (raw, tabular) in [
+                ("main:Catalog.Items.TabularSection.Rows.StandardAttribute.LineNumber", true),
+                ("main:Catalog.Items.StandardAttribute.Code", false),
+                ("main:ChartOfAccounts.Accounts.StandardTabularSection.ExtDimensionTypes.StandardAttribute.ExtDimensionType", false),
+            ] {
+                let at = QualifiedAddress::parse(raw).unwrap();
+                let node = serde_json::to_value(metadata_item_node(&at, NodeKind::StandardAttribute, &item)).unwrap();
+                assert!(node["props"].get("UnknownProviderKey").is_none());
+                assert!(node["props"].get("Synonym").is_some());
+                assert_eq!(node["props"].get("Comment").is_some(), tabular && extra == 0, "{raw}: {node}");
+                assert_eq!(node["props"].get("MultiLine").is_some(), tabular);
+                if tabular {
+                    assert_eq!(serde_json::from_str::<Value>(node["props"]["MultiLine"].as_str().unwrap()).unwrap(), json!({"kind":"boolean","value":false}));
+                    if extra == 0 {
+                        assert_eq!(serde_json::from_str::<Value>(node["props"]["Comment"].as_str().unwrap()).unwrap(), comment);
+                    }
+                }
+                assert_eq!(node["limits"].to_string().contains("Comment"), tabular && extra == 1);
+                assert!(!node["limits"].to_string().contains("UnknownProviderKey"));
+            }
+        }
     }
 }
