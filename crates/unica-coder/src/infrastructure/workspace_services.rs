@@ -4577,6 +4577,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     const SNAPSHOT_MODULE: &str = "CommonModules/SearchProbe/Ext/Module.bsl";
+    const SNAPSHOT_BEFORE: &str = "Procedure AcceptanceExistingSymbol1306() Export\nEndProcedure\n";
     const SNAPSHOT_AFTER: &str = "Procedure AcceptanceChangedSymbol978() Export\nEndProcedure\n";
 
     struct CanonicalInvalidationHelper {
@@ -4709,6 +4710,49 @@ mod tests {
                 .map(|line| line.parse().unwrap())
                 .collect()
         }
+
+        fn stop_and_verify(mut self) {
+            let mut pids = self.pids();
+            match fs::read_to_string(self.pid_file.with_extension("rlm-pids")) {
+                Ok(rlm_pids) => {
+                    pids.extend(rlm_pids.lines().map(|line| line.parse::<u32>().unwrap()))
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => panic!("read controlled RLM PID log: {error}"),
+            }
+            let mut readers = Vec::new();
+            if let Some(session) = self.runtime.analyzer().lock().unwrap().as_ref() {
+                readers.push(Arc::clone(&session.reader_terminal));
+            }
+            if let Some(session) = self.runtime.rlm().lock().unwrap().as_ref() {
+                readers.push(Arc::clone(&session.transport.reader_terminal));
+            }
+            assert!(
+                !readers.is_empty(),
+                "controlled providers must have been warmed"
+            );
+            self.runtime.begin_shutdown();
+            self.server
+                .take()
+                .unwrap()
+                .join()
+                .expect("controlled helper server must join")
+                .expect("controlled helper provider teardown must finish");
+            for pid in pids {
+                assert!(
+                    wait_for_process_exit(pid, Duration::from_secs(5)),
+                    "owned controlled provider {pid} did not exit"
+                );
+            }
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while readers.iter().any(|reader| !reader.load(Ordering::Acquire)) {
+                assert!(
+                    Instant::now() < deadline,
+                    "controlled provider stdout did not close"
+                );
+                thread::yield_now();
+            }
+        }
     }
 
     impl Drop for CanonicalInvalidationHelper {
@@ -4755,7 +4799,7 @@ mod tests {
             );
             let executable =
                 testing::fixture_executable_path(directory.path(), "snapshot-provider");
-            let status = Command::new("rustc")
+            let output = Command::new("rustc")
                 .arg("--edition=2021")
                 .arg(
                     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -4763,9 +4807,12 @@ mod tests {
                 )
                 .arg("-o")
                 .arg(&executable)
-                .status()
+                .output()
                 .unwrap();
-            assert!(status.success(), "compile controlled resident provider");
+            assert!(
+                output.status.success(),
+                "compile controlled resident provider"
+            );
             let daemon = LiveV5Daemon::start_with_owned_stop(canonical_v13_service());
             let owner = daemon.owner();
             Self {
@@ -4809,6 +4856,34 @@ mod tests {
             }))
         }
 
+        fn prepare_snapshot_module(&self, line_ending: &str) -> (PathBuf, Vec<u8>) {
+            assert!(matches!(line_ending, "\n" | "\r\n"));
+            let module = self
+                .context
+                .workspace_root
+                .join("src")
+                .join(SNAPSHOT_MODULE);
+            let lf_before = SNAPSHOT_BEFORE.as_bytes();
+            let crlf_before = SNAPSHOT_BEFORE.replace('\n', "\r\n");
+            let fixture_bytes = fs::read(&module).unwrap();
+            assert!(
+                fixture_bytes == lf_before || fixture_bytes == crlf_before.as_bytes(),
+                "the controlled module must match its known LF or CRLF source"
+            );
+            let chosen_before = SNAPSHOT_BEFORE.replace('\n', line_ending);
+            fs::write(&module, &chosen_before).unwrap();
+            let before = fs::read(&module).unwrap();
+            assert_eq!(before, chosen_before.as_bytes());
+            let expected = if before == lf_before {
+                SNAPSHOT_AFTER.as_bytes().to_vec()
+            } else if before == crlf_before.as_bytes() {
+                SNAPSHOT_AFTER.replace('\n', "\r\n").into_bytes()
+            } else {
+                panic!("the controlled source must retain its exact chosen line ending")
+            };
+            (module, expected)
+        }
+
         fn helper(&self) -> CanonicalInvalidationHelper {
             CanonicalInvalidationHelper::start(
                 &self.context,
@@ -4828,14 +4903,18 @@ mod tests {
 
     #[test]
     fn canonical_saved_apply_notifies_live_helpers_once_and_restarts_the_warmed_analyzer() {
+        for line_ending in ["\n", "\r\n"] {
+            assert_canonical_saved_apply_notifies_live_helpers_once_and_restarts_the_warmed_analyzer(line_ending);
+        }
+    }
+
+    fn assert_canonical_saved_apply_notifies_live_helpers_once_and_restarts_the_warmed_analyzer(
+        line_ending: &str,
+    ) {
         let fixture = CanonicalInvalidationFixture::new();
-        let helper = fixture.helper();
-        let module = fixture
-            .context
-            .workspace_root
-            .join("src")
-            .join(SNAPSHOT_MODULE);
+        let (module, expected) = fixture.prepare_snapshot_module(line_ending);
         let before = fs::read(&module).unwrap();
+        let helper = fixture.helper();
         assert!(helper.snapshot().contains("AcceptanceExistingSymbol1306"));
         let first_pid = helper.pids()[0];
 
@@ -4864,7 +4943,7 @@ mod tests {
             .unwrap();
         let published = fixture.apply(json!({"executionToken": token}));
         assert!(published.ok, "{published:?}");
-        assert_eq!(fs::read_to_string(&module).unwrap(), SNAPSHOT_AFTER);
+        assert_eq!(fs::read(&module).unwrap(), expected);
         let notifications = helper.notifications();
         assert_eq!(
             notifications.len(),
@@ -4944,6 +5023,8 @@ mod tests {
         assert!(!invalid.ok);
         assert_eq!(helper.notifications(), notifications);
         assert_eq!(helper.pids(), pids);
+        neighbor.stop_and_verify();
+        helper.stop_and_verify();
     }
 
     #[test]
@@ -5133,10 +5214,19 @@ mod tests {
 
     #[test]
     fn failed_helper_invalidation_preserves_the_published_receipt_and_unknown_old_results() {
+        for line_ending in ["\n", "\r\n"] {
+            assert_failed_helper_invalidation_preserves_the_published_receipt_and_unknown_old_results(line_ending);
+        }
+    }
+
+    fn assert_failed_helper_invalidation_preserves_the_published_receipt_and_unknown_old_results(
+        line_ending: &str,
+    ) {
         use crate::domain::code_intelligence::{
             CodeIntelligenceContext, CodeIntelligenceProvider, ProviderDeadline, SearchRequest,
         };
         let fixture = CanonicalInvalidationFixture::new();
+        let (module, expected) = fixture.prepare_snapshot_module(line_ending);
         let helper = fixture.helper();
         let source_root = fixture.context.workspace_root.join("src");
         let context = CodeIntelligenceContext::new(
@@ -5199,10 +5289,7 @@ mod tests {
             published.ok,
             "delivery failure must not change a committed apply: {published:?}"
         );
-        assert_eq!(
-            fs::read_to_string(source_root.join(SNAPSHOT_MODULE)).unwrap(),
-            SNAPSHOT_AFTER
-        );
+        assert_eq!(fs::read(&module).unwrap(), expected);
         assert!(
             helper.notifications().is_empty(),
             "the original helper rejects the token before invalidation"
@@ -5234,6 +5321,7 @@ mod tests {
         assert_eq!(old_rlm.result_text, initial_rlm.result_text);
         assert_eq!(old_rlm.build_id, initial_rlm.build_id);
         assert_eq!(old_rlm.freshness.as_deref(), Some("unknown"));
+        helper.stop_and_verify();
     }
 
     #[test]
