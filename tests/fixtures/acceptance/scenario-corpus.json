@@ -3473,6 +3473,25 @@
       "refused"
      ],
      "refusal": "invalid_state: `Catalog.Валюты` is still referenced by 1 source file(s): Roles/SalesReader/Ext/Rights.xml; remove the references first"
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Catalog.Валюты"
+      },
+      {
+       "pointer": "/data/props/support",
+       "eq": "unsupported"
+      }
+     ]
     }
    ],
    "id": "S112"
