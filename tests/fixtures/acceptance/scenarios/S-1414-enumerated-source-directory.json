@@ -10,6 +10,34 @@
         "at": "main:Catalog.Валюты",
         "ops": [
           {
+            "op": "supportRule.set",
+            "args": {
+              "values": {
+                "rule": "off-support"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
             "op": "object.remove",
             "args": {
               "force": true
