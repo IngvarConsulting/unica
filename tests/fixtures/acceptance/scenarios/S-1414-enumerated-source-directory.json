@@ -1,0 +1,488 @@
+{
+  "id": "S-1414-enumerated-source-directory",
+  "issue": 1414,
+  "area": "Применение изменений",
+  "task": "Изменение состава просмотренного каталога макетов другого объекта после планирования удаления объясняет зависимость и отказывает до записи; повтор токена возвращает тот же отказ, новый план сохраняет добавленный макет",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "object.remove",
+            "args": {
+              "force": true
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "removeToken": {
+          "pointer": "/data/executionToken"
+        },
+        "beforeOwner": {
+          "kind": "sha256",
+          "file": "src/Configuration.xml"
+        },
+        "beforeOld": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Валюты.xml"
+        },
+        "beforeModule": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Валюты/Ext/ManagerModule.bsl"
+        },
+        "beforeReport": {
+          "kind": "sha256",
+          "file": "src/Reports/АнализВерсийОбъектов.xml"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "exists",
+          "path": "src/Reports/АнализВерсийОбъектов/Templates/NamespaceTemplate1414.xml",
+          "eq": false
+        },
+        {
+          "kind": "exists",
+          "path": "src/Reports/АнализВерсийОбъектов/Templates/NamespaceTemplate1414/Ext/Template.xml",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.АнализВерсийОбъектов",
+        "ops": [
+          {
+            "op": "template.add",
+            "args": {
+              "items": [
+                {
+                  "name": "NamespaceTemplate1414",
+                  "templateType": "SpreadsheetDocument"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "createToken": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.beforeOwner"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Валюты.xml",
+          "eq": "$capture.beforeOld"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Валюты/Ext/ManagerModule.bsl",
+          "eq": "$capture.beforeModule"
+        },
+        {
+          "kind": "exists",
+          "path": "src/Reports/АнализВерсийОбъектов/Templates/NamespaceTemplate1414.xml",
+          "eq": false
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Reports/АнализВерсийОбъектов.xml",
+          "eq": "$capture.beforeReport"
+        },
+        {
+          "kind": "exists",
+          "path": "src/Reports/АнализВерсийОбъектов/Templates/NamespaceTemplate1414/Ext/Template.xml",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.createToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "captures": {
+        "afterCreateOwner": {
+          "kind": "sha256",
+          "file": "src/Configuration.xml"
+        },
+        "afterCreateNew": {
+          "kind": "sha256",
+          "file": "src/Reports/АнализВерсийОбъектов/Templates/NamespaceTemplate1414.xml"
+        },
+        "afterCreateCache": {
+          "kind": "sha256",
+          "file": ".build/unica/caches/metadata_graph.json"
+        },
+        "afterCreateState": {
+          "kind": "sha256",
+          "file": ".build/unica/state.json"
+        },
+        "afterCreatePayload": {
+          "kind": "sha256",
+          "file": "src/Reports/АнализВерсийОбъектов/Templates/NamespaceTemplate1414/Ext/Template.xml"
+        },
+        "afterCreateReport": {
+          "kind": "sha256",
+          "file": "src/Reports/АнализВерсийОбъектов.xml"
+        }
+      },
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Валюты.xml",
+          "eq": "$capture.beforeOld"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Валюты/Ext/ManagerModule.bsl",
+          "eq": "$capture.beforeModule"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.beforeOwner"
+        },
+        {
+          "kind": "xml",
+          "path": "src/Reports/АнализВерсийОбъектов/Templates/NamespaceTemplate1414.xml",
+          "select": "./{*}Template/{*}Properties/{*}Name",
+          "eq": [
+            "NamespaceTemplate1414"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.removeToken"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "stale_revision: enumerated namespace changed: Reports/АнализВерсийОбъектов/Templates; input `Reports/АнализВерсийОбъектов/Templates`: directory membership input; the plan enume",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "stale_revision"
+        },
+        {
+          "pointer": "/diagnostics/0/outcome",
+          "eq": "fixCall"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "enumerated namespace changed: Reports/АнализВерсийОбъектов/Templates"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "input `Reports/АнализВерсийОбъектов/Templates`"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "directory membership"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "request a fresh plan with apply(at, ops)"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "the plan enumerated this directory to retain its identity and child names"
+        }
+      ],
+      "captures": {
+        "refusedResult": {
+          "pointer": ""
+        }
+      },
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.afterCreateOwner"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Валюты.xml",
+          "eq": "$capture.beforeOld"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Валюты/Ext/ManagerModule.bsl",
+          "eq": "$capture.beforeModule"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Reports/АнализВерсийОбъектов/Templates/NamespaceTemplate1414.xml",
+          "eq": "$capture.afterCreateNew"
+        },
+        {
+          "kind": "sha256",
+          "path": ".build/unica/caches/metadata_graph.json",
+          "eq": "$capture.afterCreateCache"
+        },
+        {
+          "kind": "sha256",
+          "path": ".build/unica/state.json",
+          "eq": "$capture.afterCreateState"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Reports/АнализВерсийОбъектов/Templates/NamespaceTemplate1414/Ext/Template.xml",
+          "eq": "$capture.afterCreatePayload"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Reports/АнализВерсийОбъектов.xml",
+          "eq": "$capture.afterCreateReport"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.removeToken"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "stale_revision: enumerated namespace changed: Reports/АнализВерсийОбъектов/Templates; input `Reports/АнализВерсийОбъектов/Templates`: directory membership input; the plan enume",
+      "assertions": [
+        {
+          "pointer": "",
+          "eq": "$capture.refusedResult"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.afterCreateOwner"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Валюты.xml",
+          "eq": "$capture.beforeOld"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Валюты/Ext/ManagerModule.bsl",
+          "eq": "$capture.beforeModule"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Reports/АнализВерсийОбъектов/Templates/NamespaceTemplate1414.xml",
+          "eq": "$capture.afterCreateNew"
+        },
+        {
+          "kind": "sha256",
+          "path": ".build/unica/caches/metadata_graph.json",
+          "eq": "$capture.afterCreateCache"
+        },
+        {
+          "kind": "sha256",
+          "path": ".build/unica/state.json",
+          "eq": "$capture.afterCreateState"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Reports/АнализВерсийОбъектов/Templates/NamespaceTemplate1414/Ext/Template.xml",
+          "eq": "$capture.afterCreatePayload"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Reports/АнализВерсийОбъектов.xml",
+          "eq": "$capture.afterCreateReport"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "object.remove",
+            "args": {
+              "force": true
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "freshRemoveToken": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.freshRemoveToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "captures": {
+        "afterRemoveOwner": {
+          "kind": "sha256",
+          "file": "src/Configuration.xml"
+        },
+        "afterRemoveCache": {
+          "kind": "sha256",
+          "file": ".build/unica/caches/metadata_graph.json"
+        },
+        "afterRemoveState": {
+          "kind": "sha256",
+          "file": ".build/unica/state.json"
+        }
+      },
+      "fileAssertions": [
+        {
+          "kind": "exists",
+          "path": "src/Catalogs/Валюты.xml",
+          "eq": false
+        },
+        {
+          "kind": "exists",
+          "path": "src/Catalogs/Валюты/Ext/ManagerModule.bsl",
+          "eq": false
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Reports/АнализВерсийОбъектов/Templates/NamespaceTemplate1414.xml",
+          "eq": "$capture.afterCreateNew"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Reports/АнализВерсийОбъектов/Templates/NamespaceTemplate1414/Ext/Template.xml",
+          "eq": "$capture.afterCreatePayload"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Reports/АнализВерсийОбъектов.xml",
+          "eq": "$capture.afterCreateReport"
+        },
+        {
+          "kind": "xml",
+          "path": "src/Reports/АнализВерсийОбъектов.xml",
+          "select": "./{*}Report/{*}ChildObjects/{*}Template",
+          "contains": "NamespaceTemplate1414"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.removeToken"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "stale_revision: enumerated namespace changed: Reports/АнализВерсийОбъектов/Templates; input `Reports/АнализВерсийОбъектов/Templates`: directory membership input; the plan enume",
+      "assertions": [
+        {
+          "pointer": "",
+          "eq": "$capture.refusedResult"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "exists",
+          "path": "src/Catalogs/Валюты.xml",
+          "eq": false
+        },
+        {
+          "kind": "exists",
+          "path": "src/Catalogs/Валюты/Ext/ManagerModule.bsl",
+          "eq": false
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.afterRemoveOwner"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Reports/АнализВерсийОбъектов/Templates/NamespaceTemplate1414.xml",
+          "eq": "$capture.afterCreateNew"
+        },
+        {
+          "kind": "sha256",
+          "path": ".build/unica/caches/metadata_graph.json",
+          "eq": "$capture.afterRemoveCache"
+        },
+        {
+          "kind": "sha256",
+          "path": ".build/unica/state.json",
+          "eq": "$capture.afterRemoveState"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Reports/АнализВерсийОбъектов/Templates/NamespaceTemplate1414/Ext/Template.xml",
+          "eq": "$capture.afterCreatePayload"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Reports/АнализВерсийОбъектов.xml",
+          "eq": "$capture.afterCreateReport"
+        }
+      ]
+    }
+  ]
+}
