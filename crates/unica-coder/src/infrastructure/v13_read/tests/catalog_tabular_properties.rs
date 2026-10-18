@@ -14,7 +14,7 @@ fn fixture_with_catalog(xml: &str) -> RealReaderFixture {
 
 fn read(fixture: &RealReaderFixture, at: &str) -> Value {
     let viewed = fixture.view_service().view(ViewRequest::new(at).unwrap());
-    assert!(viewed.ok, "{at}: {viewed:?}");
+    assert!(viewed.ok, "view must succeed at {at}");
     viewed.data.unwrap()
 }
 
@@ -36,8 +36,14 @@ fn catalog_tabular_profile_reaches_public_collection_and_detail_without_writes()
     let fixture = fixture_with_catalog(CATALOG);
     let before = tree_snapshot(&fixture.source);
     for section in section_views(&fixture) {
-        assert_eq!(section["props"]["LineNumberLength"], 5, "{section}");
-        assert_eq!(section["props"]["Use"], "ForItem", "{section}");
+        assert_eq!(
+            section["props"]["LineNumberLength"], 5,
+            "the section must preserve the expected fixture facts"
+        );
+        assert_eq!(
+            section["props"]["Use"], "ForItem",
+            "the section must preserve the expected fixture facts"
+        );
         assert_eq!(section["props"]["required"], true);
         assert_eq!(section["props"]["synonym"], "Order lines");
         assert_eq!(section["title"], "Order lines");
@@ -61,13 +67,19 @@ fn catalog_tabular_profile_reaches_public_collection_and_detail_without_writes()
         serde_json::from_str(column["props"]["type"].as_str().unwrap()).unwrap();
     assert_eq!(
         column_type["variants"][0]["kind"], "number",
-        "{column_type}"
+        "the column type must preserve the expected qualifiers"
     );
-    assert_eq!(column_type["variants"][0]["digits"], 10, "{column_type}");
-    assert_eq!(column_type["variants"][0]["fraction"], 2, "{column_type}");
+    assert_eq!(
+        column_type["variants"][0]["digits"], 10,
+        "the column type must preserve the expected qualifiers"
+    );
+    assert_eq!(
+        column_type["variants"][0]["fraction"], 2,
+        "the column type must preserve the expected qualifiers"
+    );
     assert_eq!(
         column_type["variants"][0]["sign"], "nonNegative",
-        "{column_type}"
+        "the column type must preserve the expected qualifiers"
     );
     let sibling_column = read(
         &fixture,
@@ -77,12 +89,15 @@ fn catalog_tabular_profile_reaches_public_collection_and_detail_without_writes()
         serde_json::from_str(sibling_column["props"]["type"].as_str().unwrap()).unwrap();
     assert_eq!(
         sibling_type["variants"][0]["kind"], "string",
-        "{sibling_type}"
+        "the sibling type must preserve the expected qualifiers"
     );
-    assert_eq!(sibling_type["variants"][0]["length"], 80, "{sibling_type}");
+    assert_eq!(
+        sibling_type["variants"][0]["length"], 80,
+        "the sibling type must preserve the expected qualifiers"
+    );
     assert_eq!(
         sibling_type["variants"][0]["allowedLength"], "variable",
-        "{sibling_type}"
+        "the sibling type must preserve the expected qualifiers"
     );
     assert_eq!(tree_snapshot(&fixture.source), before);
 }
@@ -99,7 +114,10 @@ fn catalog_tabular_profile_reads_each_use_value_without_inventing_hierarchy_rule
                 );
             let fixture = fixture_with_catalog(&xml);
             for section in section_views(&fixture) {
-                assert_eq!(section["props"]["Use"], value, "{section}");
+                assert_eq!(
+                    section["props"]["Use"], value,
+                    "the section must preserve the expected fixture facts"
+                );
                 assert_eq!(section["props"]["LineNumberLength"], 5);
             }
         }
@@ -116,9 +134,12 @@ fn catalog_tabular_profile_missing_facts_are_not_filled_from_sibling_or_template
     for section in section_views(&fixture) {
         assert!(
             section["props"].get("LineNumberLength").is_none(),
-            "{section}"
+            "the section must preserve the expected fixture facts"
         );
-        assert!(section["props"].get("Use").is_none(), "{section}");
+        assert!(
+            section["props"].get("Use").is_none(),
+            "the section must preserve the expected fixture facts"
+        );
         assert_eq!(section["props"]["required"], true);
         assert!(
             !section["limits"]
@@ -129,7 +150,7 @@ fn catalog_tabular_profile_missing_facts_are_not_filled_from_sibling_or_template
                     let text = limit.as_str().unwrap_or_default();
                     text.contains("LineNumberLength") || text.contains(".Use")
                 }),
-            "optional absent facts are not damaged: {section}"
+            "optional absent facts are not damaged"
         );
     }
     let sibling = read(&fixture, "main:Catalog.Items.TabularSection.Notes");
@@ -168,23 +189,23 @@ fn catalog_tabular_profile_damage_is_local_to_the_observed_fact() {
             let fixture = fixture_with_catalog(&xml);
             let before = tree_snapshot(&fixture.source);
             for section in section_views(&fixture) {
-                assert!(section["props"].get(field).is_none(), "{replacement}: {section}");
+                assert!(section["props"].get(field).is_none(), "fixture {replacement}, field {field}");
                 let (independent, expected) = if field == "Use" {
                     ("LineNumberLength", json!(5))
                 } else {
                     ("Use", json!("ForItem"))
                 };
-                assert_eq!(section["props"][independent], expected, "{replacement}: {section}");
+                assert_eq!(section["props"][independent], expected, "fixture {replacement}, field {field}");
                 assert_eq!(section["props"]["required"], true);
                 assert_eq!(section["props"]["synonym"], "Order lines");
                 assert!(section["limits"].as_array().into_iter().flatten()
                     .filter_map(Value::as_str).any(|limit| limit.contains(field)),
-                    "the damaged fact must remain diagnostic: {replacement}: {section}");
+                    "the damaged fact must remain diagnostic: fixture {replacement}, field {field}");
             }
             let root = read(&fixture, "main:Catalog.Items");
             assert!(root["limits"].as_array().into_iter().flatten()
                 .filter_map(Value::as_str).any(|limit| limit.contains(field)),
-                "the owner must name the damaged fact too: {replacement}: {root}");
+                "the owner must name the damaged fact too: fixture {replacement}, field {field}");
             let column = read(&fixture, "main:Catalog.Items.TabularSection.Lines.Attribute.Quantity");
             assert_eq!(column["props"]["required"], true);
             assert!(column["props"]["type"].is_string());
@@ -205,7 +226,10 @@ fn catalog_tabular_profile_does_not_publish_unknown_or_wrong_context_facts() {
             "<Name>Quantity</Name><LineNumberLength>7</LineNumberLength><Use>ForFolderAndItem</Use>", 1);
     let fixture = fixture_with_catalog(&xml);
     for section in section_views(&fixture) {
-        assert!(section["props"].get("Secret").is_none(), "{section}");
+        assert!(
+            section["props"].get("Secret").is_none(),
+            "the section must preserve the expected fixture facts"
+        );
         assert_eq!(section["props"]["LineNumberLength"], 5);
         assert_eq!(section["props"]["Use"], "ForItem");
     }
@@ -217,24 +241,27 @@ fn catalog_tabular_profile_does_not_publish_unknown_or_wrong_context_facts() {
     for wrong_context in [root, column] {
         assert!(
             wrong_context["props"].get("LineNumberLength").is_none(),
-            "{wrong_context}"
+            "the profile must not publish facts in the wrong context"
         );
         assert!(
             wrong_context["props"].get("Use").is_none(),
-            "{wrong_context}"
+            "the profile must not publish facts in the wrong context"
         );
     }
 
     let extension = fixture
         .extension_view_service()
         .view(ViewRequest::new("main:Catalog.Items.TabularSection.Lines").unwrap());
-    assert!(extension.ok, "{extension:?}");
+    assert!(extension.ok, "the extension view must succeed");
     let extension = extension.data.unwrap();
     assert!(
         extension["props"].get("LineNumberLength").is_none(),
-        "{extension}"
+        "the Catalog-only profile must not publish extension facts"
     );
-    assert!(extension["props"].get("Use").is_none(), "{extension}");
+    assert!(
+        extension["props"].get("Use").is_none(),
+        "the Catalog-only profile must not publish extension facts"
+    );
 
     let document_xml = CATALOG
         .replace("<Catalog uuid=", "<Document uuid=")
@@ -244,9 +271,12 @@ fn catalog_tabular_profile_does_not_publish_unknown_or_wrong_context_facts() {
     let document = read(&fixture, "main:Document.Order.TabularSection.Lines");
     assert!(
         document["props"].get("LineNumberLength").is_none(),
-        "{document}"
+        "the Catalog-only profile must not publish document facts"
     );
-    assert!(document["props"].get("Use").is_none(), "{document}");
+    assert!(
+        document["props"].get("Use").is_none(),
+        "the Catalog-only profile must not publish document facts"
+    );
 }
 
 #[test]
@@ -263,11 +293,11 @@ fn catalog_tabular_profile_requires_the_exact_declared_xml_version() {
         for section in section_views(&fixture) {
             assert!(
                 section["props"].get("LineNumberLength").is_none(),
-                "the pilot requires the exact declared version: {declaration}: {section}"
+                "the pilot requires the exact declared version: {declaration}"
             );
             assert!(
                 section["props"].get("Use").is_none(),
-                "the pilot requires the exact declared version: {declaration}: {section}"
+                "the pilot requires the exact declared version: {declaration}"
             );
             assert_eq!(section["props"]["required"], true);
             assert_eq!(section["props"]["synonym"], "Order lines");
