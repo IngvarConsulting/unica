@@ -967,7 +967,12 @@ impl ProviderReadAuthority {
         let relative = self.metadata_descriptor_relative(target)?;
         let evidence = prove_already_read_metadata_owner(&relative, &descriptor)
             .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.message))?;
-        identity_metadata_payload_from_evidence(target, &evidence)
+        let mut payload = identity_metadata_payload_from_evidence(target, &evidence)?;
+        if evidence.artifact_kind() == "StyleItem" {
+            crate::infrastructure::style_item_read::enrich_style_item(&descriptor, &mut payload)
+                .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?;
+        }
+        Ok(payload)
     }
 
     pub(crate) fn metadata_owner_evidence(
