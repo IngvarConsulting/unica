@@ -1021,6 +1021,26 @@ impl ProviderReadAuthority {
             .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
     }
 
+    pub(crate) fn xdto_check_outcome(
+        &self,
+        target: &MetadataAddress,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<crate::application::v13::check::NativeCheckOutcome, ViewError> {
+        checkpoint()?;
+        let descriptor = self.metadata_descriptor(target)?;
+        let package = self.read_relative_with_checkpoint(
+            &self.attached_resource_relative(target, "Package.bin")?,
+            Some(MAX_CONFIGURATION_BYTES),
+            checkpoint,
+        )?;
+        let data = parse_xdto_info_bytes(&package, &descriptor, self.source_set(), target, None)
+            .map_err(|error| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+            })?;
+        checkpoint()?;
+        Ok(crate::infrastructure::native_operations::xdto::xdto_check_outcome(data))
+    }
+
     pub(crate) fn xdto_payload(
         &self,
         target: &MetadataAddress,

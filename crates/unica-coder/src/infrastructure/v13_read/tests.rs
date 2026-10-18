@@ -6436,3 +6436,177 @@ fn tabular_standard_attributes_preserve_profiled_member_facts_and_independent_li
         );
     }
 }
+
+fn install_xdto_check_fixture(fixture: &RealReaderFixture) {
+    let path = fixture.source.join("Configuration.xml");
+    let config=fs::read_to_string(&path).unwrap().replace("</ChildObjects>","<XDTOPackage>Control</XDTOPackage><XDTOPackage>Unsupported</XDTOPackage><XDTOPackage>Paged</XDTOPackage><XDTOPackage>Mixed</XDTOPackage></ChildObjects>");
+    write(&path, &config);
+    for name in ["Control", "Unsupported", "Paged", "Mixed"] {
+        for suffix in [".xml", "/Ext/Package.bin"] {
+            let relative = format!("XDTOPackages/{name}{suffix}");
+            write(
+                &fixture.source.join(&relative),
+                &fixture_text(&format!("acceptance/workspace-xdto-check/src/{relative}")),
+            );
+        }
+    }
+}
+
+#[test]
+fn xdto_check_preserves_complete_native_findings_and_distinguishes_profile_limits() {
+    let fixture = RealReaderFixture::new();
+    install_xdto_check_fixture(&fixture);
+    for (name, count, error_count) in [
+        ("Control", 0, 0),
+        ("Unsupported", 7, 0),
+        ("Paged", 55, 0),
+        ("Mixed", 56, 1),
+    ] {
+        let at = QualifiedAddress::parse(&format!("main:XDTOPackage.{name}")).unwrap();
+        let path = fixture
+            .source
+            .join(format!("XDTOPackages/{name}/Ext/Package.bin"));
+        let before = fs::read(&path).unwrap();
+        let authority = fixture.read_authority();
+        let target = MetadataAddress::parse(
+            PLATFORM_XML_8_3_27_FORMAT_2_20,
+            &format!("XDTOPackage.{name}"),
+        )
+        .unwrap();
+        let native = authority.read.xdto_payload(&target, None).unwrap();
+        let (_, outcome) = authority.check_xdto(&at).unwrap();
+        let checked = crate::application::v13::check::normalize_native_outcome(
+            &at,
+            "XDTOPackage",
+            crate::application::v13::check::CheckValidator::Xdto,
+            outcome.unwrap(),
+        )
+        .unwrap();
+        let findings = native["findings"].as_array().unwrap();
+        assert_eq!(findings.len(), count, "{name}");
+        assert_eq!(checked.diagnostics().len(), count, "{name}");
+        assert_eq!(checked.ok(), error_count == 0, "{name}");
+        assert_eq!(
+            checked
+                .diagnostics()
+                .iter()
+                .filter(|d| d.severity() == "error")
+                .count(),
+            error_count,
+            "{name}"
+        );
+        for (finding, diagnostic) in findings.iter().zip(checked.diagnostics()) {
+            assert_eq!(
+                finding["severity"], "error",
+                "native/writer classification must remain unchanged"
+            );
+            assert_eq!(diagnostic.code(), finding["code"].as_str().unwrap());
+            let offset = finding["location"]["bodyByteRange"]["start"]
+                .as_u64()
+                .unwrap();
+            assert!(
+                diagnostic
+                    .message()
+                    .contains(&format!("byte offset {offset} (0-based, BOM excluded)")),
+                "{diagnostic:?}"
+            );
+            assert!(
+                diagnostic
+                    .message()
+                    .contains(finding["message"].as_str().unwrap()),
+                "{diagnostic:?}"
+            );
+            if diagnostic.code() == "unsupported_node" {
+                assert_eq!(diagnostic.severity(), "warning");
+                assert!(diagnostic.message().contains("Unica profile limitation"));
+            }
+        }
+        assert_eq!(fs::read(path).unwrap(), before);
+    }
+}
+
+#[test]
+fn xdto_check_rejects_unreadable_sources_and_keeps_inherited_packages_opaque() {
+    let fixture = RealReaderFixture::new();
+    install_xdto_check_fixture(&fixture);
+    let at = QualifiedAddress::parse("main:XDTOPackage.Control").unwrap();
+    let path = fixture.source.join("XDTOPackages/Control/Ext/Package.bin");
+    let body = fs::read(&path).unwrap();
+    for invalid in [
+        b"not XML".as_slice(),
+        b"\xff",
+        b"\xef\xbb\xbf\xef\xbb\xbf<package/>",
+    ] {
+        fs::write(&path, invalid).unwrap();
+        let result = fixture.read_authority().check_xdto(&at);
+        assert!(
+            result.is_err(),
+            "parse failures are not unsupported-node warnings: {result:?}"
+        );
+    }
+    fs::write(&path, &body).unwrap();
+    let descriptor = fixture.source.join("XDTOPackages/Control.xml");
+    let original = fs::read_to_string(&descriptor).unwrap();
+    for invalid in [
+        original.replace("urn:sample", "urn:other"),
+        original.replace("<Name>Control</Name>", "<Name>Other</Name>"),
+        original.replace("http://v8.1c.ru/8.3/MDClasses", "urn:foreign"),
+    ] {
+        fs::write(&descriptor, invalid).unwrap();
+        assert!(fixture.read_authority().check_xdto(&at).is_err());
+    }
+    fs::write(&descriptor, &original).unwrap();
+    let config = fixture.source.join("Configuration.xml");
+    let original_config = fs::read_to_string(&config).unwrap();
+    fs::write(
+        &config,
+        original_config.replace("<XDTOPackage>Control</XDTOPackage>", ""),
+    )
+    .unwrap();
+    assert_eq!(
+        fixture.read_authority().check_xdto(&at).unwrap_err().code(),
+        RefusalCode::NotFound
+    );
+    fs::write(&config, original_config).unwrap();
+    fs::write(&descriptor,original.replace("</Properties>","<ExtendedConfigurationObject>99999999-9999-4999-8999-999999999999</ExtendedConfigurationObject></Properties>")).unwrap();
+    fs::remove_file(&path).unwrap();
+    assert!(fixture
+        .extension_read_authority()
+        .check_xdto(&at)
+        .unwrap()
+        .1
+        .is_none());
+    fixture.cancellation.cancel();
+    assert_eq!(
+        fixture.read_authority().check_xdto(&at).unwrap_err().code(),
+        RefusalCode::Cancelled
+    );
+}
+
+#[test]
+fn xdto_check_refuses_linked_descriptor_and_package_resources() {
+    use crate::composition::testing::{create_file_link_fixture_for_test, FileLinkFixtureOutcome};
+    for relative in [
+        "XDTOPackages/Control.xml",
+        "XDTOPackages/Control/Ext/Package.bin",
+    ] {
+        let fixture = RealReaderFixture::new();
+        install_xdto_check_fixture(&fixture);
+        let path = fixture.source.join(relative);
+        let bytes = fs::read(&path).unwrap();
+        let foreign = fixture.root.path().join("foreign.xml");
+        fs::write(&foreign, bytes).unwrap();
+        fs::remove_file(&path).unwrap();
+        let outcome = create_file_link_fixture_for_test(&foreign, &path).unwrap();
+        if outcome != FileLinkFixtureOutcome::Created {
+            eprintln!("[SKIPPED FIXTURE] file-link fixture unavailable: {outcome:?}");
+            return;
+        }
+        let at = QualifiedAddress::parse("main:XDTOPackage.Control").unwrap();
+        assert_eq!(
+            fixture.read_authority().check_xdto(&at).unwrap_err().code(),
+            RefusalCode::ProviderUnavailable,
+            "{relative}"
+        );
+    }
+}

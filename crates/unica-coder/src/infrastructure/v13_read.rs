@@ -678,6 +678,48 @@ impl<'a> LogicalViewReadAuthority<'a> {
         .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
     }
 
+    /// One retained read prepares the complete package verdict. A separate
+    /// public view would parse and validate the same XDTO model a second time.
+    pub(crate) fn check_xdto(
+        &self,
+        at: &QualifiedAddress,
+    ) -> Result<
+        (
+            ViewSourceSnapshot,
+            Option<crate::application::v13::check::NativeCheckOutcome>,
+        ),
+        ViewError,
+    > {
+        if !matches!(at.segments(), [owner] if owner.kind() == NodeKind::XdtoPackage && owner.name().is_some())
+        {
+            return Err(ViewError::new(
+                RefusalCode::BadValue,
+                "XDTO check requires a named package root",
+            ));
+        }
+        let admitted = self.snapshot(at)?;
+        let canonical = self.canonical_address(at, &admitted)?;
+        let route = route_logical_address(&canonical, self.profile)
+            .map_err(|error| ViewError::new(RefusalCode::BadValue, error.to_string()))?;
+        let target = route
+            .reader_metadata_path()
+            .ok_or_else(|| ViewError::new(RefusalCode::BadValue, "XDTO check has no descriptor"))?;
+        self.verify_registered_owner(target, &admitted)?;
+        if self
+            .read
+            .inherited_resource(target, "Package.bin")?
+            .is_some()
+        {
+            self.read_checkpoint()?;
+            return Ok((admitted, None));
+        }
+        let outcome = self
+            .read
+            .xdto_check_outcome(target, &mut || self.read_checkpoint())?;
+        self.read_checkpoint()?;
+        Ok((admitted, Some(outcome)))
+    }
+
     pub(crate) fn validate_subsystem(
         &self,
         at: &QualifiedAddress,
