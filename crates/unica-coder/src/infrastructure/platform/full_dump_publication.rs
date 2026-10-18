@@ -1450,7 +1450,18 @@ impl<'a> VerifiedFullDumpAdapter<'a> {
             cancellation,
         ) {
             Ok(prepared) => prepared,
-            Err(error) => return Ok(dump_failure(tool_name, error, None, None, None)),
+            Err(DumpPreparationFailure::BeforeStage(error)) => {
+                return Ok(dump_failure(tool_name, error, None, None, None));
+            }
+            Err(DumpPreparationFailure::PrivateSetup {
+                detail,
+                mut private,
+            }) => {
+                return Ok(finalize_private_outcome(
+                    &mut private,
+                    dump_failure(tool_name, detail, None, None, None),
+                ));
+            }
         };
         macro_rules! finish_prepared {
             ($outcome:expr) => {
@@ -1714,6 +1725,20 @@ impl<'a> VerifiedFullDumpAdapter<'a> {
     }
 }
 
+enum DumpPreparationFailure {
+    BeforeStage(String),
+    PrivateSetup {
+        detail: String,
+        private: Box<PrivateDumpStage>,
+    },
+}
+
+impl From<String> for DumpPreparationFailure {
+    fn from(detail: String) -> Self {
+        Self::BeforeStage(detail)
+    }
+}
+
 struct PreparedDump {
     private: PrivateDumpStage,
     target: PathBuf,
@@ -1735,7 +1760,7 @@ impl PreparedDump {
         platform_resolver: &dyn PlatformResolver,
         runner: &dyn ProcessRunner,
         cancellation: &CancellationToken,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, DumpPreparationFailure> {
         validate_applied_full_dump_args(args)?;
         let config_path = resolve_config_path(args, context)?;
         let config_dir = config_path.parent().unwrap_or(&context.cwd);
@@ -1753,14 +1778,16 @@ impl PreparedDump {
             merge_yaml_values(&mut effective, overlay);
         }
         if cancellation.is_cancelled() {
-            return Err("verified dump cancelled while preparing effective config".to_string());
+            return Err("verified dump cancelled while preparing effective config"
+                .to_string()
+                .into());
         }
 
         let format = yaml_string(&effective, "format")?.unwrap_or("DESIGNER");
         if format != "DESIGNER" {
             return Err(format!(
                 "applied full dump supports only format=DESIGNER source sets; configured format is {format}"
-            ));
+            ).into());
         }
         let builder = yaml_string(&effective, "builder")?.unwrap_or("DESIGNER");
         let utility = match builder {
@@ -1769,14 +1796,14 @@ impl PreparedDump {
             other => {
                 return Err(format!(
                     "applied full dump supports only builder=DESIGNER or IBCMD; configured builder is {other}"
-                ));
+                ).into());
             }
         };
 
         if yaml_mapping(&effective)?.contains_key(yaml_key("basePath")) {
             return Err(
                 "pinned v8-runner 0.5.1 rejects the removed top-level `basePath` key; paths are resolved relative to the primary config directory"
-                    .to_string(),
+                    .to_string().into(),
             );
         }
         let base_path = normalize_path_identity(config_dir)?;
@@ -1843,7 +1870,8 @@ impl PreparedDump {
             return Err(format!(
                 "resolved platform {} is not supported; required {TARGET_PLATFORM_LINE}.x",
                 platform.exact_version
-            ));
+            )
+            .into());
         }
         let mut private = PrivateDumpStage::create(&target_parent)?;
         let private_setup = (|| {
@@ -1861,10 +1889,10 @@ impl PreparedDump {
             private.write_effective_config(&effective)
         })();
         if let Err(error) = private_setup {
-            return match private.cleanup_now() {
-                Ok(()) => Err(error),
-                Err(cleanup_error) => Err(format!("{error}; {cleanup_error}")),
-            };
+            return Err(DumpPreparationFailure::PrivateSetup {
+                detail: error,
+                private: Box::new(private),
+            });
         }
 
         Ok(Self {
@@ -4195,6 +4223,7 @@ impl PrivateDumpStage {
         let bytes = serde_yaml::to_string(value)
             .map_err(|error| format!("failed to serialize effective dump config: {error}"))?;
         self.execution_anchor().verify_path_binding()?;
+        run_effective_config_prepare_hook(&self.effective_config);
         let file = create_regular_child_owner_only(
             &self.execution_anchor().directory,
             OsStr::new(EFFECTIVE_CONFIG_NAME),
@@ -6895,6 +6924,7 @@ thread_local! {
     static TEST_TREE_OPEN_HOOK: RefCell<Option<PathHook>> = const { RefCell::new(None) };
     static TEST_CLEANUP_OPEN_HOOK: RefCell<Option<CleanupOpenHook>> = const { RefCell::new(None) };
     static TEST_PRIVATE_CREATE_HOOK: RefCell<Option<PathHook>> = const { RefCell::new(None) };
+    static TEST_EFFECTIVE_CONFIG_PREPARE_HOOK: RefCell<Option<PathHook>> = const { RefCell::new(None) };
     #[cfg(windows)]
     static TEST_EFFECTIVE_CONFIG_CREATE_HOOK: RefCell<Option<PathHook>> = const { RefCell::new(None) };
     static TEST_TARGET_PARENT_CAPTURE_HOOK: RefCell<Option<PathHook>> = const { RefCell::new(None) };
@@ -7071,6 +7101,25 @@ fn with_effective_config_create_hook<T>(
 }
 
 #[cfg(test)]
+fn with_effective_config_prepare_hook<T>(
+    hook: impl FnOnce(&Path) + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<PathHook>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_EFFECTIVE_CONFIG_PREPARE_HOOK.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+    let previous =
+        TEST_EFFECTIVE_CONFIG_PREPARE_HOOK.with(|slot| slot.replace(Some(Box::new(hook))));
+    let _reset = Reset(previous);
+    action()
+}
+
+#[cfg(test)]
 fn with_target_parent_capture_hook<T>(
     hook: impl FnOnce(&Path) + 'static,
     action: impl FnOnce() -> T,
@@ -7151,6 +7200,13 @@ fn run_private_creation_failpoint(checkpoint: PrivateCreationCheckpoint) -> Resu
 fn run_private_create_hook(_path: &Path) {
     #[cfg(test)]
     if let Some(hook) = TEST_PRIVATE_CREATE_HOOK.with(|slot| slot.borrow_mut().take()) {
+        hook(_path);
+    }
+}
+
+fn run_effective_config_prepare_hook(_path: &Path) {
+    #[cfg(test)]
+    if let Some(hook) = TEST_EFFECTIVE_CONFIG_PREPARE_HOOK.with(|slot| slot.borrow_mut().take()) {
         hook(_path);
     }
 }
@@ -8501,6 +8557,97 @@ mod tests {
         invoke_with_args(runner, platform, invocation, context, &args())
     }
 
+    fn assert_retained_directory_artifact(
+        result: &crate::application::AdapterOutcome,
+        retained: &Path,
+    ) {
+        let expected = std::fs::canonicalize(retained).unwrap();
+        let expected_identity =
+            super::file_identity(&super::open_directory_nofollow(&expected).unwrap()).unwrap();
+        assert!(
+            result.artifacts.iter().any(|artifact| {
+                std::fs::canonicalize(artifact).is_ok_and(|actual| {
+                    actual == expected
+                        && super::open_directory_nofollow(&actual).is_ok_and(|directory| {
+                            super::file_identity(&directory)
+                                .is_ok_and(|identity| identity == expected_identity)
+                        })
+                })
+            }),
+            "a recovery artifact must name the retained directory identity"
+        );
+    }
+
+    #[test]
+    fn effective_config_preparation_failure_reports_retained_foreign_data() {
+        let (root, context, _) = workspace("effective-config-prepare-retention");
+        let target = context.cwd.join("src");
+        seed_valid_target(&target);
+        let before = super::capture_tree_target_nofollow(&target).unwrap();
+        let platform = fixed_platform(&root);
+        let runner = DumpRunner::valid();
+        let retained = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let hook_retained = std::rc::Rc::clone(&retained);
+
+        let result = super::with_effective_config_prepare_hook(
+            move |path| {
+                std::fs::create_dir(path).unwrap();
+                std::fs::write(path.join("foreign.txt"), b"foreign sentinel").unwrap();
+                let private = path.parent().unwrap().parent().unwrap().to_path_buf();
+                let snapshot = super::capture_tree_target_nofollow(&private).unwrap();
+                *hook_retained.borrow_mut() = Some((private, snapshot));
+            },
+            || invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context),
+        );
+
+        assert!(!result.ok);
+        assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
+        assert!(result.changes.is_empty());
+        assert_eq!(
+            super::capture_tree_target_nofollow(&target).unwrap(),
+            before
+        );
+        let retained = retained.borrow();
+        let (private, snapshot) = retained.as_ref().expect("preparation hook must run");
+        assert_eq!(
+            super::capture_tree_target_nofollow(private).unwrap(),
+            *snapshot,
+            "preparation cleanup must preserve all retained identities and bytes"
+        );
+        assert_eq!(
+            std::fs::read(
+                private
+                    .join("execution")
+                    .join(super::EFFECTIVE_CONFIG_NAME)
+                    .join("foreign.txt")
+            )
+            .unwrap(),
+            b"foreign sentinel"
+        );
+        assert!(result
+            .errors
+            .iter()
+            .any(|error| error.contains("failed to securely create private effective config")));
+        assert!(result
+            .summary
+            .contains("failed before verified dump publication"));
+        let expected = std::fs::canonicalize(private).unwrap();
+        let has_recovery_artifact = result
+            .artifacts
+            .iter()
+            .any(|artifact| std::fs::canonicalize(artifact).is_ok_and(|path| path == expected));
+        let reports_discarded = result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("the private staged dump was discarded"));
+        assert!(
+            has_recovery_artifact && !reports_discarded,
+            "retained preparation data needs recovery metadata: artifact={has_recovery_artifact}, discarded={reports_discarded}"
+        );
+        assert_retained_directory_artifact(&result, private);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[cfg(windows)]
     #[test]
     fn windows_applied_full_dump_reaches_runner_and_commits_validated_tree() {
@@ -8588,6 +8735,8 @@ mod tests {
         let runner = DumpRunner::valid();
         let displaced = context.cwd.join("created-effective-config.yaml");
         let replacement = context.cwd.join("replacement-effective-config.yaml");
+        let target = context.cwd.join("src");
+        let before = super::capture_tree_target_nofollow(&target).unwrap();
         std::fs::write(&replacement, b"replacement sentinel").unwrap();
         let expected_replacement_identity =
             crate::infrastructure::platform::filesystem::file_identity(
@@ -8595,6 +8744,8 @@ mod tests {
             )
             .unwrap();
         let created_identity = std::rc::Rc::new(Cell::new(None));
+        let retained = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let hook_retained = std::rc::Rc::clone(&retained);
         let hook_created_identity = std::rc::Rc::clone(&created_identity);
         let hook_displaced = displaced.clone();
         let hook_replacement = replacement.clone();
@@ -8609,11 +8760,31 @@ mod tests {
                 ));
                 std::fs::rename(path, &hook_displaced).unwrap();
                 std::fs::hard_link(&hook_replacement, path).unwrap();
+                let execution = path.parent().unwrap();
+                let private = execution.parent().unwrap();
+                let directories = [
+                    private.to_path_buf(),
+                    execution.to_path_buf(),
+                    private.join("recovery"),
+                ]
+                .into_iter()
+                .map(|directory| {
+                    let identity = super::file_identity(
+                        &super::open_directory_nofollow(
+                            &std::fs::canonicalize(&directory).unwrap(),
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap();
+                    (directory, identity)
+                })
+                .collect::<Vec<_>>();
+                *hook_retained.borrow_mut() = Some((path.to_path_buf(), directories));
             },
             || invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context),
         );
 
-        assert!(!result.ok, "{result:?}");
+        assert!(!result.ok);
         assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
         assert!(
             created_identity.get().is_some(),
@@ -8636,11 +8807,59 @@ mod tests {
             std::fs::read(&replacement).unwrap(),
             b"replacement sentinel"
         );
-        assert!(std::fs::read_dir(&context.cwd).unwrap().all(|entry| !entry
+        assert!(result.changes.is_empty());
+        assert_eq!(
+            super::capture_tree_target_nofollow(&target).unwrap(),
+            before
+        );
+        let retained = retained.borrow();
+        let (inside, directories) = retained.as_ref().expect("post-create hook must run");
+        assert_eq!(
+            super::file_identity(&std::fs::File::open(inside).unwrap()).unwrap(),
+            expected_replacement_identity,
+            "the substituted private name must still refer to the foreign file"
+        );
+        assert_ne!(Some(expected_replacement_identity), created_identity.get());
+        assert_eq!(std::fs::read(inside).unwrap(), b"replacement sentinel");
+        for (directory, expected_identity) in directories {
+            assert_eq!(
+                super::file_identity(
+                    &super::open_directory_nofollow(&std::fs::canonicalize(directory).unwrap())
+                        .unwrap(),
+                )
+                .unwrap(),
+                *expected_identity,
+                "cleanup must retain every original private directory identity"
+            );
+        }
+        let private = &directories[0].0;
+        let retained_roots = std::fs::read_dir(&context.cwd)
             .unwrap()
-            .file_name()
-            .to_string_lossy()
-            .starts_with(".unica-dump-guard-")));
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with(".unica-dump-guard-"))
+            })
+            .map(|path| std::fs::canonicalize(path).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            retained_roots,
+            vec![std::fs::canonicalize(private).unwrap()]
+        );
+        assert_retained_directory_artifact(&result, private);
+        assert!(result.errors.iter().any(|error| error
+            .contains("private effective config identity changed before verified reopen")));
+        assert!(result
+            .summary
+            .contains("failed before verified dump publication"));
+        assert!(result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("Data retained for recovery")));
+        assert!(!result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("the private staged dump was discarded")));
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -9970,10 +10189,7 @@ mod tests {
         assert_eq!(recoveries.len(), 1, "{result:?}");
         assert!(!recoveries[0].join("execution").exists());
         let recovery = std::fs::canonicalize(recoveries[0].join("recovery")).unwrap();
-        assert!(
-            result.artifacts.contains(&recovery.display().to_string()),
-            "{result:?}"
-        );
+        assert_retained_directory_artifact(&result, &recovery);
         assert!(
             result.summary.contains("publication state is unknown"),
             "{result:?}"

@@ -1,6 +1,7 @@
 ---
 id: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
 check:
+  - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::effective_config_preparation_failure_reports_retained_foreign_data
   - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::concurrent_target_during_capture_error_quarantine_is_preserved
   - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::concurrent_file_during_capture_error_quarantine_is_preserved
   - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::concurrent_target_during_capture_error_quarantine_survives_recovery_failure
