@@ -1,0 +1,158 @@
+{
+  "id": "S-1560-catalog-code-description-properties",
+  "issue": 1560,
+  "area": "Метаданные",
+  "task": "Прочитать свойства Code и Description справочника через выданные адреса коллекции и деталей, сохранив локализацию и исходный XML",
+  "workspace": "tests/fixtures/acceptance/workspace-standard-attributes",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "attributes": {
+          "pointer": "/data/branches/0/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/branches/0/at",
+          "eq": "main:Catalog.Items.StandardAttribute"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "61d513d709997e7259d10ff9f91c4be8012f19604f2e3bb6542a5914d4249ecf"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.attributes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "code": {
+          "pointer": "/data/items/0/at"
+        },
+        "description": {
+          "pointer": "/data/items/1/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items/2/title",
+          "eq": "Ref"
+        },
+        {
+          "pointer": "/data/items/0/props/Synonym",
+          "eq": "{\"kind\":\"localizedString\",\"values\":[{\"language\":\"ru\",\"content\":\"Цифровой код\"},{\"language\":\"en\",\"content\":\"Numeric code\"}]}"
+        },
+        {
+          "pointer": "/data/items/0/props/ToolTip",
+          "eq": "{\"kind\":\"localizedString\",\"values\":[{\"language\":\"ru\",\"content\":\"Цифровой код валюты\"}]}"
+        },
+        {
+          "pointer": "/data/items/0/props/FillChecking",
+          "eq": "{\"kind\":\"text\",\"value\":\"ShowError\"}"
+        },
+        {
+          "pointer": "/data/items/1/props/Synonym",
+          "eq": "{\"kind\":\"localizedString\",\"values\":[{\"language\":\"ru\",\"content\":\"Символьный код\"}]}"
+        },
+        {
+          "pointer": "/data/items/1/props/ToolTip",
+          "eq": "{\"kind\":\"localizedString\",\"values\":[{\"language\":\"ru\",\"content\":\"Символьный код валюты\"}]}"
+        },
+        {
+          "pointer": "/data/items/1/props/FillChecking",
+          "eq": "{\"kind\":\"text\",\"value\":\"DontCheck\"}"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "61d513d709997e7259d10ff9f91c4be8012f19604f2e3bb6542a5914d4249ecf"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.code"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/title",
+          "eq": "Code"
+        },
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "{\"kind\":\"localizedString\",\"values\":[{\"language\":\"ru\",\"content\":\"Цифровой код\"},{\"language\":\"en\",\"content\":\"Numeric code\"}]}"
+        },
+        {
+          "pointer": "/data/props/ToolTip",
+          "eq": "{\"kind\":\"localizedString\",\"values\":[{\"language\":\"ru\",\"content\":\"Цифровой код валюты\"}]}"
+        },
+        {
+          "pointer": "/data/props/FillChecking",
+          "eq": "{\"kind\":\"text\",\"value\":\"ShowError\"}"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "61d513d709997e7259d10ff9f91c4be8012f19604f2e3bb6542a5914d4249ecf"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.description"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/title",
+          "eq": "Description"
+        },
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "{\"kind\":\"localizedString\",\"values\":[{\"language\":\"ru\",\"content\":\"Символьный код\"}]}"
+        },
+        {
+          "pointer": "/data/props/ToolTip",
+          "eq": "{\"kind\":\"localizedString\",\"values\":[{\"language\":\"ru\",\"content\":\"Символьный код валюты\"}]}"
+        },
+        {
+          "pointer": "/data/props/FillChecking",
+          "eq": "{\"kind\":\"text\",\"value\":\"DontCheck\"}"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "61d513d709997e7259d10ff9f91c4be8012f19604f2e3bb6542a5914d4249ecf"
+        }
+      ]
+    }
+  ]
+}

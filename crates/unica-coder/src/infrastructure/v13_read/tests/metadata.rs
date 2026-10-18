@@ -51,6 +51,174 @@ fn metadata_node_props_carry_the_observed_object_properties() {
     assert_eq!(props["kind"], json!("Catalog"));
 }
 
+#[test]
+fn catalog_standard_attribute_properties_reach_collection_and_detail() {
+    let fixture = RealReaderFixture::new();
+    let xml = fixture_text("acceptance/workspace-standard-attributes/src/Catalogs/Items.xml");
+    let path = fixture.source.join("Catalogs/Items.xml");
+    write(&path, &xml);
+    let service = fixture.view_service();
+    let collection =
+        service.view(ViewRequest::new("main:Catalog.Items.StandardAttribute").unwrap());
+    assert!(collection.ok, "{collection:?}");
+    let data = collection.data.unwrap();
+    let items = data["items"].as_array().unwrap();
+    assert_eq!(items.len(), 3);
+    let document = roxmltree::Document::parse(&xml).unwrap();
+    for (index, name) in ["Code", "Description"].into_iter().enumerate() {
+        let at = items[index]["at"].as_str().unwrap();
+        assert_eq!(at, format!("main:Catalog.Items.StandardAttribute.{name}"));
+        let detail = service.view(ViewRequest::new(at).unwrap());
+        assert!(detail.ok, "{detail:?}");
+        let detail = detail.data.unwrap();
+        assert_eq!(detail["title"], name);
+        assert_eq!(items[index]["props"], detail["props"]);
+        let source = document
+            .descendants()
+            .find(|node| node.attribute("name") == Some(name))
+            .unwrap();
+        for key in ["Synonym", "ToolTip", "FillChecking"] {
+            let value: serde_json::Value =
+                serde_json::from_str(detail["props"][key].as_str().unwrap()).unwrap();
+            let property = source
+                .children()
+                .find(|node| node.is_element() && node.tag_name().name() == key)
+                .unwrap();
+            if key == "FillChecking" {
+                assert_eq!(
+                    value,
+                    json!({"kind":"text","value":property.text().unwrap()})
+                );
+            } else {
+                let expected = property
+                    .children()
+                    .filter(|node| node.is_element())
+                    .map(|item| {
+                        let text = |tag| {
+                            item.children()
+                                .find(|node| node.is_element() && node.tag_name().name() == tag)
+                                .unwrap()
+                                .text()
+                                .unwrap_or("")
+                        };
+                        json!({"language":text("lang"),"content":text("content")})
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(value, json!({"kind":"localizedString","values":expected}));
+            }
+        }
+    }
+    assert_eq!(items[2]["title"], "Ref");
+    assert!(items[2]
+        .get("props")
+        .is_none_or(|props| props.as_object().unwrap().is_empty()));
+    assert_eq!(fs::read_to_string(path).unwrap(), xml);
+}
+
+#[test]
+fn catalog_standard_attribute_empty_absent_and_damaged_properties_stay_distinct() {
+    for key in ["Synonym", "ToolTip", "FillChecking"] {
+        for state in ["empty", "absent", "damaged"] {
+            let fixture = RealReaderFixture::new();
+            let path = fixture.source.join("Catalogs/Items.xml");
+            let base =
+                fixture_text("acceptance/workspace-standard-attributes/src/Catalogs/Items.xml");
+            let document = roxmltree::Document::parse(&base).unwrap();
+            let mut xml = base.clone();
+            let mut ranges = document
+                .descendants()
+                .filter(|node| node.is_element() && node.tag_name().name() == key)
+                .map(|node| node.range())
+                .collect::<Vec<_>>();
+            for range in ranges.drain(..).rev() {
+                let replacement = match state {
+                    "empty" => format!("<xr:{key}/>"),
+                    "absent" => String::new(),
+                    "damaged" => format!("<xr:{key}><xr:Unexpected/></xr:{key}>"),
+                    _ => unreachable!(),
+                };
+                xml.replace_range(range, &replacement);
+            }
+            write(&path, &xml);
+            let service = fixture.view_service();
+            let collection =
+                service.view(ViewRequest::new("main:Catalog.Items.StandardAttribute").unwrap());
+            if state == "damaged" {
+                assert!(!collection.ok, "{key}: {collection:?}");
+                assert_eq!(collection.diagnostics[0]["detailCode"], "source_unreadable");
+                for name in ["Code", "Description"] {
+                    let detail = service.view(
+                        ViewRequest::new(&format!("main:Catalog.Items.StandardAttribute.{name}"))
+                            .unwrap(),
+                    );
+                    assert!(!detail.ok, "{detail:?}");
+                    assert_eq!(detail.diagnostics[0]["detailCode"], "source_unreadable");
+                }
+                let root = service.view(ViewRequest::new("main:Catalog.Items").unwrap());
+                assert!(root.ok, "{root:?}");
+                assert!(root.data.unwrap()["limits"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|limit| limit.as_str().unwrap().contains("standardAttributes")));
+            } else {
+                assert!(collection.ok, "{collection:?}");
+                for item in &collection.data.unwrap()["items"].as_array().unwrap()[..2] {
+                    let detail =
+                        service.view(ViewRequest::new(item["at"].as_str().unwrap()).unwrap());
+                    assert!(detail.ok, "{detail:?}");
+                    let detail = detail.data.unwrap();
+                    assert_eq!(item.get("props"), detail.get("props"));
+                    if state == "absent" {
+                        assert!(detail["props"].get(key).is_none());
+                    } else {
+                        let value: serde_json::Value =
+                            serde_json::from_str(detail["props"][key].as_str().unwrap()).unwrap();
+                        let expected = if key == "FillChecking" {
+                            json!({"kind":"text","value":""})
+                        } else {
+                            json!({"kind":"localizedString","values":[]})
+                        };
+                        assert_eq!(value, expected);
+                    }
+                }
+            }
+            assert_eq!(fs::read_to_string(path).unwrap(), xml);
+        }
+    }
+}
+
+#[test]
+fn standard_attribute_projection_keeps_the_closed_property_profile_and_byte_limit() {
+    let at = QualifiedAddress::parse("main:Catalog.Items.StandardAttribute.Code").unwrap();
+    let route = route_logical_address(&at, PlatformProfile::v8_3_27()).unwrap();
+    let view = project_typed_payload(&route, json!({
+        "collections": {},
+        "declarations": {"standardAttributes": [{"name":"Code", "properties":[
+            {"name":"FillChecking", "value":{"kind":"text", "value":"ShowError"}},
+            {"name":"ToolTip", "value":{"kind":"localizedString", "values":[{"language":"ru", "content":"я".repeat(2048)}]}},
+            {"name":"FutureProperty", "value":{"kind":"text", "value":"must-not-leak"}}
+        ]}]}
+    })).unwrap();
+    let data = serde_json::to_value(view).unwrap();
+    assert_eq!(data["title"], "Code");
+    assert_eq!(data["props"].as_object().unwrap().len(), 1);
+    assert_eq!(
+        data["props"]["FillChecking"],
+        r#"{"kind":"text","value":"ShowError"}"#
+    );
+
+    let at = QualifiedAddress::parse("main:Catalog.Items.Attribute.Code").unwrap();
+    let route = route_logical_address(&at, PlatformProfile::v8_3_27()).unwrap();
+    let view = project_typed_payload(&route, json!({
+        "collections":{"attributes":[{"name":"Code", "properties":[{"name":"FillChecking", "value":{"kind":"text","value":"ShowError"}}]}]}
+    })).unwrap();
+    let data = serde_json::to_value(view).unwrap();
+    assert!(data
+        .get("props")
+        .is_none_or(|props| props.as_object().unwrap().is_empty()));
+}
+
 /// Три роли дампа `PrintWebDAV`: заимствован с перекрытием, заимствован без
 /// перекрытия, собственный объект расширения.
 ///
