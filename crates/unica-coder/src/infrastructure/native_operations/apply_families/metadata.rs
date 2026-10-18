@@ -1631,6 +1631,9 @@ fn stage_command_module_lifecycle(
                 staged
                     .create(&new_relative, bytes)
                     .map_err(|error| ApplyPlanError::staging(error, &new_name_path))?;
+                staged
+                    .require_exact_path_spelling(&new_relative)
+                    .map_err(|error| ApplyPlanError::staging(error, &new_name_path))?;
                 let effect_path = staged
                     .retained_relative_path(&new_relative)
                     .map_err(|error| ApplyPlanError::staging(error, new_name_path))?;
@@ -5399,6 +5402,65 @@ mod tests {
         ]).unwrap();
         assert!(staged.planned_changes().is_empty());
         assert!(effects.events().is_empty());
+        staged.finalize().unwrap();
+    }
+
+    #[test]
+    fn command_case_correction_to_the_existing_physical_spelling_publishes_and_invalidates() {
+        let fixture = command_fixture();
+        let lowercase_module = fixture
+            .binding
+            .source_root()
+            .join("Documents/Order/Commands/refresh/Ext/CommandModule.bsl");
+        let case_alias = lowercase_module.is_file();
+        let lowercase_owner = String::from_utf8(fixture.disk_bytes())
+            .unwrap()
+            .replace("<Name>Refresh</Name>", "<Name>refresh</Name>");
+        std::fs::write(&fixture.descriptor, lowercase_owner).unwrap();
+        let admission = fixture
+            .actor
+            .admit_apply(
+                &fixture.binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let staged = admission.staged_state().unwrap();
+        let authority = admission
+            .metadata_planning_authority(&fixture.binding)
+            .unwrap();
+        let operations = [fixture.parse(
+            "command.set",
+            json!({"at": "main:Document.Order.Command.Refresh", "values": {"newName": "Refresh", "comment": "keep"}}),
+            0,
+        )];
+        let planned = plan_metadata_batch(staged, authority, &operations);
+        if case_alias {
+            let (staged, provisional) = planned.unwrap();
+            let effects = crate::infrastructure::native_operations::apply_families::request::reconcile_effects(&staged, provisional);
+            let prepared = admission.prepare_with_effects(staged, effects).unwrap();
+            let result = fixture.actor.publish_prepared_apply(prepared).unwrap();
+            assert!(result
+                .effects()
+                .cache()
+                .invalidated
+                .iter()
+                .any(|name| name == "bsl_index"));
+            assert!(String::from_utf8(fixture.disk_bytes())
+                .unwrap()
+                .contains("<Name>Refresh</Name>"));
+            assert_eq!(
+                std::fs::read(fixture.binding.source_root().join(COMMAND_MODULE_RELATIVE)).unwrap(),
+                COMMAND_MODULE.as_bytes()
+            );
+        } else {
+            assert_eq!(
+                planned.unwrap_err().kind(),
+                ApplyPlanErrorKind::InvalidState
+            );
+        }
     }
 
     #[test]
