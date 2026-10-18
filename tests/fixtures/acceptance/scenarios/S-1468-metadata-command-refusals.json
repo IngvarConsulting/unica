@@ -1,0 +1,435 @@
+{
+  "id": "S-1468-metadata-command-refusals",
+  "issue": 1468,
+  "area": "Метаданные",
+  "task": "Адресные команды метаданных отклоняют чужой лист, путь команды формы, повтор имени, пустые и неизвестные значения, лишний payload и отсутствующую команду без записи исходников",
+  "workspace": "tests/fixtures/acceptance/workspace-metadata-commands",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Command.Refresh"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/comment",
+          "eq": "Refresh original comment"
+        },
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "command.set",
+            "args": "values",
+            "implemented": true
+          }
+        },
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "command.remove",
+            "args": "at",
+            "implemented": true
+          }
+        }
+      ],
+      "captures": {
+        "before": {
+          "file": "src/Catalogs/Items.xml",
+          "kind": "sha256"
+        },
+        "refreshModule": {
+          "file": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256"
+        },
+        "keepModule": {
+          "file": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Attribute.Witness",
+        "ops": [
+          {
+            "op": "command.set",
+            "args": {
+              "values": {
+                "comment": "wrong leaf"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: apply operation `command.set` does not apply to Attribute `main:Catalog.Items.Attribute.Witness`; it addresses `Kind.Name.Command.C`",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].at"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.refreshModule"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.keepModule"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Form.List.Command.Refresh",
+        "ops": [
+          {
+            "op": "command.set",
+            "args": {
+              "values": {
+                "comment": "wrong family"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: apply operation `command.set` does not apply to Command `main:Catalog.Items.Form.List.Command.Refresh`; it addresses `Kind.Name.Command.C`",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].at"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.refreshModule"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.keepModule"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Form.List",
+        "ops": [
+          {
+            "op": "command.remove",
+            "args": {}
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: apply operation `command.remove` does not apply to Form `main:Catalog.Items.Form.List`; it addresses `Kind.Name.Command.C`",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].at"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.refreshModule"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.keepModule"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Command.Refresh",
+        "ops": [
+          {
+            "op": "command.set",
+            "args": {
+              "values": {
+                "name": "Refresh",
+                "comment": "repeat"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `command.set` names the member by its address; rename it with `newName`",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.name"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.refreshModule"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.keepModule"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Command.Refresh",
+        "ops": [
+          {
+            "op": "command.set",
+            "args": {
+              "values": {}
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `command.set` values must change at least one field",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.refreshModule"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.keepModule"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Command.Refresh",
+        "ops": [
+          {
+            "op": "command.set",
+            "args": {
+              "values": {
+                "futureField": "ignored?"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: unknown field `futureField`",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.futureField"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.refreshModule"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.keepModule"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Command.Refresh",
+        "ops": [
+          {
+            "op": "command.set",
+            "args": {
+              "values": {
+                "comment": "extra"
+              },
+              "names": [
+                "Keep"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: operation does not accept argument `names`; `command.set` expects `values`",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.names"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.refreshModule"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.keepModule"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Command.Refresh",
+        "ops": [
+          {
+            "op": "command.remove",
+            "args": {
+              "values": {
+                "comment": "extra"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: operation does not accept argument `values`; `command.remove` expects `at`",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.refreshModule"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.keepModule"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Command.Absent",
+        "ops": [
+          {
+            "op": "command.remove",
+            "args": {}
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: element `Absent` was not found",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.at"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.refreshModule"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.keepModule"
+        }
+      ]
+    }
+  ]
+}

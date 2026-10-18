@@ -1650,8 +1650,8 @@ operation_descriptors!(
     ("template.set", Metadata, MetadataTemplate, Values),
     ("template.remove", Metadata, MetadataTemplate, Target),
     (MetadataOperation::CommandAdd),
-    ("command.set", Metadata, MetadataCommand, Values),
-    ("command.remove", Metadata, MetadataCommand, Target),
+    (MetadataOperation::CommandSet),
+    (MetadataOperation::CommandRemove),
     (
         "predefinedItem.add",
         Metadata,
@@ -3283,6 +3283,8 @@ mod tests {
             OperationDescriptor::metadata(MetadataOperation::AttributeSet),
             OperationDescriptor::metadata(MetadataOperation::AttributeRemove),
             OperationDescriptor::metadata(MetadataOperation::CommandAdd),
+            OperationDescriptor::metadata(MetadataOperation::CommandSet),
+            OperationDescriptor::metadata(MetadataOperation::CommandRemove),
             OperationDescriptor::form(FormOperation::AttributeAdd),
             OperationDescriptor::form(FormOperation::CommandAdd),
         ] {
@@ -3326,7 +3328,7 @@ mod tests {
             }
         }
         for (name, family) in [
-            ("command.set", OperationFamily::Metadata),
+            ("dimension.set", OperationFamily::Metadata),
             ("item.add", OperationFamily::Form),
         ] {
             let descriptor = OperationRegistry::closed()

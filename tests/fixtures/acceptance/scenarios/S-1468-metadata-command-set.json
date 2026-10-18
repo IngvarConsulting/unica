@@ -1,0 +1,297 @@
+{
+  "id": "S-1468-metadata-command-set",
+  "issue": 1468,
+  "area": "Метаданные",
+  "task": "Изменить комментарий команды с модулем и переименовать команду без модуля: UUID и остальные байты владельца сохраняются, соседние исходники и модуль не меняются, лишние файлы не создаются",
+  "workspace": "tests/fixtures/acceptance/workspace-metadata-commands",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Command.Refresh"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/comment",
+          "eq": "Refresh original comment"
+        },
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "command.set",
+            "args": "values",
+            "implemented": true
+          }
+        },
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "command.remove",
+            "args": "at",
+            "implemented": true
+          }
+        }
+      ],
+      "captures": {
+        "before": {
+          "file": "src/Catalogs/Items.xml",
+          "kind": "sha256"
+        },
+        "refreshModule": {
+          "file": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256"
+        },
+        "keepModule": {
+          "file": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Command.Refresh",
+        "ops": [
+          {
+            "op": "command.set",
+            "args": {
+              "values": {
+                "comment": "updated command comment"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.refreshModule"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.keepModule"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "c122c3dda111d6153370e8b52c92f5edebc821efe3ac2ad5d469f3ed67d3fdd6"
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Command[@uuid=\"c144c1ed-2100-4e58-85fe-c6e2bfdb3201\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "Refresh"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Command[@uuid=\"c144c1ed-2100-4e58-85fe-c6e2bfdb3201\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
+          "eq": [
+            "updated command comment"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.refreshModule"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.keepModule"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ],
+      "captures": {
+        "afterRefresh": {
+          "file": "src/Catalogs/Items.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Command.Refresh"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/comment",
+          "eq": "updated command comment"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Command.Inspect",
+        "ops": [
+          {
+            "op": "command.set",
+            "args": {
+              "values": {
+                "newName": "InspectRenamed",
+                "comment": "descriptor-only renamed comment"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.afterRefresh"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.refreshModule"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.keepModule"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/InspectRenamed",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "4f93adc01907306d0f1055df6cf08aabe7260fc9ec7c5596e66466d28fe81598"
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Command[@uuid=\"c144c1ed-2100-4e58-85fe-c6e2bfdb3202\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "InspectRenamed"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Command[@uuid=\"c144c1ed-2100-4e58-85fe-c6e2bfdb3202\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
+          "eq": [
+            "descriptor-only renamed comment"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.refreshModule"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.keepModule"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Inspect",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/InspectRenamed",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/InspectRenamed.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    }
+  ]
+}

@@ -3,7 +3,9 @@ use crate::application::metadata::{parse_metadata_request, MetadataOperation, Me
 use crate::domain::address::{NodeKind, QualifiedAddress};
 use crate::domain::apply::OperationDescriptor;
 use crate::domain::events::{DomainEvent, DomainEventKind};
-use crate::domain::metadata::{MetaDiagnosticCode, MetaEditOperation, MetadataKind};
+use crate::domain::metadata::{
+    MetaCollection, MetaDiagnosticCode, MetaEditOperation, MetadataKind,
+};
 use crate::domain::metadata_operation::MetadataOperation as RegisteredMetadataOperation;
 use crate::domain::project_sources::SourceSetKind;
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
@@ -181,6 +183,24 @@ pub(crate) fn parse_metadata_plan_operation_in(
             RegisteredMetadataOperation::CommandAdd => {
                 parse_member_add(operation.name(), "commands", object, op_index, binding)?
             }
+            RegisteredMetadataOperation::CommandSet => parse_addressed_member_change(
+                operation.name(),
+                NodeKind::Command,
+                MetaCollection::Commands,
+                AddressedMemberChange::Set,
+                object,
+                op_index,
+                binding,
+            )?,
+            RegisteredMetadataOperation::CommandRemove => parse_addressed_member_change(
+                operation.name(),
+                NodeKind::Command,
+                MetaCollection::Commands,
+                AddressedMemberChange::Remove,
+                object,
+                op_index,
+                binding,
+            )?,
         };
         return Ok(MetadataPlanOperation { kind });
     }
@@ -198,9 +218,7 @@ pub(crate) fn parse_metadata_plan_operation_in(
         | "enumValue.set"
         | "enumValue.remove"
         | "column.set"
-        | "column.remove"
-        | "command.set"
-        | "command.remove" => parse_addressed_member(operation, object, op_index, binding)?,
+        | "column.remove" => parse_addressed_member(operation, object, op_index, binding)?,
         "dimension.add" => parse_member_add(operation, "dimensions", object, op_index, binding)?,
         "resource.add" => parse_member_add(operation, "resources", object, op_index, binding)?,
         "enumValue.add" => parse_member_add(operation, "enumValues", object, op_index, binding)?,
@@ -882,14 +900,13 @@ fn parse_member_add(
 }
 
 /// The node kind and typed collection of an addressed member operation.
-fn addressed_member(operation: &str) -> (NodeKind, &'static str) {
+fn addressed_member(operation: &str) -> (NodeKind, MetaCollection) {
     match operation.split_once('.').map(|(family, _)| family) {
-        Some("tabularSection") => (NodeKind::TabularSection, "tabularSections"),
-        Some("dimension") => (NodeKind::Dimension, "dimensions"),
-        Some("resource") => (NodeKind::Resource, "resources"),
-        Some("enumValue") => (NodeKind::EnumValue, "enumValues"),
-        Some("column") => (NodeKind::Column, "columns"),
-        Some("command") => (NodeKind::Command, "commands"),
+        Some("tabularSection") => (NodeKind::TabularSection, MetaCollection::TabularSections),
+        Some("dimension") => (NodeKind::Dimension, MetaCollection::Dimensions),
+        Some("resource") => (NodeKind::Resource, MetaCollection::Resources),
+        Some("enumValue") => (NodeKind::EnumValue, MetaCollection::EnumValues),
+        Some("column") => (NodeKind::Column, MetaCollection::Columns),
         _ => unreachable!("only addressed member operations reach this parser"),
     }
 }
@@ -904,18 +921,51 @@ fn parse_addressed_member(
     binding: &ProviderRootBinding,
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
     let (member_kind, collection) = addressed_member(operation);
-    let remove = operation.ends_with(".remove");
-    let allowed: &[&str] = if remove { &["at"] } else { &["at", "values"] };
+    let change = if operation.ends_with(".remove") {
+        AddressedMemberChange::Remove
+    } else {
+        AddressedMemberChange::Set
+    };
+    parse_addressed_member_change(
+        operation,
+        member_kind,
+        collection,
+        change,
+        args,
+        op_index,
+        binding,
+    )
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AddressedMemberChange {
+    Set,
+    Remove,
+}
+
+fn parse_addressed_member_change(
+    operation: &str,
+    member_kind: NodeKind,
+    collection: MetaCollection,
+    change: AddressedMemberChange,
+    args: &Map<String, Value>,
+    op_index: usize,
+    binding: &ProviderRootBinding,
+) -> Result<MetadataPlanKind, ApplyPlanError> {
+    let allowed: &[&str] = match change {
+        AddressedMemberChange::Set => &["at", "values"],
+        AddressedMemberChange::Remove => &["at"],
+    };
     reject_unknown_args(operation, args, allowed, op_index)?;
     let target = qualified_target(args, op_index, binding)?;
     let (owner, kind, name) = metadata_member_target(&target, member_kind, op_index)?;
-    if remove {
+    if matches!(change, AddressedMemberChange::Remove) {
         return Ok(addressed_edit(
             parse_legacy_edit(
                 binding.source_set_name(),
                 owner,
                 kind,
-                json!({"op": "remove", "collection": collection, "names": [name]}),
+                json!({"op": "remove", "collection": collection.as_str(), "names": [name]}),
                 |field| format!("ops[{op_index}].args.{field}"),
                 op_index,
             )?,
@@ -943,7 +993,7 @@ fn parse_addressed_member(
             binding.source_set_name(),
             owner,
             kind,
-            json!({"op": "update", "collection": collection, "elements": [values]}),
+            json!({"op": "update", "collection": collection.as_str(), "elements": [values]}),
             |field| {
                 format!(
                     "ops[{op_index}].args.{}",
@@ -3346,6 +3396,185 @@ mod tests {
                 error.path(),
                 Some(format!("ops[3].args.{path}").as_str()),
                 "{operation}: {args}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn typed_command_changes_keep_the_addressed_collection_action_and_fields() {
+        use super::{AddressedFields, MetadataPlanKind};
+        use crate::domain::metadata::{MetaCollection, MetaEditOperation};
+        let fixture = MetadataFixture::new();
+        for at in [
+            "Document.Order.Command.Print",
+            "main:Document.Order.Command.Print",
+        ] {
+            let parsed = parse_metadata_plan_operation(
+                "command.set",
+                &json!({"at":at,"values":{
+                    "newName":"PrintCopy","synonym":"Print copy","comment":"kept",
+                    "position":{"before":"Other"}
+                }}),
+                3,
+                &fixture.binding,
+            )
+            .unwrap();
+            let MetadataPlanKind::Edit {
+                target,
+                operation:
+                    MetaEditOperation::Update {
+                        collection,
+                        scope,
+                        elements,
+                    },
+                addressed,
+            } = parsed.kind
+            else {
+                panic!("command.set must plan a typed update");
+            };
+            assert_eq!(target.as_str(), "Document.Order");
+            assert_eq!(collection, MetaCollection::Commands);
+            assert!(scope.is_none());
+            assert_eq!(elements.len(), 1);
+            assert_eq!(elements[0].name, "Print");
+            assert_eq!(elements[0].new_name.as_deref(), Some("PrintCopy"));
+            assert_eq!(elements[0].synonym.as_deref(), Some("Print copy"));
+            assert_eq!(elements[0].comment.as_deref(), Some("kept"));
+            assert_eq!(
+                elements[0].position.as_ref().unwrap().before.as_deref(),
+                Some("Other")
+            );
+            assert_eq!(addressed, Some(AddressedFields::Values));
+
+            let parsed = parse_metadata_plan_operation(
+                "command.remove",
+                &json!({"at":at}),
+                3,
+                &fixture.binding,
+            )
+            .unwrap();
+            let MetadataPlanKind::Edit {
+                target,
+                operation:
+                    MetaEditOperation::Remove {
+                        collection,
+                        scope,
+                        names,
+                    },
+                addressed,
+            } = parsed.kind
+            else {
+                panic!("command.remove must plan a typed removal");
+            };
+            assert_eq!(target.as_str(), "Document.Order");
+            assert_eq!(collection, MetaCollection::Commands);
+            assert!(scope.is_none());
+            assert_eq!(names, ["Print"]);
+            assert_eq!(addressed, Some(AddressedFields::None));
+        }
+    }
+
+    #[test]
+    fn typed_command_changes_keep_writer_parser_refusal_order() {
+        use serde_json::Map;
+        let fixture = MetadataFixture::new();
+        for (operation, args, path) in [
+            ("command.set", json!(false), ""),
+            (
+                "command.set",
+                json!({"at":null,"values":false,"unknown":true}),
+                ".unknown",
+            ),
+            (
+                "command.remove",
+                json!({"at":null,"unknown":true}),
+                ".unknown",
+            ),
+            (
+                "command.remove",
+                json!({"at":null,"values":false}),
+                ".values",
+            ),
+            ("command.set", json!({"at":42,"values":false}), ".at"),
+            ("command.remove", json!({"at":42}), ".at"),
+            (
+                "command.set",
+                json!({"at":"main:Document.Order","values":false}),
+                ".at",
+            ),
+            ("command.remove", json!({"at":"main:Document.Order"}), ".at"),
+            (
+                "command.set",
+                json!({"at":"main:Document.Order.Attribute.Total","values":false}),
+                ".at",
+            ),
+            (
+                "command.set",
+                json!({"at":"main:Document.Order.Form.Main.Command.Print","values":false}),
+                ".at",
+            ),
+            (
+                "command.remove",
+                json!({"at":"main:Document.Order.Command"}),
+                ".at",
+            ),
+            (
+                "command.set",
+                json!({"at":"main:Document.Order.Command.Print","values":false}),
+                ".values",
+            ),
+            (
+                "command.set",
+                json!({"at":"main:Document.Order.Command.Print","values":{}}),
+                ".values",
+            ),
+            (
+                "command.set",
+                json!({"at":"main:Document.Order.Command.Print","values":{"name":42,"newName":false}}),
+                ".values.name",
+            ),
+            (
+                "command.set",
+                json!({"at":"main:Document.Order.Command.Print","values":{"newName":false,"unknown":true}}),
+                ".values.unknown",
+            ),
+        ] {
+            let error =
+                parse_metadata_plan_operation(operation, &args, 3, &fixture.binding).unwrap_err();
+            assert_eq!(
+                error.kind(),
+                ApplyPlanErrorKind::BadValue,
+                "{operation}: {args}"
+            );
+            assert_eq!(
+                error.path(),
+                Some(format!("ops[3].args{path}").as_str()),
+                "{operation}: {args}: {error:?}"
+            );
+        }
+        for (field, value) in [
+            ("newName", json!("1Print")),
+            ("title", json!("Form-only")),
+            ("action", json!("Print")),
+            ("type", json!({"variants":[{"kind":"boolean"}]})),
+            ("required", json!(true)),
+            ("fillValue", json!({"kind":"boolean","value":true})),
+            ("indexing", json!("Index")),
+            ("attributes", json!([{"name":"Nested"}])),
+        ] {
+            let values = Map::from_iter([(field.to_string(), value)]);
+            let error = parse_metadata_plan_operation(
+                "command.set",
+                &json!({"at":"main:Document.Order.Command.Print","values":values}),
+                3,
+                &fixture.binding,
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{field}");
+            assert_eq!(
+                error.path(),
+                Some(format!("ops[3].args.values.{field}").as_str()),
+                "{field}: {error:?}"
             );
         }
     }

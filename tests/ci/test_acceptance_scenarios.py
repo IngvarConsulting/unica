@@ -703,12 +703,15 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         ("attribute.set", "Metadata", "MetadataAttribute", "Values"),
         ("attribute.remove", "Metadata", "MetadataAttribute", "Target"),
         ("command.add", "Metadata", "MetadataCommands", "Items"),
+        ("command.set", "Metadata", "MetadataCommand", "Values"),
+        ("command.remove", "Metadata", "MetadataCommand", "Target"),
         ("attribute.add", "Form", "Form", "Items"),
         ("command.add", "Form", "Form", "Items"),
     ]
     CONTEXT_REGISTRATIONS = (
         "(MetadataOperation::AttributeAdd), (MetadataOperation::AttributeSet),"
         "(MetadataOperation::AttributeRemove), (MetadataOperation::CommandAdd),"
+        "(MetadataOperation::CommandSet), (MetadataOperation::CommandRemove),"
         "(FormOperation::AttributeAdd), (FormOperation::CommandAdd),"
     )
 
@@ -827,6 +830,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             '(FormOperation::AttributeAdd),\n'
             '(MetadataOperation::AttributeRemove),\n'
             '(MetadataOperation::CommandAdd),\n'
+            '(MetadataOperation::CommandSet), (MetadataOperation::CommandRemove),\n'
             '("item.add", Form, FormItemContainer, Items),\n'
             '(FormOperation::CommandAdd),',
             metadata,
@@ -836,6 +840,8 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
                     AttributeSet => ("attribute.set", MetadataAttribute, Values),
                     AttributeRemove => ("attribute.remove", MetadataAttribute, Target),
                     CommandAdd => ("command.add", MetadataCommands, Items),
+                    CommandSet => ("command.set", MetadataCommand, Values),
+                    CommandRemove => ("command.remove", MetadataCommand, Target),
                 );''',
                 "form_operation.rs": '''form_operations!(
                     AttributeAdd => ("attribute.add", Form, Items),
@@ -854,6 +860,8 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("attribute.add", "Form", "Form", "Items"),
             ("attribute.remove", "Metadata", "MetadataAttribute", "Target"),
             ("command.add", "Metadata", "MetadataCommands", "Items"),
+            ("command.set", "Metadata", "MetadataCommand", "Values"),
+            ("command.remove", "Metadata", "MetadataCommand", "Target"),
             ("item.add", "Form", "FormItemContainer", "Items"),
             ("command.add", "Form", "Form", "Items"),
             ("supportCapability.set", "Support", "Configuration", "Values"),
@@ -864,7 +872,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         module = self.renderer()
         registry, implemented = module.load_apply_registry()
         for family, migrated_names, remaining in [
-            ("Metadata", {"attribute.add", "attribute.set", "attribute.remove", "command.add"}, 30),
+            ("Metadata", {"attribute.add", "attribute.set", "attribute.remove", "command.add", "command.set", "command.remove"}, 28),
             ("Form", {"attribute.add", "command.add"}, 7),
         ]:
             self.assertEqual(
@@ -889,7 +897,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             self.assertIn(last_row, metadata)
             raw = f'("command.add", {family}, {applicability}, Items),'
             other_type = "FormOperation" if family == "Metadata" else "MetadataOperation"
-            variants = ["AttributeAdd", "AttributeSet", "AttributeRemove", "CommandAdd"] if family == "Metadata" else ["AttributeAdd", "CommandAdd"]
+            variants = ["AttributeAdd", "AttributeSet", "AttributeRemove", "CommandAdd", "CommandSet", "CommandRemove"] if family == "Metadata" else ["AttributeAdd", "CommandAdd"]
             without_family = table
             for variant in variants:
                 without_family = without_family.replace(f"({operation_type}::{variant}),", "")
@@ -916,12 +924,14 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
                 "duplicate metadata name": (table, metadata.replace(last_row, f'    CommandAdd => ("attribute.add", {applicability}, Items),\n')),
             }
             if family == "Metadata":
-                for variant, name, skeleton in [
-                    ("AttributeSet", "attribute.set", "Values"),
-                    ("AttributeRemove", "attribute.remove", "Target"),
+                for variant, name, applicability, skeleton in [
+                    ("AttributeSet", "attribute.set", "MetadataAttribute", "Values"),
+                    ("AttributeRemove", "attribute.remove", "MetadataAttribute", "Target"),
+                    ("CommandSet", "command.set", "MetadataCommand", "Values"),
+                    ("CommandRemove", "command.remove", "MetadataCommand", "Target"),
                 ]:
                     registration = f"({operation_type}::{variant}),"
-                    raw_attribute = f'("{name}", Metadata, MetadataAttribute, {skeleton}),'
+                    raw_attribute = f'("{name}", Metadata, {applicability}, {skeleton}),'
                     cases[f"missing {name} registration"] = (table.replace(registration, ""), metadata)
                     cases[f"duplicate {name} registration"] = (table + registration, metadata)
                     cases[f"raw {name} instead of typed"] = (table.replace(registration, raw_attribute), metadata)

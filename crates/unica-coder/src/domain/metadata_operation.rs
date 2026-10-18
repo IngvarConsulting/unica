@@ -44,6 +44,8 @@ metadata_operations!(
     AttributeSet => ("attribute.set", MetadataAttribute, Values),
     AttributeRemove => ("attribute.remove", MetadataAttribute, Target),
     CommandAdd => ("command.add", MetadataCommands, Items),
+    CommandSet => ("command.set", MetadataCommand, Values),
+    CommandRemove => ("command.remove", MetadataCommand, Target),
 );
 
 impl MetadataOperation {
@@ -59,6 +61,10 @@ impl MetadataOperation {
             Self::CommandAdd => {
                 OperationContract::metadata_member_add(MetaCollection::Commands, site)
             }
+            Self::CommandSet => {
+                OperationContract::metadata_member_set(MetaCollection::Commands, site)
+            }
+            Self::CommandRemove => OperationContract::metadata_member_remove(),
         }
     }
 }
@@ -70,7 +76,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn registration_metadata_preserves_attribute_operations_and_command_addition() {
+    fn registration_metadata_preserves_attribute_and_command_operations() {
         for (operation, name, applicability, skeleton) in [
             (
                 MetadataOperation::AttributeAdd,
@@ -96,6 +102,18 @@ mod tests {
                 OperationApplicability::MetadataCommands,
                 OperationSkeleton::Items,
             ),
+            (
+                MetadataOperation::CommandSet,
+                "command.set",
+                OperationApplicability::MetadataCommand,
+                OperationSkeleton::Values,
+            ),
+            (
+                MetadataOperation::CommandRemove,
+                "command.remove",
+                OperationApplicability::MetadataCommand,
+                OperationSkeleton::Target,
+            ),
         ] {
             assert_eq!(operation.name(), name);
             assert_eq!(operation.applicability(), applicability);
@@ -104,12 +122,75 @@ mod tests {
         }
         for name in [
             "attribute.rename",
-            "command.remove",
+            "command.rename",
             "attribute.add.extra",
             "ATTRIBUTE.ADD",
             "",
         ] {
             assert!(!MetadataOperation::is_named(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn command_set_contract_keeps_metadata_fields_and_refuses_form_fields() {
+        let contract = MetadataOperation::CommandSet.contract_at(None);
+        assert_eq!(contract.help, "skills/meta-edit/SKILL.md");
+        assert!(contract.normalize(&contract.example_args, "args").is_ok());
+        for values in [
+            json!({"newName":"PrintCopy"}),
+            json!({"synonym":"Print","comment":"kept"}),
+            json!({"position":{"before":"Other"}}),
+        ] {
+            assert!(
+                contract
+                    .normalize(&json!({"values":values}), "args")
+                    .is_ok(),
+                "{values}"
+            );
+        }
+        for args in [
+            json!({}),
+            json!({"values":{}}),
+            json!({"values":{"newName":"1Print"}}),
+            json!({"values":{"name":"Print"}}),
+            json!({"values":{"title":"Form-only"}}),
+            json!({"values":{"action":"Print"}}),
+            json!({"values":{"type":{"variants":[{"kind":"boolean"}]}}}),
+            json!({"values":{"fillValue":{"kind":"boolean","value":true}}}),
+            json!({"values":{"required":true}}),
+            json!({"values":{"indexing":"Index"}}),
+            json!({"values":{"comment":"kept"},"items":[]}),
+            json!({"values":{"comment":"kept"},"scope":{"tabularSection":"Lines"}}),
+        ] {
+            assert!(contract.normalize(&args, "args").is_err(), "{args}");
+        }
+        for owner in [MetadataKind::Document, MetadataKind::Report] {
+            for in_section in [false, true] {
+                assert_eq!(
+                    MetadataOperation::CommandSet
+                        .contract_at(Some(MetadataSite { owner, in_section }))
+                        .details(),
+                    contract.details(),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn command_remove_contract_takes_only_the_address() {
+        let contract = MetadataOperation::CommandRemove.contract_at(None);
+        assert_eq!(contract.example_args, json!({}));
+        assert_eq!(contract.help, "skills/meta-edit/SKILL.md");
+        for args in [json!({}), json!({"at":"Document.Order.Command.Print"})] {
+            assert!(contract.normalize(&args, "args").is_ok(), "{args}");
+        }
+        for args in [
+            json!({"name":"Print"}),
+            json!({"values":{}}),
+            json!({"items":["Print"]}),
+            json!({"scope":{"tabularSection":"Lines"}}),
+        ] {
+            assert!(contract.normalize(&args, "args").is_err(), "{args}");
         }
     }
 

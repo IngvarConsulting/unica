@@ -46,6 +46,7 @@ SOURCE_WORKSPACES = {
     "tests/fixtures/acceptance/workspace-docs-8.3.27",
     "tests/fixtures/acceptance/workspace-docs-standards-unreachable",
     "tests/fixtures/acceptance/workspace-metadata-values",
+    "tests/fixtures/acceptance/workspace-metadata-commands",
     "tests/fixtures/acceptance/workspace-english",
     "tests/fixtures/acceptance/workspace-external",
     "tests/fixtures/acceptance/workspace-external-missing",
