@@ -56,6 +56,62 @@
       "tool": "unica.diff",
       "args": {
         "executionToken": "$executionToken",
+        "limit": 20
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/chunks",
+          "eq": [
+            {
+              "path": "CommonModules/Пример/Ext/Module.bsl",
+              "side": "before",
+              "present": true,
+              "totalBytes": 392,
+              "rangeStart": 187,
+              "rangeEnd": 362,
+              "startByte": 187,
+              "endByte": 362,
+              "encoding": "utf8",
+              "content": "\nКонецФункции\r\n\r\n// соседний метод сохраняется\r\nПроцедура Соседний() Экспорт\r\n    Сообщить(\"Сосед\");\r\n"
+            },
+            {
+              "path": "CommonModules/Пример/Ext/Module.bsl",
+              "side": "after",
+              "present": true,
+              "totalBytes": 530,
+              "rangeStart": 187,
+              "rangeEnd": 500,
+              "startByte": 187,
+              "endByte": 500,
+              "encoding": "utf8",
+              "content": "\nКонецФункции\r\n\r\nПроцедура НовыйМетод() Экспорт\r\n\tСообщить(\"Предпросмотр\");\r\nКонецПроцедуры\r\n\r\n// соседний метод сохраняется\r\nПроцедура Соседний() Экспорт\r\n    Сообщить(\"Сосед\");\r\n"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/truncated",
+          "eq": false
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "complete"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.originalBytes"
+        }
+      ]
+    },
+    {
+      "tool": "unica.diff",
+      "args": {
+        "executionToken": "$executionToken",
         "limit": 1
       },
       "expect": [

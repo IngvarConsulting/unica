@@ -10,19 +10,20 @@ use crate::domain::metadata_operation::MetadataOperation as RegisteredMetadataOp
 use crate::domain::project_sources::SourceSetKind;
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use crate::infrastructure::logical_event_source::metadata_descriptor_relative;
-use crate::infrastructure::metadata_kinds::metadata_layout;
+use crate::infrastructure::metadata_kinds::{metadata_kind_by_directory, metadata_layout};
 use crate::infrastructure::native_operations::apply::{
     empty_apply_family_batch, hidden_apply_family_unimplemented, ApplyPlanError,
-    ApplyPlanErrorKind, ApplyStagedState,
+    ApplyPlanErrorKind, ApplyStagedState, StagedFileState,
 };
 use crate::infrastructure::native_operations::apply_families::request::{
     IndexedPlanOperation, ProvisionalApplyEffect,
 };
 use crate::infrastructure::native_operations::meta::{
     apply_typed_operations_to_image_with_seed, canonical_typed_command_name,
-    meta_default_text_language, meta_edit_object_identity, meta_mltext_property_replacement,
-    predefined_item_id, predefined_post_image, typed_command_module_path,
-    typed_operations_write_multilingual_text, EXTERNAL_SOURCE_TEXT_LANGUAGE,
+    check_meta_object_integrity, meta_default_text_language, meta_edit_object_identity,
+    meta_mltext_property_replacement, predefined_item_id, predefined_post_image,
+    typed_command_module_path, typed_operations_write_multilingual_text,
+    EXTERNAL_SOURCE_TEXT_LANGUAGE,
 };
 use crate::infrastructure::native_operations::text_snapshot::{
     LineEnding, LineEndingProfile, SourceTextSnapshot,
@@ -90,6 +91,86 @@ enum MetadataPlanKind {
         relative: PathBuf,
         values: Map<String, Value>,
     },
+}
+
+/// Local composition belongs to the final descriptor, after every operation
+/// family has contributed its image. A borrowed descriptor contains only the
+/// extension's contribution and cannot establish the parent's composition.
+pub(super) fn validate_final_object_integrity(
+    staged: &ApplyStagedState,
+    binding: &ProviderRootBinding,
+) -> Result<(), ApplyPlanError> {
+    for change in staged.planned_changes() {
+        let StagedFileState::Bytes(bytes) = &change.current else {
+            continue;
+        };
+        let relative = &change.relative_path;
+        let Some(directory) = relative
+            .parent()
+            .filter(|parent| parent.components().count() == 1)
+            .and_then(Path::to_str)
+            .and_then(metadata_kind_by_directory)
+        else {
+            continue;
+        };
+        let Ok(kind) = MetadataKind::parse(directory.tag) else {
+            continue;
+        };
+        if crate::domain::metadata::meta_object_integrity_rules(kind)
+            .next()
+            .is_none()
+            || relative
+                .extension()
+                .and_then(|extension| extension.to_str())
+                != Some("xml")
+        {
+            continue;
+        }
+        let Some(name) = relative.file_stem().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let at = format!("{}:{}.{}", binding.source_set_name(), kind.as_str(), name);
+        staged
+            .checkpoint("final metadata object integrity")
+            .map_err(|error| ApplyPlanError::staging(error, at.clone()))?;
+        if binding.source_kind() == SourceSetKind::Extension
+            && final_object_inherits_composition(kind, bytes)
+        {
+            continue;
+        }
+        check_meta_object_integrity(kind, bytes).map_err(|diagnostic| {
+            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, diagnostic.message).at_path(at)
+        })?;
+    }
+    Ok(())
+}
+
+fn final_object_inherits_composition(kind: MetadataKind, bytes: &[u8]) -> bool {
+    const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return false;
+    };
+    let Ok(document) = roxmltree::Document::parse(text.trim_start_matches('\u{feff}')) else {
+        return false;
+    };
+    let root = document.root_element();
+    if !root.has_tag_name((MD, "MetaDataObject")) {
+        return false;
+    }
+    root.children()
+        .find(|node| node.has_tag_name((MD, kind.as_str())))
+        .and_then(|object| {
+            object
+                .children()
+                .find(|node| node.has_tag_name((MD, "Properties")))
+        })
+        .and_then(|properties| {
+            properties
+                .children()
+                .find(|node| node.has_tag_name((MD, "ExtendedConfigurationObject")))
+        })
+        .and_then(|marker| marker.text())
+        .is_some_and(|id| uuid::Uuid::parse_str(id.trim()).is_ok())
 }
 
 /// Where the caller wrote the fields of an addressed typed edit: the typed
@@ -503,7 +584,7 @@ fn parse_object_remove(
                 ApplyPlanErrorKind::BadValue,
                 "`force` must be a boolean",
             )
-            .at_path(format!("ops[{op_index}].args.force")))
+            .at_path(format!("ops[{op_index}].args.force")));
         }
     };
     Ok(MetadataPlanKind::Remove {
@@ -635,7 +716,7 @@ fn attribute_owner_and_name(
                 ApplyPlanErrorKind::BadValue,
                 "attribute target must identify one exact Attribute leaf",
             )
-            .at_path(format!("ops[{op_index}].args.at")))
+            .at_path(format!("ops[{op_index}].args.at")));
         }
     };
     if attribute.kind() != NodeKind::Attribute {
@@ -775,7 +856,7 @@ fn parse_attribute_add(
                 ApplyPlanErrorKind::BadValue,
                 "attribute.add target must be a metadata object or its `TabularSection.<Name>`",
             )
-            .at_path(format!("ops[{op_index}].args.at")))
+            .at_path(format!("ops[{op_index}].args.at")));
         }
     };
     let items = required_array(args, "items", op_index)?.to_vec();
@@ -2501,7 +2582,12 @@ fn template_descriptor_xml(
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject {} version=\"{format_version}\">\n\t<Template uuid=\"{uuid}\">\n\t\t<Properties>\n\t\t\t<Name>{name}</Name>\n{}\n\t\t\t<Comment/>\n\t\t\t<TemplateType>{}</TemplateType>\n\t\t</Properties>\n\t</Template>\n</MetaDataObject>\n",
         crate::infrastructure::native_operations::template::full_md_namespace_declarations(),
-        ml_text_block("\t\t\t", "Synonym", lang, &crate::infrastructure::native_operations::common::split_camel_case(name)),
+        ml_text_block(
+            "\t\t\t",
+            "Synonym",
+            lang,
+            &crate::infrastructure::native_operations::common::split_camel_case(name)
+        ),
         kind.as_str()
     )
 }

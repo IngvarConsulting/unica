@@ -74,10 +74,10 @@ Compare readable logical nodes, or read exact source changes from a saved apply 
 | `cursor` | string | только в ветви | Continue the same saved plan with the same limit. Only saved-plan reads support continuation. |
 | `executionToken` | string | по ветви | Token from apply planning; reads stored before/after bytes without executing. |
 | `left` | string | по ветви | Qualified logical address of the left node. |
-| `limit` | integer | нет | Maximum differences or saved source chunks; default 100. Saved-plan pages are also bounded by encoded bytes. |
+| `limit` | integer | нет | Maximum saved source chunks; default 20. Pages are also bounded by encoded bytes. |
 | `right` | string | по ветви | Qualified logical address of the right node. |
 
-**Результат сейчас:** Сравнивает два узла одного логического вида и возвращает bounded JSON changes без общей ревизии исходников и без вычисляемого словаря `can`; сравнение сужается адресами узлов, фильтра нет. Курсора нет: усечённый ответ (`truncated: true`) называет усечение и советует сравнить узлы поменьше или поднять `limit`. Альтернатива executionToken читает точные сохранённые диапазоны before/after с контекстом до исполнения плана; страницы ограничены количеством chunks и размером, cursor привязан к плану и limit. Входы плана проверяются без записи (отвечают типизированным `data`)
+**Результат сейчас:** Сравнивает два узла одного логического вида и возвращает bounded JSON changes без общей ревизии исходников и без вычисляемого словаря `can`; сравнение сужается адресами узлов, фильтра нет. Курсора нет: усечённый ответ (`truncated: true`) называет усечение и советует сравнить узлы поменьше или поднять `limit`. Для left/right limit по умолчанию равен 100, максимум — 1000. Альтернатива executionToken читает точные сохранённые диапазоны before/after с контекстом до исполнения плана; страницы по умолчанию содержат до 20 chunks (максимум 50), также ограничены размером; page.stoppedBy сообщает limit/bytes/complete, cursor привязан к плану и limit. Входы плана проверяются без записи (отвечают типизированным `data`)
 
 **Целевой контракт:** Добавить предметные diff-проекции и продолжение сохранённого сравнения
 

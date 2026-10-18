@@ -227,7 +227,7 @@ allowed-tools:
 ```json
 {
   "executionToken": "<data.executionToken из успешного плана>",
-  "limit": 100
+  "limit": 20
 }
 ```
 
@@ -239,6 +239,9 @@ allowed-tools:
 `present` отличает пустой файл от отсутствующего. Соединяй `content` в порядке
 страниц отдельно по пути и стороне: `encoding: "utf8"` содержит точный текст,
 `encoding: "base64"` — двоичные байты в Base64.
+
+Умолчание `limit` — 20, максимум — 50. `page.stoppedBy` сообщает причину
+остановки: `limit`, `bytes` или `complete`.
 
 `cursor` продолжает только этот план с тем же `limit`. Изменение входов
 даёт `stale_revision` и требует нового плана. Применение использует сохранённые

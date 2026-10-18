@@ -80,6 +80,7 @@ mod help_facet;
 mod info;
 mod info_projection;
 mod integrity_check;
+pub(crate) use integrity_check::check_meta_object_integrity;
 mod predefined;
 mod publisher;
 

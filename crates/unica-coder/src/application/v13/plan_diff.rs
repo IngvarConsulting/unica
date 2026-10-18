@@ -121,6 +121,7 @@ impl PlanDiffLayout {
         let mut consumed = 0;
         let mut size = 0;
         let mut chunks = Vec::new();
+        let mut stopped_by = "complete";
         'windows: for window in &self.windows {
             checkpoint()?;
             let span = window.range.len().max(1);
@@ -165,7 +166,12 @@ impl PlanDiffLayout {
                 if encoded > PAGE_BYTES {
                     return Err("saved plan path exceeds the page byte limit".into());
                 }
-                if chunks.len() == limit || (!chunks.is_empty() && size + encoded > PAGE_BYTES) {
+                if chunks.len() == limit {
+                    stopped_by = "limit";
+                    break 'windows;
+                }
+                if !chunks.is_empty() && size + encoded > PAGE_BYTES {
+                    stopped_by = "bytes";
                     break 'windows;
                 }
                 size += encoded;
@@ -179,7 +185,9 @@ impl PlanDiffLayout {
             position += span;
         }
         let (_, _, next) = page_bounds_from_offset(offset, key, consumed, self.positions)?;
-        Ok(json!({"chunks": chunks, "truncated": next.is_some(), "cursor": next}))
+        Ok(
+            json!({"chunks": chunks, "truncated": next.is_some(), "cursor": next, "stoppedBy": stopped_by}),
+        )
     }
 }
 
@@ -213,26 +221,51 @@ mod tests {
     #[test]
     fn saved_source_pages_report_count_bytes_and_completion() {
         let body = vec![0; 100000];
-        let images = [SourceImage { path: "Module.bsl".into(), before: None, after: Some(&body) }];
+        let images = [SourceImage {
+            path: "Module.bsl".into(),
+            before: None,
+            after: Some(&body),
+        }];
         let layout = PlanDiffLayout::new(&images, || Ok(())).unwrap();
         let limited = layout.page(&images, "limit1", 1, None, || Ok(())).unwrap();
         assert_eq!(limited["stoppedBy"], "limit");
         assert!(limited["cursor"].is_string());
-        let bytes = layout.page(&images, "limit50", 50, None, || Ok(())).unwrap();
+        let bytes = layout
+            .page(&images, "limit50", 50, None, || Ok(()))
+            .unwrap();
         assert_eq!(bytes["stoppedBy"], "bytes");
         assert!(bytes["cursor"].is_string());
         let mut cursor = bytes["cursor"].as_str().map(str::to_owned);
         while let Some(current) = cursor {
-            let page = layout.page(&images, "limit50", 50, Some(&current), || Ok(())).unwrap();
-            assert_eq!(page, layout.page(&images, "limit50", 50, Some(&current), || Ok(())).unwrap());
+            let page = layout
+                .page(&images, "limit50", 50, Some(&current), || Ok(()))
+                .unwrap();
+            assert_eq!(
+                page,
+                layout
+                    .page(&images, "limit50", 50, Some(&current), || Ok(()))
+                    .unwrap()
+            );
             cursor = page["cursor"].as_str().map(str::to_owned);
-            if cursor.is_none() { assert_eq!(page["stoppedBy"], "complete"); }
+            if cursor.is_none() {
+                assert_eq!(page["stoppedBy"], "complete");
+            }
         }
-        let small = [SourceImage { path: "small".into(), before: None, after: Some(b"a") }];
-        let exact = PlanDiffLayout::new(&small, || Ok(())).unwrap().page(&small, "two", 2, None, || Ok(())).unwrap();
+        let small = [SourceImage {
+            path: "small".into(),
+            before: None,
+            after: Some(b"a"),
+        }];
+        let exact = PlanDiffLayout::new(&small, || Ok(()))
+            .unwrap()
+            .page(&small, "two", 2, None, || Ok(()))
+            .unwrap();
         assert_eq!(exact["stoppedBy"], "complete");
         assert!(exact["cursor"].is_null());
-        let empty = PlanDiffLayout::new(&[], || Ok(())).unwrap().page(&[], "empty", 2, None, || Ok(())).unwrap();
+        let empty = PlanDiffLayout::new(&[], || Ok(()))
+            .unwrap()
+            .page(&[], "empty", 2, None, || Ok(()))
+            .unwrap();
         assert_eq!(empty["stoppedBy"], "complete");
         assert!(empty["cursor"].is_null());
     }

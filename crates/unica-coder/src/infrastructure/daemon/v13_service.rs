@@ -16,6 +16,9 @@ use crate::application::operation_descriptors::ExecutionClass;
 use crate::application::result_store::{
     SearchCursorBinding, SearchCursorStore, StoredSearchCursor, ViewCursorBinding, ViewCursorStore,
 };
+use crate::application::source_navigation::{
+    SOURCE_NAVIGATION_LIMIT_DEFAULT, SOURCE_NAVIGATION_LIMIT_MAX,
+};
 use crate::application::tool_contracts::SurfaceRelease;
 use crate::application::v13::apply::parse_request as parse_apply_request;
 use crate::application::v13::find::{FindIndex, FindRequest};
@@ -2232,14 +2235,16 @@ impl CanonicalV13ReadService {
                 );
             }
             let limit = match arguments.get("limit") {
-                None => 100,
-                Some(value) => match bounded_usize(value).filter(|limit| *limit <= 1000) {
+                None => SOURCE_NAVIGATION_LIMIT_DEFAULT,
+                Some(value) => match bounded_usize(value)
+                    .filter(|limit| *limit <= SOURCE_NAVIGATION_LIMIT_MAX)
+                {
                     Some(limit) => limit,
                     None => {
                         return error_result(
                             None,
                             RefusalCode::BadValue,
-                            "diff limit must be an integer from 1 through 1000",
+                            "saved-plan diff limit must be an integer from 1 through 50",
                         )
                     }
                 },
@@ -2262,6 +2267,13 @@ impl CanonicalV13ReadService {
                     if let Some(cursor) = page["cursor"].as_str() {
                         result.next.push(json!({"tool": "unica.diff", "arguments": {"executionToken": token, "limit": limit, "cursor": cursor}}));
                     }
+                    let mut page = page;
+                    let stopped_by = page
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("stoppedBy")
+                        .expect("saved source page has a stop reason");
+                    result.page = Some(json!({"stoppedBy": stopped_by}));
                     result.data = Some(page);
                     result
                 }

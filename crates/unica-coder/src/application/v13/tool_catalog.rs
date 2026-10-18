@@ -1,3 +1,6 @@
+use crate::application::source_navigation::{
+    SOURCE_NAVIGATION_LIMIT_DEFAULT, SOURCE_NAVIGATION_LIMIT_MAX,
+};
 use crate::application::tool_contracts::SurfaceRelease;
 use serde_json::{json, Value};
 
@@ -422,7 +425,7 @@ fn schema_for_saved_apply_plan(properties: Value, required: Value) -> Value {
 
 fn schema_for_plan_diff() -> Value {
     let limit = json!({"type": "integer", "minimum": 1, "maximum": 1000,
-        "description": "Maximum differences or saved source chunks; default 100. Saved-plan pages are also bounded by encoded bytes."});
+        "description": "Maximum differences in left/right comparisons; default 100. Saved-plan pages default to 20 chunks, maximum 50, and are also bounded by encoded bytes."});
     let compare = schema(
         json!({"left": logical_address_with("Qualified logical address of the left node."), "right": logical_address_with("Qualified logical address of the right node."), "limit": limit}),
         json!(["left", "right"]),
@@ -430,7 +433,8 @@ fn schema_for_plan_diff() -> Value {
     let saved = schema(
         json!({
             "executionToken": {"type": "string", "minLength": 1, "description": "Token from apply planning; reads stored before/after bytes without executing."},
-            "limit": limit,
+            "limit": {"type": "integer", "minimum": 1, "maximum": SOURCE_NAVIGATION_LIMIT_MAX, "default": SOURCE_NAVIGATION_LIMIT_DEFAULT,
+                "description": format!("Maximum saved source chunks; default {SOURCE_NAVIGATION_LIMIT_DEFAULT}. Pages are also bounded by encoded bytes.")},
             "cursor": cursor("Continue the same saved plan with the same limit. Only saved-plan reads support continuation.")
         }),
         json!(["executionToken"]),
@@ -440,6 +444,7 @@ fn schema_for_plan_diff() -> Value {
         .as_object_mut()
         .unwrap()
         .extend(saved["properties"].as_object().unwrap().clone());
+    properties["limit"] = compare["properties"]["limit"].clone();
     let mut result = schema(properties, json!([]));
     result["if"] = json!({"required": ["executionToken"]});
     result["then"] = saved;
@@ -544,10 +549,7 @@ mod tests {
     fn saved_plan_diff_limits_follow_read_pages_without_restricting_comparisons() {
         let schema = super::schema_for_plan_diff();
         assert_eq!(schema["then"]["properties"]["limit"]["maximum"], 50);
-        assert!(schema["then"]["properties"]["limit"]["description"]
-            .as_str()
-            .unwrap()
-            .contains("20"));
+        assert_eq!(schema["then"]["properties"]["limit"]["default"], 20);
         assert_eq!(schema["properties"]["limit"]["maximum"], 1000);
         assert_eq!(schema["else"]["properties"]["limit"]["maximum"], 1000);
     }
