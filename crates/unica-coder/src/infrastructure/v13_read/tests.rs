@@ -6920,3 +6920,46 @@ fn xdto_check_refuses_linked_descriptor_and_package_resources() {
         );
     }
 }
+
+#[test]
+fn subsystem_text_properties_preserve_presence_and_damage_at_every_depth() {
+    for (fragment, comment, explanation, damaged) in [
+        ("<Comment/><Explanation/>", Some(""), Some(""), false),
+        ("<Comment></Comment><Explanation></Explanation>", Some(""), Some(""), false),
+        ("<Comment>  </Comment><Explanation>  </Explanation>", Some("  "), Some(""), false),
+        ("<Comment>а<![CDATA[б]]>в</Comment><Explanation><v8:item><v8:lang>en</v8:lang><v8:content>English</v8:content></v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>Пояснение</v8:content></v8:item></Explanation>", Some("абв"), Some("Пояснение"), false),
+        ("", None, None, false),
+        ("<Comment><Bad/></Comment><Explanation>garbage</Explanation>", None, None, true),
+        ("<Comment attr=\"x\"/><Explanation attr=\"x\"/>", None, None, true),
+        ("<Comment/><Comment/><Explanation/><Explanation/>", None, None, true),
+        ("<Comment xmlns=\"urn:foreign\"/><Explanation xmlns=\"urn:foreign\"/>", None, None, true),
+        ("<Comment><Bad/></Comment><Explanation><v8:item><v8:lang>ru</v8:lang></v8:item></Explanation>", None, None, true),
+        ("<Comment/><Explanation><item xmlns=\"urn:foreign\"><lang>ru</lang><content>x</content></item></Explanation>", Some(""), None, true),
+    ] {
+        let fixture = RealReaderFixture::new();
+        let paths = ["Subsystems/Sales.xml", "Subsystems/Sales/Subsystems/Orders.xml"];
+        for (path, name, child) in [(paths[0], "Sales", "Orders"), (paths[1], "Orders", "Returns")] {
+            let xml = subsystem_descriptor(name, &["Catalog.Items"], &[child])
+                .replace("<Synonym/>", &format!("<Synonym/>{fragment}"));
+            write(&fixture.source.join(path), &xml);
+            let ci = fixture.source.join(path.trim_end_matches(".xml")).join("Ext/CommandInterface.xml");
+            write(&ci, r#"<CommandInterface xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"/>"#);
+        }
+        let service = fixture.view_service();
+        for (path, at) in paths.into_iter().zip(["main:Subsystem.Sales", "main:Subsystem.Sales.Subsystem.Orders"]) {
+            let before = fs::read(fixture.source.join(path)).unwrap();
+            let result = service.view(ViewRequest::new(at).unwrap());
+            assert!(result.ok, "{fragment}: {result:?}");
+            let data = result.data.as_ref().unwrap();
+            assert_eq!(data["props"]["comment"], json!(comment), "{at}: {fragment}");
+            assert_eq!(data["props"]["explanation"], json!(explanation), "{at}: {fragment}");
+            let limits = data["limits"].to_string();
+            assert_eq!(limits.contains("properties."), damaged, "{at}: {fragment}: {limits}");
+            for branch in ["Relation", "Subsystem", "Interface"] {
+                assert_eq!(view_branch_count(&result, &format!("{at}.{branch}")), Some(1), "{at}: {fragment}");
+                assert!(service.view(ViewRequest::new(&format!("{at}.{branch}")).unwrap()).ok);
+            }
+            assert_eq!(fs::read(fixture.source.join(path)).unwrap(), before);
+        }
+    }
+}

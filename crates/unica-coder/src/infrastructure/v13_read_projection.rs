@@ -817,6 +817,7 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
             "templates",
         ],
         LogicalReader::Subsystem | LogicalReader::Interface => &[
+            "propertyLimits",
             "name",
             "synonym",
             "comment",
@@ -984,6 +985,16 @@ fn project_subsystem(
     let (content, dangling) = subsystem_content(address, payload);
     let children = subsystem_children(address, payload, suffix);
     if suffix.is_empty() {
+        let mut limits = content_limits(&dangling);
+        limits.extend(
+            payload
+                .get("propertyLimits")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_string),
+        );
         let mut branches = Vec::new();
         if !content.is_empty() {
             branches.push(BranchRef::new(
@@ -1014,7 +1025,7 @@ fn project_subsystem(
                 payload,
             )
             .with_branches(branches)
-            .with_limits(content_limits(&dangling)),
+            .with_limits(limits),
         ));
     }
     let first = &suffix[0];
