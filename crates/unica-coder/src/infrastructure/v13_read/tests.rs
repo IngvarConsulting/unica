@@ -3554,7 +3554,7 @@ fn canonical_subsystem_view_preserves_support_for_own_and_nested_descriptors() {
             ("main:Subsystem.Sales", &parent),
         ] {
             let result = service.view(ViewRequest::new(at).unwrap());
-            assert!(result.ok, "{case} {at}: {:?}", result.diagnostics);
+            assert!(result.ok, "{case} {at}: view must succeed");
             let props = &result.data.as_ref().unwrap()["props"];
             assert_eq!(props["support"], expected["support"], "{case} {at}");
             assert_eq!(
@@ -3587,7 +3587,10 @@ fn canonical_view_distinguishes_absent_support_from_unreadable_and_invalid_marke
         ] {
             let result = service.view(ViewRequest::new(at).unwrap());
             if marker_kind == "absent" {
-                assert!(result.ok, "{at}: {:?}", result.diagnostics);
+                assert!(
+                    result.ok,
+                    "{at}: view must succeed without a support marker"
+                );
                 let expected = if at == "main:Catalog.Items" {
                     json!("supported")
                 } else {
@@ -3606,8 +3609,11 @@ fn canonical_view_distinguishes_absent_support_from_unreadable_and_invalid_marke
                     assert!(props.as_object().unwrap().contains_key("directEditSafe"));
                 }
             } else {
-                assert!(!result.ok, "{marker_kind} {at}: {result:?}");
-                assert!(result.data.is_none(), "{marker_kind} {at}: {result:?}");
+                assert!(!result.ok, "{marker_kind} {at}: view must refuse");
+                assert!(
+                    result.data.is_none(),
+                    "{marker_kind} {at}: data must be absent"
+                );
                 assert_eq!(result.diagnostics[0]["code"], "provider_unavailable");
                 assert_eq!(result.diagnostics[0]["detailCode"], "source_unreadable");
                 assert_eq!(result.diagnostics[0]["outcome"], "fixSource");
