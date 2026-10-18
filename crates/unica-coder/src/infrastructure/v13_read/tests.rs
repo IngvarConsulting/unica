@@ -9080,6 +9080,70 @@ fn install_common_template_fixture(fixture: &RealReaderFixture) {
 }
 
 #[test]
+fn common_template_empty_synonyms_have_no_value_like_other_metadata() {
+    for synonym in [
+        "",
+        "<Synonym/>",
+        "<Synonym>   </Synonym>",
+        "<Synonym><v8:item><v8:lang>ru</v8:lang><v8:content/></v8:item></Synonym>",
+    ] {
+        let fixture = RealReaderFixture::new();
+        install_common_template_fixture(&fixture);
+        let descriptor = fixture.source.join("CommonTemplates/Print.xml");
+        let original = fs::read_to_string(&descriptor).unwrap();
+        let start = original.find("<Synonym>").unwrap();
+        let end = original.find("</Synonym>").unwrap() + "</Synonym>".len();
+        let mut modified = original;
+        modified.replace_range(start..end, synonym);
+        write(&descriptor, &modified);
+        let result = fixture
+            .view_service()
+            .view(ViewRequest::new("main:CommonTemplate.Print").unwrap());
+        assert!(result.ok, "{synonym:?}: {result:?}");
+        let data = result.data.unwrap();
+        assert!(data["props"]["synonym"].is_null(), "{synonym:?}: {data}");
+        assert_eq!(data["props"]["format"], "SpreadsheetDocument");
+    }
+}
+
+#[test]
+fn common_template_damaged_synonym_keeps_independent_template_facts() {
+    for synonym in [
+        "<Synonym><Bad/></Synonym>",
+        "<Synonym>broken</Synonym>",
+        "<Synonym xmlns=\"urn:foreign\"/>",
+        "<Synonym/><Synonym/>",
+        "<Synonym unexpected=\"yes\"/>",
+    ] {
+        let fixture = RealReaderFixture::new();
+        install_common_template_fixture(&fixture);
+        let descriptor = fixture.source.join("CommonTemplates/Print.xml");
+        let mut xml = fs::read_to_string(&descriptor).unwrap();
+        let start = xml.find("<Synonym>").unwrap();
+        let end = xml.find("</Synonym>").unwrap() + "</Synonym>".len();
+        xml.replace_range(start..end, synonym);
+        write(&descriptor, &xml);
+        let service = fixture.view_service();
+        let result = service.view(ViewRequest::new("main:CommonTemplate.Print").unwrap());
+        assert!(result.ok, "{synonym}: {result:?}");
+        let data = result.data.unwrap();
+        assert_eq!(data["title"], "Print");
+        assert!(data["props"]["synonym"].is_null(), "{synonym}: {data}");
+        assert_eq!(data["props"]["format"], "SpreadsheetDocument");
+        assert!(
+            data["limits"].to_string().contains("properties.Synonym"),
+            "{synonym}: {data}"
+        );
+        assert!(
+            service
+                .view(ViewRequest::new("main:CommonTemplate.Print.Area.A.Body").unwrap())
+                .ok
+        );
+        assert_eq!(fs::read_to_string(&descriptor).unwrap(), xml);
+    }
+}
+
+#[test]
 fn common_template_exposes_mxl_areas_body_and_parameters_through_public_view() {
     let fixture = RealReaderFixture::new();
     install_common_template_fixture(&fixture);

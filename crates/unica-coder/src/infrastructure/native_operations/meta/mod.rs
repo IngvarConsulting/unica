@@ -155,7 +155,8 @@ pub(crate) use template_catalog::emit_meta_internal_info;
 pub(crate) use template_catalog::metadata_generated_types_8_3_27;
 pub(crate) use usage_scan::{scan_local_enrichment, LocalEnrichment, LocalSection};
 pub(crate) use validation::{
-    parse_child_profile_from_bytes, parse_common_template_descriptor_from_bytes, MetadataAdmission,
+    parse_child_profile_from_bytes, parse_common_template_descriptor_from_bytes,
+    CommonTemplateDescriptorFacts, MetadataAdmission,
 };
 pub(crate) use validation::{
     service_child_semantics, validate_metadata_owner_shape_8_3_27, MetadataValidator,

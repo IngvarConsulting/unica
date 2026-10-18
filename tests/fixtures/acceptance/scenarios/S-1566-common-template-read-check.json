@@ -240,6 +240,33 @@
       ]
     },
     {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.commonBad"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/title",
+          "eq": "Bad"
+        },
+        {
+          "pointer": "/data/props/synonym",
+          "eq": null
+        },
+        {
+          "pointer": "/data/props/format",
+          "eq": "SpreadsheetDocument"
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "properties.Synonym"
+        }
+      ]
+    },
+    {
       "tool": "unica.check",
       "args": {
         "at": "$capture.commonBad"
@@ -427,6 +454,18 @@
         {
           "pointer": "/data/branches",
           "absent": true
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "Empty"
+        },
+        {
+          "pointer": "/data/props/synonym",
+          "eq": null
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
         }
       ]
     },
@@ -474,7 +513,7 @@
         {
           "path": "src/CommonTemplates/Bad.xml",
           "kind": "sha256",
-          "eq": "a64caf55c720686d3e425f074611a5b945383b2e220d6691bc1d5825439e7bde"
+          "eq": "dd519c7debc0b5d734d33646846e7073c6c61e63f88a69f9f9fba2d53f92eda4"
         },
         {
           "path": "src/CommonTemplates/Empty/Ext/Template.xml",
@@ -484,7 +523,7 @@
         {
           "path": "src/CommonTemplates/Empty.xml",
           "kind": "sha256",
-          "eq": "fcf853d9015b5fec96c14ab6e0cdf680af67090a1a6eaae6d293a93bcb1930c6"
+          "eq": "08f4f6cd3a0c113401872b9a4ad06ea82c03af17403aa963f266ff944d6678e1"
         },
         {
           "path": "src/CommonTemplates/Html/Ext/Template.xml",

@@ -950,11 +950,14 @@ impl<'a> LogicalViewReadAuthority<'a> {
             return Ok(identity_only_metadata_payload(kind, name));
         }
         if kind == NodeKind::CommonTemplate.as_str() {
-            let (template_type, synonym) = self.read.common_template_facts(target)?;
+            let facts = self.read.common_template_facts(target)?;
             let mut payload = self.read.identity_metadata_payload(target)?;
-            payload["synonym"] = json!(synonym);
+            payload["synonym"] = json!(facts.synonym);
             payload["properties"] =
-                json!([{"key":"TemplateType", "value":template_type.descriptor_value()}]);
+                json!([{"key":"TemplateType", "value":facts.template_type.descriptor_value()}]);
+            if let Some(message) = facts.unreadable_synonym {
+                payload["unreadable"] = json!([{"field":"properties.Synonym", "message":message}]);
+            }
             return Ok(payload);
         }
         if MetadataKind::parse(kind).is_err() {

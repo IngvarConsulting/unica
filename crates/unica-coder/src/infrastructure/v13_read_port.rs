@@ -1318,13 +1318,7 @@ impl ProviderReadAuthority {
     pub(crate) fn common_template_facts(
         &self,
         target: &MetadataAddress,
-    ) -> Result<
-        (
-            crate::application::ports::MetadataTemplateType,
-            Option<String>,
-        ),
-        ViewError,
-    > {
+    ) -> Result<super::native_operations::meta::CommonTemplateDescriptorFacts, ViewError> {
         let bytes = self.metadata_descriptor(target)?;
         parse_common_template_descriptor_from_bytes(&bytes, target)
             .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
@@ -1337,7 +1331,7 @@ impl ProviderReadAuthority {
         if target.as_str().starts_with("CommonTemplate.") {
             return self
                 .common_template_facts(target)
-                .map(|(kind, _)| MetadataChildProfile::Template(kind));
+                .map(|facts| MetadataChildProfile::Template(facts.template_type));
         }
         let descriptor = self.metadata_descriptor(target)?;
         let owner_text = target

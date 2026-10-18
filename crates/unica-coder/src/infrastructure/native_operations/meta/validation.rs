@@ -1405,10 +1405,16 @@ fn template_descriptor_type(
 /// Read the top-level template through the same closed type vocabulary and
 /// descriptor admission as a physical child template. This is a read profile,
 /// not a new metadata creation kind.
+pub(crate) struct CommonTemplateDescriptorFacts {
+    pub(crate) template_type: MetadataTemplateType,
+    pub(crate) synonym: Option<String>,
+    pub(crate) unreadable_synonym: Option<String>,
+}
+
 pub(crate) fn parse_common_template_descriptor_from_bytes(
     bytes: &[u8],
     target: &MetadataAddress,
-) -> Result<(MetadataTemplateType, Option<String>), String> {
+) -> Result<CommonTemplateDescriptorFacts, String> {
     let (_, document) = parse_metadata_image(bytes)?;
     let artifact = exact_metadata_artifact(&document, MetadataAdmission::Read)?;
     if artifact.tag_name().name() != "CommonTemplate" {
@@ -1423,14 +1429,35 @@ pub(crate) fn parse_common_template_descriptor_from_bytes(
         return Err("common template descriptor belongs to another logical address".into());
     }
     let template_type = template_descriptor_type(*properties)?;
-    let synonyms = exact_mdclasses_children(*properties, "Synonym", "CommonTemplate descriptor")?;
-    if synonyms.len() > 1 {
-        return Err("CommonTemplate descriptor must contain at most one Synonym".into());
-    }
-    let synonym = synonyms
-        .first()
-        .map(|node| super::xml_model::meta_info_ml_text(*node));
-    Ok((template_type, synonym))
+    let synonyms = properties
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name() == "Synonym")
+        .collect::<Vec<_>>();
+    let (synonym, unreadable_synonym) = match synonyms.as_slice() {
+        [] => (None, None),
+        [node]
+            if super::info_projection::meta_info_property_value_is_valid(
+                *node,
+                crate::domain::metadata::MetaInfoPropertyValueKind::LocalizedString,
+            ) && super::info_projection::direct_text_content(*node)
+                .trim()
+                .is_empty() =>
+        {
+            let value = super::xml_model::meta_info_ml_text(*node);
+            ((!value.is_empty()).then_some(value), None)
+        }
+        _ => (
+            None,
+            Some(
+                "CommonTemplate Synonym is malformed, duplicated or has a foreign namespace".into(),
+            ),
+        ),
+    };
+    Ok(CommonTemplateDescriptorFacts {
+        template_type,
+        synonym,
+        unreadable_synonym,
+    })
 }
 
 fn form_profile(properties: roxmltree::Node<'_, '_>) -> Result<MetadataChildProfile, String> {
