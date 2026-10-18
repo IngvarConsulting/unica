@@ -492,7 +492,6 @@ const IDENTIFIER_PATTERN: &str = r"^[_A-Za-zА-Яа-яЁё][_A-Za-zА-Яа-яЁ�
 fn metadata_member_collection(family: &str) -> Option<crate::domain::metadata::MetaCollection> {
     use crate::domain::metadata::MetaCollection;
     Some(match family {
-        "attribute" => MetaCollection::Attributes,
         "tabularSection" => MetaCollection::TabularSections,
         "dimension" => MetaCollection::Dimensions,
         "resource" => MetaCollection::Resources,
@@ -669,6 +668,41 @@ impl OperationContract {
         }
     }
 
+    pub(super) fn metadata_member_set(
+        collection: crate::domain::metadata::MetaCollection,
+        site: Option<MetadataSite>,
+    ) -> Self {
+        Self {
+            schema: object(
+                &[
+                    ("at", text(true)),
+                    ("values", metadata_element_schema(collection, true, site)),
+                ],
+                &["values"],
+            ),
+            target: if collection == crate::domain::metadata::MetaCollection::Attributes {
+                "The existing attribute: <source-set>:<Kind>.<Name>.Attribute.<A> or <source-set>:<Kind>.<Name>.TabularSection.<T>.Attribute.<A>."
+            } else {
+                "The existing member at its own address: <source-set>:<Kind>.<Name>.<Leaf>.<Member>."
+            },
+            effect: "Change the listed fields of the member; newName renames it. Unlisted fields stay.",
+            notes: "The member is named by its address, not by values.name. Read the member first. Cross-field rules — fillValue must match the member type — are checked by the planner, not by this schema.",
+            example_args: json!({"values":{"synonym":"Sample"}}),
+            help: METADATA_HELP,
+        }
+    }
+
+    pub(super) fn metadata_member_remove() -> Self {
+        Self {
+            schema: object(&[("at", text(true))], &[]),
+            target: "The existing member at its own address: <source-set>:<Kind>.<Name>.<Leaf>.<Member>.",
+            effect: "Remove the member from its owner.",
+            notes: "The member is named by its address; the operation takes no other arguments.",
+            example_args: json!({}),
+            help: METADATA_HELP,
+        }
+    }
+
     /// The contract on a concrete node: fields whose legality depends on the
     /// owner kind or on the tabular section are narrowed to that node.
     pub(crate) fn metadata_at(op: &str, site: Option<MetadataSite>) -> Option<Self> {
@@ -732,37 +766,14 @@ impl OperationContract {
             });
         }
         let collection = metadata_member_collection(family)?;
-        let (schema, target, effect, notes, example_args) = match verb {
-            "add" if !matches!(collection, crate::domain::metadata::MetaCollection::Attributes | crate::domain::metadata::MetaCollection::Commands) => {
-                return Some(Self::metadata_member_add(collection, site));
+        match verb {
+            "add" if collection != crate::domain::metadata::MetaCollection::Commands => {
+                Some(Self::metadata_member_add(collection, site))
             }
-            "set" => (
-                object(&[at(), ("values", metadata_element_schema(collection, true, site))], &["values"]),
-                match family {
-                    "attribute" => "The existing attribute: <source-set>:<Kind>.<Name>.Attribute.<A> or <source-set>:<Kind>.<Name>.TabularSection.<T>.Attribute.<A>.",
-                    _ => "The existing member at its own address: <source-set>:<Kind>.<Name>.<Leaf>.<Member>.",
-                },
-                "Change the listed fields of the member; newName renames it. Unlisted fields stay.",
-                "The member is named by its address, not by values.name. Read the member first. Cross-field rules — fillValue must match the member type — are checked by the planner, not by this schema.",
-                json!({"values":{"synonym":"Sample"}}),
-            ),
-            "remove" => (
-                object(&[at()], &[]),
-                "The existing member at its own address: <source-set>:<Kind>.<Name>.<Leaf>.<Member>.",
-                "Remove the member from its owner.",
-                "The member is named by its address; the operation takes no other arguments.",
-                json!({}),
-            ),
-            _ => return None,
-        };
-        Some(Self {
-            schema,
-            target,
-            effect,
-            notes,
-            example_args,
-            help: METADATA_HELP,
-        })
+            "set" => Some(Self::metadata_member_set(collection, site)),
+            "remove" => Some(Self::metadata_member_remove()),
+            _ => None,
+        }
     }
 }
 
@@ -1001,6 +1012,26 @@ mod tests {
     use super::*;
     use crate::domain::apply::{OperationFamily, OperationRegistry, IMPLEMENTED_APPLY_OPERATIONS};
     use crate::domain::role_operation::RoleOperation;
+
+    #[test]
+    fn typed_attribute_contracts_have_no_legacy_string_fallback() {
+        for site in [
+            None,
+            Some(MetadataSite {
+                owner: crate::domain::metadata::MetadataKind::Document,
+                in_section: true,
+            }),
+        ] {
+            for operation in ["attribute.add", "attribute.set", "attribute.remove"] {
+                assert!(OperationContract::metadata_at(operation, site).is_none());
+                let descriptor = OperationRegistry::closed().lookup(operation).unwrap();
+                assert!(descriptor.argument_contract().is_some());
+            }
+            for operation in ["dimension.set", "command.remove"] {
+                assert!(OperationContract::metadata_at(operation, site).is_some());
+            }
+        }
+    }
 
     /// Скомпилированная грамматика берётся из кеша по своему шаблону: повторная
     /// проверка не подменяет одну грамматику другой (#1441).

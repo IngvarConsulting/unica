@@ -700,12 +700,15 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
 
     CONTEXT_ROWS = [
         ("attribute.add", "Metadata", "MetadataAttributeContainer", "Items"),
+        ("attribute.set", "Metadata", "MetadataAttribute", "Values"),
+        ("attribute.remove", "Metadata", "MetadataAttribute", "Target"),
         ("command.add", "Metadata", "MetadataCommands", "Items"),
         ("attribute.add", "Form", "Form", "Items"),
         ("command.add", "Form", "Form", "Items"),
     ]
     CONTEXT_REGISTRATIONS = (
-        "(MetadataOperation::AttributeAdd), (MetadataOperation::CommandAdd),"
+        "(MetadataOperation::AttributeAdd), (MetadataOperation::AttributeSet),"
+        "(MetadataOperation::AttributeRemove), (MetadataOperation::CommandAdd),"
         "(FormOperation::AttributeAdd), (FormOperation::CommandAdd),"
     )
 
@@ -819,8 +822,10 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         registry, _ = self.registration_fixture(
             '(RoleOperation::Create), (RoleOperation::RightAdd), (RoleOperation::RightSet),\n'
             '(MetadataOperation::AttributeAdd),\n'
-            '("attribute.set", Metadata, MetadataAttribute, Values),\n'
+            '(MetadataOperation::AttributeSet),\n'
+            '("object.create", Metadata, Configuration, Values),\n'
             '(FormOperation::AttributeAdd),\n'
+            '(MetadataOperation::AttributeRemove),\n'
             '(MetadataOperation::CommandAdd),\n'
             '("item.add", Form, FormItemContainer, Items),\n'
             '(FormOperation::CommandAdd),',
@@ -828,6 +833,8 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             {
                 "metadata_operation.rs": '''metadata_operations!(
                     AttributeAdd => ("attribute.add", MetadataAttributeContainer, Items),
+                    AttributeSet => ("attribute.set", MetadataAttribute, Values),
+                    AttributeRemove => ("attribute.remove", MetadataAttribute, Target),
                     CommandAdd => ("command.add", MetadataCommands, Items),
                 );''',
                 "form_operation.rs": '''form_operations!(
@@ -843,7 +850,9 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("right.set", "Role", "RoleRight", "Values"),
             ("attribute.add", "Metadata", "MetadataAttributeContainer", "Items"),
             ("attribute.set", "Metadata", "MetadataAttribute", "Values"),
+            ("object.create", "Metadata", "Configuration", "Values"),
             ("attribute.add", "Form", "Form", "Items"),
+            ("attribute.remove", "Metadata", "MetadataAttribute", "Target"),
             ("command.add", "Metadata", "MetadataCommands", "Items"),
             ("item.add", "Form", "FormItemContainer", "Items"),
             ("command.add", "Form", "Form", "Items"),
@@ -854,14 +863,18 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
     def test_partial_typed_families_keep_the_remaining_raw_operations(self) -> None:
         module = self.renderer()
         registry, implemented = module.load_apply_registry()
-        migrated_names = {"attribute.add", "command.add"}
-        self.assertEqual(
-            [entry for entry in registry if entry[1] in {"Metadata", "Form"} and entry[0] in migrated_names],
-            self.CONTEXT_ROWS,
-        )
-        for family, remaining in [("Metadata", 32), ("Form", 7)]:
+        for family, migrated_names, remaining in [
+            ("Metadata", {"attribute.add", "attribute.set", "attribute.remove", "command.add"}, 30),
+            ("Form", {"attribute.add", "command.add"}, 7),
+        ]:
+            self.assertEqual(
+                [entry for entry in registry if entry[1] == family and entry[0] in migrated_names],
+                [entry for entry in self.CONTEXT_ROWS if entry[1] == family],
+            )
             self.assertEqual(sum(entry[1] == family and entry[0] not in migrated_names for entry in registry), remaining)
-        self.assertLessEqual(migrated_names, implemented)
+            self.assertLessEqual(migrated_names, implemented)
+        self.assertEqual(len(registry), 122)
+        self.assertEqual(len({entry[0] for entry in registry}), 120)
 
     def test_partial_typed_metadata_cannot_be_missing_duplicated_or_registered_as_raw(self) -> None:
         role_metadata = (REPO_ROOT / "crates/unica-coder/src/domain/role_operation.rs").read_text(encoding="utf-8")
@@ -876,12 +889,16 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             self.assertIn(last_row, metadata)
             raw = f'("command.add", {family}, {applicability}, Items),'
             other_type = "FormOperation" if family == "Metadata" else "MetadataOperation"
+            variants = ["AttributeAdd", "AttributeSet", "AttributeRemove", "CommandAdd"] if family == "Metadata" else ["AttributeAdd", "CommandAdd"]
+            without_family = table
+            for variant in variants:
+                without_family = without_family.replace(f"({operation_type}::{variant}),", "")
             cases = {
                 "unknown typed family": (table.replace(f"{operation_type}::AttributeAdd", "OtherOperation::AttributeAdd"), metadata),
                 "unknown variant": (table.replace(f"{operation_type}::AttributeAdd", f"{operation_type}::Missing"), metadata),
                 "wrong typed family": (table.replace(f"{operation_type}::AttributeAdd", f"{other_type}::AttributeAdd"), metadata),
                 "missing registration": (table.replace(f"({operation_type}::CommandAdd),", ""), metadata),
-                "all family registrations missing": (table.replace(f"({operation_type}::AttributeAdd),", "").replace(f"({operation_type}::CommandAdd),", ""), metadata),
+                "all family registrations missing": (without_family, metadata),
                 "both partial families missing": (roles, metadata),
                 "duplicate registration": (table + f"({operation_type}::CommandAdd),", metadata),
                 "raw instead of typed": (table.replace(f"({operation_type}::CommandAdd),", raw), metadata),
@@ -898,6 +915,17 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
                 "duplicate metadata variant": (table, metadata.replace(last_row, f'    AttributeAdd => ("command.add", {applicability}, Items),\n')),
                 "duplicate metadata name": (table, metadata.replace(last_row, f'    CommandAdd => ("attribute.add", {applicability}, Items),\n')),
             }
+            if family == "Metadata":
+                for variant, name, skeleton in [
+                    ("AttributeSet", "attribute.set", "Values"),
+                    ("AttributeRemove", "attribute.remove", "Target"),
+                ]:
+                    registration = f"({operation_type}::{variant}),"
+                    raw_attribute = f'("{name}", Metadata, MetadataAttribute, {skeleton}),'
+                    cases[f"missing {name} registration"] = (table.replace(registration, ""), metadata)
+                    cases[f"duplicate {name} registration"] = (table + registration, metadata)
+                    cases[f"raw {name} instead of typed"] = (table.replace(registration, raw_attribute), metadata)
+                    cases[f"raw {name} beside complete typed"] = (table + raw_attribute, metadata)
             for case, (source, family_metadata) in cases.items():
                 with self.subTest(family=family, case=case), self.assertRaises(RuntimeError):
                     self.registration_fixture(

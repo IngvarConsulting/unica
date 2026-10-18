@@ -1574,7 +1574,7 @@ macro_rules! operation_descriptor {
             match OperationFamily::$family {
                 OperationFamily::Metadata => assert!(
                     !MetadataOperation::is_named($name),
-                    "Metadata attribute.add and command.add must register a typed MetadataOperation with a mandatory contextual contract"
+                    "Typed Metadata operations must register a MetadataOperation with a mandatory contextual contract"
                 ),
                 OperationFamily::Form => assert!(
                     !FormOperation::is_named($name),
@@ -1611,8 +1611,8 @@ operation_descriptors!(
     ("relation.replace", Metadata, Metadata, Values),
     ("help.create", Metadata, Metadata, Values),
     (MetadataOperation::AttributeAdd),
-    ("attribute.set", Metadata, MetadataAttribute, Values),
-    ("attribute.remove", Metadata, MetadataAttribute, Target),
+    (MetadataOperation::AttributeSet),
+    (MetadataOperation::AttributeRemove),
     (
         "tabularSection.add",
         Metadata,
@@ -3244,6 +3244,18 @@ mod tests {
             let fields = &contract.schema["properties"]["items"]["items"]["properties"];
             assert_eq!(fields.get("fillValue").is_some(), allows_fill, "{at}");
             assert!(fields.get("savedData").is_none());
+
+            let member = QualifiedAddress::parse(&format!("{at}.Attribute.Total")).unwrap();
+            let site = OperationSite::new(&member, traits).unwrap();
+            let descriptor = registry.lookup_at("attribute.set", &site).unwrap();
+            assert_eq!(
+                descriptor.metadata_operation(),
+                Some(MetadataOperation::AttributeSet)
+            );
+            let contract = descriptor.argument_contract_at(&site).unwrap();
+            let fields = &contract.schema["properties"]["values"]["properties"];
+            assert_eq!(fields.get("fillValue").is_some(), allows_fill, "{member}");
+            assert!(fields.get("name").is_none());
         }
         for (name, expected) in [
             ("attribute.add", FormOperation::AttributeAdd),
@@ -3268,6 +3280,8 @@ mod tests {
     fn contextual_registration_rejects_missing_and_mismatched_typed_operations() {
         for valid in [
             OperationDescriptor::metadata(MetadataOperation::AttributeAdd),
+            OperationDescriptor::metadata(MetadataOperation::AttributeSet),
+            OperationDescriptor::metadata(MetadataOperation::AttributeRemove),
             OperationDescriptor::metadata(MetadataOperation::CommandAdd),
             OperationDescriptor::form(FormOperation::AttributeAdd),
             OperationDescriptor::form(FormOperation::CommandAdd),
@@ -3300,7 +3314,11 @@ mod tests {
                     ..valid
                 },
                 OperationDescriptor {
-                    skeleton: OperationSkeleton::Values,
+                    skeleton: if valid.skeleton == OperationSkeleton::Values {
+                        OperationSkeleton::Items
+                    } else {
+                        OperationSkeleton::Values
+                    },
                     ..valid
                 },
             ] {
@@ -3308,7 +3326,7 @@ mod tests {
             }
         }
         for (name, family) in [
-            ("attribute.set", OperationFamily::Metadata),
+            ("command.set", OperationFamily::Metadata),
             ("item.add", OperationFamily::Form),
         ] {
             let descriptor = OperationRegistry::closed()
