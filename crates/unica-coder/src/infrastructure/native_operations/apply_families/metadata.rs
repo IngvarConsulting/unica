@@ -19,9 +19,10 @@ use crate::infrastructure::native_operations::apply_families::request::{
     IndexedPlanOperation, ProvisionalApplyEffect,
 };
 use crate::infrastructure::native_operations::meta::{
-    apply_typed_operations_to_image_with_seed, meta_default_text_language,
-    meta_edit_object_identity, meta_mltext_property_replacement, predefined_item_id,
-    predefined_post_image, typed_operations_write_multilingual_text, EXTERNAL_SOURCE_TEXT_LANGUAGE,
+    apply_typed_operations_to_image_with_seed, canonical_typed_command_name,
+    meta_default_text_language, meta_edit_object_identity, meta_mltext_property_replacement,
+    predefined_item_id, predefined_post_image, typed_command_module_path,
+    typed_operations_write_multilingual_text, EXTERNAL_SOURCE_TEXT_LANGUAGE,
 };
 use crate::infrastructure::native_operations::text_snapshot::{
     LineEnding, LineEndingProfile, SourceTextSnapshot,
@@ -1400,13 +1401,14 @@ pub(crate) fn plan_metadata_batch(
             Some(body) => (&b"\xef\xbb\xbf"[..], body),
             None => (&b""[..], preimage.as_slice()),
         };
-        let mut postimage = String::from_utf8(body.to_vec()).map_err(|_| {
+        let source = std::str::from_utf8(body).map_err(|_| {
             ApplyPlanError::new(
                 ApplyPlanErrorKind::InvalidSource,
                 "metadata descriptor is not UTF-8",
             )
             .at_path(format!("ops[{op_index}].args.at"))
         })?;
+        let mut postimage = source.to_string();
         let (actual_kind, actual_name) =
             meta_edit_object_identity(&postimage).map_err(|message| {
                 ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
@@ -1485,6 +1487,16 @@ pub(crate) fn plan_metadata_batch(
             };
             ApplyPlanError::new(kind, diagnostic.message).at_path(path)
         })?;
+        stage_command_module_lifecycle(
+            &mut staged,
+            &authority,
+            target,
+            &relative,
+            source,
+            edit,
+            op_index,
+            &mut provisional,
+        )?;
         // The typed writer inserts `\n`-separated lines. A descriptor with one
         // observed line ending keeps it (a platform export writes CRLF); a
         // mixed or line-free one is left as written, never normalized
@@ -1522,6 +1534,129 @@ pub(crate) fn plan_metadata_batch(
         }
     }
     Ok((staged, provisional))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stage_command_module_lifecycle(
+    staged: &mut ApplyStagedState,
+    authority: &MetadataApplyAuthority<'_>,
+    owner: &MetadataAddress,
+    descriptor_relative: &Path,
+    owner_preimage: &str,
+    edit: &MetaEditOperation,
+    op_index: usize,
+    provisional: &mut Vec<ProvisionalApplyEffect>,
+) -> Result<(), ApplyPlanError> {
+    let canonical_name = |name: &str| {
+        canonical_typed_command_name(owner_preimage, name)
+            .map_err(|failure| meta_failure_to_plan_error(failure, op_index))
+    };
+    let changes = match edit {
+        MetaEditOperation::Update {
+            collection: MetaCollection::Commands,
+            elements,
+            ..
+        } => elements
+            .iter()
+            .filter_map(|element| {
+                element.new_name.as_ref().map(|new_name| {
+                    canonical_name(&element.name).map(|old_name| (old_name, Some(new_name.clone())))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        MetaEditOperation::Remove {
+            collection: MetaCollection::Commands,
+            names,
+            ..
+        } => names
+            .iter()
+            .map(|name| canonical_name(name).map(|name| (name, None)))
+            .collect::<Result<Vec<_>, _>>()?,
+        _ => return Ok(()),
+    };
+    let module_event = |name: &str| {
+        DomainEvent::new(
+            DomainEventKind::ModuleChanged,
+            format!(
+                "{}:{}.Command.{name}.Module.Command",
+                authority.source_set_name(),
+                owner.as_str()
+            ),
+        )
+    };
+    for (old_name, new_name) in changes {
+        if new_name.as_deref() == Some(old_name.as_str()) {
+            continue;
+        }
+        let at_path = format!("ops[{op_index}].args.at");
+        let old_relative = typed_command_module_path(descriptor_relative, &old_name);
+        let module = staged
+            .read(&old_relative)
+            .map_err(|error| ApplyPlanError::staging(error, &at_path))?;
+        if let Some(bytes) = &module {
+            let effect_path = staged
+                .retained_relative_path(&old_relative)
+                .map_err(|error| ApplyPlanError::staging(error, &at_path))?;
+            staged
+                .remove(&old_relative, bytes)
+                .map_err(|error| ApplyPlanError::staging(error, &at_path))?;
+            provisional.push(ProvisionalApplyEffect::single(
+                effect_path,
+                module_event(&old_name),
+                op_index,
+            ));
+        }
+        if let Some(new_name) = new_name {
+            let new_relative = typed_command_module_path(descriptor_relative, &new_name);
+            let new_name_path = format!("ops[{op_index}].args.values.newName");
+            // Probe after the staged removal: aliases under the retained
+            // filesystem's name policy share that absent overlay entry.
+            // A distinct orphan module must still refuse even when this
+            // command had no module to move.
+            if staged
+                .read(&new_relative)
+                .map_err(|error| ApplyPlanError::staging(error, &new_name_path))?
+                .is_some()
+            {
+                return Err(ApplyPlanError::new(
+                    ApplyPlanErrorKind::InvalidState,
+                    format!(
+                        "the command module destination already exists: {}",
+                        new_relative.display()
+                    ),
+                )
+                .at_path(new_name_path));
+            }
+            if let Some(bytes) = module {
+                staged
+                    .create(&new_relative, bytes)
+                    .map_err(|error| ApplyPlanError::staging(error, &new_name_path))?;
+                let effect_path = staged
+                    .retained_relative_path(&new_relative)
+                    .map_err(|error| ApplyPlanError::staging(error, new_name_path))?;
+                provisional.push(ProvisionalApplyEffect::single(
+                    effect_path,
+                    module_event(&new_name),
+                    op_index,
+                ));
+                if staged
+                    .read(&old_relative)
+                    .map_err(|error| ApplyPlanError::staging(error, &at_path))?
+                    .is_some()
+                {
+                    // A case alias can change the logical module address
+                    // without moving bytes on this filesystem. The owner's
+                    // final delta still invalidates the BSL index.
+                    provisional.push(ProvisionalApplyEffect::single(
+                        descriptor_relative,
+                        module_event(&new_name),
+                        op_index,
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn meta_failure_to_plan_error(
@@ -4866,6 +5001,19 @@ mod tests {
         crate::infrastructure::native_operations::apply::ApplyStagedState,
         crate::infrastructure::native_operations::apply::ApplyPlanError,
     > {
+        plan_all_with_effects(fixture, operations).map(|(staged, _)| staged)
+    }
+
+    fn plan_all_with_effects(
+        fixture: &MetadataFixture,
+        operations: &[(&str, serde_json::Value)],
+    ) -> Result<
+        (
+            crate::infrastructure::native_operations::apply::ApplyStagedState,
+            crate::infrastructure::native_operations::apply::PlannedApplyEffects,
+        ),
+        crate::infrastructure::native_operations::apply::ApplyPlanError,
+    > {
         let admission = fixture.admission();
         let staged = admission.staged_state().unwrap();
         let authority = admission
@@ -4876,7 +5024,513 @@ mod tests {
             .enumerate()
             .map(|(index, (name, args))| fixture.parse(name, args.clone(), index))
             .collect::<Vec<_>>();
-        plan_metadata_batch(staged, authority, &parsed).map(|(staged, _)| staged)
+        let (staged, provisional) = plan_metadata_batch(staged, authority, &parsed)?;
+        let effects =
+            crate::infrastructure::native_operations::apply_families::request::reconcile_effects(
+                &staged,
+                provisional,
+            );
+        Ok((staged, effects))
+    }
+
+    const COMMAND_MODULE: &str =
+        "\u{feff}Procedure Refresh() Export\r\n\tMessage(\"unchanged\");\r\nEndProcedure\r\n";
+    const COMMAND_MODULE_RELATIVE: &str = "Documents/Order/Commands/Refresh/Ext/CommandModule.bsl";
+
+    fn command_fixture() -> MetadataFixture {
+        let order = ORDER_XML.replace(
+            "<ChildObjects/>",
+            concat!(
+                "<ChildObjects>",
+                "<Command uuid=\"22222222-2222-4222-8222-222222222222\"><Properties><Name>Refresh</Name><Synonym/><Comment>keep</Comment><Group/><Picture/><ToolTip/></Properties></Command>",
+                "<Command uuid=\"33333333-3333-4333-8333-333333333333\"><Properties><Name>Inspect</Name><Synonym/><Comment/><Group/></Properties></Command>",
+                "<Command uuid=\"44444444-4444-4444-8444-444444444444\"><Properties><Name>Neighbor</Name><Synonym/><Comment>neighbor</Comment><Group/></Properties></Command>",
+                "</ChildObjects>"
+            ),
+        );
+        MetadataFixture::with_files(&[
+            ("Configuration.xml", RU_CONFIGURATION_XML),
+            ("Languages/Русский.xml", &language_xml("Русский", "ru")),
+            ("Documents/Order.xml", &order),
+            (COMMAND_MODULE_RELATIVE, COMMAND_MODULE),
+            (
+                "Documents/Order/Commands/Refresh/Ext/unrelated.txt",
+                "opaque neighbor",
+            ),
+            (
+                "Documents/Order/Commands/Neighbor/Ext/CommandModule.bsl",
+                "Procedure Neighbor()\nEndProcedure\n",
+            ),
+        ])
+    }
+
+    #[test]
+    fn command_rename_stages_exact_module_bytes_and_preserves_inline_identity_and_neighbors() {
+        let fixture = command_fixture();
+        let original = fixture.disk_bytes();
+        let staged = plan_all(
+            &fixture,
+            &[("command.set", json!({"at": "main:Document.Order.Command.refresh", "values": {"newName": "Updated"}}))],
+        ).unwrap();
+        let changes = staged.planned_changes();
+        assert_eq!(
+            changes.len(),
+            3,
+            "rename must stage owner, old module and new module"
+        );
+        let texts = staged_texts(&staged);
+        assert_eq!(
+            texts[Path::new("Documents/Order/Commands/Updated/Ext/CommandModule.bsl")],
+            COMMAND_MODULE
+        );
+        assert!(changes.iter().any(|change| change.relative_path
+            == Path::new(COMMAND_MODULE_RELATIVE)
+            && change.kind == StagedChangeKind::Remove));
+        let owner = &texts[Path::new("Documents/Order.xml")];
+        assert_eq!(
+            owner.as_bytes(),
+            String::from_utf8(original.clone())
+                .unwrap()
+                .replace("<Name>Refresh</Name>", "<Name>Updated</Name>")
+                .as_bytes()
+        );
+        assert_eq!(fixture.disk_bytes(), original);
+        assert_eq!(
+            std::fs::read(fixture.binding.source_root().join(COMMAND_MODULE_RELATIVE)).unwrap(),
+            COMMAND_MODULE.as_bytes()
+        );
+        assert_eq!(
+            std::fs::read(
+                fixture
+                    .binding
+                    .source_root()
+                    .join("Documents/Order/Commands/Refresh/Ext/unrelated.txt")
+            )
+            .unwrap(),
+            b"opaque neighbor"
+        );
+        assert!(!texts.contains_key(Path::new(
+            "Documents/Order/Commands/Updated/Ext/unrelated.txt"
+        )));
+    }
+
+    #[test]
+    fn command_remove_stages_only_the_owner_and_its_known_module() {
+        let fixture = command_fixture();
+        let staged = plan_all(
+            &fixture,
+            &[(
+                "command.remove",
+                json!({"at": "main:Document.Order.Command.rEfReSh"}),
+            )],
+        )
+        .unwrap();
+        let changes = staged.planned_changes();
+        assert_eq!(changes.len(), 2);
+        assert!(changes.iter().any(|change| change.relative_path
+            == Path::new(COMMAND_MODULE_RELATIVE)
+            && change.kind == StagedChangeKind::Remove));
+        let texts = staged_texts(&staged);
+        let owner = &texts[Path::new("Documents/Order.xml")];
+        assert!(!owner.contains("<Name>Refresh</Name>"));
+        assert!(owner.contains("<Name>Neighbor</Name>"));
+        assert_eq!(
+            std::fs::read(
+                fixture
+                    .binding
+                    .source_root()
+                    .join("Documents/Order/Commands/Refresh/Ext/unrelated.txt")
+            )
+            .unwrap(),
+            b"opaque neighbor"
+        );
+    }
+
+    #[test]
+    fn command_property_updates_do_not_read_or_stage_the_module() {
+        let fixture = command_fixture();
+        let module = fixture.binding.source_root().join(COMMAND_MODULE_RELATIVE);
+        std::fs::remove_file(&module).unwrap();
+        std::fs::create_dir(&module).unwrap();
+        let (staged, effects) = plan_all_with_effects(&fixture, &[(
+            "command.set",
+            json!({"at": "main:Document.Order.Command.Refresh", "values": {"comment": "updated"}}),
+        )]).unwrap();
+        assert_eq!(staged.planned_changes().len(), 1);
+        assert!(staged_texts(&staged)[Path::new("Documents/Order.xml")]
+            .contains("<Comment>updated</Comment>"));
+        assert!(
+            !crate::domain::cache::CacheImpact::from_events(effects.events())
+                .invalidated
+                .contains("bsl_index")
+        );
+        assert!(module.is_dir());
+    }
+
+    #[test]
+    fn command_without_a_module_can_be_renamed_or_removed_without_materialization() {
+        for (operation, values) in [
+            ("command.set", json!({"newName": "Updated"})),
+            ("command.remove", serde_json::Value::Null),
+        ] {
+            let fixture = command_fixture();
+            let mut args = json!({"at": "main:Document.Order.Command.Inspect"});
+            if !values.is_null() {
+                args["values"] = values;
+            }
+            let (staged, effects) = plan_all_with_effects(&fixture, &[(operation, args)]).unwrap();
+            assert_eq!(staged.planned_changes().len(), 1);
+            assert!(
+                !crate::domain::cache::CacheImpact::from_events(effects.events())
+                    .invalidated
+                    .contains("bsl_index")
+            );
+            assert!(staged.planned_changes().iter().all(|change| change
+                .relative_path
+                .extension()
+                .is_some_and(|extension| extension == "xml")));
+        }
+    }
+
+    #[test]
+    fn command_rename_refuses_an_orphan_destination_even_without_a_source_module() {
+        for name in ["Refresh", "Inspect"] {
+            let fixture = command_fixture();
+            let original = fixture.disk_bytes();
+            let blocked_relative = "Documents/Order/Commands/Blocked/Ext/CommandModule.bsl";
+            let blocked = fixture.binding.source_root().join(blocked_relative);
+            std::fs::create_dir_all(blocked.parent().unwrap()).unwrap();
+            std::fs::write(&blocked, b"foreign module").unwrap();
+            let error = plan_all(
+                &fixture,
+                &[(
+                    "command.set",
+                    json!({
+                        "at": format!("main:Document.Order.Command.{name}"),
+                        "values": {"newName": "Blocked"}
+                    }),
+                )],
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);
+            assert_eq!(error.path(), Some("ops[0].args.values.newName"));
+            assert_eq!(
+                error.to_string(),
+                format!("the command module destination already exists: {blocked_relative}")
+            );
+            assert_eq!(fixture.disk_bytes(), original);
+            assert_eq!(std::fs::read(&blocked).unwrap(), b"foreign module");
+            assert_eq!(
+                std::fs::read(fixture.binding.source_root().join(COMMAND_MODULE_RELATIVE)).unwrap(),
+                COMMAND_MODULE.as_bytes()
+            );
+        }
+    }
+
+    #[test]
+    fn command_lifecycle_chains_use_staged_modules_and_reconcile_final_cache_effects() {
+        let rename = |from: &str, to: &str| {
+            (
+                "command.set",
+                json!({"at": format!("main:Document.Order.Command.{from}"), "values": {"newName": to}}),
+            )
+        };
+        let remove = |name: &str| {
+            (
+                "command.remove",
+                json!({"at": format!("main:Document.Order.Command.{name}")}),
+            )
+        };
+        for (operations, expected_module, expected_changes) in [
+            (
+                vec![rename("Refresh", "Step"), rename("Step", "Final")],
+                Some("Final"),
+                3,
+            ),
+            (vec![rename("Refresh", "Step"), remove("Step")], None, 2),
+            (
+                vec![rename("Refresh", "Step"), rename("Step", "Refresh")],
+                Some("Refresh"),
+                0,
+            ),
+            (
+                vec![
+                    remove("Refresh"),
+                    (
+                        "command.add",
+                        json!({"at": "main:Document.Order", "items": [{"name": "Refresh"}]}),
+                    ),
+                    rename("Refresh", "Final"),
+                ],
+                None,
+                2,
+            ),
+        ] {
+            let fixture = command_fixture();
+            let (mut staged, effects) = plan_all_with_effects(&fixture, &operations).unwrap();
+            assert_eq!(
+                staged.planned_changes().len(),
+                expected_changes,
+                "{operations:?}"
+            );
+            for name in ["Refresh", "Step", "Final"] {
+                let relative = format!("Documents/Order/Commands/{name}/Ext/CommandModule.bsl");
+                let module = staged.read(Path::new(&relative)).unwrap();
+                assert_eq!(
+                    module.as_deref(),
+                    (expected_module == Some(name)).then_some(COMMAND_MODULE.as_bytes()),
+                    "{operations:?}, {name}"
+                );
+            }
+            let impact = crate::domain::cache::CacheImpact::from_events(effects.events());
+            assert_eq!(
+                impact.invalidated.contains("bsl_index"),
+                expected_changes != 0
+            );
+            assert!(effects
+                .events()
+                .iter()
+                .filter(|event| event.kind == crate::domain::events::DomainEventKind::ModuleChanged)
+                .all(|event| !event.artifact.contains(".Command.Step.")));
+            if expected_changes == 0 {
+                assert!(effects.events().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn command_lifecycle_rejects_a_stale_module_before_finalization() {
+        for (operation, args) in [
+            (
+                "command.set",
+                json!({"at": "main:Document.Order.Command.Refresh", "values": {"newName": "Updated"}}),
+            ),
+            (
+                "command.remove",
+                json!({"at": "main:Document.Order.Command.Refresh"}),
+            ),
+        ] {
+            let fixture = command_fixture();
+            let original = fixture.disk_bytes();
+            let staged = plan_all(&fixture, &[(operation, args)]).unwrap();
+            let module = fixture.binding.source_root().join(COMMAND_MODULE_RELATIVE);
+            std::fs::write(&module, b"concurrent bytes").unwrap();
+            let error = staged.finalize().unwrap_err();
+            assert_eq!(error.kind(), crate::infrastructure::native_operations::apply::ApplyStagingErrorKind::ConcurrentRevision);
+            assert_eq!(fixture.disk_bytes(), original);
+            assert_eq!(std::fs::read(&module).unwrap(), b"concurrent bytes");
+            assert!(!fixture
+                .binding
+                .source_root()
+                .join("Documents/Order/Commands/Updated")
+                .exists());
+        }
+    }
+
+    #[test]
+    fn command_rename_carries_the_previous_staged_module_postimage() {
+        let fixture = command_fixture();
+        let admission = fixture.admission();
+        let mut staged = admission.staged_state().unwrap();
+        let edited_module = b"Procedure EditedEarlier() Export\nEndProcedure\n";
+        staged
+            .replace(
+                COMMAND_MODULE_RELATIVE,
+                COMMAND_MODULE.as_bytes(),
+                edited_module.to_vec(),
+            )
+            .unwrap();
+        let authority = admission
+            .metadata_planning_authority(&fixture.binding)
+            .unwrap();
+        let operations = [fixture.parse(
+            "command.set",
+            json!({"at": "main:Document.Order.Command.Refresh", "values": {"newName": "Updated"}}),
+            1,
+        )];
+        let (mut staged, _) = plan_metadata_batch(staged, authority, &operations).unwrap();
+        assert_eq!(
+            staged
+                .read(Path::new(
+                    "Documents/Order/Commands/Updated/Ext/CommandModule.bsl"
+                ))
+                .unwrap()
+                .as_deref(),
+            Some(edited_module.as_slice())
+        );
+        assert_eq!(
+            staged.read(Path::new(COMMAND_MODULE_RELATIVE)).unwrap(),
+            None
+        );
+        assert_eq!(
+            std::fs::read(fixture.binding.source_root().join(COMMAND_MODULE_RELATIVE)).unwrap(),
+            COMMAND_MODULE.as_bytes()
+        );
+    }
+
+    #[test]
+    fn command_case_alias_rename_invalidates_the_index_and_a_roundtrip_cancels_it() {
+        let rename_lower = (
+            "command.set",
+            json!({"at": "main:Document.Order.Command.refresh", "values": {"newName": "refresh", "comment": "keep"}}),
+        );
+        let fixture = command_fixture();
+        let (mut staged, effects) =
+            plan_all_with_effects(&fixture, std::slice::from_ref(&rename_lower)).unwrap();
+        assert_eq!(
+            staged
+                .read(Path::new(
+                    "Documents/Order/Commands/refresh/Ext/CommandModule.bsl"
+                ))
+                .unwrap()
+                .as_deref(),
+            Some(COMMAND_MODULE.as_bytes())
+        );
+        assert!(
+            crate::domain::cache::CacheImpact::from_events(effects.events())
+                .invalidated
+                .contains("bsl_index")
+        );
+        assert!(staged_texts(&staged)[Path::new("Documents/Order.xml")]
+            .contains("<Name>refresh</Name>"));
+        let (staged, effects) = plan_all_with_effects(&fixture, &[
+            rename_lower,
+            ("command.set", json!({"at": "main:Document.Order.Command.Refresh", "values": {"newName": "Refresh", "comment": "keep"}})),
+        ]).unwrap();
+        assert!(staged.planned_changes().is_empty());
+        assert!(effects.events().is_empty());
+    }
+
+    #[test]
+    fn command_case_alias_rename_invalidates_after_an_earlier_aliased_read() {
+        let fixture = command_fixture();
+        let admission = fixture.admission();
+        let mut staged = admission.staged_state().unwrap();
+        staged
+            .read(Path::new(
+                "Documents/Order/Commands/rEfReSh/Ext/CommandModule.bsl",
+            ))
+            .unwrap();
+        let authority = admission
+            .metadata_planning_authority(&fixture.binding)
+            .unwrap();
+        let operations = [fixture.parse(
+            "command.set",
+            json!({"at": "main:Document.Order.Command.refresh", "values": {"newName": "refresh", "comment": "keep"}}),
+            1,
+        )];
+        let (staged, provisional) = plan_metadata_batch(staged, authority, &operations).unwrap();
+        let effects =
+            crate::infrastructure::native_operations::apply_families::request::reconcile_effects(
+                &staged,
+                provisional,
+            );
+        assert!(
+            crate::domain::cache::CacheImpact::from_events(effects.events())
+                .invalidated
+                .contains("bsl_index")
+        );
+    }
+
+    #[test]
+    fn command_lifecycle_effects_follow_the_retained_spelling_of_earlier_reads() {
+        for (operation, args) in [
+            (
+                "command.set",
+                json!({"at": "main:Document.Order.Command.Refresh", "values": {"newName": "Updated"}}),
+            ),
+            (
+                "command.remove",
+                json!({"at": "main:Document.Order.Command.Refresh"}),
+            ),
+        ] {
+            let fixture = command_fixture();
+            let admission = fixture.admission();
+            let mut staged = admission.staged_state().unwrap();
+            for relative in [
+                "Documents/Order/Commands/rEfReSh/Ext/CommandModule.bsl",
+                "Documents/Order/Commands/uPdAtEd/Ext/CommandModule.bsl",
+            ] {
+                staged.read(Path::new(relative)).unwrap();
+            }
+            let authority = admission
+                .metadata_planning_authority(&fixture.binding)
+                .unwrap();
+            let operations = [fixture.parse(operation, args, 1)];
+            let (staged, provisional) =
+                plan_metadata_batch(staged, authority, &operations).unwrap();
+            let effects = crate::infrastructure::native_operations::apply_families::request::reconcile_effects(&staged, provisional);
+            assert!(
+                crate::domain::cache::CacheImpact::from_events(effects.events())
+                    .invalidated
+                    .contains("bsl_index"),
+                "{operation}"
+            );
+        }
+    }
+
+    #[test]
+    fn command_lifecycle_refuses_links_at_the_source_or_destination_module_route() {
+        use crate::infrastructure::platform::testing::{
+            create_directory_link_fixture_for_test, create_file_link_fixture_for_test,
+            FileLinkFixtureOutcome,
+        };
+        for (source, directory) in [(true, false), (false, false), (true, true), (false, true)] {
+            let fixture = command_fixture();
+            let original = fixture.disk_bytes();
+            let outside = tempfile::tempdir().unwrap();
+            let foreign = outside.path().join("CommandModule.bsl");
+            std::fs::write(&foreign, b"foreign module").unwrap();
+            let name = if source { "Refresh" } else { "Updated" };
+            let ext = fixture
+                .binding
+                .source_root()
+                .join(format!("Documents/Order/Commands/{name}/Ext"));
+            if source {
+                if directory {
+                    std::fs::rename(&ext, ext.with_file_name("ExtSaved")).unwrap();
+                } else {
+                    std::fs::remove_file(ext.join("CommandModule.bsl")).unwrap();
+                }
+            } else {
+                std::fs::create_dir_all(ext.parent().unwrap()).unwrap();
+                if !directory {
+                    std::fs::create_dir(&ext).unwrap();
+                }
+            }
+            let outcome = if directory {
+                create_directory_link_fixture_for_test(outside.path(), &ext)
+            } else {
+                create_file_link_fixture_for_test(&foreign, ext.join("CommandModule.bsl"))
+            }
+            .unwrap();
+            if outcome != FileLinkFixtureOutcome::Created {
+                continue;
+            }
+            let error = plan_all(&fixture, &[("command.set", json!({"at": "main:Document.Order.Command.Refresh", "values": {"newName": "Updated"}}))]).unwrap_err();
+            use crate::infrastructure::native_operations::apply::ApplyStagingErrorKind;
+            assert!(
+                matches!(
+                    error.kind(),
+                    ApplyPlanErrorKind::Staging(
+                        ApplyStagingErrorKind::ContainmentIdentity
+                            | ApplyStagingErrorKind::UnsupportedProvider
+                    )
+                ),
+                "{source}, {directory}: {error}"
+            );
+            assert!(error.to_string().contains("link"), "{error}");
+            assert_eq!(
+                error.path(),
+                Some(if source {
+                    "ops[0].args.at"
+                } else {
+                    "ops[0].args.values.newName"
+                })
+            );
+            assert_eq!(fixture.disk_bytes(), original);
+            assert_eq!(std::fs::read(&foreign).unwrap(), b"foreign module");
+        }
     }
 
     const KINDS_ENUM_XML: &str = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">

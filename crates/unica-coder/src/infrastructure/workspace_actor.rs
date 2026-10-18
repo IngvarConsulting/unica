@@ -5705,6 +5705,125 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn command_module_lifecycle_failures_roll_back_owner_module_neighbors_and_cache() {
+        use crate::domain::apply::ApplyRequest;
+        use crate::infrastructure::native_operations::apply_families::plan_hidden_v13_apply;
+        use crate::infrastructure::native_operations::compile_transaction::{
+            set_retained_apply_before_post_validation_hook, set_retained_apply_failpoint,
+            take_retained_apply_observed_events, RetainedApplyFailpoint,
+            RetainedApplyObservedEvent,
+        };
+
+        for operation in ["command.set", "command.remove"] {
+            for phase in ["second-source", "cache", "postimages", "cancelled"] {
+                let fixture = actor_fixture(
+                    &format!("command-module-rollback-{operation}-{phase}"),
+                    &["src"],
+                );
+                let source = &fixture.roots[0];
+                let corpus = Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../tests/fixtures/acceptance/workspace-metadata-commands/src");
+                for relative in [
+                    "Configuration.xml",
+                    "Catalogs/Items.xml",
+                    "Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+                    "Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+                ] {
+                    let target = source.join(relative);
+                    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+                    std::fs::copy(corpus.join(relative), target).unwrap();
+                }
+                std::fs::write(
+                    source.join("Catalogs/Items/Commands/Refresh/Ext/untouched.bin"),
+                    b"opaque neighboring bytes\0\xff",
+                )
+                .unwrap();
+                let cache = fixture.root.join(".build/unica");
+                std::fs::create_dir_all(&cache).unwrap();
+                std::fs::write(cache.join("witness.bin"), b"existing cache bytes").unwrap();
+                let binding = fixture.actor.bind_provider_root("src", source).unwrap();
+                let cancellation = CancellationToken::new();
+                let admission = fixture
+                    .actor
+                    .admit_apply(
+                        &binding,
+                        None,
+                        false,
+                        ProviderDeadline::from_budget(Duration::from_secs(5)),
+                        &cancellation,
+                    )
+                    .unwrap();
+                let input = serde_json::json!({
+                    "at": "src:Catalog.Items.Command.Refresh",
+                    "ops": [{
+                        "op": operation,
+                        "args": if operation == "command.set" {
+                            serde_json::json!({"values": {"newName": "Renamed"}})
+                        } else {
+                            serde_json::json!({})
+                        },
+                    }],
+                    "dryRun": true,
+                });
+                let request = ApplyRequest::parse(input.as_object().unwrap(), &["src"]).unwrap();
+                let before_source = snapshot_tree(source);
+                let before_cache = snapshot_tree(&cache);
+                let (staged, effects) =
+                    plan_hidden_v13_apply(&request, &binding, &admission).unwrap();
+                assert_eq!(
+                    staged.planned_changes().len(),
+                    if operation == "command.set" { 3 } else { 2 },
+                    "the real planner must include the module lifecycle"
+                );
+                let prepared = admission.prepare_with_effects(staged, effects).unwrap();
+                assert_eq!(snapshot_tree(source), before_source);
+                assert_eq!(snapshot_tree(&cache), before_cache);
+                let _ = take_retained_apply_observed_events();
+                match phase {
+                    "second-source" => {
+                        set_retained_apply_failpoint(RetainedApplyFailpoint::Source(2));
+                    }
+                    "cache" => {
+                        set_retained_apply_failpoint(RetainedApplyFailpoint::EagerMetadata(1));
+                    }
+                    "postimages" => {
+                        set_retained_apply_failpoint(RetainedApplyFailpoint::AfterAllPostimages);
+                    }
+                    "cancelled" => {
+                        let cancel = cancellation.clone();
+                        set_retained_apply_before_post_validation_hook(move || cancel.cancel());
+                    }
+                    _ => unreachable!(),
+                }
+
+                let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+
+                assert_eq!(
+                    error.kind(),
+                    if phase == "cancelled" {
+                        super::ApplyPublicationErrorKind::Cancelled
+                    } else {
+                        super::ApplyPublicationErrorKind::ProviderPostvalidation
+                    },
+                    "{operation}/{phase}: {error}"
+                );
+                let observed = take_retained_apply_observed_events();
+                assert!(
+                    observed.iter().any(|event| matches!(
+                        event,
+                        RetainedApplyObservedEvent::Source(path)
+                            if path.ends_with("CommandModule.bsl")
+                    )),
+                    "{operation}/{phase} must publish a module before rollback: {observed:?}"
+                );
+                assert_eq!(snapshot_tree(source), before_source, "{operation}/{phase}");
+                assert_eq!(snapshot_tree(&cache), before_cache, "{operation}/{phase}");
+                fixture.cleanup();
+            }
+        }
+    }
+
+    #[test]
     fn unchanged_selection_input_replaced_after_writes_refuses_and_rolls_back() {
         use crate::infrastructure::native_operations::compile_transaction::RetainedApplyObservedEvent;
         use crate::infrastructure::platform::filesystem::file_identity;

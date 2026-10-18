@@ -691,6 +691,18 @@ impl ApplyStagedState {
         self.read_bounded(relative, MAX_APPLY_FILE_BYTES)
     }
 
+    /// The path that identifies this retained overlay entry in final changes.
+    /// Filesystem aliases keep the first retained spelling, so events must use
+    /// it when the caller reached that same entry through another spelling.
+    pub(crate) fn retained_relative_path(
+        &mut self,
+        relative: &Path,
+    ) -> Result<PathBuf, ApplyStagingError> {
+        let relative = strict_relative(relative)?;
+        let index = self.ensure_loaded(&relative)?;
+        Ok(self.entries[index].relative_path.clone())
+    }
+
     pub(crate) fn read_bounded(
         &mut self,
         relative: &Path,
@@ -2846,6 +2858,12 @@ pub(crate) mod tests {
         assert_eq!(
             state.read(Path::new("Ext/module.bsl")).unwrap(),
             Some(b"first-postimage".to_vec())
+        );
+        assert_eq!(
+            state
+                .retained_relative_path(Path::new("Ext/module.bsl"))
+                .unwrap(),
+            Path::new("Ext/Module.bsl")
         );
         state
             .replace(
