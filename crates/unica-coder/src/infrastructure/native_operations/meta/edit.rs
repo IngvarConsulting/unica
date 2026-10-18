@@ -735,6 +735,12 @@ struct TypedChildStorageProfile {
     descriptor: TypedChildDescriptorStorage,
 }
 
+const TYPED_COMMAND_STORAGE_PROFILE: TypedChildStorageProfile = TypedChildStorageProfile {
+    directory: "Commands",
+    resource: MetaPublicationResource::Command,
+    descriptor: TypedChildDescriptorStorage::InlineOwner,
+};
+
 #[derive(Debug)]
 pub(super) struct TypedRelationDependency {
     pub(super) handle: ClosedPlatformXmlTarget,
@@ -1649,13 +1655,26 @@ fn typed_child_storage_profile(collection: MetaCollection) -> Option<TypedChildS
             resource: MetaPublicationResource::Template,
             descriptor: TypedChildDescriptorStorage::Standalone,
         }),
-        MetaCollection::Commands => Some(TypedChildStorageProfile {
-            directory: "Commands",
-            resource: MetaPublicationResource::Command,
-            descriptor: TypedChildDescriptorStorage::InlineOwner,
-        }),
+        MetaCollection::Commands => Some(TYPED_COMMAND_STORAGE_PROFILE),
         _ => None,
     }
+}
+
+pub(crate) fn typed_command_module_path(descriptor_path: &Path, name: &str) -> PathBuf {
+    descriptor_path
+        .with_extension("")
+        .join(TYPED_COMMAND_STORAGE_PROFILE.directory)
+        .join(name)
+        .join(TYPED_COMMAND_MODULE_PATH)
+}
+
+pub(crate) fn canonical_typed_command_name(
+    xml_text: &str,
+    name: &str,
+) -> Result<String, MetaFailure> {
+    find_typed_element_identity(xml_text, "Command", None, name)
+        .map(|(_, name)| name)
+        .map_err(MetaFailure::from)
 }
 
 pub(super) fn observe_typed_child_resources(
@@ -4945,6 +4964,15 @@ fn find_typed_element_range(
     scope: Option<&str>,
     name: &str,
 ) -> Result<std::ops::Range<usize>, MetaDiagnostic> {
+    find_typed_element_identity(xml_text, tag, scope, name).map(|(range, _)| range)
+}
+
+fn find_typed_element_identity(
+    xml_text: &str,
+    tag: &str,
+    scope: Option<&str>,
+    name: &str,
+) -> Result<(std::ops::Range<usize>, String), MetaDiagnostic> {
     let doc = Document::parse(xml_text.trim_start_matches('\u{feff}')).map_err(|_| {
         typed_diagnostic(
             MetaDiagnosticCode::ProviderUnavailable,
@@ -4980,11 +5008,10 @@ fn find_typed_element_range(
     })?;
     meta_info_children(parent, tag)
         .into_iter()
-        .find(|child| {
-            meta_edit_child_object_name(*child)
-                .is_some_and(|candidate| metadata_name_eq(&candidate, name))
+        .find_map(|node| {
+            let canonical_name = meta_edit_child_object_name(node)?;
+            metadata_name_eq(&canonical_name, name).then(|| (node.range(), canonical_name))
         })
-        .map(|node| node.range())
         .ok_or_else(|| {
             typed_diagnostic(
                 MetaDiagnosticCode::TargetNotFound,
