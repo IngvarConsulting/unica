@@ -2355,6 +2355,7 @@ dependencies = [
  "libc",
  "objc2-core-foundation",
  "parser",
+ "percent-encoding",
  "proc-macro2",
  "quote",
  "regex",

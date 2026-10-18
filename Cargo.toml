@@ -63,6 +63,7 @@ webpki-roots = "1"
 # Только для стендов TLS в тестах: корень и сертификат сервера на лету.
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
 url = "2.5.4"
+percent-encoding = "2.3"
 uuid = { version = "1", features = ["v4"] }
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",

@@ -1105,6 +1105,7 @@ pub(crate) fn plan_hidden_v13_apply(
         cursor = end;
     }
 
+    metadata::validate_final_object_integrity(&staged, binding)?;
     let mut effects = reconcile_effects(&staged, provisional);
     effects.set_borrowing(borrowing);
     Ok((staged, effects))
@@ -1112,6 +1113,9 @@ pub(crate) fn plan_hidden_v13_apply(
 
 #[cfg(test)]
 mod inherited_content_tests;
+
+#[cfg(test)]
+mod object_integrity_tests;
 
 #[cfg(test)]
 mod tests {

@@ -68,7 +68,7 @@ BINARY = (
     / ("unica.exe" if os.name == "nt" else "unica")
 )
 from tests.ci.acceptance_profiles import (
-    DIAGNOSTICS_WORKSPACE, SOURCE_WORKSPACES, SYMBOL_WORKSPACE, completed_delivery_call, isolated_environment,
+    DIAGNOSTICS_WORKSPACE, KB_BOUNDARY_WORKSPACE, SOURCE_WORKSPACES, SYMBOL_WORKSPACE, completed_delivery_call, isolated_environment,
     select_profile,
 )
 
@@ -473,6 +473,57 @@ def materialize_external_form_link(workspace: Path) -> None:
         raise ValueError("external link fixture does not point to the neighboring owner")
 
 
+def source_fixture_environment(workspace_relative, environment=None):
+    if workspace_relative != KB_BOUNDARY_WORKSPACE:
+        return environment
+    environment = dict(os.environ if environment is None else environment)
+    for key in ("no_proxy", "NO_PROXY", "UNICA_DOCUMENTATION_POLICY_FILE"):
+        environment.pop(key, None)
+    # The normal HTTP client rejects this proxy scheme before DNS or a socket.
+    # If the guide-root guard regresses, the corpus fails on the proxy error
+    # instead of asking the real vendor site for the forbidden page.
+    environment["https_proxy"] = "unsupported://127.0.0.1:1"
+    environment["HTTPS_PROXY"] = "unsupported://127.0.0.1:1"
+    return environment
+
+
+class KbBoundaryFixtureTests(unittest.TestCase):
+    def test_boundary_fixture_cannot_inherit_a_proxy_bypass_or_machine_policy(self):
+        inherited = {
+            "https_proxy": "http://inherited.invalid:3128",
+            "HTTPS_PROXY": "http://inherited.invalid:3129",
+            "no_proxy": "*",
+            "NO_PROXY": "kb.1ci.com",
+            "UNICA_DOCUMENTATION_POLICY_FILE": "/unrelated/machine-policy.toml",
+            "PATH": "/inherited/path",
+        }
+        original = inherited.copy()
+        environment = source_fixture_environment(KB_BOUNDARY_WORKSPACE, inherited)
+        self.assertEqual(inherited, original)
+        self.assertEqual(environment["https_proxy"], "unsupported://127.0.0.1:1")
+        self.assertEqual(environment["HTTPS_PROXY"], "unsupported://127.0.0.1:1")
+        for key in ("no_proxy", "NO_PROXY", "UNICA_DOCUMENTATION_POLICY_FILE"):
+            self.assertNotIn(key, environment)
+        self.assertEqual(environment["PATH"], inherited["PATH"])
+
+    def test_other_source_fixtures_keep_their_environment(self):
+        environment = {"https_proxy": "http://inherited.invalid:3128", "no_proxy": "*"}
+        self.assertIs(source_fixture_environment(BARE_WORKSPACE, environment), environment)
+        self.assertIsNone(source_fixture_environment(BARE_WORKSPACE))
+
+    def test_a_proxy_failure_cannot_satisfy_the_guide_root_refusal(self):
+        corpus = load_acceptance_corpus()
+        scenario = next(s for s in corpus["scenarios"] if s["id"] == "S-953-kb-guide-root-boundary")
+        for step in scenario["wire"]:
+            locator = step["args"]["query"]
+            structured = {"ok": False, "diagnostics": [{
+                "code": "not_found",
+                "message": f"documentation page `{locator}` was not found: площадка недоступна: invalid proxy setting",
+            }]}
+            actual, note = classify({"result": {"structuredContent": structured}}, {})
+            self.assertTrue(content_mismatches(step, structured, actual, note))
+
+
 class ExternalLinkFixtureTests(unittest.TestCase):
     def test_fixed_link_is_real_and_the_neighbor_bytes_are_preserved(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -700,12 +751,18 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
 
     CONTEXT_ROWS = [
         ("attribute.add", "Metadata", "MetadataAttributeContainer", "Items"),
+        ("attribute.set", "Metadata", "MetadataAttribute", "Values"),
+        ("attribute.remove", "Metadata", "MetadataAttribute", "Target"),
         ("command.add", "Metadata", "MetadataCommands", "Items"),
+        ("command.set", "Metadata", "MetadataCommand", "Values"),
+        ("command.remove", "Metadata", "MetadataCommand", "Target"),
         ("attribute.add", "Form", "Form", "Items"),
         ("command.add", "Form", "Form", "Items"),
     ]
     CONTEXT_REGISTRATIONS = (
-        "(MetadataOperation::AttributeAdd), (MetadataOperation::CommandAdd),"
+        "(MetadataOperation::AttributeAdd), (MetadataOperation::AttributeSet),"
+        "(MetadataOperation::AttributeRemove), (MetadataOperation::CommandAdd),"
+        "(MetadataOperation::CommandSet), (MetadataOperation::CommandRemove),"
         "(FormOperation::AttributeAdd), (FormOperation::CommandAdd),"
     )
 
@@ -819,16 +876,23 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         registry, _ = self.registration_fixture(
             '(RoleOperation::Create), (RoleOperation::RightAdd), (RoleOperation::RightSet),\n'
             '(MetadataOperation::AttributeAdd),\n'
-            '("attribute.set", Metadata, MetadataAttribute, Values),\n'
+            '(MetadataOperation::AttributeSet),\n'
+            '("object.create", Metadata, Configuration, Values),\n'
             '(FormOperation::AttributeAdd),\n'
+            '(MetadataOperation::AttributeRemove),\n'
             '(MetadataOperation::CommandAdd),\n'
+            '(MetadataOperation::CommandSet), (MetadataOperation::CommandRemove),\n'
             '("item.add", Form, FormItemContainer, Items),\n'
             '(FormOperation::CommandAdd),',
             metadata,
             {
                 "metadata_operation.rs": '''metadata_operations!(
                     AttributeAdd => ("attribute.add", MetadataAttributeContainer, Items),
+                    AttributeSet => ("attribute.set", MetadataAttribute, Values),
+                    AttributeRemove => ("attribute.remove", MetadataAttribute, Target),
                     CommandAdd => ("command.add", MetadataCommands, Items),
+                    CommandSet => ("command.set", MetadataCommand, Values),
+                    CommandRemove => ("command.remove", MetadataCommand, Target),
                 );''',
                 "form_operation.rs": '''form_operations!(
                     AttributeAdd => ("attribute.add", Form, Items),
@@ -843,8 +907,12 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("right.set", "Role", "RoleRight", "Values"),
             ("attribute.add", "Metadata", "MetadataAttributeContainer", "Items"),
             ("attribute.set", "Metadata", "MetadataAttribute", "Values"),
+            ("object.create", "Metadata", "Configuration", "Values"),
             ("attribute.add", "Form", "Form", "Items"),
+            ("attribute.remove", "Metadata", "MetadataAttribute", "Target"),
             ("command.add", "Metadata", "MetadataCommands", "Items"),
+            ("command.set", "Metadata", "MetadataCommand", "Values"),
+            ("command.remove", "Metadata", "MetadataCommand", "Target"),
             ("item.add", "Form", "FormItemContainer", "Items"),
             ("command.add", "Form", "Form", "Items"),
             ("supportCapability.set", "Support", "Configuration", "Values"),
@@ -854,14 +922,18 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
     def test_partial_typed_families_keep_the_remaining_raw_operations(self) -> None:
         module = self.renderer()
         registry, implemented = module.load_apply_registry()
-        migrated_names = {"attribute.add", "command.add"}
-        self.assertEqual(
-            [entry for entry in registry if entry[1] in {"Metadata", "Form"} and entry[0] in migrated_names],
-            self.CONTEXT_ROWS,
-        )
-        for family, remaining in [("Metadata", 32), ("Form", 7)]:
+        for family, migrated_names, remaining in [
+            ("Metadata", {"attribute.add", "attribute.set", "attribute.remove", "command.add", "command.set", "command.remove"}, 28),
+            ("Form", {"attribute.add", "command.add"}, 7),
+        ]:
+            self.assertEqual(
+                [entry for entry in registry if entry[1] == family and entry[0] in migrated_names],
+                [entry for entry in self.CONTEXT_ROWS if entry[1] == family],
+            )
             self.assertEqual(sum(entry[1] == family and entry[0] not in migrated_names for entry in registry), remaining)
-        self.assertLessEqual(migrated_names, implemented)
+            self.assertLessEqual(migrated_names, implemented)
+        self.assertEqual(len(registry), 122)
+        self.assertEqual(len({entry[0] for entry in registry}), 120)
 
     def test_partial_typed_metadata_cannot_be_missing_duplicated_or_registered_as_raw(self) -> None:
         role_metadata = (REPO_ROOT / "crates/unica-coder/src/domain/role_operation.rs").read_text(encoding="utf-8")
@@ -876,12 +948,16 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             self.assertIn(last_row, metadata)
             raw = f'("command.add", {family}, {applicability}, Items),'
             other_type = "FormOperation" if family == "Metadata" else "MetadataOperation"
+            variants = ["AttributeAdd", "AttributeSet", "AttributeRemove", "CommandAdd", "CommandSet", "CommandRemove"] if family == "Metadata" else ["AttributeAdd", "CommandAdd"]
+            without_family = table
+            for variant in variants:
+                without_family = without_family.replace(f"({operation_type}::{variant}),", "")
             cases = {
                 "unknown typed family": (table.replace(f"{operation_type}::AttributeAdd", "OtherOperation::AttributeAdd"), metadata),
                 "unknown variant": (table.replace(f"{operation_type}::AttributeAdd", f"{operation_type}::Missing"), metadata),
                 "wrong typed family": (table.replace(f"{operation_type}::AttributeAdd", f"{other_type}::AttributeAdd"), metadata),
                 "missing registration": (table.replace(f"({operation_type}::CommandAdd),", ""), metadata),
-                "all family registrations missing": (table.replace(f"({operation_type}::AttributeAdd),", "").replace(f"({operation_type}::CommandAdd),", ""), metadata),
+                "all family registrations missing": (without_family, metadata),
                 "both partial families missing": (roles, metadata),
                 "duplicate registration": (table + f"({operation_type}::CommandAdd),", metadata),
                 "raw instead of typed": (table.replace(f"({operation_type}::CommandAdd),", raw), metadata),
@@ -898,6 +974,19 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
                 "duplicate metadata variant": (table, metadata.replace(last_row, f'    AttributeAdd => ("command.add", {applicability}, Items),\n')),
                 "duplicate metadata name": (table, metadata.replace(last_row, f'    CommandAdd => ("attribute.add", {applicability}, Items),\n')),
             }
+            if family == "Metadata":
+                for variant, name, applicability, skeleton in [
+                    ("AttributeSet", "attribute.set", "MetadataAttribute", "Values"),
+                    ("AttributeRemove", "attribute.remove", "MetadataAttribute", "Target"),
+                    ("CommandSet", "command.set", "MetadataCommand", "Values"),
+                    ("CommandRemove", "command.remove", "MetadataCommand", "Target"),
+                ]:
+                    registration = f"({operation_type}::{variant}),"
+                    raw_attribute = f'("{name}", Metadata, {applicability}, {skeleton}),'
+                    cases[f"missing {name} registration"] = (table.replace(registration, ""), metadata)
+                    cases[f"duplicate {name} registration"] = (table + registration, metadata)
+                    cases[f"raw {name} instead of typed"] = (table.replace(registration, raw_attribute), metadata)
+                    cases[f"raw {name} beside complete typed"] = (table + raw_attribute, metadata)
             for case, (source, family_metadata) in cases.items():
                 with self.subTest(family=family, case=case), self.assertRaises(RuntimeError):
                     self.registration_fixture(
@@ -1232,6 +1321,7 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None):
             state = home / "state"
             state.mkdir()
             environment = isolated_environment(plugin, state) if plugin else None
+            environment = source_fixture_environment(workspace_relative, environment)
             server_type = DeliveredAcceptanceServer if plugin else AcceptanceServer
             return server_type(workspace, state, corpus["protocolVersion"], environment)
 

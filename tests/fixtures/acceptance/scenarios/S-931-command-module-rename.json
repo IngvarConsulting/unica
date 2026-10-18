@@ -1,0 +1,401 @@
+{
+  "id": "S-931-command-module-rename",
+  "issue": 931,
+  "area": "Метаданные",
+  "task": "Переименовать команду с модулем через публичный apply: предпросмотр не пишет файлы, публикация переносит исходные байты CommandModule.bsl и сохраняет UUID, прочие свойства, соседей и посторонний файл на старом месте; старый адрес перестаёт изменять владельца",
+  "workspace": "tests/fixtures/acceptance/workspace-metadata-commands",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Command.Refresh"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/comment",
+          "eq": "Refresh original comment"
+        }
+      ],
+      "captures": {
+        "before": {
+          "file": "src/Catalogs/Items.xml",
+          "kind": "sha256"
+        },
+        "refreshModule": {
+          "file": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256"
+        },
+        "configuration": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "language": {
+          "file": "src/Languages/Русский.xml",
+          "kind": "sha256"
+        },
+        "keepModule": {
+          "file": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256"
+        },
+        "workspaceConfig": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
+        },
+        "unrelatedPayload": {
+          "file": "src/Catalogs/Items/Commands/Refresh/Ext/unrelated.txt",
+          "kind": "sha256"
+        },
+        "blockedModule": {
+          "file": "src/Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Command.Refresh",
+        "ops": [
+          {
+            "op": "command.set",
+            "args": {
+              "values": {
+                "newName": "RefreshRenamed"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.refreshModule"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/RefreshRenamed/Ext/CommandModule.bsl",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configuration"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.language"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.keepModule"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.workspaceConfig"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/unrelated.txt",
+          "kind": "sha256",
+          "eq": "$capture.unrelatedPayload"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.blockedModule"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/RefreshRenamed/Ext/unrelated.txt",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "47ec2d0cbb75bc01ab8bcf6b176000d41929b7220842a4e6857015b8554e3516"
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Command[@uuid=\"c144c1ed-2100-4e58-85fe-c6e2bfdb3201\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "RefreshRenamed"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Command[@uuid=\"c144c1ed-2100-4e58-85fe-c6e2bfdb3201\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
+          "eq": [
+            "Refresh original comment"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Command[@uuid=\"c144c1ed-2100-4e58-85fe-c6e2bfdb3201\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Group",
+          "eq": [
+            "FormNavigationPanelGoTo"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Command[@uuid=\"c144c1ed-2100-4e58-85fe-c6e2bfdb3201\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}ToolTip/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "Refresh preserved tooltip"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog[@uuid=\"d1839c30-e153-56f4-a896-16d27d8ee057\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "Items"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Command[@uuid=\"c144c1ed-2100-4e58-85fe-c6e2bfdb3203\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "Keep"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute[@uuid=\"c144c1ed-2100-4e58-85fe-c6e2bfdb3204\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "Witness"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/RefreshRenamed/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.refreshModule"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/RefreshRenamed.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configuration"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.language"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.keepModule"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.workspaceConfig"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/unrelated.txt",
+          "kind": "sha256",
+          "eq": "$capture.unrelatedPayload"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.blockedModule"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/RefreshRenamed/Ext/unrelated.txt",
+          "kind": "exists",
+          "eq": false
+        }
+      ],
+      "captures": {
+        "afterRename": {
+          "file": "src/Catalogs/Items.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Command.RefreshRenamed"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/comment",
+          "eq": "Refresh original comment"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Command.Refresh",
+        "ops": [
+          {
+            "op": "command.remove",
+            "args": {}
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: element `Refresh` was not found",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.at"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.afterRename"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/RefreshRenamed/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.refreshModule"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configuration"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.language"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.keepModule"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.workspaceConfig"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/unrelated.txt",
+          "kind": "sha256",
+          "eq": "$capture.unrelatedPayload"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.blockedModule"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/RefreshRenamed/Ext/unrelated.txt",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Command.Keep"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/comment",
+          "eq": "Keep original comment"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Attribute.Witness"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/comment",
+          "eq": "neighbor attribute"
+        }
+      ]
+    }
+  ]
+}

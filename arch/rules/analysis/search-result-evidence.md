@@ -13,12 +13,11 @@ check:
   - crates/unica-coder/src/application/mod.rs::code_search_schema_accepts_a_real_partial_provider_section
   - crates/unica-coder/src/application/code_intelligence.rs::malformed_provider_subset_remains_useful_without_claiming_complete_coverage
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::public_role_search_surfaces_partial_provider_warning_and_hit
-  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::a_text_search_hit_opens_the_narrowest_body_line_address
-  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::body_line_provider_search_uses_current_spans_and_preserves_evidence
-  - crates/unica-coder/tests/v13_search_integration.rs::public_body_line_ranges_open_search_hits_and_refuse_line_edits
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::canonical_role_search_preserves_typed_failure_without_private_provider_text
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::provider_search_failure_requires_one_selected_section_and_yields_to_cancellation
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::provider_limit_remains_visible_after_the_last_received_page
+  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::provider_search_pages_all_received_hits_and_rejects_changed_answers
+  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::late_oversized_provider_hit_refuses_before_first_cursor
   - crates/unica-coder/src/infrastructure/code_intelligence.rs::bsl_analyzer_at_requested_limit_does_not_claim_exhaustion
   - crates/unica-coder/src/infrastructure/code_intelligence.rs::bsl_analyzer_at_its_internal_cap_does_not_claim_exhaustion
   - crates/unica-coder/src/infrastructure/code_intelligence.rs::bsl_analyzer_output_budget_truncation_does_not_claim_exhaustion
@@ -61,13 +60,9 @@ check:
 Уточнение ожидания индекса передаётся только для известных состояний
 `buildingIndex`, `updatingIndex` и `indexQueued`; неизвестное уточнение не отменяет
 типизированную причину ожидания и возможность повтора.
-Наблюдаемое обслуживание RLM передаётся отдельно в `indexMaintenance`:
-`queued`, `running`, `startFailed`, `executionFailed`, `unknown`, `completed`
-или `cancelled`. Поле содержит категорию без произвольного текста исполнителя.
-Оно сохраняется и при успешном чтении пригодного старого индекса; состояние
-обслуживания не подменяет причину завершения самого поиска.
-Сохранённый идентификатор сборки индекса не доказывает свежесть исходников:
-в отказе `indexFreshness` остаётся `unknown`.
+Состояние [обслуживания RLM](rlm-maintenance-status.md) передаётся отдельно
+от причины завершения поиска. Сохранённая сборка и
+[актуальность данных](rlm-stale-results.md) также различаются.
 
 Проверки подтверждают форму секции и передачу данных координатором.
 Выбор поставщика на публичном входе `unica.search` проверен отдельно в #960.
@@ -76,18 +71,19 @@ check:
 наиболее подходящие совпадения; поиск имён — точные совпадения перед близкими;
 буквальный поиск — места в порядке файлов. Неполнота результата обозначается
 явно. Сводка не заменяет первую страницу полезных совпадений.
-Адрес текстового совпадения открывает абсолютный диапазон строк `Body`.
-Если текущая структура модуля подтверждает содержащий метод, адрес ведёт
-в его `Body`; иначе модульный адрес сохраняет полезное совпадение, а предел
-установления границ метода обозначается явно. Строка, колонка, фрагмент
-и ранг поставщика сохраняются. Адрес для провайдерного фрагмента выдаётся,
-только если текущий текст подтверждает этот фрагмент в указанном диапазоне;
-имя символа поставщика само по себе границу метода не доказывает.
+Адреса текстовых совпадений выдаются по
+[правилу подтверждённого диапазона](proven-hit-address.md).
 Общий [предел страницы](../mcp/read-page-budget.md) сохраняется.
 Провайдерный поиск выдаёт страницы полученного окна, сохраняя его роль,
-поставщика и полноту. Курсор не доказывает, что поставщик нашёл всё: при
+поставщика и полноту. Перед продолжением он пересобирает ограниченное окно
+и сверяет отпечаток всего ответа, а не общую ревизию исходников. Изменившийся
+ответ даёт `stale_cursor`. До первого курсора проверяется, что каждое
+совпадение окна можно вернуть целиком; неделимый результат за транспортным
+пределом вызывает отказ до первой страницы. Курсор не доказывает,
+что поставщик нашёл всё: при
 достижении его предела последняя страница сохраняет `limitReached` и нижнюю
-оценку. При 200 полученных результатах ответ рекомендует уточнить запрос.
+оценку. Кодовые роли получают окно не более 200 результатов.
+При 200 полученных результатах ответ рекомендует уточнить запрос.
 Если окно неполно, он не обещает выдачу его хвоста. Меньшие внутренние квоты
 `bsl-analyzer` и RLM остаются видимой неполнотой, но сами по себе не означают,
 что запрос слишком широк.

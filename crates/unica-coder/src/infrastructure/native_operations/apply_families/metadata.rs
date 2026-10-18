@@ -3,23 +3,27 @@ use crate::application::metadata::{parse_metadata_request, MetadataOperation, Me
 use crate::domain::address::{NodeKind, QualifiedAddress};
 use crate::domain::apply::OperationDescriptor;
 use crate::domain::events::{DomainEvent, DomainEventKind};
-use crate::domain::metadata::{MetaDiagnosticCode, MetaEditOperation, MetadataKind};
+use crate::domain::metadata::{
+    MetaCollection, MetaDiagnosticCode, MetaEditOperation, MetadataKind,
+};
 use crate::domain::metadata_operation::MetadataOperation as RegisteredMetadataOperation;
 use crate::domain::project_sources::SourceSetKind;
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use crate::infrastructure::logical_event_source::metadata_descriptor_relative;
-use crate::infrastructure::metadata_kinds::metadata_layout;
+use crate::infrastructure::metadata_kinds::{metadata_kind_by_directory, metadata_layout};
 use crate::infrastructure::native_operations::apply::{
     empty_apply_family_batch, hidden_apply_family_unimplemented, ApplyPlanError,
-    ApplyPlanErrorKind, ApplyStagedState,
+    ApplyPlanErrorKind, ApplyStagedState, StagedFileState,
 };
 use crate::infrastructure::native_operations::apply_families::request::{
     IndexedPlanOperation, ProvisionalApplyEffect,
 };
 use crate::infrastructure::native_operations::meta::{
-    apply_typed_operations_to_image_with_seed, meta_default_text_language,
-    meta_edit_object_identity, meta_mltext_property_replacement, predefined_item_id,
-    predefined_post_image, typed_operations_write_multilingual_text, EXTERNAL_SOURCE_TEXT_LANGUAGE,
+    apply_typed_operations_to_image_with_seed, canonical_typed_command_name,
+    check_meta_object_integrity, meta_default_text_language, meta_edit_object_identity,
+    meta_mltext_property_replacement, predefined_item_id, predefined_post_image,
+    typed_command_module_path, typed_operations_write_multilingual_text,
+    EXTERNAL_SOURCE_TEXT_LANGUAGE,
 };
 use crate::infrastructure::native_operations::text_snapshot::{
     LineEnding, LineEndingProfile, SourceTextSnapshot,
@@ -87,6 +91,86 @@ enum MetadataPlanKind {
         relative: PathBuf,
         values: Map<String, Value>,
     },
+}
+
+/// Local composition belongs to the final descriptor, after every operation
+/// family has contributed its image. A borrowed descriptor contains only the
+/// extension's contribution and cannot establish the parent's composition.
+pub(super) fn validate_final_object_integrity(
+    staged: &ApplyStagedState,
+    binding: &ProviderRootBinding,
+) -> Result<(), ApplyPlanError> {
+    for change in staged.planned_changes() {
+        let StagedFileState::Bytes(bytes) = &change.current else {
+            continue;
+        };
+        let relative = &change.relative_path;
+        let Some(directory) = relative
+            .parent()
+            .filter(|parent| parent.components().count() == 1)
+            .and_then(Path::to_str)
+            .and_then(metadata_kind_by_directory)
+        else {
+            continue;
+        };
+        let Ok(kind) = MetadataKind::parse(directory.tag) else {
+            continue;
+        };
+        if crate::domain::metadata::meta_object_integrity_rules(kind)
+            .next()
+            .is_none()
+            || relative
+                .extension()
+                .and_then(|extension| extension.to_str())
+                != Some("xml")
+        {
+            continue;
+        }
+        let Some(name) = relative.file_stem().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let at = format!("{}:{}.{}", binding.source_set_name(), kind.as_str(), name);
+        staged
+            .checkpoint("final metadata object integrity")
+            .map_err(|error| ApplyPlanError::staging(error, at.clone()))?;
+        if binding.source_kind() == SourceSetKind::Extension
+            && final_object_inherits_composition(kind, bytes)
+        {
+            continue;
+        }
+        check_meta_object_integrity(kind, bytes).map_err(|diagnostic| {
+            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, diagnostic.message).at_path(at)
+        })?;
+    }
+    Ok(())
+}
+
+fn final_object_inherits_composition(kind: MetadataKind, bytes: &[u8]) -> bool {
+    const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return false;
+    };
+    let Ok(document) = roxmltree::Document::parse(text.trim_start_matches('\u{feff}')) else {
+        return false;
+    };
+    let root = document.root_element();
+    if !root.has_tag_name((MD, "MetaDataObject")) {
+        return false;
+    }
+    root.children()
+        .find(|node| node.has_tag_name((MD, kind.as_str())))
+        .and_then(|object| {
+            object
+                .children()
+                .find(|node| node.has_tag_name((MD, "Properties")))
+        })
+        .and_then(|properties| {
+            properties
+                .children()
+                .find(|node| node.has_tag_name((MD, "ExtendedConfigurationObject")))
+        })
+        .and_then(|marker| marker.text())
+        .is_some_and(|id| uuid::Uuid::parse_str(id.trim()).is_ok())
 }
 
 /// Where the caller wrote the fields of an addressed typed edit: the typed
@@ -172,16 +256,38 @@ pub(crate) fn parse_metadata_plan_operation_in(
             RegisteredMetadataOperation::AttributeAdd => {
                 parse_attribute_add(object, op_index, binding)?
             }
+            RegisteredMetadataOperation::AttributeSet => {
+                parse_attribute_set(object, op_index, binding)?
+            }
+            RegisteredMetadataOperation::AttributeRemove => {
+                parse_attribute_remove(object, op_index, binding)?
+            }
             RegisteredMetadataOperation::CommandAdd => {
                 parse_member_add(operation.name(), "commands", object, op_index, binding)?
             }
+            RegisteredMetadataOperation::CommandSet => parse_addressed_member_change(
+                operation.name(),
+                NodeKind::Command,
+                MetaCollection::Commands,
+                AddressedMemberChange::Set,
+                object,
+                op_index,
+                binding,
+            )?,
+            RegisteredMetadataOperation::CommandRemove => parse_addressed_member_change(
+                operation.name(),
+                NodeKind::Command,
+                MetaCollection::Commands,
+                AddressedMemberChange::Remove,
+                object,
+                op_index,
+                binding,
+            )?,
         };
         return Ok(MetadataPlanOperation { kind });
     }
     let kind = match operation {
         "props.set" => parse_props_set(object, op_index, binding)?,
-        "attribute.set" => parse_attribute_set(object, op_index, binding)?,
-        "attribute.remove" => parse_attribute_remove(object, op_index, binding)?,
         "tabularSection.add" => {
             parse_member_add(operation, "tabularSections", object, op_index, binding)?
         }
@@ -194,9 +300,7 @@ pub(crate) fn parse_metadata_plan_operation_in(
         | "enumValue.set"
         | "enumValue.remove"
         | "column.set"
-        | "column.remove"
-        | "command.set"
-        | "command.remove" => parse_addressed_member(operation, object, op_index, binding)?,
+        | "column.remove" => parse_addressed_member(operation, object, op_index, binding)?,
         "dimension.add" => parse_member_add(operation, "dimensions", object, op_index, binding)?,
         "resource.add" => parse_member_add(operation, "resources", object, op_index, binding)?,
         "enumValue.add" => parse_member_add(operation, "enumValues", object, op_index, binding)?,
@@ -480,7 +584,7 @@ fn parse_object_remove(
                 ApplyPlanErrorKind::BadValue,
                 "`force` must be a boolean",
             )
-            .at_path(format!("ops[{op_index}].args.force")))
+            .at_path(format!("ops[{op_index}].args.force")));
         }
     };
     Ok(MetadataPlanKind::Remove {
@@ -612,7 +716,7 @@ fn attribute_owner_and_name(
                 ApplyPlanErrorKind::BadValue,
                 "attribute target must identify one exact Attribute leaf",
             )
-            .at_path(format!("ops[{op_index}].args.at")))
+            .at_path(format!("ops[{op_index}].args.at")));
         }
     };
     if attribute.kind() != NodeKind::Attribute {
@@ -752,7 +856,7 @@ fn parse_attribute_add(
                 ApplyPlanErrorKind::BadValue,
                 "attribute.add target must be a metadata object or its `TabularSection.<Name>`",
             )
-            .at_path(format!("ops[{op_index}].args.at")))
+            .at_path(format!("ops[{op_index}].args.at")));
         }
     };
     let items = required_array(args, "items", op_index)?.to_vec();
@@ -878,14 +982,13 @@ fn parse_member_add(
 }
 
 /// The node kind and typed collection of an addressed member operation.
-fn addressed_member(operation: &str) -> (NodeKind, &'static str) {
+fn addressed_member(operation: &str) -> (NodeKind, MetaCollection) {
     match operation.split_once('.').map(|(family, _)| family) {
-        Some("tabularSection") => (NodeKind::TabularSection, "tabularSections"),
-        Some("dimension") => (NodeKind::Dimension, "dimensions"),
-        Some("resource") => (NodeKind::Resource, "resources"),
-        Some("enumValue") => (NodeKind::EnumValue, "enumValues"),
-        Some("column") => (NodeKind::Column, "columns"),
-        Some("command") => (NodeKind::Command, "commands"),
+        Some("tabularSection") => (NodeKind::TabularSection, MetaCollection::TabularSections),
+        Some("dimension") => (NodeKind::Dimension, MetaCollection::Dimensions),
+        Some("resource") => (NodeKind::Resource, MetaCollection::Resources),
+        Some("enumValue") => (NodeKind::EnumValue, MetaCollection::EnumValues),
+        Some("column") => (NodeKind::Column, MetaCollection::Columns),
         _ => unreachable!("only addressed member operations reach this parser"),
     }
 }
@@ -900,18 +1003,51 @@ fn parse_addressed_member(
     binding: &ProviderRootBinding,
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
     let (member_kind, collection) = addressed_member(operation);
-    let remove = operation.ends_with(".remove");
-    let allowed: &[&str] = if remove { &["at"] } else { &["at", "values"] };
+    let change = if operation.ends_with(".remove") {
+        AddressedMemberChange::Remove
+    } else {
+        AddressedMemberChange::Set
+    };
+    parse_addressed_member_change(
+        operation,
+        member_kind,
+        collection,
+        change,
+        args,
+        op_index,
+        binding,
+    )
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AddressedMemberChange {
+    Set,
+    Remove,
+}
+
+fn parse_addressed_member_change(
+    operation: &str,
+    member_kind: NodeKind,
+    collection: MetaCollection,
+    change: AddressedMemberChange,
+    args: &Map<String, Value>,
+    op_index: usize,
+    binding: &ProviderRootBinding,
+) -> Result<MetadataPlanKind, ApplyPlanError> {
+    let allowed: &[&str] = match change {
+        AddressedMemberChange::Set => &["at", "values"],
+        AddressedMemberChange::Remove => &["at"],
+    };
     reject_unknown_args(operation, args, allowed, op_index)?;
     let target = qualified_target(args, op_index, binding)?;
     let (owner, kind, name) = metadata_member_target(&target, member_kind, op_index)?;
-    if remove {
+    if matches!(change, AddressedMemberChange::Remove) {
         return Ok(addressed_edit(
             parse_legacy_edit(
                 binding.source_set_name(),
                 owner,
                 kind,
-                json!({"op": "remove", "collection": collection, "names": [name]}),
+                json!({"op": "remove", "collection": collection.as_str(), "names": [name]}),
                 |field| format!("ops[{op_index}].args.{field}"),
                 op_index,
             )?,
@@ -939,7 +1075,7 @@ fn parse_addressed_member(
             binding.source_set_name(),
             owner,
             kind,
-            json!({"op": "update", "collection": collection, "elements": [values]}),
+            json!({"op": "update", "collection": collection.as_str(), "elements": [values]}),
             |field| {
                 format!(
                     "ops[{op_index}].args.{}",
@@ -1346,13 +1482,14 @@ pub(crate) fn plan_metadata_batch(
             Some(body) => (&b"\xef\xbb\xbf"[..], body),
             None => (&b""[..], preimage.as_slice()),
         };
-        let mut postimage = String::from_utf8(body.to_vec()).map_err(|_| {
+        let source = std::str::from_utf8(body).map_err(|_| {
             ApplyPlanError::new(
                 ApplyPlanErrorKind::InvalidSource,
                 "metadata descriptor is not UTF-8",
             )
             .at_path(format!("ops[{op_index}].args.at"))
         })?;
+        let mut postimage = source.to_string();
         let (actual_kind, actual_name) =
             meta_edit_object_identity(&postimage).map_err(|message| {
                 ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
@@ -1431,6 +1568,16 @@ pub(crate) fn plan_metadata_batch(
             };
             ApplyPlanError::new(kind, diagnostic.message).at_path(path)
         })?;
+        stage_command_module_lifecycle(
+            &mut staged,
+            &authority,
+            target,
+            &relative,
+            source,
+            edit,
+            op_index,
+            &mut provisional,
+        )?;
         // The typed writer inserts `\n`-separated lines. A descriptor with one
         // observed line ending keeps it (a platform export writes CRLF); a
         // mixed or line-free one is left as written, never normalized
@@ -1468,6 +1615,132 @@ pub(crate) fn plan_metadata_batch(
         }
     }
     Ok((staged, provisional))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stage_command_module_lifecycle(
+    staged: &mut ApplyStagedState,
+    authority: &MetadataApplyAuthority<'_>,
+    owner: &MetadataAddress,
+    descriptor_relative: &Path,
+    owner_preimage: &str,
+    edit: &MetaEditOperation,
+    op_index: usize,
+    provisional: &mut Vec<ProvisionalApplyEffect>,
+) -> Result<(), ApplyPlanError> {
+    let canonical_name = |name: &str| {
+        canonical_typed_command_name(owner_preimage, name)
+            .map_err(|failure| meta_failure_to_plan_error(failure, op_index))
+    };
+    let changes = match edit {
+        MetaEditOperation::Update {
+            collection: MetaCollection::Commands,
+            elements,
+            ..
+        } => elements
+            .iter()
+            .filter_map(|element| {
+                element.new_name.as_ref().map(|new_name| {
+                    canonical_name(&element.name).map(|old_name| (old_name, Some(new_name.clone())))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        MetaEditOperation::Remove {
+            collection: MetaCollection::Commands,
+            names,
+            ..
+        } => names
+            .iter()
+            .map(|name| canonical_name(name).map(|name| (name, None)))
+            .collect::<Result<Vec<_>, _>>()?,
+        _ => return Ok(()),
+    };
+    let module_event = |name: &str| {
+        DomainEvent::new(
+            DomainEventKind::ModuleChanged,
+            format!(
+                "{}:{}.Command.{name}.Module.Command",
+                authority.source_set_name(),
+                owner.as_str()
+            ),
+        )
+    };
+    for (old_name, new_name) in changes {
+        if new_name.as_deref() == Some(old_name.as_str()) {
+            continue;
+        }
+        let at_path = format!("ops[{op_index}].args.at");
+        let old_relative = typed_command_module_path(descriptor_relative, &old_name);
+        let module = staged
+            .read(&old_relative)
+            .map_err(|error| ApplyPlanError::staging(error, &at_path))?;
+        if let Some(bytes) = &module {
+            let effect_path = staged
+                .retained_relative_path(&old_relative)
+                .map_err(|error| ApplyPlanError::staging(error, &at_path))?;
+            staged
+                .remove(&old_relative, bytes)
+                .map_err(|error| ApplyPlanError::staging(error, &at_path))?;
+            provisional.push(ProvisionalApplyEffect::single(
+                effect_path,
+                module_event(&old_name),
+                op_index,
+            ));
+        }
+        if let Some(new_name) = new_name {
+            let new_relative = typed_command_module_path(descriptor_relative, &new_name);
+            let new_name_path = format!("ops[{op_index}].args.values.newName");
+            // Probe after the staged removal: aliases under the retained
+            // filesystem's name policy share that absent overlay entry.
+            // A distinct orphan module must still refuse even when this
+            // command had no module to move.
+            if staged
+                .read(&new_relative)
+                .map_err(|error| ApplyPlanError::staging(error, &new_name_path))?
+                .is_some()
+            {
+                return Err(ApplyPlanError::new(
+                    ApplyPlanErrorKind::InvalidState,
+                    format!(
+                        "the command module destination already exists: {}",
+                        new_relative.to_string_lossy().replace('\\', "/")
+                    ),
+                )
+                .at_path(new_name_path));
+            }
+            if let Some(bytes) = module {
+                staged
+                    .create(&new_relative, bytes)
+                    .map_err(|error| ApplyPlanError::staging(error, &new_name_path))?;
+                staged
+                    .require_exact_path_spelling(&new_relative)
+                    .map_err(|error| ApplyPlanError::staging(error, &new_name_path))?;
+                let effect_path = staged
+                    .retained_relative_path(&new_relative)
+                    .map_err(|error| ApplyPlanError::staging(error, new_name_path))?;
+                provisional.push(ProvisionalApplyEffect::single(
+                    effect_path,
+                    module_event(&new_name),
+                    op_index,
+                ));
+                if staged
+                    .read(&old_relative)
+                    .map_err(|error| ApplyPlanError::staging(error, &at_path))?
+                    .is_some()
+                {
+                    // A case alias can change the logical module address
+                    // without moving bytes on this filesystem. The owner's
+                    // final delta still invalidates the BSL index.
+                    provisional.push(ProvisionalApplyEffect::single(
+                        descriptor_relative,
+                        module_event(&new_name),
+                        op_index,
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn meta_failure_to_plan_error(
@@ -2309,7 +2582,12 @@ fn template_descriptor_xml(
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject {} version=\"{format_version}\">\n\t<Template uuid=\"{uuid}\">\n\t\t<Properties>\n\t\t\t<Name>{name}</Name>\n{}\n\t\t\t<Comment/>\n\t\t\t<TemplateType>{}</TemplateType>\n\t\t</Properties>\n\t</Template>\n</MetaDataObject>\n",
         crate::infrastructure::native_operations::template::full_md_namespace_declarations(),
-        ml_text_block("\t\t\t", "Synonym", lang, &crate::infrastructure::native_operations::common::split_camel_case(name)),
+        ml_text_block(
+            "\t\t\t",
+            "Synonym",
+            lang,
+            &crate::infrastructure::native_operations::common::split_camel_case(name)
+        ),
         kind.as_str()
     )
 }
@@ -3211,6 +3489,317 @@ mod tests {
             )
             .unwrap_err();
             assert_eq!(error.path(), Some("ops[3].args.items[0].name"));
+        }
+    }
+
+    #[test]
+    fn typed_attribute_changes_keep_the_member_owner_scope_and_caller_fields() {
+        use super::{AddressedFields, MetadataPlanKind};
+        use crate::domain::metadata::{MetaCollection, MetaEditOperation};
+        let fixture = MetadataFixture::new();
+        for (at, section) in [
+            ("Document.Order.Attribute.Total", None),
+            (
+                "main:Document.Order.TabularSection.Lines.Attribute.Total",
+                Some("Lines"),
+            ),
+        ] {
+            let parsed = parse_metadata_plan_operation(
+                "attribute.set",
+                &json!({"at":at,"values":{"newName":"Changed","comment":"kept"}}),
+                3,
+                &fixture.binding,
+            )
+            .unwrap();
+            let MetadataPlanKind::Edit {
+                target,
+                operation:
+                    MetaEditOperation::Update {
+                        collection,
+                        scope,
+                        elements,
+                    },
+                addressed,
+            } = parsed.kind
+            else {
+                panic!("attribute.set must plan a typed update");
+            };
+            assert_eq!(target.as_str(), "Document.Order");
+            assert_eq!(collection, MetaCollection::Attributes);
+            assert_eq!(
+                scope.as_ref().map(|scope| scope.tabular_section.as_str()),
+                section
+            );
+            assert_eq!(elements.len(), 1);
+            assert_eq!(elements[0].name, "Total");
+            assert_eq!(elements[0].new_name.as_deref(), Some("Changed"));
+            assert_eq!(elements[0].comment.as_deref(), Some("kept"));
+            assert_eq!(addressed, Some(AddressedFields::Values));
+
+            let parsed = parse_metadata_plan_operation(
+                "attribute.remove",
+                &json!({"at":at}),
+                3,
+                &fixture.binding,
+            )
+            .unwrap();
+            let MetadataPlanKind::Edit {
+                target,
+                operation:
+                    MetaEditOperation::Remove {
+                        collection,
+                        scope,
+                        names,
+                    },
+                addressed,
+            } = parsed.kind
+            else {
+                panic!("attribute.remove must plan a typed removal");
+            };
+            assert_eq!(target.as_str(), "Document.Order");
+            assert_eq!(collection, MetaCollection::Attributes);
+            assert_eq!(
+                scope.as_ref().map(|scope| scope.tabular_section.as_str()),
+                section
+            );
+            assert_eq!(names, ["Total"]);
+            assert_eq!(addressed, Some(AddressedFields::None));
+        }
+    }
+
+    #[test]
+    fn typed_attribute_changes_keep_writer_parser_refusal_order() {
+        let fixture = MetadataFixture::new();
+        for (operation, args, path) in [
+            (
+                "attribute.set",
+                json!({"at":null,"values":false,"unknown":true}),
+                "unknown",
+            ),
+            (
+                "attribute.remove",
+                json!({"at":null,"unknown":true}),
+                "unknown",
+            ),
+            ("attribute.set", json!({"at":42,"values":false}), "at"),
+            ("attribute.remove", json!({"at":42}), "at"),
+            (
+                "attribute.set",
+                json!({"at":"main:Document.Order","values":false}),
+                "at",
+            ),
+            (
+                "attribute.remove",
+                json!({"at":"main:Document.Order"}),
+                "at",
+            ),
+            (
+                "attribute.set",
+                json!({"at":"main:Document.Order.Attribute.Total","values":false}),
+                "values",
+            ),
+            (
+                "attribute.set",
+                json!({"at":"main:Document.Order.Attribute.Total","values":{"name":42,"newName":false}}),
+                "values.name",
+            ),
+            (
+                "attribute.set",
+                json!({"at":"main:Document.Order.Attribute.Total","values":{"newName":false,"unknown":true}}),
+                "values.unknown",
+            ),
+        ] {
+            let error =
+                parse_metadata_plan_operation(operation, &args, 3, &fixture.binding).unwrap_err();
+            assert_eq!(
+                error.kind(),
+                ApplyPlanErrorKind::BadValue,
+                "{operation}: {args}"
+            );
+            assert_eq!(
+                error.path(),
+                Some(format!("ops[3].args.{path}").as_str()),
+                "{operation}: {args}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn typed_command_changes_keep_the_addressed_collection_action_and_fields() {
+        use super::{AddressedFields, MetadataPlanKind};
+        use crate::domain::metadata::{MetaCollection, MetaEditOperation};
+        let fixture = MetadataFixture::new();
+        for at in [
+            "Document.Order.Command.Print",
+            "main:Document.Order.Command.Print",
+        ] {
+            let parsed = parse_metadata_plan_operation(
+                "command.set",
+                &json!({"at":at,"values":{
+                    "newName":"PrintCopy","synonym":"Print copy","comment":"kept",
+                    "position":{"before":"Other"}
+                }}),
+                3,
+                &fixture.binding,
+            )
+            .unwrap();
+            let MetadataPlanKind::Edit {
+                target,
+                operation:
+                    MetaEditOperation::Update {
+                        collection,
+                        scope,
+                        elements,
+                    },
+                addressed,
+            } = parsed.kind
+            else {
+                panic!("command.set must plan a typed update");
+            };
+            assert_eq!(target.as_str(), "Document.Order");
+            assert_eq!(collection, MetaCollection::Commands);
+            assert!(scope.is_none());
+            assert_eq!(elements.len(), 1);
+            assert_eq!(elements[0].name, "Print");
+            assert_eq!(elements[0].new_name.as_deref(), Some("PrintCopy"));
+            assert_eq!(elements[0].synonym.as_deref(), Some("Print copy"));
+            assert_eq!(elements[0].comment.as_deref(), Some("kept"));
+            assert_eq!(
+                elements[0].position.as_ref().unwrap().before.as_deref(),
+                Some("Other")
+            );
+            assert_eq!(addressed, Some(AddressedFields::Values));
+
+            let parsed = parse_metadata_plan_operation(
+                "command.remove",
+                &json!({"at":at}),
+                3,
+                &fixture.binding,
+            )
+            .unwrap();
+            let MetadataPlanKind::Edit {
+                target,
+                operation:
+                    MetaEditOperation::Remove {
+                        collection,
+                        scope,
+                        names,
+                    },
+                addressed,
+            } = parsed.kind
+            else {
+                panic!("command.remove must plan a typed removal");
+            };
+            assert_eq!(target.as_str(), "Document.Order");
+            assert_eq!(collection, MetaCollection::Commands);
+            assert!(scope.is_none());
+            assert_eq!(names, ["Print"]);
+            assert_eq!(addressed, Some(AddressedFields::None));
+        }
+    }
+
+    #[test]
+    fn typed_command_changes_keep_writer_parser_refusal_order() {
+        use serde_json::Map;
+        let fixture = MetadataFixture::new();
+        for (operation, args, path) in [
+            ("command.set", json!(false), ""),
+            (
+                "command.set",
+                json!({"at":null,"values":false,"unknown":true}),
+                ".unknown",
+            ),
+            (
+                "command.remove",
+                json!({"at":null,"unknown":true}),
+                ".unknown",
+            ),
+            (
+                "command.remove",
+                json!({"at":null,"values":false}),
+                ".values",
+            ),
+            ("command.set", json!({"at":42,"values":false}), ".at"),
+            ("command.remove", json!({"at":42}), ".at"),
+            (
+                "command.set",
+                json!({"at":"main:Document.Order","values":false}),
+                ".at",
+            ),
+            ("command.remove", json!({"at":"main:Document.Order"}), ".at"),
+            (
+                "command.set",
+                json!({"at":"main:Document.Order.Attribute.Total","values":false}),
+                ".at",
+            ),
+            (
+                "command.set",
+                json!({"at":"main:Document.Order.Form.Main.Command.Print","values":false}),
+                ".at",
+            ),
+            (
+                "command.remove",
+                json!({"at":"main:Document.Order.Command"}),
+                ".at",
+            ),
+            (
+                "command.set",
+                json!({"at":"main:Document.Order.Command.Print","values":false}),
+                ".values",
+            ),
+            (
+                "command.set",
+                json!({"at":"main:Document.Order.Command.Print","values":{}}),
+                ".values",
+            ),
+            (
+                "command.set",
+                json!({"at":"main:Document.Order.Command.Print","values":{"name":42,"newName":false}}),
+                ".values.name",
+            ),
+            (
+                "command.set",
+                json!({"at":"main:Document.Order.Command.Print","values":{"newName":false,"unknown":true}}),
+                ".values.unknown",
+            ),
+        ] {
+            let error =
+                parse_metadata_plan_operation(operation, &args, 3, &fixture.binding).unwrap_err();
+            assert_eq!(
+                error.kind(),
+                ApplyPlanErrorKind::BadValue,
+                "{operation}: {args}"
+            );
+            assert_eq!(
+                error.path(),
+                Some(format!("ops[3].args{path}").as_str()),
+                "{operation}: {args}: {error:?}"
+            );
+        }
+        for (field, value) in [
+            ("newName", json!("1Print")),
+            ("title", json!("Form-only")),
+            ("action", json!("Print")),
+            ("type", json!({"variants":[{"kind":"boolean"}]})),
+            ("required", json!(true)),
+            ("fillValue", json!({"kind":"boolean","value":true})),
+            ("indexing", json!("Index")),
+            ("attributes", json!([{"name":"Nested"}])),
+        ] {
+            let values = Map::from_iter([(field.to_string(), value)]);
+            let error = parse_metadata_plan_operation(
+                "command.set",
+                &json!({"at":"main:Document.Order.Command.Print","values":values}),
+                3,
+                &fixture.binding,
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{field}");
+            assert_eq!(
+                error.path(),
+                Some(format!("ops[3].args.values.{field}").as_str()),
+                "{field}: {error:?}"
+            );
         }
     }
 
@@ -4501,6 +5090,19 @@ mod tests {
         crate::infrastructure::native_operations::apply::ApplyStagedState,
         crate::infrastructure::native_operations::apply::ApplyPlanError,
     > {
+        plan_all_with_effects(fixture, operations).map(|(staged, _)| staged)
+    }
+
+    fn plan_all_with_effects(
+        fixture: &MetadataFixture,
+        operations: &[(&str, serde_json::Value)],
+    ) -> Result<
+        (
+            crate::infrastructure::native_operations::apply::ApplyStagedState,
+            crate::infrastructure::native_operations::apply::PlannedApplyEffects,
+        ),
+        crate::infrastructure::native_operations::apply::ApplyPlanError,
+    > {
         let admission = fixture.admission();
         let staged = admission.staged_state().unwrap();
         let authority = admission
@@ -4511,7 +5113,572 @@ mod tests {
             .enumerate()
             .map(|(index, (name, args))| fixture.parse(name, args.clone(), index))
             .collect::<Vec<_>>();
-        plan_metadata_batch(staged, authority, &parsed).map(|(staged, _)| staged)
+        let (staged, provisional) = plan_metadata_batch(staged, authority, &parsed)?;
+        let effects =
+            crate::infrastructure::native_operations::apply_families::request::reconcile_effects(
+                &staged,
+                provisional,
+            );
+        Ok((staged, effects))
+    }
+
+    const COMMAND_MODULE: &str =
+        "\u{feff}Procedure Refresh() Export\r\n\tMessage(\"unchanged\");\r\nEndProcedure\r\n";
+    const COMMAND_MODULE_RELATIVE: &str = "Documents/Order/Commands/Refresh/Ext/CommandModule.bsl";
+
+    fn command_fixture() -> MetadataFixture {
+        let order = ORDER_XML.replace(
+            "<ChildObjects/>",
+            concat!(
+                "<ChildObjects>",
+                "<Command uuid=\"22222222-2222-4222-8222-222222222222\"><Properties><Name>Refresh</Name><Synonym/><Comment>keep</Comment><Group/><Picture/><ToolTip/></Properties></Command>",
+                "<Command uuid=\"33333333-3333-4333-8333-333333333333\"><Properties><Name>Inspect</Name><Synonym/><Comment/><Group/></Properties></Command>",
+                "<Command uuid=\"44444444-4444-4444-8444-444444444444\"><Properties><Name>Neighbor</Name><Synonym/><Comment>neighbor</Comment><Group/></Properties></Command>",
+                "</ChildObjects>"
+            ),
+        );
+        MetadataFixture::with_files(&[
+            ("Configuration.xml", RU_CONFIGURATION_XML),
+            ("Languages/Русский.xml", &language_xml("Русский", "ru")),
+            ("Documents/Order.xml", &order),
+            (COMMAND_MODULE_RELATIVE, COMMAND_MODULE),
+            (
+                "Documents/Order/Commands/Refresh/Ext/unrelated.txt",
+                "opaque neighbor",
+            ),
+            (
+                "Documents/Order/Commands/Neighbor/Ext/CommandModule.bsl",
+                "Procedure Neighbor()\nEndProcedure\n",
+            ),
+        ])
+    }
+
+    #[test]
+    fn command_rename_stages_exact_module_bytes_and_preserves_inline_identity_and_neighbors() {
+        let fixture = command_fixture();
+        let original = fixture.disk_bytes();
+        let staged = plan_all(
+            &fixture,
+            &[("command.set", json!({"at": "main:Document.Order.Command.refresh", "values": {"newName": "Updated"}}))],
+        ).unwrap();
+        let changes = staged.planned_changes();
+        assert_eq!(
+            changes.len(),
+            3,
+            "rename must stage owner, old module and new module"
+        );
+        let texts = staged_texts(&staged);
+        assert_eq!(
+            texts[Path::new("Documents/Order/Commands/Updated/Ext/CommandModule.bsl")],
+            COMMAND_MODULE
+        );
+        assert!(changes.iter().any(|change| change.relative_path
+            == Path::new(COMMAND_MODULE_RELATIVE)
+            && change.kind == StagedChangeKind::Remove));
+        let owner = &texts[Path::new("Documents/Order.xml")];
+        assert_eq!(
+            owner.as_bytes(),
+            String::from_utf8(original.clone())
+                .unwrap()
+                .replace("<Name>Refresh</Name>", "<Name>Updated</Name>")
+                .as_bytes()
+        );
+        assert_eq!(fixture.disk_bytes(), original);
+        assert_eq!(
+            std::fs::read(fixture.binding.source_root().join(COMMAND_MODULE_RELATIVE)).unwrap(),
+            COMMAND_MODULE.as_bytes()
+        );
+        assert_eq!(
+            std::fs::read(
+                fixture
+                    .binding
+                    .source_root()
+                    .join("Documents/Order/Commands/Refresh/Ext/unrelated.txt")
+            )
+            .unwrap(),
+            b"opaque neighbor"
+        );
+        assert!(!texts.contains_key(Path::new(
+            "Documents/Order/Commands/Updated/Ext/unrelated.txt"
+        )));
+    }
+
+    #[test]
+    fn command_remove_stages_only_the_owner_and_its_known_module() {
+        let fixture = command_fixture();
+        let staged = plan_all(
+            &fixture,
+            &[(
+                "command.remove",
+                json!({"at": "main:Document.Order.Command.rEfReSh"}),
+            )],
+        )
+        .unwrap();
+        let changes = staged.planned_changes();
+        assert_eq!(changes.len(), 2);
+        assert!(changes.iter().any(|change| change.relative_path
+            == Path::new(COMMAND_MODULE_RELATIVE)
+            && change.kind == StagedChangeKind::Remove));
+        let texts = staged_texts(&staged);
+        let owner = &texts[Path::new("Documents/Order.xml")];
+        assert!(!owner.contains("<Name>Refresh</Name>"));
+        assert!(owner.contains("<Name>Neighbor</Name>"));
+        assert_eq!(
+            std::fs::read(
+                fixture
+                    .binding
+                    .source_root()
+                    .join("Documents/Order/Commands/Refresh/Ext/unrelated.txt")
+            )
+            .unwrap(),
+            b"opaque neighbor"
+        );
+    }
+
+    #[test]
+    fn command_property_updates_do_not_read_or_stage_the_module() {
+        let fixture = command_fixture();
+        let module = fixture.binding.source_root().join(COMMAND_MODULE_RELATIVE);
+        std::fs::remove_file(&module).unwrap();
+        std::fs::create_dir(&module).unwrap();
+        let (staged, effects) = plan_all_with_effects(&fixture, &[(
+            "command.set",
+            json!({"at": "main:Document.Order.Command.Refresh", "values": {"comment": "updated"}}),
+        )]).unwrap();
+        assert_eq!(staged.planned_changes().len(), 1);
+        assert!(staged_texts(&staged)[Path::new("Documents/Order.xml")]
+            .contains("<Comment>updated</Comment>"));
+        assert!(
+            !crate::domain::cache::CacheImpact::from_events(effects.events())
+                .invalidated
+                .contains("bsl_index")
+        );
+        assert!(module.is_dir());
+    }
+
+    #[test]
+    fn command_without_a_module_can_be_renamed_or_removed_without_materialization() {
+        for (operation, values) in [
+            ("command.set", json!({"newName": "Updated"})),
+            ("command.remove", serde_json::Value::Null),
+        ] {
+            let fixture = command_fixture();
+            let mut args = json!({"at": "main:Document.Order.Command.Inspect"});
+            if !values.is_null() {
+                args["values"] = values;
+            }
+            let (staged, effects) = plan_all_with_effects(&fixture, &[(operation, args)]).unwrap();
+            assert_eq!(staged.planned_changes().len(), 1);
+            assert!(
+                !crate::domain::cache::CacheImpact::from_events(effects.events())
+                    .invalidated
+                    .contains("bsl_index")
+            );
+            assert!(staged.planned_changes().iter().all(|change| change
+                .relative_path
+                .extension()
+                .is_some_and(|extension| extension == "xml")));
+        }
+    }
+
+    #[test]
+    fn command_rename_refuses_an_orphan_destination_even_without_a_source_module() {
+        for name in ["Refresh", "Inspect"] {
+            let fixture = command_fixture();
+            let original = fixture.disk_bytes();
+            let blocked_relative = "Documents/Order/Commands/Blocked/Ext/CommandModule.bsl";
+            let blocked = fixture.binding.source_root().join(blocked_relative);
+            std::fs::create_dir_all(blocked.parent().unwrap()).unwrap();
+            std::fs::write(&blocked, b"foreign module").unwrap();
+            let error = plan_all(
+                &fixture,
+                &[(
+                    "command.set",
+                    json!({
+                        "at": format!("main:Document.Order.Command.{name}"),
+                        "values": {"newName": "Blocked"}
+                    }),
+                )],
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);
+            assert_eq!(error.path(), Some("ops[0].args.values.newName"));
+            assert_eq!(
+                error.to_string(),
+                format!("the command module destination already exists: {blocked_relative}")
+            );
+            assert_eq!(fixture.disk_bytes(), original);
+            assert_eq!(std::fs::read(&blocked).unwrap(), b"foreign module");
+            assert_eq!(
+                std::fs::read(fixture.binding.source_root().join(COMMAND_MODULE_RELATIVE)).unwrap(),
+                COMMAND_MODULE.as_bytes()
+            );
+        }
+    }
+
+    #[test]
+    fn command_lifecycle_chains_use_staged_modules_and_reconcile_final_cache_effects() {
+        let rename = |from: &str, to: &str| {
+            (
+                "command.set",
+                json!({"at": format!("main:Document.Order.Command.{from}"), "values": {"newName": to}}),
+            )
+        };
+        let remove = |name: &str| {
+            (
+                "command.remove",
+                json!({"at": format!("main:Document.Order.Command.{name}")}),
+            )
+        };
+        for (operations, expected_module, expected_changes) in [
+            (
+                vec![rename("Refresh", "Step"), rename("Step", "Final")],
+                Some("Final"),
+                3,
+            ),
+            (vec![rename("Refresh", "Step"), remove("Step")], None, 2),
+            (
+                vec![rename("Refresh", "Step"), rename("Step", "Refresh")],
+                Some("Refresh"),
+                0,
+            ),
+            (
+                vec![
+                    remove("Refresh"),
+                    (
+                        "command.add",
+                        json!({"at": "main:Document.Order", "items": [{"name": "Refresh"}]}),
+                    ),
+                    rename("Refresh", "Final"),
+                ],
+                None,
+                2,
+            ),
+        ] {
+            let fixture = command_fixture();
+            let (mut staged, effects) = plan_all_with_effects(&fixture, &operations).unwrap();
+            assert_eq!(
+                staged.planned_changes().len(),
+                expected_changes,
+                "{operations:?}"
+            );
+            for name in ["Refresh", "Step", "Final"] {
+                let relative = format!("Documents/Order/Commands/{name}/Ext/CommandModule.bsl");
+                let module = staged.read(Path::new(&relative)).unwrap();
+                assert_eq!(
+                    module.as_deref(),
+                    (expected_module == Some(name)).then_some(COMMAND_MODULE.as_bytes()),
+                    "{operations:?}, {name}"
+                );
+            }
+            let impact = crate::domain::cache::CacheImpact::from_events(effects.events());
+            assert_eq!(
+                impact.invalidated.contains("bsl_index"),
+                expected_changes != 0
+            );
+            assert!(effects
+                .events()
+                .iter()
+                .filter(|event| event.kind == crate::domain::events::DomainEventKind::ModuleChanged)
+                .all(|event| !event.artifact.contains(".Command.Step.")));
+            if expected_changes == 0 {
+                assert!(effects.events().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn command_lifecycle_rejects_a_stale_module_before_finalization() {
+        for (operation, args) in [
+            (
+                "command.set",
+                json!({"at": "main:Document.Order.Command.Refresh", "values": {"newName": "Updated"}}),
+            ),
+            (
+                "command.remove",
+                json!({"at": "main:Document.Order.Command.Refresh"}),
+            ),
+        ] {
+            let fixture = command_fixture();
+            let original = fixture.disk_bytes();
+            let staged = plan_all(&fixture, &[(operation, args)]).unwrap();
+            let module = fixture.binding.source_root().join(COMMAND_MODULE_RELATIVE);
+            std::fs::write(&module, b"concurrent bytes").unwrap();
+            let error = staged.finalize().unwrap_err();
+            assert_eq!(error.kind(), crate::infrastructure::native_operations::apply::ApplyStagingErrorKind::ConcurrentRevision);
+            assert_eq!(fixture.disk_bytes(), original);
+            assert_eq!(std::fs::read(&module).unwrap(), b"concurrent bytes");
+            assert!(!fixture
+                .binding
+                .source_root()
+                .join("Documents/Order/Commands/Updated")
+                .exists());
+        }
+    }
+
+    #[test]
+    fn command_rename_carries_the_previous_staged_module_postimage() {
+        let fixture = command_fixture();
+        let admission = fixture.admission();
+        let mut staged = admission.staged_state().unwrap();
+        let edited_module = b"Procedure EditedEarlier() Export\nEndProcedure\n";
+        staged
+            .replace(
+                COMMAND_MODULE_RELATIVE,
+                COMMAND_MODULE.as_bytes(),
+                edited_module.to_vec(),
+            )
+            .unwrap();
+        let authority = admission
+            .metadata_planning_authority(&fixture.binding)
+            .unwrap();
+        let operations = [fixture.parse(
+            "command.set",
+            json!({"at": "main:Document.Order.Command.Refresh", "values": {"newName": "Updated"}}),
+            1,
+        )];
+        let (mut staged, _) = plan_metadata_batch(staged, authority, &operations).unwrap();
+        assert_eq!(
+            staged
+                .read(Path::new(
+                    "Documents/Order/Commands/Updated/Ext/CommandModule.bsl"
+                ))
+                .unwrap()
+                .as_deref(),
+            Some(edited_module.as_slice())
+        );
+        assert_eq!(
+            staged.read(Path::new(COMMAND_MODULE_RELATIVE)).unwrap(),
+            None
+        );
+        assert_eq!(
+            std::fs::read(fixture.binding.source_root().join(COMMAND_MODULE_RELATIVE)).unwrap(),
+            COMMAND_MODULE.as_bytes()
+        );
+    }
+
+    #[test]
+    fn command_case_alias_rename_invalidates_the_index_and_a_roundtrip_cancels_it() {
+        let rename_lower = (
+            "command.set",
+            json!({"at": "main:Document.Order.Command.refresh", "values": {"newName": "refresh", "comment": "keep"}}),
+        );
+        let fixture = command_fixture();
+        let (mut staged, effects) =
+            plan_all_with_effects(&fixture, std::slice::from_ref(&rename_lower)).unwrap();
+        assert_eq!(
+            staged
+                .read(Path::new(
+                    "Documents/Order/Commands/refresh/Ext/CommandModule.bsl"
+                ))
+                .unwrap()
+                .as_deref(),
+            Some(COMMAND_MODULE.as_bytes())
+        );
+        assert!(
+            crate::domain::cache::CacheImpact::from_events(effects.events())
+                .invalidated
+                .contains("bsl_index")
+        );
+        assert!(staged_texts(&staged)[Path::new("Documents/Order.xml")]
+            .contains("<Name>refresh</Name>"));
+        let (staged, effects) = plan_all_with_effects(&fixture, &[
+            rename_lower,
+            ("command.set", json!({"at": "main:Document.Order.Command.Refresh", "values": {"newName": "Refresh", "comment": "keep"}})),
+        ]).unwrap();
+        assert!(staged.planned_changes().is_empty());
+        assert!(effects.events().is_empty());
+        staged.finalize().unwrap();
+    }
+
+    #[test]
+    fn command_case_correction_to_the_existing_physical_spelling_publishes_and_invalidates() {
+        let fixture = command_fixture();
+        let lowercase_module = fixture
+            .binding
+            .source_root()
+            .join("Documents/Order/Commands/refresh/Ext/CommandModule.bsl");
+        let case_alias = lowercase_module.is_file();
+        let lowercase_owner = String::from_utf8(fixture.disk_bytes())
+            .unwrap()
+            .replace("<Name>Refresh</Name>", "<Name>refresh</Name>");
+        std::fs::write(&fixture.descriptor, lowercase_owner).unwrap();
+        let admission = fixture
+            .actor
+            .admit_apply(
+                &fixture.binding,
+                None,
+                false,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let staged = admission.staged_state().unwrap();
+        let authority = admission
+            .metadata_planning_authority(&fixture.binding)
+            .unwrap();
+        let operations = [fixture.parse(
+            "command.set",
+            json!({"at": "main:Document.Order.Command.Refresh", "values": {"newName": "Refresh", "comment": "keep"}}),
+            0,
+        )];
+        let planned = plan_metadata_batch(staged, authority, &operations);
+        if case_alias {
+            let (staged, provisional) = planned.unwrap();
+            let effects = crate::infrastructure::native_operations::apply_families::request::reconcile_effects(&staged, provisional);
+            let prepared = admission.prepare_with_effects(staged, effects).unwrap();
+            let result = fixture.actor.publish_prepared_apply(prepared).unwrap();
+            assert!(result
+                .effects()
+                .cache()
+                .invalidated
+                .iter()
+                .any(|name| name == "bsl_index"));
+            assert!(String::from_utf8(fixture.disk_bytes())
+                .unwrap()
+                .contains("<Name>Refresh</Name>"));
+            assert_eq!(
+                std::fs::read(fixture.binding.source_root().join(COMMAND_MODULE_RELATIVE)).unwrap(),
+                COMMAND_MODULE.as_bytes()
+            );
+        } else {
+            assert_eq!(
+                planned.unwrap_err().kind(),
+                ApplyPlanErrorKind::InvalidState
+            );
+        }
+    }
+
+    #[test]
+    fn command_case_alias_rename_invalidates_after_an_earlier_aliased_read() {
+        let fixture = command_fixture();
+        let admission = fixture.admission();
+        let mut staged = admission.staged_state().unwrap();
+        staged
+            .read(Path::new(
+                "Documents/Order/Commands/rEfReSh/Ext/CommandModule.bsl",
+            ))
+            .unwrap();
+        let authority = admission
+            .metadata_planning_authority(&fixture.binding)
+            .unwrap();
+        let operations = [fixture.parse(
+            "command.set",
+            json!({"at": "main:Document.Order.Command.refresh", "values": {"newName": "refresh", "comment": "keep"}}),
+            1,
+        )];
+        let (staged, provisional) = plan_metadata_batch(staged, authority, &operations).unwrap();
+        let effects =
+            crate::infrastructure::native_operations::apply_families::request::reconcile_effects(
+                &staged,
+                provisional,
+            );
+        assert!(
+            crate::domain::cache::CacheImpact::from_events(effects.events())
+                .invalidated
+                .contains("bsl_index")
+        );
+    }
+
+    #[test]
+    fn command_lifecycle_effects_follow_the_retained_spelling_of_earlier_reads() {
+        for (operation, args) in [
+            (
+                "command.set",
+                json!({"at": "main:Document.Order.Command.Refresh", "values": {"newName": "Updated"}}),
+            ),
+            (
+                "command.remove",
+                json!({"at": "main:Document.Order.Command.Refresh"}),
+            ),
+        ] {
+            let fixture = command_fixture();
+            let admission = fixture.admission();
+            let mut staged = admission.staged_state().unwrap();
+            for relative in [
+                "Documents/Order/Commands/rEfReSh/Ext/CommandModule.bsl",
+                "Documents/Order/Commands/uPdAtEd/Ext/CommandModule.bsl",
+            ] {
+                staged.read(Path::new(relative)).unwrap();
+            }
+            let authority = admission
+                .metadata_planning_authority(&fixture.binding)
+                .unwrap();
+            let operations = [fixture.parse(operation, args, 1)];
+            let (staged, provisional) =
+                plan_metadata_batch(staged, authority, &operations).unwrap();
+            let effects = crate::infrastructure::native_operations::apply_families::request::reconcile_effects(&staged, provisional);
+            assert!(
+                crate::domain::cache::CacheImpact::from_events(effects.events())
+                    .invalidated
+                    .contains("bsl_index"),
+                "{operation}"
+            );
+        }
+    }
+
+    #[test]
+    fn command_lifecycle_refuses_links_at_the_source_or_destination_module_route() {
+        use crate::infrastructure::platform::testing::{
+            create_directory_link_fixture_for_test, create_file_link_fixture_for_test,
+            FileLinkFixtureOutcome,
+        };
+        for (source, directory) in [(true, false), (false, false), (true, true), (false, true)] {
+            let fixture = command_fixture();
+            let original = fixture.disk_bytes();
+            let outside = tempfile::tempdir().unwrap();
+            let foreign = outside.path().join("CommandModule.bsl");
+            std::fs::write(&foreign, b"foreign module").unwrap();
+            let name = if source { "Refresh" } else { "Updated" };
+            let ext = fixture
+                .binding
+                .source_root()
+                .join(format!("Documents/Order/Commands/{name}/Ext"));
+            if source {
+                if directory {
+                    std::fs::rename(&ext, ext.with_file_name("ExtSaved")).unwrap();
+                } else {
+                    std::fs::remove_file(ext.join("CommandModule.bsl")).unwrap();
+                }
+            } else {
+                std::fs::create_dir_all(ext.parent().unwrap()).unwrap();
+                if !directory {
+                    std::fs::create_dir(&ext).unwrap();
+                }
+            }
+            let outcome = if directory {
+                create_directory_link_fixture_for_test(outside.path(), &ext)
+            } else {
+                create_file_link_fixture_for_test(&foreign, ext.join("CommandModule.bsl"))
+            }
+            .unwrap();
+            if outcome != FileLinkFixtureOutcome::Created {
+                continue;
+            }
+            let error = plan_all(&fixture, &[("command.set", json!({"at": "main:Document.Order.Command.Refresh", "values": {"newName": "Updated"}}))]).unwrap_err();
+            use crate::infrastructure::native_operations::apply::ApplyStagingErrorKind;
+            assert!(
+                matches!(
+                    error.kind(),
+                    ApplyPlanErrorKind::Staging(
+                        ApplyStagingErrorKind::ContainmentIdentity
+                            | ApplyStagingErrorKind::UnsupportedProvider
+                    )
+                ),
+                "{source}, {directory}: {error}"
+            );
+            assert!(error.to_string().contains("link"), "{error}");
+            assert_eq!(
+                error.path(),
+                Some(if source {
+                    "ops[0].args.at"
+                } else {
+                    "ops[0].args.values.newName"
+                })
+            );
+            assert_eq!(fixture.disk_bytes(), original);
+            assert_eq!(std::fs::read(&foreign).unwrap(), b"foreign module");
+        }
     }
 
     const KINDS_ENUM_XML: &str = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">

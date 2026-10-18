@@ -1,52 +1,8 @@
 ---
 id: INV.WIRE.RESOLVE-EXACT-BRIDGE
 check:
-  - crates/unica-coder/tests/platform/v13_resolve_resources.rs::resolve_external_form_resources_round_trip_all_three_file_kinds
-  - crates/unica-coder/tests/platform/v13_resolve_resources.rs::resolve_external_form_resources_require_registered_matching_owner_and_form
-  - crates/unica-coder/tests/platform/v13_resolve_resources.rs::resolve_external_form_resources_never_follow_linked_content
-  - crates/unica-coder/tests/platform/v13_resolve_resources.rs::resolve_form_metadata_survives_absent_local_content_without_substituting_it
-  - crates/unica-coder/tests/platform/v13_resolve_resources.rs::resolve_common_form_resources_preserve_deepest_root_and_ambiguity
-  - crates/unica-coder/tests/platform/v13_resolve_resources.rs::resolve_common_form_resources_never_follow_content_or_metadata_links
-  - crates/unica-coder/tests/platform/v13_resolve_resources.rs::resolve_resource_refuses_mismatched_descriptor_identity_on_public_mcp
-  - crates/unica-coder/tests/platform/v13_resolve_resources.rs::resolve_form_and_module_paths_preserve_the_exact_resource_on_public_mcp
-  - crates/unica-coder/tests/platform/v13_resolve_resources.rs::resolve_resources_refuse_unregistered_and_absent_targets_on_public_mcp
-  - crates/unica-coder/tests/platform/v13_resolve_resources.rs::resolve_resources_keep_source_prefix_and_deepest_root_selection_on_public_mcp
-  - crates/unica-coder/tests/platform/v13_resolve_resources.rs::resolve_resources_do_not_follow_linked_files_or_directories_on_public_mcp
-  - crates/unica-coder/tests/platform/v13_resolve_resources.rs::resolve_resource_prefix_skips_a_foreign_linked_collection_on_public_mcp
-  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::resolve_exact_bsl_nodes_across_module_roles
-  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::resolve_exact_method_spans_annotations_through_its_closing_line
-  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::resolve_exact_module_body_numbers_lines_like_view
-  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::resolve_exact_tree_children_use_their_containing_xml
-  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::resolve_exact_module_read_failures_are_never_successful_locations
-  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::resolve_exact_cancelled_read_never_claims_a_location
-  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::view_nested_regions_never_substitutes_the_final_name
   - crates/unica-coder/src/application/v13/tool_catalog.rs::v13_catalog_locks_the_eight_domain_contracts_without_publishing_them
   - crates/unica-coder/src/application/v13/resolve.rs::resolve_takes_exactly_one_side_of_the_bridge
-  - crates/unica-coder/src/application/v13/resolve.rs::absent_lines_are_named_rather_than_omitted
-  - crates/unica-coder/src/infrastructure/daemon/mod.rs::resolve_path_ignores_the_full_directory_entry_budget
-  - crates/unica-coder/tests/platform/v13_resolve_target_isolation.rs::resolve_path_checks_only_target_and_necessary_owner_on_public_mcp
-  - crates/unica-coder/tests/platform/v13_resolve_target_isolation.rs::resolve_absolute_xml_ignores_a_broken_foreign_target_and_reports_ambiguous_alias
-  - crates/unica-coder/tests/platform/v13_resolve_target_isolation.rs::resolve_relative_source_prefix_skips_foreign_linked_collections_on_public_mcp
-  - crates/unica-coder/tests/platform/v13_resolve_target_isolation.rs::resolve_absolute_path_uses_the_deepest_admitted_source_root
-  - crates/unica-coder/tests/platform/v13_resolve_target_isolation.rs::resolve_path_succeeds_above_the_full_directory_byte_budget
-  - crates/unica-coder/tests/platform/v13_resolve_target_isolation.rs::resolve_path_does_not_inherit_the_search_source_set_limit
-  - crates/unica-coder/src/infrastructure/daemon/mod.rs::name_search_reports_an_injected_local_read_fault_through_the_live_daemon
-  - crates/unica-coder/src/infrastructure/v13_find.rs::point_lookup_preserves_full_relative_paths_and_checks_every_source_before_not_found
-  - crates/unica-coder/src/infrastructure/v13_find.rs::point_lookup_routes_owner_module_roles_through_the_platform_profile
-  - crates/unica-coder/src/infrastructure/v13_find.rs::point_lookup_refuses_ambiguous_paths_across_admitted_sources
-  - crates/unica-coder/src/infrastructure/v13_find.rs::point_lookup_uses_the_full_layout_path_even_with_a_shorter_suffix
-  - crates/unica-coder/src/infrastructure/v13_find.rs::absolute_common_module_path_skips_a_broken_alias_in_another_source
-  - crates/unica-coder/src/infrastructure/v13_find.rs::absolute_lookup_keeps_distinct_source_roots_with_different_case
-  - crates/unica-coder/src/infrastructure/v13_find.rs::absolute_lookup_accepts_a_physical_unicode_alias_of_the_source_root
-  - crates/unica-coder/src/infrastructure/v13_find.rs::windows_drive_and_unc_prefixes_keep_the_same_root_anchor_shape
-  - crates/unica-coder/src/infrastructure/v13_find.rs::absolute_lookup_refuses_a_replaced_requested_root_ancestor
-  - crates/unica-coder/src/infrastructure/v13_find.rs::absolute_lookup_skips_a_foreign_root_at_the_target_files_depth
-  - crates/unica-coder/src/infrastructure/v13_find.rs::absolute_lookup_distinguishes_a_file_from_a_case_folded_foreign_root
-  - crates/unica-coder/src/infrastructure/v13_find.rs::absolute_lookup_does_not_open_a_damaged_case_distinct_foreign_parent
-  - crates/unica-coder/src/infrastructure/v13_find.rs::relative_source_prefix_skips_linked_collections_in_another_source
-  - crates/unica-coder/src/infrastructure/v13_find.rs::point_lookup_checks_the_owner_of_a_nested_object
-  - crates/unica-coder/src/infrastructure/v13_find.rs::point_lookup_nested_path_ignores_an_unrelated_linked_owner_directory
-  - crates/unica-coder/src/infrastructure/v13_find.rs::linked_proven_owner_directory_refuses_instead_of_hiding_nested_names
 ---
 
 # Запрос resolve выбирает одну сторону адресного моста
@@ -54,66 +10,7 @@ check:
 `unica.resolve` принимает ровно один аргумент: логический адрес `at`
 или путь `path`. Два аргумента вместе и отсутствие обоих дают `bad_value`.
 
-Форма расположения явно называет наличие строк: `lines.state` равен
-`range` с границами `from` и `to` либо `notLineBased`. Поле не опускается,
-когда диапазона нет.
-
-При успешном ответе указанный предмет существует; результат сообщает его
-адрес, вид и действительное место в исходниках. Отсутствующий предмет даёт
-`not_found`. Для метода или области BSL диапазон относится именно к файлу
-модуля, а не к XML-дескриптору его владельца. У древовидного ресурса диапазон
-не выдумывается. Ошибка чтения или отмена дают отказ; успешный ответ не содержит `rev`.
-
-Диапазон метода начинается с его первой аннотации, директивы компиляции
-или `Асинх`, например `&НаСервере` или `&Перед`, а без них — со строки
-объявления.
-Он заканчивается строкой `КонецПроцедуры` или `КонецФункции` включительно,
-поэтому у пустого метода есть диапазон. `Method.<имя>.Body` охватывает те же
-строки, что и его текст в `view`: от документирующего комментария над методом
-до строки окончания. Область занимает строки от `#Область` до `#КонецОбласти`,
-`Body` модуля — все строки файла.
-
-При `path` проверяются запрошенный объект и необходимые владельцы. Абсолютный
-путь внутри допущенного корня выбирает самый глубокий подходящий набор
-исходников, когда допущенные корни вложены; его связь
-с корнем и объектом подтверждается физической идентичностью и правилами имён
-каталогов. Путь вне всех допущенных корней не указывает на объект.
-Относительный путь с доказанным
-префиксом корня также выбирает свой набор; без такого префикса проверяются
-подходящие кандидаты всех допущенных наборов. Точечный поиск не наследует
-ограничения числа наборов исходников полного поиска. Размер общего справочника имён
-и повреждение постороннего дескриптора не препятствуют ответу о запрошенном
-объекте. Запрос содержит полный путь из раскладки, возможно с префиксом
-рабочей области; укороченное имя файла не является таким путём. Отсутствующую
-часть раскладки нельзя отбросить ради совпадения с более коротким чужим путём.
-Разные объекты по одному относительному пути дают отказ вместо произвольного
-выбора. `not_found` возможен лишь после проверки всех относящихся к запросу
-кандидатов.
-
-В наборах конфигурации и расширения `Forms/<форма>/Ext/Form.xml` владельца
-и `CommonForms/<форма>/Ext/Form.xml` разрешаются в адрес формы, а соответствующий
-`Ext/Form/Module.bsl` — в её `Module.Form`. Дескриптор формы
-`Forms/<форма>.xml` или `CommonForms/<форма>.xml` разрешается в её `Metadata`.
-Обратное разрешение этих трёх адресов называет тот же локальный ресурс:
-структуру формы, её декларацию или модуль. Вложенный элемент формы разрешается
-в содержащий его XML; путь всего XML не восстанавливает адрес отдельного
-элемента. Отсутствующее локальное содержимое заимствованной формы не заменяется
-дескриптором или файлом базового набора; локальная декларация доступна по
-`Metadata` независимо от наличия содержимого.
-
-У именованной формы внешней обработки или отчёта действуют те же три адреса
-и обратимость ресурсов. В наборах внешних исходников дескриптор расположен
-по `<владелец>/Forms/<форма>.xml`, а структура и модуль — под
-`<владелец>/Forms/<форма>/Ext/`. Это правило относится к ресурсам формы и
-не добавляет разрешение прочих модулей внешнего объекта.
-
-Файл `Ext/<Роль>Module.bsl` владельца, включая корневой модуль
-конфигурации и модуль общей или вложенной команды, разрешается в его
-`Module.<Роль>`, только если общая раскладка модулей и профиль платформы
-допускают эту роль для вида владельца. Возвращённый путь называет запрошенный
-файл; XML-дескриптор владельца его не заменяет. Регистрация владельца и формы
-подтверждается тем же логическим reader, что и `view`. Поддержаны полный путь
-относительно корня набора, путь с префиксом workspace и абсолютный путь. До
-проверки регистрации физические кандидаты разных наборов по одному
-относительному пути дают отказ неоднозначности, включая случай
-незарегистрированного физического двойника.
+Успешный ответ связывает существующий предмет с его логическим адресом и
+[действительным расположением](resolved-source-location.md). Поиск по пути
+соблюдает [точечное доказательство цели](../workspace/sources/source-path-resolution.md),
+а формы и модули — [идентичность конкретного ресурса](../workspace/sources/resolved-resource-identity.md).

@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20"><Catalog uuid="d1839c30-e153-56f4-a896-16d27d8ee057"><InternalInfo><xr:GeneratedType name="CatalogObject.Items" category="Object"><xr:TypeId>47830097-de82-5618-aedf-0e8904f94528</xr:TypeId><xr:ValueId>07803201-249c-552c-b0cd-132788a580cd</xr:ValueId></xr:GeneratedType><xr:GeneratedType name="CatalogRef.Items" category="Ref"><xr:TypeId>590d5238-5593-5ba8-8b4c-db4ee42543a2</xr:TypeId><xr:ValueId>f07b3465-b3b5-5581-8ebc-49f89e95f7d6</xr:ValueId></xr:GeneratedType><xr:GeneratedType name="CatalogSelection.Items" category="Selection"><xr:TypeId>f0380ad6-f333-5342-bcaf-4f68200bbfa2</xr:TypeId><xr:ValueId>b15025cf-b253-55ee-8e10-e1dea208d95f</xr:ValueId></xr:GeneratedType><xr:GeneratedType name="CatalogList.Items" category="List"><xr:TypeId>4ac8c253-2758-5fb5-8db4-fbbb4c12381d</xr:TypeId><xr:ValueId>a30d736f-7e3c-5218-a9a7-d5917f8871c0</xr:ValueId></xr:GeneratedType><xr:GeneratedType name="CatalogManager.Items" category="Manager"><xr:TypeId>74f4cca4-c314-5e67-89f2-1d7b7852680f</xr:TypeId><xr:ValueId>e7115b28-0243-5001-83de-29d45b5694b3</xr:ValueId></xr:GeneratedType></InternalInfo><Properties><Name>Items</Name><Hierarchical>false</Hierarchical><CodeLength>9</CodeLength><DescriptionLength>50</DescriptionLength></Properties><ChildObjects>
+		<Attribute uuid="c144c1ed-2100-4e58-85fe-c6e2bfdb3204"><Properties><Name>Witness</Name><Type><v8:Type>xs:string</v8:Type><v8:StringQualifiers><v8:Length>40</v8:Length><v8:AllowedLength>Variable</v8:AllowedLength></v8:StringQualifiers></Type><Comment>neighbor attribute</Comment></Properties></Attribute>
+		<Command uuid="c144c1ed-2100-4e58-85fe-c6e2bfdb3201">
+			<Properties>
+				<Name>Refresh</Name>
+				<Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Refresh label</v8:content></v8:item></Synonym>
+				<Comment>Refresh original comment</Comment>
+				<Group>FormNavigationPanelGoTo</Group>
+				<CommandParameterType/>
+				<ParameterUseMode>Single</ParameterUseMode>
+				<ModifiesData>false</ModifiesData>
+				<Representation>Auto</Representation>
+				<ToolTip><v8:item><v8:lang>ru</v8:lang><v8:content>Refresh preserved tooltip</v8:content></v8:item></ToolTip>
+				<Picture/>
+				<Shortcut/>
+				<OnMainServerUnavalableBehavior>Auto</OnMainServerUnavalableBehavior>
+			</Properties>
+		</Command>
+		<Command uuid="c144c1ed-2100-4e58-85fe-c6e2bfdb3202">
+			<Properties>
+				<Name>Inspect</Name>
+				<Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Inspect label</v8:content></v8:item></Synonym>
+				<Comment>Inspect original comment</Comment>
+				<Group>FormCommandBarImportant</Group>
+				<CommandParameterType/>
+				<ParameterUseMode>Multiple</ParameterUseMode>
+				<ModifiesData>true</ModifiesData>
+				<Representation>TextPicture</Representation>
+				<ToolTip><v8:item><v8:lang>ru</v8:lang><v8:content>Inspect preserved tooltip</v8:content></v8:item></ToolTip>
+				<Picture/>
+				<Shortcut/>
+				<OnMainServerUnavalableBehavior>Auto</OnMainServerUnavalableBehavior>
+			</Properties>
+		</Command>
+		<Command uuid="c144c1ed-2100-4e58-85fe-c6e2bfdb3203">
+			<Properties>
+				<Name>Keep</Name>
+				<Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Keep label</v8:content></v8:item></Synonym>
+				<Comment>Keep original comment</Comment>
+				<Group>FormNavigationPanelGoTo</Group>
+				<CommandParameterType/>
+				<ParameterUseMode>Single</ParameterUseMode>
+				<ModifiesData>false</ModifiesData>
+				<Representation>Text</Representation>
+				<ToolTip><v8:item><v8:lang>ru</v8:lang><v8:content>Keep preserved tooltip</v8:content></v8:item></ToolTip>
+				<Picture/>
+				<Shortcut/>
+				<OnMainServerUnavalableBehavior>Auto</OnMainServerUnavalableBehavior>
+			</Properties>
+		</Command>
+	</ChildObjects></Catalog></MetaDataObject>

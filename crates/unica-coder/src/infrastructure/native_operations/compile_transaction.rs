@@ -582,6 +582,7 @@ pub(crate) struct CompileTransaction {
     retained_apply: Vec<PlannedRetainedApplyChange>,
     retained_apply_read_guards: Vec<RetainedApplyReadGuardBinding>,
     retained_namespaces: Vec<super::apply::RetainedNamespaceGuard>,
+    retained_path_spellings: Vec<super::apply::RetainedPathSpellingGuard>,
     retained_apply_authority: Option<ApplyWriterAuthority>,
     retained_apply_root: Option<Arc<RetainedDirectoryCapability>>,
     retained_apply_cache_root: Option<Arc<RetainedDirectoryCapability>>,
@@ -707,29 +708,28 @@ impl CompileTransaction {
         self.retained_apply_read_guards = guards;
     }
 
+    pub(super) fn bind_retained_path_spellings(
+        &mut self,
+        guards: Vec<super::apply::RetainedPathSpellingGuard>,
+    ) {
+        self.retained_path_spellings = guards;
+    }
+
+    fn validate_retained_path_spellings(&self) -> Result<(), RetainedApplyValidationError> {
+        for guard in &self.retained_path_spellings {
+            guard.validate().map_err(retained_guard_validation_error)?;
+        }
+        Ok(())
+    }
+
     fn validate_retained_namespaces(
         &self,
         deltas: &[(PathBuf, Option<u8>)],
     ) -> Result<(), RetainedApplyValidationError> {
         for guard in &self.retained_namespaces {
-            guard.validate(deltas).map_err(|error| {
-                use super::apply::ApplyStagingErrorKind as Kind;
-                let kind = match error.kind() {
-                    Kind::Cancelled => RetainedApplyValidationErrorKind::Cancelled,
-                    Kind::Deadline => RetainedApplyValidationErrorKind::Deadline,
-                    Kind::ConcurrentRevision => {
-                        RetainedApplyValidationErrorKind::ConcurrentRevision
-                    }
-                    Kind::ContainmentIdentity | Kind::AbsentChainOccupied => {
-                        RetainedApplyValidationErrorKind::ContainmentIdentity
-                    }
-                    Kind::UnsupportedProvider => {
-                        RetainedApplyValidationErrorKind::UnsupportedProvider
-                    }
-                    Kind::Invariant => RetainedApplyValidationErrorKind::Invariant,
-                };
-                RetainedApplyValidationError::new(kind, error.to_string())
-            })?;
+            guard
+                .validate(deltas)
+                .map_err(retained_guard_validation_error)?;
         }
         Ok(())
     }
@@ -891,6 +891,8 @@ impl CompileTransaction {
         self.retained_apply.extend(cache.retained_apply);
         self.retained_apply_read_guards
             .extend(cache.retained_apply_read_guards);
+        self.retained_path_spellings
+            .extend(cache.retained_path_spellings);
         self.retained_apply_cache_root = cache.retained_apply_root;
         self.retained_apply_cache_start = Some(cache_start);
         Ok(self)
@@ -912,6 +914,7 @@ impl CompileTransaction {
                 "injected retained apply provider validation failure",
             ));
         }
+        self.validate_retained_path_spellings()?;
         self.validate_retained_namespaces(&[])?;
         self.validate_retained_apply_read_guards()?;
         if self.retained_apply.is_empty() {
@@ -1026,6 +1029,8 @@ impl CompileTransaction {
             }
             #[cfg(test)]
             run_retained_apply_before_post_validation_hook();
+            self.validate_retained_path_spellings()
+                .map_err(|error| error.to_string())?;
             self.validate_published_namespaces(&published, &created_directories)
                 .map_err(|error| error.to_string())?;
             self.validate_retained_apply_read_guards()
@@ -1188,6 +1193,8 @@ impl CompileTransaction {
                     _ => None,
                 })
                 .collect::<Vec<_>>();
+            self.validate_retained_path_spellings()
+                .map_err(retained_apply_validation_publication_error)?;
             self.validate_published_namespaces(&published, &created_directories)
                 .map_err(retained_apply_validation_publication_error)?;
             self.validate_retained_apply_read_guards()
@@ -1784,6 +1791,7 @@ impl CompileTransaction {
     pub(crate) fn is_empty(&self) -> bool {
         self.retained_apply.is_empty()
             && self.retained_apply_read_guards.is_empty()
+            && self.retained_path_spellings.is_empty()
             && self.creates.is_empty()
             && self.read_guards.is_empty()
             && self.absence_guards.is_empty()
@@ -1802,6 +1810,9 @@ impl CompileTransaction {
         cancellation: &crate::domain::cancellation::CancellationToken,
     ) {
         for guard in &mut self.retained_namespaces {
+            guard.rebind_execution_context(deadline, cancellation);
+        }
+        for guard in &mut self.retained_path_spellings {
             guard.rebind_execution_context(deadline, cancellation);
         }
         for guard in &mut self.retained_apply_read_guards {
@@ -2518,6 +2529,23 @@ fn validate_strict_relative_file_path(relative: &Path) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+fn retained_guard_validation_error(
+    error: super::apply::ApplyStagingError,
+) -> RetainedApplyValidationError {
+    use super::apply::ApplyStagingErrorKind as Kind;
+    let kind = match error.kind() {
+        Kind::Cancelled => RetainedApplyValidationErrorKind::Cancelled,
+        Kind::Deadline => RetainedApplyValidationErrorKind::Deadline,
+        Kind::ConcurrentRevision => RetainedApplyValidationErrorKind::ConcurrentRevision,
+        Kind::ContainmentIdentity | Kind::AbsentChainOccupied => {
+            RetainedApplyValidationErrorKind::ContainmentIdentity
+        }
+        Kind::UnsupportedProvider => RetainedApplyValidationErrorKind::UnsupportedProvider,
+        Kind::Invariant => RetainedApplyValidationErrorKind::Invariant,
+    };
+    RetainedApplyValidationError::new(kind, error.to_string())
 }
 
 fn retained_apply_entry_checkpoint(
