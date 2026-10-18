@@ -100,9 +100,9 @@ mod validation_context;
 mod xml_model;
 
 pub(crate) use edit::{
-    meta_edit_object_identity, prepare_typed_edit, resolve_typed_edit_object,
-    resolve_typed_metadata_object, typed_operations_write_multilingual_text,
-    EXTERNAL_SOURCE_TEXT_LANGUAGE,
+    canonical_typed_command_name, meta_edit_object_identity, prepare_typed_edit,
+    resolve_typed_edit_object, resolve_typed_metadata_object, typed_command_module_path,
+    typed_operations_write_multilingual_text, EXTERNAL_SOURCE_TEXT_LANGUAGE,
 };
 pub(crate) use xml_model::{
     first_top_child_object_offset, meta_default_text_language, meta_mltext_property_replacement,

@@ -20,14 +20,20 @@
 
 ## Проверка
 
-```sh
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace -- --test-threads=1
-python3.12 -m pip install -r tests/ci/requirements.txt
-python3.12 -m unittest discover -s tests/ci
-git diff --check
-```
+Перед push выберите локальные тесты по
+[unica-testing](https://github.com/IngvarConsulting/unica/blob/main/.agents/skills/unica-testing/SKILL.md#что-запускать).
+Обязательные проверки Rust перед push и порядок слияния описаны в
+[подготовке PR](https://github.com/IngvarConsulting/unica/blob/main/.agents/skills/unica-development/references/pull-requests.md#вливание-через-очередь).
+Выполните `git diff --check`.
+
+Укажите фактически выполненные команды, их результаты и существенные
+ограничения: пропуски, ОС, features или неустранённые падения.
+
+- Выполненные проверки и результаты:
+- Ограничения проверки:
+
+Локальные проверки не заменяют обязательные ворота CI и очереди слияния.
+Зелёный PR не доказывает успешный профиль `queue` на будущем дереве `main`.
 
 - [ ] Новое поведение покрыто тестом, который можно назвать по имени.
 - [ ] Документация, описывающая изменённое поведение, обновлена в этом же PR.

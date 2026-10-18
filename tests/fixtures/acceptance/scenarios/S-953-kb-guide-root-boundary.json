@@ -1,0 +1,156 @@
+{
+  "id": "S-953-kb-guide-root-boundary",
+  "name": "kb-direct-locators-respect-complete-guide-roots",
+  "issue": 953,
+  "area": "Документация и стандарты",
+  "task": "Отклонить прямые адреса вне полных корней руководств разработчика и администратора без чтения страниц.",
+  "profile": "source",
+  "workspace": "tests/fixtures/acceptance/workspace-kb-boundary",
+  "wire": [
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "https://kb.1ci.com/Support/Developer_Guides/8.3.27/Probe/?language=en",
+        "source": "platform-help"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: documentation page `https://kb.1ci.com/Support/Developer_Guides/8.3.27/Probe/?language=en` was not found: адрес \"https://kb.1ci.com/Support/Developer_Guides/8.3",
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": false
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "eq": "documentation page `https://kb.1ci.com/Support/Developer_Guides/8.3.27/Probe/?language=en` was not found: адрес \"https://kb.1ci.com/Support/Developer_Guides/8.3.27/Probe/?language=en\" вне объявленных корней руководств: запрашиваются только страницы категорий Developer Guides и Administrator Guides"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "https://kb.1ci.com/Support/Administrator_Guides/8.3.27/Probe/?language=en",
+        "source": "platform-help"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: documentation page `https://kb.1ci.com/Support/Administrator_Guides/8.3.27/Probe/?language=en` was not found: адрес \"https://kb.1ci.com/Support/Administrator_Gu",
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": false
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "eq": "documentation page `https://kb.1ci.com/Support/Administrator_Guides/8.3.27/Probe/?language=en` was not found: адрес \"https://kb.1ci.com/Support/Administrator_Guides/8.3.27/Probe/?language=en\" вне объявленных корней руководств: запрашиваются только страницы категорий Developer Guides и Administrator Guides"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "https://kb.1ci.com/1C_Enterprise_Platform/Guides/Developer_Guides_Archive/8.3.27/Probe/?language=en",
+        "source": "platform-help"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: documentation page `https://kb.1ci.com/1C_Enterprise_Platform/Guides/Developer_Guides_Archive/8.3.27/Probe/?language=en` was not found: адрес \"https://kb.1ci.co",
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": false
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "eq": "documentation page `https://kb.1ci.com/1C_Enterprise_Platform/Guides/Developer_Guides_Archive/8.3.27/Probe/?language=en` was not found: адрес \"https://kb.1ci.com/1C_Enterprise_Platform/Guides/Developer_Guides_Archive/8.3.27/Probe/?language=en\" вне объявленных корней руководств: запрашиваются только страницы категорий Developer Guides и Administrator Guides"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "https://kb.1ci.com/1C_Enterprise_Platform/Guides_Archive/Administrator_Guides/8.3.27/Probe/?language=en",
+        "source": "platform-help"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: documentation page `https://kb.1ci.com/1C_Enterprise_Platform/Guides_Archive/Administrator_Guides/8.3.27/Probe/?language=en` was not found: адрес \"https://kb.1c",
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": false
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "eq": "documentation page `https://kb.1ci.com/1C_Enterprise_Platform/Guides_Archive/Administrator_Guides/8.3.27/Probe/?language=en` was not found: адрес \"https://kb.1ci.com/1C_Enterprise_Platform/Guides_Archive/Administrator_Guides/8.3.27/Probe/?language=en\" вне объявленных корней руководств: запрашиваются только страницы категорий Developer Guides и Administrator Guides"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "https://kb.1ci.com/1C_Enterprise_Platform/Guides/Developer_Guides/8.3.27/%2e%2e/%2e%2e/%2e%2e/%2e%2e/Support/Probe/?language=en",
+        "source": "platform-help"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: documentation page `https://kb.1ci.com/1C_Enterprise_Platform/Guides/Developer_Guides/8.3.27/%2e%2e/%2e%2e/%2e%2e/%2e%2e/Support/Probe/?language=en` was not fou",
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": false
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "eq": "documentation page `https://kb.1ci.com/1C_Enterprise_Platform/Guides/Developer_Guides/8.3.27/%2e%2e/%2e%2e/%2e%2e/%2e%2e/Support/Probe/?language=en` was not found: адрес \"https://kb.1ci.com/1C_Enterprise_Platform/Guides/Developer_Guides/8.3.27/%2e%2e/%2e%2e/%2e%2e/%2e%2e/Support/Probe/?language=en\" несёт недопустимые сегменты пути ('..', пустые, с разделителями или управляющими символами) и не является адресом страницы руководства"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ]
+    }
+  ]
+}

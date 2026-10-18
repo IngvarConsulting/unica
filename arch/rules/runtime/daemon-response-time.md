@@ -1,6 +1,7 @@
 ---
 id: INV.WIRE.DAEMON-RESPONSE-TIME
-check: []
+check:
+  - crates/unica-coder/src/infrastructure/daemon/client_v5.rs::partial_v5_response_bytes_cannot_replenish_client_deadline
 gap: https://github.com/IngvarConsulting/unica/issues/984
 ---
 
@@ -12,7 +13,8 @@ gap: https://github.com/IngvarConsulting/unica/issues/984
 
 Аварийная доставка закрытой ошибки fail-stop имеет отдельный запас после
 сериализации. Этот запас не разрешает продолжить предметную операцию.
-Полная проверка обеих временных границ указана в `gap`.
+Проверка частичного чтения подтверждает неизменность срока ответа.
+Полная проверка обеих временных границ остаётся в `gap`.
 
 Исходный срок фиксируется один раз, до строгой проверки запроса, допуска
 и подготовки операции. Он определяет момент прямого ответа или передачи

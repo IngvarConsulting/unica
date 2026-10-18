@@ -84,9 +84,9 @@ fn compile_registration_with_declarations(entry: &str, metadata: &str, form: &st
         enum OperationFamily {{ Role, Support, Metadata, Form }}
         pub(super) enum OperationApplicability {{
             Configuration, SupportRule, MetadataAttributeContainer,
-            MetadataAttribute, MetadataCommands, Form, FormItemContainer,
+            MetadataAttribute, MetadataCommands, MetadataCommand, Form, FormItemContainer,
         }}
-        pub(super) enum OperationSkeleton {{ Values, Items }}
+        pub(super) enum OperationSkeleton {{ Values, Items, Target }}
         enum RoleOperation {{ Create }}
         enum SupportOperation {{ CapabilitySet, RuleSet }}
         enum TypedOperation {{
@@ -197,9 +197,11 @@ fn typed_role_registration_compiles_and_legacy_role_tuple_is_rejected() {
 #[test]
 fn typed_contextual_registrations_compile_and_migrated_raw_tuples_are_rejected() {
     let typed = compile_registration(
-        r#"(MetadataOperation::AttributeAdd), (MetadataOperation::CommandAdd),
+        r#"(MetadataOperation::AttributeAdd), (MetadataOperation::AttributeSet),
+            (MetadataOperation::AttributeRemove), (MetadataOperation::CommandAdd),
+            (MetadataOperation::CommandSet), (MetadataOperation::CommandRemove),
             (FormOperation::AttributeAdd), (FormOperation::CommandAdd),
-            ("attribute.set", Metadata, MetadataAttribute, Values),
+            ("object.create", Metadata, Configuration, Values),
             ("item.add", Form, FormItemContainer, Items)"#,
     );
     assert!(
@@ -207,20 +209,41 @@ fn typed_contextual_registrations_compile_and_migrated_raw_tuples_are_rejected()
         "{}",
         String::from_utf8_lossy(&typed.stderr)
     );
-    for (family, name, applicability) in [
-        ("Metadata", "attribute.add", "MetadataAttributeContainer"),
-        ("Metadata", "command.add", "MetadataCommands"),
-        ("Form", "attribute.add", "Form"),
-        ("Form", "command.add", "Form"),
+    for (family, name, applicability, skeleton) in [
+        (
+            "Metadata",
+            "attribute.add",
+            "MetadataAttributeContainer",
+            "Items",
+        ),
+        ("Metadata", "attribute.set", "MetadataAttribute", "Values"),
+        (
+            "Metadata",
+            "attribute.remove",
+            "MetadataAttribute",
+            "Target",
+        ),
+        ("Metadata", "command.add", "MetadataCommands", "Items"),
+        ("Metadata", "command.set", "MetadataCommand", "Values"),
+        ("Metadata", "command.remove", "MetadataCommand", "Target"),
+        ("Form", "attribute.add", "Form", "Items"),
+        ("Form", "command.add", "Form", "Items"),
     ] {
-        let legacy =
-            compile_registration(&format!(r#"("{name}", {family}, {applicability}, Items)"#));
+        let legacy = compile_registration(&format!(
+            r#"("{name}", {family}, {applicability}, {skeleton})"#
+        ));
         assert!(
             !legacy.status.success(),
             "{family} {name} must require its typed registration"
         );
+        let expected_diagnostic = if family == "Metadata" {
+            "Typed Metadata operations must register a MetadataOperation with a mandatory contextual contract"
+        } else {
+            "Form attribute.add and command.add must register a typed FormOperation with a mandatory contract"
+        };
         assert!(
-            String::from_utf8_lossy(&legacy.stderr).contains(&format!("typed {family}Operation")),
+            String::from_utf8_lossy(&legacy.stderr)
+                .contains(&format!("evaluation panicked: {expected_diagnostic}")),
             "{}",
             String::from_utf8_lossy(&legacy.stderr)
         );
