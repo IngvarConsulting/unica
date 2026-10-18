@@ -2937,6 +2937,7 @@ mod tests {
                 cache_events: Arc::new(Mutex::new(Vec::new())),
                 read: Mutex::new(Some(Ok(MetadataRead {
                     local: MetaLocalInfo {
+                        member_read_profile: None,
                         metadata_path: subject.target.clone(),
                         kind: MetadataKind::Document,
                         details: MetaInfoDetails::empty(MetadataKind::Document),
@@ -3124,6 +3125,7 @@ mod tests {
             cache_events: Arc::new(Mutex::new(Vec::new())),
             read: Mutex::new(Some(Ok(MetadataRead {
                 local: MetaLocalInfo {
+                    member_read_profile: None,
                     metadata_path: subject.target.clone(),
                     kind: MetadataKind::Document,
                     details: MetaInfoDetails::empty(MetadataKind::Document),

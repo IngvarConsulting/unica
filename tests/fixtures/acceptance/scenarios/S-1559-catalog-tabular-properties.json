@@ -1,0 +1,238 @@
+{
+  "id": "S-1559-catalog-tabular-properties",
+  "issue": 1559,
+  "area": "Метаданные",
+  "task": "Прочитать LineNumberLength и Use табличной части справочника в коллекции и детали, сохранив независимые факты, типы колонок, идентификаторы и исходные байты. Частичный сценарий #1559, не проверка полного паритета свойств.",
+  "workspace": "tests/fixtures/acceptance/workspace-catalog-tabular-properties",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Catalog.Items.TabularSection.Lines"
+        },
+        {
+          "pointer": "/data/items/0/props/LineNumberLength",
+          "eq": 5
+        },
+        {
+          "pointer": "/data/items/0/props/Use",
+          "eq": "ForItem"
+        },
+        {
+          "pointer": "/data/items/0/props/required",
+          "eq": true
+        },
+        {
+          "pointer": "/data/items/1/props/LineNumberLength",
+          "eq": 3
+        },
+        {
+          "pointer": "/data/items/1/props/Use",
+          "eq": "ForFolder"
+        },
+        {
+          "pointer": "/data/items/1/props/required",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "2a94c7c22dc32af168c9716cc15c33d8ba8dd8cb3647d783ba996834eca08e7b"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "52480e68d87c3cb65d1f58f2e8f323e9d21857088735335716853d62af755733"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Catalog.Items.TabularSection.Lines"
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "Order lines"
+        },
+        {
+          "pointer": "/data/props/LineNumberLength",
+          "eq": 5
+        },
+        {
+          "pointer": "/data/props/Use",
+          "eq": "ForItem"
+        },
+        {
+          "pointer": "/data/props/required",
+          "eq": true
+        },
+        {
+          "pointer": "/data/branches",
+          "eq": [
+            {
+              "at": "main:Catalog.Items.TabularSection.Lines.Attribute",
+              "count": 1
+            }
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "2a94c7c22dc32af168c9716cc15c33d8ba8dd8cb3647d783ba996834eca08e7b"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "52480e68d87c3cb65d1f58f2e8f323e9d21857088735335716853d62af755733"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection.Notes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/LineNumberLength",
+          "eq": 3
+        },
+        {
+          "pointer": "/data/props/Use",
+          "eq": "ForFolder"
+        },
+        {
+          "pointer": "/data/props/required",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "2a94c7c22dc32af168c9716cc15c33d8ba8dd8cb3647d783ba996834eca08e7b"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "52480e68d87c3cb65d1f58f2e8f323e9d21857088735335716853d62af755733"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection.Lines.Attribute.Quantity"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Catalog.Items.TabularSection.Lines.Attribute.Quantity"
+        },
+        {
+          "pointer": "/data/props/required",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/type",
+          "contains": "\"digits\":10"
+        },
+        {
+          "pointer": "/data/props/type",
+          "contains": "\"fraction\":2"
+        },
+        {
+          "pointer": "/data/props/Use",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/LineNumberLength",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "2a94c7c22dc32af168c9716cc15c33d8ba8dd8cb3647d783ba996834eca08e7b"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "52480e68d87c3cb65d1f58f2e8f323e9d21857088735335716853d62af755733"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        },
+        {
+          "kind": "xml",
+          "path": "src/Catalogs/Items.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"3986e985-04bb-4bca-a2ea-c591d95c3455\"]/{http://v8.1c.ru/8.3/MDClasses}InternalInfo/{http://v8.1c.ru/8.3/xcf/readable}GeneratedType[@category=\"TabularSection\"]/{http://v8.1c.ru/8.3/xcf/readable}TypeId",
+          "eq": [
+            "f6dbbc1b-17f2-4d93-842a-3e05e4c5b152"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Catalogs/Items.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"3986e985-04bb-4bca-a2ea-c591d95c3455\"]/{http://v8.1c.ru/8.3/MDClasses}InternalInfo/{http://v8.1c.ru/8.3/xcf/readable}GeneratedType[@category=\"TabularSectionRow\"]/{http://v8.1c.ru/8.3/xcf/readable}ValueId",
+          "eq": [
+            "327e820f-2915-4680-8ad1-47713f4e5f9b"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Catalogs/Items.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}StandardAttributes/{http://v8.1c.ru/8.3/xcf/readable}StandardAttribute[@name=\"LineNumber\"]/{http://v8.1c.ru/8.3/xcf/readable}TypeReductionMode",
+          "eq": [
+            "TransformValues"
+          ]
+        }
+      ]
+    }
+  ]
+}

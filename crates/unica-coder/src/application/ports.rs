@@ -292,6 +292,7 @@ pub(crate) enum MetadataEvidenceAvailability {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MetaLocalInfo {
+    pub(crate) member_read_profile: Option<crate::domain::metadata::MetaMemberReadProfile>,
     pub(crate) metadata_path: MetadataAddress,
     pub(crate) kind: MetadataKind,
     pub(crate) details: MetaInfoDetails,

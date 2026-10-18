@@ -1,6 +1,8 @@
 ---
 id: INV.SOURCE.INCOMPLETE-METADATA-READ
 check:
+  - crates/unica-coder/src/infrastructure/v13_read/tests/catalog_tabular_properties.rs::catalog_tabular_profile_damage_is_local_to_the_observed_fact
+  - crates/unica-coder/src/infrastructure/v13_read/tests/catalog_tabular_properties.rs::catalog_tabular_profile_missing_facts_are_not_filled_from_sibling_or_template
   - crates/unica-coder/src/infrastructure/native_operations/meta/form_metadata.rs::form_use_purposes_preserves_absence_empty_and_malformed_observations
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::specialized_relation_limits_distinguish_absence_empty_and_damage
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::missing_relation_preserves_known_targets_and_reports_incompleteness
@@ -34,6 +36,12 @@ check:
 Без `CodeType` владельца вид кодов предопределённых элементов неизвестен:
 чтение ограничивает ветвь предопределённых, а запись предопределённых
 отказывает тем же текстом, не проверяя коды по придуманному виду.
+
+Ошибка одного из наблюдаемых свойств табличной части `LineNumberLength`
+или `Use` оставляет саму часть, остальные доказанные свойства и колонки
+доступными. Ограничение видно у объекта, в строке коллекции и в детали
+табличной части. Допустимое отсутствие этих свойств не создаёт значения
+по умолчанию или ошибки.
 
 Проверки идентичности и структуры объекта остаются обязательными. Чтение
 не изменяет исходники.

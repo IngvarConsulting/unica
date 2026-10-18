@@ -637,6 +637,7 @@ pub(crate) mod tests {
         let related = MetadataOperations::read_related(
             &request,
             &crate::application::ports::MetaLocalInfo {
+                member_read_profile: None,
                 metadata_path: request.metadata_path.clone(),
                 kind: MetadataKind::Catalog,
                 details: crate::domain::metadata::MetaInfoDetails::empty(MetadataKind::Catalog),

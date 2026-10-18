@@ -32,7 +32,7 @@ use crate::infrastructure::native_operations::form::parse_form_info_xml;
 use crate::infrastructure::native_operations::form::FormInfoData;
 use crate::infrastructure::native_operations::meta::{
     descriptor_extends_parent, parse_child_profile_from_bytes, parse_meta_borrowing,
-    parse_typed_meta_local_info, MetaBorrowing,
+    parse_typed_meta_local_info_for_source, MetaBorrowing,
 };
 use crate::infrastructure::native_operations::mxl::parse_mxl_info_xml;
 use crate::infrastructure::native_operations::role::parse_role_info_xml;
@@ -835,12 +835,17 @@ impl ProviderReadAuthority {
         } else {
             None
         };
-        let info =
-            parse_typed_meta_local_info(&descriptor, target, support).map_err(|failure| {
-                let message = serde_json::to_string(&failure.diagnostics)
-                    .unwrap_or_else(|_| "metadata reader failed".to_string());
-                ViewError::detailed(RefusalDetail::SourceUnreadable, message)
-            })?;
+        let info = parse_typed_meta_local_info_for_source(
+            &descriptor,
+            target,
+            support,
+            self.source_set_kind,
+        )
+        .map_err(|failure| {
+            let message = serde_json::to_string(&failure.diagnostics)
+                .unwrap_or_else(|_| "metadata reader failed".to_string());
+            ViewError::detailed(RefusalDetail::SourceUnreadable, message)
+        })?;
         Ok(MetadataLocalRead { info, borrowing })
     }
 
