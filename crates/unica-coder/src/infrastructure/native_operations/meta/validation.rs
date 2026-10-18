@@ -1377,19 +1377,7 @@ fn parse_child_artifact(
     let profile = match kind {
         "Form" => form_profile(*properties)?,
         "Command" => MetadataChildProfile::Command,
-        "Template" => {
-            let template_types =
-                exact_mdclasses_children(*properties, "TemplateType", "Template descriptor")?;
-            let [template_type] = template_types.as_slice() else {
-                return Err("Template descriptor must contain exactly one TemplateType".into());
-            };
-            let value = meta_info_inner_text(*template_type);
-            MetadataChildProfile::Template(
-                MetadataTemplateType::from_descriptor_value(value.trim()).ok_or_else(|| {
-                    "Template descriptor has unsupported TemplateType".to_string()
-                })?,
-            )
-        }
+        "Template" => MetadataChildProfile::Template(template_descriptor_type(*properties)?),
         _ => unreachable!(),
     };
     let child = MetadataAddress::parse(
@@ -1398,6 +1386,51 @@ fn parse_child_artifact(
     )
     .map_err(|_| "child descriptor identity is not representable".to_string())?;
     Ok(ClosedChildDescriptor { child, profile })
+}
+
+fn template_descriptor_type(
+    properties: roxmltree::Node<'_, '_>,
+) -> Result<MetadataTemplateType, String> {
+    let types = exact_mdclasses_children(properties, "TemplateType", "Template descriptor")?;
+    let [value] = types.as_slice() else {
+        return Err("Template descriptor must contain exactly one TemplateType".into());
+    };
+    if value.children().any(|child| child.is_element()) {
+        return Err("TemplateType must be a scalar".into());
+    }
+    MetadataTemplateType::from_descriptor_value(meta_info_inner_text(*value).trim())
+        .ok_or_else(|| "Template descriptor has unsupported TemplateType".into())
+}
+
+/// Read the top-level template through the same closed type vocabulary and
+/// descriptor admission as a physical child template. This is a read profile,
+/// not a new metadata creation kind.
+pub(crate) fn parse_common_template_descriptor_from_bytes(
+    bytes: &[u8],
+    target: &MetadataAddress,
+) -> Result<(MetadataTemplateType, Option<String>), String> {
+    let (_, document) = parse_metadata_image(bytes)?;
+    let artifact = exact_metadata_artifact(&document, MetadataAdmission::Read)?;
+    if artifact.tag_name().name() != "CommonTemplate" {
+        return Err("common template descriptor has the wrong artifact kind".into());
+    }
+    let properties = exact_mdclasses_children(artifact, "Properties", "CommonTemplate descriptor")?;
+    let [properties] = properties.as_slice() else {
+        return Err("CommonTemplate descriptor must contain exactly one Properties".into());
+    };
+    let name = exact_child_name(*properties, "CommonTemplate")?;
+    if target.as_str() != format!("CommonTemplate.{name}") {
+        return Err("common template descriptor belongs to another logical address".into());
+    }
+    let template_type = template_descriptor_type(*properties)?;
+    let synonyms = exact_mdclasses_children(*properties, "Synonym", "CommonTemplate descriptor")?;
+    if synonyms.len() > 1 {
+        return Err("CommonTemplate descriptor must contain at most one Synonym".into());
+    }
+    let synonym = synonyms
+        .first()
+        .map(|node| super::xml_model::meta_info_ml_text(*node));
+    Ok((template_type, synonym))
 }
 
 fn form_profile(properties: roxmltree::Node<'_, '_>) -> Result<MetadataChildProfile, String> {

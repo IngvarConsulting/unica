@@ -168,7 +168,6 @@ impl MetadataTemplateType {
         }
     }
 
-    #[cfg(test)]
     pub(crate) const fn descriptor_value(self) -> &'static str {
         match self {
             Self::HtmlDocument => "HTMLDocument",

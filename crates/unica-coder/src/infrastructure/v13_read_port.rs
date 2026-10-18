@@ -31,8 +31,9 @@ use crate::infrastructure::native_operations::dcs::parse_dcs_info_xml;
 use crate::infrastructure::native_operations::form::parse_form_info_xml;
 use crate::infrastructure::native_operations::form::FormInfoData;
 use crate::infrastructure::native_operations::meta::{
-    descriptor_extends_parent, parse_child_profile_from_bytes, parse_meta_borrowing,
-    parse_typed_meta_local_info, MetaBorrowing,
+    descriptor_extends_parent, parse_child_profile_from_bytes,
+    parse_common_template_descriptor_from_bytes, parse_meta_borrowing, parse_typed_meta_local_info,
+    MetaBorrowing,
 };
 use crate::infrastructure::native_operations::mxl::parse_mxl_info_xml;
 use crate::infrastructure::native_operations::role::parse_role_info_xml;
@@ -1314,10 +1315,30 @@ impl ProviderReadAuthority {
         path_text(self.module_relative(target)?)
     }
 
+    pub(crate) fn common_template_facts(
+        &self,
+        target: &MetadataAddress,
+    ) -> Result<
+        (
+            crate::application::ports::MetadataTemplateType,
+            Option<String>,
+        ),
+        ViewError,
+    > {
+        let bytes = self.metadata_descriptor(target)?;
+        parse_common_template_descriptor_from_bytes(&bytes, target)
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
+    }
+
     pub(crate) fn metadata_child_profile(
         &self,
         target: &MetadataAddress,
     ) -> Result<MetadataChildProfile, ViewError> {
+        if target.as_str().starts_with("CommonTemplate.") {
+            return self
+                .common_template_facts(target)
+                .map(|(kind, _)| MetadataChildProfile::Template(kind));
+        }
         let descriptor = self.metadata_descriptor(target)?;
         let owner_text = target
             .as_str()

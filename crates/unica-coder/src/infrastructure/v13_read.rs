@@ -787,6 +787,26 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 &mut || self.read_checkpoint(),
             );
         }
+        if matches!(route.reader(), LogicalReader::Dcs | LogicalReader::Mxl) {
+            if let Some(target) = route
+                .reader_metadata_path()
+                .filter(|target| target.as_str().starts_with("CommonTemplate."))
+            {
+                let expected = if route.reader() == LogicalReader::Dcs {
+                    MetadataTemplateType::DataCompositionSchema
+                } else {
+                    MetadataTemplateType::SpreadsheetDocument
+                };
+                if self.read.metadata_child_profile(target)?
+                    != MetadataChildProfile::Template(expected)
+                {
+                    return Err(ViewError::new(
+                        RefusalCode::NotFound,
+                        "template kind has no requested interior",
+                    ));
+                }
+            }
+        }
         if route.reader() == LogicalReader::Dcs {
             return self.read.dcs_payload(
                 route.reader_metadata_path().ok_or_else(|| {
@@ -928,6 +948,14 @@ impl<'a> LogicalViewReadAuthority<'a> {
         if kind == NodeKind::WebSocketClient.as_str() {
             let name = target.as_str().split('.').nth(1).unwrap_or_default();
             return Ok(identity_only_metadata_payload(kind, name));
+        }
+        if kind == NodeKind::CommonTemplate.as_str() {
+            let (template_type, synonym) = self.read.common_template_facts(target)?;
+            let mut payload = self.read.identity_metadata_payload(target)?;
+            payload["synonym"] = json!(synonym);
+            payload["properties"] =
+                json!([{"key":"TemplateType", "value":template_type.descriptor_value()}]);
+            return Ok(payload);
         }
         if MetadataKind::parse(kind).is_err() {
             return self.read.identity_metadata_payload(target);
@@ -2011,24 +2039,29 @@ impl LogicalViewReadAuthority<'_> {
             return Ok(projected);
         }
         let segments = route.at().segments();
-        let [owner, template] = segments else {
-            return Ok(projected);
+        let child_text = match segments {
+            [template]
+                if template.kind() == NodeKind::CommonTemplate && template.name().is_some() =>
+            {
+                format!("CommonTemplate.{}", template.name().unwrap_or_default())
+            }
+            [owner, template]
+                if template.kind() == NodeKind::Template
+                    && template.name().is_some()
+                    && owner.name().is_some() =>
+            {
+                format!(
+                    "{}.{}.Template.{}",
+                    owner.kind().as_str(),
+                    owner.name().unwrap_or_default(),
+                    template.name().unwrap_or_default()
+                )
+            }
+            _ => return Ok(projected),
         };
-        if template.kind() != NodeKind::Template || template.name().is_none() {
-            return Ok(projected);
-        }
-        let Some(owner_name) = owner.name() else {
-            return Ok(projected);
-        };
-        let child = MetadataAddress::parse(
-            PLATFORM_XML_8_3_27_FORMAT_2_20,
-            &format!(
-                "{}.{owner_name}.Template.{}",
-                owner.kind().as_str(),
-                template.name().unwrap_or_default()
-            ),
-        )
-        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))?;
+        let child = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &child_text).map_err(
+            |error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()),
+        )?;
         let mut projected = projected;
         let format = match self.read.metadata_child_profile(&child) {
             Ok(MetadataChildProfile::Template(MetadataTemplateType::DataCompositionSchema)) => {
@@ -2062,6 +2095,12 @@ impl LogicalViewReadAuthority<'_> {
         }
         if let Some(format) = format {
             projected = projected.with_prop("format", Value::String(format.into()));
+        } else if matches!(segments, [template] if template.kind() == NodeKind::CommonTemplate) {
+            if let MetadataChildProfile::Template(kind) =
+                self.read.metadata_child_profile(&child)?
+            {
+                projected = projected.with_prop("format", json!(kind.descriptor_value()));
+            }
         }
         for (kind, count) in self.template_body_branches(&child)? {
             if count > 0 {
