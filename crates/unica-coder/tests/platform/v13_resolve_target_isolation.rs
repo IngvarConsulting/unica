@@ -19,23 +19,23 @@ fn resolve_path_checks_only_target_and_necessary_owner_on_public_mcp() {
     .expect("workspace manifest");
     std::fs::write(
         workspace.join("Configuration.xml"),
-        r#"<MetaDataObject><Configuration><Properties><Name>Main</Name></Properties><ChildObjects><Catalog>Visible</Catalog><Catalog>Broken</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="00000000-0000-4000-8000-000000000001"><Properties><Name>Main</Name></Properties><ChildObjects><Catalog>Visible</Catalog><Catalog>Broken</Catalog><CommonModule>Main</CommonModule></ChildObjects></Configuration></MetaDataObject>"#,
     )
     .expect("configuration descriptor");
     let owner = workspace.join("Catalogs/Visible.xml");
     std::fs::write(
         &owner,
-        r#"<MetaDataObject><Catalog><Properties><Name>Visible</Name></Properties><ChildObjects><Form>Form</Form></ChildObjects></Catalog></MetaDataObject>"#,
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="00000000-0000-4000-8000-000000000002"><Properties><Name>Visible</Name></Properties><ChildObjects><Form>Form</Form></ChildObjects></Catalog></MetaDataObject>"#,
     )
     .expect("visible catalog descriptor");
     std::fs::write(
         workspace.join("Catalogs/Visible/Forms/Form.xml"),
-        r#"<MetaDataObject><Form><Properties><Name>Form</Name></Properties></Form></MetaDataObject>"#,
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form uuid="00000000-0000-4000-8000-000000000003"><Properties><Name>Form</Name></Properties></Form></MetaDataObject>"#,
     )
     .expect("form descriptor");
     std::fs::write(
         workspace.join("CommonModules/Main.xml"),
-        r#"<MetaDataObject><CommonModule><Properties><Name>Main</Name></Properties></CommonModule></MetaDataObject>"#,
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule uuid="00000000-0000-4000-8000-000000000004"><Properties><Name>Main</Name></Properties></CommonModule></MetaDataObject>"#,
     )
     .expect("common module owner");
     let module = workspace.join("CommonModules/Main/Ext/Module.bsl");
@@ -63,7 +63,10 @@ fn resolve_path_checks_only_target_and_necessary_owner_on_public_mcp() {
         json!({"path": "Catalogs/Visible/Forms/Form.xml"}),
     ));
     assert_eq!(resolved["ok"], true, "{resolved:#}");
-    assert_eq!(resolved["data"]["at"], "main:Catalog.Visible.Form.Form");
+    assert_eq!(
+        resolved["data"]["at"],
+        "main:Catalog.Visible.Form.Form.Metadata"
+    );
 
     let absolute_form = std::fs::canonicalize(workspace.join("Catalogs/Visible/Forms/Form.xml"))
         .expect("absolute form path");
@@ -75,7 +78,7 @@ fn resolve_path_checks_only_target_and_necessary_owner_on_public_mcp() {
     assert_eq!(absolute_resolved["ok"], true, "{absolute_resolved:#}");
     assert_eq!(
         absolute_resolved["data"]["at"],
-        "main:Catalog.Visible.Form.Form"
+        "main:Catalog.Visible.Form.Form.Metadata"
     );
 
     let absolute_module = std::fs::canonicalize(&module).expect("absolute module path");
@@ -142,22 +145,22 @@ fn resolve_relative_source_prefix_skips_foreign_linked_collections_on_public_mcp
     .expect("main descriptor");
     std::fs::write(
         extension.join("Configuration.xml"),
-        r#"<MetaDataObject><Configuration><Properties><Name>Extension</Name></Properties></Configuration></MetaDataObject>"#,
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="00000000-0000-4000-8000-000000000005"><Properties><Name>Extension</Name></Properties><ChildObjects><Catalog>Visible</Catalog><CommonModule>Main</CommonModule></ChildObjects></Configuration></MetaDataObject>"#,
     )
     .expect("extension descriptor");
     std::fs::write(
         extension.join("Catalogs/Visible.xml"),
-        r#"<MetaDataObject><Catalog><Properties><Name>Visible</Name></Properties><ChildObjects><Form>Form</Form></ChildObjects></Catalog></MetaDataObject>"#,
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="00000000-0000-4000-8000-000000000006"><Properties><Name>Visible</Name></Properties><ChildObjects><Form>Form</Form></ChildObjects></Catalog></MetaDataObject>"#,
     )
     .expect("catalog owner");
     std::fs::write(
         extension.join("Catalogs/Visible/Forms/Form.xml"),
-        r#"<MetaDataObject><Form><Properties><Name>Form</Name></Properties></Form></MetaDataObject>"#,
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form uuid="00000000-0000-4000-8000-000000000007"><Properties><Name>Form</Name></Properties></Form></MetaDataObject>"#,
     )
     .expect("form descriptor");
     std::fs::write(
         extension.join("CommonModules/Main.xml"),
-        r#"<MetaDataObject><CommonModule><Properties><Name>Main</Name></Properties></CommonModule></MetaDataObject>"#,
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule uuid="00000000-0000-4000-8000-000000000008"><Properties><Name>Main</Name></Properties></CommonModule></MetaDataObject>"#,
     )
     .expect("common module owner");
     std::fs::write(
@@ -196,7 +199,10 @@ fn resolve_relative_source_prefix_skips_foreign_linked_collections_on_public_mcp
         json!({"path": "src/extension/Catalogs/Visible/Forms/Form.xml"}),
     ));
     assert_eq!(form["ok"], true, "{form:#}");
-    assert_eq!(form["data"]["at"], "extension:Catalog.Visible.Form.Form");
+    assert_eq!(
+        form["data"]["at"],
+        "extension:Catalog.Visible.Form.Form.Metadata"
+    );
 
     let module = mcp.completed_tool_call(call_tool(
         3,

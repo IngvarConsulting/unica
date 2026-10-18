@@ -4,9 +4,13 @@ use crate::application::v13::find::{
 use crate::domain::address::{NodeKind, QualifiedAddress};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
+use crate::domain::platform_profile::PlatformProfile;
 use crate::domain::project_sources::SourceSetKind;
 use crate::domain::refusal::{RefusalCode, RefusalDetail};
 use crate::infrastructure::capacity_observation::CapacityObserver;
+use crate::infrastructure::logical_event_source::{
+    module_address_for_relative, module_relative, module_source_address,
+};
 use crate::infrastructure::metadata_kinds::metadata_kind_by_directory;
 use crate::infrastructure::platform::filesystem::{
     FileIdentity, RetainedChildCapability, RetainedDirectoryCapability,
@@ -19,6 +23,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 const MAX_SOURCE_SETS: usize = 64;
+const MAX_POINT_PATH_DEPTH: usize = 7;
 const DEFAULT_MAX_DOCUMENTS: usize = 65_536;
 const DEFAULT_MAX_FACT_BYTES: usize = 16 * 1024 * 1024;
 /// Enough of a descriptor head to carry `Name` and `Synonym`. The directory
@@ -32,6 +37,39 @@ const NESTED_FAMILIES: [(&str, NodeKind); 3] = [
     ("Templates", NodeKind::Template),
     ("Commands", NodeKind::Command),
 ];
+
+/// Файловые ресурсы только для точечного поиска, не индексируемые как факты имени.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AttachedPathResource {
+    Form,
+    FormModule,
+    RoleModule,
+}
+
+impl AttachedPathResource {
+    fn from_layout(parts: &[&str], source_kind: SourceSetKind) -> Option<Self> {
+        if matches!(
+            source_kind,
+            SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+        ) {
+            return match parts {
+                [_, "forms", _, "ext", "form.xml"] => Some(Self::Form),
+                [_, "forms", _, "ext", "form", "module.bsl"] => Some(Self::FormModule),
+                _ => None,
+            };
+        }
+        match parts {
+            ["commonforms", _, "ext", "form.xml"] => Some(Self::Form),
+            ["commonforms", _, "ext", "form", "module.bsl"] => Some(Self::FormModule),
+            [_, _, "forms", _, "ext", "form.xml"] => Some(Self::Form),
+            [_, _, "forms", _, "ext", "form", "module.bsl"] => Some(Self::FormModule),
+            [.., "ext", file] if file.ends_with("module.bsl") && *file != "module.bsl" => {
+                Some(Self::RoleModule)
+            }
+            _ => None,
+        }
+    }
+}
 
 /// One admitted source-set root. The directory is read through the retained
 /// no-follow capability the actor owns; no path is reopened by name.
@@ -367,7 +405,7 @@ impl WorkspaceFindDirectoryBuilder {
             }
         } else {
             for source in sources {
-                source_matches.push((1..=parts.len().min(4)).any(|depth| {
+                source_matches.push((1..=parts.len().min(MAX_POINT_PATH_DEPTH)).any(|depth| {
                     let tail = parts[parts.len() - depth..].join("/");
                     normalized != tail && source_path_ends_with_query(source, &normalized, &tail)
                 }));
@@ -382,7 +420,7 @@ impl WorkspaceFindDirectoryBuilder {
         // The full index chooses the longest stored path. Probe equal-length
         // candidates in every source set before trying shorter fallbacks, so
         // a damaged, unrelated fallback cannot block an exact target.
-        for depth in [4, 3, 2, 1] {
+        for depth in [7, 6, 5, 4, 3, 2, 1] {
             let tail = parts
                 .len()
                 .checked_sub(depth)
@@ -485,7 +523,7 @@ impl WorkspaceFindDirectoryBuilder {
                     }
                 }
                 find_checkpoint(deadline, cancellation)?;
-                return Ok(located);
+                return located.map(form_descriptor_location).transpose();
             }
         }
         find_checkpoint(deadline, cancellation)?;
@@ -505,6 +543,18 @@ impl WorkspaceFindDirectoryBuilder {
         located: &mut Option<FindDocument>,
         ambiguous_alias: &mut bool,
     ) -> Result<(), FindBuildError> {
+        if let Some(tail) = parts.len().checked_sub(depth).map(|start| &parts[start..]) {
+            if let Some(resource) = AttachedPathResource::from_layout(tail, source.kind) {
+                return self.locate_attached_path(
+                    source,
+                    tail,
+                    resource,
+                    deadline,
+                    cancellation,
+                    located,
+                );
+            }
+        }
         let physical_names = absolute_relative.map(|relative| {
             relative
                 .components()
@@ -740,6 +790,158 @@ impl WorkspaceFindDirectoryBuilder {
         Ok(())
     }
 
+    /// Повторно использует поиск дескриптора только внутри источника, выбранного
+    /// исходным путём ресурса. За регистрацию по-прежнему отвечает логический читатель.
+    fn locate_attached_path(
+        &self,
+        source: &LayoutFindSource<'_>,
+        tail: &[&str],
+        resource: AttachedPathResource,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+        located: &mut Option<FindDocument>,
+    ) -> Result<(), FindBuildError> {
+        if resource == AttachedPathResource::RoleModule {
+            return self.locate_role_module_path(source, tail, deadline, cancellation, located);
+        }
+        let (address_suffix, file_suffix, is_module) = match resource {
+            AttachedPathResource::Form => ("", "/Ext/Form.xml", false),
+            AttachedPathResource::FormModule => (".Module.Form", "/Ext/Form/Module.bsl", true),
+            AttachedPathResource::RoleModule => unreachable!("ветка обработана выше"),
+        };
+        let descriptor_parts = match source.kind {
+            SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport => 3,
+            _ if tail.first() == Some(&"commonforms") => 2,
+            _ => 4,
+        };
+        let descriptor_query = format!("{}.xml", tail[..descriptor_parts].join("/"));
+        let source = LayoutFindSource::new(source.name, source.kind, source.root);
+        let Some(owner) = self.locate_path(
+            std::slice::from_ref(&source),
+            &descriptor_query,
+            deadline,
+            cancellation,
+        )?
+        else {
+            return Ok(());
+        };
+        let descriptor_address =
+            QualifiedAddress::parse(owner.at()).map_err(|_| unsafe_layout_entry())?;
+        let form_address = descriptor_address
+            .form_metadata_owner()
+            .ok_or_else(unsafe_layout_entry)?;
+        let at = format!("{form_address}{address_suffix}");
+        let address = QualifiedAddress::parse(&at).map_err(|_| unsafe_layout_entry())?;
+        if is_module
+            && crate::domain::platform_profile::PlatformProfile::v8_3_27()
+                .module_capability(&address)
+                .is_none()
+        {
+            return Ok(());
+        }
+        let descriptor = owner.placed_path().ok_or_else(unsafe_layout_entry)?;
+        let stem = descriptor
+            .strip_suffix(".xml")
+            .ok_or_else(unsafe_layout_entry)?;
+        let relative = format!("{stem}{file_suffix}");
+        find_checkpoint(deadline, cancellation)?;
+        match source
+            .root
+            .open_relative_regular_nofollow(Path::new(&relative))
+        {
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(child_read_error(error)),
+        }
+        add_path_match(
+            located,
+            FindDocument::new(
+                at,
+                if is_module { "Module" } else { "Form" },
+                owner.at(),
+                Vec::new(),
+            )
+            .with_path(relative),
+        )
+    }
+
+    fn locate_role_module_path(
+        &self,
+        source: &LayoutFindSource<'_>,
+        tail: &[&str],
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+        located: &mut Option<FindDocument>,
+    ) -> Result<(), FindBuildError> {
+        let owner_parts = &tail[..tail.len() - 2];
+        let descriptor_query = if owner_parts.is_empty() {
+            "Configuration.xml".to_string()
+        } else {
+            format!("{}.xml", owner_parts.join("/"))
+        };
+        let selected = LayoutFindSource::new(source.name, source.kind, source.root);
+        let mut owner = self.locate_path(
+            std::slice::from_ref(&selected),
+            &descriptor_query,
+            deadline,
+            cancellation,
+        )?;
+        if owner.is_none() && !owner_parts.is_empty() {
+            owner = self.locate_path(
+                std::slice::from_ref(&selected),
+                &owner_parts.join("/"),
+                deadline,
+                cancellation,
+            )?;
+        }
+        let Some(owner) = owner else {
+            return Ok(());
+        };
+        let owner_address =
+            QualifiedAddress::parse(owner.at()).map_err(|_| unsafe_layout_entry())?;
+        let owner_address = owner_address.form_metadata_owner().unwrap_or(owner_address);
+        let branch = if owner.kind() == "Configuration" {
+            format!("{}:Module", source.name)
+        } else {
+            format!("{owner_address}.Module")
+        };
+        let branch = QualifiedAddress::parse(&branch).map_err(|_| unsafe_layout_entry())?;
+        let profile = PlatformProfile::v8_3_27();
+        let requested = tail.join("/");
+        let Some((expected, relative)) = profile
+            .module_children(&branch)
+            .into_iter()
+            .filter_map(|child| {
+                let target = module_source_address(child.at(), child.capability()).ok()?;
+                let relative = module_relative(&target, source.kind).ok()?;
+                (normalize_layout_path(&relative.to_string_lossy()) == requested)
+                    .then_some((child, relative))
+            })
+            .next()
+        else {
+            return Ok(());
+        };
+        let Some(address) =
+            module_address_for_relative(source.name, source.kind, profile, &relative)
+        else {
+            return Err(unsafe_layout_entry());
+        };
+        if address != *expected.at() {
+            return Err(unsafe_layout_entry());
+        }
+        find_checkpoint(deadline, cancellation)?;
+        match source.root.open_relative_regular_nofollow(&relative) {
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(child_read_error(error)),
+        }
+        add_path_match(
+            located,
+            FindDocument::new(address.to_string(), "Module", owner.at(), Vec::new())
+                .with_path(path_text(&relative)),
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn locate_common_module_file(
         &self,
@@ -955,7 +1157,17 @@ impl WorkspaceFindDirectoryBuilder {
                         cancellation,
                     )?
                     else {
-                        return Err(unsafe_layout_entry());
+                        let missing = collection.map_or_else(
+                            || PathBuf::from(&descriptor_name),
+                            |(_, name)| PathBuf::from(name).join(&descriptor_name),
+                        );
+                        return Err(FindBuildError::new(
+                            RefusalCode::InvalidSource,
+                            format!(
+                                "owner descriptor `{}` of the requested object is missing",
+                                path_text(&missing)
+                            ),
+                        ));
                     };
                     let RetainedChildCapability::RegularFile(owner_file) = owner_descriptor else {
                         return Err(unsafe_layout_entry());
@@ -1634,6 +1846,26 @@ fn require_target_identity(
     })
 }
 
+/// Path lookup names the descriptor facet; the name directory still names the form root.
+fn form_descriptor_location(document: FindDocument) -> Result<FindDocument, FindBuildError> {
+    if !matches!(document.kind(), "Form" | "CommonForm")
+        || !document
+            .placed_path()
+            .is_some_and(|path| path.ends_with(".xml") && !path.ends_with("/Ext/Form.xml"))
+    {
+        return Ok(document);
+    }
+    let address = QualifiedAddress::parse(&format!("{}.Metadata", document.at()))
+        .map_err(|_| unsafe_layout_entry())?;
+    if address.form_metadata_owner().is_none() {
+        return Err(unsafe_layout_entry());
+    }
+    Ok(
+        FindDocument::new(address.to_string(), "Metadata", document.at(), Vec::new())
+            .with_path(document.placed_path().ok_or_else(unsafe_layout_entry)?),
+    )
+}
+
 fn find_document(
     source: &LayoutFindSource<'_>,
     at: &str,
@@ -1868,7 +2100,7 @@ fn retain_absolute_target(
     cancellation: &CancellationToken,
 ) -> Result<Option<AbsoluteTargetWitness>, FindBuildError> {
     let depth = relative.components().count();
-    if !(1..=4).contains(&depth) {
+    if !(1..=MAX_POINT_PATH_DEPTH).contains(&depth) {
         return Ok(None);
     }
     let mut current = source.root.clone();
@@ -1931,7 +2163,7 @@ fn absolute_query_matches_placement(
     let requested = witness.relative.components().collect::<Vec<_>>();
     let placed = Path::new(placed_path).components().collect::<Vec<_>>();
     let depth = requested.len();
-    if depth != placed.len() || !(1..=4).contains(&depth) {
+    if depth != placed.len() || !(1..=MAX_POINT_PATH_DEPTH).contains(&depth) {
         return Ok(false);
     }
     let mut parent = source.root.clone();
@@ -2658,7 +2890,7 @@ mod tests {
             ("src/Catalogs/Валюты.xml", "main:Catalog.Валюты"),
             (
                 "Catalogs/Валюты/Forms/ФормаЭлемента.xml",
-                "main:Catalog.Валюты.Form.ФормаЭлемента",
+                "main:Catalog.Валюты.Form.ФормаЭлемента.Metadata",
             ),
             (
                 "Catalogs/Валюты/Templates/Печать.xml",
@@ -2706,6 +2938,70 @@ mod tests {
             write(&fixture.source.join("Catalogs/Валюты.xml"), "<broken");
             assert!(locate(non_layout.to_str().unwrap()).unwrap().is_none());
         }
+    }
+
+    #[test]
+    fn point_lookup_routes_owner_module_roles_through_the_platform_profile() {
+        let fixture = Fixture::new();
+        write(
+            &fixture.source.join("Ext/SessionModule.bsl"),
+            "Процедура Probe() Экспорт\nКонецПроцедуры\n",
+        );
+        write(
+            &fixture
+                .source
+                .join("Catalogs/Валюты/Ext/RecordSetModule.bsl"),
+            "Процедура Probe() Экспорт\nКонецПроцедуры\n",
+        );
+        write(
+            &fixture.source.join("CommonCommands/Open.xml"),
+            &owner("Open", "CommonCommand", "Открыть", ""),
+        );
+        write(
+            &fixture
+                .source
+                .join("CommonCommands/Open/Ext/CommandModule.bsl"),
+            "Процедура Probe() Экспорт\nКонецПроцедуры\n",
+        );
+        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let builder = WorkspaceFindDirectoryBuilder::default();
+        let locate = |path: &str| {
+            builder.locate_path(
+                &[LayoutFindSource::new(
+                    "main",
+                    SourceSetKind::Configuration,
+                    &root,
+                )],
+                path,
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+        };
+        for (path, expected) in [
+            (
+                "Catalogs/Валюты/Ext/ObjectModule.bsl",
+                "main:Catalog.Валюты.Module.Object",
+            ),
+            (
+                "Catalogs/Валюты/Commands/Обновить/Ext/CommandModule.bsl",
+                "main:Catalog.Валюты.Command.Обновить.Module.Command",
+            ),
+            (
+                "CommonCommands/Open/Ext/CommandModule.bsl",
+                "main:CommonCommand.Open.Module.Command",
+            ),
+            ("Ext/SessionModule.bsl", "main:Module.Session"),
+        ] {
+            let entry = locate(path).unwrap().expect("путь модуля размещён");
+            assert_eq!(entry.at(), expected, "{path}");
+            assert_eq!(entry.placed_path(), Some(path), "{path}");
+        }
+        assert!(
+            locate("Catalogs/Валюты/Ext/RecordSetModule.bsl")
+                .unwrap()
+                .is_none(),
+            "физический файл не добавляет справочнику модуль набора записей"
+        );
     }
 
     #[test]
@@ -3288,7 +3584,10 @@ mod tests {
         let entry = lookup(WorkspaceFindDirectoryBuilder::default())
             .unwrap()
             .expect("the form and its owner are proven");
-        assert_eq!(entry.at(), "main:Catalog.Валюты.Form.ФормаЭлемента");
+        assert_eq!(
+            entry.at(),
+            "main:Catalog.Валюты.Form.ФормаЭлемента.Metadata"
+        );
 
         let error = lookup(
             WorkspaceFindDirectoryBuilder::default()
@@ -3429,24 +3728,34 @@ mod tests {
         let cancelled = CancellationToken::new();
         cancelled.cancel();
         let builder = WorkspaceFindDirectoryBuilder::default();
-        let error = builder
-            .locate_path(
-                &source,
-                "Catalogs/Валюты.xml",
-                ProviderDeadline::from_budget(Duration::from_secs(7)),
-                &cancelled,
-            )
-            .unwrap_err();
-        assert_eq!(error.code(), RefusalCode::Cancelled);
-        let error = builder
-            .locate_path(
-                &source,
-                "Catalogs/Валюты.xml",
-                ProviderDeadline::from_budget(Duration::ZERO),
-                &CancellationToken::new(),
-            )
-            .unwrap_err();
-        assert_eq!(error.code(), RefusalCode::DeadlineExceeded);
+        for path in [
+            "Catalogs/Валюты.xml",
+            "Catalogs/Валюты/Forms/ФормаЭлемента.xml",
+            "Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+            "Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form/Module.bsl",
+            "CommonForms/Main.xml",
+            "CommonForms/Main/Ext/Form.xml",
+            "CommonForms/Main/Ext/Form/Module.bsl",
+        ] {
+            let error = builder
+                .locate_path(
+                    &source,
+                    path,
+                    ProviderDeadline::from_budget(Duration::from_secs(7)),
+                    &cancelled,
+                )
+                .unwrap_err();
+            assert_eq!(error.code(), RefusalCode::Cancelled);
+            let error = builder
+                .locate_path(
+                    &source,
+                    path,
+                    ProviderDeadline::from_budget(Duration::ZERO),
+                    &CancellationToken::new(),
+                )
+                .unwrap_err();
+            assert_eq!(error.code(), RefusalCode::DeadlineExceeded);
+        }
     }
 
     #[test]
@@ -3597,7 +3906,10 @@ mod tests {
             )
             .unwrap()
             .expect("the unrelated owner is outside the nested path");
-        assert_eq!(found.at(), "main:Catalog.Валюты.Form.ФормаЭлемента");
+        assert_eq!(
+            found.at(),
+            "main:Catalog.Валюты.Form.ФормаЭлемента.Metadata"
+        );
     }
 
     #[test]
@@ -4136,7 +4448,7 @@ mod tests {
             ("Импорт.xml", "processor:ExternalDataProcessor.Импорт"),
             (
                 "Импорт/Forms/Основная.xml",
-                "processor:ExternalDataProcessor.Импорт.Form.Основная",
+                "processor:ExternalDataProcessor.Импорт.Form.Основная.Metadata",
             ),
         ] {
             let entry = builder

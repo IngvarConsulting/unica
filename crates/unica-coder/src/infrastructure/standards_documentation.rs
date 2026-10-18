@@ -12,7 +12,9 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 
 use crate::domain::documentation::*;
-use crate::infrastructure::documentation_policy::{DocumentationPolicy, NetworkAccess};
+use crate::infrastructure::documentation_policy::{
+    network_failure, DocumentationPolicy, NetworkAccess,
+};
 use crate::infrastructure::internal_adapters::{HttpClient, StandardsAdapter};
 
 /// Встроенное умолчание endpoint сервера стандартов — то же, что всегда
@@ -183,7 +185,10 @@ impl DocumentationProvider for V8StdDocumentationProvider {
         let body = match self.http.post_json(&self.endpoint, &payload) {
             Ok(body) => body,
             Err(error) => {
-                return Some(Err(format!("сервер стандартов недоступен: {error}")));
+                return Some(Err(network_failure(
+                    "v8std",
+                    format!("сервер стандартов недоступен: {error}"),
+                )));
             }
         };
         let outcome = StandardsAdapter::outcome_from_http_body(
@@ -340,7 +345,10 @@ impl DocumentationProvider for V8StdDocumentationProvider {
                     return vec![self.section(
                         "ru",
                         DocumentationSectionStatus::Failed {
-                            diagnostic: format!("сервер стандартов недоступен: {error}"),
+                            diagnostic: network_failure(
+                                "v8std",
+                                format!("сервер стандартов недоступен: {error}"),
+                            ),
                         },
                         Vec::new(),
                     )];
@@ -1235,11 +1243,28 @@ mod tests {
         assert_eq!(sections.len(), 1);
         match &sections[0].status {
             DocumentationSectionStatus::Failed { diagnostic } => assert!(
-                diagnostic.contains("connection refused"),
+                diagnostic.contains("connection refused")
+                    && diagnostic.contains("[providers.v8std]")
+                    && diagnostic.contains("network = \"deny\""),
                 "диагностика обязана нести причину, получено {diagnostic}"
             ),
             other => panic!("ожидался Failed, получено {other:?}"),
         }
+    }
+
+    #[test]
+    fn v8std_get_transport_failure_names_the_disable_setting() {
+        let (provider, _) = provider(NetworkAccess::Allow, Err("TLS trust failure".to_string()));
+        let error = provider
+            .get("https://v8std.ru/std/702/", "ru", &context())
+            .unwrap()
+            .unwrap_err();
+        assert!(
+            error.contains("TLS trust failure")
+                && error.contains("[providers.v8std]")
+                && error.contains("network = \"deny\""),
+            "{error}"
+        );
     }
 
     #[test]
@@ -1403,6 +1428,42 @@ mod tests {
             other => panic!("ожидался отказ сервера, получено {other:?}"),
         }
         assert!(stand.requests().is_empty());
+    }
+
+    /// Сервер стандартов видит, что пишет ему Unica: `unica/<версия> (docs; …)`,
+    /// а не умолчание HTTP-библиотеки.
+    #[test]
+    fn v8std_requests_name_unica_in_the_user_agent() {
+        let stand =
+            unica_bootstrap::network::test_support::HttpStand::start(LIVE_BODY, "application/json");
+        let provider = V8StdDocumentationProvider {
+            endpoint: stand.url("mcp"),
+            network: NetworkAccess::Allow,
+            http: Arc::new(
+                crate::infrastructure::internal_adapters::NetworkHttpClient::with_client(
+                    unica_bootstrap::network::test_support::client_with(&[]),
+                ),
+            ),
+            cancellation: crate::domain::cancellation::CancellationToken::default(),
+            search_cache_ttl: Duration::from_secs(3600),
+            revalidate_search: false,
+        };
+
+        let sections = provider.search(&request(), &context());
+
+        assert!(
+            matches!(sections[0].status, DocumentationSectionStatus::Ok),
+            "{:?}",
+            sections[0].status
+        );
+        let agents = stand.header("User-Agent");
+        assert!(!agents.is_empty());
+        for agent in agents {
+            assert_eq!(
+                agent,
+                vec![unica_bootstrap::network::DOCS_USER_AGENT.to_owned()]
+            );
+        }
     }
 
     #[test]

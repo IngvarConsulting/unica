@@ -2,8 +2,6 @@
 id: INV.SOURCE.LARGE-CONFIGURATION-ROOT-VIEW
 check:
   - crates/unica-coder/tests/v13_search_integration.rs::canonical_view_reads_configuration_past_eight_mebibytes_with_many_registrations
-  - crates/unica-coder/src/infrastructure/v13_large_configuration.rs::registration_cache_reuses_only_the_same_source_revision
-  - crates/unica-coder/src/infrastructure/daemon/invocation_service.rs::logical_read_reuses_registration_cache_and_isolates_sources_and_invocations
 gap: https://github.com/IngvarConsulting/unica/issues/1119
 ---
 
@@ -12,11 +10,13 @@ gap: https://github.com/IngvarConsulting/unica/issues/1119
 `view` читает `Configuration.xml` через удержанный файл и проверяет его до
 выдачи полного результата. Общий размер этого файла сам по себе не является
 причиной отказа при просмотре корня, ветки метаданных или зарегистрированного
-объекта. В пределах одного чтения запросы к объектам используют общий индекс
-регистраций. Новый вызов читает регистрации заново, без общей ревизии
-набора; неподтверждённая регистрация не становится успешным чтением.
+объекта. Запросы к объектам используют общий индекс регистраций;
+неподтверждённая регистрация не становится успешным чтением.
+[Повторное использование разобранного корня и индекса](configuration-root-cache-reuse.md)
+имеет отдельные условия.
 
 Полная работа с большой конфигурацией ещё не достигнута: отдельный большой
 XML-токен требует памяти пропорционально его длине, чтение дескриптора объекта
 по-прежнему ограничено 8 МиБ, а ветка с большим числом уникальных объектов
-может превысить квоту снимка коллекции. Эти случаи остаются в [#1119](https://github.com/IngvarConsulting/unica/issues/1119).
+может превысить квоту снимка коллекции. Эти случаи остаются в
+[#1119](https://github.com/IngvarConsulting/unica/issues/1119).

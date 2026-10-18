@@ -1,6 +1,6 @@
 use crate::application::ports::{MetadataChildProfile, MetadataTemplateType};
-use crate::application::v13::body_snapshot::BodySnapshot;
 use crate::application::v13::resolve::ResolvedLines;
+use crate::application::v13::source_text::{admit_text, ModuleText};
 use crate::application::v13::view::{ViewError, ViewReadAuthority, ViewSourceSnapshot};
 use crate::domain::address::{AddressSegment, NodeKind, QualifiedAddress};
 use crate::domain::cancellation::CancellationToken;
@@ -10,7 +10,9 @@ use crate::domain::module_projection::{
     CommonModuleProperties, EventProjection, MethodProjection, ModuleProjectionSet,
     RegionProjection,
 };
-use crate::domain::node_view::{BranchRef, CollectionView, NodeView, NodeViewData};
+use crate::domain::node_view::{
+    BranchRef, CollectionView, NodeView, NodeViewData, SourceText, TextView,
+};
 use crate::domain::platform_profile::{
     ModuleCapability, ModuleRole, ModuleSourceLayout, PlatformProfile,
 };
@@ -39,54 +41,15 @@ use crate::infrastructure::platform_xml_owner::PlatformXmlSourceSetOwnerEvidence
 use crate::infrastructure::platform_xml_source_targets::{
     resolve_platform_xml_target, TargetKindPolicy,
 };
-#[cfg(test)]
-use crate::infrastructure::source_revision::SourceRevisionService;
 use crate::infrastructure::v13_large_configuration::{RegistrationCache, RegistrationIndex};
 use crate::infrastructure::v13_read_port::ProviderReadAuthority;
 use serde_json::{json, Map, Value};
-#[cfg(test)]
-use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
-#[cfg(test)]
-thread_local! {
-    static REVIEW_BEFORE_OWNER_PROOF: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
-    static REVIEW_AFTER_CANONICAL_ROLE_READ: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
-}
-
-#[cfg(test)]
-pub(crate) fn review_set_before_owner_proof(hook: impl FnOnce() + 'static) {
-    REVIEW_BEFORE_OWNER_PROOF.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
-}
-
-#[cfg(test)]
-pub(crate) fn review_set_after_canonical_role_read(hook: impl FnOnce() + 'static) {
-    REVIEW_AFTER_CANONICAL_ROLE_READ.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
-}
-
-#[cfg(test)]
-fn review_run_before_owner_proof() {
-    REVIEW_BEFORE_OWNER_PROOF.with(|slot| {
-        if let Some(hook) = slot.borrow_mut().take() {
-            hook();
-        }
-    });
-}
-
-#[cfg(test)]
-fn review_run_after_canonical_role_read() {
-    REVIEW_AFTER_CANONICAL_ROLE_READ.with(|slot| {
-        if let Some(hook) = slot.borrow_mut().take() {
-            hook();
-        }
-    });
-}
-
 const MAX_MODULE_BYTES: usize = 8 * 1024 * 1024;
-/// Hidden v0.13 read adapter. Its revision service is supplied by the
-/// workspace actor that owns the source capability; the adapter never creates
-/// an ambient per-call revision authority.
+/// Logical read adapter over one actor-issued source capability. Its read
+/// identity is fixed at admission; the adapter never snapshots the tree.
 pub(crate) struct LogicalViewReadAuthority<'a> {
     cancellation: &'a CancellationToken,
     read: ProviderReadAuthority,
@@ -94,7 +57,6 @@ pub(crate) struct LogicalViewReadAuthority<'a> {
     deadline: ProviderDeadline,
     module_projections: Mutex<BTreeMap<ModuleProjectionCacheKey, Arc<ModuleProjectionSet>>>,
     configuration_payloads: Mutex<BTreeMap<RevisionCacheKey, Arc<Value>>>,
-    configuration_registrations: Arc<RegistrationCache>,
     verified_owners: Mutex<BTreeSet<OwnerProofCacheKey>>,
     owner_evidence: Mutex<BTreeMap<OwnerProofCacheKey, Arc<PlatformXmlSourceSetOwnerEvidence>>>,
     verified_owner_edges: Mutex<BTreeSet<OwnerEdgeCacheKey>>,
@@ -146,7 +108,6 @@ impl<'a> LogicalViewReadAuthority<'a> {
         source_set: impl Into<String>,
         source_set_identity: impl Into<String>,
         source_set_kind: SourceSetKind,
-        revision_service: Arc<SourceRevisionService>,
         source_root: Arc<RetainedDirectoryCapability>,
         profile: PlatformProfile,
     ) -> Self {
@@ -157,7 +118,6 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 source_set_identity,
                 source_set_kind,
                 source_root,
-                revision_service,
             ),
             profile,
             ProviderDeadline::no_deadline(),
@@ -194,12 +154,11 @@ impl<'a> LogicalViewReadAuthority<'a> {
     ) -> Self {
         Self {
             cancellation,
-            read,
+            read: read.with_artifacts(registration_cache),
             profile,
             deadline,
             module_projections: Mutex::new(BTreeMap::new()),
             configuration_payloads: Mutex::new(BTreeMap::new()),
-            configuration_registrations: registration_cache,
             verified_owners: Mutex::new(BTreeSet::new()),
             owner_evidence: Mutex::new(BTreeMap::new()),
             verified_owner_edges: Mutex::new(BTreeSet::new()),
@@ -332,7 +291,11 @@ impl<'a> LogicalViewReadAuthority<'a> {
     /// Resolve can reuse the typed identity locator only after reading the
     /// exact node. View treats an absent BSL file as empty; a source location
     /// must distinguish that case from an existing empty file.
-    pub(crate) fn existing_export_path(&self, at: &QualifiedAddress) -> Result<String, ViewError> {
+    pub(crate) fn existing_export_path(
+        &self,
+        at: &QualifiedAddress,
+        requested_path: Option<&str>,
+    ) -> Result<String, ViewError> {
         self.read_checkpoint()?;
         let route = route_logical_address(at, self.profile)
             .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
@@ -352,13 +315,31 @@ impl<'a> LogicalViewReadAuthority<'a> {
         let path = self.identity_export_path(at)?.ok_or_else(|| {
             ViewError::new(RefusalCode::NotFound, "the logical node has no source file")
         })?;
+        if route.reader() == LogicalReader::Form {
+            let target = route
+                .reader_metadata_path()
+                .ok_or_else(|| ViewError::new(RefusalCode::NotFound, "form route has no target"))?;
+            if !self.read.form_source_exists(target)? {
+                return Err(ViewError::new(
+                    RefusalCode::NotFound,
+                    "the local Form.xml source file does not exist",
+                ));
+            }
+        }
+        if requested_path.is_some_and(|requested| requested != path) {
+            return Err(ViewError::new(
+                RefusalCode::NotFound,
+                "the requested file is not the logical node's source",
+            ));
+        }
         self.read_checkpoint()?;
         Ok(path)
     }
 
     /// Resolve names the node's kind and its own source lines. In a BSL
     /// module `Method` spans the whole declaration through its closing line,
-    /// and `Body` only the text between them. The module `Body` counts the
+    /// and its `Body` the lines `view` returns as its text: the doc comment
+    /// above the method through the closing line. The module `Body` counts the
     /// file stream like the view fast path, without projecting the module.
     pub(crate) fn source_lines(
         &self,
@@ -421,7 +402,10 @@ impl<'a> LogicalViewReadAuthority<'a> {
                         "the BSL module source file does not exist",
                     )
                 })?;
-            return Ok((NodeKind::Body.as_str().to_string(), line_range(1, count)));
+            return Ok((
+                NodeKind::Body.as_str().to_string(),
+                selected_lines(at, line_range(1, count))?,
+            ));
         }
         let projections = self.module_projection(&module_at, capability, admitted)?;
         let (kind, lines) = if region {
@@ -440,7 +424,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             if method_body {
                 (
                     NodeKind::Body,
-                    line_range(method.body_from_line, method.body_to_line),
+                    line_range(method.text_from_line, method.to_line),
                 )
             } else {
                 (
@@ -450,7 +434,105 @@ impl<'a> LogicalViewReadAuthority<'a> {
             }
         };
         self.read_checkpoint()?;
-        Ok((kind.as_str().to_string(), lines))
+        Ok((kind.as_str().to_string(), selected_lines(at, lines)?))
+    }
+
+    /// Inspect containment and source bytes in one retained projection, with
+    /// one final source identity/cancellation fence for the entire answer.
+    fn with_body_line_projection<T>(
+        &self,
+        module: &QualifiedAddress,
+        from: usize,
+        to: usize,
+        inspect: impl FnOnce(QualifiedAddress, &ModuleProjectionSet) -> T,
+    ) -> Result<T, ViewError> {
+        self.read_checkpoint()?;
+        let admitted = self.snapshot(module)?;
+        let route = route_logical_address(module, self.profile)
+            .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
+        let capability = route.module().ok_or_else(|| {
+            ViewError::new(
+                RefusalCode::BadValue,
+                "search hit does not name a BSL module",
+            )
+        })?;
+        let (module_at, _) = module_prefix(module, self.profile, capability)?;
+        self.verify_module_owner(&module_at, capability, &admitted)?;
+        let projections = self.module_projection(&module_at, capability, &admitted)?;
+        let body = projections
+            .methods()
+            .iter()
+            .filter(|method| from >= method.text_from_line && to <= method.to_line)
+            .min_by_key(|method| method.to_line - method.text_from_line)
+            .map_or_else(
+                || format!("{module_at}.Body"),
+                |method| format!("{}.Body", method.at),
+            );
+        let body = QualifiedAddress::parse(&body)
+            .map_err(|error| ViewError::new(RefusalCode::BadValue, error.to_string()))?;
+        let result = inspect(body, &projections);
+        self.read_checkpoint()?;
+        if self.snapshot(module)? != admitted {
+            return Err(ViewError::new(
+                RefusalCode::ConcurrentChange,
+                "source changed while search hit boundaries were read",
+            ));
+        }
+        Ok(result)
+    }
+
+    /// Resolves semantic containment from the same projection as Method
+    /// views. Provider symbols are never accepted as boundary evidence.
+    pub(crate) fn narrowest_body_for_lines(
+        &self,
+        module: &QualifiedAddress,
+        from: usize,
+        to: usize,
+    ) -> Result<QualifiedAddress, ViewError> {
+        self.with_body_line_projection(module, from, to, |body, _| body)
+    }
+
+    pub(crate) fn module_address_for_source_target(
+        &self,
+        target: &MetadataAddress,
+    ) -> Option<QualifiedAddress> {
+        let path = crate::infrastructure::logical_event_source::module_relative(
+            target,
+            self.read.source_set_kind(),
+        )
+        .ok()?;
+        crate::infrastructure::logical_event_source::module_address_for_relative(
+            self.read.source_set(),
+            self.read.source_set_kind(),
+            self.profile,
+            &path,
+        )
+    }
+
+    pub(crate) fn body_for_search_hit(
+        &self,
+        module: &QualifiedAddress,
+        from: usize,
+        to: usize,
+        snippet: &str,
+    ) -> Result<Option<QualifiedAddress>, ViewError> {
+        self.with_body_line_projection(module, from, to, |body, projection| {
+            let source = projection.source_text();
+            if from == 0 || to < from || to > source.lines().count() {
+                return None;
+            }
+            let start = source
+                .split_inclusive('\n')
+                .take(from - 1)
+                .map(str::len)
+                .sum::<usize>();
+            let end = source
+                .split_inclusive('\n')
+                .take(to)
+                .map(str::len)
+                .sum::<usize>();
+            source[start..end].contains(snippet).then_some(body)
+        })
     }
 
     #[cfg(test)]
@@ -538,6 +620,22 @@ impl<'a> LogicalViewReadAuthority<'a> {
             relative.into(),
         )
         .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
+    }
+
+    pub(crate) fn validate_subsystem(
+        &self,
+        at: &QualifiedAddress,
+    ) -> Result<crate::application::v13::check::NativeCheckOutcome, ViewError> {
+        let admitted = self.snapshot(at)?;
+        let canonical = self.canonical_address(at, &admitted)?;
+        let route = route_logical_address(&canonical, self.profile)
+            .map_err(|error| ViewError::new(RefusalCode::BadValue, error.to_string()))?;
+        let target = route.reader_metadata_path().ok_or_else(|| {
+            ViewError::new(RefusalCode::BadValue, "subsystem check has no descriptor")
+        })?;
+        self.verify_registered_owner(target, &admitted)?;
+        self.read
+            .validate_subsystem(&canonical, &mut || self.read_checkpoint())
     }
 
     /// Proves a DCS template through the same registration and descriptor
@@ -670,8 +768,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
         admitted: &ViewSourceSnapshot,
     ) -> Result<Value, ViewError> {
         if route.reader() == LogicalReader::Configuration {
+            // Корень доказывает только `Configuration.xml`: описание
+            // объекта проверяют прямое чтение и ветка его вида.
             let payload = self.configuration_payload(admitted)?;
-            self.verify_top_level_inventory(payload.as_ref(), admitted)?;
             return Ok(payload.as_ref().clone());
         }
         if route.reader() == LogicalReader::Metadata {
@@ -778,10 +877,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
             return Ok(Arc::clone(payload));
         }
         let mut checkpoint = || self.read_checkpoint();
-        let payload = Arc::new(
-            self.read
-                .configuration_payload_with_checkpoint(&mut checkpoint)?,
-        );
+        let payload = self
+            .read
+            .configuration_payload_with_checkpoint(&mut checkpoint)?;
         cache.insert(key, Arc::clone(&payload));
         Ok(payload)
     }
@@ -791,6 +889,15 @@ impl<'a> LogicalViewReadAuthority<'a> {
         route: &LogicalTreeRoute,
         admitted: &ViewSourceSnapshot,
     ) -> Result<Value, ViewError> {
+        if route.at().form_metadata_owner().is_some() {
+            let target = route.reader_metadata_path().ok_or_else(|| {
+                ViewError::new(RefusalCode::NotFound, "form metadata route has no owner")
+            })?;
+            self.verify_registered_owner(target, admitted)?;
+            return self
+                .read
+                .form_metadata_payload(target, &mut || self.read_checkpoint());
+        }
         if matches!(
             route.at().segments(),
             [owner] if owner.kind() == NodeKind::WebSocketClient && owner.name().is_some()
@@ -986,85 +1093,6 @@ impl<'a> LogicalViewReadAuthority<'a> {
         self.ensure_owner_registered_parts(owner_kind, owner_name, admitted)
     }
 
-    fn verify_top_level_inventory(
-        &self,
-        payload: &Value,
-        admitted: &ViewSourceSnapshot,
-    ) -> Result<(), ViewError> {
-        for item in payload
-            .get("registeredObjects")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            let kind = item.get("kind").and_then(Value::as_str).ok_or_else(|| {
-                ViewError::detailed(
-                    RefusalDetail::SourceUnreadable,
-                    "registered owner has no kind",
-                )
-            })?;
-            let name = item.get("name").and_then(Value::as_str).ok_or_else(|| {
-                ViewError::detailed(
-                    RefusalDetail::SourceUnreadable,
-                    "registered owner has no name",
-                )
-            })?;
-            if kind == NodeKind::WebSocketClient.as_str() {
-                continue;
-            }
-            let owner =
-                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &format!("{kind}.{name}"))
-                    .map_err(|error| {
-                        ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
-                    })?;
-            self.verify_registered_owner(&owner, admitted)?;
-        }
-        Ok(())
-    }
-
-    /// The Configuration root already has registration evidence from the
-    /// streaming owner document. Verify each descriptor directly, without
-    /// rebuilding that full inventory or retaining one cache entry per owner.
-    fn verify_streamed_top_level_owner(&self, kind: &str, name: &str) -> Result<(), ViewError> {
-        if kind == NodeKind::WebSocketClient.as_str() {
-            return Ok(());
-        }
-        self.read_checkpoint()?;
-        #[cfg(test)]
-        review_run_before_owner_proof();
-        let target =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &format!("{kind}.{name}"))
-                .map_err(|error| {
-                    ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
-                })?;
-        let evidence = self
-            .read
-            .metadata_owner_evidence(&target, &mut || self.read_checkpoint())
-            .map_err(|error| {
-                if error.code() == RefusalCode::NotFound {
-                    ViewError::detailed(
-                        RefusalDetail::SourceUnreadable,
-                        format!(
-                            "registered metadata owner `{}` has no descriptor",
-                            target.as_str()
-                        ),
-                    )
-                } else {
-                    error
-                }
-            })?;
-        if evidence.artifact_kind() != kind || evidence.artifact_name() != Some(name) {
-            return Err(ViewError::detailed(
-                RefusalDetail::SourceUnreadable,
-                format!(
-                    "metadata descriptor identity does not match `{}`",
-                    target.as_str()
-                ),
-            ));
-        }
-        Ok(())
-    }
-
     fn ensure_owner_registered_parts(
         &self,
         owner_kind: &str,
@@ -1107,17 +1135,10 @@ impl<'a> LogicalViewReadAuthority<'a> {
 
     fn streamed_configuration_registration_index(
         &self,
-        admitted: &ViewSourceSnapshot,
+        _admitted: &ViewSourceSnapshot,
     ) -> Result<Arc<RegistrationIndex>, ViewError> {
-        self.configuration_registrations.get_or_build(
-            &admitted.source_set_identity,
-            &admitted.revision,
-            &|| self.read_checkpoint(),
-            || {
-                self.read
-                    .streamed_configuration_registration_index(&|| self.read_checkpoint())
-            },
-        )
+        self.read
+            .streamed_configuration_registration_index(&|| self.read_checkpoint())
     }
 
     fn module_view(
@@ -1314,8 +1335,6 @@ impl<'a> LogicalViewReadAuthority<'a> {
         target: &MetadataAddress,
         admitted: &ViewSourceSnapshot,
     ) -> Result<(), ViewError> {
-        #[cfg(test)]
-        review_run_before_owner_proof();
         self.verify_registered_owner(target, admitted)
     }
 
@@ -1591,11 +1610,11 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         LogicalViewReadAuthority::read_checkpoint(self)
     }
 
-    fn read_body_disk(
+    fn read_module_text(
         &self,
         at: &QualifiedAddress,
         admitted: &ViewSourceSnapshot,
-    ) -> Result<Option<BodySnapshot>, ViewError> {
+    ) -> Result<Option<ModuleText>, ViewError> {
         let route = route_logical_address(at, self.profile)
             .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
         if route.reader() != LogicalReader::Module {
@@ -1626,10 +1645,15 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
             ));
         }
         let target = module_source_address(&module_at, capability)?;
-        let body = self
-            .read
-            .module_body_snapshot(&target, || self.read_checkpoint())?;
-        Ok(Some(body))
+        let text = match at.line_range() {
+            Some(range) => self
+                .read
+                .module_text_range(&target, range, || self.read_checkpoint())?,
+            None => self
+                .read
+                .module_text_within_limit(&target, || self.read_checkpoint())?,
+        };
+        Ok(Some(text))
     }
 
     fn snapshot(&self, at: &QualifiedAddress) -> Result<ViewSourceSnapshot, ViewError> {
@@ -1673,8 +1697,6 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         }
         let payload = self.typed_payload_for(&route, admitted)?;
         let projected = project_typed_payload(&route, payload)?;
-        #[cfg(test)]
-        review_run_after_canonical_role_read();
         if admitted.revision != self.exact_revision()? {
             return Err(ViewError::new(
                 RefusalCode::StaleCursor,
@@ -1733,7 +1755,7 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         let target_depth = target.as_str().split('.').count().div_ceil(2);
         let is_detail = at.segments().len() > target_depth;
         let path = match route.reader() {
-            LogicalReader::Form if is_detail => self
+            LogicalReader::Form => self
                 .read
                 .attached_resource_export_path(target, "Form.xml")?,
             LogicalReader::Role if is_detail => self
@@ -1749,7 +1771,6 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                 .read
                 .attached_resource_export_path(target, "Package.bin")?,
             LogicalReader::Metadata
-            | LogicalReader::Form
             | LogicalReader::Role
             | LogicalReader::Subsystem
             | LogicalReader::Xdto => self.read.metadata_descriptor_export_path(target)?,
@@ -1794,9 +1815,7 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         {
             let streamed = self
                 .read
-                .streamed_configuration_root(&|| self.read_checkpoint(), |kind, name| {
-                    self.verify_streamed_top_level_owner(kind, name)
-                })?;
+                .streamed_configuration_root(&|| self.read_checkpoint())?;
             crate::infrastructure::v13_read_projection::project_configuration_with_counts(
                 route.at(),
                 &streamed.payload,
@@ -1889,6 +1908,17 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
             projected
         } else {
             self.with_module_branch(projected, at, admitted)?
+        };
+        let projected = if route.reader() == LogicalReader::Form
+            && route.reader_metadata_path().is_some_and(|target| {
+                at.segments().len() == target.as_str().split('.').count().div_ceil(2)
+            }) {
+            projected.with_branch(crate::domain::node_view::BranchRef::new(
+                format!("{at}.Metadata"),
+                1,
+            ))
+        } else {
+            projected
         };
         self.read_checkpoint()?;
         if admitted.revision != self.exact_revision()? {
@@ -2053,34 +2083,7 @@ impl LogicalViewReadAuthority<'_> {
                 let payload = self
                     .read
                     .dcs_payload(child, &mut || self.read_checkpoint())?;
-                vec![
-                    (
-                        NodeKind::DataSet,
-                        payload
-                            .get("dataSets")
-                            .and_then(Value::as_array)
-                            .map_or(0, Vec::len),
-                    ),
-                    (
-                        NodeKind::Setting,
-                        payload
-                            .get("variants")
-                            .and_then(Value::as_array)
-                            .map_or(0, Vec::len),
-                    ),
-                    (
-                        NodeKind::Item,
-                        ["dataSources", "links"]
-                            .iter()
-                            .map(|key| {
-                                payload
-                                    .get(*key)
-                                    .and_then(Value::as_array)
-                                    .map_or(0, Vec::len)
-                            })
-                            .sum(),
-                    ),
-                ]
+                crate::infrastructure::v13_read_projection::dcs_template_branches(&payload)
             }
             Ok(MetadataChildProfile::Template(MetadataTemplateType::SpreadsheetDocument)) => {
                 let payload = self
@@ -2598,7 +2601,7 @@ fn module_projection_view_data(
         let branches = summary
             .branches
             .iter()
-            .map(|branch| BranchRef::new(&branch.at, branch.count))
+            .map(|branch| BranchRef::new(&branch.at, branch.count).with_bytes(branch.bytes))
             .collect();
         return Ok(NodeViewData::Node(
             NodeView::new(&summary.at, summary.kind, &summary.title, props).with_branches(branches),
@@ -2642,15 +2645,11 @@ fn module_projection_view_data(
             if detail.name().is_none() && detail.kind() == NodeKind::Body =>
         {
             let method = find_method(projections, name)?;
-            let items = projections
-                .body()
-                .iter()
-                .filter(|line| {
-                    line.line >= method.body_from_line && line.line <= method.body_to_line
-                })
-                .map(|line| json!({"line": line.line, "text": line.text}))
-                .collect();
-            module_collection(requested, NodeKind::Body, items)
+            module_text(
+                requested,
+                projections.method_text(method),
+                method.text_from_line,
+            )
         }
         (NodeKind::Method, Some(name), Some(detail))
             if detail.name().is_none() && detail.kind() == NodeKind::Compilation =>
@@ -2681,6 +2680,9 @@ fn module_projection_view_data(
                 .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
             Ok(NodeViewData::Node(region_node(requested, region)))
         }
+        // Срез `Public`/`Library`/`Override` — элемент без адреса: у
+        // `Interface` нет имени, и `…Interface.Public` грамматика отвергает.
+        // Адресуются методы среза (#1467).
         (NodeKind::Interface, None, None) => module_collection(
             requested,
             NodeKind::Interface,
@@ -2688,40 +2690,16 @@ fn module_projection_view_data(
                 .interfaces()
                 .iter()
                 .map(|interface| {
-                    node_value(
-                        &interface.at,
-                        NodeKind::Interface,
-                        interface.interface.as_str(),
-                        Map::from_iter([
-                            ("interface".to_string(), json!(interface.interface)),
-                            ("methods".to_string(), json!(interface.methods)),
-                        ]),
-                        Vec::new(),
-                    )
+                    json!({
+                        "kind": NodeKind::Interface.as_str(),
+                        "name": interface.interface.as_str(),
+                        "addressable": false,
+                        "interface": interface.interface,
+                        "methods": interface.methods,
+                    })
                 })
                 .collect(),
         ),
-        (NodeKind::Interface, Some(name), None) => projections
-            .interfaces()
-            .iter()
-            .find(|interface| interface.interface.as_str() == name)
-            .map(|interface| {
-                NodeViewData::Node(NodeView::new(
-                    &interface.at,
-                    NodeKind::Interface.as_str(),
-                    name,
-                    Map::from_iter([
-                        ("interface".to_string(), json!(interface.interface)),
-                        ("methods".to_string(), json!(interface.methods)),
-                    ]),
-                ))
-            })
-            .ok_or_else(|| {
-                ViewError::new(
-                    RefusalCode::NotFound,
-                    format!("interface `{name}` was not found"),
-                )
-            }),
         (NodeKind::Event, None, None) => module_collection(
             requested,
             NodeKind::Event,
@@ -2748,18 +2726,86 @@ fn module_projection_view_data(
                 .map(|range| serde_json::to_value(range).unwrap_or(Value::Null))
                 .collect(),
         ),
-        (NodeKind::Body, None, None) => module_collection(
-            requested,
-            NodeKind::Body,
-            projections
-                .body()
-                .iter()
-                .map(|line| json!({"line": line.line, "text": line.text}))
-                .collect(),
-        ),
+        (NodeKind::Body, None, None) => module_text(requested, projections.source_text(), 1),
         _ => Err(ViewError::new(
             RefusalCode::NotFound,
             "module projection suffix is not available",
+        )),
+    }
+}
+
+/// Узел `Body` с текстом; предел проверяет тот, кто отдаёт сам текст.
+fn module_text(
+    requested: &QualifiedAddress,
+    text: &str,
+    first_line: usize,
+) -> Result<NodeViewData, ViewError> {
+    let count = text.lines().count();
+    let (from, to) = requested.line_range().map_or(
+        (first_line, first_line + count.saturating_sub(1)),
+        |range| (range.from, range.to),
+    );
+    let text = if let Some(range) = requested.line_range() {
+        selected_lines(
+            requested,
+            line_range(first_line, first_line + count.saturating_sub(1)),
+        )?;
+        let start = range.from - first_line;
+        let end = range.to - first_line;
+        let mut offset = 0;
+        let mut first = 0;
+        let mut last = 0;
+        for (line, fragment) in text.split_inclusive('\n').enumerate() {
+            if line == start {
+                first = offset;
+            }
+            offset += fragment.len();
+            if line == end {
+                last = offset;
+                break;
+            }
+        }
+        &text[first..last]
+    } else {
+        text
+    };
+    let text = if admit_text(text).is_ok() {
+        SourceText::Whole(text.to_string())
+    } else {
+        SourceText::Oversized {
+            bytes: text.len() as u64,
+            prefix: crate::application::v13::source_text::complete_prefix(text).to_string(),
+        }
+    };
+    Ok(NodeViewData::Text(TextView::new(
+        NodeView::new(
+            requested.to_string(),
+            NodeKind::Body.as_str(),
+            NodeKind::Body.as_str(),
+            Map::new(),
+        ),
+        SourceText::Window {
+            text: Box::new(text),
+            from,
+            to,
+        },
+    )))
+}
+
+fn selected_lines(at: &QualifiedAddress, full: ResolvedLines) -> Result<ResolvedLines, ViewError> {
+    let Some(range) = at.line_range() else {
+        return Ok(full);
+    };
+    match full {
+        ResolvedLines::Range { from, to } if range.from >= from && range.to <= to => {
+            Ok(ResolvedLines::Range {
+                from: range.from,
+                to: range.to,
+            })
+        }
+        _ => Err(ViewError::new(
+            RefusalCode::BadValue,
+            "Body line selector is outside this Body; use absolute file lines within its bounds",
         )),
     }
 }
@@ -2810,11 +2856,11 @@ fn method_node(method: &MethodProjection) -> NodeView {
         ("methodKind".to_string(), json!(method.method_kind)),
         ("export".to_string(), json!(method.export)),
         ("compile".to_string(), json!(method.compile)),
-        // Область уже называет свои строки; метод называет их теперь тоже.
-        // Это не физическая раскладка, а координата внутри модуля — той же
-        // природы, что пары `{line, text}` у тела.
-        ("line".to_string(), json!(method.body_from_line)),
-        ("endLine".to_string(), json!(method.body_to_line)),
+        // Область называет свои строки; метод называет строки своего текста
+        // `Body` — от документирующего комментария до строки окончания.
+        // Это координата внутри модуля, а не физическая раскладка.
+        ("line".to_string(), json!(method.text_from_line)),
+        ("endLine".to_string(), json!(method.to_line)),
     ]);
     if let Some(doc) = &method.doc {
         props.insert("doc".to_string(), json!(doc));
@@ -2830,14 +2876,7 @@ fn method_node(method: &MethodProjection) -> NodeView {
             format!("{}.Compilation", method.at),
             method.compilation_count,
         ),
-        BranchRef::new(
-            format!("{}.Body", method.at),
-            if method.body_to_line < method.body_from_line {
-                0
-            } else {
-                method.body_to_line - method.body_from_line + 1
-            },
-        ),
+        BranchRef::new(format!("{}.Body", method.at), method.text_line_count()),
     ])
 }
 

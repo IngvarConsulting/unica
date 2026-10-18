@@ -1,0 +1,225 @@
+{
+  "id": "S-1507-nested-subsystem-check",
+  "name": "check-validates-the-selected-nested-subsystem",
+  "issue": 1507,
+  "area": "Подсистемы",
+  "task": "Проверить выбранную вложенную подсистему на трёх уровнях, обнаружить ошибку её дескриптора и отказать отсутствующей или незарегистрированной цели без подмены родителем.",
+  "workspace": "tests/fixtures/acceptance/workspace-nested-check",
+  "wire": [
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:Subsystem"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "readable",
+      "validators": []
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.Parent"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:Subsystem.Parent"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/status",
+          "eq": "passed"
+        },
+        {
+          "pointer": "/data/at",
+          "eq": "main:Subsystem.Parent"
+        },
+        {
+          "pointer": "/data/validators",
+          "eq": [
+            "subsystem"
+          ]
+        }
+      ],
+      "status": "passed",
+      "validators": [
+        "subsystem"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.Parent.Subsystem.Child"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:Subsystem.Parent.Subsystem.Child"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/status",
+          "eq": "passed"
+        },
+        {
+          "pointer": "/data/at",
+          "eq": "main:Subsystem.Parent.Subsystem.Child"
+        },
+        {
+          "pointer": "/data/validators",
+          "eq": [
+            "subsystem"
+          ]
+        }
+      ],
+      "status": "passed",
+      "validators": [
+        "subsystem"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.Parent.Subsystem.Child.Subsystem.Grandchild"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:Subsystem.Parent.Subsystem.Child.Subsystem.Grandchild"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/status",
+          "eq": "passed"
+        },
+        {
+          "pointer": "/data/at",
+          "eq": "main:Subsystem.Parent.Subsystem.Child.Subsystem.Grandchild"
+        },
+        {
+          "pointer": "/data/validators",
+          "eq": [
+            "subsystem"
+          ]
+        }
+      ],
+      "status": "passed",
+      "validators": [
+        "subsystem"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.Parent.Subsystem.Broken"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:Subsystem.Parent.Subsystem.Broken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/status",
+          "eq": "failed"
+        },
+        {
+          "pointer": "/data/at",
+          "eq": "main:Subsystem.Parent.Subsystem.Broken"
+        },
+        {
+          "pointer": "/data/validators",
+          "eq": [
+            "subsystem"
+          ]
+        },
+        {
+          "pointer": "/data/diagnostics/0/message",
+          "contains": "IncludeHelpInContents"
+        }
+      ],
+      "status": "failed",
+      "validators": [
+        "subsystem"
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:Subsystem.Parent.Subsystem.Absent"
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        }
+      ],
+      "refusal": "not_found: subsystem `Absent` is not registered in `Subsystems/Parent.xml`"
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:Subsystem.Parent.Subsystem.Ghost"
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        }
+      ],
+      "refusal": "not_found: subsystem `Ghost` is not registered in `Subsystems/Parent.xml`"
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:Subsystem.Parent.Subsystem.Missing"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: subsystem descriptor `Subsystems/Parent/Subsystems/Missing.xml` is absent",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        }
+      ]
+    }
+  ]
+}

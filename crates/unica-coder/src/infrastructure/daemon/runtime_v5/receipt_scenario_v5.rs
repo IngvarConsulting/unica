@@ -1941,6 +1941,51 @@ fn run_task_retirement_case(
         pending = Some(committed);
     }
     let pending = pending.expect("terminal retirement always has Pending");
+    let old_authorization_reuse = initial_authorization
+        .as_ref()
+        .map(|old| -> Result<Value, String> {
+            let receipts_before = recovered_runtime.receipt_ledger.snapshot_catalog(deadline())
+                .map_err(|error| format!("snapshot receipts before stale authorization: {error}"))?;
+            let task_before = recovered_runtime.task_projection.task_store
+                .get(key.reserved_task_id(), provider_deadline());
+            let link_before = recovered_runtime.task_projection.lifecycle_links
+                .read_by_task_id(key.reserved_task_id(), provider_deadline());
+            let reason = match recovered_runtime.task_projection.delete_terminal_authorized(
+                old, clock.now_epoch_millis(), deadline(),
+            ) {
+                Err(super::V5TaskProjectionFailure {
+                    error: ReceiptLedgerError::Corrupt("stale or malformed process retirement capability"),
+                    ..
+                }) => "stale_process_capability",
+                Err(failure) => return Err(format!("unexpected stale authorization refusal: {}", failure.error)),
+                Ok(_) => return Err("old process retirement authorization was accepted".to_owned()),
+            };
+            let receipts_after = recovered_runtime.receipt_ledger.snapshot_catalog(deadline())
+                .map_err(|error| format!("snapshot receipts after stale authorization: {error}"))?;
+            let task_after = recovered_runtime.task_projection.task_store
+                .get(key.reserved_task_id(), provider_deadline());
+            let link_after = recovered_runtime.task_projection.lifecycle_links
+                .read_by_task_id(key.reserved_task_id(), provider_deadline());
+            if receipts_before != receipts_after || task_before != task_after || link_before != link_after {
+                return Err("stale authorization changed retained state".to_owned());
+            }
+            let version = |record: &Result<V5StoredInvocationRecord, V5TaskStoreError>| -> Result<u64, String> {
+                match record {
+                    Ok(record) => Ok(record.version),
+                    Err(V5TaskStoreError::NotFound { .. }) => Ok(0),
+                    Err(error) => Err(format!("read stale authorization target: {error}")),
+                }
+            };
+            Ok(json!({
+                "presentedFingerprint": old.authorization_fingerprint,
+                "receiptStoreMutationsBefore": receipts_before.generation(),
+                "receiptStoreMutationsAfter": receipts_after.generation(),
+                "taskStoreMutationsBefore": version(&task_before)?,
+                "taskStoreMutationsAfter": version(&task_after)?,
+                "reason": reason,
+            }))
+        }).transpose()?;
+
     let recovered_authorization = recovered_runtime
         .task_projection
         .authorize_task_retirement(&pending, deadline())
@@ -1950,23 +1995,6 @@ fn run_task_retirement_case(
         &mut event_sequence,
         "existing_pending_authorized",
     );
-
-    let old_authorization_reuse = initial_authorization.as_ref().map(|old| {
-        let receipt_before = after_crash["receiptStoreMutations"].as_u64().unwrap_or(0);
-        let task_before = after_crash["taskStoreMutations"].as_u64().unwrap_or(0);
-        let _ = recovered_runtime
-            .task_projection
-            .delete_terminal_authorized(old, clock.now_epoch_millis(), deadline());
-        json!({
-            "presentedFingerprint": old.authorization_fingerprint,
-            "rejectedSequence": recovered_authorization.issued_sequence.saturating_add(1),
-            "receiptStoreMutationsBefore": receipt_before,
-            "receiptStoreMutationsAfter": receipt_before,
-            "taskStoreMutationsBefore": task_before,
-            "taskStoreMutationsAfter": task_before,
-            "reason": "stale_process_capability",
-        })
-    });
 
     let source_record = super::terminal_record_from_retirement_pending(&pending);
     let source_evidence = artifact_evidence(

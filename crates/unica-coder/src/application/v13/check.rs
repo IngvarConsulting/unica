@@ -283,6 +283,18 @@ pub(crate) struct NodeFacts {
     /// `Form.xml`, `Template.xml`): its content is the parent's, and there is
     /// nothing in this source set for the companion validator to read.
     pub(crate) inherited: bool,
+    /// The node's owners are subsystems only (`main:Subsystem.A.Interface`):
+    /// only there `Interface` is a command interface. The same kind under a
+    /// module (`main:CommonModule.X.Interface`) is a slice of its methods
+    /// (#1467).
+    pub(crate) subsystem_owned: bool,
+    /// The node lies inside a template (`…Template.T.Area.A.Body`): its
+    /// `Body` is template data, not module code.
+    pub(crate) in_template: bool,
+    /// The last address segment carries a name. A metadata kind or `Module`
+    /// without one is a branch listing its members (`main:Catalog`,
+    /// `…Items.Module`), not one descriptor or one module (#1467).
+    pub(crate) named: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -320,6 +332,13 @@ pub(crate) fn plan_for_node(kind: &str, facts: NodeFacts) -> Vec<CheckStep> {
         // валидатор файла прав, формы или макета проверял бы содержимое
         // родителя, которого в этом наборе нет.
         "Role" | "Form" | "Template" if facts.inherited => Vec::new(),
+        // Срезы `Interface` модуля — проекция его методов, а не командный
+        // интерфейс подсистемы; как и метод, они читаются без своего шага:
+        // код модуля проверяет шаг `bsl` на самом модуле (#1467).
+        "Interface" if !facts.subsystem_owned => Vec::new(),
+        // Ветвь, перечисляющая модули, и тело области макета — не код модуля.
+        "Module" if !facts.named => Vec::new(),
+        "Body" if facts.in_template => Vec::new(),
         "Configuration" if facts.extension => vec![CheckStep::Native(CheckValidator::Cfe)],
         "Configuration" => vec![CheckStep::Native(CheckValidator::Cf)],
         "Form" => vec![CheckStep::Native(CheckValidator::Form)],
@@ -335,13 +354,13 @@ pub(crate) fn plan_for_node(kind: &str, facts: NodeFacts) -> Vec<CheckStep> {
         // The typed metadata validator reads object descriptors only; roles
         // and subsystems keep their own validators.
         "Role" => vec![CheckStep::Native(CheckValidator::Role)],
-        "Subsystem" => vec![CheckStep::Native(CheckValidator::Subsystem)],
+        "Subsystem" if facts.named => vec![CheckStep::Native(CheckValidator::Subsystem)],
         "Interface" | "CommandInterface" => vec![CheckStep::Native(CheckValidator::Interface)],
         // Узел с кодом проверяется анализатором BSL. Прежде план у него был
         // пуст, и `check` отвечал «читается» — то есть молчал о находках,
         // ради которых его и зовут.
         "Module" | "Body" => vec![CheckStep::Bsl],
-        other if crate::domain::metadata::MetadataKind::parse(other).is_ok() => {
+        other if facts.named && crate::domain::metadata::MetadataKind::parse(other).is_ok() => {
             vec![CheckStep::Meta]
         }
         _ => Vec::new(),
@@ -720,8 +739,26 @@ mod tests {
     }
 
     #[test]
+    fn form_metadata_checks_readability_without_selecting_a_content_or_owner_validator() {
+        for extension in [false, true] {
+            let facts = NodeFacts {
+                named: true,
+                extension,
+                ..NodeFacts::default()
+            };
+            assert!(plan_for_node("Metadata", facts).is_empty());
+            let at = QualifiedAddress::parse("main:CommonForm.Main.Metadata").unwrap();
+            assert_eq!(CheckValidator::for_unread_address(&at, extension), None);
+        }
+    }
+
+    #[test]
     fn every_node_kind_owns_its_validators_without_a_caller_choice() {
-        let plain = NodeFacts::default();
+        let plain = NodeFacts {
+            named: true,
+            subsystem_owned: true,
+            ..NodeFacts::default()
+        };
         assert_eq!(
             plan_for_node("Configuration", plain),
             [CheckStep::Native(CheckValidator::Cf)]
@@ -801,10 +838,62 @@ mod tests {
         // `check` отвечал «читается», молча пропуская находки, ради которых
         // его и зовут.
         assert_eq!(plan_for_node("Module", plain), [CheckStep::Bsl]);
-        assert_eq!(plan_for_node("Body", plain), [CheckStep::Bsl]);
+        assert_eq!(
+            plan_for_node(
+                "Body",
+                NodeFacts {
+                    named: false,
+                    ..plain
+                }
+            ),
+            [CheckStep::Bsl]
+        );
+        // Ветвь модулей (`…Items.Module`) и тело области макета
+        // (`…Area.A.Body`) — не код модуля: анализатору нечего читать.
+        assert!(plan_for_node(
+            "Module",
+            NodeFacts {
+                named: false,
+                ..plain
+            }
+        )
+        .is_empty());
+        assert!(plan_for_node(
+            "Body",
+            NodeFacts {
+                named: false,
+                in_template: true,
+                ..plain
+            }
+        )
+        .is_empty());
+        // Ветвь вида метаданных (`main:Catalog`) — не один дескриптор.
+        for kind in ["Catalog", "Subsystem"] {
+            assert!(plan_for_node(
+                kind,
+                NodeFacts {
+                    named: false,
+                    ..plain
+                }
+            )
+            .is_empty());
+        }
         // Метод разбирается не отдельно: анализатор читает модуль целиком, и
         // отдельный шаг на методе поднимал бы инструмент дважды на один файл.
         assert!(plan_for_node("Method", plain).is_empty());
+        // Ветвь `Interface` модуля — не командный интерфейс подсистемы.
+        assert_eq!(
+            plan_for_node("Interface", plain),
+            [CheckStep::Native(CheckValidator::Interface)]
+        );
+        assert!(plan_for_node(
+            "Interface",
+            NodeFacts {
+                subsystem_owned: false,
+                ..plain
+            }
+        )
+        .is_empty());
     }
 
     #[test]

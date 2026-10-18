@@ -1,0 +1,402 @@
+{
+  "id": "S-1468-support-can",
+  "name": "support-can-contracts-preview-without-source-writes",
+  "issue": 1468,
+  "area": "Поддержка поставщика",
+  "task": "Прочитать закрытые контракты supportCapability.set и supportRule.set для конфигурации, объекта и его формы, построить предпросмотры непосредственно по exampleArgs без записи и отвергнуть неоднозначные, неизвестные и нетипизированные аргументы.",
+  "workspace": "tests/fixtures/acceptance/workspace-support-form",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration.Can.supportCapability.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Can"
+        },
+        {
+          "pointer": "/data/props/op",
+          "eq": "supportCapability.set"
+        },
+        {
+          "pointer": "/data/props/implemented",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/additionalProperties",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/contract/exampleArgs/at",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "args0": {
+          "pointer": "/data/props/contract/exampleArgs"
+        },
+        "beforeSupport": {
+          "file": "src/Ext/ParentConfigurations.bin",
+          "kind": "sha256"
+        },
+        "beforeCatalog": {
+          "file": "src/Catalogs/Items.xml",
+          "kind": "sha256"
+        },
+        "beforeForm": {
+          "file": "src/Catalogs/Items/Forms/Main.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "supportCapability.set",
+            "args": "$capture.args0"
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Ext/ParentConfigurations.bin",
+          "kind": "sha256",
+          "eq": "$capture.beforeSupport"
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.beforeCatalog"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.beforeForm"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/executionToken",
+          "notEq": null
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        }
+      ],
+      "captures": {
+        "preview0Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Can.supportRule.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Can"
+        },
+        {
+          "pointer": "/data/props/op",
+          "eq": "supportRule.set"
+        },
+        {
+          "pointer": "/data/props/implemented",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/additionalProperties",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/contract/exampleArgs/at",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "args1": {
+          "pointer": "/data/props/contract/exampleArgs"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items",
+        "ops": [
+          {
+            "op": "supportRule.set",
+            "args": "$capture.args1"
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Ext/ParentConfigurations.bin",
+          "kind": "sha256",
+          "eq": "$capture.beforeSupport"
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.beforeCatalog"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.beforeForm"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/executionToken",
+          "notEq": null
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        }
+      ],
+      "captures": {
+        "preview1Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Form.Main.Can.supportRule.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Can"
+        },
+        {
+          "pointer": "/data/props/op",
+          "eq": "supportRule.set"
+        },
+        {
+          "pointer": "/data/props/implemented",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/additionalProperties",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/contract/exampleArgs/at",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "args2": {
+          "pointer": "/data/props/contract/exampleArgs"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Form.Main",
+        "ops": [
+          {
+            "op": "supportRule.set",
+            "args": "$capture.args2"
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Ext/ParentConfigurations.bin",
+          "kind": "sha256",
+          "eq": "$capture.beforeSupport"
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.beforeCatalog"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.beforeForm"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/executionToken",
+          "notEq": null
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        }
+      ],
+      "captures": {
+        "preview2Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "supportCapability.set",
+            "args": {
+              "values": {
+                "enabled": true,
+                "rule": "on"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: one of the supported argument alternatives must match",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Ext/ParentConfigurations.bin",
+          "kind": "sha256",
+          "eq": "$capture.beforeSupport"
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.beforeCatalog"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.beforeForm"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "supportCapability.set",
+            "args": {
+              "values": {
+                "enabled": true
+              },
+              "ignored": true
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: unknown argument",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Ext/ParentConfigurations.bin",
+          "kind": "sha256",
+          "eq": "$capture.beforeSupport"
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.beforeCatalog"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.beforeForm"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items",
+        "ops": [
+          {
+            "op": "supportRule.set",
+            "args": {
+              "values": [
+                "editable"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: expected \"object\"",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Ext/ParentConfigurations.bin",
+          "kind": "sha256",
+          "eq": "$capture.beforeSupport"
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.beforeCatalog"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.beforeForm"
+        }
+      ]
+    }
+  ]
+}

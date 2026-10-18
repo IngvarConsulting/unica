@@ -14,18 +14,14 @@ use crate::domain::invocation::{DomainResult, InvocationFailure, SafeIdentityHas
 use crate::domain::project_sources::{
     ProjectSourceSet, SourceFormat, SourceProfile, SourceSetKind,
 };
-use crate::domain::refusal::{RefusalCode, RefusalDetail};
+use crate::domain::refusal::RefusalCode;
 use crate::infrastructure::logical_event_source::module_address_for_relative;
 use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
 use crate::infrastructure::runtime_jobs::{RuntimeJobService, RuntimeResourceOwner};
 use crate::infrastructure::source_selection_evidence::discover_project_source_admission;
 use crate::infrastructure::source_selection_evidence::SourceSelectionEvidenceErrorKind;
-use crate::infrastructure::v13_large_configuration::{
-    read_configuration_registration_index, RegistrationCache, RegistrationIndex,
-};
+use crate::infrastructure::v13_large_configuration::{RegistrationCache, RegistrationIndex};
 use crate::infrastructure::workspace::discover_workspace;
-#[cfg(test)]
-use crate::infrastructure::workspace_actor::WorkspaceRevisionFence;
 use crate::infrastructure::workspace_actor::{
     ApplyAdmission, ApplyAdmissionError, IndexWorkIdentity, ProviderRootBinding, WorkspaceActor,
     WorkspaceActorRegistry, WorkspaceActorRegistryError, WorkspaceSourceSetInput,
@@ -80,8 +76,6 @@ impl LiteralSearchScan {
 struct SearchHitOwners<'a> {
     root: &'a RetainedDirectoryCapability,
     source_kind: SourceSetKind,
-    identity: &'a str,
-    revision: &'a str,
     cache: &'a RegistrationCache,
     index: Option<Option<Arc<RegistrationIndex>>>,
     owners: std::collections::BTreeMap<(&'static str, String), bool>,
@@ -91,15 +85,11 @@ impl<'a> SearchHitOwners<'a> {
     fn new(
         root: &'a RetainedDirectoryCapability,
         source_kind: SourceSetKind,
-        identity: &'a str,
-        revision: &'a str,
         cache: &'a RegistrationCache,
     ) -> Self {
         Self {
             root,
             source_kind,
-            identity,
-            revision,
             cache,
             index: None,
             owners: std::collections::BTreeMap::new(),
@@ -140,22 +130,7 @@ impl<'a> SearchHitOwners<'a> {
         checkpoint()?;
         let proved = if configuration {
             if self.index.is_none() {
-                let root = self.root;
-                let built =
-                    self.cache
-                        .get_or_build(self.identity, self.revision, checkpoint, || {
-                            let file = root
-                                .open_relative_regular_nofollow(std::path::Path::new(
-                                    "Configuration.xml",
-                                ))
-                                .map_err(|error| {
-                                    ViewError::detailed(
-                                        RefusalDetail::SourceUnreadable,
-                                        error.to_string(),
-                                    )
-                                })?;
-                            read_configuration_registration_index(file, checkpoint)
-                        });
+                let built = self.cache.registrations(self.root, checkpoint);
                 self.index = Some(match built {
                     Ok(index) => Some(index),
                     Err(error) if interrupted(&error) => return Err(error),
@@ -376,13 +351,8 @@ impl ActorReadSourceCapability {
                 Ok(())
             }
         };
-        let mut owners = SearchHitOwners::new(
-            &root,
-            self.binding.source_kind(),
-            &self.identity,
-            &self.read_identity,
-            &self.registration_cache,
-        );
+        let mut owners =
+            SearchHitOwners::new(&root, self.binding.source_kind(), &self.registration_cache);
         let mut stack = vec![(start_relative, start_directory, 0_usize)];
         let mut visited_entries = 0_usize;
         let mut scan = LiteralSearchScan::complete();
@@ -632,13 +602,12 @@ impl ActorReadSourceCapability {
 pub(super) fn actor_read_source_capability_for_test(
     binding: ProviderRootBinding,
     identity: String,
-    fence: crate::infrastructure::workspace_actor::WorkspaceLogicalReadFence,
     deadline: ProviderDeadline,
 ) -> ActorReadSourceCapability {
     ActorReadSourceCapability {
         binding,
         identity,
-        read_identity: fence.revision().revision_identity(),
+        read_identity: uuid::Uuid::new_v4().to_string(),
         deadline,
         registration_cache: Arc::new(RegistrationCache::default()),
     }
@@ -863,12 +832,14 @@ impl ActorBoundInvocation {
                 }
                 let sources = selected
                     .into_iter()
-                    .map(|source| ActorLogicalReadSourceLease {
-                        binding: source.binding.clone(),
-                        read_identity: uuid::Uuid::new_v4().to_string(),
-                        registration_cache: Arc::new(RegistrationCache::default()),
+                    .map(|source| {
+                        Ok(ActorLogicalReadSourceLease {
+                            binding: source.binding.clone(),
+                            read_identity: uuid::Uuid::new_v4().to_string(),
+                            registration_cache: self.actor.source_artifacts(&source.binding)?,
+                        })
                     })
-                    .collect();
+                    .collect::<Result<Vec<_>, String>>()?;
                 ActorExecutionRevision::LogicalRead(ActorLogicalReadLease {
                     deadline: logical_deadline,
                     sources,
@@ -935,9 +906,6 @@ pub(crate) struct ActorBoundExecution {
 }
 
 enum ActorExecutionRevision {
-    #[cfg(test)]
-    #[allow(dead_code)]
-    Legacy(WorkspaceRevisionFence),
     LogicalRead(ActorLogicalReadLease),
     /// `find` reads the physical layout of the admitted roots and answers a
     /// directory of addresses and paths. A directory is not a snapshot, so it
@@ -980,6 +948,55 @@ impl ActorBoundExecution {
         self.invocation.actor.context()
     }
 
+    fn original_body_line_targets(&self) -> Vec<QualifiedAddress> {
+        let names = self.admitted_source_set_names();
+        let mut arguments = self.arguments().clone();
+        // The canonical Apply preparation parses a preview before creating a
+        // saved plan; use that same parser and address resolution here.
+        arguments.insert("dryRun".into(), serde_json::Value::Bool(true));
+        let Ok(request) = ApplyRequest::parse(&arguments, &names) else {
+            return Vec::new();
+        };
+        std::iter::once(request.at())
+            .chain(request.ops().iter().map(|op| op.at()))
+            .filter(|at| at.line_range().is_some())
+            .cloned()
+            .collect()
+    }
+
+    /// Only a refusal of the original ranged Apply call may inspect its
+    /// admitted source. It cannot acquire mutation admission or publish edits.
+    pub(in crate::infrastructure::daemon) fn apply_range_refusal_source(
+        &self,
+        at: &QualifiedAddress,
+    ) -> Result<ActorReadSourceCapability, String> {
+        let ActorExecutionRevision::UnpublishedApply(confirmed) = &self.revision else {
+            return Err("range-refusal reads require an unpublished apply invocation".into());
+        };
+        if confirmed.load(std::sync::atomic::Ordering::Acquire)
+            || at.line_range().is_none()
+            || !self.original_body_line_targets().contains(at)
+        {
+            return Err(
+                "range-refusal read must name an original read-only Body range before mutation"
+                    .into(),
+            );
+        }
+        let binding = &self
+            .invocation
+            .read_sources
+            .iter()
+            .find(|source| source.binding.source_set_name() == at.source_set())
+            .ok_or_else(|| "range-refusal source was not admitted".to_string())?
+            .binding;
+        let source = ActorLogicalReadSourceLease {
+            binding: binding.clone(),
+            read_identity: uuid::Uuid::new_v4().to_string(),
+            registration_cache: self.invocation.actor.source_artifacts(binding)?,
+        };
+        self.issue_read_source(&source, ProviderDeadline::no_deadline())
+    }
+
     pub(in crate::infrastructure::daemon) fn admit_apply(
         &self,
         request: &ApplyRequest,
@@ -988,6 +1005,15 @@ impl ActorBoundExecution {
         if !matches!(self.revision, ActorExecutionRevision::UnpublishedApply(_)) {
             return Err(ApplyAdmissionError::Other(
                 "apply admission belongs to a non-apply invocation".to_string(),
+            ));
+        }
+        if !self.original_body_line_targets().is_empty()
+            || std::iter::once(request.at())
+                .chain(request.ops().iter().map(|op| op.at()))
+                .any(|at| at.line_range().is_some())
+        {
+            return Err(ApplyAdmissionError::Other(
+                "Body line ranges cannot acquire apply admission".into(),
             ));
         }
         let binding = self
@@ -1131,20 +1157,7 @@ impl ActorBoundExecution {
             .sources
             .iter()
             .chain(parents.iter())
-            .map(|source| {
-                self.invocation.actor.validate_binding(&source.binding)?;
-                Ok(ActorReadSourceCapability {
-                    binding: source.binding.clone(),
-                    identity: format!(
-                        "{}:{}",
-                        self.invocation.workspace_identity_hash.as_str(),
-                        source.binding.source_set_name()
-                    ),
-                    read_identity: source.read_identity.clone(),
-                    deadline: lease.deadline,
-                    registration_cache: Arc::clone(&source.registration_cache),
-                })
-            })
+            .map(|source| self.issue_read_source(source, lease.deadline))
             .collect()
     }
 
@@ -1188,10 +1201,7 @@ impl ActorBoundExecution {
                         || uuid::Uuid::new_v4().to_string(),
                         |parent| parent.read_identity.clone(),
                     ),
-                    registration_cache: existing.map_or_else(
-                        || Arc::new(RegistrationCache::default()),
-                        |parent| Arc::clone(&parent.registration_cache),
-                    ),
+                    registration_cache: self.invocation.actor.source_artifacts(&source.binding)?,
                 });
             }
         }
@@ -1221,6 +1231,48 @@ impl ActorBoundExecution {
                 })
             })
             .collect()
+    }
+
+    /// Повышает до типизированного читателя только кандидата раскладки,
+    /// выбранного resolve(path). Владельцем удерживаемого корня и артефактов
+    /// остаётся актор.
+    pub(in crate::infrastructure::daemon) fn layout_read_source(
+        &self,
+        name: &str,
+    ) -> Result<ActorReadSourceCapability, String> {
+        let ActorExecutionRevision::LayoutRead(lease) = &self.revision else {
+            return Err("typed layout reads require a layout invocation".into());
+        };
+        let binding = lease
+            .bindings
+            .iter()
+            .find(|binding| binding.source_set_name() == name)
+            .ok_or_else(|| "the selected layout source was not admitted".to_string())?;
+        let source = ActorLogicalReadSourceLease {
+            binding: binding.clone(),
+            read_identity: uuid::Uuid::new_v4().to_string(),
+            registration_cache: self.invocation.actor.source_artifacts(binding)?,
+        };
+        self.issue_read_source(&source, lease.deadline)
+    }
+
+    fn issue_read_source(
+        &self,
+        source: &ActorLogicalReadSourceLease,
+        read_deadline: ProviderDeadline,
+    ) -> Result<ActorReadSourceCapability, String> {
+        self.invocation.actor.validate_binding(&source.binding)?;
+        Ok(ActorReadSourceCapability {
+            binding: source.binding.clone(),
+            identity: format!(
+                "{}:{}",
+                self.invocation.workspace_identity_hash.as_str(),
+                source.binding.source_set_name()
+            ),
+            read_identity: source.read_identity.clone(),
+            deadline: read_deadline,
+            registration_cache: Arc::clone(&source.registration_cache),
+        })
     }
 
     pub(crate) fn rejected_logical_read_result(&self) -> Option<DomainResult> {
@@ -1310,24 +1362,18 @@ impl ActorBoundExecution {
         self.invocation.provider_root_for_test()
     }
 
-    #[cfg(test)]
-    pub(super) fn mark_source_revision_dirty_for_test(&self) {
-        self.invocation.actor.mark_source_revisions_dirty();
-    }
-
     pub(super) fn publish(
         self,
         staged: Result<DomainResult, InvocationFailure>,
         cancellation: &CancellationToken,
     ) -> Result<Result<DomainResult, InvocationFailure>, ExecutionBoundaryError> {
+        let range_refusal_targets =
+            if matches!(self.revision, ActorExecutionRevision::UnpublishedApply(_)) {
+                self.original_body_line_targets()
+            } else {
+                Vec::new()
+            };
         match self.revision {
-            #[cfg(test)]
-            ActorExecutionRevision::Legacy(revision) => self
-                .invocation
-                .actor
-                .begin_publication(&revision, ProviderDeadline::no_deadline(), cancellation)?
-                .publish(staged, ProviderDeadline::no_deadline(), cancellation)
-                .map_err(ExecutionBoundaryError::from),
             // A layout directory publishes no revision state: `find` neither
             // captures a lease nor confirms one, so its result stands as read.
             ActorExecutionRevision::LayoutRead(lease) => {
@@ -1427,21 +1473,40 @@ impl ActorBoundExecution {
                 if confirmed.load(std::sync::atomic::Ordering::Acquire) {
                     return Ok(staged);
                 }
-                let dry_run = self
-                    .invocation
-                    .arguments
-                    .get("dryRun")
-                    .and_then(serde_json::Value::as_bool)
-                    == Some(true);
-                let requires_actor_publication = match &staged {
-                    Ok(result) => {
-                        let closed_dry_run_result = dry_run
-                            && result.ok
-                            && result.changed.is_empty()
-                            && result.rev.is_none();
-                        !closed_dry_run_result
-                            && (result.ok || !result.changed.is_empty() || result.rev.is_some())
+                // A range refusal may have read its original source to name
+                // a containing method. Fence that advisory at publication,
+                // just as a logical read, without admitting any mutation.
+                if !range_refusal_targets.is_empty() {
+                    for source_set in range_refusal_targets
+                        .iter()
+                        .map(QualifiedAddress::source_set)
+                        .collect::<std::collections::BTreeSet<_>>()
+                    {
+                        let binding = self
+                            .invocation
+                            .read_sources
+                            .iter()
+                            .find(|source| source.binding.source_set_name() == source_set)
+                            .ok_or_else(|| {
+                                ExecutionBoundaryError::Internal(
+                                    "range-refusal source was not admitted".into(),
+                                )
+                            })?;
+                        self.invocation
+                            .actor
+                            .validate_binding(&binding.binding)
+                            .map_err(ExecutionBoundaryError::binding_changed)?;
                     }
+                    if cancellation.is_cancelled() {
+                        return Ok(Ok(DomainResult::canonical_rejection(None, RefusalCode::Cancelled, "Body range refusal was cancelled before publishing its source advisory.")));
+                    }
+                }
+                // `dryRun` и `ifRev` отклоняются до привязки к актору
+                // (`validate_hidden_v13_request`), поэтому отдельного
+                // закрытого предпросмотра здесь не бывает: любой успех,
+                // изменение или ревизия требуют публикации актором.
+                let requires_actor_publication = match &staged {
+                    Ok(result) => result.ok || !result.changed.is_empty() || result.rev.is_some(),
                     Err(_) => false,
                 };
                 if requires_actor_publication {
@@ -1766,6 +1831,9 @@ fn bind_workspace_invocation_controlled(
                     stage: "the actor registry rejected the workspace identity",
                 })
             }
+            WorkspaceActorRegistryError::NamedRootUnavailable => {
+                unadmitted(UnadmittedCause::ActorRootUnavailable)
+            }
             WorkspaceActorRegistryError::Poisoned => WorkspaceAdmissionError::RegistryFailed,
         })?;
     after_actor_admission(&mut admitted_sources);
@@ -1877,6 +1945,8 @@ pub(super) enum UnadmittedCause {
     },
     /// Наборы отобраны, но актор их не связал.
     ActorBindingFailed { stage: &'static str },
+    /// Повторное открытие имени корня временно не подтвердило его идентичность.
+    ActorRootUnavailable,
 }
 
 /// Test control of the workspace admission walk: a test can hold the walk at
@@ -1978,31 +2048,35 @@ mod registration_cache_tests {
     use super::*;
     use crate::application::invocation_store::ToolIdentity;
     use crate::application::ports::TokioClock;
-    use crate::infrastructure::v13_large_configuration::{
-        read_configuration_registration_index, RegistrationIndex,
-    };
-    use std::cell::Cell;
-    use std::path::Path;
+    use crate::application::result_store::ViewCursorStore;
+    use crate::application::v13::view::{ViewRequest, ViewService};
+    use crate::infrastructure::v13_large_configuration::RegistrationIndex;
 
-    fn registrations(
-        source: &ActorReadSourceCapability,
-        path: &Path,
-        builds: &Cell<usize>,
-    ) -> Arc<RegistrationIndex> {
+    fn registrations(source: &ActorReadSourceCapability) -> Arc<RegistrationIndex> {
         source
             .registration_cache
-            .get_or_build(&source.identity, &source.read_identity, &|| Ok(()), || {
-                builds.set(builds.get() + 1);
-                read_configuration_registration_index(
-                    std::fs::File::open(path).unwrap(),
-                    &|| Ok(()),
-                )
-            })
+            .registrations(&source.retained_root(), &|| Ok(()))
             .unwrap()
     }
 
+    /// Parses of `Configuration.xml` and of the support marker one
+    /// `view <set>:Configuration` performs through a fresh capability.
+    fn root_view_parses(source: &ActorReadSourceCapability) -> (bool, usize, usize) {
+        let cancellation = CancellationToken::new();
+        let authority = source.logical_view_read_authority(&cancellation).unwrap();
+        let service = ViewService::new(authority, ViewCursorStore::default());
+        let at = format!("{}:Configuration", source.source_set_name());
+        let result = service.view(ViewRequest::new(&at).unwrap());
+        let authority = service.authority_for_test();
+        (
+            result.ok,
+            authority.configuration_payload_read_count(),
+            authority.support_state_read_count(),
+        )
+    }
+
     #[test]
-    fn logical_read_reuses_registration_cache_and_isolates_sources_and_invocations() {
+    fn logical_read_retains_root_artifacts_across_calls_and_isolates_sources() {
         let workspace = tempfile::tempdir().unwrap();
         let xml = |name: &str| {
             format!(
@@ -2041,21 +2115,16 @@ mod registration_cache_tests {
             )
             .unwrap()
         };
+        // Let the stamps leave the timestamp-granularity window, as files
+        // of a real workspace have, so the actor may retain what it parsed.
+        std::thread::sleep(std::time::Duration::from_millis(2_100));
         let cancellation = CancellationToken::new();
         let execution = bind().begin_execution(&cancellation).unwrap();
         let first = execution.read_sources().unwrap().remove(0);
-        let again = execution.read_sources().unwrap().remove(0);
-        assert!(
-            Arc::ptr_eq(&first.registration_cache, &again.registration_cache),
-            "reacquiring capabilities must retain the source lease's registration index"
-        );
-        let builds = Cell::new(0);
-        let path = workspace.path().join("ext/Configuration.xml");
-        let index = registrations(&first, &path, &builds);
-        let reused = registrations(&again, &path, &builds);
-        assert!(Arc::ptr_eq(&index, &reused));
-        assert_eq!(builds.get(), 1, "one lease parses Configuration.xml once");
+        let index = registrations(&first);
+        assert_eq!(root_view_parses(&first), (true, 1, 0));
 
+        // Sources stay isolated: the parent set has its own retained artifacts.
         execution
             .admit_borrowing_parent_sources(&cancellation)
             .unwrap();
@@ -2069,33 +2138,57 @@ mod registration_cache_tests {
             &first.registration_cache,
             &parent.registration_cache
         ));
-        execution
-            .admit_borrowing_parent_sources(&cancellation)
-            .unwrap();
-        let parent_again = execution
+
+        // A later call reuses what the actor retained while no file changed.
+        let next = bind()
+            .begin_execution(&cancellation)
+            .unwrap()
             .read_sources()
             .unwrap()
-            .into_iter()
-            .find(|source| source.source_set_name() == "parent")
-            .unwrap();
-        assert!(
-            Arc::ptr_eq(&parent.registration_cache, &parent_again.registration_cache),
-            "repeated parent admission must preserve its existing read lease"
-        );
-        assert_eq!(parent.read_identity, parent_again.read_identity);
-
-        std::fs::write(&path, xml("Later")).unwrap();
-        let next_execution = bind().begin_execution(&cancellation).unwrap();
-        let next = next_execution.read_sources().unwrap().remove(0);
-        assert!(!Arc::ptr_eq(
+            .remove(0);
+        assert!(Arc::ptr_eq(
             &first.registration_cache,
             &next.registration_cache
         ));
         assert_ne!(first.read_identity, next.read_identity);
-        let fresh = registrations(&next, &path, &builds);
-        assert_eq!(builds.get(), 2);
+        assert!(Arc::ptr_eq(&index, &registrations(&next)));
+        assert_eq!(first.registration_cache.registration_builds_for_test(), 1);
+        assert_eq!(root_view_parses(&next), (true, 0, 0));
+
+        // A changed support marker is read again by the next call.
+        let marker = workspace.path().join("ext/Ext/ParentConfigurations.bin");
+        std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+                "../../tests/fixtures/platform_8_3_27/support-edit-bin-only/src/Ext/ParentConfigurations.bin",
+            ),
+            &marker,
+        )
+        .unwrap();
+        // Let the stamps leave the timestamp-granularity window, as files
+        // of a real workspace have, so the actor may retain what it parsed.
+        std::thread::sleep(std::time::Duration::from_millis(2_100));
+        let after_marker = bind()
+            .begin_execution(&cancellation)
+            .unwrap()
+            .read_sources()
+            .unwrap()
+            .remove(0);
+        assert_eq!(root_view_parses(&after_marker), (true, 1, 1));
+
+        // A changed Configuration.xml is never served from the old index.
+        std::fs::write(workspace.path().join("ext/Configuration.xml"), xml("Later")).unwrap();
+        let after_edit = bind()
+            .begin_execution(&cancellation)
+            .unwrap()
+            .read_sources()
+            .unwrap()
+            .remove(0);
+        let fresh = registrations(&after_edit);
+        assert_eq!(first.registration_cache.registration_builds_for_test(), 2);
         assert!(fresh.contains("Catalog", "Later", &|| Ok(())).unwrap());
         assert!(!fresh.contains("Catalog", "First", &|| Ok(())).unwrap());
+        assert_eq!(root_view_parses(&after_edit), (true, 1, 0));
     }
 }
 
@@ -2113,5 +2206,313 @@ mod search_line_tests {
         assert_eq!(error.kind(), ErrorKind::FileTooLarge);
         assert!(error.to_string().contains("source line exceeds"));
         assert!(line.len() <= 8);
+    }
+}
+
+#[cfg(test)]
+mod body_range_refusal_tests {
+    use super::*;
+    use crate::application::invocation_store::ToolIdentity;
+    use crate::application::ports::TokioClock;
+    use crate::infrastructure::daemon::protocol::InvocationRequest;
+    use serde_json::json;
+
+    fn workspace() -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/acceptance/workspace-resolve");
+        for name in [
+            "v8project.yaml",
+            "src/Configuration.xml",
+            "src/CommonModules/Probe.xml",
+            "src/CommonModules/Probe/Ext/Module.bsl",
+        ] {
+            let to = root.path().join(name);
+            std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+            std::fs::copy(fixture.join(name), to).unwrap();
+        }
+        root
+    }
+
+    fn prepared(
+        root: &std::path::Path,
+        tool: ToolIdentity,
+        args: serde_json::Value,
+    ) -> ActorBoundExecution {
+        let request = InvocationRequest::new(
+            tool,
+            args,
+            std::fs::canonicalize(root).unwrap().to_string_lossy(),
+            7000,
+        )
+        .unwrap();
+        bind_workspace_invocation(
+            &request,
+            &WorkspaceActorRegistry::default(),
+            Arc::default(),
+            Arc::default(),
+            Arc::default(),
+            None,
+            InvocationResponseDeadline::capture(Arc::new(TokioClock)),
+        )
+        .unwrap()
+        .begin_execution(&CancellationToken::new())
+        .unwrap()
+    }
+
+    fn args(top: &str, target: Option<&str>) -> serde_json::Value {
+        let mut args = json!({"text":"Возврат;"});
+        if let Some(target) = target {
+            args["at"] = json!(target);
+        }
+        json!({"at":top,"ops":[{"op":"code.replace","args":args}]})
+    }
+
+    #[test]
+    fn body_range_refusal_capability_is_closed_to_the_original_unpublished_call() {
+        let root = workspace();
+        let ranged = QualifiedAddress::parse("main:CommonModule.Probe.Body#L4").unwrap();
+        let whole = "main:CommonModule.Probe.Body";
+        for arguments in [
+            args(&ranged.to_string(), Some(whole)),
+            args("main:CommonModule.Probe", Some(&ranged.to_string())),
+        ] {
+            let execution = prepared(root.path(), ToolIdentity::Apply, arguments);
+            assert!(matches!(
+                execution.revision,
+                ActorExecutionRevision::UnpublishedApply(_)
+            ));
+            let source = execution.apply_range_refusal_source(&ranged).unwrap();
+            assert_eq!(source.source_set_name(), "main");
+            assert!(source.deadline().remaining().is_none());
+            let cancellation = CancellationToken::new();
+            let authority = source.logical_view_read_authority(&cancellation).unwrap();
+            assert_eq!(
+                authority
+                    .narrowest_body_for_lines(&ranged, 4, 4)
+                    .unwrap()
+                    .to_string(),
+                "main:CommonModule.Probe.Method.Ping.Body"
+            );
+            assert!(execution
+                .apply_range_refusal_source(
+                    &QualifiedAddress::parse("main:CommonModule.Probe.Body#L5").unwrap()
+                )
+                .is_err());
+            assert!(execution
+                .apply_range_refusal_source(
+                    &QualifiedAddress::parse("foreign:CommonModule.Probe.Body#L4").unwrap()
+                )
+                .is_err());
+            assert!(execution
+                .apply_range_refusal_source(&ranged.without_line_range())
+                .is_err());
+            let request = ApplyRequest::parse(&json!({"at":whole,"ops":[{"op":"code.replace","args":{"text":"Возврат;"}}],"dryRun":true}).as_object().unwrap().clone(), &["main"]).unwrap();
+            test_control::take_apply_deadlines();
+            assert!(
+                execution.admit_apply(&request, &cancellation).is_err(),
+                "an op override cannot turn the original ranged call into mutation admission"
+            );
+            assert!(test_control::take_apply_deadlines().is_empty());
+            let ActorExecutionRevision::UnpublishedApply(confirmed) = &execution.revision else {
+                unreachable!();
+            };
+            confirmed.store(true, std::sync::atomic::Ordering::Release);
+            assert!(execution.apply_range_refusal_source(&ranged).is_err());
+        }
+        let ordinary = prepared(root.path(), ToolIdentity::Apply, args(whole, None));
+        assert!(
+            ordinary.apply_range_refusal_source(&ranged).is_err(),
+            "an ordinary apply cannot fabricate a ranged sibling target"
+        );
+        let mut parsed = args(whole, Some(&ranged.to_string()))
+            .as_object()
+            .unwrap()
+            .clone();
+        parsed.insert("dryRun".into(), json!(true));
+        let parsed = ApplyRequest::parse(&parsed, &["main"]).unwrap();
+        assert!(
+            ordinary
+                .admit_apply(&parsed, &CancellationToken::new())
+                .is_err(),
+            "a ranged parsed operation cannot acquire mutation admission"
+        );
+        assert!(test_control::take_apply_deadlines().is_empty());
+        let read = prepared(
+            root.path(),
+            ToolIdentity::View,
+            json!({"at":ranged.to_string()}),
+        );
+        assert!(read.apply_range_refusal_source(&ranged).is_err());
+    }
+
+    #[test]
+    fn body_range_refusal_capability_rejects_foreign_actor_and_preserves_profile() {
+        use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
+        use crate::infrastructure::workspace_actor::{
+            WorkspaceActorRegistry, WorkspaceSourceSetInput,
+        };
+        let root = workspace();
+        let other = workspace();
+        let ranged = QualifiedAddress::parse("main:CommonModule.Probe.Body#L4").unwrap();
+        let mut execution = prepared(
+            root.path(),
+            ToolIdentity::Apply,
+            args(&ranged.to_string(), None),
+        );
+        let foreign = prepared(
+            other.path(),
+            ToolIdentity::Apply,
+            args(&ranged.to_string(), None),
+        );
+        execution.invocation.read_sources = vec![ActorReadSourceBinding {
+            binding: foreign.invocation.read_sources[0].binding.clone(),
+        }]
+        .into();
+        assert!(execution.apply_range_refusal_source(&ranged).is_err());
+        let mut execution = prepared(
+            root.path(),
+            ToolIdentity::Apply,
+            args(&ranged.to_string(), None),
+        );
+        let source = root.path().join("src");
+        let actor = WorkspaceActorRegistry::default()
+            .get_or_create(
+                execution.workspace_context(),
+                [WorkspaceSourceSetInput::new(
+                    "main",
+                    &source,
+                    SourceSetKind::Configuration,
+                    SourceFormat::PlatformXml,
+                    SourceProfile::TestPlatform8_3_28Format2_20,
+                )],
+                "canonical-v0.13",
+            )
+            .unwrap();
+        execution.invocation.read_sources = vec![ActorReadSourceBinding {
+            binding: actor.bind_provider_root("main", &source).unwrap(),
+        }]
+        .into();
+        execution.invocation.actor = actor;
+        let capability = execution.apply_range_refusal_source(&ranged).unwrap();
+        assert!(
+            capability
+                .logical_view_read_authority(&CancellationToken::new())
+                .is_err(),
+            "an unsupported bound profile stays unsupported"
+        );
+    }
+
+    #[test]
+    fn body_range_refusal_read_preserves_cancellation_and_rejects_replaced_root() {
+        use crate::infrastructure::platform::testing::{
+            attempt_retained_directory_replacement_for_test, RetainedDirectoryReplacementOutcome,
+        };
+        let root = workspace();
+        let ranged = QualifiedAddress::parse("main:CommonModule.Probe.Body#L4").unwrap();
+        let execution = prepared(
+            root.path(),
+            ToolIdentity::Apply,
+            args(&ranged.to_string(), None),
+        );
+        let capability = execution.apply_range_refusal_source(&ranged).unwrap();
+        let cancellation = CancellationToken::new();
+        let authority = capability
+            .logical_view_read_authority(&cancellation)
+            .unwrap();
+        cancellation.cancel();
+        assert_eq!(
+            authority
+                .narrowest_body_for_lines(&ranged, 4, 4)
+                .unwrap_err()
+                .code(),
+            RefusalCode::Cancelled
+        );
+        let cancellation = CancellationToken::new();
+        let authority = capability
+            .logical_view_read_authority(&cancellation)
+            .unwrap();
+        let source = root.path().join("src");
+        match attempt_retained_directory_replacement_for_test(&source, &root.path().join("old-src"))
+            .unwrap()
+        {
+            RetainedDirectoryReplacementOutcome::Replaced => {
+                assert!(execution.apply_range_refusal_source(&ranged).is_err());
+                assert!(authority.narrowest_body_for_lines(&ranged, 4, 4).is_err());
+            }
+            _ => { /* This platform prevents replacement while the root is retained. */ }
+        }
+    }
+
+    #[test]
+    fn body_range_refusal_publication_rechecks_cancellation_after_advisory_read() {
+        let root = workspace();
+        let ranged = QualifiedAddress::parse("main:CommonModule.Probe.Body#L4").unwrap();
+        let execution = prepared(
+            root.path(),
+            ToolIdentity::Apply,
+            args(&ranged.to_string(), None),
+        );
+        let cancellation = CancellationToken::new();
+        let source = execution.apply_range_refusal_source(&ranged).unwrap();
+        let authority = source.logical_view_read_authority(&cancellation).unwrap();
+        let body = authority.narrowest_body_for_lines(&ranged, 4, 4).unwrap();
+        drop(authority);
+        drop(source);
+        let mut refusal = DomainResult::canonical_rejection(
+            Some(ranged.to_string()),
+            RefusalCode::BadValue,
+            "Body ranges are read-only",
+        );
+        refusal.next.push(json!({"tool":"unica.view","args":{"at":body.prefix(body.segments().len()-1).to_string()}}));
+        cancellation.cancel();
+        let result = execution
+            .publish(Ok(refusal), &cancellation)
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.diagnostics[0]["code"], "cancelled", "an advisory obtained before cancellation cannot bypass the publication fence: {result:?}");
+        assert!(result.next.is_empty());
+    }
+
+    #[test]
+    fn body_range_refusal_publication_rechecks_root_after_advisory_read() {
+        use crate::infrastructure::platform::testing::{
+            attempt_retained_directory_replacement_for_test, RetainedDirectoryReplacementOutcome,
+        };
+        let root = workspace();
+        let ranged = QualifiedAddress::parse("main:CommonModule.Probe.Body#L4").unwrap();
+        let execution = prepared(
+            root.path(),
+            ToolIdentity::Apply,
+            args(&ranged.to_string(), None),
+        );
+        let cancellation = CancellationToken::new();
+        let source = execution.apply_range_refusal_source(&ranged).unwrap();
+        let authority = source.logical_view_read_authority(&cancellation).unwrap();
+        let body = authority.narrowest_body_for_lines(&ranged, 4, 4).unwrap();
+        drop(authority);
+        drop(source);
+        let mut refusal = DomainResult::canonical_rejection(
+            Some(ranged.to_string()),
+            RefusalCode::BadValue,
+            "Body ranges are read-only",
+        );
+        refusal.next.push(json!({"tool":"unica.view","args":{"at":body.prefix(body.segments().len()-1).to_string()}}));
+        if matches!(
+            attempt_retained_directory_replacement_for_test(
+                &root.path().join("src"),
+                &root.path().join("old-src")
+            )
+            .unwrap(),
+            RetainedDirectoryReplacementOutcome::Replaced
+        ) {
+            assert!(
+                matches!(
+                    execution.publish(Ok(refusal), &cancellation),
+                    Err(super::ExecutionBoundaryError::BindingChanged(_))
+                ),
+                "a retained-source advisory must not publish after its named root was replaced"
+            );
+        }
     }
 }

@@ -2,6 +2,7 @@
 id: INV.WIRE.ADMISSION-NAMES-ITS-CAUSE
 check:
   - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_admission_names_why_no_source_set_was_admitted
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::saved_apply_token_survives_temporary_named_root_validation_failure
 gap: https://github.com/IngvarConsulting/unica/issues/970
 ---
 

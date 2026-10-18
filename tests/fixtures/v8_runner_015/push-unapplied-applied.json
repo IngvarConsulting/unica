@@ -1,0 +1,29 @@
+{
+  "ok": true,
+  "command": "push",
+  "duration_ms": 14364,
+  "data": {
+    "provider": {
+      "selected": "ibcmd",
+      "origin": {
+        "kind": "override",
+        "file": "v8project.yaml"
+      }
+    },
+    "ok": true,
+    "provider_dispatched": true,
+    "steps": [
+      {
+        "source_set": "main",
+        "mode": "skipped",
+        "ok": true,
+        "applied": true,
+        "message": "no changes; applied the configuration loaded earlier without apply",
+        "duration_ms": 14343
+      }
+    ],
+    "duration_ms": 14364
+  },
+  "warnings": [],
+  "steps": []
+}

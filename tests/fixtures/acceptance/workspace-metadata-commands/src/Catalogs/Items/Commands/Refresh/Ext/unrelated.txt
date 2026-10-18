@@ -1,0 +1,2 @@
+﻿Unrelated neighboring payload.
+Preserve these bytes in place.

@@ -41,8 +41,9 @@ A form module holds client and server code in one file, and the directive on eac
 2. Inspect the form with `unica.view` on the form node for the declared events, parameters, and items, and `unica.view` on the object node for the object behind it.
 3. Read the existing module with `unica.view` on the module node (its `Method` branch lists the methods) before adding to it.
 4. Count the server calls the change adds on the path of a single user action. If it adds one, name the reason.
-5. Declare any new form parameter through `unica.apply` (`formAttribute.add`) before reading it in the module.
+5. Declare any new form attribute through `unica.apply` (`attribute.add` at the form address) before reading it in the module. A form parameter is not an attribute and has no `unica.apply` operation yet: name that gap instead of adding an attribute in its place.
 6. Apply module changes with `unica.apply`, one verifiable step at a time, giving every new procedure exactly one directive.
+   A handler is wired at the event's own address from the `Event` branch of the form or its item, `…Form.<Form>[.Item.<Item>…].Event.<Event>`: `event.implement` writes the binding and the procedure, `event.bind` writes only the binding with `values: {handler[, callType]}`. The event and its item are named by the address, not by arguments.
 7. Verify statically with `unica.check` on the module node (test runs are outside the v0.13 surface), and require separate evidence for runtime behavior and opening the affected form.
 
 ## Command Availability
@@ -81,12 +82,12 @@ source bridge, which permits opening a file outside Unica:
 
 The returned `path` is relative to the selected source-set root, which need not
 be the workspace root. Confirm the root and format in the project configuration.
-In a Designer dump it may identify the descriptor
-`Catalogs/Номенклатура/Forms/ФормаЭлемента.xml`; the item tree lives beside it
-in `ФормаЭлемента/Ext/Form.xml`. Check that this file exists and has a `Form`
-root in the `http://v8.1c.ru/8.3/xcf/logform` namespace. A `MetaDataObject`
-descriptor does not contain the complete form tree. Do not assume this layout
-for EDT or other formats without evidence.
+In a Designer dump the form address identifies its `…/Ext/Form.xml`, whose
+root is `Form` in the `http://v8.1c.ru/8.3/xcf/logform` namespace. The separate
+`….Metadata` address identifies its XML descriptor (UUID, name, synonym and
+metadata properties); `….Module.Form` identifies its BSL module. This also
+applies to common forms, for example `main:CommonForm.ВыборПериода.Metadata`.
+Do not assume this layout for EDT or other formats without evidence.
 
 Read the form content with `Read` and collect every element whose `CommandName`
 exactly matches the command, accounting for the XML namespace. Traverse the whole XML, including `AutoCommandBar`,

@@ -1,6 +1,7 @@
 ---
 id: INV.SOURCE.SUPPORT-SEPARATE-APPLY
-check: []
+check:
+  - crates/unica-coder/src/infrastructure/native_operations/apply_families/mod.rs::support_and_ordinary_edits_require_separate_batches_under_every_policy
 gap: https://github.com/IngvarConsulting/unica/issues/942
 ---
 

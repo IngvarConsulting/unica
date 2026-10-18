@@ -1,6 +1,7 @@
 ---
 id: INV.SOURCE.INCOMPLETE-METADATA-READ
 check:
+  - crates/unica-coder/src/infrastructure/native_operations/meta/form_metadata.rs::form_use_purposes_preserves_absence_empty_and_malformed_observations
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::specialized_relation_limits_distinguish_absence_empty_and_damage
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::missing_relation_preserves_known_targets_and_reports_incompleteness
   - crates/unica-coder/src/infrastructure/native_operations/meta/info_tests.rs::missing_write_mode_does_not_claim_complete_registrar_evidence

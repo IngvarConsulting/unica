@@ -68,7 +68,8 @@ pub(crate) use hooks::{
     V5RuntimeHooks, V5Stage, V5StoreFaultPoint,
 };
 use joining::{
-    tool_is_joinable, HolderCancel, JoinHolder, JoinRegistry, ReceiptHandles, SubmitFences,
+    tool_is_joinable, HolderCancel, HolderProjection, HolderReplyContext, HolderReplyProjection,
+    JoinHolder, JoinRegistry, ReceiptHandles, SubmitFences,
 };
 #[cfg(feature = "receipt-ledger-test-support")]
 mod receipt_scenario_v5;
@@ -121,6 +122,8 @@ pub(crate) struct V5ReceiptRuntime {
     // joins and releases its store before named authority is released. A
     // fail-stopped runtime is retained until process death instead.
     receipt_ledger: ReceiptLedgerActor,
+    #[cfg(test)]
+    receipt_owner_identity_for_test: crate::infrastructure::platform::filesystem::FileIdentity,
     _stable_authority: ReceiptAuthorityLock,
     epoch_clock: Arc<dyn EpochMillisClock>,
     invocation_executor: V5InvocationExecutor,
@@ -2665,6 +2668,8 @@ impl V5ReceiptRuntime {
         let recovery_keys = receipt_ledger
             .recovery_keys(None)
             .map_err(|error| format!("inspect protocol-v5 receipt recovery catalog: {error}"))?;
+        #[cfg(test)]
+        let receipt_owner_identity_for_test = receipt_ledger.ownership_file_identity_for_test();
         let receipt_ledger = spawn_receipt_ledger_actor(receipt_ledger);
         let startup_deadline = Instant::now() + STARTUP_RECONCILIATION_TIMEOUT;
         let task_projection =
@@ -2674,6 +2679,8 @@ impl V5ReceiptRuntime {
             core_identity: config.core_identity.clone(),
             _stable_authority: stable_authority,
             receipt_ledger,
+            #[cfg(test)]
+            receipt_owner_identity_for_test,
             epoch_clock,
             invocation_executor: {
                 #[cfg(test)]
@@ -3386,34 +3393,46 @@ impl V5ReceiptRuntime {
         epoch_ms: u64,
         deadline: Instant,
     ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
+        let before = self.joins.capture_reply(key.reserved_task_id());
+        let reply = self.cancel_invocation_canonical(key, epoch_ms, deadline)?;
+        self.project_holder_reply(&before, reply, deadline)
+    }
+
+    fn cancel_invocation_canonical(
+        &self,
+        key: ReceiptKey,
+        epoch_ms: u64,
+        deadline: Instant,
+    ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
         self.validate_receipt_key(&key)?;
         let task_id = key.reserved_task_id();
-        // A joined call is cancelled as its holder, never through the ledger:
-        // an exact key it never reserved must not become a cancel row.
-        if let Some(alias) = self.joins.alias(task_id) {
-            if !alias.holder.matches(&key) {
+        // Match the full live holder context before changing its interest.
+        // Joined calls reserve no ledger row of their own.
+        let holder_context = self.joins.read_context(task_id);
+        if let Some(read) = &holder_context {
+            if !read.holder.matches(&key) {
                 return Err(ReceiptLedgerError::InvocationIdentityMismatch);
             }
-            let snapshot = self.cancel_task(task_id, deadline)?;
-            return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
-                outcome: V5InvocationResponse::Task { snapshot },
-            }));
-        }
-        if self.joins.is_shared_leader(task_id) {
-            let current = self.resolve_task(task_id, deadline)?;
-            if current.invocation_id() != key.invocation_id()
-                || current.receipt_key_digest()
-                    != &crate::application::receipt_ledger::receipt_key_digest(&key)
-            {
-                return Err(ReceiptLedgerError::InvocationIdentityMismatch);
+            if read.leader == task_id {
+                self.resolve_task_for_key(&key, deadline)?;
             }
         }
-        if self.joins.cancel_holder(task_id, epoch_ms) == HolderCancel::Released {
-            // Joined calls still wait for this work: only this holder leaves.
-            let snapshot = self.resolve_task(task_id, deadline)?;
-            return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
-                outcome: V5InvocationResponse::Task { snapshot },
-            }));
+        let holder_cancel = match &holder_context {
+            Some(read) => self
+                .joins
+                .cancel_holder_in_context(read, epoch_ms)
+                .ok_or(ReceiptLedgerError::ReceiptNotFound)?,
+            None => self.joins.cancel_holder(task_id, epoch_ms),
+        };
+        if holder_context
+            .as_ref()
+            .is_some_and(|read| read.leader != task_id)
+        {
+            self.cancel_task_with_decision(task_id, holder_cancel, deadline)?;
+            return self.resolve_task_reply_for_key(&key, deadline);
+        }
+        if holder_cancel == HolderCancel::Released {
+            return self.resolve_task_reply_for_key(&key, deadline);
         }
         /// What the cancel does once the key's lock is released.
         enum CancelStep {
@@ -3574,6 +3593,21 @@ impl V5ReceiptRuntime {
     }
 
     fn submit_invocation(
+        self: &Arc<Self>,
+        decoded: DecodedV5Request,
+        epoch_ms: u64,
+        deadline: Instant,
+    ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
+        let task_id = match decoded.request() {
+            V5ClientRequest::SubmitInvocation { invocation } => invocation.reserved_task_id(),
+            _ => return Err(ReceiptLedgerError::InvocationIdentityMismatch),
+        };
+        let before = self.joins.capture_reply(task_id);
+        let reply = self.submit_invocation_canonical(decoded, epoch_ms, deadline)?;
+        self.project_holder_reply(&before, reply, deadline)
+    }
+
+    fn submit_invocation_canonical(
         self: &Arc<Self>,
         decoded: DecodedV5Request,
         epoch_ms: u64,
@@ -5918,10 +5952,21 @@ impl V5ReceiptRuntime {
         epoch_ms: u64,
         deadline: Instant,
     ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
+        let before = self.joins.capture_reply(key.reserved_task_id());
+        let reply = self.fence_invocation_canonical(key, epoch_ms, deadline)?;
+        self.project_holder_reply(&before, reply, deadline)
+    }
+
+    fn fence_invocation_canonical(
+        &self,
+        key: ReceiptKey,
+        epoch_ms: u64,
+        deadline: Instant,
+    ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
         self.validate_receipt_key(&key)?;
         let digest = crate::application::receipt_ledger::receipt_key_digest(&key);
         let _stripe = self.submit_fences.stripe(&digest);
-        match self.recover_invocation(key.clone(), epoch_ms, deadline) {
+        match self.recover_invocation_canonical(key.clone(), epoch_ms, deadline) {
             Err(ReceiptLedgerError::ReceiptNotFound) if self.submit_fences.fence(digest) => {
                 Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
                     outcome: V5InvocationResponse::ReceiptPending {
@@ -5938,6 +5983,17 @@ impl V5ReceiptRuntime {
     }
 
     fn recover_invocation(
+        &self,
+        key: ReceiptKey,
+        epoch_ms: u64,
+        deadline: Instant,
+    ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
+        let before = self.joins.capture_reply(key.reserved_task_id());
+        let reply = self.recover_invocation_canonical(key, epoch_ms, deadline)?;
+        self.project_holder_reply(&before, reply, deadline)
+    }
+
+    fn recover_invocation_canonical(
         &self,
         key: ReceiptKey,
         epoch_ms: u64,
@@ -6021,6 +6077,55 @@ impl V5ReceiptRuntime {
         ))
     }
 
+    /// Canonical bodies may hold key locks while constructing a Task reply.
+    /// Normalize only after they return; an unjoined handoff with unchanged
+    /// membership keeps its already canonical snapshot without another read.
+    fn project_holder_reply(
+        &self,
+        before: &HolderReplyContext,
+        reply: V5RuntimeReply,
+        deadline: Instant,
+    ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
+        let (mut response, fail_stop) = match reply {
+            V5RuntimeReply::Json(response) => (response, false),
+            V5RuntimeReply::JsonFailStop(response) => (response, true),
+            prepared => return Ok(prepared),
+        };
+        let snapshot = match &mut response {
+            V5ServerResponse::Task { snapshot }
+            | V5ServerResponse::Invocation {
+                outcome: V5InvocationResponse::Task { snapshot },
+            } => Some(snapshot),
+            _ => None,
+        };
+        if let Some(snapshot) = snapshot {
+            if snapshot.task_id() != before.task_id() {
+                return Err(ReceiptLedgerError::InvocationIdentityMismatch);
+            }
+            match self.joins.reply_projection(before) {
+                HolderReplyProjection::Retired => return Err(ReceiptLedgerError::ReceiptNotFound),
+                HolderReplyProjection::Unchanged => {}
+                HolderReplyProjection::Normalize => {
+                    let fresh = self.resolve_task(snapshot.task_id(), deadline)?;
+                    if fresh.invocation_id() != snapshot.invocation_id()
+                        || fresh.receipt_key_digest() != snapshot.receipt_key_digest()
+                    {
+                        return Err(ReceiptLedgerError::InvocationIdentityMismatch);
+                    }
+                    if self.joins.reply_projection(before) == HolderReplyProjection::Retired {
+                        return Err(ReceiptLedgerError::ReceiptNotFound);
+                    }
+                    *snapshot = fresh;
+                }
+            }
+        }
+        Ok(if fail_stop {
+            V5RuntimeReply::JsonFailStop(response)
+        } else {
+            V5RuntimeReply::Json(response)
+        })
+    }
+
     /// The state of one Task as its holder sees it: a joined call sees the
     /// shared Task under its own identity, a holder that let go sees its own
     /// cancellation, everybody else sees the stored Task.
@@ -6029,36 +6134,85 @@ impl V5ReceiptRuntime {
         task_id: crate::domain::invocation::TaskId,
         deadline: Instant,
     ) -> Result<super::protocol_v5::V5DaemonTaskSnapshot, ReceiptLedgerError> {
-        if let Some(alias) = self.joins.alias(task_id) {
-            return match self.resolve_receipt_task(alias.leader, deadline) {
-                Ok(shared) => Ok(joined_task_snapshot(
-                    &shared,
-                    &alias.holder,
-                    alias.cancelled_at_epoch_ms,
-                )),
-                Err(ReceiptLedgerError::ReceiptNotFound) => {
-                    self.joins.forget_shared(alias.leader);
-                    Err(ReceiptLedgerError::ReceiptNotFound)
-                }
-                Err(error) => Err(error),
-            };
-        }
-        let snapshot = match self.resolve_receipt_task(task_id, deadline) {
-            Err(ReceiptLedgerError::ReceiptNotFound) => {
-                self.joins.forget_shared(task_id);
-                return Err(ReceiptLedgerError::ReceiptNotFound);
+        let original = self.joins.capture_reply(task_id);
+        loop {
+            if Instant::now() >= deadline {
+                return Err(ReceiptLedgerError::DeadlineExceeded);
             }
-            other => other?,
-        };
-        if let Some(released_at) = self.joins.leader_released_at(task_id) {
-            let holder = JoinHolder {
-                task_id,
-                invocation_id: snapshot.invocation_id(),
-                receipt_key_digest: snapshot.receipt_key_digest().clone(),
+            let captured = self.joins.capture_reply(task_id);
+            let context = captured.read();
+            let leader = context.map_or(task_id, |read| read.leader);
+            let shared = match self.resolve_receipt_task(leader, deadline) {
+                Err(ReceiptLedgerError::ReceiptNotFound) => {
+                    if let Some(read) = &context {
+                        self.joins.forget_missing_context(read);
+                    }
+                    return Err(ReceiptLedgerError::ReceiptNotFound);
+                }
+                other => other?,
             };
-            return Ok(joined_task_snapshot(&snapshot, &holder, Some(released_at)));
+            if let Some(read) = &context {
+                let canonical = &read.canonical_holder;
+                if shared.task_id() != canonical.task_id
+                    || shared.invocation_id() != canonical.invocation_id
+                    || shared.receipt_key_digest() != &canonical.receipt_key_digest
+                {
+                    return Err(ReceiptLedgerError::ReceiptNotFound);
+                }
+            }
+            // Take a fresh registry decision after the canonical read. It
+            // validates the exact read context and orders observations against
+            // cancellation without keeping the registry locked during I/O.
+            match self
+                .joins
+                .project_holder(&captured, task_snapshot_is_terminal(&shared))
+            {
+                HolderProjection::Reload => continue,
+                HolderProjection::Retired => return Err(ReceiptLedgerError::ReceiptNotFound),
+                HolderProjection::Shared => {
+                    if self.joins.reply_projection(&original) == HolderReplyProjection::Retired {
+                        return Err(ReceiptLedgerError::ReceiptNotFound);
+                    }
+                    return Ok(match context {
+                        Some(read) => joined_task_snapshot(&shared, &read.holder, None),
+                        None => shared,
+                    });
+                }
+                HolderProjection::Cancelled(at) => {
+                    if self.joins.reply_projection(&original) == HolderReplyProjection::Retired {
+                        return Err(ReceiptLedgerError::ReceiptNotFound);
+                    }
+                    let read = context.expect("a holder cancellation has a read context");
+                    return Ok(joined_task_snapshot(&shared, &read.holder, Some(at)));
+                }
+            }
+        }
+    }
+
+    fn resolve_task_for_key(
+        &self,
+        key: &ReceiptKey,
+        deadline: Instant,
+    ) -> Result<super::protocol_v5::V5DaemonTaskSnapshot, ReceiptLedgerError> {
+        let snapshot = self.resolve_task(key.reserved_task_id(), deadline)?;
+        if snapshot.invocation_id() != key.invocation_id()
+            || snapshot.receipt_key_digest()
+                != &crate::application::receipt_ledger::receipt_key_digest(key)
+        {
+            return Err(ReceiptLedgerError::InvocationIdentityMismatch);
         }
         Ok(snapshot)
+    }
+
+    fn resolve_task_reply_for_key(
+        &self,
+        key: &ReceiptKey,
+        deadline: Instant,
+    ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
+        let snapshot = self.resolve_task_for_key(key, deadline)?;
+        Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
+            outcome: V5InvocationResponse::Task { snapshot },
+        }))
     }
 
     /// A Task from its stores, or else the receipt reserved under its id.
@@ -6279,7 +6433,35 @@ impl V5ReceiptRuntime {
         task_id: crate::domain::invocation::TaskId,
         deadline: Instant,
     ) -> Result<super::protocol_v5::V5DaemonTaskSnapshot, ReceiptLedgerError> {
-        match self.joins.cancel_holder(task_id, self.epoch_ms()) {
+        let before = self.joins.capture_reply(task_id);
+        let snapshot = self.cancel_task_canonical(task_id, deadline)?;
+        let reply = self.project_holder_reply(
+            &before,
+            V5RuntimeReply::Json(V5ServerResponse::Task { snapshot }),
+            deadline,
+        )?;
+        match reply {
+            V5RuntimeReply::Json(V5ServerResponse::Task { snapshot }) => Ok(snapshot),
+            _ => unreachable!("Task normalization preserves the reply envelope"),
+        }
+    }
+
+    fn cancel_task_canonical(
+        &self,
+        task_id: crate::domain::invocation::TaskId,
+        deadline: Instant,
+    ) -> Result<super::protocol_v5::V5DaemonTaskSnapshot, ReceiptLedgerError> {
+        let decision = self.joins.cancel_holder(task_id, self.epoch_ms());
+        self.cancel_task_with_decision(task_id, decision, deadline)
+    }
+
+    fn cancel_task_with_decision(
+        &self,
+        task_id: crate::domain::invocation::TaskId,
+        decision: HolderCancel,
+        deadline: Instant,
+    ) -> Result<super::protocol_v5::V5DaemonTaskSnapshot, ReceiptLedgerError> {
+        match decision {
             HolderCancel::Released => self.resolve_task(task_id, deadline),
             HolderCancel::CancelShared(shared) if shared == task_id => {
                 match self.cancel_stored_task(task_id, deadline) {
@@ -6565,7 +6747,7 @@ impl V5ReceiptRuntime {
                     let Some(alias) = self.joins.attach(&identity, candidate.task_id, key) else {
                         return Ok(None);
                     };
-                    let snapshot = joined_task_snapshot(&shared, &alias.holder, None);
+                    let snapshot = self.resolve_task(alias.holder.task_id, deadline)?;
                     return Ok(Some(V5RuntimeReply::Json(V5ServerResponse::Invocation {
                         outcome: V5InvocationResponse::Task { snapshot },
                     })));
@@ -7074,35 +7256,15 @@ fn terminal_task_snapshot(
     }
 }
 
-fn snapshot_terminal_epoch_ms(snapshot: &super::protocol_v5::V5DaemonTaskSnapshot) -> Option<u64> {
-    match snapshot {
-        super::protocol_v5::V5DaemonTaskSnapshot::Completed {
-            terminal_epoch_ms, ..
-        }
-        | super::protocol_v5::V5DaemonTaskSnapshot::Failed {
-            terminal_epoch_ms, ..
-        }
-        | super::protocol_v5::V5DaemonTaskSnapshot::Cancelled {
-            terminal_epoch_ms, ..
-        } => Some(*terminal_epoch_ms),
-        super::protocol_v5::V5DaemonTaskSnapshot::Queued { .. }
-        | super::protocol_v5::V5DaemonTaskSnapshot::Working { .. } => None,
-    }
-}
-
-/// The shared Task as one holder sees it: under the holder's own identity,
-/// and cancelled from the moment the holder let go, unless the shared work
-/// had already ended by then.
+/// Apply the registry's already ordered terminal decision to the canonical
+/// shared Task; durable wall timestamps do not determine causal order.
 fn joined_task_snapshot(
     shared: &super::protocol_v5::V5DaemonTaskSnapshot,
     holder: &JoinHolder,
     released_at_epoch_ms: Option<u64>,
 ) -> super::protocol_v5::V5DaemonTaskSnapshot {
     use super::protocol_v5::V5DaemonTaskSnapshot as Snapshot;
-    let ended_before_release = released_at_epoch_ms.is_some_and(|released| {
-        snapshot_terminal_epoch_ms(shared).is_some_and(|terminal| terminal <= released)
-    });
-    if let Some(released) = released_at_epoch_ms.filter(|_| !ended_before_release) {
+    if let Some(released) = released_at_epoch_ms {
         let cancelled = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
             .expect("the canonical cancelled terminal has a fixed encoding");
         return terminal_task_snapshot(

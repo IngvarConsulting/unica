@@ -1,0 +1,519 @@
+{
+  "id": "S-931-command-module-refusals",
+  "issue": 931,
+  "area": "Метаданные",
+  "task": "Отказать переименованию команды в занятый путь модуля, в том числе при отсутствующем исходном модуле, и лишнему payload операции: XML владельца, оба модуля, посторонний файл и прочие исходники сохраняются побайтно",
+  "workspace": "tests/fixtures/acceptance/workspace-metadata-commands",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Command.Refresh"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/comment",
+          "eq": "Refresh original comment"
+        }
+      ],
+      "captures": {
+        "before": {
+          "file": "src/Catalogs/Items.xml",
+          "kind": "sha256"
+        },
+        "refreshModule": {
+          "file": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256"
+        },
+        "configuration": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "language": {
+          "file": "src/Languages/Русский.xml",
+          "kind": "sha256"
+        },
+        "keepModule": {
+          "file": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256"
+        },
+        "workspaceConfig": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
+        },
+        "unrelatedPayload": {
+          "file": "src/Catalogs/Items/Commands/Refresh/Ext/unrelated.txt",
+          "kind": "sha256"
+        },
+        "blockedModule": {
+          "file": "src/Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Command.Refresh",
+        "ops": [
+          {
+            "op": "command.set",
+            "args": {
+              "values": {
+                "newName": "Blocked"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_state: the command module destination already exists: Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.newName"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.refreshModule"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configuration"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.language"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.keepModule"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.workspaceConfig"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/unrelated.txt",
+          "kind": "sha256",
+          "eq": "$capture.unrelatedPayload"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.blockedModule"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Blocked.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/RefreshRenamed/Ext/CommandModule.bsl",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Command.Inspect",
+        "ops": [
+          {
+            "op": "command.set",
+            "args": {
+              "values": {
+                "newName": "Blocked"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_state: the command module destination already exists: Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.newName"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.refreshModule"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configuration"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.language"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.keepModule"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.workspaceConfig"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/unrelated.txt",
+          "kind": "sha256",
+          "eq": "$capture.unrelatedPayload"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.blockedModule"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Blocked.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/RefreshRenamed/Ext/CommandModule.bsl",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Command.Refresh",
+        "ops": [
+          {
+            "op": "command.set",
+            "args": {
+              "values": {
+                "newName": "Blocked"
+              },
+              "names": [
+                "Keep"
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: operation does not accept argument `names`; `command.set` expects `values`",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.names"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.refreshModule"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configuration"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.language"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.keepModule"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.workspaceConfig"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/unrelated.txt",
+          "kind": "sha256",
+          "eq": "$capture.unrelatedPayload"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.blockedModule"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Blocked.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/RefreshRenamed/Ext/CommandModule.bsl",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Command.Refresh",
+        "ops": [
+          {
+            "op": "command.remove",
+            "args": {
+              "values": {
+                "comment": "extra"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: operation does not accept argument `values`; `command.remove` expects `at`",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.refreshModule"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configuration"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.language"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.keepModule"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.workspaceConfig"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/unrelated.txt",
+          "kind": "sha256",
+          "eq": "$capture.unrelatedPayload"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.blockedModule"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Blocked.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/RefreshRenamed/Ext/CommandModule.bsl",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Command.Refresh",
+        "ops": [
+          {
+            "op": "command.set",
+            "args": {
+              "values": {
+                "newName": "Blocked",
+                "futureField": "ignored?"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: unknown field `futureField`",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.futureField"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.refreshModule"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configuration"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.language"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.keepModule"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.workspaceConfig"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/unrelated.txt",
+          "kind": "sha256",
+          "eq": "$capture.unrelatedPayload"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.blockedModule"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Blocked.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/RefreshRenamed/Ext/CommandModule.bsl",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Command.Keep"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/comment",
+          "eq": "Keep original comment"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.refreshModule"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configuration"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.language"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.keepModule"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.workspaceConfig"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/unrelated.txt",
+          "kind": "sha256",
+          "eq": "$capture.unrelatedPayload"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.blockedModule"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Blocked.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/RefreshRenamed/Ext/CommandModule.bsl",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    }
+  ]
+}

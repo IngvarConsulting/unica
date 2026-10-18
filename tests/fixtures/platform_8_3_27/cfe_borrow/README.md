@@ -121,3 +121,12 @@ when it adopts an object.
 `extension-xdto-package-inherited.xml` and their owner
 `extension-data-processor.xml` are those exports. The complete trees are part
 of the `workspace-borrowed` acceptance fixture.
+
+## Заимствованное значение перечисления (#1396)
+
+`extension-enum-value.xml` — исходный экспорт расширения после живого цикла
+импорта, проверки, применения и выгрузки через `ibcmd` 8.3.27.2074. Файл
+сохраняется побайтно с BOM и CRLF. Он фиксирует порядок `EnumValue`,
+`InternalInfo`, `Properties`, а внутри свойств — `ObjectBelonging`, `Name`,
+`Synonym`, `Comment`, `ExtendedConfigurationObject`; у вложенных элементов нет
+повторных объявлений пространств имён.

@@ -1,0 +1,565 @@
+{
+  "id": "S-1515-form-resource-addresses",
+  "name": "distinct-form-metadata-structure-and-module",
+  "issue": 1515,
+  "area": "Навигация по исходникам",
+  "task": "Общая форма и форма владельца имеют отдельные символические адреса метаданных, структуры и модуля: каждый локальный ресурс разрешается в свой адрес и обратно; прежние адреса содержимого читаются, незарегистрированная форма и продолжение Metadata отказывают.",
+  "workspace": "tests/fixtures/acceptance/workspace-resolve-resources",
+  "wire": [
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "CommonForms/Main/Ext/Form.xml"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:CommonForm.Main"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "CommonForms/Main/Ext/Form.xml"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Form"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "src/CommonForms/Main/Ext/Form.xml"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:CommonForm.Main"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "CommonForms/Main/Ext/Form.xml"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Form"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "$workspace/src/CommonForms/Main/Ext/Form.xml"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:CommonForm.Main"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "CommonForms/Main/Ext/Form.xml"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Form"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "at": "main:CommonForm.Main"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:CommonForm.Main"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "CommonForms/Main/Ext/Form.xml"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Form"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "CommonForms/Main.xml"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:CommonForm.Main.Metadata"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "CommonForms/Main.xml"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Metadata"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "src/CommonForms/Main.xml"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:CommonForm.Main.Metadata"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "CommonForms/Main.xml"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Metadata"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "$workspace/src/CommonForms/Main.xml"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:CommonForm.Main.Metadata"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "CommonForms/Main.xml"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Metadata"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "at": "main:CommonForm.Main.Metadata"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:CommonForm.Main.Metadata"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "CommonForms/Main.xml"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Metadata"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "CommonForms/Main/Ext/Form/Module.bsl"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:CommonForm.Main.Module.Form"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "CommonForms/Main/Ext/Form/Module.bsl"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Module"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "src/CommonForms/Main/Ext/Form/Module.bsl"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:CommonForm.Main.Module.Form"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "CommonForms/Main/Ext/Form/Module.bsl"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Module"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "$workspace/src/CommonForms/Main/Ext/Form/Module.bsl"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:CommonForm.Main.Module.Form"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "CommonForms/Main/Ext/Form/Module.bsl"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Module"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "at": "main:CommonForm.Main.Module.Form"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:CommonForm.Main.Module.Form"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "CommonForms/Main/Ext/Form/Module.bsl"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Module"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "DataProcessors/Processor/Forms/Main/Ext/Form.xml"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:DataProcessor.Processor.Form.Main"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "DataProcessors/Processor/Forms/Main/Ext/Form.xml"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Form"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "at": "main:DataProcessor.Processor.Form.Main"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:DataProcessor.Processor.Form.Main"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "DataProcessors/Processor/Forms/Main/Ext/Form.xml"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Form"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "DataProcessors/Processor/Forms/Main.xml"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:DataProcessor.Processor.Form.Main.Metadata"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "DataProcessors/Processor/Forms/Main.xml"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Metadata"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "at": "main:DataProcessor.Processor.Form.Main.Metadata"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:DataProcessor.Processor.Form.Main.Metadata"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "DataProcessors/Processor/Forms/Main.xml"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Metadata"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "DataProcessors/Processor/Forms/Main/Ext/Form/Module.bsl"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:DataProcessor.Processor.Form.Main.Module.Form"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "DataProcessors/Processor/Forms/Main/Ext/Form/Module.bsl"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Module"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "at": "main:DataProcessor.Processor.Form.Main.Module.Form"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:DataProcessor.Processor.Form.Main.Module.Form"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "DataProcessors/Processor/Forms/Main/Ext/Form/Module.bsl"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Module"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonForm.Main"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Form"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonForm.Main.Metadata"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Metadata"
+        },
+        {
+          "pointer": "/data/props/uuid",
+          "eq": "f3317000-0000-4000-8000-000000000005"
+        },
+        {
+          "pointer": "/data/props/Name",
+          "eq": "Main"
+        },
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Metadata descriptor only"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonForm.Main.Item.Value"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Item"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonForm.Main.Module.Form"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Module"
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:CommonForm.Main.Metadata"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "readable",
+      "validators": []
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "CommonForms/Orphan.xml"
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        }
+      ],
+      "refusal": "not_found: metadata owner `CommonForm.Orphan` is not registered"
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "CommonForms/Orphan/Ext/Form.xml"
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        }
+      ],
+      "refusal": "not_found: metadata owner `CommonForm.Orphan` is not registered"
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "CommonForms/Orphan/Ext/Form/Module.bsl"
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        }
+      ],
+      "refusal": "not_found: metadata owner `CommonForm.Orphan` is not registered"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonForm.Main.Metadata.Item.Value"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: invalid logical address; expected <sourceSet>:<Kind>[.<Name>...]: Metadata is the terminal nameless descriptor of a named form"
+    }
+  ]
+}

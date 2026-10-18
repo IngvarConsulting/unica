@@ -9,9 +9,12 @@ import shutil
 import time
 from pathlib import Path
 
+from tests.ci.acceptance_controls import load_corpus, tool_result
+
 REPO = Path(__file__).resolve().parents[2]
 SYMBOL_WORKSPACE = "tests/fixtures/acceptance/workspace-symbol"
 DIAGNOSTICS_WORKSPACE = "tests/fixtures/acceptance/workspace-diagnostics"
+KB_BOUNDARY_WORKSPACE = "tests/fixtures/acceptance/workspace-kb-boundary"
 FAULT_CASES = {"empty", "invalid-event", "unknown-severity", "exit-failure", "missing-engine", "checksum-mismatch"}
 DIAGNOSTIC_CASES = {"plain", "authors-toml", "authors-json", "diff-base", "precedence"}
 # A call graph branch orders the missing analyzer in the same call; the
@@ -32,31 +35,37 @@ EXTERNAL_CHECK_ADDRESSES = {
     "erf:ExternalReport.Sales.Module.Object",
 }
 AGENT_EVALUATIONS = {"dcs-contract": DCS_WORKSPACE, "mxl-contract": MXL_WORKSPACE}
-SOURCE_WORKSPACES = {
-    "tests/fixtures/acceptance/workspace-incomplete-borrowed",
-    "tests/fixtures/acceptance/workspace-invalid-borrowing",
-    "tests/fixtures/acceptance/workspace-predefined",
-    "tests/fixtures/acceptance/workspace-docs-8.3.26",
-    "tests/fixtures/acceptance/workspace-docs-8.3.27",
-    "tests/fixtures/acceptance/workspace-metadata-values",
-    "tests/fixtures/acceptance/workspace-english",
-    "tests/fixtures/acceptance/workspace-external",
-    "tests/fixtures/acceptance/workspace-external-missing",
-    "tests/fixtures/acceptance/workspace-external-invalid",
-    "tests/fixtures/acceptance/workspace-external-linked",
+ACCEPTANCE_ROOT = REPO / "tests/fixtures/acceptance"
+SOURCE_PROFILE_DIR = "source-profiles"
 
-    "tests/fixtures/acceptance/workspace-metadata-warning",
-    DCS_WORKSPACE,
-    MXL_WORKSPACE,
-    "tests/fixtures/acceptance/workspace-code",
-    "tests/fixtures/acceptance/workspace-resolve",
-    "tests/fixtures/acceptance/workspace-form-names",
-    "tests/fixtures/acceptance/workspace-borrowed",
-    "tests/fixtures/acceptance/workspace-xdto-facets",
-    "tests/fixtures/acceptance/workspace",
-    "tests/fixtures/acceptance/workspace-format",
-    "tests/fixtures/acceptance/workspace-bare",
-}
+
+def load_source_workspaces(root: Path = ACCEPTANCE_ROOT) -> set[str]:
+    """Explicit source-fixture registrations, one file per sibling workspace.
+
+    Adding a fixture does not edit a shared Python set. Declarations stay
+    outside the workspaces copied into the product by the acceptance runner.
+    """
+    root = Path(root)
+    directory = root / SOURCE_PROFILE_DIR
+    if directory.is_symlink() or not directory.is_dir():
+        raise ValueError(f"{directory}: source profiles need a regular directory")
+    workspaces = set()
+    for declaration in sorted(directory.iterdir()):
+        if declaration.name.startswith("."):
+            continue
+        if (declaration.suffix != ".json" or declaration.stem in {".", ".."}
+                or declaration.is_symlink() or not declaration.is_file()):
+            raise ValueError(f"{declaration}: expected a regular <workspace>.json declaration")
+        if load_corpus(declaration) != {"profile": "source"}:
+            raise ValueError(f"{declaration}: expected exactly a source profile")
+        workspace = root / declaration.stem
+        if workspace.is_symlink() or not workspace.is_dir():
+            raise ValueError(f"{declaration}: source fixture must be a regular sibling directory")
+        workspaces.add(f"tests/fixtures/acceptance/{workspace.name}")
+    return workspaces
+
+
+SOURCE_WORKSPACES = load_source_workspaces()
 
 
 def select_profile(corpus, profile):
@@ -194,7 +203,7 @@ def completed_delivery_call(server, tool, arguments, label):
     response = invoke(tool, arguments)
     task_id = None
     for poll in range(20):
-        result = (response or {}).get("result", {}).get("structuredContent") or {}
+        result = tool_result(response) or {}
         task = (result.get("data") or {}).get("task")
         if result.get("ok") is True and task:
             if task.get("status") not in {"queued", "working", "completed"}:

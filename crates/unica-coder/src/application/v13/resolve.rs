@@ -96,6 +96,10 @@ impl ResolvedSource {
         &self.at
     }
 
+    pub(crate) fn path(&self) -> &str {
+        &self.path
+    }
+
     #[cfg(test)]
     pub(crate) const fn lines(&self) -> ResolvedLines {
         self.lines

@@ -5360,18 +5360,19 @@ pub(crate) mod tests {
             thread::sleep(Duration::from_millis(10));
             cancelled = service.poll(&started.id).expect("poll cancellation");
         }
+        let descendant_still_alive = descendant
+            .is_alive()
+            .expect("probe descendant immediately after terminal observation");
 
         assert!(
             cancelled.phase.is_terminal(),
             "cancelled tree stayed active"
         );
-        assert!(!service.store.active_lock_path().exists());
         assert!(
-            !descendant
-                .is_alive()
-                .expect("probe descendant after cancellation"),
-            "cancel returned before the owned descendant died"
+            !descendant_still_alive,
+            "terminal state preceded the owned descendant's process signal"
         );
+        assert!(!service.store.active_lock_path().exists());
     }
 
     #[test]
@@ -6456,9 +6457,32 @@ pub(crate) mod tests {
 
     impl ReplacedJobDirectory {
         fn install(jobs_root: &Path, job_id: &str) -> Self {
+            Self::attempt_install(jobs_root, job_id).expect(
+                "displace admitted job directory: no handle inside it is retained at this point",
+            )
+        }
+
+        /// Windows refuses to rename a directory while a file inside it is
+        /// open, so a swap at a point where the runtime still holds a child
+        /// handle cannot happen there. `None` reports exactly that refusal:
+        /// `jobs/<id>` still names the admitted directory and nothing was
+        /// displaced.
+        fn attempt_install(jobs_root: &Path, job_id: &str) -> Option<Self> {
+            use crate::infrastructure::platform::testing::{
+                attempt_retained_directory_replacement_for_test,
+                RetainedDirectoryReplacementOutcome,
+            };
             let canonical = jobs_root.join(job_id);
             let admitted = jobs_root.join(format!("{job_id}-admitted"));
-            fs::rename(&canonical, &admitted).expect("displace admitted job directory");
+            match attempt_retained_directory_replacement_for_test(&canonical, &admitted)
+                .expect("displace admitted job directory")
+            {
+                RetainedDirectoryReplacementOutcome::Replaced => {}
+                RetainedDirectoryReplacementOutcome::PreventedByRetainedHandle => {
+                    assert!(canonical.is_dir() && !admitted.exists());
+                    return None;
+                }
+            }
             fs::create_dir(&canonical).expect("install replacement job directory");
             for entry in fs::read_dir(&admitted).expect("list admitted job directory") {
                 let entry = entry.expect("admitted job entry");
@@ -6469,11 +6493,11 @@ pub(crate) mod tests {
             }
             let installed = crate::test_support::tree_snapshot(&canonical);
             assert!(installed.contains_key(Path::new("record.json")));
-            Self {
+            Some(Self {
                 canonical,
                 admitted,
                 installed,
-            }
+            })
         }
 
         fn deferred(
@@ -6486,6 +6510,23 @@ pub(crate) mod tests {
                 installed
                     .send(Self::install(&jobs_root, &job_id))
                     .expect("report installed replacement");
+            });
+            (swap, receiver)
+        }
+
+        /// Like [`Self::deferred`], for a boundary where the runtime may still
+        /// hold a handle inside the job directory; `None` is the platform's
+        /// refusal to displace it.
+        fn deferred_attempt(
+            jobs_root: PathBuf,
+            job_id: Arc<Mutex<String>>,
+        ) -> (DirectorySwap, mpsc::Receiver<Option<Self>>) {
+            let (installed, receiver) = mpsc::channel();
+            let swap: DirectorySwap = Box::new(move || {
+                let job_id = job_id.lock().unwrap().clone();
+                installed
+                    .send(Self::attempt_install(&jobs_root, &job_id))
+                    .expect("report the replacement attempt");
             });
             (swap, receiver)
         }
@@ -6781,19 +6822,43 @@ pub(crate) mod tests {
         let armed = arm_directory_swaps(&service);
 
         // Swapped right after the heartbeat record replaced `record.json`:
-        // the post-publication proof must notice it.
+        // the post-publication proof must notice it. The published record's
+        // handle is still open here, and Windows refuses to rename a directory
+        // with an open file inside: there the swap itself cannot happen, and
+        // the heartbeat is confirmed in the admitted directory.
         let (swap, installed) =
-            ReplacedJobDirectory::deferred(jobs_root.clone(), Arc::clone(&job_id));
+            ReplacedJobDirectory::deferred_attempt(jobs_root.clone(), Arc::clone(&job_id));
         *armed.lock().unwrap() = Some((DirectoryAuthorityHookPoint::RecordReplaced, swap));
-        service
-            .poll(&job.id)
-            .expect_err("a record published into a replaced name is not confirmed");
-        let published = installed
+        let heartbeat = service.poll(&job.id);
+        let first = match installed
             .try_recv()
-            .expect("the swap ran after the publication");
-        published.assert_untouched(&service.store, &job.id);
-        assert!(service.has_retained_process(&job.id));
-        let (first_aside, first_installed) = published.restore();
+            .expect("the swap ran after the publication")
+        {
+            Some(published) => {
+                heartbeat.expect_err("a record published into a replaced name is not confirmed");
+                published.assert_untouched(&service.store, &job.id);
+                assert!(service.has_retained_process(&job.id));
+                Some(published.restore())
+            }
+            None => {
+                assert_eq!(
+                    heartbeat
+                        .expect("an undisplaced directory confirms its heartbeat")
+                        .phase,
+                    RuntimeJobPhase::Running
+                );
+                assert_eq!(
+                    service.store.read_record(&job.id).unwrap().phase,
+                    RuntimeJobPhase::Running
+                );
+                assert_eq!(
+                    fs::read_to_string(service.store.active_lock_path()).unwrap(),
+                    job.id
+                );
+                assert!(service.has_retained_process(&job.id));
+                None
+            }
+        };
 
         // Swapped after the terminal record is confirmed and before the lock
         // is released: the result stays in the admitted directory, the lock
@@ -6830,10 +6895,12 @@ pub(crate) mod tests {
                 .phase,
             RuntimeJobPhase::Succeeded
         );
-        assert_eq!(
-            crate::test_support::tree_snapshot(&first_aside),
-            first_installed
-        );
+        if let Some((first_aside, first_installed)) = first {
+            assert_eq!(
+                crate::test_support::tree_snapshot(&first_aside),
+                first_installed
+            );
+        }
         assert_eq!(
             crate::test_support::tree_snapshot(&second_aside),
             second_installed

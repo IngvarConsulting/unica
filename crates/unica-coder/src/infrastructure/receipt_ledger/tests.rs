@@ -6965,3 +6965,81 @@ fn recovery_cleanup_preserves_external_targets_of_replaced_active_and_generation
         assert_eq!(fs::read(displaced).unwrap(), b"first-pass-orphan");
     }
 }
+
+#[test]
+fn body_read_hint_survives_receipt_reopen_and_tampering_is_rejected() {
+    for hint in [
+        None,
+        Some(Box::new(crate::domain::invocation::SourceTextReadHint {
+            from_line: 97,
+            to_line: 98,
+            prefix: Some("first\r\nsecond".into()),
+        })),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let receipts = fs::canonicalize(root.path()).unwrap().join("receipts");
+        let store = ReceiptLedgerStore::open(&receipts).unwrap();
+        let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
+        let reservation = store
+            .reserve(
+                key.clone(),
+                OriginalCutoffDescriptor::new(1_000, 7_000).unwrap(),
+                reserve_deadline(),
+            )
+            .unwrap()
+            .into_reservation()
+            .unwrap();
+        let mut result = DomainResult::success("done");
+        result.source_text_read_hint = hint.clone();
+        let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
+            result: Box::new(result),
+        })
+        .unwrap();
+        if hint.is_none() {
+            assert_eq!(
+                terminal.payload(),
+                br#"{"status":"completed","result":{"ok":true,"summary":"done"}}"#
+            );
+            assert_eq!(
+                terminal.digest().as_str(),
+                "48ae70504a268023f6e6c404963986f8246501d68e7160c3fc3eeb6afcb577b2"
+            );
+        }
+        store
+            .publish_direct_terminal(
+                &key,
+                reservation.record_version(),
+                2_000,
+                terminal,
+                reserve_deadline(),
+            )
+            .unwrap();
+        let path = receipts
+            .join(ACTIVE_DIRECTORY_NAME)
+            .join(format!("{}.json", receipt_key_digest(&key).as_str()));
+        let before = fs::read(&path).unwrap();
+        drop(store);
+        let reopened = ReceiptLedgerStore::open(&receipts).unwrap();
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            before,
+            "opening a retained record must not rewrite it"
+        );
+        assert!(reopened
+            .writer
+            .lock()
+            .unwrap()
+            .records
+            .contains_key(&receipt_key_digest(&key)));
+        drop(reopened);
+        if hint.is_some() {
+            let row = String::from_utf8(before).unwrap();
+            assert!(row.contains("\"fromLine\":97"));
+            fs::write(&path, row.replacen("\"fromLine\":97", "\"fromLine\":96", 1)).unwrap();
+            assert!(
+                ReceiptLedgerStore::open(&receipts).is_err(),
+                "coordinates participate in the canonical terminal digest"
+            );
+        }
+    }
+}

@@ -3445,22 +3445,6 @@ pub(crate) fn extract_xml_attr(text: &str, element: &str, attr: &str) -> Option<
     Some(value_rest[..attr_end].to_string())
 }
 
-pub(crate) fn emit_mltext(lines: &mut Vec<String>, indent: &str, tag: &str, text: &str) {
-    if text.is_empty() {
-        lines.push(format!("{indent}<{tag}/>"));
-        return;
-    }
-    lines.push(format!("{indent}<{tag}>"));
-    lines.push(format!("{indent}\t<v8:item>"));
-    lines.push(format!("{indent}\t\t<v8:lang>ru</v8:lang>"));
-    lines.push(format!(
-        "{indent}\t\t<v8:content>{}</v8:content>",
-        escape_xml(text)
-    ));
-    lines.push(format!("{indent}\t</v8:item>"));
-    lines.push(format!("{indent}</{tag}>"));
-}
-
 pub(crate) fn split_camel_case(name: &str) -> String {
     if name.is_empty() {
         return name.to_string();

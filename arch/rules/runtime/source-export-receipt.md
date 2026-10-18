@@ -7,6 +7,7 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::preview_refuses_a_target_outside_the_workspace_an_undeclared_set_or_a_write
   - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::apply_without_prior_preview_counts_the_exported_files_itself
   - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::apply_refuses_another_target_and_an_empty_target
+  - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::apply_names_the_export_mode_that_happened_when_it_differs
 gap: https://github.com/IngvarConsulting/unica/issues/950
 ---
 
@@ -22,14 +23,16 @@ gap: https://github.com/IngvarConsulting/unica/issues/950
 
 Preview `pull` принимает только объявленный набор и цель внутри
 рабочего пространства, показывает относительный путь и не допускает
-ответа о выполненной записи. Явный `dryRun: true` выбирает preview,
-`dryRun: false` — исполнение без предварительного запроса preview. Ответ
-раннера о другом наборе или другой цели не признаётся успехом.
-Режим и имя расширения в ответе должны совпасть с аргументами вызова.
+ответа о выполненной записи. Используется
+[режим previewApply](../mcp/run-operation-names.md). Ответ раннера о другом
+наборе или другой цели не признаётся успехом.
+Запрошенный режим и имя расширения в ответе должны совпасть с аргументами
+вызова. Случившийся режим раннер 0.15 называет отдельно, и ответ передаёт его
+как `performedMode` с причиной расхождения `modeReason`, не выдавая его
+за запрошенный; preview так же называет режим плана раннера `plannedMode`.
 
-`run` не принимает `ifRev` и не выдаёт `rev`. Исполнение проверяет
-объявленный состав наборов и цель выгрузки по текущему проекту.
-Отдельный preview не фиксирует их между вызовами.
+Исполнение проверяет объявленный состав наборов и цель выгрузки
+по текущему проекту.
 Внутри вызова проектный файл, его локальное дополнение и объявленный
 состав наборов сверяются до и после внутреннего preview раннера.
 Их изменение даёт `concurrent_change` до исполнения.

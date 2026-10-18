@@ -1,0 +1,92 @@
+{
+  "id": "S-919-preserve-subtree",
+  "issue": 919,
+  "area": "Формы",
+  "task": "Перенести существующее поле в группу через item.move, сохранив ID, привязку, заголовок и companions; предпросмотр не пишет, опубликованный результат проходит check",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеНаименованиеПолное",
+        "ops": [
+          {
+            "op": "item.move",
+            "args": {
+              "values": {
+                "into": "ГруппаСлужебная"
+              }
+            }
+          }
+        ]
+      },
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data/mode", "eq": "preview"},
+        {"pointer": "/data/executable", "eq": true}
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "eq": "d2afae775e4a3352b6bd8a73da925ca5e52d8247d249a93a56a832007a5a6dde"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {"executionToken": "$executionToken"},
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data/mode", "eq": "published"}
+      ],
+      "fileAssertions": [
+        {
+          "kind": "xmlTags",
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "select": "./{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное'][@id='4']",
+          "eq": ["InputField"]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "select": "./{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное'][@id='4']/{*}DataPath",
+          "eq": ["Объект.НаименованиеПолное"]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "select": "./{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное'][@id='4']/{*}Title/{*}item/{*}content",
+          "eq": ["Полное наименование"]
+        },
+        {
+          "kind": "xmlTags",
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "select": "./{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное'][@id='4']/{*}ContextMenu[@name='ПолеНаименованиеПолноеКонтекстноеМеню'][@id='5']",
+          "eq": ["ContextMenu"]
+        },
+        {
+          "kind": "xmlTags",
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "select": "./{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное'][@id='4']/{*}ExtendedTooltip[@name='ПолеНаименованиеПолноеРасширеннаяПодсказка'][@id='6']",
+          "eq": ["ExtendedTooltip"]
+        },
+        {
+          "kind": "xmlTags",
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "select": "./{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное']",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {"at": "main:Catalog.Валюты.Form.ФормаЭлемента"},
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data/diagnosticCount", "eq": 0}
+      ],
+      "status": "passed",
+      "validators": ["form"]
+    }
+  ]
+}

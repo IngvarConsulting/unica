@@ -168,39 +168,58 @@ class LocalDevInstallerTests(unittest.TestCase):
         )
         self.assertLess(create_home, first_codex_call)
 
-    @staticmethod
-    def packaged_skill_names() -> set[str]:
-        skills_root = REPO_ROOT / "plugins/unica/skills"
-        return {
-            path.name for path in skills_root.iterdir() if (path / "SKILL.md").is_file()
-        }
-
-    def test_prompt_proof_names_no_skill_of_its_own(self) -> None:
-        installer = INSTALLER.read_text(encoding="utf-8")
-
-        # The proof takes the skill from the package at run time, so no skill
-        # name is written anywhere in the script: not on the needle line, and
-        # not in a variable assigned above it.
-        packaged = self.packaged_skill_names()
-        self.assertTrue(packaged)
-        for skill in sorted(packaged):
-            with self.subTest(skill=skill):
-                self.assertNotIn(skill, installer)
-
+    def assert_prompt_skill_comes_from_package(self, installer: str) -> None:
         needles = re.findall(r"for needle in (.+); do", installer)
         self.assertEqual(len(needles), 1, needles)
-        needle_line = needles[0]
-        self.assertIn('"Unica"', needle_line)
-        # Whatever the variable is called, the skill arrives through one.
-        self.assertRegex(needle_line, r'"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?"')
+        variable = re.fullmatch(
+            r'"Unica"\s+"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})"',
+            needles[0],
+        )
+        self.assertIsNotNone(variable, needles[0])
+        name = variable[1] or variable[2]
+        assignments = list(re.finditer(rf"\b{re.escape(name)}=([^\n]*)", installer))
+        self.assertEqual(len(assignments), 1, [item[0] for item in assignments])
+        self.assertEqual(
+            assignments[0][1],
+            '"$(packaged_prompt_skill "$MARKETPLACE_DIR/plugins/unica/skills")"',
+        )
+        # A comment containing the selector is not an executable assignment.
+        self.assertRegex(
+            installer,
+            rf"(?m)^[ \t]*{re.escape(assignments[0][0])}$",
+        )
+        self.assertLess(assignments[0].start(), installer.index("for needle in "))
 
-        # A skill removed from the package is no longer in `packaged`, so the
-        # names dropped so far are named here: `v8-runner` went in #670, and
-        # the proof must not grow a literal back in its place. It stays legal
-        # elsewhere in the script as the name of a bundled tool.
-        for retired in ("v8-runner",):
-            with self.subTest(retired=retired):
-                self.assertNotIn(retired, needle_line)
+    def test_prompt_proof_names_no_skill_of_its_own(self) -> None:
+        # Marketplace/tool names may coincide with skills. Only the prompt
+        # needle must come from the packaged selector, including its assignment.
+        self.assert_prompt_skill_comes_from_package(INSTALLER.read_text(encoding="utf-8"))
+
+    def test_prompt_skill_guard_rejects_hardcoded_and_reassigned_needles(self) -> None:
+        installer = INSTALLER.read_text(encoding="utf-8")
+        selector = 'PROMPT_SKILL="$(packaged_prompt_skill "$MARKETPLACE_DIR/plugins/unica/skills")"'
+        for mutated in (
+            installer.replace('"$PROMPT_SKILL"; do', '"unica-dev"; do'),
+            installer.replace('"$PROMPT_SKILL"; do', '"v8-runner"; do'),
+            installer.replace('"$PROMPT_SKILL"; do', '"$MARKETPLACE_NAME"; do'),
+            installer.replace('"$PROMPT_SKILL"; do', '$PROMPT_SKILL; do'),
+            installer.replace(selector, "# " + selector),
+            installer.replace(selector, 'PROMPT_SKILL="unica-dev"'),
+            installer.replace(selector, selector + '\nPROMPT_SKILL="unica-dev"'),
+            installer.replace(selector, selector + '\nexport PROMPT_SKILL="unica-dev"'),
+            installer.replace(selector, selector + '\nlocal PROMPT_SKILL="unica-dev"'),
+            installer.replace("PROMPT_SKILL", "OTHER_SKILL").replace(
+                selector.replace("PROMPT_SKILL", "OTHER_SKILL"),
+                'OTHER_SKILL="code-search"',
+            ),
+        ):
+            with self.subTest(mutated=mutated[-160:]):
+                with self.assertRaises(AssertionError):
+                    self.assert_prompt_skill_comes_from_package(mutated)
+
+        self.assert_prompt_skill_comes_from_package(
+            installer.replace("PROMPT_SKILL", "OTHER_SKILL")
+        )
 
     def packaged_prompt_skill(self, skills_root: Path) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory() as tmp:

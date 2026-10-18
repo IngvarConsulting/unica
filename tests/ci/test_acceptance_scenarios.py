@@ -4,10 +4,13 @@ The common corpus has source, pinned-analyzer delivery and real-agent drivers.
 Runtime drivers are implemented with their surface tasks;
 a profile without an executable driver is rejected.
 
-Every scenario in tests/fixtures/acceptance/scenario-corpus.json is a real
-configuration-development task expressed as a wire of canonical unica.* calls
-against the acceptance fixture workspace.  The corpus freezes, per step, the
-class of answer the surface gives today:
+Every scenario of the corpus (the closed block S001-S440 in
+tests/fixtures/acceptance/scenario-corpus.json and one file per later scenario
+in tests/fixtures/acceptance/scenarios/, both loaded by
+scripts/ci/acceptance_corpus.py) is a real configuration-development task
+expressed as a wire of canonical unica.* calls against the acceptance fixture
+workspace.  The corpus freezes, per step, the class of answer the surface
+gives today:
 
   ok          ok:true result without a task receipt
   task        ok:true queued/working Task receipt
@@ -48,22 +51,25 @@ from pathlib import Path
 from tests.ci.acceptance_controls import (
     capture_values,
     content_mismatches,
+    corpus_storage,
     file_value,
-    load_corpus,
+    load_acceptance_corpus,
     matches_step,
     substitute_capture,
+    relative_file,
+    tool_result,
     validate_controls,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-CORPUS = REPO_ROOT / "tests/fixtures/acceptance/scenario-corpus.json"
 BINARY = (
     (REPO_ROOT / Path(os.environ.get("CARGO_TARGET_DIR", "target"))).resolve()
     / "debug"
     / ("unica.exe" if os.name == "nt" else "unica")
 )
 from tests.ci.acceptance_profiles import (
-    DIAGNOSTICS_WORKSPACE, SYMBOL_WORKSPACE, completed_delivery_call, isolated_environment, select_profile,
+    DIAGNOSTICS_WORKSPACE, KB_BOUNDARY_WORKSPACE, SOURCE_WORKSPACES, SYMBOL_WORKSPACE, completed_delivery_call, isolated_environment,
+    select_profile,
 )
 
 REFUSAL_DICTIONARY = REPO_ROOT / "crates/unica-coder/src/domain/refusal.rs"
@@ -155,6 +161,11 @@ def substitute(value, context):
     if isinstance(value, str) and value.startswith("$capture."):
         return substitute_capture(value, context)
     if isinstance(value, str):
+        if value.startswith("$workspace/"):
+            relative = relative_file(value[len("$workspace/"):])
+            if "workspace" not in context:
+                raise ValueError("absolute workspace path needs an active scenario")
+            return str(Path(context["workspace"]).joinpath(*relative.parts))
         if value == "$task":
             return context.get("task", "00000000-0000-4000-8000-000000000000")
         if value == "$executionToken":
@@ -181,7 +192,7 @@ def classify(response, context):
         if "deadline expired" in message:
             return "provider", message[:160]
         return "error", json.dumps(response, ensure_ascii=False)[:200]
-    structured = response.get("result", {}).get("structuredContent")
+    structured = tool_result(response)
     if structured is None:
         return "error", "no structuredContent"
     if structured.get("rev"):
@@ -462,6 +473,57 @@ def materialize_external_form_link(workspace: Path) -> None:
         raise ValueError("external link fixture does not point to the neighboring owner")
 
 
+def source_fixture_environment(workspace_relative, environment=None):
+    if workspace_relative != KB_BOUNDARY_WORKSPACE:
+        return environment
+    environment = dict(os.environ if environment is None else environment)
+    for key in ("no_proxy", "NO_PROXY", "UNICA_DOCUMENTATION_POLICY_FILE"):
+        environment.pop(key, None)
+    # The normal HTTP client rejects this proxy scheme before DNS or a socket.
+    # If the guide-root guard regresses, the corpus fails on the proxy error
+    # instead of asking the real vendor site for the forbidden page.
+    environment["https_proxy"] = "unsupported://127.0.0.1:1"
+    environment["HTTPS_PROXY"] = "unsupported://127.0.0.1:1"
+    return environment
+
+
+class KbBoundaryFixtureTests(unittest.TestCase):
+    def test_boundary_fixture_cannot_inherit_a_proxy_bypass_or_machine_policy(self):
+        inherited = {
+            "https_proxy": "http://inherited.invalid:3128",
+            "HTTPS_PROXY": "http://inherited.invalid:3129",
+            "no_proxy": "*",
+            "NO_PROXY": "kb.1ci.com",
+            "UNICA_DOCUMENTATION_POLICY_FILE": "/unrelated/machine-policy.toml",
+            "PATH": "/inherited/path",
+        }
+        original = inherited.copy()
+        environment = source_fixture_environment(KB_BOUNDARY_WORKSPACE, inherited)
+        self.assertEqual(inherited, original)
+        self.assertEqual(environment["https_proxy"], "unsupported://127.0.0.1:1")
+        self.assertEqual(environment["HTTPS_PROXY"], "unsupported://127.0.0.1:1")
+        for key in ("no_proxy", "NO_PROXY", "UNICA_DOCUMENTATION_POLICY_FILE"):
+            self.assertNotIn(key, environment)
+        self.assertEqual(environment["PATH"], inherited["PATH"])
+
+    def test_other_source_fixtures_keep_their_environment(self):
+        environment = {"https_proxy": "http://inherited.invalid:3128", "no_proxy": "*"}
+        self.assertIs(source_fixture_environment(BARE_WORKSPACE, environment), environment)
+        self.assertIsNone(source_fixture_environment(BARE_WORKSPACE))
+
+    def test_a_proxy_failure_cannot_satisfy_the_guide_root_refusal(self):
+        corpus = load_acceptance_corpus()
+        scenario = next(s for s in corpus["scenarios"] if s["id"] == "S-953-kb-guide-root-boundary")
+        for step in scenario["wire"]:
+            locator = step["args"]["query"]
+            structured = {"ok": False, "diagnostics": [{
+                "code": "not_found",
+                "message": f"documentation page `{locator}` was not found: площадка недоступна: invalid proxy setting",
+            }]}
+            actual, note = classify({"result": {"structuredContent": structured}}, {})
+            self.assertTrue(content_mismatches(step, structured, actual, note))
+
+
 class ExternalLinkFixtureTests(unittest.TestCase):
     def test_fixed_link_is_real_and_the_neighbor_bytes_are_preserved(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -480,7 +542,7 @@ class ExternalLinkFixtureTests(unittest.TestCase):
 
 
     def test_link_refusal_cannot_pass_as_wrong_descriptor_identity(self):
-        corpus = load_corpus(CORPUS)
+        corpus = load_acceptance_corpus()
         case = next(s for s in corpus["scenarios"] if s.get("name") == "external-linked-payload-refusal")
         link = {"assertions": case["wire"][0]["assertions"]}
         foreign = case["wire"][1]["assertions"][1]["eq"]
@@ -496,6 +558,18 @@ class SavedPlanWireTests(unittest.TestCase):
                    "executionToken": "saved-plan", "rev": "current-revision"}
         self.assertEqual(substitute({"text": "$capture.text", "object": "$capture.object"}, context),
                          {"text": "$executionToken", "object": {"at": "$rev"}})
+
+    def test_absolute_path_query_stays_inside_the_scenario_workspace(self):
+        context = {"workspace": Path("/scenario")}
+        self.assertEqual(substitute({"path": "$workspace/src/Form.xml"}, context),
+                         {"path": str(Path("/scenario/src/Form.xml"))})
+        for path in ["$workspace/../outside.xml", "$workspace/C:/outside.xml", "$workspace//outside.xml"]:
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                substitute(path, context)
+        with self.assertRaises(ValueError):
+            substitute("$workspace/src/Form.xml", {})
+        self.assertEqual(substitute("$capture.literal", {"captures": {"literal": "$workspace/src/Form.xml"}}),
+                         "$workspace/src/Form.xml")
 
     def test_execute_uses_the_preview_token_and_reads_do_not_replace_it(self):
         context = {}
@@ -520,29 +594,41 @@ class SavedPlanWireTests(unittest.TestCase):
 class AcceptanceCorpusShapeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.corpus = load_corpus(CORPUS)
+        cls.corpus = load_acceptance_corpus()
 
-    def test_corpus_is_uniquely_numbered_and_not_missing_steps(self) -> None:
+    def test_corpus_ids_are_stable_and_the_manifest_freezes_every_step(self) -> None:
+        storage = corpus_storage()
         scenarios = self.corpus["scenarios"]
-        self.assertEqual(len(scenarios), 422)
-        # Исполнение apply следует за планированием с сохранением токена.
-        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 1125,
-            "a wire step went missing: the corpus freezes 1125 steps",
-        )
         identifiers = [scenario["id"] for scenario in scenarios]
-        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 423)])
+        self.assertEqual(len(identifiers), len(set(identifiers)), "scenario ids are unique")
+        # The historical block keeps its numbers and is closed: links to S###
+        # still find their scenario, and nothing takes the next number.
+        legacy = [identifier for identifier in identifiers if storage.LEGACY_ID.fullmatch(identifier)]
+        self.assertEqual(legacy, [f"S{index:03d}" for index in range(1, storage.LEGACY_LAST + 1)])
+        for identifier in identifiers[len(legacy):]:
+            storage.stable_order(identifier)
+        # A dropped scenario or step is caught per scenario, not by a total
+        # every addition would have to edit.
+        self.assertEqual(
+            storage.manifest_problems(self.corpus, storage.read_manifest()), [],
+            "the corpus differs from tests/fixtures/acceptance/scenario-manifest/",
+        )
 
     def test_all_scenarios_have_an_executable_profile(self) -> None:
         source = {s["id"] for s in select_profile(self.corpus, "source")["scenarios"]}
         delivery = {s["id"] for s in select_profile(self.corpus, "delivery")["scenarios"]}
         agent = {s["id"] for s in select_profile(self.corpus, "agent-evaluation")["scenarios"]}
         fault = {s["id"] for s in select_profile(self.corpus, "fault-injection")["scenarios"]}
-        self.assertEqual(fault, {"S344", "S345", "S346", "S389", "S390", "S396", "S398"})
         self.assertFalse(fault & (source | delivery | agent))
         self.assertFalse(source & delivery or source & agent or delivery & agent)
         self.assertEqual(source | delivery | agent | fault, {s["id"] for s in self.corpus["scenarios"]})
-        self.assertEqual(agent, {"S328", "S335"})
-        self.assertEqual(delivery, {'S324', 'S339', 'S340', 'S341', 'S342', 'S343', 'S359'})
+        # The closed S### block keeps its profiles; a per-file scenario
+        # declares its own and is admitted by select_profile, so two added
+        # scenarios never edit these sets.
+        legacy = corpus_storage().LEGACY_ID.fullmatch
+        self.assertEqual({i for i in fault if legacy(i)}, {"S344", "S345", "S346", "S389", "S390", "S396", "S398"})
+        self.assertEqual({i for i in agent if legacy(i)}, {"S328", "S335"})
+        self.assertEqual({i for i in delivery if legacy(i)}, {'S324', 'S339', 'S340', 'S341', 'S342', 'S343', 'S359'})
 
     def test_every_step_freezes_known_classes_and_documents_gaps(self) -> None:
         for scenario in self.corpus["scenarios"]:
@@ -550,7 +636,7 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
             workspace = scenario.get("workspace", self.corpus["workspace"])
             self.assertIn(
                 workspace,
-                {self.corpus["workspace"], "tests/fixtures/acceptance/workspace-xdto-facets", "tests/fixtures/acceptance/workspace-predefined", FORMAT_WORKSPACE, BARE_WORKSPACE, SYMBOL_WORKSPACE, DIAGNOSTICS_WORKSPACE, "tests/fixtures/acceptance/workspace-dcs", "tests/fixtures/acceptance/workspace-mxl", "tests/fixtures/acceptance/workspace-code", "tests/fixtures/acceptance/workspace-metadata-warning", "tests/fixtures/acceptance/workspace-metadata-values", "tests/fixtures/acceptance/workspace-external", "tests/fixtures/acceptance/workspace-external-invalid", "tests/fixtures/acceptance/workspace-external-linked", "tests/fixtures/acceptance/workspace-external-missing", "tests/fixtures/acceptance/workspace-docs-8.3.26", "tests/fixtures/acceptance/workspace-docs-8.3.27", "tests/fixtures/acceptance/workspace-resolve", "tests/fixtures/acceptance/workspace-form-names", "tests/fixtures/acceptance/workspace-incomplete-borrowed", "tests/fixtures/acceptance/workspace-invalid-borrowing", "tests/fixtures/acceptance/workspace-english", "tests/fixtures/acceptance/workspace-borrowed"},
+                SOURCE_WORKSPACES | {SYMBOL_WORKSPACE, DIAGNOSTICS_WORKSPACE},
                 f"{scenario['id']}: a scenario runs on one of the registered fixture workspaces",
             )
             for index, step in enumerate(scenario["wire"]):
@@ -659,25 +745,436 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
 
 
 class AcceptanceRegistryDocumentTests(unittest.TestCase):
-    """`docs/acceptance-scenarios.md` is the rendered view of the corpus for
-    contributors; it must never drift from the JSON it is generated from."""
+    """The scenario registry is rendered from the corpus when the site is
+    built; it is not committed, so two added scenarios never edit its counts
+    and coverage lists in the same lines."""
 
-    def test_registry_document_is_rendered_from_the_corpus(self) -> None:
+    CONTEXT_ROWS = [
+        ("attribute.add", "Metadata", "MetadataAttributeContainer", "Items"),
+        ("attribute.set", "Metadata", "MetadataAttribute", "Values"),
+        ("attribute.remove", "Metadata", "MetadataAttribute", "Target"),
+        ("command.add", "Metadata", "MetadataCommands", "Items"),
+        ("command.set", "Metadata", "MetadataCommand", "Values"),
+        ("command.remove", "Metadata", "MetadataCommand", "Target"),
+        ("attribute.add", "Form", "Form", "Items"),
+        ("command.add", "Form", "Form", "Items"),
+    ]
+    CONTEXT_REGISTRATIONS = (
+        "(MetadataOperation::AttributeAdd), (MetadataOperation::AttributeSet),"
+        "(MetadataOperation::AttributeRemove), (MetadataOperation::CommandAdd),"
+        "(MetadataOperation::CommandSet), (MetadataOperation::CommandRemove),"
+        "(FormOperation::AttributeAdd), (FormOperation::CommandAdd),"
+    )
+
+    def renderer(self):
         module_path = REPO_ROOT / "scripts" / "ci" / "render-acceptance-registry.py"
         spec = importlib.util.spec_from_file_location("render_acceptance_registry", module_path)
         self.assertIsNotNone(spec)
         assert spec is not None and spec.loader is not None
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        rendered = module.render_document()
-        document = REPO_ROOT / "docs" / "acceptance-scenarios.md"
-        self.assertEqual(
-            document.read_text(encoding="utf-8"),
-            rendered,
-            "docs/acceptance-scenarios.md is stale; run "
-            "`python scripts/ci/render-acceptance-registry.py --write`",
-        )
+        return module
+
+    def test_registry_document_is_rendered_from_the_corpus(self) -> None:
+        with patch("subprocess.Popen", side_effect=AssertionError("registry rendering must not launch Cargo or the product")):
+            module = self.renderer()
+            rendered = module.render_document()
         self.assertIn("## Покрытие реестра `apply`", rendered)
+        corpus = load_acceptance_corpus()
+        self.assertIn(f"**{len(corpus['scenarios'])} сценариев**", rendered)
+        for scenario in corpus["scenarios"]:
+            self.assertIn(f"\n| {scenario['id']} | ", rendered)
+        page = module.render_html(rendered)
+        self.assertIn('id="S047"', page)
+        self.assertIn("описан в <code>tests/fixtures/acceptance/README.md</code>", page)
+
+    def test_role_rows_keep_their_arguments_order_and_implemented_status(self) -> None:
+        module = self.renderer()
+        registry, implemented = module.load_apply_registry()
+        self.assertEqual(
+            [entry for entry in registry if entry[1] == "Role"],
+            [
+                ("role.create", "Role", "Configuration", "Values"),
+                ("right.add", "Role", "Role", "Items"),
+                ("right.set", "Role", "RoleRight", "Values"),
+            ],
+        )
+        rendered = module.render_document()
+        for operation, args in [("role.create", "values"), ("right.add", "items"), ("right.set", "values")]:
+            self.assertIn(operation, implemented)
+            self.assertIn(f"| `{operation}` | `{args}` | да | ", rendered)
+
+    def registration_fixture(self, table, metadata, additional_metadata=None, *, complete_support=True, complete_context=True):
+        # A family-focused fixture keeps unrelated typed families complete.
+        sources = dict(additional_metadata or {})
+        for family in ["support", "metadata", "form"]:
+            filename = f"{family}_operation.rs"
+            if filename not in sources:
+                sources[filename] = (REPO_ROOT / "crates/unica-coder/src/domain" / filename).read_text(encoding="utf-8")
+        if complete_support:
+            table += "\n(SupportOperation::CapabilitySet), (SupportOperation::RuleSet),"
+        if complete_context:
+            table += "\n" + self.CONTEXT_REGISTRATIONS
+        module = self.renderer()
+        with tempfile.TemporaryDirectory(prefix="typed-registry-") as raw:
+            root = Path(raw)
+            registry = root / "apply.rs"
+            registry.write_text(
+                "\noperation_descriptors!(\n" + table + "\n);\n"
+                'const IMPLEMENTED_APPLY_OPERATIONS: &[&str] = &["role.create", "right.add", "right.set"];\n',
+                encoding="utf-8",
+            )
+            if metadata is not None:
+                (root / "role_operation.rs").write_text(metadata, encoding="utf-8")
+            for filename, source in sources.items():
+                if source is not None:
+                    (root / filename).write_text(source, encoding="utf-8")
+            with patch.object(module, "APPLY_REGISTRY", registry):
+                return module.load_apply_registry()
+
+    def test_typed_support_rows_keep_their_metadata_and_registry_order(self) -> None:
+        metadata = (REPO_ROOT / "crates/unica-coder/src/domain/role_operation.rs").read_text(encoding="utf-8")
+        support_metadata = '''support_operations!(
+            CapabilitySet => ("supportCapability.set", Configuration, Values),
+            RuleSet => ("supportRule.set", SupportRule, Values),
+        );'''
+        registry, _ = self.registration_fixture(
+            '(RoleOperation::Create), (RoleOperation::RightAdd), (RoleOperation::RightSet),\n'
+            '(SupportOperation::CapabilitySet),\n'
+            '("query.set", Dcs, DcsQuery, Values),\n'
+            '(SupportOperation::RuleSet),',
+            metadata,
+            {"support_operation.rs": support_metadata},
+            complete_support=False,
+        )
+        self.assertEqual(registry, [
+            ("role.create", "Role", "Configuration", "Values"),
+            ("right.add", "Role", "Role", "Items"),
+            ("right.set", "Role", "RoleRight", "Values"),
+            ("supportCapability.set", "Support", "Configuration", "Values"),
+            ("query.set", "Dcs", "DcsQuery", "Values"),
+            ("supportRule.set", "Support", "SupportRule", "Values"),
+        ] + self.CONTEXT_ROWS)
+
+    def test_support_rows_keep_their_arguments_order_and_implemented_status(self) -> None:
+        module = self.renderer()
+        registry, implemented = module.load_apply_registry()
+        self.assertEqual(
+            [entry for entry in registry if entry[1] == "Support"],
+            [
+                ("supportCapability.set", "Support", "Configuration", "Values"),
+                ("supportRule.set", "Support", "SupportRule", "Values"),
+            ],
+        )
+        rendered = module.render_document()
+        for operation in ["supportCapability.set", "supportRule.set"]:
+            self.assertIn(operation, implemented)
+            self.assertIn(f"| `{operation}` | `values` | да | ", rendered)
+
+    def test_partial_typed_rows_preserve_colliding_names_and_raw_neighbors(self) -> None:
+        metadata = (REPO_ROOT / "crates/unica-coder/src/domain/role_operation.rs").read_text(encoding="utf-8")
+        registry, _ = self.registration_fixture(
+            '(RoleOperation::Create), (RoleOperation::RightAdd), (RoleOperation::RightSet),\n'
+            '(MetadataOperation::AttributeAdd),\n'
+            '(MetadataOperation::AttributeSet),\n'
+            '("object.create", Metadata, Configuration, Values),\n'
+            '(FormOperation::AttributeAdd),\n'
+            '(MetadataOperation::AttributeRemove),\n'
+            '(MetadataOperation::CommandAdd),\n'
+            '(MetadataOperation::CommandSet), (MetadataOperation::CommandRemove),\n'
+            '("item.add", Form, FormItemContainer, Items),\n'
+            '(FormOperation::CommandAdd),',
+            metadata,
+            {
+                "metadata_operation.rs": '''metadata_operations!(
+                    AttributeAdd => ("attribute.add", MetadataAttributeContainer, Items),
+                    AttributeSet => ("attribute.set", MetadataAttribute, Values),
+                    AttributeRemove => ("attribute.remove", MetadataAttribute, Target),
+                    CommandAdd => ("command.add", MetadataCommands, Items),
+                    CommandSet => ("command.set", MetadataCommand, Values),
+                    CommandRemove => ("command.remove", MetadataCommand, Target),
+                );''',
+                "form_operation.rs": '''form_operations!(
+                    AttributeAdd => ("attribute.add", Form, Items),
+                    CommandAdd => ("command.add", Form, Items),
+                );''',
+            },
+            complete_context=False,
+        )
+        self.assertEqual(registry, [
+            ("role.create", "Role", "Configuration", "Values"),
+            ("right.add", "Role", "Role", "Items"),
+            ("right.set", "Role", "RoleRight", "Values"),
+            ("attribute.add", "Metadata", "MetadataAttributeContainer", "Items"),
+            ("attribute.set", "Metadata", "MetadataAttribute", "Values"),
+            ("object.create", "Metadata", "Configuration", "Values"),
+            ("attribute.add", "Form", "Form", "Items"),
+            ("attribute.remove", "Metadata", "MetadataAttribute", "Target"),
+            ("command.add", "Metadata", "MetadataCommands", "Items"),
+            ("command.set", "Metadata", "MetadataCommand", "Values"),
+            ("command.remove", "Metadata", "MetadataCommand", "Target"),
+            ("item.add", "Form", "FormItemContainer", "Items"),
+            ("command.add", "Form", "Form", "Items"),
+            ("supportCapability.set", "Support", "Configuration", "Values"),
+            ("supportRule.set", "Support", "SupportRule", "Values"),
+        ])
+
+    def test_partial_typed_families_keep_the_remaining_raw_operations(self) -> None:
+        module = self.renderer()
+        registry, implemented = module.load_apply_registry()
+        for family, migrated_names, remaining in [
+            ("Metadata", {"attribute.add", "attribute.set", "attribute.remove", "command.add", "command.set", "command.remove"}, 28),
+            ("Form", {"attribute.add", "command.add"}, 7),
+        ]:
+            self.assertEqual(
+                [entry for entry in registry if entry[1] == family and entry[0] in migrated_names],
+                [entry for entry in self.CONTEXT_ROWS if entry[1] == family],
+            )
+            self.assertEqual(sum(entry[1] == family and entry[0] not in migrated_names for entry in registry), remaining)
+            self.assertLessEqual(migrated_names, implemented)
+        self.assertEqual(len(registry), 122)
+        self.assertEqual(len({entry[0] for entry in registry}), 120)
+
+    def test_partial_typed_metadata_cannot_be_missing_duplicated_or_registered_as_raw(self) -> None:
+        role_metadata = (REPO_ROOT / "crates/unica-coder/src/domain/role_operation.rs").read_text(encoding="utf-8")
+        roles = "(RoleOperation::Create), (RoleOperation::RightAdd), (RoleOperation::RightSet),\n"
+        table = roles + self.CONTEXT_REGISTRATIONS
+        for family, applicability in [("Metadata", "MetadataCommands"), ("Form", "Form")]:
+            filename = f"{family.lower()}_operation.rs"
+            table_name = f"{family.lower()}_operations"
+            operation_type = f"{family}Operation"
+            metadata = (REPO_ROOT / "crates/unica-coder/src/domain" / filename).read_text(encoding="utf-8")
+            last_row = f'    CommandAdd => ("command.add", {applicability}, Items),\n'
+            self.assertIn(last_row, metadata)
+            raw = f'("command.add", {family}, {applicability}, Items),'
+            other_type = "FormOperation" if family == "Metadata" else "MetadataOperation"
+            variants = ["AttributeAdd", "AttributeSet", "AttributeRemove", "CommandAdd", "CommandSet", "CommandRemove"] if family == "Metadata" else ["AttributeAdd", "CommandAdd"]
+            without_family = table
+            for variant in variants:
+                without_family = without_family.replace(f"({operation_type}::{variant}),", "")
+            cases = {
+                "unknown typed family": (table.replace(f"{operation_type}::AttributeAdd", "OtherOperation::AttributeAdd"), metadata),
+                "unknown variant": (table.replace(f"{operation_type}::AttributeAdd", f"{operation_type}::Missing"), metadata),
+                "wrong typed family": (table.replace(f"{operation_type}::AttributeAdd", f"{other_type}::AttributeAdd"), metadata),
+                "missing registration": (table.replace(f"({operation_type}::CommandAdd),", ""), metadata),
+                "all family registrations missing": (without_family, metadata),
+                "both partial families missing": (roles, metadata),
+                "duplicate registration": (table + f"({operation_type}::CommandAdd),", metadata),
+                "raw instead of typed": (table.replace(f"({operation_type}::CommandAdd),", raw), metadata),
+                "raw beside complete typed": (table + raw, metadata),
+                "missing metadata file": (table, None),
+                "missing metadata table": (table, metadata.replace(f"\n{table_name}!(", "\nprevious_operations!(")),
+                "repeated metadata table": (table, metadata + f'\n{table_name}!(Extra => ("extra.add", Form, Items),);\n'),
+                "empty metadata table": (table, f"{table_name}!();"),
+                "unterminated metadata table": (table, f'{table_name}!(CommandAdd => ("command.add", {applicability}, Items),'),
+                "missing metadata row": (table, metadata.replace(last_row, "")),
+                "incomplete metadata row": (table, metadata.replace(last_row, f'    CommandAdd => ("command.add", {applicability}),\n')),
+                "unsupported metadata row": (table, metadata.replace(last_row, "    CommandAdd => operation_metadata(),\n")),
+                "nonliteral metadata name": (table, metadata.replace(last_row, f"    CommandAdd => (COMMAND_ADD, {applicability}, Items),\n")),
+                "duplicate metadata variant": (table, metadata.replace(last_row, f'    AttributeAdd => ("command.add", {applicability}, Items),\n')),
+                "duplicate metadata name": (table, metadata.replace(last_row, f'    CommandAdd => ("attribute.add", {applicability}, Items),\n')),
+            }
+            if family == "Metadata":
+                for variant, name, applicability, skeleton in [
+                    ("AttributeSet", "attribute.set", "MetadataAttribute", "Values"),
+                    ("AttributeRemove", "attribute.remove", "MetadataAttribute", "Target"),
+                    ("CommandSet", "command.set", "MetadataCommand", "Values"),
+                    ("CommandRemove", "command.remove", "MetadataCommand", "Target"),
+                ]:
+                    registration = f"({operation_type}::{variant}),"
+                    raw_attribute = f'("{name}", Metadata, {applicability}, {skeleton}),'
+                    cases[f"missing {name} registration"] = (table.replace(registration, ""), metadata)
+                    cases[f"duplicate {name} registration"] = (table + registration, metadata)
+                    cases[f"raw {name} instead of typed"] = (table.replace(registration, raw_attribute), metadata)
+                    cases[f"raw {name} beside complete typed"] = (table + raw_attribute, metadata)
+            for case, (source, family_metadata) in cases.items():
+                with self.subTest(family=family, case=case), self.assertRaises(RuntimeError):
+                    self.registration_fixture(
+                        source, role_metadata, {filename: family_metadata}, complete_context=False,
+                    )
+
+    def test_typed_role_rows_stay_between_their_raw_registry_neighbors(self) -> None:
+        metadata = (REPO_ROOT / "crates/unica-coder/src/domain/role_operation.rs").read_text(encoding="utf-8")
+        registry, _ = self.registration_fixture(
+            '("object.create", Metadata, Configuration, Values),\n'
+            '(RoleOperation::Create),\n'
+            '(RoleOperation::RightAdd),\n'
+            '// A comment is not a descriptor: (OtherOperation::Hidden),\n'
+            '(RoleOperation::RightSet),\n'
+            '("query.set", Dcs, DcsQuery, Values),',
+            metadata,
+        )
+        self.assertEqual(registry, [
+            ("object.create", "Metadata", "Configuration", "Values"),
+            ("role.create", "Role", "Configuration", "Values"),
+            ("right.add", "Role", "Role", "Items"),
+            ("right.set", "Role", "RoleRight", "Values"),
+            ("query.set", "Dcs", "DcsQuery", "Values"),
+            ("supportCapability.set", "Support", "Configuration", "Values"),
+            ("supportRule.set", "Support", "SupportRule", "Values"),
+        ] + self.CONTEXT_ROWS)
+
+    def test_role_metadata_survives_split_impls_and_unrelated_helpers(self) -> None:
+        metadata = (REPO_ROOT / "crates/unica-coder/src/domain/role_operation.rs").read_text(encoding="utf-8")
+        contract = "    pub(crate) fn contract(self) -> OperationContract {"
+        self.assertEqual(metadata.count(contract), 1)
+        metadata = metadata.replace(
+            contract,
+            '}\n\n// role_operations!(Commented => ("ignored.operation", Configuration, Values),);\n'
+            'impl RoleOperation {\n'
+            '    #[allow(dead_code)]\n'
+            '    fn unrelated_metadata_hint(self) -> &\'static str { "role_operations!(NotATable)" }\n\n'
+            + contract,
+        )
+        registry, _ = self.registration_fixture(
+            "(RoleOperation::Create), (RoleOperation::RightAdd), (RoleOperation::RightSet),",
+            metadata,
+        )
+        self.assertEqual(registry, [
+            ("role.create", "Role", "Configuration", "Values"),
+            ("right.add", "Role", "Role", "Items"),
+            ("right.set", "Role", "RoleRight", "Values"),
+            ("supportCapability.set", "Support", "Configuration", "Values"),
+            ("supportRule.set", "Support", "SupportRule", "Values"),
+        ] + self.CONTEXT_ROWS)
+
+    def test_unknown_or_incomplete_typed_metadata_cannot_silently_drop_a_role(self) -> None:
+        metadata = (REPO_ROOT / "crates/unica-coder/src/domain/role_operation.rs").read_text(encoding="utf-8")
+        table = '("query.set", Dcs, DcsQuery, Values),\n' + "\n".join(
+            f"(RoleOperation::{variant})," for variant in ["Create", "RightAdd", "RightSet"]
+        )
+        last_row = '    RightSet => ("right.set", RoleRight, Values),\n'
+        self.assertIn(last_row, metadata)
+        cases = {
+            "unknown typed family": (table.replace("RoleOperation::Create", "OtherOperation::Create"), metadata),
+            "unknown variant": (table.replace("RoleOperation::Create", "RoleOperation::Missing"), metadata),
+            "missing registration": (table.replace("(RoleOperation::RightSet),", ""), metadata),
+            "all typed registrations missing": ('("query.set", Dcs, DcsQuery, Values),', metadata),
+            "duplicate registration": (table + "\n(RoleOperation::Create),", metadata),
+            "missing metadata file": (table, None),
+            "missing metadata table": (table, metadata.replace("\nrole_operations!(", "\nprevious_role_operations!(")),
+            "repeated metadata table": (table, metadata + '\nrole_operations!(Extra => ("role.extra", Configuration, Values),);\n'),
+            "empty metadata table": (table, "role_operations!();"),
+            "unterminated metadata table": (table, 'role_operations!(Create => ("role.create", Configuration, Values),'),
+            "missing metadata row": (table, metadata.replace(last_row, "")),
+            "incomplete metadata row": (table, metadata.replace(last_row, '    RightSet => ("right.set", RoleRight),\n')),
+            "unsupported metadata row": (table, metadata.replace(last_row, '    RightSet => role_metadata(),\n')),
+            "nonliteral metadata name": (table, metadata.replace(last_row, '    RightSet => (RIGHT_SET, RoleRight, Values),\n')),
+            "duplicate metadata variant": (table, metadata.replace(last_row, '    RightAdd => ("right.set", RoleRight, Values),\n')),
+            "duplicate metadata name": (table, metadata.replace(last_row, '    RightSet => ("right.add", RoleRight, Values),\n')),
+        }
+        for case, (source, role_metadata) in cases.items():
+            with self.subTest(case=case), self.assertRaises(RuntimeError):
+                self.registration_fixture(source, role_metadata)
+
+    def test_unknown_or_incomplete_typed_metadata_cannot_silently_drop_support(self) -> None:
+        metadata = (REPO_ROOT / "crates/unica-coder/src/domain/role_operation.rs").read_text(encoding="utf-8")
+        support_metadata = (REPO_ROOT / "crates/unica-coder/src/domain/support_operation.rs").read_text(encoding="utf-8")
+        roles = "(RoleOperation::Create), (RoleOperation::RightAdd), (RoleOperation::RightSet),\n"
+        table = roles + "(SupportOperation::CapabilitySet), (SupportOperation::RuleSet),"
+        last_row = '    RuleSet => ("supportRule.set", SupportRule, Values),\n'
+        self.assertIn(last_row, support_metadata)
+        cases = {
+            "unknown typed family": (table.replace("SupportOperation::CapabilitySet", "OtherOperation::CapabilitySet"), support_metadata),
+            "unknown variant": (table.replace("SupportOperation::CapabilitySet", "SupportOperation::Missing"), support_metadata),
+            "missing registration": (table.replace("(SupportOperation::RuleSet),", ""), support_metadata),
+            "all typed registrations missing": (roles, support_metadata),
+            "duplicate registration": (table + "\n(SupportOperation::CapabilitySet),", support_metadata),
+            "missing metadata file": (table, None),
+            "missing metadata table": (table, support_metadata.replace("\nsupport_operations!(", "\nprevious_support_operations!(")),
+            "repeated metadata table": (table, support_metadata + '\nsupport_operations!(Extra => ("support.extra", Configuration, Values),);\n'),
+            "empty metadata table": (table, "support_operations!();"),
+            "unterminated metadata table": (table, 'support_operations!(CapabilitySet => ("supportCapability.set", Configuration, Values),'),
+            "missing metadata row": (table, support_metadata.replace(last_row, "")),
+            "incomplete metadata row": (table, support_metadata.replace(last_row, '    RuleSet => ("supportRule.set", SupportRule),\n')),
+            "unsupported metadata row": (table, support_metadata.replace(last_row, '    RuleSet => support_metadata(),\n')),
+            "nonliteral metadata name": (table, support_metadata.replace(last_row, '    RuleSet => (SUPPORT_RULE_SET, SupportRule, Values),\n')),
+            "duplicate metadata variant": (table, support_metadata.replace(last_row, '    CapabilitySet => ("supportRule.set", SupportRule, Values),\n')),
+            "duplicate metadata name": (table, support_metadata.replace(last_row, '    RuleSet => ("supportCapability.set", SupportRule, Values),\n')),
+        }
+        for case, (source, support_source) in cases.items():
+            with self.subTest(case=case), self.assertRaises(RuntimeError):
+                self.registration_fixture(
+                    source, metadata, {"support_operation.rs": support_source}, complete_support=False,
+                )
+
+    def test_support_metadata_survives_split_impls_and_unrelated_helpers(self) -> None:
+        metadata = (REPO_ROOT / "crates/unica-coder/src/domain/role_operation.rs").read_text(encoding="utf-8")
+        support_metadata = (REPO_ROOT / "crates/unica-coder/src/domain/support_operation.rs").read_text(encoding="utf-8")
+        contract = "    pub(crate) fn contract(self) -> OperationContract {"
+        self.assertEqual(support_metadata.count(contract), 1)
+        support_metadata = support_metadata.replace(
+            contract,
+            '}\n\n// support_operations!(Commented => ("ignored.operation", Configuration, Values),);\n'
+            'impl SupportOperation {\n'
+            '    #[allow(dead_code)]\n'
+            '    fn unrelated_metadata_hint(self) -> &\'static str { "support_operations!(NotATable)" }\n\n'
+            + contract,
+        )
+        registry, _ = self.registration_fixture(
+            "(RoleOperation::Create), (RoleOperation::RightAdd), (RoleOperation::RightSet),",
+            metadata, {"support_operation.rs": support_metadata},
+        )
+        self.assertEqual([entry for entry in registry if entry[1] == "Support"], [
+            ("supportCapability.set", "Support", "Configuration", "Values"),
+            ("supportRule.set", "Support", "SupportRule", "Values"),
+        ])
+
+    def test_raw_typed_family_rows_cannot_bypass_complete_typed_registrations(self) -> None:
+        metadata = (REPO_ROOT / "crates/unica-coder/src/domain/role_operation.rs").read_text(encoding="utf-8")
+        roles = "(RoleOperation::Create), (RoleOperation::RightAdd), (RoleOperation::RightSet),"
+        support = "(SupportOperation::CapabilitySet), (SupportOperation::RuleSet),"
+        raw_roles = (
+            '("role.create", Role, Configuration, Values),'
+            '("right.add", Role, Role, Items),'
+            '("right.set", Role, RoleRight, Values),'
+        )
+        raw_support = (
+            '("supportCapability.set", Support, Configuration, Values),'
+            '("supportRule.set", Support, SupportRule, Values),'
+        )
+        for table in [
+            roles + support + raw_roles,
+            roles + support + raw_support,
+            raw_roles + support,
+            roles + raw_support,
+        ]:
+            with self.subTest(table=table), self.assertRaises(RuntimeError):
+                self.registration_fixture(table, metadata, complete_support=False)
+
+    def test_metadata_table_locator_ignores_comments_strings_and_character_literals(self) -> None:
+        metadata = (REPO_ROOT / "crates/unica-coder/src/domain/role_operation.rs").read_text(encoding="utf-8")
+        decoy = 'role_operations!(Decoy => ("ignored.operation", Configuration, Values),);'
+        prefix = (
+            '// ' + decoy + '\n'
+            '/* outer /* nested */ ' + decoy + ' */\n'
+            'const ORDINARY: &str = ' + json.dumps(decoy) + ';\n'
+            'const RAW: &str = r###"a quoted \" prefix ' + decoy + '"###;\n'
+            'const RAW_BYTES: &[u8] = br##"a quoted \" prefix ' + decoy + '"##;\n'
+            'fn unused_c_literal() { let _ = cr#"left " role_operations!(NotATable); right"#; }\n'
+            'fn quote_marker() -> char { \'"\' }\n'
+            'fn byte_quote_marker() -> u8 { b\'"\' }\n'
+            "fn lifetime_probe<'a>(value: &'a str) -> &'a str { value }\n"
+        )
+        table = "(RoleOperation::Create), (RoleOperation::RightAdd), (RoleOperation::RightSet),"
+        expected, implemented = self.registration_fixture(table, metadata)
+        for family in ["Role", "Support", "Metadata", "Form"]:
+            family_prefix = prefix.replace("role_operations", f"{family.lower()}_operations")
+            filename = f"{family.lower()}_operation.rs"
+            family_metadata = (REPO_ROOT / "crates/unica-coder/src/domain" / filename).read_text(encoding="utf-8")
+            with self.subTest(family=family):
+                role_source = family_prefix + metadata if family == "Role" else metadata
+                actual, actual_implemented = self.registration_fixture(
+                    table, role_source,
+                    {} if family == "Role" else {filename: family_prefix + family_metadata},
+                )
+                self.assertEqual(actual, expected)
+                self.assertEqual(actual_implemented, implemented)
+                with self.assertRaises(RuntimeError):
+                    self.registration_fixture(
+                        table, family_prefix if family == "Role" else metadata,
+                        {} if family == "Role" else {filename: family_prefix},
+                    )
 
 
 class AcceptanceCorpusRunTests(unittest.TestCase):
@@ -690,7 +1187,7 @@ class AcceptanceCorpusRunTests(unittest.TestCase):
             cwd=REPO_ROOT,
             check=True,
         )
-        cls.corpus = load_corpus(CORPUS)
+        cls.corpus = load_acceptance_corpus()
         for scenario in cls.corpus["scenarios"]:
             declared = set()
             for step in scenario["wire"]:
@@ -824,6 +1321,7 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None):
             state = home / "state"
             state.mkdir()
             environment = isolated_environment(plugin, state) if plugin else None
+            environment = source_fixture_environment(workspace_relative, environment)
             server_type = DeliveredAcceptanceServer if plugin else AcceptanceServer
             return server_type(workspace, state, corpus["protocolVersion"], environment)
 
@@ -840,7 +1338,7 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None):
                     server.close()
                     current_workspace = wanted
                     server = fresh_server(current_workspace)
-                context = {}
+                context = {"workspace": server.workspace}
                 broken = False
                 finish = scenario_driver(server, scenario) if scenario_driver else None
                 verification = []
@@ -875,7 +1373,7 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None):
                     # node proves the verdict it froze; without these two
                     # checks a typo in an address or a failing validator
                     # would pass as the intended outcome.
-                    structured = response.get("result", {}).get("structuredContent") or {}
+                    structured = tool_result(response) or {}
                     verification.append({"tool": step["tool"], "args": arguments, "result": structured})
                     failures = content_mismatches(step, structured, actual, note, server.workspace, context)
                     if not failures:
@@ -921,7 +1419,7 @@ class AcceptanceDeliveryCorpusRunTests(unittest.TestCase):
     def setUpClass(cls):
         subprocess.run(["cargo", "build", "--quiet", "--locked", "--package", "unica-coder", "--bin", "unica"],
                        cwd=REPO_ROOT, check=True)
-        cls.corpus = load_corpus(CORPUS)
+        cls.corpus = load_acceptance_corpus()
         for scenario in cls.corpus["scenarios"]:
             declared = set()
             for step in scenario["wire"]:
@@ -965,7 +1463,7 @@ class AcceptanceFaultCorpusRunTests(unittest.TestCase):
     def setUpClass(cls):
         subprocess.run(["cargo", "build", "--quiet", "--locked", "--package", "unica-coder", "--bin", "unica"],
                        cwd=REPO_ROOT, check=True)
-        cls.corpus = load_corpus(CORPUS)
+        cls.corpus = load_acceptance_corpus()
 
     def test_controlled_jsonl_faults_preserve_public_reason_without_provider_input(self):
         from tests.ci.acceptance_faults import stage_fault_producer, fault_driver

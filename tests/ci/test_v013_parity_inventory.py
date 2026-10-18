@@ -12,6 +12,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.ci.acceptance_controls import load_acceptance_corpus
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -887,14 +889,22 @@ class V013ParityInventoryTest(unittest.TestCase):
         """A case that cites the acceptance corpus must cite a scenario that
         exists and freezes the same answer; a dangling or mismatched citation
         would let a parity shard claim evidence the corpus never gives."""
+        # The corpus file names the whole corpus: the closed S### block and
+        # the per-file scenarios load together, and a case may also cite a
+        # per-file scenario by its own path.
         corpus_path = "tests/fixtures/acceptance/scenario-corpus.json"
-        corpus = json.loads((REPO_ROOT / corpus_path).read_text(encoding="utf-8"))
+        scenario_dir = "tests/fixtures/acceptance/scenarios/"
+        corpus = load_acceptance_corpus()
         scenarios = {scenario["id"]: scenario for scenario in corpus["scenarios"]}
         documents, _, _ = load_repository_inputs(REPO_ROOT)
         offenders = []
         for shard, document in documents.items():
             for case in document.get("cases", []):
-                if case.get("fixture") != corpus_path:
+                fixture = case.get("fixture") or ""
+                if fixture != corpus_path and not fixture.startswith(scenario_dir):
+                    continue
+                if fixture.startswith(scenario_dir) and fixture != f"{scenario_dir}{case['expected'].get('scenario')}.json":
+                    offenders.append(f"{shard}:{case['caseId']} cites {fixture} for {case['expected'].get('scenario')!r}")
                     continue
                 expected = case["expected"]
                 scenario = scenarios.get(expected.get("scenario"))

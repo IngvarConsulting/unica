@@ -15,7 +15,7 @@ use crate::infrastructure::internal_adapters::{
 use crate::infrastructure::platform::StreamControl;
 use crate::infrastructure::redaction::redactor;
 use crate::infrastructure::rlm_navigation::RlmNavigationAdapter;
-use crate::infrastructure::workspace_index::{read_bsl_index_status, IndexReadiness};
+use crate::infrastructure::workspace_index::IndexReadiness;
 use crate::infrastructure::workspace_services::{
     WorkspaceRlmOperation, WorkspaceServiceBslCall, WorkspaceServiceBslOutput,
     WorkspaceServiceManager, WorkspaceServiceRlmCall, WorkspaceServiceRlmOutput,
@@ -662,7 +662,7 @@ impl CodeIntelligenceProvider for BslAnalyzerProvider<'_> {
     }
 }
 
-trait RlmSearchClient: Send + Sync {
+pub(crate) trait RlmSearchClient: Send + Sync {
     fn search(
         &self,
         context: &CodeIntelligenceContext,
@@ -673,9 +673,10 @@ trait RlmSearchClient: Send + Sync {
     ) -> Result<RlmSearchAttempt, String>;
 }
 
-enum RlmSearchAttempt {
+pub(crate) enum RlmSearchAttempt {
     Output(WorkspaceServiceRlmOutput),
     Unready(IndexReadiness),
+    DeadlineExceeded,
 }
 
 struct WorkspaceRlmSearchClient;
@@ -691,71 +692,86 @@ impl RlmSearchClient for WorkspaceRlmSearchClient {
     ) -> Result<RlmSearchAttempt, String> {
         let started_at = std::time::Instant::now();
         let manager = WorkspaceServiceManager::new();
-        let mut reported_detail = None;
-        let mut backoff = Duration::from_millis(100);
-        loop {
-            if cancellation.is_cancelled() {
-                return Err(cancelled_error("RLM search wait stopped"));
-            }
-            let Some(remaining) = timeout.checked_sub(started_at.elapsed()) else {
-                return Ok(RlmSearchAttempt::Unready(IndexReadiness::Building));
-            };
-            if remaining.is_zero() {
-                return Ok(RlmSearchAttempt::Unready(IndexReadiness::Building));
-            }
-            let attempt = manager.call_rlm_cancellable(
-                &context.workspace,
-                &context.source_root.path,
-                WorkspaceRlmOperation::Search {
-                    query: query.to_string(),
-                    limit,
-                },
-                remaining,
-                cancellation,
-            )?;
-            let readiness = match attempt {
-                WorkspaceServiceRlmCall::Output(output) => {
-                    return Ok(RlmSearchAttempt::Output(output));
-                }
-                WorkspaceServiceRlmCall::Unready(readiness) => readiness,
-            };
-            if matches!(
-                readiness,
-                IndexReadiness::Failed(_) | IndexReadiness::Unavailable(_)
-            ) {
-                return Ok(RlmSearchAttempt::Unready(readiness));
-            }
-            let detail = rlm_index_progress_detail(&context.workspace, &context.source_root.path);
-            if reported_detail.as_deref() != Some(detail) {
-                context.report_progress(ProviderProgressUpdate {
-                    phase: SearchProviderPhase::Preparing,
-                    detail_code: Some(detail.to_string()),
-                    results_found: 0,
-                });
-                reported_detail = Some(detail.to_string());
-            }
-            let Some(remaining) = timeout.checked_sub(started_at.elapsed()) else {
-                return Ok(RlmSearchAttempt::Unready(readiness));
-            };
-            if remaining.is_zero() {
-                return Ok(RlmSearchAttempt::Unready(readiness));
-            }
-            cancellable_sleep(backoff.min(remaining), cancellation)?;
-            backoff = (backoff * 2).min(Duration::from_secs(1));
-        }
+        wait_for_rlm_search(
+            context,
+            timeout,
+            cancellation,
+            || started_at.elapsed(),
+            |remaining| {
+                manager.call_rlm_cancellable(
+                    &context.workspace,
+                    &context.source_root.path,
+                    WorkspaceRlmOperation::Search {
+                        query: query.to_string(),
+                        limit,
+                    },
+                    remaining,
+                    cancellation,
+                )
+            },
+            |duration| cancellable_sleep(duration, cancellation),
+        )
     }
 }
 
-fn rlm_index_progress_detail(context: &WorkspaceContext, source_root: &Path) -> &'static str {
-    let is_update = read_bsl_index_status(context, source_root)
-        .ok()
-        .flatten()
-        .and_then(|status| status.message)
-        .is_some_and(|message| message.contains("update"));
-    if is_update {
-        "updatingIndex"
-    } else {
-        "buildingIndex"
+fn wait_for_rlm_search(
+    context: &CodeIntelligenceContext,
+    timeout: Duration,
+    cancellation: &CancellationToken,
+    mut elapsed: impl FnMut() -> Duration,
+    mut call: impl FnMut(Duration) -> Result<WorkspaceServiceRlmCall, String>,
+    mut wait: impl FnMut(Duration) -> Result<(), String>,
+) -> Result<RlmSearchAttempt, String> {
+    let mut reported_detail = None;
+    let mut last_observed = None;
+    let mut backoff = Duration::from_millis(100);
+    loop {
+        if cancellation.is_cancelled() {
+            return Err(cancelled_error("RLM search wait stopped"));
+        }
+        let Some(remaining) = timeout
+            .checked_sub(elapsed())
+            .filter(|remaining| !remaining.is_zero())
+        else {
+            return Ok(last_observed.map_or(
+                RlmSearchAttempt::DeadlineExceeded,
+                RlmSearchAttempt::Unready,
+            ));
+        };
+        let attempt = call(remaining)?;
+        let readiness = match attempt {
+            WorkspaceServiceRlmCall::Output(output) => {
+                return Ok(RlmSearchAttempt::Output(output));
+            }
+            WorkspaceServiceRlmCall::Unready(readiness) => readiness,
+        };
+        if !matches!(readiness, IndexReadiness::Queued | IndexReadiness::Building) {
+            return Ok(RlmSearchAttempt::Unready(readiness));
+        }
+        let detail = rlm_index_progress_detail(&readiness);
+        if reported_detail.as_deref() != Some(detail) {
+            context.report_progress(ProviderProgressUpdate {
+                phase: SearchProviderPhase::Preparing,
+                detail_code: Some(detail.to_string()),
+                results_found: 0,
+            });
+            reported_detail = Some(detail.to_string());
+        }
+        let remaining = timeout.saturating_sub(elapsed());
+        if remaining.is_zero() {
+            return Ok(RlmSearchAttempt::Unready(readiness));
+        }
+        last_observed = Some(readiness);
+        wait(backoff.min(remaining))?;
+        backoff = (backoff * 2).min(Duration::from_secs(1));
+    }
+}
+
+fn rlm_index_progress_detail(readiness: &IndexReadiness) -> &'static str {
+    match readiness {
+        IndexReadiness::Queued => "indexQueued",
+        IndexReadiness::Building => "buildingIndex",
+        _ => "indexStatusUnknown",
     }
 }
 
@@ -774,15 +790,17 @@ fn cancellable_sleep(duration: Duration, cancellation: &CancellationToken) -> Re
 fn rlm_search_unready_error(readiness: IndexReadiness) -> String {
     match readiness {
         IndexReadiness::Ready { .. } => "RLM index readiness changed unexpectedly".to_string(),
-        IndexReadiness::Missing => "rlm index is missing; background build requested".to_string(),
+        IndexReadiness::Missing => "rlm index is missing; maintenance state is unknown".to_string(),
         IndexReadiness::Stale { status } => format!(
-            "rlm index is stale ({}); background update requested",
+            "rlm index is stale ({}); maintenance state is unknown",
             redactor(&status)
         ),
         IndexReadiness::Building => "rlm index building".to_string(),
+        IndexReadiness::Queued => "rlm index maintenance queued".to_string(),
         IndexReadiness::Incomplete => {
-            "rlm index recovery update pending; retry after maintenance".to_string()
+            "rlm index is incomplete; maintenance state is unknown".to_string()
         }
+        IndexReadiness::MaintenanceUnavailable(evidence) => evidence.summary().to_string(),
         IndexReadiness::Failed(error) | IndexReadiness::Unavailable(error) => redactor(&error),
     }
 }
@@ -803,7 +821,7 @@ impl RlmProvider<'static> {
 
 impl<'a> RlmProvider<'a> {
     #[cfg(test)]
-    fn with_client(client: &'a (dyn RlmSearchClient + Send + Sync)) -> Self {
+    pub(crate) fn with_client(client: &'a (dyn RlmSearchClient + Send + Sync)) -> Self {
         Self { client }
     }
 }
@@ -871,49 +889,42 @@ impl CodeIntelligenceProvider for RlmProvider<'_> {
             Err(error) if error.starts_with(CANCELLED_PREFIX) => {
                 return failed_section(ProviderId::Rlm, error);
             }
-            Err(error)
-                if error.contains("source revision")
-                    || provider_engine_absent(&context.workspace.cwd, "rlm-bsl-mcp") =>
-            {
-                if error.contains("source revision") {
-                    context.report_progress(ProviderProgressUpdate {
-                        phase: SearchProviderPhase::Preparing,
-                        detail_code: Some("sourceRevisionUntrusted".to_string()),
-                        results_found: 0,
-                    });
-                }
+            Err(error) if provider_engine_absent(&context.workspace.cwd, "rlm-bsl-mcp") => {
                 return unavailable_section(ProviderId::Rlm, redactor(&error));
             }
             Err(error) => return failed_section(ProviderId::Rlm, error),
         };
         match attempt {
+            RlmSearchAttempt::DeadlineExceeded => ProviderSearchSection::timed_out(
+                ProviderId::Rlm.identity(),
+                SearchRanking::None,
+                SearchOrdering::Provider,
+                Vec::new(),
+                vec![
+                    "RLM provider deadline exceeded before observing index maintenance".to_string(),
+                ],
+            )
+            .expect("a deadline-expired RLM section is valid"),
             RlmSearchAttempt::Output(result) => {
                 let mut section =
                     parse_rlm_search(&result.result_text, context, request.limit, cancellation);
                 section.index_freshness =
                     Some(result.freshness.unwrap_or_else(|| "unknown".to_string()));
                 section.index_build_id = result.build_id;
+                if let Some(maintenance) = result.maintenance {
+                    section.index_maintenance = Some(maintenance.evidence());
+                }
                 section
             }
             RlmSearchAttempt::Unready(readiness) => {
+                let maintenance = readiness.maintenance_evidence();
                 let dependency_detail = match &readiness {
-                    IndexReadiness::Missing | IndexReadiness::Building => Some("buildingIndex"),
-                    IndexReadiness::Stale { .. } | IndexReadiness::Incomplete => {
-                        Some("updatingIndex")
-                    }
-                    IndexReadiness::Ready { .. }
-                    | IndexReadiness::Failed(_)
-                    | IndexReadiness::Unavailable(_) => None,
+                    IndexReadiness::Queued => Some("indexQueued"),
+                    IndexReadiness::Building => Some("buildingIndex"),
+                    _ => None,
                 };
                 let diagnostic = rlm_search_unready_error(readiness);
-                if diagnostic.contains("source revision") {
-                    context.report_progress(ProviderProgressUpdate {
-                        phase: SearchProviderPhase::Preparing,
-                        detail_code: Some("sourceRevisionUntrusted".to_string()),
-                        results_found: 0,
-                    });
-                }
-                if let Some(detail_code) = dependency_detail {
+                let mut section = if let Some(detail_code) = dependency_detail {
                     ProviderSearchSection::dependency_pending(
                         ProviderId::Rlm.identity(),
                         SearchRanking::None,
@@ -925,7 +936,9 @@ impl CodeIntelligenceProvider for RlmProvider<'_> {
                     .expect("dependency-pending RLM section is valid")
                 } else {
                     unavailable_section(ProviderId::Rlm, diagnostic)
-                }
+                };
+                section.index_maintenance = maintenance;
+                section
             }
         }
     }
@@ -1849,15 +1862,17 @@ mod tests {
         CallEdgeProvenance, CallGraphDirection, CallGraphState, CodeIntelligenceContext,
         CodeIntelligenceProvider, CodeIntelligenceReadData, CodeIntelligenceReadRequest,
         CodeIntelligenceRegistry, CodeSearchScope, ProviderCapability, ProviderDeadline,
-        ProviderId, ProviderSectionStatus, RelativeSearchFilter, SearchCountRelation,
-        SearchRequest,
+        ProviderId, ProviderSearchSection, ProviderSectionStatus, RelativeSearchFilter,
+        SearchCountRelation, SearchRequest,
     };
     use crate::domain::source_location::SourceLocation;
     use crate::domain::source_roots::ResolvedSourceRoot;
     use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::internal_adapters::{ProcessCommand, ProcessOutput, ProcessRunner};
     use crate::infrastructure::workspace_index::IndexReadiness;
-    use crate::infrastructure::workspace_services::WorkspaceServiceBslOutput;
+    use crate::infrastructure::workspace_services::{
+        WorkspaceServiceBslOutput, WorkspaceServiceRlmCall,
+    };
     use serde_json::{json, Value};
 
     /// Замеренные ответы анализатора, а не придуманные.
@@ -2524,11 +2539,8 @@ mod tests {
         );
     }
 
-    /// The generated cache is not source. `source_roots` and `source_revision`
-    /// already skip `.build` while walking, and
-    /// `source_generation_ignores_generated_build_cache_but_tracks_bsl_source`
-    /// names `<sourceRoot>/.build/bsl-graph.db` as the artefact they skip. The
-    /// lexical corpus has to agree: `.build` sorts before every metadata
+    /// The generated cache is not source. The lexical corpus skips
+    /// `<sourceRoot>/.build/bsl-graph.db`: `.build` sorts before every metadata
     /// directory, `git grep` emits in path order, and on a real workspace the
     /// analyzer databases there run to gigabytes. A corpus that keeps them
     /// spends the whole provider budget reading Unica's own index of the very
@@ -3206,7 +3218,7 @@ mod tests {
     }
 
     #[test]
-    fn bsl_analyzer_empty_results_with_ready_indexing_footer_are_empty() {
+    fn bsl_analyzer_empty_results_with_index_ready_footer_are_empty() {
         for text in [
             "No results found.",
             "No results found.\nIndexing lexical: ready\nIndexing semantic: disabled",
@@ -3905,6 +3917,7 @@ mod tests {
                         stderr: String::new(),
                         freshness: Some("unknown".to_string()),
                         build_id: Some("test-build".to_string()),
+                        maintenance: None,
                     },
                 )),
                 readiness => Ok(RlmSearchAttempt::Unready(readiness.clone())),
@@ -3935,10 +3948,212 @@ mod tests {
                         stderr: String::new(),
                         freshness: Some("unknown".to_string()),
                         build_id: Some("test-build".to_string()),
+                        maintenance: None,
                     },
                 )),
                 readiness => Ok(RlmSearchAttempt::Unready(readiness.clone())),
             }
+        }
+    }
+
+    // This client exercises the production wait loop. Only the clock,
+    // service boundary and sleep are controlled; no ready-made attempt is injected.
+    struct ControlledRlmWaitClient {
+        readiness: Vec<IndexReadiness>,
+        elapsed_before_wait: Duration,
+        wait_overshoot: Duration,
+        cancel_on_wait: bool,
+        calls: Mutex<Vec<Duration>>,
+    }
+
+    impl RlmSearchClient for ControlledRlmWaitClient {
+        fn search(
+            &self,
+            context: &CodeIntelligenceContext,
+            _query: &str,
+            _limit: usize,
+            timeout: Duration,
+            cancellation: &CancellationToken,
+        ) -> Result<RlmSearchAttempt, String> {
+            let started_at = manual_now();
+            set_manual_now(started_at + self.elapsed_before_wait);
+            let mut next = 0;
+            super::wait_for_rlm_search(
+                context,
+                timeout,
+                cancellation,
+                || manual_now().duration_since(started_at),
+                |remaining| {
+                    self.calls.lock().unwrap().push(remaining);
+                    let readiness = self
+                        .readiness
+                        .get(next)
+                        .expect("the wait loop dispatched beyond the controlled sequence")
+                        .clone();
+                    next += 1;
+                    Ok(WorkspaceServiceRlmCall::Unready(readiness))
+                },
+                |duration| {
+                    set_manual_now(manual_now() + duration + self.wait_overshoot);
+                    if self.cancel_on_wait {
+                        cancellation.cancel();
+                    }
+                    Ok(())
+                },
+            )
+        }
+    }
+
+    fn controlled_rlm_wait_section(
+        client: &ControlledRlmWaitClient,
+        budget: Duration,
+        cancellation: &CancellationToken,
+    ) -> ProviderSearchSection {
+        let started_at = Instant::now();
+        set_manual_now(started_at);
+        RlmProvider::with_client(client).search(
+            &SearchRequest {
+                query: "Find".into(),
+                limit: 20,
+            },
+            &context(),
+            ProviderDeadline::with_clock(started_at + budget, manual_now),
+            cancellation,
+        )
+    }
+
+    #[test]
+    fn rlm_wait_deadline_preserves_the_last_observed_maintenance() {
+        use crate::domain::code_intelligence::{IndexMaintenanceEvidence, SearchTerminationCode};
+        for overshoot in [Duration::ZERO, Duration::from_nanos(1)] {
+            for (states, budget, detail, evidence) in [
+                (
+                    vec![IndexReadiness::Queued],
+                    Duration::from_millis(100),
+                    "indexQueued",
+                    IndexMaintenanceEvidence::Queued,
+                ),
+                (
+                    vec![IndexReadiness::Building],
+                    Duration::from_millis(100),
+                    "buildingIndex",
+                    IndexMaintenanceEvidence::Running,
+                ),
+                (
+                    vec![IndexReadiness::Queued, IndexReadiness::Building],
+                    Duration::from_millis(300),
+                    "buildingIndex",
+                    IndexMaintenanceEvidence::Running,
+                ),
+            ] {
+                let expected_calls = states.len();
+                let client = ControlledRlmWaitClient {
+                    readiness: states,
+                    elapsed_before_wait: Duration::ZERO,
+                    wait_overshoot: overshoot,
+                    cancel_on_wait: false,
+                    calls: Mutex::new(Vec::new()),
+                };
+                let section =
+                    controlled_rlm_wait_section(&client, budget, &CancellationToken::new());
+                assert_eq!(
+                    section.status,
+                    ProviderSectionStatus::TimedOut,
+                    "{section:?}"
+                );
+                let termination = section.termination.as_ref().unwrap();
+                assert_eq!(termination.code, SearchTerminationCode::DependencyPending);
+                assert_eq!(termination.detail_code.as_deref(), Some(detail));
+                assert!(termination.retryable);
+                assert_eq!(section.index_maintenance, Some(evidence));
+                let calls = client.calls.lock().unwrap();
+                assert_eq!(calls.len(), expected_calls);
+                assert_eq!(calls[0], budget);
+                if expected_calls == 2 {
+                    assert_eq!(calls[1], budget - Duration::from_millis(100) - overshoot);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rlm_wait_deadline_before_observation_is_typed_without_maintenance() {
+        use crate::domain::code_intelligence::SearchTerminationCode;
+        let budget = Duration::from_millis(100);
+        for overshoot in [Duration::ZERO, Duration::from_nanos(1)] {
+            let client = ControlledRlmWaitClient {
+                readiness: Vec::new(),
+                elapsed_before_wait: budget + overshoot,
+                wait_overshoot: Duration::ZERO,
+                cancel_on_wait: false,
+                calls: Mutex::new(Vec::new()),
+            };
+            let section = controlled_rlm_wait_section(&client, budget, &CancellationToken::new());
+            assert_eq!(
+                section.status,
+                ProviderSectionStatus::TimedOut,
+                "{section:?}"
+            );
+            let termination = section.termination.as_ref().unwrap();
+            assert_eq!(termination.code, SearchTerminationCode::DeadlineExceeded);
+            assert!(termination.retryable);
+            assert_eq!(termination.detail_code, None);
+            assert_eq!(section.index_maintenance, None);
+            assert!(client.calls.lock().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn rlm_wait_cancellation_wins_over_expiration_and_observed_maintenance() {
+        for readiness in [IndexReadiness::Queued, IndexReadiness::Building] {
+            let client = ControlledRlmWaitClient {
+                readiness: vec![readiness],
+                elapsed_before_wait: Duration::ZERO,
+                wait_overshoot: Duration::from_nanos(1),
+                cancel_on_wait: true,
+                calls: Mutex::new(Vec::new()),
+            };
+            let section = controlled_rlm_wait_section(
+                &client,
+                Duration::from_millis(100),
+                &CancellationToken::new(),
+            );
+            assert_eq!(section.status, ProviderSectionStatus::Failed);
+            assert!(section.diagnostics[0].starts_with(CANCELLED_PREFIX));
+            assert_eq!(section.index_maintenance, None);
+            assert_eq!(client.calls.lock().unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn rlm_wait_terminal_observation_supersedes_prior_maintenance() {
+        use crate::domain::code_intelligence::{IndexMaintenanceEvidence, SearchTerminationCode};
+        for evidence in [
+            IndexMaintenanceEvidence::Unknown,
+            IndexMaintenanceEvidence::StartFailed,
+        ] {
+            let client = ControlledRlmWaitClient {
+                readiness: vec![
+                    IndexReadiness::Queued,
+                    IndexReadiness::MaintenanceUnavailable(evidence),
+                ],
+                elapsed_before_wait: Duration::ZERO,
+                wait_overshoot: Duration::ZERO,
+                cancel_on_wait: false,
+                calls: Mutex::new(Vec::new()),
+            };
+            let section = controlled_rlm_wait_section(
+                &client,
+                Duration::from_secs(1),
+                &CancellationToken::new(),
+            );
+            assert_eq!(section.status, ProviderSectionStatus::Unavailable);
+            assert_eq!(
+                section.termination.unwrap().code,
+                SearchTerminationCode::ProviderUnavailable
+            );
+            assert_eq!(section.index_maintenance, Some(evidence));
+            assert_eq!(client.calls.lock().unwrap().len(), 2);
         }
     }
 
@@ -3962,6 +4177,7 @@ mod tests {
                     stderr: String::new(),
                     freshness: Some("unknown".to_string()),
                     build_id: Some("test-build".to_string()),
+                    maintenance: None,
                 },
             ))
         }
@@ -3980,6 +4196,54 @@ mod tests {
         ) -> Result<RlmSearchAttempt, String> {
             Err("cancelled: readiness transport stopped".to_string())
         }
+    }
+
+    #[test]
+    fn rlm_provider_redacts_maintenance_failure_while_preserving_readable_results() {
+        struct FailedMaintenanceClient;
+        impl RlmSearchClient for FailedMaintenanceClient {
+            fn search(
+                &self,
+                _: &CodeIntelligenceContext,
+                _: &str,
+                _: usize,
+                _: Duration,
+                _: &CancellationToken,
+            ) -> Result<RlmSearchAttempt, String> {
+                Ok(RlmSearchAttempt::Output(
+                    crate::infrastructure::workspace_services::WorkspaceServiceRlmOutput {
+                        result_text: "[]".to_string(),
+                        stderr: String::new(),
+                        freshness: Some("unknown".to_string()),
+                        build_id: Some("readable-build".to_string()),
+                        maintenance: Some(
+                            crate::infrastructure::workspace_index::IndexMaintenanceStatus::Failed(
+                                "worker failed; token=maintenance-secret".to_string(),
+                            ),
+                        ),
+                    },
+                ))
+            }
+        }
+        let section = RlmProvider::with_client(&FailedMaintenanceClient).search(
+            &SearchRequest {
+                query: "Find".to_string(),
+                limit: 20,
+            },
+            &context(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(5)),
+            &CancellationToken::new(),
+        );
+        assert_eq!(section.status, ProviderSectionStatus::Empty);
+        assert_eq!(section.index_build_id.as_deref(), Some("readable-build"));
+        assert_eq!(
+            section.index_maintenance,
+            Some(crate::domain::code_intelligence::IndexMaintenanceEvidence::ExecutionFailed)
+        );
+        assert!(section.diagnostics.is_empty());
+        assert!(!serde_json::to_string(&section)
+            .unwrap()
+            .contains("maintenance-secret"));
     }
 
     #[test]
@@ -4485,10 +4749,10 @@ mod tests {
     }
 
     #[test]
-    fn rlm_provider_reports_pending_update_as_a_retryable_dependency() {
+    fn rlm_provider_does_not_infer_maintenance_from_staleness() {
         let client = FakeRlmClient {
             readiness: IndexReadiness::Stale {
-                status: "source revision changed".to_string(),
+                status: "stale (content)".to_string(),
             },
             calls: Mutex::new(Vec::new()),
             result: "[]".to_string(),
@@ -4504,19 +4768,15 @@ mod tests {
             &CancellationToken::new(),
         );
 
-        assert_eq!(section.status, ProviderSectionStatus::TimedOut);
+        assert_eq!(section.status, ProviderSectionStatus::Unavailable);
         assert_eq!(
-            serde_json::to_value(&section).unwrap()["termination"],
-            json!({
-                "code": "dependencyPending",
-                "retryable": true,
-                "detailCode": "updatingIndex"
-            })
+            section.termination.unwrap(),
+            crate::domain::code_intelligence::SearchTermination::provider_unavailable()
         );
     }
 
     #[test]
-    fn rlm_provider_reports_incomplete_as_retryable_recovery_without_results() {
+    fn rlm_provider_does_not_infer_maintenance_from_incomplete_index() {
         let client = FakeRlmClient {
             readiness: IndexReadiness::Incomplete,
             calls: Mutex::new(Vec::new()),
@@ -4533,19 +4793,15 @@ mod tests {
             &CancellationToken::new(),
         );
 
-        assert_eq!(section.status, ProviderSectionStatus::TimedOut);
+        assert_eq!(section.status, ProviderSectionStatus::Unavailable);
         assert!(section.hits.is_empty());
         assert!(section
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.contains("recovery")));
+            .any(|diagnostic| diagnostic.contains("maintenance state is unknown")));
         assert_eq!(
-            serde_json::to_value(&section).unwrap()["termination"],
-            json!({
-                "code": "dependencyPending",
-                "retryable": true,
-                "detailCode": "updatingIndex"
-            })
+            section.termination.unwrap(),
+            crate::domain::code_intelligence::SearchTermination::provider_unavailable()
         );
     }
 

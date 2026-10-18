@@ -6,19 +6,19 @@ check:
   - crates/unica-coder/src/domain/invocation.rs::refusal_envelope::every_code_answers_with_one_of_the_six_outcomes
   - crates/unica-coder/src/domain/invocation.rs::refusal_envelope::the_six_outcomes_are_spelled_as_published_on_the_wire
   - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_refusals_answer_one_diagnostics_channel_from_the_closed_code_set
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::saved_apply_token_survives_temporary_named_root_validation_failure
 ---
 
-# Отказ передаётся через diagnostics и отличает устаревший план
+# Отказ передаётся через diagnostics с закрытым кодом и исходом
 
 Канонический вызов передаёт отказ через `diagnostics`: первый элемент
 содержит закрытый код и непустое сообщение. Второго кода в `data.code`
-нет. Изменение исходных байтов сохранённого плана `unica.apply` даёт
-`stale_revision`. `unica.run` не принимает `ifRev` и не связывает
-предварительный просмотр с последующим исполнением ревизией.
+нет. Предметные условия отказа задают владельцы гарантий, в том числе
+[сохранённого плана apply](../workspace/apply-revision-fence.md) и
+[режима run](run-operation-names.md).
 
-Отсутствие файлового поддерева у допущенного логического scope поиска
-даёт успешный пустой результат без диагностик. Это не отказ провайдера
-и не сырая ошибка файловой системы.
+Пустой результат и файловый сбой поиска различаются по
+[правилу диагностики поиска](../analysis/search-io-diagnostic.md).
 
 Проверка исполняет предметные вызовы через production daemon runtime;
 форму compatibility Task-ответов задаёт отдельный контракт.

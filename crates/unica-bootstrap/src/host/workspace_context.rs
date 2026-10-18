@@ -124,6 +124,8 @@ pub enum ClientRoots {
 pub struct HostRequest {
     pub metadata: Map<String, Value>,
     pub roots: ClientRoots,
+    /// Сколько байтов ответа этот клиент передаёт модели целиком.
+    pub response_budget: super::ResponseBudget,
 }
 
 impl HostRequest {
@@ -131,6 +133,7 @@ impl HostRequest {
         Self {
             metadata,
             roots: ClientRoots::NotDeclared,
+            response_budget: super::ResponseBudget::default(),
         }
     }
 }
@@ -477,7 +480,11 @@ mod tests {
     }
 
     fn with_roots(metadata: Map<String, Value>, roots: ClientRoots) -> HostRequest {
-        HostRequest { metadata, roots }
+        HostRequest {
+            metadata,
+            roots,
+            ..HostRequest::default()
+        }
     }
 
     fn root_uri(path: &Path) -> String {

@@ -21,6 +21,8 @@ mod v13_run_dictionary;
 mod v13_search_admission;
 #[allow(dead_code)]
 mod v13_service;
+#[cfg(test)]
+pub(crate) use v13_service::provider_search_page;
 mod v13_source_export;
 mod v13_source_import;
 mod v13_source_set_name;
@@ -943,12 +945,12 @@ mod tests {
     }
 
     #[test]
-    fn canonical_invocation_authority_keeps_root_capabilities_without_source_revision() {
+    fn canonical_invocation_authority_keeps_root_capabilities_without_a_tree_revision() {
         canonical_service_boundary_exposes_no_raw_request_or_workspace_hint();
         canonical_service_reads_only_actor_bound_roots_and_persists_the_same_identity();
         actor_bound_publication_rejects_root_replacement_and_hides_staged_bytes();
         actor_bound_read_publication_allows_source_content_change();
-        super::server::actor_capacity_tests::logical_reads_run_without_deadline_source_scans_or_mutation_lane_wait();
+        super::server::actor_capacity_tests::logical_reads_run_without_deadline_tree_scans_or_mutation_lane_wait();
     }
 
     #[test]
@@ -962,4 +964,4 @@ mod tests {
     }
 }
 
-mod runner_014;
+mod runner_015;

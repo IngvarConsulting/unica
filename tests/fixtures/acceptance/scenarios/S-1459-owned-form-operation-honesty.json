@@ -1,0 +1,90 @@
+{
+  "id": "S-1459-owned-form-operation-honesty",
+  "issue": 1459,
+  "area": "Формы",
+  "task": "Обычная форма объявляет item.add, отдаёт контракт и публикует LabelField после предпросмотра без записи",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "item.add",
+            "args": "items",
+            "implemented": true
+          }
+        }
+      ],
+      "captures": {
+        "ownedBefore": {
+          "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.item.add"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+        "ops": [
+          {
+            "op": "item.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Added",
+                  "type": "LabelField"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.ownedBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "xmlTags",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}ChildItems/*[@name=\"Added\"]",
+          "eq": [
+            "LabelField"
+          ]
+        }
+      ]
+    }
+  ]
+}

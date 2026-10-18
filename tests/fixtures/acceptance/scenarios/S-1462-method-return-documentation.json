@@ -1,0 +1,179 @@
+{
+  "id": "S-1462-method-return-documentation",
+  "issue": 1462,
+  "area": "Код BSL",
+  "task": "По адресу Method преобразовать экспортную процедуру в функцию, добавить документацию возвращаемого значения и повторить замену без дублирования или изменения соседних областей",
+  "workspace": "tests/fixtures/acceptance/workspace-resolve",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Method.Ping"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "06e6740a8b5bf78f00bebb76e0f91956a97d690e5b78aaa088858b0487cee937"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.Probe.Method.Ping",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "text": "Функция Ping() Экспорт\n    Возврат 1;\nКонецФункции\n"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "06e6740a8b5bf78f00bebb76e0f91956a97d690e5b78aaa088858b0487cee937"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "77d85b4d113150d7ae805cd3019c156e5c04e07ae4ae8ed5520bc7507507af75"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.Probe.Method.Ping",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "text": "// Возвращаемое значение:\n//  Число\nФункция Ping() Экспорт\n    Возврат 1;\nКонецФункции\n"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "77d85b4d113150d7ae805cd3019c156e5c04e07ae4ae8ed5520bc7507507af75"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "fdbf97807c3d8c61eeae6be4763440754f6fb0745c370f93b1bd8e5bdca74495"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.Probe.Method.Ping",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "text": "// Возвращаемое значение:\n//  Число\nФункция Ping() Экспорт\n    Возврат 1;\nКонецФункции\n"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "fdbf97807c3d8c61eeae6be4763440754f6fb0745c370f93b1bd8e5bdca74495"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "fdbf97807c3d8c61eeae6be4763440754f6fb0745c370f93b1bd8e5bdca74495"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Method.Ping.Body"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/sourceText",
+          "eq": "// Возвращаемое значение:\n//  Число\nФункция Ping() Экспорт\n    Возврат 1;\nКонецФункции\n"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "fdbf97807c3d8c61eeae6be4763440754f6fb0745c370f93b1bd8e5bdca74495"
+        }
+      ]
+    }
+  ]
+}
