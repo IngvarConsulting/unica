@@ -1,6 +1,6 @@
 use roxmltree::{Document, Node};
 
-use super::xml_model::meta_info_child;
+use super::xml_model::MD_CLASSES_NS;
 use crate::domain::metadata::{
     meta_object_integrity_rules, MetaCollection, MetaDiagnostic, MetaDiagnosticCode,
     MetaObjectRequirement, MetaPropertyKey, MetadataKind,
@@ -8,7 +8,7 @@ use crate::domain::metadata::{
 
 /// Платформа принимает такой дескриптор как документ и отвергает как объект
 /// конфигурации, поэтому условие проверяется здесь, а не схемой.
-pub(super) fn check_meta_object_integrity(
+pub(crate) fn check_meta_object_integrity(
     kind: MetadataKind,
     descriptor: &[u8],
 ) -> Result<(), MetaDiagnostic> {
@@ -23,26 +23,31 @@ pub(super) fn check_meta_object_integrity(
     let object = document
         .root_element()
         .children()
-        .find(Node::is_element)
-        .ok_or_else(|| validation_failed("descriptor has no metadata object"))?;
+        .find(|node| node.has_tag_name((MD_CLASSES_NS, kind.as_str())))
+        .ok_or_else(|| {
+            validation_failed(format!(
+                "descriptor has no {} metadata object",
+                kind.as_str()
+            ))
+        })?;
 
     for rule in rules {
         let satisfied = match rule.requirement {
             MetaObjectRequirement::AnyCollectionNonEmpty(collections) => {
-                meta_info_child(object, "ChildObjects").is_some_and(|children| {
+                metadata_child(object, "ChildObjects").is_some_and(|children| {
                     collections.iter().any(|collection| {
                         collection_element_name(*collection).is_some_and(|element_name| {
-                            children.children().any(|child| {
-                                child.is_element() && child.tag_name().name() == element_name
-                            })
+                            children
+                                .children()
+                                .any(|child| child.has_tag_name((MD_CLASSES_NS, element_name)))
                         })
                     })
                 })
             }
             MetaObjectRequirement::PropertyNonEmpty(property) => {
-                meta_info_child(object, "Properties")
+                metadata_child(object, "Properties")
                     .and_then(|properties| {
-                        meta_info_child(properties, property_element_name(property))
+                        metadata_child(properties, property_element_name(property))
                     })
                     .and_then(|node| node.text())
                     .is_some_and(|value| !value.trim().is_empty())
@@ -50,7 +55,7 @@ pub(super) fn check_meta_object_integrity(
         };
         if !satisfied {
             return Err(validation_failed(format!(
-                "{} rejects this object: {}. Provide it through `operations` on the same call: {}",
+                "{} rejects this object: {}. Provide the required fields in the same apply batch: {}",
                 kind.as_str(),
                 rule.platform_message,
                 requirement_hint(rule.requirement)
@@ -58,6 +63,11 @@ pub(super) fn check_meta_object_integrity(
         }
     }
     Ok(())
+}
+
+fn metadata_child<'a, 'input>(node: Node<'a, 'input>, name: &str) -> Option<Node<'a, 'input>> {
+    node.children()
+        .find(|child| child.has_tag_name((MD_CLASSES_NS, name)))
 }
 
 fn collection_element_name(collection: MetaCollection) -> Option<&'static str> {
@@ -134,6 +144,50 @@ mod tests {
     #[test]
     fn register_with_one_resource_is_accepted() {
         check_meta_object_integrity(MetadataKind::InformationRegister, FILLED_REGISTER).unwrap();
+    }
+
+    #[test]
+    fn a_foreign_namespace_member_does_not_satisfy_required_composition() {
+        let foreign = std::str::from_utf8(FILLED_REGISTER)
+            .unwrap()
+            .replace("<Resource>", "<Resource xmlns=\"urn:foreign\">");
+        let error =
+            check_meta_object_integrity(MetadataKind::InformationRegister, foreign.as_bytes())
+                .expect_err("a same-named foreign element is not a register resource");
+        assert_eq!(error.code, MetaDiagnosticCode::ValidationFailed);
+        assert!(error
+            .message
+            .contains("Register without dimensions, resources, and attributes"));
+    }
+
+    #[test]
+    fn foreign_namespace_containers_and_properties_do_not_satisfy_integrity() {
+        for foreign in [
+            std::str::from_utf8(FILLED_REGISTER)
+                .unwrap()
+                .replace("<ChildObjects>", "<ChildObjects xmlns=\"urn:foreign\">"),
+            std::str::from_utf8(FILLED_NAMESPACE)
+                .unwrap()
+                .replace("<Namespace>", "<Namespace xmlns=\"urn:foreign\">"),
+            std::str::from_utf8(FILLED_NAMESPACE)
+                .unwrap()
+                .replace("<Properties>", "<Properties xmlns=\"urn:foreign\">"),
+        ] {
+            let kind = if foreign.contains("<WebService>") {
+                MetadataKind::WebService
+            } else {
+                MetadataKind::InformationRegister
+            };
+            check_meta_object_integrity(kind, foreign.as_bytes())
+                .expect_err("foreign metadata is not proof of the required composition");
+        }
+    }
+
+    #[test]
+    fn a_different_prefix_for_the_metadata_namespace_preserves_integrity() {
+        let prefixed = r#"<m:MetaDataObject xmlns:m="http://v8.1c.ru/8.3/MDClasses"><m:InformationRegister><m:Properties><m:Name>R</m:Name></m:Properties><m:ChildObjects><m:Resource><m:Properties><m:Name>Price</m:Name></m:Properties></m:Resource></m:ChildObjects></m:InformationRegister></m:MetaDataObject>"#;
+        check_meta_object_integrity(MetadataKind::InformationRegister, prefixed.as_bytes())
+            .unwrap();
     }
 
     #[test]

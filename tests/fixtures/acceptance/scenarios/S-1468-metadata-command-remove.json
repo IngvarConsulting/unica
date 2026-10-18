@@ -1,0 +1,211 @@
+{
+  "id": "S-1468-metadata-command-remove",
+  "issue": 1468,
+  "area": "Метаданные",
+  "task": "Удалить встроенную команду без модуля: предпросмотр не пишет файлы, публикация сохраняет соседние UUID, свойства и модули, повторное удаление даёт адресный отказ без записи",
+  "workspace": "tests/fixtures/acceptance/workspace-metadata-commands",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Command.Refresh"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/comment",
+          "eq": "Refresh original comment"
+        },
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "command.set",
+            "args": "values",
+            "implemented": true
+          }
+        },
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "command.remove",
+            "args": "at",
+            "implemented": true
+          }
+        }
+      ],
+      "captures": {
+        "before": {
+          "file": "src/Catalogs/Items.xml",
+          "kind": "sha256"
+        },
+        "refreshModule": {
+          "file": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256"
+        },
+        "keepModule": {
+          "file": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Command.Inspect",
+        "ops": [
+          {
+            "op": "command.remove",
+            "args": {}
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.refreshModule"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.keepModule"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Inspect",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "86ac70fc7ced6222d9563568f2ba89639734cc927865f5a2033a313dd5be32a2"
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Command/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "Refresh",
+            "Keep"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.refreshModule"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.keepModule"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Inspect",
+          "kind": "exists",
+          "eq": false
+        }
+      ],
+      "captures": {
+        "afterRemoval": {
+          "file": "src/Catalogs/Items.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Command.Refresh"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/comment",
+          "eq": "Refresh original comment"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Command.Inspect",
+        "ops": [
+          {
+            "op": "command.remove",
+            "args": {}
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: element `Inspect` was not found",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.at"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.afterRemoval"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.refreshModule"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.keepModule"
+        }
+      ]
+    }
+  ]
+}

@@ -497,7 +497,6 @@ fn metadata_member_collection(family: &str) -> Option<crate::domain::metadata::M
         "resource" => MetaCollection::Resources,
         "enumValue" => MetaCollection::EnumValues,
         "column" => MetaCollection::Columns,
-        "command" => MetaCollection::Commands,
         _ => return None,
     })
 }
@@ -767,9 +766,7 @@ impl OperationContract {
         }
         let collection = metadata_member_collection(family)?;
         match verb {
-            "add" if collection != crate::domain::metadata::MetaCollection::Commands => {
-                Some(Self::metadata_member_add(collection, site))
-            }
+            "add" => Some(Self::metadata_member_add(collection, site)),
             "set" => Some(Self::metadata_member_set(collection, site)),
             "remove" => Some(Self::metadata_member_remove()),
             _ => None,
@@ -1014,7 +1011,7 @@ mod tests {
     use crate::domain::role_operation::RoleOperation;
 
     #[test]
-    fn typed_attribute_contracts_have_no_legacy_string_fallback() {
+    fn typed_attribute_and_command_contracts_have_no_legacy_string_fallback() {
         for site in [
             None,
             Some(MetadataSite {
@@ -1022,12 +1019,19 @@ mod tests {
                 in_section: true,
             }),
         ] {
-            for operation in ["attribute.add", "attribute.set", "attribute.remove"] {
+            for operation in [
+                "attribute.add",
+                "attribute.set",
+                "attribute.remove",
+                "command.add",
+                "command.set",
+                "command.remove",
+            ] {
                 assert!(OperationContract::metadata_at(operation, site).is_none());
                 let descriptor = OperationRegistry::closed().lookup(operation).unwrap();
                 assert!(descriptor.argument_contract().is_some());
             }
-            for operation in ["dimension.set", "command.remove"] {
+            for operation in ["dimension.set", "column.remove"] {
                 assert!(OperationContract::metadata_at(operation, site).is_some());
             }
         }

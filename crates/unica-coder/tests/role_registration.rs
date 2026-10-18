@@ -84,7 +84,7 @@ fn compile_registration_with_declarations(entry: &str, metadata: &str, form: &st
         enum OperationFamily {{ Role, Support, Metadata, Form }}
         pub(super) enum OperationApplicability {{
             Configuration, SupportRule, MetadataAttributeContainer,
-            MetadataAttribute, MetadataCommands, Form, FormItemContainer,
+            MetadataAttribute, MetadataCommands, MetadataCommand, Form, FormItemContainer,
         }}
         pub(super) enum OperationSkeleton {{ Values, Items, Target }}
         enum RoleOperation {{ Create }}
@@ -199,6 +199,7 @@ fn typed_contextual_registrations_compile_and_migrated_raw_tuples_are_rejected()
     let typed = compile_registration(
         r#"(MetadataOperation::AttributeAdd), (MetadataOperation::AttributeSet),
             (MetadataOperation::AttributeRemove), (MetadataOperation::CommandAdd),
+            (MetadataOperation::CommandSet), (MetadataOperation::CommandRemove),
             (FormOperation::AttributeAdd), (FormOperation::CommandAdd),
             ("object.create", Metadata, Configuration, Values),
             ("item.add", Form, FormItemContainer, Items)"#,
@@ -223,6 +224,8 @@ fn typed_contextual_registrations_compile_and_migrated_raw_tuples_are_rejected()
             "Target",
         ),
         ("Metadata", "command.add", "MetadataCommands", "Items"),
+        ("Metadata", "command.set", "MetadataCommand", "Values"),
+        ("Metadata", "command.remove", "MetadataCommand", "Target"),
         ("Form", "attribute.add", "Form", "Items"),
         ("Form", "command.add", "Form", "Items"),
     ] {

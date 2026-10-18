@@ -851,20 +851,28 @@ impl crate::domain::documentation::DocumentationProvider for Kb1ciProvider {
             return Some(Err("вызов отменён до обращения к площадке".to_string()));
         }
         let path = path.split('?').next().unwrap_or(path).trim_matches('/');
-        // Путь локатора уходит в адрес запроса дословно: сегменты `..` (и
-        // пустые) вывели бы запрос за объявленные корни руководств.
-        // Эта граница действует и на получение страницы.
-        if path
-            .split('/')
-            .any(|segment| segment.is_empty() || segment == "." || segment == "..")
-        {
+        // Проверяем декодированные сегменты, но передаём исходное экранирование:
+        // нормализация URL не должна превратить допущенный путь в выход из корня.
+        let unsafe_segment = path.split('/').any(|segment| {
+            percent_encoding::percent_decode_str(segment)
+                .decode_utf8()
+                .map_or(true, |decoded| {
+                    decoded.is_empty()
+                        || decoded == "."
+                        || decoded == ".."
+                        || decoded
+                            .chars()
+                            .any(|ch| ch.is_control() || matches!(ch, '/' | '\\'))
+                })
+        });
+        if unsafe_segment {
             return Some(Err(format!(
-                "адрес {document_id:?} несёт сегменты '..' или пустые и не является адресом страницы руководства"
+                "адрес {document_id:?} несёт недопустимые сегменты пути ('..', пустые, с разделителями или управляющими символами) и не является адресом страницы руководства"
             )));
         }
-        let corpus = if path.contains("Developer_Guides") {
+        let corpus = if path.starts_with("1C_Enterprise_Platform/Guides/Developer_Guides/") {
             "kb-developer-guide"
-        } else if path.contains("Administrator_Guides") {
+        } else if path.starts_with("1C_Enterprise_Platform/Guides/Administrator_Guides/") {
             "kb-administrator-guide"
         } else {
             return Some(Err(format!(
@@ -2132,6 +2140,72 @@ mod provider_tests {
             "отказ обязан назвать сегмент, получено {error}"
         );
         assert_eq!(transport.calls.load(Ordering::SeqCst), 0, "сеть не тронута");
+    }
+
+    #[test]
+    fn kb_get_refuses_encoded_or_ambiguous_path_segments_before_network() {
+        let _serial = kb_test_lock();
+        let base = "https://kb.encoded-path";
+        for tail in [
+            "%2e/Test",
+            "%2E%2e/Test",
+            ".%2e/Test",
+            "%2E./Test",
+            "..%2fSupport/Test",
+            "%5c..%5cSupport/Test",
+            "..\\Support/Test",
+            ".\t./Test",
+            ".%0a./Test",
+        ] {
+            let path = format!("1C_Enterprise_Platform/Guides/Developer_Guides/8.3.27/{tail}");
+            let responses = std::collections::BTreeMap::from([(
+                format!("{base}/bin/view/OnecInt/KB/{path}/?language=en"),
+                Ok(
+                    "<div id=\"xwikicontent\"><h1>Outside</h1><p>Must not be read.</p></div>"
+                        .to_string(),
+                ),
+            )]);
+            let (provider, transport) = provider_over(base, responses, NetworkAccess::Allow);
+            let result = provider
+                .get(
+                    &format!("{base}/{path}/?language=en"),
+                    "en",
+                    &request("x", None).1,
+                )
+                .expect("KB owns the locator");
+            assert!(
+                result.is_err(),
+                "unsafe path was read: {path:?}: {result:?}"
+            );
+            assert_eq!(transport.calls.load(Ordering::SeqCst), 0, "{path:?}");
+        }
+    }
+
+    #[test]
+    fn kb_get_preserves_encoded_page_names_inside_a_guide() {
+        let _serial = kb_test_lock();
+        let base = "https://kb.encoded-name";
+        let path = "1C_Enterprise_Platform/Guides/Developer_Guides/8.3.27/URL%20formats_%D0%A2%D0%B5%D1%81%D1%82";
+        let responses = std::collections::BTreeMap::from([(
+            format!("{base}/bin/view/OnecInt/KB/{path}/?language=en"),
+            Ok(
+                "<div id=\"xwikicontent\"><h1>URL formats</h1><p>Encoded page text.</p></div>"
+                    .to_string(),
+            ),
+        )]);
+        let (provider, transport) = provider_over(base, responses, NetworkAccess::Allow);
+        let document = provider
+            .get(
+                &format!("{base}/{path}/?language=en"),
+                "en",
+                &request("x", None).1,
+            )
+            .expect("KB owns the locator")
+            .expect("an encoded page name remains within the guide");
+        assert_eq!(document.corpus, "kb-developer-guide");
+        assert_eq!(document.applicable_version, "8.3.27");
+        assert_eq!(document.text, "URL formats Encoded page text.");
+        assert_eq!(transport.calls.load(Ordering::SeqCst), 1);
     }
 
     /// Транспорт, гасящий токен на первом же запросе страницы: так отмена
