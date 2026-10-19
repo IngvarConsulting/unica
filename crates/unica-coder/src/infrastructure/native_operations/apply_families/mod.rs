@@ -100,7 +100,7 @@ fn refuse_targets_on_locked_vendor_objects(
     if !state.global_editing_enabled() {
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::InvalidState,
-            "the configuration is on vendor support with changes disabled; enable editing with `supportCapability.set` first",
+            "the configuration is on vendor support with changes disabled; enable editing with `supportCapability.set` in a separate apply before ordinary edits",
         )
         .at_path(at));
     }
@@ -139,7 +139,7 @@ fn refuse_targets_on_locked_vendor_objects(
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::InvalidState,
             format!(
-                "`{owner}` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` first"
+                "`{owner}` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
             ),
         )
         .at_path(at));
