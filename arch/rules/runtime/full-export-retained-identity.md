@@ -40,7 +40,6 @@ check:
   - crates/unica-coder/src/infrastructure/platform/process.rs::controlled_stdout_reader_panic_is_not_eof
   - crates/unica-coder/src/infrastructure/platform/process.rs::controlled_stderr_reader_faults_do_not_satisfy_eof
   - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::a_verified_publication_with_no_terminal_retains_its_recovery
-gap: https://github.com/IngvarConsulting/unica/issues/981
 ---
 
 # Полная выгрузка сверяет идентичность объектов и сохраняет неопознанные данные
@@ -71,6 +70,3 @@ gap: https://github.com/IngvarConsulting/unica/issues/981
 
 Удаление ссылки при очистке не затрагивает её цель. Delete-pending имя
 в Windows не считается подтверждённым отсутствием.
-
-Сквозное подтверждение гарантий публикации и очистки в публичном `pull`
-на поддерживаемых ОС остаётся разрывом из `gap`.

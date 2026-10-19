@@ -5,7 +5,6 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::full_export_rejects_invalid_results_before_replacing_sources
   - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::platform_resolver_does_not_trust_an_explicit_platform_path_or_broad_claim
   - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::platform_executable_or_install_swap_after_runner_prevents_publication
-gap: https://github.com/IngvarConsulting/unica/issues/981
 ---
 
 # Полная выгрузка запускает проверенную неизменяемую платформу
