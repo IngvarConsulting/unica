@@ -364,29 +364,87 @@ pub(crate) fn remove_metadata_child_text_with_flag(
 ) -> (String, bool) {
     let plain = format!("<{local_name}>{item_name}</{local_name}>");
     let prefixed = format!("<md:{local_name}>{item_name}</md:{local_name}>");
-    let mut removed = false;
-    let mut result = String::with_capacity(xml_text.len());
-    for line in xml_text.split_inclusive('\n') {
+    let mut offset = 0;
+    let own_line = xml_text.split_inclusive('\n').find_map(|line| {
+        let line_start = offset;
+        offset += line.len();
         let trimmed = line.trim();
-        if !removed && (trimmed == plain || trimmed == prefixed) {
-            removed = true;
-            continue;
+        if trimmed == plain || trimmed == prefixed {
+            let start = line_start + line.len() - line.trim_start().len();
+            Some((start..start + trimmed.len(), line_start..offset))
+        } else {
+            None
         }
-        result.push_str(line);
+    });
+    let inline = || {
+        [&plain, &prefixed].into_iter().find_map(|needle| {
+            xml_text.find(needle).map(|start| {
+                let range = start..start + needle.len();
+                (range.clone(), range)
+            })
+        })
+    };
+    let Some((element_range, removal_range)) = own_line.or_else(inline) else {
+        return (xml_text.to_string(), false);
+    };
+    if let Some(result) = empty_child_objects_after_removal(xml_text, element_range) {
+        return (result, true);
     }
-    if removed {
-        (result, true)
-    } else if let Some(index) = xml_text.find(&plain) {
-        let mut result = xml_text.to_string();
-        result.replace_range(index..index + plain.len(), "");
-        (result, true)
-    } else if let Some(index) = xml_text.find(&prefixed) {
-        let mut result = xml_text.to_string();
-        result.replace_range(index..index + prefixed.len(), "");
-        (result, true)
-    } else {
-        (xml_text.to_string(), false)
+    let mut result = xml_text.to_string();
+    result.replace_range(removal_range, "");
+    (result, true)
+}
+
+/// Use the native empty spelling only for the direct collection emptied by this removal.
+pub(super) fn empty_child_objects_after_removal(
+    xml_text: &str,
+    removed_range: std::ops::Range<usize>,
+) -> Option<String> {
+    const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
+    let source = xml_text.strip_prefix('\u{feff}').unwrap_or(xml_text);
+    let bom_len = xml_text.len() - source.len();
+    let removed_range =
+        removed_range.start.checked_sub(bom_len)?..removed_range.end.checked_sub(bom_len)?;
+    let document = Document::parse(source).ok()?;
+    let removed = document.descendants().find(|node| {
+        node.is_element()
+            && node.tag_name().namespace() == Some(MD_NS)
+            && node.range() == removed_range
+    })?;
+    let parent = removed.parent_element()?;
+    if !parent.has_tag_name((MD_NS, "ChildObjects")) {
+        return None;
     }
+
+    let parent_range = parent.range();
+    let parent_source = &source[parent_range.clone()];
+    let opening_end = parent_range.start + parent_source.find('>')?;
+    let closing_start = parent_range.start + parent_source.rfind("</")?;
+    let opening = &source[parent_range.start + 1..opening_end];
+    let xml_space = |byte: u8| matches!(byte, b' ' | b'\t' | b'\r' | b'\n');
+    let name_end = opening.bytes().position(xml_space).unwrap_or(opening.len());
+    // Inspect raw bytes, not decoded text: attributes, xmlns, comments, CDATA,
+    // entities and non-XML whitespace must survive even when they look empty.
+    if !opening[name_end..].bytes().all(xml_space)
+        || opening_end >= removed_range.start
+        || removed_range.end > closing_start
+        || !source[opening_end + 1..removed_range.start]
+            .bytes()
+            .all(xml_space)
+        || !source[removed_range.end..closing_start]
+            .bytes()
+            .all(xml_space)
+    {
+        return None;
+    }
+
+    let replacement = format!("{}/>", &source[parent_range.start..opening_end]);
+    let mut result = xml_text.to_string();
+    result.replace_range(
+        parent_range.start + bom_len..parent_range.end + bom_len,
+        &replacement,
+    );
+    Some(result)
 }
 
 /// Largest single source file the reference scan will read.
