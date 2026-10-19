@@ -2363,7 +2363,12 @@ fn parse_standard_tabular_sections(
                     "FillChecking",
                     &format!("{base}.fillChecking"),
                 )?,
-                standard_attributes: parse_standard_attributes(attributes)?,
+                standard_attributes: parse_standard_attributes(attributes).map_err(
+                    |mut error| {
+                        error.field = format!("{base}.{}", error.field);
+                        error
+                    },
+                )?,
             })
         })
         .collect()
