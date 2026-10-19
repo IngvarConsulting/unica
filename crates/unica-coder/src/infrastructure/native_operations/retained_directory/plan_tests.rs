@@ -195,27 +195,39 @@ fn directory_cleanup_does_not_delete_a_foreign_successor_at_its_last_boundary() 
     let displaced = root.join("original-recovery-relocated");
     let replacement = recovery.clone();
     let moved = displaced.clone();
+    let hook_observation = std::rc::Rc::new(std::cell::Cell::new((false, None)));
+    let observed_by_hook = std::rc::Rc::clone(&hook_observation);
     set_before_identity_bound_directory_cleanup_mutation_hook(move || {
+        observed_by_hook.set((true, None));
         std::fs::rename(&replacement, &moved).unwrap();
         std::fs::create_dir(&replacement).unwrap();
+        observed_by_hook.set((
+            true,
+            Some(
+                RetainedDirectoryCapability::open(&replacement)
+                    .unwrap()
+                    .identity(),
+            ),
+        ));
     });
-    assert!(published.cleanup().is_err());
+    let result = published.cleanup();
+    let (hook_fired, foreign_identity) = hook_observation.get();
+    let recovery_identity = RetainedDirectoryCapability::open(&recovery).map(|dir| dir.identity());
+    let displaced_identity =
+        RetainedDirectoryCapability::open(&displaced).map(|dir| dir.identity());
+    eprintln!(
+        "directory cleanup observation: hook_fired={hook_fired}, result={result:?}, original={original_identity:?}, foreign={foreign_identity:?}, recovery={recovery_identity:?}, displaced={displaced_identity:?}"
+    );
+    assert!(hook_fired, "the competing directory replacement must run");
+    assert!(result.is_err(), "{result:?}");
     assert!(
         recovery.is_dir(),
         "foreign empty directory must not be cleaned"
     );
-    assert_ne!(
-        RetainedDirectoryCapability::open(&recovery)
-            .unwrap()
-            .identity(),
-        original_identity
-    );
-    assert_eq!(
-        RetainedDirectoryCapability::open(&displaced)
-            .unwrap()
-            .identity(),
-        original_identity
-    );
+    let foreign_identity = foreign_identity.expect("the hook must capture its successor identity");
+    assert_ne!(foreign_identity, original_identity);
+    assert_eq!(recovery_identity.unwrap(), foreign_identity);
+    assert_eq!(displaced_identity.unwrap(), original_identity);
 }
 
 #[test]

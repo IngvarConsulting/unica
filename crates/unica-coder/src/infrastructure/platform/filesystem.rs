@@ -225,7 +225,7 @@ pub(crate) fn set_before_identity_bound_directory_cleanup_mutation_hook(
     });
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 fn run_before_identity_bound_directory_cleanup_mutation_hook() {
     if let Some(hook) =
         TEST_BEFORE_IDENTITY_BOUND_DIRECTORY_CLEANUP_MUTATION.with(|slot| slot.borrow_mut().take())
@@ -6543,6 +6543,10 @@ fn remove_identity_bound_empty_directory_child_with(
     expected_identity: FileIdentity,
     retained: &fs::File,
 ) -> io::Result<()> {
+    // Windows binds deletion to this handle; inject the competing name before
+    // that final binding, after the caller's retained image validation.
+    #[cfg(test)]
+    run_before_identity_bound_directory_cleanup_mutation_hook();
     let named = open_any_child_for_delete(parent, name)?;
     if opened_child_kind(&named)? != OpenedChildKind::Directory
         || file_identity(&named)? != expected_identity
