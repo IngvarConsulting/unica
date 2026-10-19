@@ -1037,7 +1037,7 @@ class CorpusAdapterTests(unittest.TestCase):
         verifier = load_verifier()
         self.assertEqual(
             verifier.EXPECTED_CASE_CONTRACT_SHA256,
-            "bbd782e757485d65be77ebd9c2b0d7602b1ad2634c6ae7045397c88aa5598a4c",
+            "7b9ecc3dbe53a0feb0c90a3e004b7a69c8f6062616235ed41d45de8461445df9",
         )
         self.assertEqual(
             verifier.LAST_VERIFIED_CASE_CONTRACT_SHA256,
@@ -2804,6 +2804,7 @@ class CheckpointExecutionTests(unittest.TestCase):
 
                 MODE = {mode!r}
                 DCS_TRUNCATED_EXPORT = {(ROOT / 'tests/dev/fixtures/dcs-platform-truncated/export.xml').read_bytes()!r}
+                DCS_FIXED_EXPORT = {(ROOT / 'tests/dev/fixtures/dcs-platform-truncated/fixed-export.xml').read_bytes()!r}
                 args = sys.argv[1:]
                 if args == ["--version"]:
                     print("8.3.28.1" if MODE == "wrong-version" else "8.3.27.2074")
@@ -2939,6 +2940,25 @@ class CheckpointExecutionTests(unittest.TestCase):
                     for path in candidates:
                         if ET.parse(path).getroot().tag == "{{http://v8.1c.ru/8.1/data-composition-system/schema}}DataCompositionSchema":
                             path.write_bytes(DCS_TRUNCATED_EXPORT)
+                if MODE.startswith("dcs-defaults"):
+                    for path in candidates:
+                        if ET.parse(path).getroot().tag == "{{http://v8.1c.ru/8.1/data-composition-system/schema}}DataCompositionSchema":
+                            path.write_bytes(DCS_FIXED_EXPORT)
+                    if MODE == "dcs-defaults-nonxml":
+                        (destination / "Module.bsl").write_bytes(b"changed authored module")
+                    elif MODE == "dcs-defaults-xml":
+                        (destination / "Other.xml").write_text("<other>changed</other>")
+                    elif MODE == "dcs-defaults-xml-add":
+                        (destination / "Unexpected.xml").write_text("<unexpected/>")
+                    elif MODE == "dcs-defaults-xml-remove":
+                        (destination / "Other.xml").unlink(missing_ok=True)
+                    elif MODE == "dcs-defaults-directory":
+                        empty = destination / "authored-empty"
+                        if empty.is_dir():
+                            empty.rmdir()
+                    elif MODE == "dcs-defaults-owner":
+                        owner = destination / "Configuration.xml"
+                        owner.write_bytes(owner.read_bytes().replace(b'2.20', b'2.21'))
                 if MODE in {{"normalized", "unstable"}} or (
                     MODE == "mutate-round1-input" and destination.parent.name == "round1"
                 ):
@@ -3042,6 +3062,44 @@ class CheckpointExecutionTests(unittest.TestCase):
             facts = result["dcsSemanticRetention"]["files"][0]
             self.assertEqual((facts["sourceElementCount"], facts["exportElementCount"]), (239, 89))
             self.assertFalse(facts["preserved"])
+
+    def test_evidenced_dcs_defaults_pass_without_hiding_other_changes(self):
+        verifier = load_verifier()
+        for suffix, verdict in (
+            ("", "pass"),
+            ("-nonxml", "accepted-normalized"),
+            ("-xml", "accepted-normalized"),
+            ("-xml-add", "accepted-normalized"),
+            ("-xml-remove", "accepted-normalized"),
+            ("-directory", "accepted-normalized"),
+            ("-owner", "unstable-roundtrip"),
+        ):
+            with self.subTest(suffix=suffix), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                source = root / "source"
+                write(source / "Configuration.xml", CONFIG_XML)
+                write(source / "Other.xml", "<other>authored</other>")
+                (source / "Module.bsl").write_bytes(b"authored module")
+                (source / "authored-empty").mkdir()
+                body = source / DcsSemanticRetentionTests.PATH
+                body.parent.mkdir(parents=True)
+                body.write_bytes(
+                    (DcsSemanticRetentionTests.FIXTURE / "fixed-source.xml").read_bytes()
+                )
+                result = verifier.run_checkpoint(
+                    self.checkpoint_item(source),
+                    self.fake_ibcmd(root, "dcs-defaults" + suffix),
+                    verifier.CommandRunner(timeout_seconds=15), root / "evidence", root,
+                )
+                self.assertTrue(result["dcsSemanticRetention"]["preserved"], result)
+                self.assertTrue(result["roundtripComparison"]["equal"], result)
+                self.assertFalse(result["sourceComparison"]["equal"], result)
+                self.assertEqual(result["verdict"], verdict, result)
+                if not suffix:
+                    self.assertEqual(
+                        result["sourceComparison"]["changed"],
+                        [DcsSemanticRetentionTests.PATH],
+                    )
 
     def test_non_xml_add_remove_and_change_affect_platform_verdicts(self):
         verifier = load_verifier()
