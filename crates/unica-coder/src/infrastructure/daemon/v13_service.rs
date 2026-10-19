@@ -139,7 +139,83 @@ impl CanonicalInvocationService for CanonicalV13ReadService {
     }
 }
 
+#[cfg(test)]
+std::thread_local! {
+    static VIEW_CAPABILITY_PROBE_FOR_TEST: std::cell::RefCell<Option<(String, Vec<String>)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// A thread-local observer restores the previous observer even after a panic.
+#[cfg(test)]
+pub(super) struct ViewCapabilityProbeForTest {
+    previous: Option<(String, Vec<String>)>,
+}
+
+#[cfg(test)]
+impl ViewCapabilityProbeForTest {
+    pub(super) fn start(at: &str) -> Self {
+        Self {
+            previous: VIEW_CAPABILITY_PROBE_FOR_TEST
+                .with(|slot| slot.replace(Some((at.to_owned(), Vec::new())))),
+        }
+    }
+
+    pub(super) fn revisions(&self) -> Vec<String> {
+        VIEW_CAPABILITY_PROBE_FOR_TEST.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .expect("capability observer is active")
+                .1
+                .clone()
+        })
+    }
+}
+
+#[cfg(test)]
+impl Drop for ViewCapabilityProbeForTest {
+    fn drop(&mut self) {
+        VIEW_CAPABILITY_PROBE_FOR_TEST.with(|slot| {
+            slot.replace(self.previous.take());
+        });
+    }
+}
+
+#[cfg(test)]
+fn observe_fresh_view_capability_for_test(at: &str, revision: impl FnOnce() -> String) {
+    VIEW_CAPABILITY_PROBE_FOR_TEST.with(|slot| {
+        if let Some((target, revisions)) = slot.borrow_mut().as_mut() {
+            if target == at {
+                revisions.push(revision());
+            }
+        }
+    });
+}
+
 impl CanonicalV13ReadService {
+    #[cfg(test)]
+    pub(super) fn with_view_cursor_budget_for_test(max_total_bytes: usize) -> Self {
+        Self {
+            cursors: Arc::new(ViewCursorStore::new(max_total_bytes)),
+            ..Self::default()
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn retained_view_usage_for_test(
+        &self,
+    ) -> crate::application::result_store::ViewRetainedUsage {
+        self.cursors.retained_usage_for_test()
+    }
+
+    #[cfg(test)]
+    pub(super) fn retained_view_binding_ids_for_test(&self) -> Vec<String> {
+        self.cursors.retained_binding_ids_for_test()
+    }
+
+    #[cfg(test)]
+    pub(super) fn retained_view_payload_identities_for_test(&self) -> Vec<usize> {
+        self.cursors.retained_payload_identities_for_test()
+    }
+
     pub(crate) fn with_capacity_observer(observer: Arc<CapacityObserver>) -> Self {
         let mut service = Self::default();
         service.cursors =
@@ -562,6 +638,12 @@ impl CanonicalV13ReadService {
                 "view source set was not admitted by the workspace actor",
             );
         };
+        #[cfg(test)]
+        if request.cursor().is_none() {
+            observe_fresh_view_capability_for_test(&address.to_string(), || {
+                source.revision_identity()
+            });
+        }
         let authority = match source.logical_view_read_authority(cancellation) {
             Ok(authority) => authority,
             Err(error) => {
@@ -597,6 +679,12 @@ impl CanonicalV13ReadService {
                 return error_result(Some(at.to_string()), RefusalCode::BadValue, message);
             }
             let service = ViewService::with_shared_cursors(authority, Arc::clone(&self.cursors));
+            if request.cursor().is_some() {
+                return enforce_view_result_limit(
+                    service.view_saved_collection(request, &owner),
+                    at,
+                );
+            }
             let owner_result = service.view(match ViewRequest::new(&owner.to_string()) {
                 Ok(request) => request,
                 Err(error) => return view_error_result(Some(owner.to_string()), error),
@@ -611,12 +699,6 @@ impl CanonicalV13ReadService {
                     "owning method has no source revision",
                 );
             };
-            if request.cursor().is_some() {
-                return enforce_view_result_limit(
-                    service.view_preloaded_collection(request, &owner, expected_revision, None),
-                    at,
-                );
-            }
             // Ветвь — единственный вход в граф, и анализатор, которого нет на
             // машине, она поставляет этим же вызовом, как `check` и `search`:
             // пока поставка идёт, ответ просит повтор, провал поставки — её

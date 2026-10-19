@@ -2,13 +2,16 @@
 //!
 //! The store keeps an immutable snapshot of a full typed `OperationResult.data`
 //! so a continuation call can serve byte-stable slices without re-reading the
-//! source. Entries never outlive the server process; TTL, LRU eviction and a
-//! total-bytes quota keep it bounded.
+//! source. Legacy result references use TTL and LRU. View continuations retain
+//! their promised snapshot for the process lifetime and refuse new admission
+//! before exceeding their cumulative retained-state budget.
 
 use crate::domain::invocation::DomainResult;
 use crate::domain::refusal::{RefusalCode, RefusalDetail};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+#[cfg(test)]
+use std::collections::HashSet;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -16,16 +19,16 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
-use uuid::Uuid;
 
 pub const DEFAULT_TTL: Duration = Duration::from_secs(15 * 60);
 pub const DEFAULT_MAX_ENTRIES: usize = 32;
 pub const DEFAULT_MAX_TOTAL_BYTES: usize = 64 * 1024 * 1024;
-const VIEW_MAX_ENTRIES: usize = 128;
-// The token string and entry bookkeeping are bounded separately from the
-// serialized snapshot. Charge each issued token so they cannot bypass the
-// aggregate byte quota while sharing one Arc.
-const VIEW_ENTRY_CHARGE: usize = 128;
+// Temporary and unproven retained-state budget; see #1119. This does not
+// bound process RSS or transient source reads, JSON clones and index growth.
+const VIEW_CURSOR_PAYLOAD_BYTES: usize = 17;
+const VIEW_CURSOR_CIPHERTEXT_BYTES: usize = VIEW_CURSOR_PAYLOAD_BYTES + 16;
+const VIEW_CURSOR_TOKEN_BYTES: usize = 4 + 2 * VIEW_CURSOR_CIPHERTEXT_BYTES;
+const VIEW_CURSOR_AAD: &[u8] = b"unica.view.cursor.vc2";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResultStoreError {
@@ -93,20 +96,73 @@ pub(crate) struct ViewCursorBinding {
     pub(crate) page_limit: usize,
 }
 
-struct ViewCursorEntry {
-    snapshot: Arc<ViewCollectionSnapshot>,
-    offset: usize,
-    stored_at: Instant,
-    last_read: Instant,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ViewCursorQuestion {
+    pub(crate) canonical_at: String,
+    pub(crate) projection: String,
+    pub(crate) source_set_identity: String,
+    pub(crate) page_limit: usize,
+}
+
+impl ViewCursorBinding {
+    fn has_same_question(&self, other: &Self) -> bool {
+        self.canonical_at == other.canonical_at
+            && self.projection == other.projection
+            && self.source_set_identity == other.source_set_identity
+            && self.page_limit == other.page_limit
+    }
+
+    pub(crate) fn question(&self) -> ViewCursorQuestion {
+        ViewCursorQuestion {
+            canonical_at: self.canonical_at.clone(),
+            projection: self.projection.clone(),
+            source_set_identity: self.source_set_identity.clone(),
+            page_limit: self.page_limit,
+        }
+    }
+}
+
+#[derive(Default)]
+struct ViewCursorState {
+    key: Option<zeroize::Zeroizing<[u8; 64]>>,
+    snapshots: Vec<Arc<ViewCollectionSnapshot>>,
+    snapshot_bytes: usize,
+    payload_bytes: usize,
+    payload_count: usize,
+}
+
+#[derive(Debug)]
+struct ViewCollectionPayload {
+    node: Value,
+    items: Vec<Value>,
 }
 
 #[derive(Debug)]
 pub(crate) struct ViewCollectionSnapshot {
     pub(crate) binding: ViewCursorBinding,
-    pub(crate) node: Value,
-    pub(crate) items: Vec<Value>,
-    bytes: usize,
-    secret: [u8; 32],
+    payload: Arc<ViewCollectionPayload>,
+    id: u64,
+}
+
+impl ViewCollectionSnapshot {
+    pub(crate) fn node(&self) -> &Value {
+        &self.payload.node
+    }
+
+    pub(crate) fn items(&self) -> &[Value] {
+        &self.payload.items
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ViewRetainedUsage {
+    pub(crate) records: usize,
+    pub(crate) unique_payloads: usize,
+    pub(crate) record_bytes: usize,
+    pub(crate) payload_bytes: usize,
+    pub(crate) index_capacity: usize,
+    pub(crate) retained_bytes: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -118,15 +174,57 @@ pub(crate) struct StoredViewCursor {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ViewCursorError {
     Invalid,
+    CapacityExceeded,
+    OwnerUnavailable,
+    EntropyUnavailable,
+    TokenUnavailable,
+    OffsetNotRepresentable,
+    AllocationUnavailable,
 }
 
 impl ViewCursorError {
     pub(crate) const fn code(self) -> RefusalCode {
         match self {
             Self::Invalid => RefusalCode::InvalidCursor,
+            Self::CapacityExceeded => RefusalCode::ResultTooLarge,
+            Self::OwnerUnavailable => RefusalDetail::CachePoisoned.code(),
+            Self::EntropyUnavailable => RefusalDetail::ProviderAbsent.code(),
+            Self::TokenUnavailable | Self::OffsetNotRepresentable | Self::AllocationUnavailable => {
+                RefusalCode::ProviderFailed
+            }
+        }
+    }
+
+    pub(crate) const fn detail(self) -> Option<RefusalDetail> {
+        match self {
+            Self::OwnerUnavailable => Some(RefusalDetail::CachePoisoned),
+            Self::EntropyUnavailable => Some(RefusalDetail::ProviderAbsent),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn message(self) -> &'static str {
+        match self {
+            Self::Invalid => "view cursor does not belong to this question and owner",
+            Self::CapacityExceeded => "new view snapshot exceeds the temporary retained-state budget; earlier continuations remain available",
+            Self::OwnerUnavailable => "view cursor owner is unavailable",
+            Self::EntropyUnavailable => "view cursor entropy is unavailable",
+            Self::TokenUnavailable => "view continuation could not be authenticated or issued",
+            Self::OffsetNotRepresentable => "view continuation size or offset is not representable",
+            Self::AllocationUnavailable => "view snapshot index allocation is unavailable",
+        }
+    }
+
+    pub(crate) fn into_result(self, at: Option<String>) -> DomainResult {
+        match self.detail() {
+            Some(detail) => DomainResult::canonical_rejection_detailed(at, detail, self.message()),
+            None => DomainResult::canonical_rejection(at, self.code(), self.message()),
         }
     }
 }
+
+#[cfg(test)]
+type ViewEntropy = fn(&mut [u8]) -> Result<(), ViewCursorError>;
 
 /// Optional observation port implemented outside the application layer.
 pub(crate) trait ViewCapacityObserver: Send + Sync {
@@ -134,17 +232,15 @@ pub(crate) trait ViewCapacityObserver: Send + Sync {
     fn record_view_admission_refusal(&self);
 }
 
-/// Bounded process-local storage for opaque v0.13 page continuations. Tokens
-/// are opaque replayable capabilities; no numeric parser offset crosses the
-/// public boundary. Entries share one bounded immutable collection snapshot.
-/// Only issued continuations consume entry slots, so a long collection can
-/// progress without reserving its entire chain before the first page.
+/// One append-only process owner for immutable view snapshots. An encrypted
+/// snapshot index and offset need no retained per-page entries. New admission
+/// cannot reclaim any snapshot already promised to a caller.
 pub(crate) struct ViewCursorStore {
-    ttl: Duration,
-    max_entries: usize,
     max_total_bytes: usize,
-    entries: Mutex<HashMap<String, ViewCursorEntry>>,
+    state: Mutex<ViewCursorState>,
     capacity_observer: Option<Arc<dyn ViewCapacityObserver>>,
+    #[cfg(test)]
+    entropy: Option<ViewEntropy>,
 }
 
 /// A search continuation binds the exact question through its digest. The
@@ -498,18 +594,18 @@ fn search_answer_digest(binding: &SearchCursorBinding) -> (u8, [u8; 32]) {
 
 impl Default for ViewCursorStore {
     fn default() -> Self {
-        Self::new(DEFAULT_TTL, VIEW_MAX_ENTRIES, DEFAULT_MAX_TOTAL_BYTES)
+        Self::new(DEFAULT_MAX_TOTAL_BYTES)
     }
 }
 
 impl ViewCursorStore {
-    pub(crate) fn new(ttl: Duration, max_entries: usize, max_total_bytes: usize) -> Self {
+    pub(crate) fn new(max_total_bytes: usize) -> Self {
         Self {
-            ttl,
-            max_entries,
             max_total_bytes,
-            entries: Mutex::new(HashMap::new()),
+            state: Mutex::new(ViewCursorState::default()),
             capacity_observer: None,
+            #[cfg(test)]
+            entropy: None,
         }
     }
 
@@ -527,174 +623,385 @@ impl ViewCursorStore {
         node: Value,
         items: Vec<Value>,
         offset: usize,
-    ) -> Option<String> {
+    ) -> Result<String, ViewCursorError> {
         if offset >= items.len() {
-            return None;
+            return Err(ViewCursorError::Invalid);
         }
-        if self.max_entries == 0 {
+        if let Err(lower_bound) =
+            bounded_json_size_attempt(&(&binding, &node, &items), self.max_total_bytes)
+        {
             if let Some(observer) = &self.capacity_observer {
-                observer.record_view_admission_refusal();
+                observer.record_view(lower_bound as u64, false, false);
             }
-            return None;
+            return Err(ViewCursorError::CapacityExceeded);
         }
-        let json_bytes =
-            match bounded_json_size_attempt(&(&binding, &node, &items), self.max_total_bytes) {
-                Ok(bytes) => bytes,
-                Err(lower_bound) => {
-                    if let Some(observer) = &self.capacity_observer {
-                        observer.record_view(lower_bound as u64, false, false);
-                    }
-                    return None;
-                }
-            };
-        let bytes = snapshot_charge(&binding, &node, &items, json_bytes);
-        // The current cursor must remain available while its successor is
-        // published. Admit enough quota for both before returning page one,
-        // otherwise a later page could fail solely on cursor bookkeeping.
-        let reserved_entries = if self.max_entries > 1 && offset + 1 < items.len() {
-            2
-        } else {
-            1
-        };
-        if bytes.saturating_add(reserved_entries * VIEW_ENTRY_CHARGE) > self.max_total_bytes {
-            if let Some(observer) = &self.capacity_observer {
-                observer.record_view(bytes as u64, true, false);
-            }
-            return None;
-        }
-        let mut secret = [0u8; 32];
-        secret[..16].copy_from_slice(Uuid::new_v4().as_bytes());
-        secret[16..].copy_from_slice(Uuid::new_v4().as_bytes());
-        let snapshot = Arc::new(ViewCollectionSnapshot {
-            binding,
-            node,
-            items,
-            bytes,
-            secret,
+        // serde_json::Map does not expose its IndexMap capacity. Rebuild only
+        // objects, preserving order and moving their owned keys/values, so an
+        // arbitrarily preallocated sparse map is not retained uncharged.
+        let node = compact_view_objects(node);
+        let items = items
+            .into_iter()
+            .map(compact_view_objects)
+            .collect::<Vec<_>>();
+        let charges = snapshot_record_charge(&binding).and_then(|record| {
+            let payload = snapshot_payload_charge(&node, &items)?;
+            Ok((record, payload, view_add(record, payload)?))
         });
-        let result = self.insert_entry(snapshot, offset, None);
+        let (record_bytes, payload_bytes, bytes) = match charges {
+            Ok(charges) => charges,
+            Err(error) => {
+                if let Some(observer) = &self.capacity_observer {
+                    observer.record_view_admission_refusal();
+                }
+                return Err(error);
+            }
+        };
+        // The complete fresh input is observed independently of whether its
+        // immutable payload is already retained by this owner.
+        let result = self.admit_snapshot(binding, node, items, offset, record_bytes, payload_bytes);
         if let Some(observer) = &self.capacity_observer {
-            observer.record_view(bytes as u64, true, result.is_some());
+            observer.record_view(bytes as u64, true, result.is_ok());
         }
         result
     }
 
-    /// Reissue the same successor on retries, including when an older LRU
-    /// eviction removed that successor after its first publication.
+    fn admit_snapshot(
+        &self,
+        binding: ViewCursorBinding,
+        node: Value,
+        items: Vec<Value>,
+        offset: usize,
+        record_bytes: usize,
+        payload_bytes: usize,
+    ) -> Result<String, ViewCursorError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| ViewCursorError::OwnerUnavailable)?;
+        // Every caller has already completed a fresh full projection. Preserve
+        // each issued binding; only the immutable equal data may share storage.
+        let mut shared_payload = None;
+        for snapshot in &state.snapshots {
+            if snapshot.binding == binding && snapshot.node() == &node && snapshot.items() == items
+            {
+                let key = state
+                    .key
+                    .as_ref()
+                    .ok_or(ViewCursorError::OwnerUnavailable)?;
+                return issue_view_cursor(key, snapshot.id, offset);
+            }
+            if shared_payload.is_none()
+                && snapshot.binding.has_same_question(&binding)
+                && snapshot.node() == &node
+                && snapshot.items() == items
+            {
+                shared_payload = Some(Arc::clone(&snapshot.payload));
+            }
+        }
+        let len = state
+            .snapshots
+            .len()
+            .checked_add(1)
+            .ok_or(ViewCursorError::OffsetNotRepresentable)?;
+        let id = u64::try_from(len).map_err(|_| ViewCursorError::OffsetNotRepresentable)?;
+        let new_payload_bytes = if shared_payload.is_none() {
+            payload_bytes
+        } else {
+            0
+        };
+        let snapshot_bytes = view_add(
+            view_add(state.snapshot_bytes, record_bytes)?,
+            new_payload_bytes,
+        )?;
+        let total_payload_bytes = view_add(state.payload_bytes, new_payload_bytes)?;
+        let payload_count = view_add(state.payload_count, usize::from(shared_payload.is_none()))?;
+        let mut grown = None;
+        if len > state.snapshots.capacity() {
+            let amortized = state
+                .snapshots
+                .capacity()
+                .checked_mul(2)
+                .unwrap_or(len)
+                .max(len)
+                .max(4);
+            // A spare-capacity policy must not refuse a snapshot that fits with
+            // an exact index. Neither failed candidate is installed or retained.
+            for capacity in [amortized, len] {
+                let mut candidate = Vec::new();
+                if candidate.try_reserve_exact(capacity).is_err() {
+                    if capacity != len {
+                        continue;
+                    }
+                    return Err(ViewCursorError::AllocationUnavailable);
+                }
+                if view_retained_charge(snapshot_bytes, candidate.capacity())?
+                    <= self.max_total_bytes
+                {
+                    grown = Some(candidate);
+                    break;
+                }
+                if capacity == len {
+                    return Err(ViewCursorError::CapacityExceeded);
+                }
+            }
+        } else if view_retained_charge(snapshot_bytes, state.snapshots.capacity())?
+            > self.max_total_bytes
+        {
+            return Err(ViewCursorError::CapacityExceeded);
+        }
+        // A failed entropy or cipher operation leaves both the old key and the
+        // append-only index unchanged. Only a successful admission installs a key.
+        let mut new_key = None;
+        if state.key.is_none() {
+            let mut key = zeroize::Zeroizing::new([0u8; 64]);
+            self.fill_entropy(&mut key[..])?;
+            new_key = Some(key);
+        }
+        let key = state
+            .key
+            .as_ref()
+            .or(new_key.as_ref())
+            .ok_or(ViewCursorError::OwnerUnavailable)?;
+        let token = issue_view_cursor(key, id, offset)?;
+        let payload = match shared_payload {
+            Some(payload) => payload,
+            None => Arc::new(ViewCollectionPayload { node, items }),
+        };
+        let snapshot = Arc::new(ViewCollectionSnapshot {
+            binding,
+            payload,
+            id,
+        });
+        if let Some(mut candidate) = grown {
+            candidate.extend(state.snapshots.iter().cloned());
+            candidate.push(snapshot);
+            state.snapshots = candidate;
+        } else {
+            state.snapshots.push(snapshot);
+        }
+        state.snapshot_bytes = snapshot_bytes;
+        state.payload_bytes = total_payload_bytes;
+        state.payload_count = payload_count;
+        if let Some(key) = new_key {
+            state.key = Some(key);
+        }
+        // On reuse, the unused fresh node/items remain function parameters and
+        // are destroyed after this guard, including every early refusal path.
+        drop(state);
+        Ok(token)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_usage_for_test(&self) -> ViewRetainedUsage {
+        let state = self.state.lock().unwrap();
+        ViewRetainedUsage {
+            records: state.snapshots.len(),
+            unique_payloads: state.payload_count,
+            record_bytes: state.snapshot_bytes - state.payload_bytes,
+            payload_bytes: state.payload_bytes,
+            index_capacity: state.snapshots.capacity(),
+            retained_bytes: view_retained_charge(state.snapshot_bytes, state.snapshots.capacity())
+                .unwrap(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_binding_ids_for_test(&self) -> Vec<String> {
+        self.state
+            .lock()
+            .unwrap()
+            .snapshots
+            .iter()
+            .map(|snapshot| snapshot.binding.snapshot_id.clone())
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_payload_identities_for_test(&self) -> Vec<usize> {
+        self.state
+            .lock()
+            .unwrap()
+            .snapshots
+            .iter()
+            .map(|snapshot| Arc::as_ptr(&snapshot.payload) as usize)
+            .collect()
+    }
+
     pub(crate) fn insert_next(
         &self,
         current: &StoredViewCursor,
         offset: usize,
         current_token: &str,
-    ) -> Option<String> {
-        if offset >= current.snapshot.items.len() {
-            return None;
+    ) -> Result<String, ViewCursorError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| ViewCursorError::OwnerUnavailable)?;
+        let snapshot = view_snapshot_by_id(&state, current.snapshot.id)?;
+        if !Arc::ptr_eq(snapshot, &current.snapshot) || offset >= snapshot.items().len() {
+            return Err(ViewCursorError::Invalid);
         }
-        self.insert_entry(Arc::clone(&current.snapshot), offset, Some(current_token))
-    }
-
-    fn insert_entry(
-        &self,
-        snapshot: Arc<ViewCollectionSnapshot>,
-        offset: usize,
-        current_token: Option<&str>,
-    ) -> Option<String> {
-        if self.max_entries == 0
-            || snapshot.bytes.saturating_add(VIEW_ENTRY_CHARGE) > self.max_total_bytes
-        {
-            return None;
+        let key = state.key.as_ref().ok_or(ViewCursorError::Invalid)?;
+        if issue_view_cursor(key, snapshot.id, current.offset)? != current_token {
+            return Err(ViewCursorError::Invalid);
         }
-        let token = view_cursor_token(&snapshot.secret, offset);
-        let now = Instant::now();
-        let mut entries = self.entries.lock().expect("view cursor store poisoned");
-        entries.retain(|_, entry| now.duration_since(entry.stored_at) < self.ttl);
-        if let Some(existing) = entries.get_mut(&token) {
-            if Arc::ptr_eq(&existing.snapshot, &snapshot) && existing.offset == offset {
-                existing.last_read = now;
-                return Some(token);
-            }
-            return None;
-        }
-        while entries.len() >= self.max_entries
-            || unique_snapshot_bytes(&entries, Some(&snapshot))
-                .saturating_add((entries.len() + 1).saturating_mul(VIEW_ENTRY_CHARGE))
-                > self.max_total_bytes
-        {
-            let oldest = entries
-                .iter()
-                .filter(|(candidate, _)| {
-                    self.max_entries == 1 || current_token != Some(candidate.as_str())
-                })
-                .min_by_key(|(_, entry)| entry.last_read)
-                .map(|(candidate, _)| candidate.clone())?;
-            entries.remove(&oldest);
-        }
-        entries.insert(
-            token.clone(),
-            ViewCursorEntry {
-                snapshot,
-                offset,
-                stored_at: now,
-                last_read: now,
-            },
-        );
-        Some(token)
+        issue_view_cursor(key, snapshot.id, offset)
     }
 
     pub(crate) fn read(
         &self,
         token: &str,
-        expected: &ViewCursorBinding,
-        _current_revision: &str,
+        expected: &ViewCursorQuestion,
     ) -> Result<StoredViewCursor, ViewCursorError> {
-        if !valid_view_cursor_token(token) {
+        use aes_siv::KeyInit;
+        let ciphertext = decode_view_cursor(token)?;
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| ViewCursorError::OwnerUnavailable)?;
+        let key = state.key.as_ref().ok_or(ViewCursorError::Invalid)?;
+        let mut cipher = aes_siv::siv::Aes256Siv::new_from_slice(&key[..])
+            .map_err(|_| ViewCursorError::TokenUnavailable)?;
+        let plaintext = zeroize::Zeroizing::new(
+            cipher
+                .decrypt([VIEW_CURSOR_AAD], &ciphertext)
+                .map_err(|_| ViewCursorError::Invalid)?,
+        );
+        if plaintext.len() != VIEW_CURSOR_PAYLOAD_BYTES || plaintext[0] != 1 {
             return Err(ViewCursorError::Invalid);
         }
-        let mut entries = self.entries.lock().expect("view cursor store poisoned");
-        let now = Instant::now();
-        let Some(entry) = entries.get(token) else {
-            return Err(ViewCursorError::Invalid);
-        };
-        if now.duration_since(entry.stored_at) >= self.ttl {
-            entries.remove(token);
-            return Err(ViewCursorError::Invalid);
-        }
-        let entry = entries
-            .get_mut(token)
-            .expect("the checked view cursor remains present");
-        let binding = &entry.snapshot.binding;
-        if binding.canonical_at != expected.canonical_at
+        let id = u64::from_be_bytes(
+            plaintext[1..9]
+                .try_into()
+                .map_err(|_| ViewCursorError::Invalid)?,
+        );
+        let offset = usize::try_from(u64::from_be_bytes(
+            plaintext[9..17]
+                .try_into()
+                .map_err(|_| ViewCursorError::Invalid)?,
+        ))
+        .map_err(|_| ViewCursorError::Invalid)?;
+        // Authenticate and parse before consulting the private index.
+        let snapshot = view_snapshot_by_id(&state, id)?;
+        let binding = &snapshot.binding;
+        if offset >= snapshot.items().len()
+            || binding.canonical_at != expected.canonical_at
             || binding.projection != expected.projection
             || binding.source_set_identity != expected.source_set_identity
             || binding.page_limit != expected.page_limit
         {
             return Err(ViewCursorError::Invalid);
         }
-        entry.last_read = now;
         Ok(StoredViewCursor {
-            snapshot: Arc::clone(&entry.snapshot),
-            offset: entry.offset,
+            snapshot: Arc::clone(snapshot),
+            offset,
         })
+    }
+
+    pub(crate) fn token_probe() -> String {
+        encode_view_cursor(&[0u8; VIEW_CURSOR_CIPHERTEXT_BYTES])
+    }
+
+    fn fill_entropy(&self, bytes: &mut [u8]) -> Result<(), ViewCursorError> {
+        #[cfg(test)]
+        if let Some(fill) = self.entropy {
+            return fill(bytes);
+        }
+        getrandom::fill(bytes).map_err(|_| ViewCursorError::EntropyUnavailable)
     }
 }
 
-fn unique_snapshot_bytes(
-    entries: &HashMap<String, ViewCursorEntry>,
-    extra: Option<&Arc<ViewCollectionSnapshot>>,
-) -> usize {
-    let mut seen = HashSet::new();
-    let mut total = 0usize;
-    for entry in entries.values() {
-        if seen.insert(Arc::as_ptr(&entry.snapshot) as usize) {
-            total = total.saturating_add(entry.snapshot.bytes);
+fn view_snapshot_by_id(
+    state: &ViewCursorState,
+    id: u64,
+) -> Result<&Arc<ViewCollectionSnapshot>, ViewCursorError> {
+    let index = usize::try_from(id)
+        .ok()
+        .and_then(|id| id.checked_sub(1))
+        .ok_or(ViewCursorError::Invalid)?;
+    state.snapshots.get(index).ok_or(ViewCursorError::Invalid)
+}
+
+fn view_add(left: usize, right: usize) -> Result<usize, ViewCursorError> {
+    left.checked_add(right)
+        .ok_or(ViewCursorError::OffsetNotRepresentable)
+}
+
+fn view_mul(left: usize, right: usize) -> Result<usize, ViewCursorError> {
+    left.checked_mul(right)
+        .ok_or(ViewCursorError::OffsetNotRepresentable)
+}
+
+fn view_retained_charge(
+    snapshot_bytes: usize,
+    index_capacity: usize,
+) -> Result<usize, ViewCursorError> {
+    let owner = view_add(
+        std::mem::size_of::<ViewCursorStore>(),
+        2 * std::mem::size_of::<usize>(),
+    )?;
+    view_add(
+        view_add(owner, snapshot_bytes)?,
+        view_mul(
+            index_capacity,
+            std::mem::size_of::<Arc<ViewCollectionSnapshot>>(),
+        )?,
+    )
+}
+
+fn issue_view_cursor(key: &[u8; 64], id: u64, offset: usize) -> Result<String, ViewCursorError> {
+    use aes_siv::KeyInit;
+    let mut payload = zeroize::Zeroizing::new([0u8; VIEW_CURSOR_PAYLOAD_BYTES]);
+    payload[0] = 1;
+    payload[1..9].copy_from_slice(&id.to_be_bytes());
+    payload[9..17].copy_from_slice(
+        &u64::try_from(offset)
+            .map_err(|_| ViewCursorError::OffsetNotRepresentable)?
+            .to_be_bytes(),
+    );
+    let mut cipher = aes_siv::siv::Aes256Siv::new_from_slice(key)
+        .map_err(|_| ViewCursorError::TokenUnavailable)?;
+    let ciphertext = cipher
+        .encrypt([VIEW_CURSOR_AAD], &payload[..])
+        .map_err(|_| ViewCursorError::TokenUnavailable)?;
+    if ciphertext.len() != VIEW_CURSOR_CIPHERTEXT_BYTES {
+        return Err(ViewCursorError::TokenUnavailable);
+    }
+    Ok(encode_view_cursor(&ciphertext))
+}
+
+fn encode_view_cursor(ciphertext: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut token = String::with_capacity(VIEW_CURSOR_TOKEN_BYTES);
+    token.push_str("vc2.");
+    for byte in ciphertext {
+        token.push(char::from(HEX[usize::from(byte >> 4)]));
+        token.push(char::from(HEX[usize::from(byte & 15)]));
+    }
+    token
+}
+
+fn decode_view_cursor(token: &str) -> Result<[u8; VIEW_CURSOR_CIPHERTEXT_BYTES], ViewCursorError> {
+    if token.len() != VIEW_CURSOR_TOKEN_BYTES || !token.starts_with("vc2.") {
+        return Err(ViewCursorError::Invalid);
+    }
+    fn nibble(byte: u8) -> Result<u8, ViewCursorError> {
+        match byte {
+            b'0'..=b'9' => Ok(byte - b'0'),
+            b'a'..=b'f' => Ok(byte - b'a' + 10),
+            _ => Err(ViewCursorError::Invalid),
         }
     }
-    if let Some(snapshot) = extra {
-        if seen.insert(Arc::as_ptr(snapshot) as usize) {
-            total = total.saturating_add(snapshot.bytes);
-        }
+    let mut ciphertext = [0u8; VIEW_CURSOR_CIPHERTEXT_BYTES];
+    for (pair, out) in token.as_bytes()[4..]
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .zip(&mut ciphertext)
+    {
+        *out = (nibble(pair[0])? << 4) | nibble(pair[1])?;
     }
-    total
+    Ok(ciphertext)
 }
 
 struct BoundedSizeWriter {
@@ -730,92 +1037,121 @@ fn bounded_json_size_attempt(value: &impl serde::Serialize, limit: usize) -> Res
     Ok(writer.bytes)
 }
 
-fn snapshot_charge(
-    binding: &ViewCursorBinding,
-    node: &Value,
-    items: &Vec<Value>,
-    json_bytes: usize,
-) -> usize {
-    let binding_heap = [
+fn compact_view_objects(value: Value) -> Value {
+    match value {
+        Value::Object(values) => {
+            let mut compact = serde_json::Map::with_capacity(values.len());
+            for (key, value) in values {
+                compact.insert(key, compact_view_objects(value));
+            }
+            Value::Object(compact)
+        }
+        Value::Array(values) => {
+            Value::Array(values.into_iter().map(compact_view_objects).collect())
+        }
+        value => value,
+    }
+}
+
+fn compact_view_object_charge(len: usize) -> Result<usize, ViewCursorError> {
+    if len == 0 {
+        return Ok(0);
+    }
+    // Cargo.lock pins serde_json 1.0.150 (preserve_order), indexmap 2.14.0
+    // Core::with_capacity (one Vec<Bucket> plus HashTable<usize>), and
+    // hashbrown 0.17.1 capacity_to_buckets/TableLayout::calculate_layout_for.
+    // Newly compacted maps request exactly len entries. Charge their bucket
+    // vector and the hash index, padding/control group at the maximum width
+    // 16 used by these locked implementations. This is a constructor-based
+    // retained-allocation bound, not allocator overhead or process RSS.
+    let word = std::mem::size_of::<usize>();
+    let buckets = if len < 15 {
+        let min = match word {
+            0..=1 => 14,
+            2..=3 => 7,
+            _ => 3,
+        };
+        match len.max(min) {
+            0..=3 => 4,
+            4..=7 => 8,
+            _ => 16,
+        }
+    } else {
+        (view_mul(len, 8)? / 7)
+            .checked_next_power_of_two()
+            .ok_or(ViewCursorError::OffsetNotRepresentable)?
+    };
+    let entry = view_add(
+        view_add(word, std::mem::size_of::<String>())?,
+        std::mem::size_of::<Value>(),
+    )?;
+    let entries = view_mul(len, entry)?;
+    let ctrl_offset = view_add(view_mul(buckets, word)?, 15)? & !15;
+    view_add(entries, view_add(ctrl_offset, view_add(buckets, 16)?)?)
+}
+
+fn snapshot_record_charge(binding: &ViewCursorBinding) -> Result<usize, ViewCursorError> {
+    let json_bytes = bounded_json_size_attempt(binding, usize::MAX)
+        .map_err(|_| ViewCursorError::OffsetNotRepresentable)?;
+    let mut heap = std::mem::size_of::<ViewCollectionSnapshot>();
+    for text in [
         &binding.canonical_at,
         &binding.projection,
         &binding.source_set_identity,
         &binding.snapshot_id,
-    ]
-    .iter()
-    .fold(0usize, |total, value| {
-        total.saturating_add(value.capacity())
-    });
-    let estimated_heap = std::mem::size_of::<ViewCollectionSnapshot>()
-        .saturating_add(binding_heap)
-        .saturating_add(value_heap_bytes(node))
-        .saturating_add(
-            items
-                .capacity()
-                .saturating_mul(std::mem::size_of::<Value>()),
-        )
-        .saturating_add(items.iter().fold(0usize, |total, value| {
-            total.saturating_add(value_extra_heap_bytes(value))
-        }));
-    json_bytes.max(estimated_heap)
+    ] {
+        heap = view_add(heap, text.capacity())?;
+    }
+    view_add(json_bytes.max(heap), 2 * std::mem::size_of::<usize>())
 }
 
-fn value_heap_bytes(value: &Value) -> usize {
-    std::mem::size_of::<Value>().saturating_add(value_extra_heap_bytes(value))
+fn snapshot_payload_charge(node: &Value, items: &Vec<Value>) -> Result<usize, ViewCursorError> {
+    let json_bytes = bounded_json_size_attempt(&(node, items), usize::MAX)
+        .map_err(|_| ViewCursorError::OffsetNotRepresentable)?;
+    let mut heap = std::mem::size_of::<ViewCollectionPayload>();
+    heap = view_add(heap, value_extra_heap_bytes(node)?)?;
+    heap = view_add(
+        heap,
+        view_mul(items.capacity(), std::mem::size_of::<Value>())?,
+    )?;
+    for value in items {
+        heap = view_add(heap, value_extra_heap_bytes(value)?)?;
+    }
+    view_add(json_bytes.max(heap), 2 * std::mem::size_of::<usize>())
 }
 
-fn value_extra_heap_bytes(value: &Value) -> usize {
+#[cfg(test)]
+fn snapshot_charge(
+    binding: &ViewCursorBinding,
+    node: &Value,
+    items: &Vec<Value>,
+) -> Result<usize, ViewCursorError> {
+    view_add(
+        snapshot_record_charge(binding)?,
+        snapshot_payload_charge(node, items)?,
+    )
+}
+
+fn value_extra_heap_bytes(value: &Value) -> Result<usize, ViewCursorError> {
     match value {
-        Value::String(text) => text.capacity(),
-        Value::Array(values) => values
-            .capacity()
-            .saturating_mul(std::mem::size_of::<Value>())
-            .saturating_add(values.iter().fold(0usize, |total, value| {
-                total.saturating_add(value_extra_heap_bytes(value))
-            })),
-        Value::Object(values) => values
-            .len()
-            .saturating_mul(std::mem::size_of::<String>() + std::mem::size_of::<Value>() + 64)
-            .saturating_add(values.iter().fold(0usize, |total, (key, value)| {
-                total
-                    .saturating_add(key.capacity())
-                    .saturating_add(value_extra_heap_bytes(value))
-            })),
-        Value::Null | Value::Bool(_) | Value::Number(_) => 0,
+        Value::String(text) => Ok(text.capacity()),
+        Value::Array(values) => {
+            let mut bytes = view_mul(values.capacity(), std::mem::size_of::<Value>())?;
+            for value in values {
+                bytes = view_add(bytes, value_extra_heap_bytes(value)?)?;
+            }
+            Ok(bytes)
+        }
+        Value::Object(values) => {
+            let mut bytes = compact_view_object_charge(values.len())?;
+            for (key, value) in values {
+                bytes = view_add(bytes, key.capacity())?;
+                bytes = view_add(bytes, value_extra_heap_bytes(value)?)?;
+            }
+            Ok(bytes)
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => Ok(0),
     }
-}
-
-fn view_cursor_token(secret: &[u8; 32], offset: usize) -> String {
-    // HMAC-SHA256 keeps the offset opaque and makes reissued successors stable.
-    let mut ipad = [0x36u8; 64];
-    let mut opad = [0x5cu8; 64];
-    for (index, byte) in secret.iter().enumerate() {
-        ipad[index] ^= byte;
-        opad[index] ^= byte;
-    }
-    let inner = Sha256::new()
-        .chain_update(ipad)
-        .chain_update((offset as u64).to_be_bytes())
-        .finalize();
-    let digest = Sha256::new()
-        .chain_update(opad)
-        .chain_update(inner)
-        .finalize();
-    use std::fmt::Write as _;
-    let mut token = String::with_capacity(36);
-    token.push_str("vc1.");
-    for byte in &digest[..16] {
-        write!(&mut token, "{byte:02x}").expect("writing to a String cannot fail");
-    }
-    token
-}
-
-fn valid_view_cursor_token(token: &str) -> bool {
-    token.len() == 36
-        && token.starts_with("vc1.")
-        && token[4..]
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 impl Default for ResultStore {
@@ -1609,11 +1945,11 @@ mod tests {
                 0,
             )
             .unwrap();
-        assert!(token.starts_with("vc1."));
+        assert!(token.starts_with("vc2."));
         assert!(token[4..].parse::<usize>().is_err());
         assert_eq!(
             ViewCursorStore::default()
-                .read(&token, &binding, "rev-1")
+                .read(&token, &binding.question())
                 .unwrap_err(),
             ViewCursorError::Invalid
         );
@@ -1621,130 +1957,87 @@ mod tests {
         let mut other = binding.clone();
         other.canonical_at = "main:Document.Счет.Module.Object.Body".to_string();
         assert_eq!(
-            store.read(&token, &other, "rev-1").unwrap_err(),
+            store.read(&token, &other.question()).unwrap_err(),
             ViewCursorError::Invalid
         );
         let mut other = binding.clone();
         other.projection = "Method".to_string();
         assert_eq!(
-            store.read(&token, &other, "rev-1").unwrap_err(),
+            store.read(&token, &other.question()).unwrap_err(),
             ViewCursorError::Invalid
         );
         let mut other = binding.clone();
         other.source_set_identity = "other:sha256-source-id".to_string();
         assert_eq!(
-            store.read(&token, &other, "rev-1").unwrap_err(),
+            store.read(&token, &other.question()).unwrap_err(),
             ViewCursorError::Invalid
         );
         let mut other = binding.clone();
         other.page_limit = 2;
         assert_eq!(
-            store.read(&token, &other, "rev-1").unwrap_err(),
+            store.read(&token, &other.question()).unwrap_err(),
             ViewCursorError::Invalid
         );
-        let page = store.read(&token, &binding, "rev-1").unwrap();
-        assert_eq!(page.snapshot.items[page.offset], json!({"line": 2}));
+        let page = store.read(&token, &binding.question()).unwrap();
+        assert_eq!(page.snapshot.items()[page.offset], json!({"line": 2}));
         let successor = store.insert_next(&page, 1, &token).unwrap();
-        let replay = store.read(&token, &binding, "rev-1").unwrap();
+        let replay = store.read(&token, &binding.question()).unwrap();
         assert_eq!(replay.offset, page.offset);
         assert_eq!(store.insert_next(&replay, 1, &token).unwrap(), successor);
     }
 
     #[test]
-    fn long_chain_issues_one_cursor_at_a_time_and_reissues_an_evicted_successor() {
-        let store = ViewCursorStore::new(DEFAULT_TTL, 2, 4_096);
-        let binding = view_binding("main:Document.Заказ.Module.Object.Body", "rev-1");
-        let first = store
-            .insert_snapshot(
+    fn new_snapshot_pressure_preserves_every_promised_chain() {
+        let store = ViewCursorStore::new(4_096);
+        let mut issued = Vec::new();
+        for index in 0..100 {
+            let binding = view_binding(
+                &format!("main:Document.Owner{index}.Module.Object.Body"),
+                "rev-1",
+            );
+            match store.insert_snapshot(
                 binding.clone(),
-                json!({"at": binding.canonical_at}),
-                vec![json!(1), json!(2), json!(3), json!(4)],
+                json!({}),
+                vec![json!("X".repeat(800)), json!(2)],
                 0,
-            )
-            .unwrap();
-        let first_page = store.read(&first, &binding, "rev-1").unwrap();
-        let second = store.insert_next(&first_page, 1, &first).unwrap();
-        let second_page = store.read(&second, &binding, "rev-1").unwrap();
-        let third = store.insert_next(&second_page, 2, &second).unwrap();
-        assert_eq!(
-            store.read(&first, &binding, "rev-1").unwrap_err(),
-            ViewCursorError::Invalid
+            ) {
+                Ok(token) => issued.push((binding, token)),
+                Err(error) => {
+                    assert_eq!(error, ViewCursorError::CapacityExceeded);
+                    break;
+                }
+            }
+        }
+        assert!(!issued.is_empty() && issued.len() < 100);
+        let state = store.state.lock().unwrap();
+        let before = (
+            state.snapshots.len(),
+            state.snapshots.capacity(),
+            state.snapshot_bytes,
         );
-        let third_page = store.read(&third, &binding, "rev-1").unwrap();
-        let fourth = store.insert_next(&third_page, 3, &third).unwrap();
-        assert_eq!(
-            store.read(&second, &binding, "rev-1").unwrap_err(),
-            ViewCursorError::Invalid
+        assert!(
+            view_retained_charge(state.snapshot_bytes, state.snapshots.capacity()).unwrap()
+                <= 4_096
         );
-        store.read(&third, &binding, "rev-1").unwrap();
-        let _other = store
-            .insert_snapshot(
-                view_binding("main:Document.Другой.Module.Object.Body", "rev-1"),
-                json!({"at":"other"}),
-                vec![json!(1)],
-                0,
-            )
-            .unwrap();
+        drop(state);
+        for (binding, token) in &issued {
+            let page = store.read(token, &binding.question()).unwrap();
+            let successor = store.insert_next(&page, 1, token).unwrap();
+            assert_eq!(
+                store.read(&successor, &binding.question()).unwrap().offset,
+                1
+            );
+            assert_eq!(store.insert_next(&page, 1, token).unwrap(), successor);
+        }
+        let state = store.state.lock().unwrap();
         assert_eq!(
-            store.read(&fourth, &binding, "rev-1").unwrap_err(),
-            ViewCursorError::Invalid
+            (
+                state.snapshots.len(),
+                state.snapshots.capacity(),
+                state.snapshot_bytes
+            ),
+            before
         );
-        // A still-live predecessor reissues exactly its evicted successor.
-        let third_page = store.read(&third, &binding, "rev-1").unwrap();
-        assert_eq!(store.insert_next(&third_page, 3, &third).unwrap(), fourth);
-        assert_eq!(store.read(&fourth, &binding, "rev-1").unwrap().offset, 3);
-    }
-
-    #[test]
-    fn view_snapshot_byte_quota_and_lru_evict_old_chains() {
-        let binding = |name| view_binding(name, "rev-1");
-        let store = ViewCursorStore::new(DEFAULT_TTL, 8, 2_048);
-        let insert = |name| {
-            store
-                .insert_snapshot(
-                    binding(name),
-                    json!({"at":name}),
-                    vec![json!("X".repeat(800))],
-                    0,
-                )
-                .unwrap()
-        };
-        let first_at = "main:Document.Первый.Module.Object.Body";
-        let second_at = "main:Document.Второй.Module.Object.Body";
-        let third_at = "main:Document.Третий.Module.Object.Body";
-        let first = insert(first_at);
-        let second = insert(second_at);
-        assert_eq!(
-            store.read(&first, &binding(first_at), "rev-1").unwrap_err(),
-            ViewCursorError::Invalid
-        );
-        store.read(&second, &binding(second_at), "rev-1").unwrap();
-        let third = insert(third_at);
-        assert_eq!(
-            store
-                .read(&second, &binding(second_at), "rev-1")
-                .unwrap_err(),
-            ViewCursorError::Invalid
-        );
-        assert!(store.read(&third, &binding(third_at), "rev-1").is_ok());
-
-        let lru = ViewCursorStore::new(DEFAULT_TTL, 2, 4_096);
-        let first = lru
-            .insert_snapshot(binding(first_at), json!({}), vec![json!(1)], 0)
-            .unwrap();
-        let second = lru
-            .insert_snapshot(binding(second_at), json!({}), vec![json!(2)], 0)
-            .unwrap();
-        lru.read(&first, &binding(first_at), "rev-1").unwrap();
-        let third = lru
-            .insert_snapshot(binding(third_at), json!({}), vec![json!(3)], 0)
-            .unwrap();
-        assert_eq!(
-            lru.read(&second, &binding(second_at), "rev-1").unwrap_err(),
-            ViewCursorError::Invalid
-        );
-        assert!(lru.read(&first, &binding(first_at), "rev-1").is_ok());
-        assert!(lru.read(&third, &binding(third_at), "rev-1").is_ok());
     }
 
     #[test]
@@ -1752,21 +2045,34 @@ mod tests {
         let binding = view_binding("main:Document.Заказ.Module.Object.Body", "rev-1");
         let node = json!({"at": binding.canonical_at});
         let items = vec![json!(1), json!(2), json!(3)];
-        let json_bytes = bounded_json_size(&(&binding, &node, &items), usize::MAX).unwrap();
-        let snapshot_bytes = snapshot_charge(&binding, &node, &items, json_bytes);
-        let too_small =
-            ViewCursorStore::new(DEFAULT_TTL, 2, snapshot_bytes + 2 * VIEW_ENTRY_CHARGE - 1);
-        assert!(too_small
-            .insert_snapshot(binding.clone(), node.clone(), items.clone(), 1)
-            .is_none());
-
-        let enough = ViewCursorStore::new(DEFAULT_TTL, 2, snapshot_bytes + 2 * VIEW_ENTRY_CHARGE);
+        let bytes = snapshot_charge(&binding, &node, &items).unwrap();
+        let exact = view_retained_charge(bytes, 1).unwrap();
+        let too_small = ViewCursorStore::new(exact - 1);
+        assert_eq!(
+            too_small.insert_snapshot(binding.clone(), node.clone(), items.clone(), 1),
+            Err(ViewCursorError::CapacityExceeded)
+        );
+        let state = too_small.state.lock().unwrap();
+        assert!(state.key.is_none() && state.snapshots.is_empty());
+        assert_eq!(
+            state.snapshots.capacity(),
+            0,
+            "refused growth must leave no retained index allocation"
+        );
+        drop(state);
+        let enough = ViewCursorStore::new(exact);
         let first = enough
             .insert_snapshot(binding.clone(), node, items, 1)
             .unwrap();
-        let page = enough.read(&first, &binding, "rev-1").unwrap();
+        let page = enough.read(&first, &binding.question()).unwrap();
         let second = enough.insert_next(&page, 2, &first).unwrap();
-        assert_eq!(enough.read(&second, &binding, "rev-1").unwrap().offset, 2);
+        assert_eq!(enough.read(&second, &binding.question()).unwrap().offset, 2);
+        let state = enough.state.lock().unwrap();
+        assert_eq!(state.snapshots.len(), 1);
+        assert!(
+            view_retained_charge(state.snapshot_bytes, state.snapshots.capacity()).unwrap()
+                <= exact
+        );
     }
 
     #[test]
@@ -1774,17 +2080,20 @@ mod tests {
         let observer = Arc::new(ViewObservationProbe::default());
         let port: Arc<dyn ViewCapacityObserver> = observer.clone();
         let binding = view_binding("main:Document.Заказ.Module.Object.Body", "rev-1");
-        let item = json!("x".repeat(2_048));
-        let capped =
-            ViewCursorStore::new(DEFAULT_TTL, 8, 512).with_capacity_observer(Arc::clone(&port));
-        assert!(capped
-            .insert_snapshot(binding.clone(), json!({}), vec![item], 0)
-            .is_none());
-        let successful =
-            ViewCursorStore::new(DEFAULT_TTL, 8, 4_096).with_capacity_observer(Arc::clone(&port));
+        let capped = ViewCursorStore::new(512).with_capacity_observer(Arc::clone(&port));
+        assert_eq!(
+            capped.insert_snapshot(
+                binding.clone(),
+                json!({}),
+                vec![json!("x".repeat(2_048))],
+                0
+            ),
+            Err(ViewCursorError::CapacityExceeded)
+        );
+        let successful = ViewCursorStore::new(4_096).with_capacity_observer(Arc::clone(&port));
         assert!(successful
             .insert_snapshot(binding, json!({}), vec![json!(1)], 0)
-            .is_some());
+            .is_ok());
         let samples = observer.samples.lock().unwrap();
         assert_eq!(samples.len(), 2);
         assert!(samples[0].0 > 512);
@@ -1793,77 +2102,621 @@ mod tests {
     }
 
     #[test]
-    fn expired_view_cursor_releases_its_snapshot_charge() {
-        let store = ViewCursorStore::new(Duration::ZERO, 8, 4_096);
-        let first = view_binding("main:Document.Первый.Module.Object.Body", "rev-1");
-        let second = view_binding("main:Document.Второй.Module.Object.Body", "rev-1");
-        let first_token = store
-            .insert_snapshot(first.clone(), json!({}), vec![json!(1)], 0)
-            .unwrap();
-        let second_token = store
-            .insert_snapshot(second.clone(), json!({}), vec![json!(2)], 0)
-            .unwrap();
-        let entries = store.entries.lock().unwrap();
-        assert_eq!(
-            entries.len(),
-            1,
-            "expired snapshot must be discarded on admission"
-        );
-        assert!(!entries.contains_key(&first_token));
-        assert!(entries.contains_key(&second_token));
-    }
-
-    #[test]
     fn many_small_items_are_charged_for_retained_heap_not_only_json() {
         let binding = view_binding("main:Document.Заказ.Module.Object.Body", "rev-1");
         let items = vec![Value::Null; 10_000];
         let json_bytes = bounded_json_size(&(&binding, json!({}), &items), usize::MAX).unwrap();
         assert!(json_bytes < 100_000);
-        let store = ViewCursorStore::new(DEFAULT_TTL, 128, 100_000);
-        assert!(store
-            .insert_snapshot(binding, json!({}), items, 1)
-            .is_none());
+        let store = ViewCursorStore::new(100_000);
+        assert_eq!(
+            store.insert_snapshot(binding, json!({}), items, 1),
+            Err(ViewCursorError::CapacityExceeded)
+        );
     }
 
     #[test]
-    fn source_change_preserves_the_snapshot_but_tampering_and_expiry_are_invalid() {
+    fn source_change_preserves_the_snapshot_but_tampering_is_invalid() {
         let store = ViewCursorStore::default();
         let binding = view_binding("main:Document.Заказ.Module.Object.Body", "rev-1");
         let token = store
-            .insert_snapshot(
-                binding.clone(),
-                json!({"at": binding.canonical_at}),
-                vec![json!({"line": 2})],
-                0,
-            )
+            .insert_snapshot(binding.clone(), json!({}), vec![json!({"line": 2})], 0)
             .unwrap();
+        let mut changed = binding.clone();
+        changed.snapshot_id = "rev-after-source-change".into();
         assert_eq!(
             store
-                .read(&token, &binding, "rev-2")
+                .read(&token, &changed.question())
                 .unwrap()
                 .snapshot
-                .items,
+                .items(),
             vec![json!({"line": 2})]
         );
         assert_eq!(
             store
-                .read("vc1.00000000000000000000000000000000", &binding, "rev-1")
+                .read(&ViewCursorStore::token_probe(), &binding.question())
                 .unwrap_err(),
             ViewCursorError::Invalid
         );
+    }
 
-        let expiring = ViewCursorStore::new(Duration::ZERO, 4, 1024);
-        let token = expiring
+    #[test]
+    fn hundreds_of_independent_chains_have_no_record_count_eviction() {
+        let store = ViewCursorStore::default();
+        let issued = (0..300)
+            .map(|index| {
+                let binding =
+                    view_binding(&format!("main:CommonModule.Owner{index}.Method"), "rev-1");
+                let token = store
+                    .insert_snapshot(
+                        binding.clone(),
+                        json!({}),
+                        vec![json!(index), json!(index + 1)],
+                        0,
+                    )
+                    .unwrap();
+                (binding, token, index)
+            })
+            .collect::<Vec<_>>();
+        for (binding, token, index) in issued {
+            let page = store.read(&token, &binding.question()).unwrap();
+            assert_eq!(page.snapshot.items()[page.offset], json!(index));
+            let next = store.insert_next(&page, 1, &token).unwrap();
+            assert_eq!(
+                store
+                    .read(&next, &binding.question())
+                    .unwrap()
+                    .snapshot
+                    .items()[1],
+                json!(index + 1)
+            );
+        }
+        assert_eq!(store.state.lock().unwrap().snapshots.len(), 300);
+    }
+
+    #[test]
+    fn only_complete_equal_fresh_results_share_retained_state() {
+        let store = ViewCursorStore::default();
+        let binding = view_binding("main:CommonModule.Owner.Method", "rev-1");
+        let first = store
             .insert_snapshot(
                 binding.clone(),
-                json!({"at": binding.canonical_at}),
-                vec![json!({"line": 2})],
+                json!({"title": "one"}),
+                vec![json!(1), json!(2)],
                 0,
             )
             .unwrap();
+        for _ in 0..130 {
+            assert_eq!(
+                store
+                    .insert_snapshot(
+                        binding.clone(),
+                        json!({"title": "one"}),
+                        vec![json!(1), json!(2)],
+                        0
+                    )
+                    .unwrap(),
+                first
+            );
+        }
+        let first_usage = store.retained_usage_for_test();
+        assert_eq!((first_usage.records, first_usage.unique_payloads), (1, 1));
+        let original = store.read(&first, &binding.question()).unwrap();
+        let mut revised = binding.clone();
+        revised.snapshot_id = "rev-2".into();
+        let revision_token = store
+            .insert_snapshot(
+                revised.clone(),
+                json!({"title": "one"}),
+                vec![json!(1), json!(2)],
+                0,
+            )
+            .unwrap();
+        assert_ne!(revision_token, first);
+        let revision = store.read(&revision_token, &binding.question()).unwrap();
+        assert_ne!(original.snapshot.id, revision.snapshot.id);
+        assert_eq!(original.snapshot.binding.snapshot_id, "rev-1");
+        assert_eq!(revision.snapshot.binding.snapshot_id, "rev-2");
+        assert!(Arc::ptr_eq(
+            &original.snapshot.payload,
+            &revision.snapshot.payload
+        ));
+        let revised_usage = store.retained_usage_for_test();
         assert_eq!(
-            expiring.read(&token, &binding, "rev-1").unwrap_err(),
+            (revised_usage.records, revised_usage.unique_payloads),
+            (2, 1)
+        );
+        assert_eq!(revised_usage.payload_bytes, first_usage.payload_bytes);
+        assert_eq!(revised_usage.record_bytes, 2 * first_usage.record_bytes);
+        assert_eq!(
+            store
+                .insert_snapshot(
+                    revised,
+                    json!({"title": "one"}),
+                    vec![json!(1), json!(2)],
+                    0,
+                )
+                .unwrap(),
+            revision_token,
+            "a later full-binding retry must find its own record past an earlier shared payload"
+        );
+        assert_eq!(store.retained_usage_for_test(), revised_usage);
+        for (node, items) in [
+            (json!({"title": "two"}), vec![json!(1), json!(2)]),
+            (json!({"title": "one"}), vec![json!(1), json!(3)]),
+            (json!({"title": "one"}), vec![json!(2), json!(1)]),
+        ] {
+            let token = store
+                .insert_snapshot(binding.clone(), node, items, 0)
+                .unwrap();
+            assert_ne!(token, first);
+            let changed = store.read(&token, &binding.question()).unwrap();
+            assert!(!Arc::ptr_eq(
+                &original.snapshot.payload,
+                &changed.snapshot.payload
+            ));
+        }
+        let usage = store.retained_usage_for_test();
+        assert_eq!((usage.records, usage.unique_payloads), (5, 4));
+        assert_eq!(original.snapshot.items(), vec![json!(1), json!(2)]);
+    }
+
+    #[test]
+    fn equal_payloads_from_different_complete_questions_are_retained_separately() {
+        let binding = view_binding("main:CommonModule.Owner.Method", "rev-1");
+        let store = ViewCursorStore::default();
+        let first = store
+            .insert_snapshot(binding.clone(), json!({}), vec![json!(1)], 0)
+            .unwrap();
+        let original = store.read(&first, &binding.question()).unwrap();
+        for field in 0..4 {
+            let mut changed = binding.clone();
+            match field {
+                0 => changed.canonical_at = "main:CommonModule.Other.Method".into(),
+                1 => changed.projection = "other".into(),
+                2 => changed.source_set_identity = "other-workspace-and-source-set".into(),
+                3 => changed.page_limit += 1,
+                _ => unreachable!(),
+            }
+            let token = store
+                .insert_snapshot(changed.clone(), json!({}), vec![json!(1)], 0)
+                .unwrap();
+            let retained = store.read(&token, &changed.question()).unwrap();
+            assert!(!Arc::ptr_eq(
+                &original.snapshot.payload,
+                &retained.snapshot.payload
+            ));
+            assert_eq!(
+                store.read(&token, &binding.question()).unwrap_err(),
+                ViewCursorError::Invalid
+            );
+        }
+        let usage = store.retained_usage_for_test();
+        assert_eq!((usage.records, usage.unique_payloads), (5, 5));
+    }
+
+    #[test]
+    fn shared_payload_boundary_charges_each_binding_and_preserves_every_refusal() {
+        let binding = view_binding("main:CommonModule.Owner.Method", "rev-1");
+        let node = json!({});
+        let items = vec![json!("x".repeat(16_384)), json!(2)];
+        let record_bytes = snapshot_record_charge(&binding).unwrap();
+        let payload_bytes = snapshot_payload_charge(&node, &items).unwrap();
+        let exact = view_retained_charge(payload_bytes + 5 * record_bytes, 5).unwrap();
+        assert!(exact < view_retained_charge(5 * (payload_bytes + record_bytes), 5).unwrap());
+        let store = ViewCursorStore::new(exact);
+        let first = store
+            .insert_snapshot(binding.clone(), node.clone(), items.clone(), 0)
+            .unwrap();
+        let mut changed = binding.clone();
+        changed.snapshot_id = "rev-2".into();
+        let second = store
+            .insert_snapshot(changed.clone(), node.clone(), items.clone(), 0)
+            .unwrap();
+        assert_ne!(first, second);
+        let mut issued = vec![first, second];
+        for revision in ["rev-3", "rev-4", "rev-5"] {
+            changed.snapshot_id = revision.into();
+            issued.push(
+                store
+                    .insert_snapshot(changed.clone(), node.clone(), items.clone(), 0)
+                    .unwrap(),
+            );
+        }
+        let before = store.retained_usage_for_test();
+        assert_eq!((before.records, before.unique_payloads), (5, 1));
+        assert_eq!(before.payload_bytes, payload_bytes);
+        assert_eq!(before.record_bytes, 5 * record_bytes);
+        assert_eq!(
+            before.index_capacity, 5,
+            "near-bound growth uses the exact fallback"
+        );
+        assert_eq!(before.retained_bytes, exact);
+        let key = store.state.lock().unwrap().key.as_ref().unwrap().clone();
+        changed.snapshot_id = "rev-6".into();
+        assert_eq!(
+            store.insert_snapshot(changed.clone(), node.clone(), items.clone(), 0),
+            Err(ViewCursorError::CapacityExceeded),
+            "sharing still reserves each fresh binding"
+        );
+        assert_eq!(store.retained_usage_for_test(), before);
+        assert_eq!(
+            store.admit_snapshot(changed, node, items, 0, usize::MAX, 0),
+            Err(ViewCursorError::OffsetNotRepresentable)
+        );
+        assert_eq!(store.retained_usage_for_test(), before);
+        assert_eq!(
+            &store.state.lock().unwrap().key.as_ref().unwrap()[..],
+            &key[..]
+        );
+        for token in &issued {
+            let page = store.read(token, &binding.question()).unwrap();
+            let next = store.insert_next(&page, 1, token).unwrap();
+            assert_eq!(store.insert_next(&page, 1, token).unwrap(), next);
+            assert_eq!(
+                store
+                    .read(&next, &binding.question())
+                    .unwrap()
+                    .snapshot
+                    .items()[1],
+                json!(2)
+            );
+        }
+        assert_eq!(store.retained_usage_for_test(), before);
+    }
+
+    #[test]
+    fn concurrent_fresh_bindings_charge_one_shared_payload_and_all_successful_records() {
+        let binding = view_binding("main:CommonModule.Owner.Method", "rev-0000");
+        let node = json!({});
+        let items = vec![json!("x".repeat(16_384)), json!(2)];
+        let record_bytes = snapshot_record_charge(&binding).unwrap();
+        let payload_bytes = snapshot_payload_charge(&node, &items).unwrap();
+        let budget = view_retained_charge(payload_bytes + 4 * record_bytes, 4).unwrap();
+        let store = Arc::new(ViewCursorStore::new(budget));
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let handles = (0..8)
+            .map(|index| {
+                let store = Arc::clone(&store);
+                let barrier = Arc::clone(&barrier);
+                let mut binding = binding.clone();
+                binding.snapshot_id = format!("rev-{index:04}").into_boxed_str().into_string();
+                let node = node.clone();
+                let items = items.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    store.insert_snapshot(binding, node, items, 0)
+                })
+            })
+            .collect::<Vec<_>>();
+        let tokens = handles
+            .into_iter()
+            .filter_map(|handle| match handle.join().unwrap() {
+                Ok(token) => Some(token),
+                Err(error) => {
+                    assert_eq!(error, ViewCursorError::CapacityExceeded);
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(tokens.len(), 4);
+        assert_eq!(tokens.iter().collect::<HashSet<_>>().len(), 4);
+        let usage = store.retained_usage_for_test();
+        assert_eq!((usage.records, usage.unique_payloads), (4, 1));
+        assert_eq!(usage.record_bytes, 4 * record_bytes);
+        assert_eq!(usage.payload_bytes, payload_bytes);
+        assert_eq!(usage.retained_bytes, budget);
+        let pages = tokens
+            .iter()
+            .map(|token| store.read(token, &binding.question()).unwrap())
+            .collect::<Vec<_>>();
+        for page in &pages[1..] {
+            assert!(Arc::ptr_eq(
+                &pages[0].snapshot.payload,
+                &page.snapshot.payload
+            ));
+        }
+        for (page, token) in pages.iter().zip(&tokens) {
+            let next = store.insert_next(page, 1, token).unwrap();
+            assert_eq!(store.insert_next(page, 1, token).unwrap(), next);
+        }
+        assert_eq!(store.retained_usage_for_test(), usage);
+    }
+
+    #[test]
+    fn concurrent_new_admissions_reserve_one_atomic_cumulative_budget() {
+        let binding = view_binding("main:CommonModule.Owner.Method", "rev-1");
+        let node = json!({});
+        let items = vec![json!(1), json!(2)];
+        let bytes = snapshot_charge(&binding, &node, &items).unwrap();
+        let budget = view_retained_charge(bytes * 2, 4).unwrap();
+        let store = Arc::new(ViewCursorStore::new(budget));
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let handles = (0..8)
+            .map(|index| {
+                let store = Arc::clone(&store);
+                let barrier = Arc::clone(&barrier);
+                let binding = binding.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    store.insert_snapshot(
+                        binding,
+                        json!({}),
+                        vec![json!(index * 2), json!(index * 2 + 1)],
+                        0,
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        let results = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 2);
+        assert!(results
+            .iter()
+            .filter_map(|result| result.as_ref().err())
+            .all(|error| *error == ViewCursorError::CapacityExceeded));
+        let state = store.state.lock().unwrap();
+        assert_eq!(state.snapshots.len(), 2);
+        assert!(
+            view_retained_charge(state.snapshot_bytes, state.snapshots.capacity()).unwrap()
+                <= budget
+        );
+        drop(state);
+        for token in results.into_iter().flatten() {
+            let page = store.read(&token, &binding.question()).unwrap();
+            assert!(store.insert_next(&page, 1, &token).is_ok());
+        }
+    }
+
+    #[test]
+    fn view_tokens_authenticate_every_byte_owner_offset_and_domain() {
+        let store = ViewCursorStore::default();
+        let binding = view_binding("main:CommonModule.Owner.Method", "rev-1");
+        let token = store
+            .insert_snapshot(binding.clone(), json!({}), vec![json!(1), json!(2)], 0)
+            .unwrap();
+        assert_eq!(token.len(), ViewCursorStore::token_probe().len());
+        for index in 0..token.len() {
+            let mut changed = token.as_bytes().to_vec();
+            changed[index] = if changed[index] == b'0' { b'1' } else { b'0' };
+            assert_eq!(
+                store
+                    .read(std::str::from_utf8(&changed).unwrap(), &binding.question())
+                    .unwrap_err(),
+                ViewCursorError::Invalid,
+                "tampered byte {index}"
+            );
+        }
+        let current = store.read(&token, &binding.question()).unwrap();
+        let foreign = ViewCursorStore::default();
+        let foreign_token = foreign
+            .insert_snapshot(binding.clone(), json!({}), vec![json!(1), json!(2)], 0)
+            .unwrap();
+        assert_eq!(
+            foreign.read(&token, &binding.question()).unwrap_err(),
             ViewCursorError::Invalid
         );
+        assert_eq!(
+            foreign.insert_next(&current, 1, &foreign_token),
+            Err(ViewCursorError::Invalid)
+        );
+        let key = store.state.lock().unwrap().key.as_ref().unwrap().clone();
+        for (id, offset) in [(0, 0), (u64::MAX, 0), (1, usize::MAX)] {
+            let crafted = issue_view_cursor(&key, id, offset).unwrap();
+            assert_eq!(
+                store.read(&crafted, &binding.question()).unwrap_err(),
+                ViewCursorError::Invalid
+            );
+        }
+        use aes_siv::KeyInit;
+        let mut cipher = aes_siv::siv::Aes256Siv::new_from_slice(&key[..]).unwrap();
+        let wrong_domain = cipher
+            .encrypt([SEARCH_CURSOR_AAD], &[0u8; VIEW_CURSOR_PAYLOAD_BYTES])
+            .unwrap();
+        assert_eq!(
+            store
+                .read(&encode_view_cursor(&wrong_domain), &binding.question())
+                .unwrap_err(),
+            ViewCursorError::Invalid
+        );
+        assert_eq!(store.state.lock().unwrap().snapshots.len(), 1);
+    }
+
+    #[test]
+    fn view_entropy_failure_never_replaces_an_installed_owner_or_promise() {
+        fn partial_failure(bytes: &mut [u8]) -> Result<(), ViewCursorError> {
+            bytes[0] = 7;
+            Err(ViewCursorError::EntropyUnavailable)
+        }
+        let mut store = ViewCursorStore {
+            entropy: Some(partial_failure),
+            ..ViewCursorStore::default()
+        };
+        let binding = view_binding("main:CommonModule.Owner.Method", "rev-1");
+        assert_eq!(
+            store.insert_snapshot(binding.clone(), json!({}), vec![json!(1), json!(2)], 0),
+            Err(ViewCursorError::EntropyUnavailable)
+        );
+        {
+            let state = store.state.lock().unwrap();
+            assert!(state.key.is_none() && state.snapshots.is_empty());
+            assert_eq!(state.snapshots.capacity(), 0);
+            assert_eq!(state.snapshot_bytes, 0);
+            assert_eq!(state.payload_bytes, 0);
+            assert_eq!(state.payload_count, 0);
+        }
+        store.entropy = None;
+        let token = store
+            .insert_snapshot(binding.clone(), json!({}), vec![json!(1), json!(2)], 0)
+            .unwrap();
+        let key = store.state.lock().unwrap().key.as_ref().unwrap().clone();
+        store.entropy = Some(partial_failure);
+        let current = store.read(&token, &binding.question()).unwrap();
+        let next = store.insert_next(&current, 1, &token).unwrap();
+        assert_eq!(store.insert_next(&current, 1, &token).unwrap(), next);
+        assert!(
+            store
+                .insert_snapshot(binding.clone(), json!({}), vec![json!(3), json!(4)], 0)
+                .is_ok(),
+            "new chains use the existing key, not fresh entropy"
+        );
+        assert_eq!(
+            &store.state.lock().unwrap().key.as_ref().unwrap()[..],
+            &key[..]
+        );
+        assert_eq!(store.read(&token, &binding.question()).unwrap().offset, 0);
+    }
+
+    #[test]
+    fn poisoned_view_owner_is_distinct_from_cursor_or_budget_refusal() {
+        let store = Arc::new(ViewCursorStore::default());
+        let binding = view_binding("main:CommonModule.Owner.Method", "rev-1");
+        let token = store
+            .insert_snapshot(binding.clone(), json!({}), vec![json!(1), json!(2)], 0)
+            .unwrap();
+        let current = store.read(&token, &binding.question()).unwrap();
+        let poisoned = Arc::clone(&store);
+        assert!(std::thread::spawn(move || {
+            let _lock = poisoned.state.lock().unwrap();
+            panic!("poison view owner");
+        })
+        .join()
+        .is_err());
+        assert_eq!(
+            store.read(&token, &binding.question()).unwrap_err(),
+            ViewCursorError::OwnerUnavailable
+        );
+        assert_eq!(
+            store.insert_next(&current, 1, &token),
+            Err(ViewCursorError::OwnerUnavailable)
+        );
+        assert_eq!(
+            store.insert_snapshot(binding, json!({}), vec![json!(3)], 0),
+            Err(ViewCursorError::OwnerUnavailable)
+        );
+    }
+
+    #[test]
+    fn view_cursor_failures_keep_typed_causes_on_the_wire() {
+        for (error, code, detail) in [
+            (ViewCursorError::Invalid, "invalid_cursor", None),
+            (ViewCursorError::CapacityExceeded, "result_too_large", None),
+            (
+                ViewCursorError::OwnerUnavailable,
+                "provider_unavailable",
+                Some("cache_poisoned"),
+            ),
+            (
+                ViewCursorError::EntropyUnavailable,
+                "provider_unavailable",
+                Some("provider_absent"),
+            ),
+            (ViewCursorError::TokenUnavailable, "provider_failed", None),
+            (
+                ViewCursorError::OffsetNotRepresentable,
+                "provider_failed",
+                None,
+            ),
+            (
+                ViewCursorError::AllocationUnavailable,
+                "provider_failed",
+                None,
+            ),
+        ] {
+            let result = error.into_result(Some("main:Configuration".into()));
+            assert_eq!(result.diagnostics[0]["code"], code);
+            assert_eq!(
+                result.diagnostics[0]
+                    .get("detailCode")
+                    .and_then(Value::as_str),
+                detail
+            );
+        }
+        assert_eq!(
+            view_add(usize::MAX, 1),
+            Err(ViewCursorError::OffsetNotRepresentable)
+        );
+        assert_eq!(
+            view_mul(usize::MAX, 2),
+            Err(ViewCursorError::OffsetNotRepresentable)
+        );
+    }
+
+    #[test]
+    fn every_promised_page_survives_a_chain_longer_than_128_pages() {
+        let store = ViewCursorStore::default();
+        let binding = view_binding("main:Document.Заказ.Module.Object.Body", "rev-1");
+        let items = (0..260)
+            .map(|line| json!({"line": line}))
+            .collect::<Vec<_>>();
+        let mut token = store
+            .insert_snapshot(
+                binding.clone(),
+                json!({"at": binding.canonical_at}),
+                items.clone(),
+                0,
+            )
+            .unwrap();
+        let mut promised = Vec::new();
+        for offset in 0..items.len() {
+            let page = store.read(&token, &binding.question()).unwrap();
+            assert_eq!(page.offset, offset);
+            assert_eq!(page.snapshot.items()[offset], items[offset]);
+            let next = (offset + 1 < items.len())
+                .then(|| store.insert_next(&page, offset + 1, &token).unwrap());
+            promised.push((token.clone(), offset, next.clone()));
+            if let Some(next) = next {
+                token = next;
+            }
+        }
+        for (token, offset, expected_next) in promised {
+            let page = store
+                .read(&token, &binding.question())
+                .expect("every issued page must survive subsequent page requests");
+            assert_eq!(page.offset, offset);
+            assert_eq!(page.snapshot.items(), items);
+            let actual_next = (offset + 1 < items.len())
+                .then(|| store.insert_next(&page, offset + 1, &token).unwrap());
+            assert_eq!(
+                actual_next, expected_next,
+                "retry must return the same successor"
+            );
+        }
+    }
+
+    #[test]
+    fn sparse_and_empty_object_allocations_are_compacted_before_retention() {
+        let mut object = serde_json::Map::with_capacity(16_384);
+        object.insert("small".into(), json!(1));
+        let original_entry = object.get_key_value("small").unwrap().0 as *const String as usize;
+        let mut empty = serde_json::Map::with_capacity(16_384);
+        empty.insert("removed".into(), json!(1));
+        empty.clear();
+        let binding = view_binding("main:CommonModule.Owner.Method", "rev-1");
+        let store = ViewCursorStore::new(4_096);
+        let token = store
+            .insert_snapshot(
+                binding.clone(),
+                Value::Object(object),
+                vec![Value::Object(empty), json!(2)],
+                0,
+            )
+            .unwrap();
+        let retained = store.read(&token, &binding.question()).unwrap();
+        let compact = retained.snapshot.node().as_object().unwrap();
+        let retained_entry = compact.get_key_value("small").unwrap().0 as *const String as usize;
+        assert_ne!(
+            original_entry, retained_entry,
+            "the original sparse object allocation must not be retained"
+        );
+        assert_eq!(retained.snapshot.node(), &json!({"small": 1}));
+        assert_eq!(retained.snapshot.items()[0], json!({}));
+        let state = store.state.lock().unwrap();
+        assert!(
+            view_retained_charge(state.snapshot_bytes, state.snapshots.capacity()).unwrap()
+                <= 4_096
+        );
+        assert_eq!(compact_view_object_charge(0).unwrap(), 0);
     }
 }

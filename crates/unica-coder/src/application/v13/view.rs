@@ -1,5 +1,7 @@
 use crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES;
-use crate::application::result_store::{ViewCursorBinding, ViewCursorError, ViewCursorStore};
+use crate::application::result_store::{
+    ViewCursorBinding, ViewCursorError, ViewCursorQuestion, ViewCursorStore,
+};
 use crate::application::v13::source_text::{body_text_result, oversized_body, ModuleText};
 use crate::domain::address::QualifiedAddress;
 use crate::domain::invocation::DomainResult;
@@ -13,7 +15,6 @@ use std::sync::Arc;
 const DEFAULT_LIMIT: usize = 20;
 const MAX_LIMIT: usize = 50;
 pub(crate) const PREFERRED_PAGE_BYTES: usize = 64 * 1024;
-const CURSOR_SIZE_PLACEHOLDER: &str = "vc1.00000000000000000000000000000000";
 type ViewProjector<'a> = dyn Fn(&Value) -> Result<Value, ViewError> + 'a;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -60,6 +61,21 @@ impl ViewRequest {
     pub(crate) fn with_cursor(mut self, cursor: String) -> Self {
         self.cursor = Some(cursor);
         self
+    }
+
+    fn continuation_question(&self, source_set_identity: String) -> ViewCursorQuestion {
+        ViewCursorQuestion {
+            canonical_at: self.at.to_string(),
+            projection: self
+                .at
+                .segments()
+                .last()
+                .map(|segment| segment.kind().as_str())
+                .unwrap_or("Configuration")
+                .to_string(),
+            source_set_identity,
+            page_limit: self.limit,
+        }
     }
 
     fn binding(
@@ -210,7 +226,7 @@ impl<A: ViewReadAuthority> ViewService<A> {
     }
 
     pub(crate) fn view(&self, request: ViewRequest) -> DomainResult {
-        match self.try_view(&request, None, None) {
+        match self.try_view(&request, None, None, None) {
             Ok(result) => result,
             Err(error) => error_result(Some(request.at.to_string()), error),
         }
@@ -221,7 +237,7 @@ impl<A: ViewReadAuthority> ViewService<A> {
         request: ViewRequest,
         project: &ViewProjector<'_>,
     ) -> DomainResult {
-        match self.try_view(&request, Some(project), None) {
+        match self.try_view(&request, Some(project), None, None) {
             Ok(result) => result,
             Err(error) => error_result(Some(request.at.to_string()), error),
         }
@@ -237,9 +253,34 @@ impl<A: ViewReadAuthority> ViewService<A> {
         expected_revision: &str,
         data: Option<Value>,
     ) -> DomainResult {
-        match self.try_view(&request, None, Some((source_at, expected_revision, data))) {
+        match self.try_view(
+            &request,
+            None,
+            Some((source_at, expected_revision, data)),
+            None,
+        ) {
             Ok(result) => result,
             Err(error) => error_result(Some(request.at.to_string()), error),
+        }
+    }
+
+    pub(crate) fn view_saved_collection(
+        &self,
+        request: ViewRequest,
+        source_at: &QualifiedAddress,
+    ) -> DomainResult {
+        if request.cursor().is_none() {
+            return error_result(
+                Some(request.at()),
+                ViewError::new(
+                    RefusalCode::InvalidState,
+                    "a saved collection requires its issued cursor",
+                ),
+            );
+        }
+        match self.try_view(&request, None, None, Some(source_at)) {
+            Ok(result) => result,
+            Err(error) => error_result(Some(request.at()), error),
         }
     }
 
@@ -248,9 +289,39 @@ impl<A: ViewReadAuthority> ViewService<A> {
         request: &ViewRequest,
         project: Option<&ViewProjector<'_>>,
         supplied: Option<(&QualifiedAddress, &str, Option<Value>)>,
+        continuation_source: Option<&QualifiedAddress>,
     ) -> Result<DomainResult, ViewError> {
-        let source_at = supplied.as_ref().map_or(&request.at, |(at, _, _)| *at);
+        let source_at = supplied
+            .as_ref()
+            .map_or(continuation_source.unwrap_or(&request.at), |(at, _, _)| *at);
         let snapshot = self.authority.snapshot(source_at)?;
+        if let Some(cursor) = request.cursor.as_deref() {
+            let question = request.continuation_question(snapshot.source_set_identity.clone());
+            let stored = self.cursors.read(cursor, &question).map_err(cursor_error)?;
+            let page = prepare_page(
+                stored.snapshot.node(),
+                stored.snapshot.items(),
+                stored.offset,
+                request.limit,
+                &stored.snapshot.binding,
+            )?;
+            let next_cursor = if page.next_offset < stored.snapshot.items().len() {
+                self.cursors
+                    .insert_next(&stored, page.next_offset, cursor)
+                    .map_err(cursor_error)?
+                    .into()
+            } else {
+                None
+            };
+            return collection_result(
+                stored.snapshot.node(),
+                page.items,
+                next_cursor,
+                page.stopped_by,
+                &stored.snapshot.binding,
+            );
+        }
+
         if supplied.as_ref().is_some_and(|(_, expected, _)| {
             request.cursor.is_none() && snapshot.revision != *expected
         }) {
@@ -265,39 +336,6 @@ impl<A: ViewReadAuthority> ViewService<A> {
             self.authority.canonical_address(&request.at, &snapshot)?
         };
         let binding = request.binding(&canonical_at, &snapshot);
-        if let Some(cursor) = request.cursor.as_deref() {
-            let stored = self
-                .cursors
-                .read(cursor, &binding, &snapshot.revision)
-                .map_err(cursor_error)?;
-            let page = prepare_page(
-                &stored.snapshot.node,
-                &stored.snapshot.items,
-                stored.offset,
-                request.limit,
-                &stored.snapshot.binding,
-            )?;
-            let next_cursor = if page.next_offset < stored.snapshot.items.len() {
-                self.cursors
-                    .insert_next(&stored, page.next_offset, cursor)
-                    .ok_or_else(|| {
-                        ViewError::new(
-                            RefusalCode::ResultTooLarge,
-                            "view continuation could not be retained",
-                        )
-                    })?
-                    .into()
-            } else {
-                None
-            };
-            return collection_result(
-                &stored.snapshot.node,
-                page.items,
-                next_cursor,
-                page.stopped_by,
-                &stored.snapshot.binding,
-            );
-        }
 
         let mut text = None;
         let serialized = if let Some((_, _, data)) = supplied {
@@ -437,12 +475,7 @@ impl<A: ViewReadAuthority> ViewService<A> {
             Some(
                 self.cursors
                     .insert_snapshot(binding.clone(), node.clone(), items, first.next_offset)
-                    .ok_or_else(|| {
-                        ViewError::new(
-                            RefusalCode::ResultTooLarge,
-                            "logical collection exceeds the bounded view snapshot store",
-                        )
-                    })?,
+                    .map_err(cursor_error)?,
             )
         };
         collection_result(&node, first.items, cursor, first.stopped_by, &binding)
@@ -545,8 +578,8 @@ fn preflight_collection(
     let with_cursor = collection_result(
         node,
         vec![Value::Null],
-        Some(CURSOR_SIZE_PLACEHOLDER.to_string()),
-        "bytes",
+        Some(ViewCursorStore::token_probe()),
+        "complete",
         binding,
     )?;
     let terminal = collection_result(node, vec![Value::Null], None, "complete", binding)?;
@@ -633,7 +666,7 @@ fn prepare_page(
         let probe = collection_result(
             node,
             candidate.clone(),
-            (offset + 1 < items.len()).then(|| CURSOR_SIZE_PLACEHOLDER.to_string()),
+            (offset + 1 < items.len()).then(ViewCursorStore::token_probe),
             "complete",
             binding,
         )?;
@@ -656,7 +689,7 @@ fn prepare_page(
     let page_probe = collection_result(
         node,
         page_items.clone(),
-        (offset < items.len()).then(|| CURSOR_SIZE_PLACEHOLDER.to_string()),
+        (offset < items.len()).then(ViewCursorStore::token_probe),
         stopped_by,
         binding,
     )?;
@@ -674,14 +707,10 @@ fn prepare_page(
 }
 
 fn cursor_error(error: ViewCursorError) -> ViewError {
-    ViewError::new(
-        error.code(),
-        match error {
-            ViewCursorError::Invalid => {
-                "view cursor is invalid, expired, or belongs to another question"
-            }
-        },
-    )
+    match error.detail() {
+        Some(detail) => ViewError::detailed(detail, error.message()),
+        None => ViewError::new(error.code(), error.message()),
+    }
 }
 
 fn error_result(at: Option<String>, error: ViewError) -> DomainResult {
@@ -854,7 +883,7 @@ mod tests {
         assert_eq!(first.data.as_ref().unwrap()["items"][1]["line"], 2);
         assert_eq!(first.page.as_ref().unwrap()["stoppedBy"], "limit");
         let cursor = first.cursor.unwrap();
-        assert!(cursor.starts_with("vc1."));
+        assert!(cursor.starts_with("vc2."));
         assert!(cursor[4..].parse::<usize>().is_err());
 
         let second = service.view(
@@ -1414,7 +1443,6 @@ mod tests {
 
     #[test]
     fn collection_exceeding_cursor_entry_count_still_has_usable_pages() {
-        use crate::application::result_store::DEFAULT_TTL;
         let at = "main:Document.Заказ.Module.Object.Body";
         let mut authority = FixtureAuthority::new();
         authority.views.insert(
@@ -1424,7 +1452,7 @@ mod tests {
                 (0..100).map(|line| json!({"line": line})).collect(),
             )),
         );
-        let store = ViewCursorStore::new(DEFAULT_TTL, 2, 1024 * 1024);
+        let store = ViewCursorStore::new(1024 * 1024);
         let service = ViewService::new(authority, store);
         let request = || ViewRequest::new(at).unwrap().with_limit(1).unwrap();
         let mut page = service.view(request());
@@ -1446,7 +1474,6 @@ mod tests {
 
     #[test]
     fn snapshot_over_byte_quota_refuses_before_promising_a_continuation() {
-        use crate::application::result_store::DEFAULT_TTL;
         let at = "main:Document.Заказ.Module.Object.Body";
         let mut authority = FixtureAuthority::new();
         authority.views.insert(
@@ -1456,7 +1483,7 @@ mod tests {
                 (0..100).map(|line| json!({"line": line})).collect(),
             )),
         );
-        let store = ViewCursorStore::new(DEFAULT_TTL, 128, 512);
+        let store = ViewCursorStore::new(512);
         let result = ViewService::new(authority, store)
             .view(ViewRequest::new(at).unwrap().with_limit(1).unwrap());
         assert!(!result.ok);
@@ -1560,5 +1587,78 @@ mod tests {
             Outcome::FixSource,
             "проверка пуста, если умолчание кода совпадает с исходом уточнения"
         );
+    }
+
+    #[test]
+    fn actual_cursor_size_is_reserved_for_late_items_and_metadata() {
+        use crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES;
+        use crate::application::result_store::ViewCursorBinding;
+        let at = "main:Document.Заказ.Module.Object.Body";
+        let binding = ViewCursorBinding {
+            canonical_at: at.into(),
+            projection: "Body".into(),
+            source_set_identity: "main:source-id".into(),
+            snapshot_id: "rev-1".into(),
+            page_limit: 1,
+        };
+        let node = json!({"at": at, "kind": "Body", "title": ""});
+        let probe = super::collection_result(
+            &node,
+            vec![json!("")],
+            Some(ViewCursorStore::token_probe()),
+            "complete",
+            &binding,
+        )
+        .unwrap();
+        let padding = MAX_CANONICAL_RESULT_BYTES - super::serialized_result_size(&probe);
+        let items = vec![json!("first"), json!("X".repeat(padding)), json!("last")];
+        super::preflight_collection(&node, &items, &binding).unwrap();
+        let page = super::prepare_page(&node, &items, 1, 1, &binding).unwrap();
+        let store = ViewCursorStore::default();
+        let token = store
+            .insert_snapshot(binding.clone(), node.clone(), items.clone(), 2)
+            .unwrap();
+        let encoded =
+            super::collection_result(&node, page.items, Some(token), page.stopped_by, &binding)
+                .unwrap();
+        assert!(super::serialized_result_size(&encoded) <= MAX_CANONICAL_RESULT_BYTES);
+        let mut over = items;
+        over[1] = json!("X".repeat(padding + 1));
+        assert_eq!(
+            super::preflight_collection(&node, &over, &binding)
+                .unwrap_err()
+                .code(),
+            crate::domain::refusal::RefusalCode::ResultTooLarge
+        );
+
+        let base = super::collection_result(
+            &node,
+            vec![serde_json::Value::Null],
+            Some(ViewCursorStore::token_probe()),
+            "complete",
+            &binding,
+        )
+        .unwrap();
+        let mut metadata = node;
+        metadata["title"] =
+            json!("M".repeat(MAX_CANONICAL_RESULT_BYTES - super::serialized_result_size(&base)));
+        let items = vec![serde_json::Value::Null, serde_json::Value::Null];
+        super::preflight_collection(&metadata, &items, &binding).unwrap();
+        let page = super::prepare_page(&metadata, &items, 0, 1, &binding).unwrap();
+        let token = store
+            .insert_snapshot(binding.clone(), metadata.clone(), items.clone(), 1)
+            .unwrap();
+        let encoded = super::collection_result(
+            &metadata,
+            page.items,
+            Some(token),
+            page.stopped_by,
+            &binding,
+        )
+        .unwrap();
+        assert!(super::serialized_result_size(&encoded) <= MAX_CANONICAL_RESULT_BYTES);
+        let title = metadata["title"].as_str().unwrap().to_owned() + "!";
+        metadata["title"] = json!(title);
+        assert!(super::preflight_collection(&metadata, &items, &binding).is_err());
     }
 }
