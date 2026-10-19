@@ -5,6 +5,84 @@ use serde_json::{json, Map, Value};
 
 const METADATA_HELP: &str = "skills/meta-edit/SKILL.md";
 
+pub(crate) fn metadata_object_create_input_schema() -> &'static Value {
+    static SCHEMA: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+    SCHEMA.get_or_init(|| {
+        object(
+            &[
+                ("at", text(true)),
+                ("values", object(&[
+                    ("kind", json!({"type":"string","enum":crate::domain::metadata::MetadataKind::ALL.iter().map(|kind| kind.as_str()).collect::<Vec<_>>()})),
+                    // The identifier is checked during staging. Raw decoding
+                    // must not move it ahead of a later operation's error.
+                    ("name", json!({"type":"string","minLength":1})),
+                ], &["kind", "name"])),
+            ],
+            &["values"],
+        )
+    })
+}
+
+pub(crate) fn metadata_object_remove_input_schema() -> &'static Value {
+    static SCHEMA: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+    SCHEMA.get_or_init(|| {
+        object(
+            &[
+                ("at", text(true)),
+                ("force", json!({"type":"boolean","default":false})),
+            ],
+            &[],
+        )
+    })
+}
+
+pub(crate) fn metadata_borrow_input_schema() -> &'static Value {
+    static SCHEMA: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+    SCHEMA.get_or_init(|| object(&[
+        ("at", text(true)),
+        ("from", json!({"type":"string","minLength":1})),
+        ("overrides", json!({"type":"array","uniqueItems":true,"items":{"type":"string","minLength":1}})),
+    ], &["from"]))
+}
+
+pub(crate) fn metadata_help_create_input_schema() -> &'static Value {
+    static SCHEMA: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+    SCHEMA.get_or_init(|| {
+        object(
+            &[
+                ("at", text(true)),
+                (
+                    "values",
+                    object(
+                        &[(
+                            "lang",
+                            json!({"type":"string","minLength":1,"pattern":"^[A-Za-z0-9]+$"}),
+                        )],
+                        &["lang"],
+                    ),
+                ),
+            ],
+            &["values"],
+        )
+    })
+}
+
+pub(crate) fn metadata_relation_input_schema() -> &'static Value {
+    static SCHEMA: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+    SCHEMA.get_or_init(|| {
+        object(
+            &[
+                ("at", text(true)),
+                (
+                    "values",
+                    crate::domain::metadata::metadata_relation_values_input_schema().clone(),
+                ),
+            ],
+            &["values"],
+        )
+    })
+}
+
 /// The node a metadata member contract is asked for: the owner kind and
 /// whether the address lies inside a tabular section. Field legality that
 /// depends on them (fill values, predefined-item fields) is published only
@@ -330,6 +408,99 @@ impl OperationContract {
         let (family, verb) = op.split_once('.')?;
         let owner = site.map(|site| site.owner);
         let at = || ("at", text(true));
+        if family == "object" {
+            let (schema, target, effect, notes, example_args, help) = match verb {
+                "create" => {
+                    let mut schema = metadata_object_create_input_schema().clone();
+                    schema["properties"]["values"]["properties"]["name"]["pattern"] = json!(IDENTIFIER_PATTERN);
+                    (schema,
+                        "The Configuration root: <source-set>:Configuration.",
+                        "Create and register a new metadata object with its minimal supported files.",
+                        "Choose an unused valid 1C identifier. The operation accepts kind and name; configure properties and members with subsequent operations in the same apply call.",
+                        json!({"values":{"kind":"Catalog","name":"Sample"}}),
+                        "skills/meta-add/SKILL.md")
+                }
+                "remove" => (metadata_object_remove_input_schema().clone(),
+                    "The existing metadata object: <source-set>:<Kind>.<Name>.",
+                    "Remove the object descriptor, its resource directory and its registration; update subsystem membership.",
+                    "References from other objects are checked. force=true keeps those references and reports references_kept; it does not repair them. Under the deny support policy, a vendor object must be taken off support in a separate apply call first.",
+                    json!({}), METADATA_HELP),
+                "borrow" => (metadata_borrow_input_schema().clone(),
+                    "The extension Configuration root: <extension-source-set>:Configuration.",
+                    "Borrow or refresh the named parent object, preserving the extension's identity and local data.",
+                    "exampleArgs is a template: replace parent and Sample with an existing object in a distinct admitted parent source set. from is a qualified address of a named top-level object or Enum.EnumValue; read that source first. overrides names supported transferred properties; an empty array is allowed for a top-level object but any overrides field is refused for EnumValue. Refresh preserves the established override set.",
+                    json!({"from":"parent:Catalog.Sample"}), "skills/cfe-borrow/SKILL.md"),
+                _ => return None,
+            };
+            return Some(Self {
+                schema,
+                target,
+                effect,
+                notes,
+                example_args,
+                help,
+            });
+        }
+        if family == "help" && verb == "create" {
+            return Some(Self {
+                schema: metadata_help_create_input_schema().clone(),
+                target: "The existing metadata object: <source-set>:<Kind>.<Name>.",
+                effect: "Create Ext/Help.xml and Ext/Help/<lang>.html; add IncludeHelpInContents=false to owner forms that lack that property.",
+                notes: "lang is required and contains only ASCII letters and digits, for example ru or en. Creation is refused if help already exists; existing help and forms are preserved. Plan this root-inspecting operation before other changes in the batch.",
+                example_args: json!({"values":{"lang":"ru"}}),
+                help: METADATA_HELP,
+            });
+        }
+        if family == "relation" && matches!(verb, "add" | "remove" | "replace") {
+            use crate::domain::metadata::{
+                metadata_relation_specs, metadata_relation_values_schema, MetaRelation,
+            };
+            let relation = owner
+                .map(|kind| {
+                    metadata_relation_specs(kind)
+                        .first()
+                        .map(|spec| spec.relation)
+                })
+                .unwrap_or(Some(MetaRelation::Owners));
+            let example_args = relation
+                .map(|relation| {
+                    let targets = match relation {
+                        MetaRelation::Owners | MetaRelation::BasedOn => {
+                            json!([{"metadataPath":"Catalog.Sample"}])
+                        }
+                        MetaRelation::RegisterRecords => {
+                            json!([{"metadataPath":"InformationRegister.Sample"}])
+                        }
+                        MetaRelation::InputByString => {
+                            json!([{"fieldPath":"Catalog.Sample.Attribute.Code"}])
+                        }
+                        MetaRelation::Source => {
+                            json!([{"kind":"family","sourceClass":"catalogObject"}])
+                        }
+                    };
+                    json!({"values":{"relation":relation.as_str(),"targets":targets}})
+                })
+                .unwrap_or_else(|| json!({}));
+            let mut schema = metadata_relation_input_schema().clone();
+            schema["properties"]["values"] = metadata_relation_values_schema(owner);
+            return Some(Self {
+                schema,
+                target: "The existing metadata object that owns this relation: <source-set>:<Kind>.<Name>.",
+                effect: match verb {
+                    "add" => "Add the listed relation targets, preserving existing targets.",
+                    "remove" => "Remove the listed relation targets, preserving other targets.",
+                    "replace" => "Replace the relation's logical targets with the listed set.",
+                    _ => unreachable!("the relation verb was checked"),
+                },
+                notes: if relation.is_none() {
+                    "This owner kind has no supported relations. Its relation field rejects every value; there is no executable argument example on this node."
+                } else {
+                    "exampleArgs is a template: replace Sample targets with existing objects or fields allowed for this owner. The owner kind narrows the relation and target shape. targets is nonempty; mode is selected by the operation name. Read targets first. Field existence, same-owner paths, source-class compatibility and the final nonempty EventSubscription source are checked by the planner. Existing XML namespaces and unrelated data are preserved."
+                },
+                example_args,
+                help: METADATA_HELP,
+            });
+        }
         if family == "predefinedItem" {
             let (schema, target, effect, example_args) = match verb {
                 "add" => (

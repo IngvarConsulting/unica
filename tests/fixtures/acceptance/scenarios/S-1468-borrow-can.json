@@ -1,0 +1,480 @@
+{
+  "id": "S-1468-borrow-can",
+  "issue": 1468,
+  "area": "Метаданные",
+  "task": "Прочитать подробный Can object.borrow и построить preview заимствования реального общего модуля из admitted parent, сохранив полные байты расширения и родителя.",
+  "workspace": "tests/fixtures/acceptance/workspace-format",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:Configuration.Can.object.borrow"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Can"
+        },
+        {
+          "pointer": "/data/props/op",
+          "eq": "object.borrow"
+        },
+        {
+          "pointer": "/data/props/implemented",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/additionalProperties",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/contract/exampleArgs/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/from/type",
+          "eq": "string"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/overrides/type",
+          "eq": "array"
+        }
+      ],
+      "captures": {
+        "before0": {
+          "file": "src-ext/Catalogs/ПР_НастройкиВалют.xml",
+          "kind": "sha256"
+        },
+        "before1": {
+          "file": "src-ext/CommonModules/ПР_Модуль.xml",
+          "kind": "sha256"
+        },
+        "before2": {
+          "file": "src-ext/CommonModules/ПР_Модуль/Ext/Module.bsl",
+          "kind": "sha256"
+        },
+        "before3": {
+          "file": "src-ext/Configuration.xml",
+          "kind": "sha256"
+        },
+        "before4": {
+          "file": "src-ext/EventSubscriptions/ПР_ПередЗаписьюНастроек.xml",
+          "kind": "sha256"
+        },
+        "before5": {
+          "file": "src-ext/Languages/Русский.xml",
+          "kind": "sha256"
+        },
+        "before6": {
+          "file": "src-ext/Roles/ПР_ОсновнаяРоль.xml",
+          "kind": "sha256"
+        },
+        "before7": {
+          "file": "src-ext/Roles/ПР_ОсновнаяРоль/Ext/Rights.xml",
+          "kind": "sha256"
+        },
+        "before8": {
+          "file": "src-nosupport/Catalogs/Валюты.xml",
+          "kind": "sha256"
+        },
+        "before9": {
+          "file": "src-nosupport/Catalogs/Валюты/Ext/ManagerModule.bsl",
+          "kind": "sha256"
+        },
+        "before10": {
+          "file": "src-nosupport/Catalogs/Валюты/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        },
+        "before11": {
+          "file": "src-nosupport/Catalogs/Валюты/Forms/ФормаСписка.xml",
+          "kind": "sha256"
+        },
+        "before12": {
+          "file": "src-nosupport/Catalogs/Валюты/Forms/ФормаСписка/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "before13": {
+          "file": "src-nosupport/Catalogs/Валюты/Forms/ФормаЭлемента.xml",
+          "kind": "sha256"
+        },
+        "before14": {
+          "file": "src-nosupport/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "before15": {
+          "file": "src-nosupport/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        },
+        "before16": {
+          "file": "src-nosupport/CommonModules/GoogleПереводчик.xml",
+          "kind": "sha256"
+        },
+        "before17": {
+          "file": "src-nosupport/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+          "kind": "sha256"
+        },
+        "before18": {
+          "file": "src-nosupport/Configuration.xml",
+          "kind": "sha256"
+        },
+        "before19": {
+          "file": "src-nosupport/DocumentJournals/ДокументыОрганизации.xml",
+          "kind": "sha256"
+        },
+        "before20": {
+          "file": "src-nosupport/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "kind": "sha256"
+        },
+        "before21": {
+          "file": "src-nosupport/Enums/LanguageAware.xml",
+          "kind": "sha256"
+        },
+        "before22": {
+          "file": "src-nosupport/Enums/ВажностьПроблемыУчета.xml",
+          "kind": "sha256"
+        },
+        "before23": {
+          "file": "src-nosupport/Enums/НастройкиПоставщика.xml",
+          "kind": "sha256"
+        },
+        "before24": {
+          "file": "src-nosupport/Enums/СпособыУстановкиКурсаВалюты.xml",
+          "kind": "sha256"
+        },
+        "before25": {
+          "file": "src-nosupport/HTTPServices/ПроверкаСвязи.xml",
+          "kind": "sha256"
+        },
+        "before26": {
+          "file": "src-nosupport/HTTPServices/ПроверкаСвязи/Ext/Module.bsl",
+          "kind": "sha256"
+        },
+        "before27": {
+          "file": "src-nosupport/InformationRegisters/АдминистративнаяИерархия.xml",
+          "kind": "sha256"
+        },
+        "before28": {
+          "file": "src-nosupport/Languages/English.xml",
+          "kind": "sha256"
+        },
+        "before29": {
+          "file": "src-nosupport/Languages/Русский.xml",
+          "kind": "sha256"
+        },
+        "before30": {
+          "file": "src-nosupport/Reports/АнализВерсийОбъектов.xml",
+          "kind": "sha256"
+        },
+        "before31": {
+          "file": "src-nosupport/Reports/АнализВерсийОбъектов/Templates/МакетОтчета.xml",
+          "kind": "sha256"
+        },
+        "before32": {
+          "file": "src-nosupport/Reports/АнализВерсийОбъектов/Templates/МакетОтчета/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "before33": {
+          "file": "src-nosupport/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных.xml",
+          "kind": "sha256"
+        },
+        "before34": {
+          "file": "src-nosupport/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "before35": {
+          "file": "src-nosupport/Roles/SalesReader.xml",
+          "kind": "sha256"
+        },
+        "before36": {
+          "file": "src-nosupport/Roles/SalesReader/Ext/Rights.xml",
+          "kind": "sha256"
+        },
+        "before37": {
+          "file": "src-nosupport/Subsystems/Администрирование.xml",
+          "kind": "sha256"
+        },
+        "before38": {
+          "file": "src-nosupport/Subsystems/Администрирование/Ext/CommandInterface.xml",
+          "kind": "sha256"
+        },
+        "before39": {
+          "file": "src-nosupport/Subsystems/Администрирование/Subsystems/КонтрольРаботыПользователей.xml",
+          "kind": "sha256"
+        },
+        "before40": {
+          "file": "src-nosupport/WebServices/ОбменДанными.xml",
+          "kind": "sha256"
+        },
+        "before41": {
+          "file": "src-nosupport/WebServices/ОбменДанными/Ext/Module.bsl",
+          "kind": "sha256"
+        },
+        "before42": {
+          "file": "src-nosupport/XDTOPackages/EnterpriseData_1_17_3.xml",
+          "kind": "sha256"
+        },
+        "before43": {
+          "file": "src-nosupport/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "ext:Configuration",
+        "ops": [
+          {
+            "op": "object.borrow",
+            "args": {
+              "from": "nosupport:CommonModule.GoogleПереводчик"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src-ext/Catalogs/ПР_НастройкиВалют.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0"
+        },
+        {
+          "path": "src-ext/CommonModules/ПР_Модуль.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1"
+        },
+        {
+          "path": "src-ext/CommonModules/ПР_Модуль/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.before2"
+        },
+        {
+          "path": "src-ext/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.before3"
+        },
+        {
+          "path": "src-ext/EventSubscriptions/ПР_ПередЗаписьюНастроек.xml",
+          "kind": "sha256",
+          "eq": "$capture.before4"
+        },
+        {
+          "path": "src-ext/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.before5"
+        },
+        {
+          "path": "src-ext/Roles/ПР_ОсновнаяРоль.xml",
+          "kind": "sha256",
+          "eq": "$capture.before6"
+        },
+        {
+          "path": "src-ext/Roles/ПР_ОсновнаяРоль/Ext/Rights.xml",
+          "kind": "sha256",
+          "eq": "$capture.before7"
+        },
+        {
+          "path": "src-nosupport/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "$capture.before8"
+        },
+        {
+          "path": "src-nosupport/Catalogs/Валюты/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.before9"
+        },
+        {
+          "path": "src-nosupport/Catalogs/Валюты/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.before10"
+        },
+        {
+          "path": "src-nosupport/Catalogs/Валюты/Forms/ФормаСписка.xml",
+          "kind": "sha256",
+          "eq": "$capture.before11"
+        },
+        {
+          "path": "src-nosupport/Catalogs/Валюты/Forms/ФормаСписка/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.before12"
+        },
+        {
+          "path": "src-nosupport/Catalogs/Валюты/Forms/ФормаЭлемента.xml",
+          "kind": "sha256",
+          "eq": "$capture.before13"
+        },
+        {
+          "path": "src-nosupport/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.before14"
+        },
+        {
+          "path": "src-nosupport/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.before15"
+        },
+        {
+          "path": "src-nosupport/CommonModules/GoogleПереводчик.xml",
+          "kind": "sha256",
+          "eq": "$capture.before16"
+        },
+        {
+          "path": "src-nosupport/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.before17"
+        },
+        {
+          "path": "src-nosupport/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.before18"
+        },
+        {
+          "path": "src-nosupport/DocumentJournals/ДокументыОрганизации.xml",
+          "kind": "sha256",
+          "eq": "$capture.before19"
+        },
+        {
+          "path": "src-nosupport/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.before20"
+        },
+        {
+          "path": "src-nosupport/Enums/LanguageAware.xml",
+          "kind": "sha256",
+          "eq": "$capture.before21"
+        },
+        {
+          "path": "src-nosupport/Enums/ВажностьПроблемыУчета.xml",
+          "kind": "sha256",
+          "eq": "$capture.before22"
+        },
+        {
+          "path": "src-nosupport/Enums/НастройкиПоставщика.xml",
+          "kind": "sha256",
+          "eq": "$capture.before23"
+        },
+        {
+          "path": "src-nosupport/Enums/СпособыУстановкиКурсаВалюты.xml",
+          "kind": "sha256",
+          "eq": "$capture.before24"
+        },
+        {
+          "path": "src-nosupport/HTTPServices/ПроверкаСвязи.xml",
+          "kind": "sha256",
+          "eq": "$capture.before25"
+        },
+        {
+          "path": "src-nosupport/HTTPServices/ПроверкаСвязи/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.before26"
+        },
+        {
+          "path": "src-nosupport/InformationRegisters/АдминистративнаяИерархия.xml",
+          "kind": "sha256",
+          "eq": "$capture.before27"
+        },
+        {
+          "path": "src-nosupport/Languages/English.xml",
+          "kind": "sha256",
+          "eq": "$capture.before28"
+        },
+        {
+          "path": "src-nosupport/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.before29"
+        },
+        {
+          "path": "src-nosupport/Reports/АнализВерсийОбъектов.xml",
+          "kind": "sha256",
+          "eq": "$capture.before30"
+        },
+        {
+          "path": "src-nosupport/Reports/АнализВерсийОбъектов/Templates/МакетОтчета.xml",
+          "kind": "sha256",
+          "eq": "$capture.before31"
+        },
+        {
+          "path": "src-nosupport/Reports/АнализВерсийОбъектов/Templates/МакетОтчета/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.before32"
+        },
+        {
+          "path": "src-nosupport/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.before33"
+        },
+        {
+          "path": "src-nosupport/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.before34"
+        },
+        {
+          "path": "src-nosupport/Roles/SalesReader.xml",
+          "kind": "sha256",
+          "eq": "$capture.before35"
+        },
+        {
+          "path": "src-nosupport/Roles/SalesReader/Ext/Rights.xml",
+          "kind": "sha256",
+          "eq": "$capture.before36"
+        },
+        {
+          "path": "src-nosupport/Subsystems/Администрирование.xml",
+          "kind": "sha256",
+          "eq": "$capture.before37"
+        },
+        {
+          "path": "src-nosupport/Subsystems/Администрирование/Ext/CommandInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.before38"
+        },
+        {
+          "path": "src-nosupport/Subsystems/Администрирование/Subsystems/КонтрольРаботыПользователей.xml",
+          "kind": "sha256",
+          "eq": "$capture.before39"
+        },
+        {
+          "path": "src-nosupport/WebServices/ОбменДанными.xml",
+          "kind": "sha256",
+          "eq": "$capture.before40"
+        },
+        {
+          "path": "src-nosupport/WebServices/ОбменДанными/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.before41"
+        },
+        {
+          "path": "src-nosupport/XDTOPackages/EnterpriseData_1_17_3.xml",
+          "kind": "sha256",
+          "eq": "$capture.before42"
+        },
+        {
+          "path": "src-nosupport/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.before43"
+        },
+        {
+          "path": "src-ext/CommonModules/GoogleПереводчик.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    }
+  ]
+}

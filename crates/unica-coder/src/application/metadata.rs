@@ -3,24 +3,25 @@ use super::AdapterOutcome;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::events::{DomainEvent, DomainEventKind};
 use crate::domain::metadata::{
-    fill_value_schema, metadata_kinds_object_pattern, metadata_relation_specs,
+    fill_value_schema, metadata_event_source_input_schema,
+    metadata_relation_field_target_input_schema, metadata_relation_object_target_input_schema,
+    metadata_relation_operation_input_schema, metadata_relation_operation_schema,
     metadata_type_schema, position_schema, unknown_metadata_property_message,
     validate_metadata_kind_collection, validate_metadata_operation_capabilities, DateFractions,
     EventSourceClass, MetaCollection, MetaDiagnostic, MetaDiagnosticCode, MetaEditOperation,
     MetaEditOperationTag, MetaElementInput, MetaElementUpdateInput, MetaEventSource, MetaFillValue,
     MetaPosition, MetaPredefinedAccountType, MetaPredefinedExtDimensionType, MetaPredefinedFields,
     MetaPredefinedItemAdd, MetaPredefinedItemUpdate, MetaPropertyChanges, MetaPropertyInput,
-    MetaPropertyValue, MetaPropertyValueKind, MetaRelation, MetaRelationTarget,
-    MetaRelationTargetPolicy, MetaScope, MetaTemplateKind, MetaValidationStatus, MetadataFieldPath,
-    MetadataKind, MetadataReference, MetadataType, MetadataTypeVariant, NumberSign,
-    RelationEditMode, StringLengthMode, METADATA_PROPERTY_SPECS,
+    MetaPropertyValue, MetaPropertyValueKind, MetaRelation, MetaRelationTarget, MetaScope,
+    MetaTemplateKind, MetaValidationStatus, MetadataFieldPath, MetadataKind, MetadataReference,
+    MetadataType, MetadataTypeVariant, NumberSign, RelationEditMode, StringLengthMode,
+    METADATA_PROPERTY_SPECS,
 };
 use crate::domain::operation_contract::{
     metadata_element_input_schema, metadata_host_element_schema, ArgumentShape,
 };
 use crate::domain::source_target::{
     metadata_address_kind_spellings, MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20,
-    RECALCULATION_KIND_SPELLINGS,
 };
 use crate::domain::workspace::WorkspaceContext;
 use serde_json::{json, Map, Value};
@@ -719,11 +720,16 @@ fn parse_edit_operation(
                     "lang",
                 ],
             )?;
-            let relation_name = required_string_diagnostic(object, "relation")?;
-            let relation = MetaRelation::parse(&relation_name)?;
-            let mode_name = required_string_diagnostic(object, "mode")?;
-            let mode = RelationEditMode::parse(&mode_name)?;
-            let targets = required_array(object, "targets")?
+            let reader =
+                MetadataArgumentReader::new(object, metadata_relation_operation_input_schema(), "");
+            let relation = reader.read("relation", |object, key, field| {
+                MetaRelation::parse(&required_string_at(object, key, field)?)
+            })?;
+            let mode = reader.read("mode", |object, key, field| {
+                RelationEditMode::parse(&required_string_at(object, key, field)?)
+            })?;
+            let targets = reader
+                .read("targets", required_array_at)?
                 .iter()
                 .enumerate()
                 .map(|(index, target)| {
@@ -1035,15 +1041,24 @@ impl<'a> MetadataArgumentReader<'a> {
     }
 
     fn reject_unknown(&self) -> Result<(), MetaDiagnostic> {
-        reject_unknown_shape_fields(self.object, self.shape, &format!("{}.", self.field))
+        let prefix = if self.field.is_empty() {
+            String::new()
+        } else {
+            format!("{}.", self.field)
+        };
+        reject_unknown_shape_fields(self.object, self.shape, &prefix)
     }
 
     fn read<T>(
         &self,
         key: &str,
-        convert: impl FnOnce(&Map<String, Value>, &str, &str) -> Result<T, MetaDiagnostic>,
+        convert: impl FnOnce(&'a Map<String, Value>, &str, &str) -> Result<T, MetaDiagnostic>,
     ) -> Result<T, MetaDiagnostic> {
-        let field = format!("{}.{key}", self.field);
+        let field = if self.field.is_empty() {
+            key.to_string()
+        } else {
+            format!("{}.{key}", self.field)
+        };
         let converted = convert(self.object, key, &field)?;
         if let Some(value) = self.object.get(key) {
             let shape = self.shape.property(key).expect("known typed input field");
@@ -1410,11 +1425,16 @@ fn parse_reference(value: &Value, field: &str) -> Result<MetadataReference, Meta
     let object = value
         .as_object()
         .ok_or_else(|| invalid(field, "relation target must be an object"))?;
-    reject_unknown_fields(object, &["metadataPath"], &format!("{field}."))?;
-    let path_field = format!("{field}.metadataPath");
-    let raw = required_string_at(object, "metadataPath", &path_field)?;
-    Ok(MetadataReference {
-        metadata_path: parse_address(&raw, &path_field)?,
+    let reader = MetadataArgumentReader::new(
+        object,
+        metadata_relation_object_target_input_schema(),
+        field,
+    );
+    reader.reject_unknown()?;
+    reader.read("metadataPath", |object, key, field| {
+        Ok(MetadataReference {
+            metadata_path: parse_address(&required_string_at(object, key, field)?, field)?,
+        })
     })
 }
 
@@ -1422,12 +1442,16 @@ fn parse_field_reference(value: &Value, field: &str) -> Result<MetadataFieldPath
     let object = value
         .as_object()
         .ok_or_else(|| invalid(field, "inputByString target must be an object"))?;
-    reject_unknown_fields(object, &["fieldPath"], &format!("{field}."))?;
-    let path_field = format!("{field}.fieldPath");
-    let raw = required_string_at(object, "fieldPath", &path_field)?;
-    MetadataFieldPath::parse(&raw).map_err(|mut diagnostic| {
-        diagnostic.field = Some(path_field);
-        diagnostic
+    let reader =
+        MetadataArgumentReader::new(object, metadata_relation_field_target_input_schema(), field);
+    reader.reject_unknown()?;
+    reader.read("fieldPath", |object, key, field| {
+        MetadataFieldPath::parse(&required_string_at(object, key, field)?).map_err(
+            |mut diagnostic| {
+                diagnostic.field = Some(field.to_string());
+                diagnostic
+            },
+        )
     })
 }
 
@@ -1436,27 +1460,42 @@ fn parse_event_source(value: &Value, field: &str) -> Result<MetaEventSource, Met
         .as_object()
         .ok_or_else(|| invalid(field, "event source target must be an object"))?;
     let kind = required_string_at(object, "kind", &format!("{field}.kind"))?;
-    let (allowed, source) = match kind.as_str() {
+    let Some(shape) =
+        ArgumentShape::new(metadata_event_source_input_schema()).variant("kind", &kind)
+    else {
+        return Err(invalid(
+            format!("{field}.kind"),
+            format!("unsupported event source kind `{kind}`"),
+        ));
+    };
+    let reader = MetadataArgumentReader {
+        object,
+        shape,
+        field,
+    };
+    reader.read("kind", required_string_at)?;
+    let source = match kind.as_str() {
         "object" | "manager" | "recordSet" | "definedType" => {
-            let path_field = format!("{field}.metadataPath");
-            let raw = required_string_at(object, "metadataPath", &path_field)?;
-            let metadata_path = parse_address(&raw, &path_field)?;
-            let source = match kind.as_str() {
+            let metadata_path = reader.read("metadataPath", |object, key, field| {
+                parse_address(&required_string_at(object, key, field)?, field)
+            })?;
+            match kind.as_str() {
                 "object" => MetaEventSource::Object { metadata_path },
                 "manager" => {
-                    let source_class = object
-                        .get("sourceClass")
-                        .map(|value| {
-                            let class_field = format!("{field}.sourceClass");
-                            EventSourceClass::parse(value.as_str().ok_or_else(|| {
-                                invalid(&class_field, "sourceClass must be a string")
-                            })?)
-                            .map_err(|mut diagnostic| {
-                                diagnostic.field = Some(class_field);
-                                diagnostic
+                    let source_class = reader.read("sourceClass", |object, key, field| {
+                        object
+                            .get(key)
+                            .map(|value| {
+                                EventSourceClass::parse(value.as_str().ok_or_else(|| {
+                                    invalid(field, "sourceClass must be a string")
+                                })?)
+                                .map_err(|mut diagnostic| {
+                                    diagnostic.field = Some(field.to_string());
+                                    diagnostic
+                                })
                             })
-                        })
-                        .transpose()?;
+                            .transpose()
+                    })?;
                     MetaEventSource::Manager {
                         metadata_path,
                         source_class,
@@ -1465,34 +1504,22 @@ fn parse_event_source(value: &Value, field: &str) -> Result<MetaEventSource, Met
                 "recordSet" => MetaEventSource::RecordSet { metadata_path },
                 "definedType" => MetaEventSource::DefinedType { metadata_path },
                 _ => unreachable!("event source kind match is closed"),
-            };
-            if kind == "manager" {
-                (&["kind", "metadataPath", "sourceClass"][..], source)
-            } else {
-                (&["kind", "metadataPath"][..], source)
             }
         }
         "family" => {
-            let class_field = format!("{field}.sourceClass");
-            let source_class =
-                EventSourceClass::parse(&required_string_at(object, "sourceClass", &class_field)?)
-                    .map_err(|mut diagnostic| {
-                        diagnostic.field = Some(class_field);
+            let source_class = reader.read("sourceClass", |object, key, field| {
+                EventSourceClass::parse(&required_string_at(object, key, field)?).map_err(
+                    |mut diagnostic| {
+                        diagnostic.field = Some(field.to_string());
                         diagnostic
-                    })?;
-            (
-                &["kind", "sourceClass"][..],
-                MetaEventSource::Family { source_class },
-            )
+                    },
+                )
+            })?;
+            MetaEventSource::Family { source_class }
         }
-        _ => {
-            return Err(invalid(
-                format!("{field}.kind"),
-                format!("unsupported event source kind `{kind}`"),
-            ));
-        }
+        _ => unreachable!("the shared event source union has closed kinds"),
     };
-    reject_unknown_fields(object, allowed, &format!("{field}."))?;
+    reader.reject_unknown()?;
     Ok(source)
 }
 
@@ -2154,233 +2181,6 @@ fn host_visible_operation_schema() -> Value {
     })
 }
 
-fn metadata_relation_operation_schema() -> Value {
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "description": "Edit one relation. Each relation selects its own mode and target contract; EventSubscription source supports non-empty add/remove/replace requests; removing the last logical source is refused.",
-        "required": ["op", "relation", "mode", "targets"],
-        "properties": {
-            "op": {"type": "string", "enum": [MetaEditOperationTag::EditRelations.as_str()]},
-            "relation": {
-                "type": "string",
-                "enum": MetaRelation::ALL.iter().copied().map(MetaRelation::as_str).collect::<Vec<_>>(),
-            },
-            "mode": {
-                "type": "string",
-                "enum": RelationEditMode::ALL.iter().copied().map(RelationEditMode::as_str).collect::<Vec<_>>(),
-            },
-            "targets": {
-                "type": "array",
-                "uniqueItems": true,
-            },
-        },
-        "oneOf": MetaRelation::ALL
-            .iter()
-            .copied()
-            .map(metadata_relation_schema_branch)
-            .collect::<Vec<_>>(),
-    })
-}
-
-fn metadata_relation_schema_branch(relation: MetaRelation) -> Value {
-    let targets = if relation == MetaRelation::Source {
-        metadata_event_source_targets_schema()
-    } else {
-        json!({
-            "type": "array",
-            "minItems": 1,
-            "uniqueItems": true,
-            "items": metadata_relation_target_schema(relation),
-        })
-    };
-    let modes = RelationEditMode::ALL
-        .iter()
-        .copied()
-        .map(RelationEditMode::as_str)
-        .collect::<Vec<_>>();
-    json!({
-        "properties": {
-            "relation": {"const": relation.as_str()},
-            "mode": {"type": "string", "enum": modes},
-            "targets": targets,
-        },
-    })
-}
-
-fn metadata_relation_target_schema(relation: MetaRelation) -> Value {
-    let policies = MetadataKind::ALL
-        .iter()
-        .copied()
-        .flat_map(metadata_relation_specs)
-        .filter(|spec| spec.relation == relation)
-        .map(|spec| spec.target_policy)
-        .collect::<Vec<_>>();
-    let policy = *policies
-        .first()
-        .expect("every public relation has a capability policy");
-    assert!(
-        policies.iter().all(|candidate| *candidate == policy),
-        "one public relation must not publish conflicting target policies"
-    );
-    match policy {
-        MetaRelationTargetPolicy::MetadataKinds(kinds) => json!({
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["metadataPath"],
-            "properties": {
-                "metadataPath": {
-                    "type": "string",
-                    "pattern": metadata_kinds_object_pattern(kinds),
-                },
-            },
-        }),
-        MetaRelationTargetPolicy::SameOwnerField => json!({
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["fieldPath"],
-            "properties": {
-                "fieldPath": {
-                    "type": "string",
-                    "pattern": r"^[^.]+\.[^.]+\.(Attribute|StandardAttribute)\.[^.]+$",
-                },
-            },
-        }),
-        MetaRelationTargetPolicy::EventSources => metadata_event_source_target_schema(),
-    }
-}
-
-fn metadata_event_source_targets_schema() -> Value {
-    json!({
-        "type": "array",
-        "minItems": 1,
-        "uniqueItems": true,
-        "items": metadata_event_source_target_schema(),
-        "description": "Replace the source with one or more logical event source targets.",
-    })
-}
-
-fn metadata_event_source_target_schema() -> Value {
-    let metadata_object = |kind: &str, pattern: String| {
-        json!({
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["kind", "metadataPath"],
-            "properties": {
-                "kind": {"const": kind},
-                "metadataPath": {
-                    "type": "string",
-                    "pattern": pattern,
-                },
-            },
-        })
-    };
-    let named = metadata_identifier_pattern_body();
-    let spelling_group = |values: &[&str]| {
-        values
-            .iter()
-            .flat_map(|value| {
-                metadata_address_kind_spellings(value)
-                    .unwrap_or_else(|| panic!("event source root {value} must be registered"))
-            })
-            .collect::<Vec<_>>()
-            .join("|")
-    };
-    let roots = |values: &[&str]| format!(r"^({})\.{named}$", spelling_group(values));
-    let variants = vec![
-        metadata_object(
-            "object",
-            roots(&[
-                "Catalog",
-                "Document",
-                "ChartOfAccounts",
-                "ChartOfCharacteristicTypes",
-                "ChartOfCalculationTypes",
-                "ExchangePlan",
-                "BusinessProcess",
-                "Task",
-                "Report",
-                "DataProcessor",
-            ]),
-        ),
-        metadata_object(
-            "manager",
-            roots(&[
-                "Catalog",
-                "Document",
-                "Enum",
-                "InformationRegister",
-                "AccumulationRegister",
-                "AccountingRegister",
-                "CalculationRegister",
-                "ChartOfAccounts",
-                "ChartOfCharacteristicTypes",
-                "ChartOfCalculationTypes",
-                "BusinessProcess",
-                "Task",
-                "ExchangePlan",
-                "DocumentJournal",
-                "Report",
-                "DataProcessor",
-                "FilterCriterion",
-                "SettingsStorage",
-            ]),
-        ),
-        json!({
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["kind", "metadataPath", "sourceClass"],
-            "properties": {
-                "kind": {"const": "manager"},
-                "metadataPath": {
-                    "type": "string",
-                    "pattern": roots(&["Constant"]),
-                },
-                "sourceClass": {
-                    "type": "string",
-                    "enum": ["constantManager", "constantValueManager"],
-                },
-            },
-        }),
-        metadata_object(
-            "recordSet",
-            format!(
-                r"^(({})\.{named}|({})\.{named}\.({})\.{named})$",
-                spelling_group(&[
-                    "InformationRegister",
-                    "AccumulationRegister",
-                    "AccountingRegister",
-                    "CalculationRegister",
-                    "Sequence",
-                ]),
-                spelling_group(&["CalculationRegister"]),
-                RECALCULATION_KIND_SPELLINGS.join("|"),
-            ),
-        ),
-        metadata_object("definedType", roots(&["DefinedType"])),
-        json!({
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["kind", "sourceClass"],
-            "properties": {
-                "kind": {"const": "family"},
-                "sourceClass": {
-                    "type": "string",
-                    "enum": EventSourceClass::ALL
-                        .iter()
-                        .copied()
-                        .map(EventSourceClass::as_str)
-                        .collect::<Vec<_>>(),
-                },
-            },
-        }),
-    ];
-    json!({
-        "oneOf": variants,
-        "description": "One member of the closed typed EventSubscription source algebra.",
-    })
-}
-
 fn scope_schema() -> Value {
     json!({
         "type": "object",
@@ -2395,10 +2195,6 @@ fn scope_schema() -> Value {
         "required": ["tabularSection"],
         "description": "Optional scope for a collection owned by a tabular section.",
     })
-}
-
-fn metadata_identifier_pattern_body() -> &'static str {
-    r"[_A-Za-zА-Яа-яЁё][_A-Za-zА-Яа-яЁё0-9]*"
 }
 
 #[cfg(test)]
@@ -4667,6 +4463,133 @@ mod tests {
             validate_schema_and_parse(MetadataOperation::Edit, &cross_kind_based_on),
             "the platform BasedOn generation matrix permits cross-kind targets"
         );
+    }
+
+    #[test]
+    fn relation_readers_preserve_conversion_and_unknown_field_diagnostic_order() {
+        let call = |relation: Value, mode: Value, targets: Value| {
+            json!({
+                "op": "editRelations", "relation": relation, "mode": mode, "targets": targets,
+            })
+        };
+        for (operation, field, message) in [
+            (
+                call(json!("unknown"), json!(false), json!(false)),
+                "relation",
+                "unsupported metadata relation `unknown`",
+            ),
+            (
+                call(json!("owners"), json!("unknown"), json!(false)),
+                "mode",
+                "unsupported relation mode `unknown`",
+            ),
+            (
+                call(
+                    json!("owners"),
+                    json!("add"),
+                    json!([{"metadataPath": false, "extra": true}]),
+                ),
+                "targets[0].extra",
+                "unknown field `extra`",
+            ),
+            (
+                call(
+                    json!("inputByString"),
+                    json!("add"),
+                    json!([{"fieldPath": false, "extra": true}]),
+                ),
+                "targets[0].extra",
+                "unknown field `extra`",
+            ),
+            (
+                call(
+                    json!("source"),
+                    json!("add"),
+                    json!([{"kind": "unknown", "metadataPath": false, "extra": true}]),
+                ),
+                "targets[0].kind",
+                "unsupported event source kind `unknown`",
+            ),
+            (
+                call(
+                    json!("source"),
+                    json!("add"),
+                    json!([{"kind": "manager", "metadataPath": false, "sourceClass": false, "extra": true}]),
+                ),
+                "targets[0].metadataPath",
+                "`targets[0].metadataPath` must be a string",
+            ),
+            (
+                call(
+                    json!("source"),
+                    json!("add"),
+                    json!([{"kind": "manager", "metadataPath": "Catalog.Items", "sourceClass": false, "extra": true}]),
+                ),
+                "targets[0].sourceClass",
+                "sourceClass must be a string",
+            ),
+            (
+                call(
+                    json!("source"),
+                    json!("add"),
+                    json!([{"kind": "family", "sourceClass": false, "extra": true}]),
+                ),
+                "targets[0].sourceClass",
+                "`targets[0].sourceClass` must be a string",
+            ),
+            (
+                call(
+                    json!("source"),
+                    json!("add"),
+                    json!([{"kind": "object", "metadataPath": "Catalog.Items", "extra": true}]),
+                ),
+                "targets[0].extra",
+                "unknown field `extra`",
+            ),
+        ] {
+            let error = parse_edit_operation(&operation, MetadataKind::Catalog).unwrap_err();
+            assert_eq!(error.field.as_deref(), Some(field), "{operation}");
+            assert_eq!(error.message, message, "{operation}");
+        }
+
+        let error = diagnostic(
+            MetadataOperation::Edit,
+            json!({
+                "sourceSet": "main",
+                "metadataPath": "Catalog.Items",
+                "operations": [
+                    {"op": "editRelations", "relation": "owners", "mode": "add", "targets": [{"metadataPath": "Catalog.Parent"}]},
+                    {"op": "editRelations", "relation": "owners", "mode": "unknown", "targets": false},
+                ],
+            }),
+        );
+        assert_eq!(error.operation_index, Some(1));
+        assert_eq!(error.field.as_deref(), Some("mode"));
+        assert_eq!(error.message, "unsupported relation mode `unknown`");
+    }
+
+    #[test]
+    fn raw_event_source_manager_keeps_optional_class_before_domain_correlation() {
+        for (target, class) in [
+            (
+                json!({"kind": "manager", "metadataPath": "Constant.Flag"}),
+                None,
+            ),
+            (
+                json!({"kind": "manager", "metadataPath": "Catalog.Items", "sourceClass": "constantManager"}),
+                Some(EventSourceClass::ConstantManager),
+            ),
+        ] {
+            let parsed = parse_event_source(&target, "targets[1]").unwrap();
+            assert!(
+                matches!(parsed, MetaEventSource::Manager { source_class, .. } if source_class == class)
+            );
+        }
+        let error = parse_event_source(&json!({
+            "kind": "manager", "metadataPath": "Catalog.Items", "sourceClass": "unknown", "extra": true,
+        }), "targets[1]").unwrap_err();
+        assert_eq!(error.field.as_deref(), Some("targets[1].sourceClass"));
+        assert_eq!(error.message, "unsupported event source class `unknown`");
     }
 
     #[test]

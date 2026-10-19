@@ -1293,6 +1293,9 @@ mod form_lifecycle_tests;
 #[cfg(test)]
 #[path = "form_move_tests.rs"]
 mod form_move_tests;
+#[cfg(test)]
+#[path = "metadata_can_tests.rs"]
+mod metadata_can_tests;
 
 #[cfg(test)]
 pub(crate) mod actor_capacity_tests {
