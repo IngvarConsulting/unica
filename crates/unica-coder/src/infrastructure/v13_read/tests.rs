@@ -3,6 +3,7 @@ mod catalog_attribute_tooltip;
 mod catalog_tabular_properties;
 mod form;
 mod metadata;
+mod metadata_declaration_diagnostics;
 mod support;
 
 use support::*;

@@ -1032,6 +1032,17 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 (field.starts_with("details.")
                     || field.starts_with("properties.")
                     || field.starts_with("relations.")
+                    || [
+                        "standardAttributes",
+                        "characteristics",
+                        "standardTabularSections",
+                    ]
+                    .iter()
+                    .any(|prefix| {
+                        field
+                            .strip_prefix(prefix)
+                            .is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '[']))
+                    })
                     || (field.starts_with("collections.tabularSections[")
                         && field.contains("].standardAttributes"))
                     || local
