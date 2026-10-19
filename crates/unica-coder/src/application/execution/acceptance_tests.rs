@@ -1,5 +1,7 @@
 //! Independent acceptance sequences exercise the application API. The driver
 //! acknowledges synthetic commits; it is not evidence of filesystem durability.
+use super::hydration::*;
+use super::test_support::{Archive as DurableCatalog, Fixture as ExecutionCoordinator};
 use super::*;
 use crate::domain::execution::{FailureReason, Tool};
 use crate::domain::invocation::DomainResult;
@@ -24,7 +26,7 @@ fn confirm(owner: &mut ExecutionCoordinator, effects: Vec<Effect>) -> Vec<Effect
     let mut observed = Vec::new();
     while let Some(effect) = pending.pop_front() {
         match effect {
-            Effect::Commit(request) => pending.extend(owner.complete(request.committed()).unwrap()),
+            Effect::Commit(request) => pending.extend(owner.commit(request).unwrap()),
             other => observed.push(other),
         }
     }
@@ -123,7 +125,7 @@ fn acceptance_primary_ack_does_not_drop_an_active_alias_or_factual_result() {
     let cancelled = CanonicalOutcome::cancelled();
     assert_eq!(
         coordinator.inspect(&primary).unwrap().primary(),
-        Some(&cancelled)
+        Some(&cancelled.descriptor())
     );
     let pending = coordinator
         .acknowledge(&primary, &capability, cancelled.digest(), 40)
@@ -135,10 +137,10 @@ fn acceptance_primary_ack_does_not_drop_an_active_alias_or_factual_result() {
     let pending = coordinator.report(run.finish(factual.clone())).unwrap();
     confirm(&mut coordinator, pending);
     let record = coordinator.inspect(&primary).unwrap();
-    assert_eq!(record.primary(), Some(&cancelled));
-    assert_eq!(record.producer(), Some(&factual));
+    assert_eq!(record.primary(), Some(&cancelled.descriptor()));
+    assert_eq!(record.producer(), Some(&factual.descriptor()));
     assert!(
-        matches!(coordinator.observe_holder(&primary, member), Ok(model::HolderObservation::Terminal(outcome)) if outcome == &factual)
+        matches!(coordinator.observe_holder(&primary, member), Ok(model::HolderObservation::Terminal(outcome)) if outcome == &factual.descriptor())
     );
     let bytes = coordinator.catalog().unwrap().encode();
     let (mut reopened, effects) = ExecutionCoordinator::restore(
@@ -149,7 +151,7 @@ fn acceptance_primary_ack_does_not_drop_an_active_alias_or_factual_result() {
     confirm(&mut reopened, effects);
     assert_eq!(
         reopened.lookup_task(primary.task_id()).unwrap().primary(),
-        Some(&cancelled)
+        Some(&cancelled.descriptor())
     );
     assert!(reopened.lookup_task(alias.task_id()).is_err());
     assert_eq!(reopened.holder_count(&primary), 0);
@@ -186,7 +188,7 @@ fn acceptance_both_ack_expose_orders_obey_confirmed_public_promises() {
                     .lookup_task(invocation.task_id())
                     .unwrap()
                     .primary(),
-                Some(&factual)
+                Some(&factual.descriptor())
             );
         } else {
             assert!(coordinator.inspect(&invocation).unwrap().compacted());
@@ -198,11 +200,11 @@ fn acceptance_both_ack_expose_orders_obey_confirmed_public_promises() {
                     ..
                 }]
             ));
-            assert!(coordinator
-                .inspect(&invocation)
-                .unwrap()
-                .producer()
-                .is_none());
+            assert!(coordinator.store(&invocation).producer().is_none());
+            assert!(matches!(
+                coordinator.prepare_task(&invocation),
+                Err(Error::Compacted)
+            ));
         }
         let before = coordinator.catalog().unwrap().encode();
         let pending = coordinator
@@ -238,7 +240,7 @@ fn acceptance_cancel_and_expose_pending_commits_do_not_discard_factual_mutation(
         .report(run.finish(factual.clone()))
         .unwrap()
         .is_empty());
-    let effects = coordinator.complete(cancellation.committed()).unwrap();
+    let effects = coordinator.commit(cancellation).unwrap();
     let observed = confirm(&mut coordinator, effects);
     assert!(observed
         .iter()
@@ -248,7 +250,7 @@ fn acceptance_cancel_and_expose_pending_commits_do_not_discard_factual_mutation(
             .lookup_task(invocation.task_id())
             .unwrap()
             .primary(),
-        Some(&factual)
+        Some(&factual.descriptor())
     );
 }
 
@@ -267,7 +269,7 @@ fn acceptance_unknown_begin_never_grants_run_and_recovery_never_replays() {
     let accepted = take_accepted(confirm(&mut coordinator, pending));
     let begin = only_commit(coordinator.begin(accepted, 20, None).unwrap());
     // The storage fault fixture says the uncertain write actually reached disk.
-    let durable = DurableCatalog::new(vec![begin.candidate().clone()]).unwrap();
+    let durable = DurableCatalog::new(vec![coordinator.assemble(&begin)]).unwrap();
     assert!(matches!(
         coordinator.complete(begin.unknown()).unwrap().as_slice(),
         [Effect::FailStop]
@@ -286,7 +288,7 @@ fn acceptance_unknown_begin_never_grants_run_and_recovery_never_replays() {
             .lookup_task(invocation.task_id())
             .unwrap()
             .primary(),
-        Some(&CanonicalOutcome::failed(FailureReason::OutcomeUncertain))
+        Some(&CanonicalOutcome::failed(FailureReason::OutcomeUncertain).descriptor())
     );
 }
 
@@ -348,12 +350,8 @@ fn acceptance_delivery_choice_does_not_ack_a_late_direct_or_lose_built_direct() 
     let result = CanonicalOutcome::completed(DomainResult::success("prepared"));
     let pending = coordinator.report(run.finish(result.clone())).unwrap();
     confirm(&mut coordinator, pending);
-    let late = coordinator
-        .prepare_direct(&invocation, &capability)
-        .unwrap();
-    let ready = coordinator
-        .prepare_direct(&invocation, &capability)
-        .unwrap();
+    let late = coordinator.direct(&invocation, &capability).unwrap();
+    let ready = coordinator.direct(&invocation, &capability).unwrap();
     let mut task = DeliveryChoice::new(invocation.clone());
     task.return_task(task_permit(&mut coordinator, &invocation))
         .unwrap();
@@ -384,12 +382,22 @@ fn acceptance_writable_capabilities_cannot_be_cloned() {
     let _ = <TaskPublicationPermit as AmbiguousIfClone<_>>::check;
     let _ = <AdmissionRejection as AmbiguousIfClone<_>>::check;
     let _ = <CancellationPermit as AmbiguousIfClone<_>>::check;
+    let _ = <ReadRequest as AmbiguousIfClone<_>>::check;
+    let _ = <ReadCompletion as AmbiguousIfClone<_>>::check;
+    let _ = <ResultPublicationPermit as AmbiguousIfClone<_>>::check;
+    let _ = <HolderPublicationPermit as AmbiguousIfClone<_>>::check;
     trait AmbiguousIfDeserializable<A> {
         fn check() {}
     }
     impl<T: ?Sized> AmbiguousIfDeserializable<()> for T {}
     impl<T: serde::de::DeserializeOwned> AmbiguousIfDeserializable<u8> for T {}
     let _ = <RunPermit as AmbiguousIfDeserializable<_>>::check;
+    let _ = <Record as AmbiguousIfDeserializable<_>>::check;
+    let _ = <RecoveryCatalog as AmbiguousIfDeserializable<_>>::check;
+    let _ = <ReadRequest as AmbiguousIfDeserializable<_>>::check;
+    let _ = <ReadCompletion as AmbiguousIfDeserializable<_>>::check;
+    let _ = <ResultPublicationPermit as AmbiguousIfDeserializable<_>>::check;
+    let _ = <HolderPublicationPermit as AmbiguousIfDeserializable<_>>::check;
     let _ = <DirectPublicationPermit as AmbiguousIfDeserializable<_>>::check;
     let _ = <OutcomeEvidence as AmbiguousIfDeserializable<_>>::check;
     let _ = <AcceptedPermit as AmbiguousIfDeserializable<_>>::check;
@@ -500,7 +508,7 @@ fn acceptance_retired_membership_cannot_cancel_its_successor() {
     let pending = coordinator.report(run.finish(factual.clone())).unwrap();
     confirm(&mut coordinator, pending);
     assert!(
-        matches!(coordinator.observe_holder(&primary, current), Ok(model::HolderObservation::Terminal(outcome)) if outcome == &factual)
+        matches!(coordinator.observe_holder(&primary, current), Ok(model::HolderObservation::Terminal(outcome)) if outcome == &factual.descriptor())
     );
 }
 
@@ -628,7 +636,7 @@ fn acceptance_cancel_outcome_expose_permutations_preserve_factual_mutation() {
                     .lookup_task(invocation.task_id())
                     .unwrap()
                     .primary(),
-                Some(&factual),
+                Some(&factual.descriptor()),
                 "order={order:?}, defer={defer}"
             );
             let (mut reopened, effects) = ExecutionCoordinator::restore(
@@ -644,7 +652,7 @@ fn acceptance_cancel_outcome_expose_permutations_preserve_factual_mutation() {
                     .lookup_task(invocation.task_id())
                     .unwrap()
                     .primary(),
-                Some(&factual)
+                Some(&factual.descriptor())
             );
         }
     }
@@ -665,7 +673,7 @@ fn acceptance_observer_and_wrong_owner_cannot_release_primary_payload() {
             .lookup_task(invocation.task_id())
             .unwrap()
             .primary(),
-        Some(&factual)
+        Some(&factual.descriptor())
     );
     assert_eq!(coordinator.holder_count(&invocation), 0);
     let wrong_owner = OwnerCapability::new([5; 32]);

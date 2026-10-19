@@ -1,11 +1,13 @@
 //! P1 application owner. Default-compiled but not connected to the runtime until
 //! P3. The storage driver consumes commit requests outside this decision loop.
+use crate::domain::execution::storage::{PayloadDelta, RecoveryCatalog, StoredRecord};
 use crate::domain::execution::{
-    self as model, CanonicalOutcome, DurableCatalog, Error, Event, Intent, JoinEvidence, Key,
-    Membership, ObservationWindow, ReadAuthority, Record, RunIdentity, State,
+    self as model, CanonicalOutcome, Error, Event, Intent, JoinEvidence, Key, Membership,
+    ObservationWindow, ReadAuthority, Record, RunIdentity, State,
 };
 use crate::domain::invocation::{InvocationId, TaskId};
 use std::collections::{HashMap, VecDeque};
+pub(crate) mod hydration;
 
 /// A frontend secret. Debug and durable projections never expose its bytes.
 pub(crate) struct OwnerCapability([u8; 32]);
@@ -139,6 +141,7 @@ pub(crate) enum Effect {
 pub(crate) struct CommitRequest {
     stamp: Stamp,
     candidate: Box<Record>,
+    payloads: PayloadDelta,
 }
 impl CommitRequest {
     pub(crate) fn key(&self) -> &Key {
@@ -159,6 +162,15 @@ impl CommitRequest {
     pub(crate) fn candidate_fingerprint(&self) -> [u8; 32] {
         self.stamp.fingerprint
     }
+    pub(crate) fn assemble(&self, prior: Option<&StoredRecord>) -> Result<StoredRecord, Error> {
+        if prior.map(|p| p.record().fingerprint()) != self.stamp.previous_fingerprint {
+            return Err(Error::InvalidRecord);
+        }
+        self.payloads.assemble(*self.candidate.clone(), prior)
+    }
+    pub(crate) fn payloads(&self) -> &PayloadDelta {
+        &self.payloads
+    }
     pub(crate) fn committed(self) -> CommitCompletion {
         CommitCompletion {
             stamp: self.stamp,
@@ -177,7 +189,7 @@ impl CommitRequest {
             resolution: Resolution::Unknown,
         }
     }
-    pub(crate) fn readback(self, record: Record) -> CommitCompletion {
+    pub(crate) fn readback(self, record: StoredRecord) -> CommitCompletion {
         CommitCompletion {
             stamp: self.stamp,
             resolution: Resolution::Readback(Box::new(record)),
@@ -190,13 +202,14 @@ struct Stamp {
     epoch: AuthorityEpoch,
     id: u64,
     expected_revision: u64,
+    previous_fingerprint: Option<[u8; 32]>,
     fingerprint: [u8; 32],
 }
 #[derive(Debug)]
 enum Resolution {
     Committed,
     RolledBack,
-    Readback(Box<Record>),
+    Readback(Box<StoredRecord>),
     Unknown,
 }
 #[derive(Debug)]
@@ -249,20 +262,20 @@ impl ExecutionCoordinator {
         }
     }
     pub(crate) fn restore(
-        catalog: DurableCatalog,
+        catalog: RecoveryCatalog,
         epoch: AuthorityEpoch,
     ) -> Result<(Self, Vec<Effect>), Error> {
-        // Revalidate before changing any group: corruption cannot select a winner.
-        let catalog = DurableCatalog::new(catalog.records().to_vec())?;
+        // Only a completely validated stream can construct this catalog.
+        let records = catalog.into_records();
         let mut owner = Self::new(epoch);
         let mut effects = Vec::new();
-        for record in catalog.records() {
+        for record in records {
             let key = record.key().clone();
             owner.claim(&key)?;
             owner.groups.insert(
                 key.invocation_id(),
                 Slot {
-                    confirmed: State::from_record(record.clone())?,
+                    confirmed: State::from_record(record)?,
                     pending: None,
                     queue: VecDeque::new(),
                 },
@@ -276,7 +289,8 @@ impl ExecutionCoordinator {
         owner.finish_recovery();
         Ok((owner, effects))
     }
-    pub(crate) fn catalog(&self) -> Result<DurableCatalog, Error> {
+    /// Compact comparison data, never sufficient to recover a durable store.
+    pub(crate) fn snapshot(&self) -> Vec<Record> {
         let mut records: Vec<_> = self
             .groups
             .values()
@@ -284,7 +298,7 @@ impl ExecutionCoordinator {
             .filter(|r| r.revision() > 0)
             .collect();
         records.sort_by_key(|r| r.key().digest());
-        DurableCatalog::new(records)
+        records
     }
     pub(crate) fn inspect(&self, key: &Key) -> Result<&Record, Error> {
         let slot = self
@@ -446,28 +460,6 @@ impl ExecutionCoordinator {
             false,
         )
     }
-    pub(crate) fn prepare_direct(
-        &self,
-        key: &Key,
-        owner: &OwnerCapability,
-    ) -> Result<DirectPublicationPermit, Error> {
-        self.check_available()?;
-        let record = self.inspect(key)?;
-        if !record.owned_by(owner.hash()) {
-            return Err(Error::OwnerMismatch);
-        }
-        if record.acknowledgement().is_some() {
-            return Err(Error::AlreadyAcknowledged);
-        }
-        if record.compacted() {
-            return Err(Error::Compacted);
-        }
-        let outcome = record.primary().ok_or(Error::NotRunnable)?.clone();
-        Ok(DirectPublicationPermit {
-            key: key.clone(),
-            outcome,
-        })
-    }
     pub(crate) fn attach(
         &mut self,
         key: &Key,
@@ -566,18 +558,21 @@ impl ExecutionCoordinator {
         while let Some(event) = slot.queue.pop_front() {
             match slot.confirmed.decide(event.clone()) {
                 Ok(Some(transition)) => {
-                    let (candidate, intents) = transition.into_parts();
+                    let (candidate, intents, payloads) = transition.into_parts();
                     self.next_commit = self.next_commit.checked_add(1).ok_or(Error::Overflow)?;
                     let stamp = Stamp {
                         key: key.clone(),
                         epoch: self.epoch,
                         id: self.next_commit,
                         expected_revision: slot.confirmed.record().revision(),
+                        previous_fingerprint: (slot.confirmed.record().revision() > 0)
+                            .then(|| slot.confirmed.record().fingerprint()),
                         fingerprint: candidate.record().fingerprint(),
                     };
                     effects.push(Effect::Commit(CommitRequest {
                         stamp: stamp.clone(),
                         candidate: Box::new(candidate.record().clone()),
+                        payloads,
                     }));
                     slot.pending = Some(Pending {
                         stamp,
@@ -635,16 +630,16 @@ impl ExecutionCoordinator {
         }
         let mut committed = matches!(completion.resolution, Resolution::Committed);
         if let Resolution::Readback(ref actual) = completion.resolution {
-            if actual.validate().is_err() || actual.key() != &key {
+            if actual.record().key() != &key {
                 self.unavailable = true;
                 return Ok(vec![Effect::FailStop]);
             }
             let pending = slot.pending.as_ref().expect("checked pending");
-            committed = actual.as_ref() == pending.candidate.record();
+            committed = actual.record() == pending.candidate.record();
             if !committed
                 && slot
                     .confirmed
-                    .with_readback(actual.as_ref().clone())
+                    .with_readback(actual.record().clone())
                     .is_err()
             {
                 self.unavailable = true;
@@ -681,7 +676,7 @@ impl ExecutionCoordinator {
             }
         } else {
             if let Resolution::Readback(actual) = completion.resolution {
-                slot.confirmed = slot.confirmed.with_readback(*actual)?;
+                slot.confirmed = slot.confirmed.with_readback(actual.into_metadata())?;
             }
             // Retry the semantic fact, not a stale candidate revision. This is
             // especially important for Outcome queued behind Cancel or Expose.
@@ -764,3 +759,9 @@ mod acceptance_tests;
 mod recovery_acceptance_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod test_support;
+
+#[cfg(test)]
+mod compact_tests;
