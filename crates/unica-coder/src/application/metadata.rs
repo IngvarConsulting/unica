@@ -18,7 +18,8 @@ use crate::domain::metadata::{
     METADATA_PROPERTY_SPECS,
 };
 use crate::domain::operation_contract::{
-    metadata_element_input_schema, metadata_host_element_schema, ArgumentShape,
+    metadata_element_input_schema, metadata_host_element_schema,
+    metadata_predefined_element_input_schema, ArgumentShape,
 };
 use crate::domain::source_target::{
     metadata_address_kind_spellings, MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20,
@@ -775,11 +776,13 @@ fn parse_predefined_add(
     index: usize,
 ) -> Result<MetaPredefinedItemAdd, MetaDiagnostic> {
     let prefix = format!("elements[{index}]");
-    let object = predefined_object(value, &prefix)?;
+    let schema = metadata_predefined_element_input_schema(false);
+    let object = predefined_object(value, &prefix, ArgumentShape::new(schema))?;
+    let reader = MetadataArgumentReader::new(object, schema, &prefix);
     Ok(MetaPredefinedItemAdd {
-        id: canonical_uuid(object, "id", &prefix)?,
-        name: required_string_at(object, "name", &format!("{prefix}.name"))?,
-        fields: parse_predefined_fields(object, &prefix)?,
+        id: reader.read("id", |object, key, _| canonical_uuid(object, key, &prefix))?,
+        name: reader.read("name", required_string_at)?,
+        fields: parse_predefined_fields(&reader)?,
     })
 }
 
@@ -788,42 +791,30 @@ fn parse_predefined_update(
     index: usize,
 ) -> Result<MetaPredefinedItemUpdate, MetaDiagnostic> {
     let prefix = format!("elements[{index}]");
-    let object = predefined_object(value, &prefix)?;
+    let schema = metadata_predefined_element_input_schema(true);
+    let object = predefined_object(value, &prefix, ArgumentShape::new(schema))?;
+    let reader = MetadataArgumentReader::new(object, schema, &prefix);
     Ok(MetaPredefinedItemUpdate {
-        id: canonical_uuid(object, "id", &prefix)?,
-        name: object
-            .get("name")
-            .map(|value| nonempty_string(value, &format!("{prefix}.name")))
-            .transpose()?,
-        fields: parse_predefined_fields(object, &prefix)?,
+        id: reader.read("id", |object, key, _| canonical_uuid(object, key, &prefix))?,
+        name: reader.read("name", |object, key, field| {
+            object
+                .get(key)
+                .map(|value| nonempty_string(value, field))
+                .transpose()
+        })?,
+        fields: parse_predefined_fields(&reader)?,
     })
 }
 
 fn predefined_object<'a>(
     value: &'a Value,
     prefix: &str,
+    shape: ArgumentShape<'_>,
 ) -> Result<&'a Map<String, Value>, MetaDiagnostic> {
     let object = value
         .as_object()
         .ok_or_else(|| invalid(prefix, "predefined item must be an object"))?;
-    reject_unknown_fields(
-        object,
-        &[
-            "id",
-            "name",
-            "code",
-            "description",
-            "isFolder",
-            "type",
-            "accountType",
-            "offBalance",
-            "order",
-            "accountingFlags",
-            "extDimensionTypes",
-            "actionPeriodIsBase",
-        ],
-        &format!("{prefix}."),
-    )?;
+    reject_unknown_shape_fields(object, shape, &format!("{prefix}."))?;
     Ok(object)
 }
 
@@ -839,58 +830,83 @@ fn canonical_uuid(
 }
 
 fn parse_predefined_fields(
-    object: &Map<String, Value>,
-    prefix: &str,
+    reader: &MetadataArgumentReader<'_>,
 ) -> Result<MetaPredefinedFields, MetaDiagnostic> {
     let optional_string = |name: &str| {
-        object
-            .get(name)
-            .map(|value| {
-                value
-                    .as_str()
-                    .map(str::to_string)
-                    .ok_or_else(|| invalid(format!("{prefix}.{name}"), "field must be a string"))
-            })
-            .transpose()
+        reader.read(name, |object, key, field| {
+            object
+                .get(key)
+                .map(|value| {
+                    value
+                        .as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| invalid(field, "field must be a string"))
+                })
+                .transpose()
+        })
     };
     let optional_bool = |name: &str| {
-        object
-            .get(name)
-            .map(|value| {
-                value
-                    .as_bool()
-                    .ok_or_else(|| invalid(format!("{prefix}.{name}"), "field must be a boolean"))
-            })
-            .transpose()
+        reader.read(name, |object, key, field| {
+            object
+                .get(key)
+                .map(|value| {
+                    value
+                        .as_bool()
+                        .ok_or_else(|| invalid(field, "field must be a boolean"))
+                })
+                .transpose()
+        })
     };
     Ok(MetaPredefinedFields {
         code: optional_string("code")?,
         description: optional_string("description")?,
         is_folder: optional_bool("isFolder")?,
-        r#type: object
-            .get("type")
-            .map(|value| parse_metadata_type(value, &format!("{prefix}.type")))
-            .transpose()?,
-        account_type: object
-            .get("accountType")
-            .map(|value| {
-                let field = format!("{prefix}.accountType");
-                let value = value
-                    .as_str()
-                    .ok_or_else(|| invalid(&field, "accountType must be a string"))?;
-                MetaPredefinedAccountType::parse(value, &field)
-            })
-            .transpose()?,
+        r#type: reader.read("type", |object, key, field| {
+            object
+                .get(key)
+                .map(|value| parse_metadata_type(value, field))
+                .transpose()
+        })?,
+        account_type: reader.read("accountType", |object, key, field| {
+            object
+                .get(key)
+                .map(|value| {
+                    let value = value
+                        .as_str()
+                        .ok_or_else(|| invalid(field, "accountType must be a string"))?;
+                    MetaPredefinedAccountType::parse(value, field)
+                })
+                .transpose()
+        })?,
         off_balance: optional_bool("offBalance")?,
         order: optional_string("order")?,
-        accounting_flags: object
-            .get("accountingFlags")
-            .map(|value| parse_predefined_flags(value, &format!("{prefix}.accountingFlags")))
-            .transpose()?,
-        ext_dimension_types: object
-            .get("extDimensionTypes")
-            .map(|value| parse_ext_dimension_types(value, &format!("{prefix}.extDimensionTypes")))
-            .transpose()?,
+        accounting_flags: reader.read("accountingFlags", |object, key, field| {
+            object
+                .get(key)
+                .map(|value| {
+                    parse_predefined_flags(
+                        value,
+                        field,
+                        reader.shape.property(key).expect("predefined flags"),
+                    )
+                })
+                .transpose()
+        })?,
+        ext_dimension_types: reader.read("extDimensionTypes", |object, key, field| {
+            object
+                .get(key)
+                .map(|value| {
+                    parse_ext_dimension_types(
+                        value,
+                        field,
+                        reader
+                            .shape
+                            .property(key)
+                            .expect("predefined ext dimension types"),
+                    )
+                })
+                .transpose()
+        })?,
         action_period_is_base: optional_bool("actionPeriodIsBase")?,
     })
 }
@@ -898,6 +914,7 @@ fn parse_predefined_fields(
 fn parse_predefined_flags(
     value: &Value,
     field: &str,
+    shape: ArgumentShape<'_>,
 ) -> Result<BTreeMap<String, bool>, MetaDiagnostic> {
     let object = value
         .as_object()
@@ -907,10 +924,15 @@ fn parse_predefined_flags(
         if name.is_empty() {
             return Err(invalid(field, "accounting flag name must not be empty"));
         }
-        let value = value
+        let converted = value
             .as_bool()
             .ok_or_else(|| invalid(format!("{field}.{name}"), "accounting flag must be boolean"))?;
-        flags.insert(name.clone(), value);
+        shape
+            .additional_properties()
+            .expect("predefined accounting flag value")
+            .validate_field(value, &format!("{field}.{name}"))
+            .map_err(|error| invalid(error.path, error.message))?;
+        flags.insert(name.clone(), converted);
     }
     Ok(flags)
 }
@@ -918,6 +940,7 @@ fn parse_predefined_flags(
 fn parse_ext_dimension_types(
     value: &Value,
     field: &str,
+    shape: ArgumentShape<'_>,
 ) -> Result<Vec<MetaPredefinedExtDimensionType>, MetaDiagnostic> {
     let values = value
         .as_array()
@@ -929,30 +952,44 @@ fn parse_ext_dimension_types(
         let object = value
             .as_object()
             .ok_or_else(|| invalid(&item_field, "ext-dimension type must be an object"))?;
-        reject_unknown_fields(
+        let reader = MetadataArgumentReader {
             object,
-            &["name", "turnover", "accountingFlags"],
-            &format!("{item_field}."),
-        )?;
-        let name = required_string_at(object, "name", &format!("{item_field}.name"))?;
+            shape: shape.items().expect("predefined ext dimension type"),
+            field: &item_field,
+        };
+        reader.reject_unknown()?;
+        let name = reader.read("name", required_string_at)?;
         if !names.insert(name.to_lowercase()) {
             return Err(invalid(
                 format!("{item_field}.name"),
                 "ext-dimension type name is duplicated",
             ));
         }
-        let turnover = object
-            .get("turnover")
-            .map(|value| {
-                value.as_bool().ok_or_else(|| {
-                    invalid(format!("{item_field}.turnover"), "turnover must be boolean")
+        let turnover = reader.read("turnover", |object, key, field| {
+            object
+                .get(key)
+                .map(|value| {
+                    value
+                        .as_bool()
+                        .ok_or_else(|| invalid(field, "turnover must be boolean"))
                 })
-            })
-            .transpose()?;
-        let accounting_flags = object
-            .get("accountingFlags")
-            .map(|value| parse_predefined_flags(value, &format!("{item_field}.accountingFlags")))
-            .transpose()?;
+                .transpose()
+        })?;
+        let accounting_flags = reader.read("accountingFlags", |object, key, field| {
+            object
+                .get(key)
+                .map(|value| {
+                    parse_predefined_flags(
+                        value,
+                        field,
+                        reader
+                            .shape
+                            .property(key)
+                            .expect("ext dimension accounting flags"),
+                    )
+                })
+                .transpose()
+        })?;
         result.push(MetaPredefinedExtDimensionType {
             name,
             turnover,
@@ -2050,42 +2087,16 @@ fn host_visible_operation_schema() -> Value {
     };
     let elements = || json!({"type": "array", "minItems": 1, "items": element});
     let predefined_fields = || {
-        json!({
-            "id": {
-                "type": "string",
-                "format": "uuid",
-                "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
-            },
-            "name": {"type": "string", "minLength": 1},
-            "code": {"type": "string"},
-            "description": {"type": "string"},
-            "isFolder": {"type": "boolean"},
-            "type": schema_reference("metadataType"),
-            "accountType": {"type": "string", "enum": ["Active", "Passive", "ActivePassive"]},
-            "offBalance": {"type": "boolean"},
-            "order": {"type": "string"},
-            "accountingFlags": {
-                "type": "object",
-                "additionalProperties": {"type": "boolean"},
-            },
-            "extDimensionTypes": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": ["name"],
-                    "properties": {
-                        "name": {"type": "string", "minLength": 1},
-                        "turnover": {"type": "boolean"},
-                        "accountingFlags": {
-                            "type": "object",
-                            "additionalProperties": {"type": "boolean"},
-                        },
-                    },
-                },
-            },
-            "actionPeriodIsBase": {"type": "boolean"},
-        })
+        let mut fields = metadata_predefined_element_input_schema(false)["properties"].clone();
+        fields["id"]
+            .as_object_mut()
+            .expect("predefined id field")
+            .remove("minLength");
+        fields["id"]["format"] = json!("uuid");
+        fields["id"]["pattern"] =
+            json!("^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$");
+        fields["type"] = schema_reference("metadataType");
+        fields
     };
     let predefined_operation = |tag: MetaEditOperationTag, update: bool| {
         json!({
@@ -2102,7 +2113,7 @@ fn host_visible_operation_schema() -> Value {
                         "type": "object",
                         "additionalProperties": false,
                         "minProperties": if update { 2 } else { 0 },
-                        "required": if update { json!(["id"]) } else { json!(["id", "name"]) },
+                        "required": metadata_predefined_element_input_schema(update)["required"].clone(),
                         "properties": predefined_fields(),
                     },
                 },
@@ -5625,7 +5636,178 @@ mod tests {
     }
 
     #[test]
+    fn predefined_readers_keep_legacy_compound_error_order() {
+        for (changes, field, message) in [
+            (
+                json!({"id": false, "extra": true}),
+                "elements[3].extra",
+                "unknown field `extra`",
+            ),
+            (
+                json!({"id": "not-a-uuid", "name": false}),
+                "elements[3].id",
+                "predefined item id must be a UUID",
+            ),
+            (
+                json!({"name": false, "code": false}),
+                "elements[3].name",
+                "`elements[3].name` must be a string",
+            ),
+            (
+                json!({"code": false, "description": false}),
+                "elements[3].code",
+                "field must be a string",
+            ),
+            (
+                json!({"isFolder": "bad", "accountType": false}),
+                "elements[3].isFolder",
+                "field must be a boolean",
+            ),
+            (
+                json!({"accountType": false, "offBalance": "bad"}),
+                "elements[3].accountType",
+                "accountType must be a string",
+            ),
+            (
+                json!({"accountType": "bad", "offBalance": "bad"}),
+                "elements[3].accountType",
+                "accountType must be Active, Passive, or ActivePassive",
+            ),
+            (
+                json!({"order": false, "accountingFlags": false}),
+                "elements[3].order",
+                "field must be a string",
+            ),
+            (
+                json!({"accountingFlags": {"": false, "Bad": "bad"}, "extDimensionTypes": false}),
+                "elements[3].accountingFlags",
+                "accounting flag name must not be empty",
+            ),
+            (
+                json!({"accountingFlags": {"Bad": "bad"}, "extDimensionTypes": false}),
+                "elements[3].accountingFlags.Bad",
+                "accounting flag must be boolean",
+            ),
+            (
+                json!({"extDimensionTypes": [{"name": false, "extra": true, "turnover": "bad"}]}),
+                "elements[3].extDimensionTypes[0].extra",
+                "unknown field `extra`",
+            ),
+            (
+                json!({"extDimensionTypes": [{"name": false, "turnover": "bad"}]}),
+                "elements[3].extDimensionTypes[0].name",
+                "`elements[3].extDimensionTypes[0].name` must be a string",
+            ),
+            (
+                json!({"extDimensionTypes": [{"name": "Dim"}, {"name": "dim", "turnover": "bad"}]}),
+                "elements[3].extDimensionTypes[1].name",
+                "ext-dimension type name is duplicated",
+            ),
+            (
+                json!({"extDimensionTypes": [{"name": "Dim", "turnover": "bad", "accountingFlags": false}]}),
+                "elements[3].extDimensionTypes[0].turnover",
+                "turnover must be boolean",
+            ),
+            (
+                json!({"extDimensionTypes": [{"name": "Dim", "accountingFlags": {"": "bad"}}]}),
+                "elements[3].extDimensionTypes[0].accountingFlags",
+                "accounting flag name must not be empty",
+            ),
+        ] {
+            let mut item = json!({"id":"a7d2e6fc-3824-4b56-b4be-ae6be4944c0e","name":"Main"});
+            item.as_object_mut()
+                .unwrap()
+                .extend(changes.as_object().unwrap().clone());
+            let error = parse_predefined_add(&item, 3).unwrap_err();
+            assert_eq!(error.field.as_deref(), Some(field), "{item}: {error:?}");
+            assert_eq!(error.message, message, "{item}: {error:?}");
+        }
+        let item = json!({"id":"a7d2e6fc-3824-4b56-b4be-ae6be4944c0e","code":""});
+        assert!(parse_predefined_update(&item, 3).unwrap().name.is_none());
+        let error =
+            parse_predefined_update(&json!({"id":false,"newName":"Renamed"}), 3).unwrap_err();
+        assert_eq!(error.field.as_deref(), Some("elements[3].newName"));
+        assert_eq!(error.message, "unknown field `newName`");
+    }
+
+    #[test]
+    fn predefined_fields_consume_the_shared_primitive_and_nested_shapes() {
+        let item = json!({"code":"C","description":"D","isFolder":false,
+            "accountType":"Active","offBalance":false,"order":"O",
+            "accountingFlags":{"Flag":true},"extDimensionTypes":[{"name":"Dim","turnover":false,"accountingFlags":{"Flag":true}}],
+            "actionPeriodIsBase":false});
+        let object = item.as_object().unwrap();
+        assert!(parse_predefined_fields(&MetadataArgumentReader::new(
+            object,
+            metadata_predefined_element_input_schema(false),
+            "elements[3]"
+        ))
+        .is_ok());
+        for (pointer, field) in [
+            ("/properties/code/type", "elements[3].code"),
+            ("/properties/description/type", "elements[3].description"),
+            ("/properties/isFolder/type", "elements[3].isFolder"),
+            ("/properties/accountType/type", "elements[3].accountType"),
+            ("/properties/offBalance/type", "elements[3].offBalance"),
+            ("/properties/order/type", "elements[3].order"),
+            ("/properties/accountingFlags/additionalProperties/type", "elements[3].accountingFlags.Flag"),
+            ("/properties/extDimensionTypes/items/properties/name/type", "elements[3].extDimensionTypes[0].name"),
+            ("/properties/extDimensionTypes/items/properties/turnover/type", "elements[3].extDimensionTypes[0].turnover"),
+            ("/properties/extDimensionTypes/items/properties/accountingFlags/additionalProperties/type", "elements[3].extDimensionTypes[0].accountingFlags.Flag"),
+            ("/properties/actionPeriodIsBase/type", "elements[3].actionPeriodIsBase"),
+        ] {
+            let mut schema = metadata_predefined_element_input_schema(false).clone();
+            *schema.pointer_mut(pointer).unwrap() = json!("integer");
+            let reader = MetadataArgumentReader::new(object, &schema, "elements[3]");
+            let error = parse_predefined_fields(&reader).unwrap_err();
+            assert_eq!(error.field.as_deref(), Some(field), "{pointer}: {error:?}");
+        }
+    }
+
+    #[test]
     fn predefined_items_schema_and_parser_use_uuid_typed_collection_contract() {
+        let name_shape = json!({"type":"string","minLength":1});
+        for update in [false, true] {
+            let raw = metadata_predefined_element_input_schema(update);
+            assert_eq!(raw["properties"]["id"], name_shape);
+            assert_eq!(raw["properties"]["name"], name_shape);
+            assert_eq!(
+                raw["properties"]["extDimensionTypes"]["items"]["properties"]["name"],
+                name_shape
+            );
+        }
+        let host = host_visible_operation_schema();
+        let predefined_operations = host["oneOf"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|operation| {
+                operation["properties"]["collection"]["enum"][0] == "predefinedItems"
+                    && operation["properties"].get("elements").is_some()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(predefined_operations.len(), 2);
+        for operation in predefined_operations {
+            let fields = &operation["properties"]["elements"]["items"]["properties"];
+            assert_eq!(fields["name"], name_shape);
+            assert_eq!(
+                fields["extDimensionTypes"]["items"]["properties"]["name"],
+                name_shape
+            );
+            assert_eq!(
+                fields["id"],
+                json!({"type":"string","format":"uuid","pattern":"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"})
+            );
+            assert!(fields.get("newName").is_none());
+        }
+        let can = crate::domain::operation_contract::OperationContract::metadata_predefined_add(
+            Some(MetadataKind::ChartOfAccounts),
+        );
+        assert_eq!(
+            can.schema["properties"]["items"]["items"]["properties"]["extDimensionTypes"]["items"]
+                ["properties"]["name"],
+            name_shape
+        );
         let schema = metadata_input_schema(MetadataOperation::Edit);
         let validator = jsonschema::validator_for(&schema).unwrap();
         let valid = json!({

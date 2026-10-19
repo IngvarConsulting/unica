@@ -751,6 +751,13 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
     and coverage lists in the same lines."""
 
     METADATA_CONTEXT = [
+        ("ObjectBorrow", "object.borrow", "ExtensionRoot", "From"),
+        ("ObjectCreate", "object.create", "Configuration", "Values"),
+        ("ObjectRemove", "object.remove", "Metadata", "Target"),
+        ("RelationAdd", "relation.add", "Metadata", "Values"),
+        ("RelationRemove", "relation.remove", "Metadata", "Values"),
+        ("RelationReplace", "relation.replace", "Metadata", "Values"),
+        ("HelpCreate", "help.create", "Metadata", "Values"),
         ("AttributeAdd", "attribute.add", "MetadataAttributeContainer", "Items"),
         ("AttributeSet", "attribute.set", "MetadataAttribute", "Values"),
         ("AttributeRemove", "attribute.remove", "MetadataAttribute", "Target"),
@@ -769,9 +776,15 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         ("ColumnAdd", "column.add", "MetadataColumns", "Items"),
         ("ColumnSet", "column.set", "MetadataColumn", "Values"),
         ("ColumnRemove", "column.remove", "MetadataColumn", "Target"),
+        ("TemplateAdd", "template.add", "MetadataTemplates", "Items"),
+        ("TemplateSet", "template.set", "MetadataTemplate", "Values"),
+        ("TemplateRemove", "template.remove", "MetadataTemplate", "Target"),
         ("CommandAdd", "command.add", "MetadataCommands", "Items"),
         ("CommandSet", "command.set", "MetadataCommand", "Values"),
         ("CommandRemove", "command.remove", "MetadataCommand", "Target"),
+        ("PredefinedItemAdd", "predefinedItem.add", "MetadataPredefinedItems", "Items"),
+        ("PredefinedItemSet", "predefinedItem.set", "MetadataPredefinedItem", "Values"),
+        ("PredefinedItemRemove", "predefinedItem.remove", "MetadataPredefinedItem", "Target"),
     ]
     FORM_CONTEXT = [
         ("Add", "form.add", "MetadataForms", "Items"),
@@ -908,7 +921,8 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             '(RoleOperation::Create), (RoleOperation::RightAdd), (RoleOperation::RightSet),\n'
             '(MetadataOperation::AttributeAdd),\n'
             '(MetadataOperation::AttributeSet),\n'
-            '("object.create", Metadata, Configuration, Values),\n'
+            '(MetadataOperation::ObjectCreate),\n'
+            '("query.set", Dcs, DcsQuery, Values),\n'
             '(FormOperation::Add), (FormOperation::Set), (FormOperation::Remove),\n'
             '(FormOperation::AttributeAdd),\n'
             '(MetadataOperation::AttributeRemove),\n'
@@ -920,6 +934,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             metadata,
             {
                 "metadata_operation.rs": '''metadata_operations!(
+                    ObjectCreate => ("object.create", Configuration, Values),
                     AttributeAdd => ("attribute.add", MetadataAttributeContainer, Items),
                     AttributeSet => ("attribute.set", MetadataAttribute, Values),
                     AttributeRemove => ("attribute.remove", MetadataAttribute, Target),
@@ -937,6 +952,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("attribute.add", "Metadata", "MetadataAttributeContainer", "Items"),
             ("attribute.set", "Metadata", "MetadataAttribute", "Values"),
             ("object.create", "Metadata", "Configuration", "Values"),
+            ("query.set", "Dcs", "DcsQuery", "Values"),
             ("form.add", "Form", "MetadataForms", "Items"),
             ("form.set", "Form", "MetadataForms", "Values"),
             ("form.remove", "Form", "Form", "Target"),
@@ -954,11 +970,11 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("supportRule.set", "Support", "SupportRule", "Values"),
         ])
 
-    def test_partial_metadata_and_fully_typed_form_keep_registry_rows(self) -> None:
+    def test_fully_typed_metadata_and_form_keep_registry_rows(self) -> None:
         module = self.renderer()
         registry, implemented = module.load_apply_registry()
         for family, migrated_names, remaining in [
-            ("Metadata", {name for _, name, _, _ in self.METADATA_CONTEXT}, 13),
+            ("Metadata", {name for _, name, _, _ in self.METADATA_CONTEXT}, 0),
             ("Form", {name for _, name, _, _ in self.FORM_CONTEXT}, 0),
         ]:
             self.assertEqual(
@@ -1022,11 +1038,10 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
                 cases[f"duplicate {name} registration"] = (table + registration, metadata)
                 cases[f"raw {name} instead of typed"] = (table.replace(registration, raw_operation), metadata)
                 cases[f"raw {name} beside complete typed"] = (table + raw_operation, metadata)
-            if family == "Form":
-                renamed_metadata = metadata.replace('"command.add"', '"command.probe"')
-                cases["raw unknown form name"] = (table + '("future.operation", Form, Form, Items),', metadata)
-                cases["raw original form name after literal rename"] = (table + raw, renamed_metadata)
-                cases["raw renamed form name"] = (table + '("command.probe", Form, Form, Items),', renamed_metadata)
+            renamed_metadata = metadata.replace('"command.add"', '"command.probe"')
+            cases["raw unknown family name"] = (table + f'("future.operation", {family}, Form, Items),', metadata)
+            cases["raw original name after literal rename"] = (table + raw, renamed_metadata)
+            cases["raw renamed family name"] = (table + f'("command.probe", {family}, Form, Items),', renamed_metadata)
             for case, (source, family_metadata) in cases.items():
                 with self.subTest(family=family, case=case), self.assertRaises(RuntimeError):
                     self.registration_fixture(
@@ -1036,7 +1051,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
     def test_typed_role_rows_stay_between_their_raw_registry_neighbors(self) -> None:
         metadata = (REPO_ROOT / "crates/unica-coder/src/domain/role_operation.rs").read_text(encoding="utf-8")
         registry, _ = self.registration_fixture(
-            '("object.create", Metadata, Configuration, Values),\n'
+            '("mxl.set", Mxl, MxlArea, Values),\n'
             '(RoleOperation::Create),\n'
             '(RoleOperation::RightAdd),\n'
             '// A comment is not a descriptor: (OtherOperation::Hidden),\n'
@@ -1045,7 +1060,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             metadata,
         )
         self.assertEqual(registry, [
-            ("object.create", "Metadata", "Configuration", "Values"),
+            ("mxl.set", "Mxl", "MxlArea", "Values"),
             ("role.create", "Role", "Configuration", "Values"),
             ("right.add", "Role", "Role", "Items"),
             ("right.set", "Role", "RoleRight", "Values"),

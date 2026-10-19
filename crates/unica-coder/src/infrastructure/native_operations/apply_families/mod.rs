@@ -117,10 +117,10 @@ fn refuse_targets_on_locked_vendor_objects(
     let support_rule =
         support_root_uuid_from_bytes(&bytes).and_then(|uuid| state.object_rule(&uuid));
     if matches!(support_rule, Some(0 | 1))
-        && request
-            .ops()
-            .iter()
-            .any(|operation| operation.name() == "object.remove")
+        && request.ops().iter().any(|operation| {
+            crate::domain::metadata_operation::MetadataOperation::named(operation.name())
+                == Some(crate::domain::metadata_operation::MetadataOperation::ObjectRemove)
+        })
     {
         let rule_name = if support_rule == Some(0) {
             "locked"
@@ -601,7 +601,9 @@ fn parse_family_operation(
         return Err(hidden_apply_family_unimplemented(op_index));
     };
     let args = serde_json::Value::Object(operation.args().clone());
-    if operation.name() == "object.borrow" {
+    if descriptor.metadata_operation()
+        == Some(crate::domain::metadata_operation::MetadataOperation::ObjectBorrow)
+    {
         return borrow::parse(&args, op_index, binding).map(ParsedApplyOperation::Borrow);
     }
     let parsed = match descriptor.family() {

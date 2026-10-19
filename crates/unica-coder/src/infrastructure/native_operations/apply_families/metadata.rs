@@ -256,16 +256,22 @@ pub(crate) fn parse_metadata_plan_operation_in(
         .at_path(format!("ops[{op_index}].args"))
     })?;
     if let Some(operation) = descriptor.and_then(OperationDescriptor::metadata_operation) {
-        let contract = operation.contract_at(None);
-        let shape = ArgumentShape::new(&contract.schema);
-        // Unknown outer keys precede address errors. Contextual legality is
-        // still checked by the target and typed conversion, in their order.
-        reject_unknown_args_with(
-            operation.name(),
-            object,
-            |key| shape.property(key).is_some(),
-            op_index,
-        )?;
+        let member_contract = operation
+            .member_collection()
+            .map(|_| operation.contract_at(None));
+        let member_shape = member_contract
+            .as_ref()
+            .map(|contract| ArgumentShape::new(&contract.schema));
+        // Inline members retain their shared envelope checks. Other Metadata
+        // operations visit their argument shape in their own established order.
+        if let Some(shape) = member_shape {
+            reject_unknown_args_with(
+                operation.name(),
+                object,
+                |key| shape.property(key).is_some(),
+                op_index,
+            )?;
+        }
         let kind = match operation {
             RegisteredMetadataOperation::AttributeAdd => {
                 parse_attribute_add(object, op_index, binding)?
@@ -276,13 +282,20 @@ pub(crate) fn parse_metadata_plan_operation_in(
             RegisteredMetadataOperation::AttributeRemove => {
                 parse_attribute_remove(object, op_index, binding)?
             }
-            RegisteredMetadataOperation::TabularSectionAdd => {
-                parse_member_add(MetaCollection::TabularSections, object, op_index, binding)?
-            }
+            RegisteredMetadataOperation::TabularSectionAdd => parse_member_add(
+                operation
+                    .member_collection()
+                    .expect("inline member collection"),
+                object,
+                op_index,
+                binding,
+            )?,
             RegisteredMetadataOperation::TabularSectionSet => parse_addressed_member_change(
                 operation.name(),
                 NodeKind::TabularSection,
-                MetaCollection::TabularSections,
+                operation
+                    .member_collection()
+                    .expect("inline member collection"),
                 AddressedMemberChange::Set,
                 object,
                 op_index,
@@ -291,19 +304,28 @@ pub(crate) fn parse_metadata_plan_operation_in(
             RegisteredMetadataOperation::TabularSectionRemove => parse_addressed_member_change(
                 operation.name(),
                 NodeKind::TabularSection,
-                MetaCollection::TabularSections,
+                operation
+                    .member_collection()
+                    .expect("inline member collection"),
                 AddressedMemberChange::Remove,
                 object,
                 op_index,
                 binding,
             )?,
-            RegisteredMetadataOperation::DimensionAdd => {
-                parse_member_add(MetaCollection::Dimensions, object, op_index, binding)?
-            }
+            RegisteredMetadataOperation::DimensionAdd => parse_member_add(
+                operation
+                    .member_collection()
+                    .expect("inline member collection"),
+                object,
+                op_index,
+                binding,
+            )?,
             RegisteredMetadataOperation::DimensionSet => parse_addressed_member_change(
                 operation.name(),
                 NodeKind::Dimension,
-                MetaCollection::Dimensions,
+                operation
+                    .member_collection()
+                    .expect("inline member collection"),
                 AddressedMemberChange::Set,
                 object,
                 op_index,
@@ -312,19 +334,28 @@ pub(crate) fn parse_metadata_plan_operation_in(
             RegisteredMetadataOperation::DimensionRemove => parse_addressed_member_change(
                 operation.name(),
                 NodeKind::Dimension,
-                MetaCollection::Dimensions,
+                operation
+                    .member_collection()
+                    .expect("inline member collection"),
                 AddressedMemberChange::Remove,
                 object,
                 op_index,
                 binding,
             )?,
-            RegisteredMetadataOperation::ResourceAdd => {
-                parse_member_add(MetaCollection::Resources, object, op_index, binding)?
-            }
+            RegisteredMetadataOperation::ResourceAdd => parse_member_add(
+                operation
+                    .member_collection()
+                    .expect("inline member collection"),
+                object,
+                op_index,
+                binding,
+            )?,
             RegisteredMetadataOperation::ResourceSet => parse_addressed_member_change(
                 operation.name(),
                 NodeKind::Resource,
-                MetaCollection::Resources,
+                operation
+                    .member_collection()
+                    .expect("inline member collection"),
                 AddressedMemberChange::Set,
                 object,
                 op_index,
@@ -333,19 +364,28 @@ pub(crate) fn parse_metadata_plan_operation_in(
             RegisteredMetadataOperation::ResourceRemove => parse_addressed_member_change(
                 operation.name(),
                 NodeKind::Resource,
-                MetaCollection::Resources,
+                operation
+                    .member_collection()
+                    .expect("inline member collection"),
                 AddressedMemberChange::Remove,
                 object,
                 op_index,
                 binding,
             )?,
-            RegisteredMetadataOperation::EnumValueAdd => {
-                parse_member_add(MetaCollection::EnumValues, object, op_index, binding)?
-            }
+            RegisteredMetadataOperation::EnumValueAdd => parse_member_add(
+                operation
+                    .member_collection()
+                    .expect("inline member collection"),
+                object,
+                op_index,
+                binding,
+            )?,
             RegisteredMetadataOperation::EnumValueSet => parse_addressed_member_change(
                 operation.name(),
                 NodeKind::EnumValue,
-                MetaCollection::EnumValues,
+                operation
+                    .member_collection()
+                    .expect("inline member collection"),
                 AddressedMemberChange::Set,
                 object,
                 op_index,
@@ -354,19 +394,28 @@ pub(crate) fn parse_metadata_plan_operation_in(
             RegisteredMetadataOperation::EnumValueRemove => parse_addressed_member_change(
                 operation.name(),
                 NodeKind::EnumValue,
-                MetaCollection::EnumValues,
+                operation
+                    .member_collection()
+                    .expect("inline member collection"),
                 AddressedMemberChange::Remove,
                 object,
                 op_index,
                 binding,
             )?,
-            RegisteredMetadataOperation::ColumnAdd => {
-                parse_member_add(MetaCollection::Columns, object, op_index, binding)?
-            }
+            RegisteredMetadataOperation::ColumnAdd => parse_member_add(
+                operation
+                    .member_collection()
+                    .expect("inline member collection"),
+                object,
+                op_index,
+                binding,
+            )?,
             RegisteredMetadataOperation::ColumnSet => parse_addressed_member_change(
                 operation.name(),
                 NodeKind::Column,
-                MetaCollection::Columns,
+                operation
+                    .member_collection()
+                    .expect("inline member collection"),
                 AddressedMemberChange::Set,
                 object,
                 op_index,
@@ -375,19 +424,28 @@ pub(crate) fn parse_metadata_plan_operation_in(
             RegisteredMetadataOperation::ColumnRemove => parse_addressed_member_change(
                 operation.name(),
                 NodeKind::Column,
-                MetaCollection::Columns,
+                operation
+                    .member_collection()
+                    .expect("inline member collection"),
                 AddressedMemberChange::Remove,
                 object,
                 op_index,
                 binding,
             )?,
-            RegisteredMetadataOperation::CommandAdd => {
-                parse_member_add(MetaCollection::Commands, object, op_index, binding)?
-            }
+            RegisteredMetadataOperation::CommandAdd => parse_member_add(
+                operation
+                    .member_collection()
+                    .expect("inline member collection"),
+                object,
+                op_index,
+                binding,
+            )?,
             RegisteredMetadataOperation::CommandSet => parse_addressed_member_change(
                 operation.name(),
                 NodeKind::Command,
-                MetaCollection::Commands,
+                operation
+                    .member_collection()
+                    .expect("inline member collection"),
                 AddressedMemberChange::Set,
                 object,
                 op_index,
@@ -396,51 +454,80 @@ pub(crate) fn parse_metadata_plan_operation_in(
             RegisteredMetadataOperation::CommandRemove => parse_addressed_member_change(
                 operation.name(),
                 NodeKind::Command,
-                MetaCollection::Commands,
+                operation
+                    .member_collection()
+                    .expect("inline member collection"),
                 AddressedMemberChange::Remove,
                 object,
                 op_index,
                 binding,
             )?,
+            RegisteredMetadataOperation::ObjectBorrow => {
+                // The family entry dispatches Borrow to its existing carrier
+                // before this lower MetadataPlan parser is called.
+                return Err(hidden_apply_family_unimplemented(op_index));
+            }
+            RegisteredMetadataOperation::ObjectCreate => {
+                parse_object_create(object, op_index, binding)?
+            }
+            RegisteredMetadataOperation::ObjectRemove => {
+                parse_object_remove(object, op_index, binding)?
+            }
+            RegisteredMetadataOperation::TemplateAdd => {
+                parse_template_add(object, op_index, binding)?
+            }
+            RegisteredMetadataOperation::TemplateSet => {
+                parse_template_set(object, op_index, binding)?
+            }
+            RegisteredMetadataOperation::TemplateRemove => {
+                parse_template_remove(object, op_index, binding)?
+            }
+            RegisteredMetadataOperation::PredefinedItemAdd => {
+                parse_predefined_add(object, op_index, binding)?
+            }
+            RegisteredMetadataOperation::PredefinedItemSet => {
+                parse_predefined_set(object, op_index, binding)?
+            }
+            RegisteredMetadataOperation::PredefinedItemRemove => {
+                parse_predefined_remove(object, op_index, binding)?
+            }
+            RegisteredMetadataOperation::RelationAdd
+            | RegisteredMetadataOperation::RelationRemove
+            | RegisteredMetadataOperation::RelationReplace => {
+                parse_relation(operation, object, op_index, binding)?
+            }
+            RegisteredMetadataOperation::HelpCreate => {
+                parse_help_create(object, op_index, binding)?
+            }
         };
         // Convert the target and payload first to retain their diagnostics.
         // Only the shared envelope's requiredness and container types remain;
         // nested fields were visited by the staged Metadata argument reader.
-        for key in shape.required_names() {
-            if !object.contains_key(key) {
-                return Err(ApplyPlanError::new(
-                    ApplyPlanErrorKind::BadValue,
-                    format!("`{key}` is required"),
-                )
-                .at_path(format!("ops[{op_index}].args.{key}")));
+        if let Some(shape) = member_shape {
+            for key in shape.required_names() {
+                if !object.contains_key(key) {
+                    return Err(ApplyPlanError::new(
+                        ApplyPlanErrorKind::BadValue,
+                        format!("`{key}` is required"),
+                    )
+                    .at_path(format!("ops[{op_index}].args.{key}")));
+                }
             }
-        }
-        for (key, value) in object {
-            shape
-                .property(key)
-                .expect("known operation argument")
-                .validate_type(value, &format!("ops[{op_index}].args.{key}"))
-                .map_err(|error| {
-                    ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message)
-                        .at_path(error.path)
-                })?;
+            for (key, value) in object {
+                shape
+                    .property(key)
+                    .expect("known operation argument")
+                    .validate_type(value, &format!("ops[{op_index}].args.{key}"))
+                    .map_err(|error| {
+                        ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message)
+                            .at_path(error.path)
+                    })?;
+            }
         }
         return Ok(MetadataPlanOperation { kind });
     }
     let kind = match operation {
         "props.set" => parse_props_set(object, op_index, binding)?,
-        "template.add" => parse_template_add(object, op_index, binding)?,
-        "template.set" => parse_template_set(object, op_index, binding)?,
-        "template.remove" => parse_template_remove(object, op_index, binding)?,
-        "predefinedItem.add" => parse_predefined_add(object, op_index, binding)?,
-        "predefinedItem.set" => parse_predefined_set(object, op_index, binding)?,
-        "predefinedItem.remove" => parse_predefined_remove(object, op_index, binding)?,
-        "relation.add" => parse_relation(operation, "add", object, op_index, binding)?,
-        "relation.replace" => parse_relation(operation, "replace", object, op_index, binding)?,
-        "relation.remove" => parse_relation(operation, "remove", object, op_index, binding)?,
-        "object.create" => parse_object_create(object, op_index, binding)?,
-        "object.remove" => parse_object_remove(object, op_index, binding)?,
-        "help.create" => parse_help_create(object, op_index, binding)?,
         _ => return Err(hidden_apply_family_unimplemented(op_index)),
     };
     Ok(MetadataPlanOperation { kind })
@@ -545,8 +632,7 @@ fn parse_template_add(
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
-    let normalized = crate::domain::operation_contract::OperationContract::mxl("template.add")
-        .expect("template contract")
+    let normalized = crate::domain::operation_contract::OperationContract::metadata_template_add()
         .normalize(
             &Value::Object(args.clone()),
             &format!("ops[{op_index}].args"),
@@ -619,13 +705,22 @@ fn parse_template_set(
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
-    reject_unknown_args("template.set", args, &["at", "values"], op_index)?;
+    let contract = RegisteredMetadataOperation::TemplateSet.contract_at(None);
+    reject_unknown_input_args("template.set", args, &contract.schema, op_index)?;
     let target = qualified_target(args, op_index, binding)?;
     let (owner, name) = template_target(&target, op_index)?;
     let values = required_object(args, "values", op_index)?.clone();
+    let shape = ArgumentShape::new(&contract.schema);
+    check_input_field(
+        shape,
+        "values",
+        &args["values"],
+        &format!("ops[{op_index}].args.values"),
+    )?;
+    let values_shape = shape.property("values").expect("template.set values");
     if let Some(field) = values
         .keys()
-        .find(|field| !["synonym", "comment", "templateType"].contains(&field.as_str()))
+        .find(|field| values_shape.property(field).is_none())
     {
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::BadValue,
@@ -649,7 +744,7 @@ fn parse_template_set(
                 ApplyPlanErrorKind::BadValue,
                 format!("`{field}` must be a string"),
             )
-            .at_path(location));
+            .at_path(location.clone()));
         };
         if field == "templateType" {
             crate::domain::metadata::MetaTemplateKind::parse(text).map_err(|diagnostic| {
@@ -657,6 +752,7 @@ fn parse_template_set(
                     .at_path(location.clone())
             })?;
         }
+        check_input_field(values_shape, field, value, &location)?;
     }
     Ok(MetadataPlanKind::TemplateSet {
         owner,
@@ -670,7 +766,8 @@ fn parse_template_remove(
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
-    reject_unknown_args("template.remove", args, &["at"], op_index)?;
+    let contract = RegisteredMetadataOperation::TemplateRemove.contract_at(None);
+    reject_unknown_input_args("template.remove", args, &contract.schema, op_index)?;
     let target = qualified_target(args, op_index, binding)?;
     let (owner, name) = template_target(&target, op_index)?;
     Ok(MetadataPlanKind::TemplateRemove { owner, name })
@@ -1324,10 +1421,17 @@ fn parse_predefined_add(
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
-    reject_unknown_args("predefinedItem.add", args, &["at", "items"], op_index)?;
+    let contract = RegisteredMetadataOperation::PredefinedItemAdd.contract_at(None);
+    reject_unknown_input_args("predefinedItem.add", args, &contract.schema, op_index)?;
     let target = qualified_target(args, op_index, binding)?;
     let (owner, kind) = metadata_owner(&target, op_index)?;
     let items = required_array(args, "items", op_index)?.to_vec();
+    check_input_field(
+        ArgumentShape::new(&contract.schema),
+        "items",
+        &args["items"],
+        &format!("ops[{op_index}].args.items"),
+    )?;
     let operation = edit_operation(parse_legacy_edit(
         binding.source_set_name(),
         owner.clone(),
@@ -1355,10 +1459,19 @@ fn parse_predefined_set(
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
-    reject_unknown_args("predefinedItem.set", args, &["at", "values"], op_index)?;
+    let contract = RegisteredMetadataOperation::PredefinedItemSet.contract_at(None);
+    reject_unknown_input_args("predefinedItem.set", args, &contract.schema, op_index)?;
     let target = qualified_target(args, op_index, binding)?;
     let (owner, kind, name) = metadata_member_target(&target, NodeKind::PredefinedItem, op_index)?;
     let values = required_object(args, "values", op_index)?.clone();
+    // Only the already-converted container is checked here. Selector presence
+    // errors still precede the old typed inner reader and its unknown keys.
+    check_input_field(
+        ArgumentShape::new(&contract.schema),
+        "values",
+        &args["values"],
+        &format!("ops[{op_index}].args.values"),
+    )?;
     for (field, message) in [
         (
             "id",
@@ -1403,7 +1516,8 @@ fn parse_predefined_remove(
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
-    reject_unknown_args("predefinedItem.remove", args, &["at"], op_index)?;
+    let contract = RegisteredMetadataOperation::PredefinedItemRemove.contract_at(None);
+    reject_unknown_input_args("predefinedItem.remove", args, &contract.schema, op_index)?;
     let target = qualified_target(args, op_index, binding)?;
     let (owner, kind, name) = metadata_member_target(&target, NodeKind::PredefinedItem, op_index)?;
     Ok(MetadataPlanKind::Predefined {
@@ -1451,12 +1565,15 @@ fn predefined_update(
 /// One relation edit: `values` carries the closed `relation` name and its
 /// `targets`; the mode comes from the operation name itself.
 fn parse_relation(
-    operation: &str,
-    mode: &str,
+    operation: RegisteredMetadataOperation,
     args: &Map<String, Value>,
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
+    let mode = operation
+        .relation_mode()
+        .expect("registered relation operation");
+    let operation = operation.name();
     let schema = metadata_relation_input_schema();
     let shape = ArgumentShape::new(schema);
     reject_unknown_input_args(operation, args, schema, op_index)?;
@@ -1486,7 +1603,7 @@ fn parse_relation(
         binding.source_set_name(),
         owner,
         kind,
-        json!({"op": "editRelations", "relation": relation, "mode": mode, "targets": targets}),
+        json!({"op": "editRelations", "relation": relation, "mode": mode.as_str(), "targets": targets}),
         |field| format!("ops[{op_index}].args.values.{field}"),
         op_index,
     )
@@ -3572,6 +3689,64 @@ mod tests {
         .unwrap_err();
         assert_eq!(misplaced.kind(), ApplyPlanErrorKind::BadValue);
         assert_eq!(misplaced.path(), Some("ops[4].args.items"));
+    }
+
+    #[test]
+    fn migrated_metadata_resources_keep_their_own_argument_stages() {
+        let fixture = MetadataFixture::new();
+        let before = fixture.disk_bytes();
+        for (operation, args, path, message) in [
+            (
+                "template.add",
+                json!({"at":"main:Document.Order.Attribute.Total", "items":false}),
+                "ops[3].args.items",
+                "expected \"array\"",
+            ),
+            (
+                "predefinedItem.set",
+                json!({"at":"main:Catalog.Items.PredefinedItem.Sample", "values":{"id":false,"name":false,"newName":false}}),
+                "ops[3].args.values.id",
+                "the predefined item is named by its address, not by `id`",
+            ),
+        ] {
+            let descriptor = crate::domain::apply::OperationRegistry::closed()
+                .lookup(operation)
+                .unwrap();
+            let error = super::parse_metadata_plan_operation_in(
+                Some(descriptor),
+                operation,
+                &args,
+                3,
+                &fixture.binding,
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{operation}");
+            assert_eq!(error.path(), Some(path), "{operation}");
+            assert!(error.to_string().contains(message), "{operation}: {error}");
+        }
+        // This lower parser has always refused Borrow. Its real typed family
+        // entry keeps the existing Borrow carrier and parent guards.
+        let descriptor = crate::domain::apply::OperationRegistry::closed()
+            .lookup("object.borrow")
+            .unwrap();
+        for args in [json!({}), json!({"unknown":true})] {
+            let error = super::parse_metadata_plan_operation_in(
+                Some(descriptor),
+                "object.borrow",
+                &args,
+                4,
+                &fixture.binding,
+            )
+            .unwrap_err();
+            let expected =
+                crate::infrastructure::native_operations::apply::hidden_apply_family_unimplemented(
+                    4,
+                );
+            assert_eq!(error.kind(), expected.kind());
+            assert_eq!(error.path(), expected.path());
+            assert_eq!(error.to_string(), expected.to_string());
+        }
+        assert_eq!(fixture.disk_bytes(), before);
     }
 
     #[test]
