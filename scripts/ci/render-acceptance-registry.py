@@ -163,8 +163,8 @@ def load_apply_registry() -> tuple[list[tuple[str, str, str, str]], set[str]]:
         r'|([A-Za-z_]\w*)::([A-Za-z_]\w*))\s*\)'
     )
     entries = []
-    fully_typed_families = ("Role", "Support")
-    typed_families = (*fully_typed_families, "Metadata", "Form")
+    fully_typed_families = ("Role", "Support", "Form")
+    typed_families = (*fully_typed_families, "Metadata")
     typed = {f"{family}Operation": _registration_metadata(family) for family in typed_families}
     typed_names = {(entry[1], entry[0]) for metadata in typed.values() for entry in metadata.values()}
     registered = {operation_type: [] for operation_type in typed}

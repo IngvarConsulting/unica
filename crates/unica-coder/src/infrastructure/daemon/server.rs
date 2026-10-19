@@ -1288,6 +1288,9 @@ impl DaemonServerConfig {
 }
 
 #[cfg(test)]
+#[path = "form_lifecycle_tests.rs"]
+mod form_lifecycle_tests;
+#[cfg(test)]
 #[path = "form_move_tests.rs"]
 mod form_move_tests;
 

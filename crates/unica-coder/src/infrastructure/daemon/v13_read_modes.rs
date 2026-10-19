@@ -236,7 +236,9 @@ pub(super) fn operation_node_with(
         .and_then(|props| props.get("tag"))
         .and_then(Value::as_str)
         .is_some_and(|tag| tag.starts_with("[AutoCommandBar") || tag.starts_with("[CmdBar"));
-    if operation == "item.add" && command_bar {
+    if descriptor.form_operation() == Some(crate::domain::form_operation::FormOperation::ItemAdd)
+        && command_bar
+    {
         contract = Some(
             crate::domain::operation_contract::OperationContract::form_item_add_in_command_bar(),
         );

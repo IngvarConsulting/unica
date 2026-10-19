@@ -760,13 +760,12 @@ pub(crate) fn parse_form_resource_plan_operation_in(
                 None => return Err(hidden_apply_family_unimplemented(op_index)),
             }
         }
-        Some(OperationFamily::Form) => parse_form_operation(
-            descriptor.and_then(OperationDescriptor::form_operation),
-            operation,
-            object,
-            op_index,
-            binding,
-        )?,
+        Some(OperationFamily::Form) => {
+            match descriptor.and_then(OperationDescriptor::form_operation) {
+                Some(operation) => parse_form_operation(operation, object, op_index, binding)?,
+                None => return Err(hidden_apply_family_unimplemented(op_index)),
+            }
+        }
         _ => FormResourcePlanKind::Unsupported,
     };
     Ok(FormResourcePlanOperation {
@@ -1533,11 +1532,12 @@ fn check_element_cross_fields(
     Ok(())
 }
 
-fn parse_typed_form_operation(
-    operation: FormOperation,
+fn parse_form_root_addition(
     target: FormTarget,
     args: &Map<String, Value>,
     op_index: usize,
+    key: &str,
+    transform: impl Fn(&Map<String, Value>, &mut Map<String, Value>, &str),
 ) -> Result<FormResourcePlanKind, ApplyPlanError> {
     let form = target.form.ok_or_else(|| {
         bad(
@@ -1559,21 +1559,7 @@ fn parse_typed_form_operation(
         let name = required_string(item, "name", op_index, &location)?.to_string();
         let mut entry = item.clone();
         entry.insert("name".to_string(), Value::String(name.clone()));
-        match operation {
-            FormOperation::AttributeAdd => {
-                if let Some(type_name) = item.get("type").and_then(Value::as_str) {
-                    entry.insert(
-                        "type".to_string(),
-                        Value::String(form_attribute_type(type_name)),
-                    );
-                }
-            }
-            FormOperation::CommandAdd => {
-                if !entry.contains_key("action") {
-                    entry.insert("action".to_string(), Value::String(name));
-                }
-            }
-        }
+        transform(item, &mut entry, &name);
         entries.push(Value::Object(entry));
     }
     if entries.is_empty() {
@@ -1583,10 +1569,6 @@ fn parse_typed_form_operation(
             "`items` must list at least one entry",
         ));
     }
-    let key = match operation {
-        FormOperation::AttributeAdd => "attributes",
-        FormOperation::CommandAdd => "commands",
-    };
     let mut wrapper = Map::new();
     wrapper.insert(key.to_string(), Value::Array(entries));
     Ok(FormResourcePlanKind::FormEdit {
@@ -1598,39 +1580,47 @@ fn parse_typed_form_operation(
 }
 
 fn parse_form_operation(
-    typed_operation: Option<FormOperation>,
-    operation: &str,
+    operation: FormOperation,
     args: &Map<String, Value>,
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<FormResourcePlanKind, ApplyPlanError> {
+    let operation_name = operation.name();
     let address = qualified_target(args, op_index, binding)?;
     let target = form_target(&address, op_index)?;
     // Узел, на котором исполняется операция, — ровно её `at`: элемент и
     // событие задаются адресом, а операция другого узла отказывает, а не
     // пишет молча в форму, элемент или владельца (#1351, #1355).
     let placed = match operation {
-        "form.add" | "form.set" => target.form.is_none(),
-        "item.add" => target.form.is_some() && target.event.is_none(),
-        "item.remove" | "item.move" => !target.items.is_empty() && target.event.is_none(),
-        "event.bind" => target.event.is_some(),
-        _ => target.form.is_some() && target.items.is_empty() && target.event.is_none(),
+        FormOperation::Add | FormOperation::Set => target.form.is_none(),
+        FormOperation::ItemAdd => target.form.is_some() && target.event.is_none(),
+        FormOperation::ItemRemove | FormOperation::ItemMove => {
+            !target.items.is_empty() && target.event.is_none()
+        }
+        FormOperation::EventBind => target.event.is_some(),
+        FormOperation::Remove | FormOperation::AttributeAdd | FormOperation::CommandAdd => {
+            target.form.is_some() && target.items.is_empty() && target.event.is_none()
+        }
     };
     if !placed {
         let shape = match operation {
-            "form.add" | "form.set" => "the form owner `Owner.Name`, not a form",
-            "item.add" => {
+            FormOperation::Add | FormOperation::Set => "the form owner `Owner.Name`, not a form",
+            FormOperation::ItemAdd => {
                 "the form `Owner.Name.Form.F` or its item `….Item.A[.Item.B…]` that receives the elements"
             }
-            "item.remove" | "item.move" => {
+            FormOperation::ItemRemove | FormOperation::ItemMove => {
                 "the existing item `Owner.Name.Form.F.Item.A[.Item.B…]`"
             }
-            "event.bind" => "the event `Owner.Name.Form.F[.Item.A…].Event.E`",
-            _ => "the form `Owner.Name.Form.F`",
+            FormOperation::EventBind => "the event `Owner.Name.Form.F[.Item.A…].Event.E`",
+            FormOperation::Remove | FormOperation::AttributeAdd | FormOperation::CommandAdd => "the form `Owner.Name.Form.F`",
         };
-        return Err(bad(op_index, "at", format!("{operation} targets {shape}")));
+        return Err(bad(
+            op_index,
+            "at",
+            format!("{operation_name} targets {shape}"),
+        ));
     }
-    if operation == "item.add" {
+    if operation == FormOperation::ItemAdd {
         if let Some(items) = args.get("items").and_then(Value::as_array) {
             for (index, item) in items.iter().enumerate() {
                 if let Some(item) = item.as_object() {
@@ -1647,21 +1637,19 @@ fn parse_form_operation(
     // Опубликованный контракт и разбор планировщиком принимают одну форму
     // аргументов: ключ, которого писатель не пишет, отказывает до записи,
     // а не теряется молча (#1447).
-    let contract = typed_operation
-        .map(FormOperation::contract)
-        .or_else(|| crate::domain::operation_contract::OperationContract::form(operation));
-    if let Some(contract) = contract {
+    let contract = operation.contract();
+    {
         let mut checked = args.clone();
         // `at` операции уже разобран в адрес; контракт сверяет остальное.
         checked.insert("at".to_string(), Value::String(address.to_string()));
         contract
             .normalize(&Value::Object(checked), &format!("ops[{op_index}].args"))
             .map_err(|error| {
-                let contract_at = format!("{address}.Can.{operation}");
+                let contract_at = format!("{address}.Can.{operation_name}");
                 ApplyPlanError::new(
                     ApplyPlanErrorKind::BadValue,
                     format!(
-                        "{}: {}; `{operation}` writes only the arguments listed at `{contract_at}`",
+                        "{}: {}; `{operation_name}` writes only the arguments listed at `{contract_at}`",
                         error.path, error.message
                     ),
                 )
@@ -1672,9 +1660,6 @@ fn parse_form_operation(
                     "reason": "аргументы, которые операция записывает на этом узле",
                 }))
             })?;
-    }
-    if let Some(operation) = typed_operation {
-        return parse_typed_form_operation(operation, target, args, op_index);
     }
     let items_path = format!("ops[{op_index}].args.items");
     let form_of = |target: &FormTarget| -> Result<String, ApplyPlanError> {
@@ -1687,7 +1672,28 @@ fn parse_form_operation(
         })
     };
     match operation {
-        "form.add" => {
+        FormOperation::AttributeAdd => parse_form_root_addition(
+            target,
+            args,
+            op_index,
+            "attributes",
+            |item, entry, _name| {
+                if let Some(type_name) = item.get("type").and_then(Value::as_str) {
+                    entry.insert(
+                        "type".to_string(),
+                        Value::String(form_attribute_type(type_name)),
+                    );
+                }
+            },
+        ),
+        FormOperation::CommandAdd => {
+            parse_form_root_addition(target, args, op_index, "commands", |_item, entry, name| {
+                if !entry.contains_key("action") {
+                    entry.insert("action".to_string(), Value::String(name.to_string()));
+                }
+            })
+        }
+        FormOperation::Add => {
             if target.form.is_some() {
                 return Err(bad(
                     op_index,
@@ -1725,7 +1731,7 @@ fn parse_form_operation(
                 forms,
             })
         }
-        "form.set" => {
+        FormOperation::Set => {
             let values = args
                 .get("values")
                 .and_then(Value::as_object)
@@ -1769,14 +1775,14 @@ fn parse_form_operation(
                 defaults,
             })
         }
-        "form.remove" => {
+        FormOperation::Remove => {
             let form = form_of(&target)?;
             Ok(FormResourcePlanKind::FormRemove {
                 owner: target.owner,
                 form,
             })
         }
-        "item.add" => {
+        FormOperation::ItemAdd => {
             let form = form_of(&target)?;
             let items = args
                 .get("items")
@@ -1820,7 +1826,7 @@ fn parse_form_operation(
                 definitions,
             })
         }
-        "item.move" => {
+        FormOperation::ItemMove => {
             let form = form_of(&target)?;
             let normalized = crate::domain::operation_contract::OperationContract::form_move()
                 .normalize(
@@ -1858,7 +1864,7 @@ fn parse_form_operation(
                 }],
             })
         }
-        "item.remove" => {
+        FormOperation::ItemRemove => {
             let form = form_of(&target)?;
             // Элемент назван адресом: список в аргументах называл бы другие
             // узлы, и молча его не отбрасываем.
@@ -1886,7 +1892,7 @@ fn parse_form_operation(
                 )],
             })
         }
-        "event.bind" => {
+        FormOperation::EventBind => {
             let form = form_of(&target)?;
             // Событие и его элемент задаются адресом: `values` несут только
             // обработчик и `callType`.
@@ -1918,7 +1924,6 @@ fn parse_form_operation(
                 definitions: vec![FormEditStep::Definition(definition)],
             })
         }
-        _ => Ok(FormResourcePlanKind::Unsupported),
     }
 }
 
@@ -3656,8 +3661,7 @@ mod tests {
     fn every_published_element_key_reaches_the_xml_of_its_kind() {
         use crate::infrastructure::native_operations::form::{emit_form_element, FormIdAllocator};
         let fixture = ApplySeamFixture::new();
-        let contract =
-            crate::domain::operation_contract::OperationContract::form("item.add").unwrap();
+        let contract = crate::domain::form_operation::FormOperation::ItemAdd.contract();
         let variants = contract.schema["properties"]["items"]["items"]["anyOf"]
             .as_array()
             .unwrap()

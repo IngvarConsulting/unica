@@ -1298,11 +1298,9 @@ impl OperationDescriptor {
             OperationFamily::Role => self
                 .role_operation()
                 .and_then(RoleOperation::content_resource),
-            OperationFamily::Form
-                if !matches!(self.name, "form.add" | "form.set" | "form.remove") =>
-            {
-                Some("Form.xml")
-            }
+            OperationFamily::Form => self
+                .form_operation()
+                .and_then(FormOperation::content_resource),
             OperationFamily::Event | OperationFamily::Code => Some("Form.xml"),
             OperationFamily::Dcs | OperationFamily::Mxl => Some("Template.xml"),
             OperationFamily::Xdto => Some("Package.bin"),
@@ -1334,14 +1332,8 @@ impl OperationDescriptor {
     /// автоматическая командная панель — часть своего владельца и не
     /// удаляется. `None` — роль не установлена.
     pub(crate) fn admits_form_item(self, role: Option<FormItemRole>) -> bool {
-        !matches!(
-            (self.name, role),
-            ("item.add", Some(FormItemRole::Leaf))
-                | (
-                    "item.remove" | "item.move",
-                    Some(FormItemRole::AutoCommandBar)
-                )
-        )
+        self.form_operation()
+            .is_none_or(|operation| operation.admits_form_item(role))
     }
 
     /// Применимость к прочитанному узлу: место и, для самого макета, формат
@@ -1477,10 +1469,7 @@ impl OperationDescriptor {
             },
             OperationFamily::Role => self.role_operation().map(RoleOperation::contract),
             OperationFamily::Support => self.support_operation().map(SupportOperation::contract),
-            OperationFamily::Form => match self.form_operation() {
-                Some(operation) => Some(operation.contract()),
-                None => super::operation_contract::OperationContract::form(self.name),
-            },
+            OperationFamily::Form => self.form_operation().map(FormOperation::contract),
             OperationFamily::Event => {
                 super::operation_contract::OperationContract::event(self.name)
             }
@@ -1557,6 +1546,11 @@ macro_rules! operation_descriptor {
             "Support operations must register a typed SupportOperation with a mandatory contract"
         )
     };
+    (($name:literal, Form, $applicability:ident, $skeleton:ident)) => {
+        compile_error!(
+            "Form operations must register a typed FormOperation with a mandatory contract"
+        )
+    };
     ((RoleOperation::$variant:ident)) => {
         OperationDescriptor::role(RoleOperation::$variant)
     };
@@ -1575,10 +1569,6 @@ macro_rules! operation_descriptor {
                 OperationFamily::Metadata => assert!(
                     !MetadataOperation::is_named($name),
                     "Typed Metadata operations must register a MetadataOperation with a mandatory contextual contract"
-                ),
-                OperationFamily::Form => assert!(
-                    !FormOperation::is_named($name),
-                    "Form attribute.add and command.add must register a typed FormOperation with a mandatory contract"
                 ),
                 _ => (),
             }
@@ -1628,9 +1618,9 @@ operation_descriptors!(
     (MetadataOperation::ColumnAdd),
     (MetadataOperation::ColumnSet),
     (MetadataOperation::ColumnRemove),
-    ("form.add", Form, MetadataForms, Items),
-    ("form.set", Form, MetadataForms, Values),
-    ("form.remove", Form, Form, Target),
+    (FormOperation::Add),
+    (FormOperation::Set),
+    (FormOperation::Remove),
     ("template.add", Metadata, MetadataTemplates, Items),
     ("template.set", Metadata, MetadataTemplate, Values),
     ("template.remove", Metadata, MetadataTemplate, Target),
@@ -1655,12 +1645,12 @@ operation_descriptors!(
         MetadataPredefinedItem,
         Target
     ),
-    ("item.add", Form, FormItemContainer, Items),
-    ("item.remove", Form, FormItem, Target),
-    ("item.move", Form, FormItem, Values),
+    (FormOperation::ItemAdd),
+    (FormOperation::ItemRemove),
+    (FormOperation::ItemMove),
     (FormOperation::AttributeAdd),
     (FormOperation::CommandAdd),
-    ("event.bind", Form, FormEvent, Values),
+    (FormOperation::EventBind),
     (RoleOperation::Create),
     (RoleOperation::RightAdd),
     (RoleOperation::RightSet),
@@ -3108,9 +3098,10 @@ mod tests {
             ),
             None => {
                 return match descriptor.family() {
-                    OperationFamily::Role | OperationFamily::Support => false,
+                    OperationFamily::Role | OperationFamily::Support | OperationFamily::Form => {
+                        false
+                    }
                     OperationFamily::Metadata => !MetadataOperation::is_named(descriptor.name()),
-                    OperationFamily::Form => !FormOperation::is_named(descriptor.name()),
                     _ => true,
                 }
             }
@@ -3285,8 +3276,15 @@ mod tests {
             OperationDescriptor::metadata(MetadataOperation::CommandAdd),
             OperationDescriptor::metadata(MetadataOperation::CommandSet),
             OperationDescriptor::metadata(MetadataOperation::CommandRemove),
+            OperationDescriptor::form(FormOperation::Add),
+            OperationDescriptor::form(FormOperation::Set),
+            OperationDescriptor::form(FormOperation::Remove),
+            OperationDescriptor::form(FormOperation::ItemAdd),
+            OperationDescriptor::form(FormOperation::ItemRemove),
+            OperationDescriptor::form(FormOperation::ItemMove),
             OperationDescriptor::form(FormOperation::AttributeAdd),
             OperationDescriptor::form(FormOperation::CommandAdd),
+            OperationDescriptor::form(FormOperation::EventBind),
         ] {
             assert!(typed_registration_is_consistent(valid));
             let other = if valid.family() == OperationFamily::Metadata {
@@ -3327,17 +3325,12 @@ mod tests {
                 assert!(!typed_registration_is_consistent(invalid), "{invalid:?}");
             }
         }
-        for (name, family) in [
-            ("template.set", OperationFamily::Metadata),
-            ("item.add", OperationFamily::Form),
-        ] {
-            let descriptor = OperationRegistry::closed()
-                .named(name)
-                .find(|d| d.family() == family)
-                .unwrap();
-            assert_eq!(descriptor.typed_operation, None);
-            assert!(typed_registration_is_consistent(descriptor));
-        }
+        let descriptor = OperationRegistry::closed()
+            .named("template.set")
+            .find(|d| d.family() == OperationFamily::Metadata)
+            .unwrap();
+        assert_eq!(descriptor.typed_operation, None);
+        assert!(typed_registration_is_consistent(descriptor));
     }
 
     #[test]
