@@ -1454,6 +1454,7 @@ fn typed_element(
             fill_value: None,
             addressing_dimension: None,
             properties: properties_readback,
+            standard_attributes: None,
             property_limits: Vec::new(),
             attributes: Vec::new(),
         });
@@ -1548,6 +1549,25 @@ fn typed_element(
     } else {
         None
     };
+    let standard_attributes = if node.tag_name().name() == "TabularSection" {
+        match super::info_projection::observe_tabular_standard_attributes(
+            properties,
+            &format!("{field}.standardAttributes"),
+        ) {
+            Ok(value) => value.map(Some),
+            Err(error) => {
+                incomplete = true;
+                diagnostics.push(
+                    MetaDiagnostic::error(error.code, error.message)
+                        .with_metadata_path(target.clone())
+                        .with_field(error.field),
+                );
+                Some(None)
+            }
+        }
+    } else {
+        None
+    };
     let attributes = if nested_attributes {
         typed_elements_profiled(
             xml,
@@ -1583,6 +1603,7 @@ fn typed_element(
         fill_value,
         addressing_dimension,
         properties: properties_readback,
+        standard_attributes,
         property_limits,
         attributes,
     })

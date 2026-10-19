@@ -80,7 +80,8 @@ fn catalog_attribute_profile_reaches_public_collection_and_detail_without_writes
     assert_eq!(
         section["branches"],
         json!([
-            {"at": format!("{SECTION}.Attribute"), "count": 2}
+            {"at": format!("{SECTION}.Attribute"), "count": 2},
+            {"at": format!("{SECTION}.StandardAttribute"), "count": 1}
         ])
     );
     let sibling = read(&fixture, SPELLING);

@@ -96,6 +96,10 @@
             {
               "at": "main:Catalog.Items.TabularSection.Lines.Attribute",
               "count": 1
+            },
+            {
+              "at": "main:Catalog.Items.TabularSection.Lines.StandardAttribute",
+              "count": 1
             }
           ]
         }

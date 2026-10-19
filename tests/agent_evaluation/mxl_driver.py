@@ -1,17 +1,21 @@
 """MXL acceptance uses the shared packet, transcript and independent review engine."""
+import hashlib
+import json
+
 from tests.agent_evaluation.dcs_driver import (
     REPO, audit_mcp, terminal_calls, evaluate as evaluate_contract, independent_review as review_contract,
 )
+from tests.ci.acceptance_controls import assert_value, file_value, read_file
 
 OWNER = "cf:Report.F06Report"
 TEMPLATE = OWNER + ".Template.Agent1311"
 PREFIX = "src/cf/Reports/F06Report/"
 RUBRIC = (
     "Агент нашёл и прочитал F06Template, области A/B, текст области A и параметры A. "
-    "Из подробных can-контрактов он узнал template.add и mxl.set, создал SpreadsheetDocument "
-    "Agent1311 и после применения создания заполнил Header. Вход mxl.set содержит "
-    "R1C1=Товар, R1C2=Сумма, R2C1=Agent1311, R2C2=JSON-число 12.5, columns=4. "
-    "По принятому контракту number сериализуется в текст: ожидаемый Body и XML "
+    "Агент прочитал подробные Can-контракты фактически выбранных операций до preview, "
+    "создал SpreadsheetDocument Agent1311 с областью Header через публичные операции. "
+    "В результате R1C1=Товар, R1C2=Сумма, R2C1=Agent1311, R2C2=12.5. "
+    "По принятому контракту число представлено текстом: ожидаемый Body и XML "
     "содержат строку 12.5, сохранение числового типа в MXL не требуется. "
     "Независимые fileObservations доказывают область Header, две строки, ширину 4, "
     "точное расположение этих четырёх текстов и пустоту колонок 3–4. "
@@ -29,7 +33,7 @@ RUBRIC = (
 
 def audit(records):
     allowed, calls = audit_mcp(records, target_template=TEMPLATE, owner=OWNER,
-                              required_operations={"template.add", "mxl.set"})
+                              required_operations={"template.add"})
     observations = terminal_calls(calls)
     first_publication = min(call["index"] for call in observations
                         if call["params"]["name"] == "unica.apply"
@@ -51,13 +55,69 @@ def audit(records):
     return allowed, calls
 
 
+def template_registration(workspace):
+    namespace = "{http://v8.1c.ru/8.3/MDClasses}"
+    return file_value(workspace, {"kind": "xml", "path": "src/cf/Reports/F06Report.xml",
+        "select": f"./{namespace}Report/{namespace}ChildObjects/{namespace}Template"})
+
+
+def verify_mxl_images(workspace, scenario, source_before, registered_before):
+    """Read the frozen corpus assertions and retained template bytes directly."""
+    assertions = [assertion for step in scenario["wire"] for assertion in step.get("fileAssertions", [])]
+    if not assertions:
+        raise ValueError("MXL evaluation omitted its physical file assertions")
+    sheet = "{http://v8.1c.ru/8.2/data/spreadsheet}"
+    core = "{http://v8.1c.ru/8.1/data/core}"
+    for row, column, text in [(0, 1, "Товар"), (0, 2, "Сумма"), (1, 1, "Agent1311"), (1, 2, "12.5")]:
+        assertions.append({"kind": "xml", "path": PREFIX + "Templates/Agent1311/Ext/Template.xml",
+            "select": f"./{sheet}rowsItem[{sheet}index='{row}']/{sheet}row/{sheet}c[{column}]"
+                      f"/{sheet}c/{sheet}tl/{core}item/{core}content[.!='']",
+            "eq": [text]})
+    observations = []
+    for assertion in assertions:
+        observed = file_value(workspace, assertion)
+        assert_value(observed, assertion, {})
+        observations.append({"descriptor": assertion, "observed": observed})
+    preserved = {path: digest for path, digest in source_before.items()
+                 if path.startswith(PREFIX + "Templates/")}
+    if not preserved:
+        raise ValueError("MXL evaluation omitted its original template preimages")
+    for path, expected in preserved.items():
+        try:
+            actual = hashlib.sha256(read_file(workspace, path)).hexdigest()
+        except OSError as error:
+            raise ValueError(f"existing template resource disappeared: {path}") from error
+        if actual != expected:
+            raise ValueError(f"existing template resource changed: {path}")
+    registered = template_registration(workspace)
+    if (registered.count("Agent1311") != 1
+            or [name for name in registered if name != "Agent1311"] != registered_before):
+        raise ValueError("MXL template registration lost an existing template or added an unrequested one")
+    namespace = "{http://v8.1c.ru/8.3/MDClasses}"
+    kind = file_value(workspace, {"kind": "xml", "path": PREFIX + "Templates/Agent1311.xml",
+        "select": f"./{namespace}Template/{namespace}Properties/{namespace}TemplateType"})
+    if kind != ["SpreadsheetDocument"]:
+        raise ValueError("created MXL template descriptor is not SpreadsheetDocument")
+    return {"template": TEMPLATE, "fileAssertions": observations, "templateType": kind[0],
+            "preservedTemplatesSha256": preserved, "registeredTemplatesBefore": registered_before,
+            "registeredTemplates": registered}
+
+
 def evaluate(server, scenario, proof_root):
-    return evaluate_contract(server, scenario, proof_root,
+    registered_before = template_registration(server.workspace)
+    proof = evaluate_contract(server, scenario, proof_root,
                              fixture=REPO / "tests/fixtures/acceptance/agent-mxl",
                              source="src", auditor=audit,
                              changed_paths={"src/cf/Reports/F06Report.xml",
                                             PREFIX + "Templates/Agent1311.xml",
                                             PREFIX + "Templates/Agent1311/Ext/Template.xml"})
+    manifest = json.loads((proof / "manifest.json").read_text())
+    observations = verify_mxl_images(server.workspace, scenario, manifest["sourceBefore"], registered_before)
+    path = proof / "file-observations.json"
+    path.write_text(json.dumps(observations, ensure_ascii=False, indent=2))
+    manifest["fileObservationsSha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    (proof / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    return proof
 
 
 def independent_review(proof):

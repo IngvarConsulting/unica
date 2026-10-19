@@ -1975,6 +1975,64 @@ fn node_is_empty_placeholder(node: roxmltree::Node<'_, '_>) -> bool {
         .any(|child| child.is_element() || child.text().is_some_and(|text| !text.trim().is_empty()))
 }
 
+pub(super) fn observe_tabular_standard_attributes(
+    properties: roxmltree::Node<'_, '_>,
+    field: &str,
+) -> Result<Option<Vec<MetaStandardAttribute>>, ProjectionError> {
+    let nodes = properties
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name() == "StandardAttributes")
+        .collect::<Vec<_>>();
+    let container = match nodes.as_slice() {
+        [] => return Ok(None),
+        [node] if node.tag_name().namespace() == Some(MD_CLASSES_NAMESPACE) => *node,
+        _ => {
+            return Err(ProjectionError::malformed(
+                field,
+                "tabular section StandardAttributes is duplicated or has a foreign namespace",
+            ))
+        }
+    };
+    let attributes = parse_standard_attributes(container).map_err(|mut error| {
+        let suffix = error.field.strip_prefix("standardAttributes").unwrap_or("");
+        error.field = format!("{field}{suffix}");
+        error
+    })?;
+    let mut names = std::collections::HashSet::new();
+    for (index, attribute) in attributes.iter().enumerate() {
+        if !crate::domain::metadata::metadata_identifier_is_valid(&attribute.name) {
+            return Err(ProjectionError::malformed(
+                format!("{field}[{index}].name"),
+                "standard attribute name is not a valid metadata identifier",
+            ));
+        }
+        if !names.insert(attribute.name.as_str()) {
+            return Err(ProjectionError::malformed(
+                format!("{field}[{index}].name"),
+                "standard attribute name is duplicated",
+            ));
+        }
+    }
+    for (index, attribute) in container
+        .children()
+        .filter(roxmltree::Node::is_element)
+        .enumerate()
+    {
+        for property in attribute.children().filter(roxmltree::Node::is_element) {
+            let name = property.tag_name().name();
+            if standard_attribute_property_is_localized(name)
+                && !direct_text_content(property).trim().is_empty()
+            {
+                return Err(ProjectionError::malformed(
+                    format!("{field}[{index}].properties.{name}"),
+                    "localized standard attribute property must contain localized items",
+                ));
+            }
+        }
+    }
+    Ok(Some(attributes))
+}
+
 fn parse_standard_attributes(
     container: roxmltree::Node<'_, '_>,
 ) -> Result<Vec<MetaStandardAttribute>, ProjectionError> {
@@ -2023,7 +2081,8 @@ fn parse_standard_attribute(
     for child in node.children().filter(roxmltree::Node::is_element) {
         let property_name = child.tag_name().name();
         if child.tag_name().namespace() != Some(READABLE_NAMESPACE)
-            || !standard_attribute_property_names().contains(&property_name)
+            || !crate::domain::metadata::META_STANDARD_ATTRIBUTE_PROPERTY_NAMES
+                .contains(&property_name)
             || !seen.insert(property_name)
         {
             return Err(ProjectionError::unsupported(
@@ -2043,34 +2102,8 @@ fn parse_standard_attribute(
     Ok(MetaStandardAttribute { name, properties })
 }
 
-fn standard_attribute_property_names() -> &'static [&'static str] {
-    &[
-        "LinkByType",
-        "FillChecking",
-        "MultiLine",
-        "FillFromFillingValue",
-        "CreateOnInput",
-        "TypeReductionMode",
-        "MaxValue",
-        "ToolTip",
-        "ExtendedEdit",
-        "Format",
-        "ChoiceForm",
-        "QuickChoice",
-        "ChoiceHistoryOnInput",
-        "EditFormat",
-        "PasswordMode",
-        "DataHistory",
-        "MarkNegatives",
-        "MinValue",
-        "Synonym",
-        "Comment",
-        "FullTextSearch",
-        "ChoiceParameterLinks",
-        "FillValue",
-        "Mask",
-        "ChoiceParameters",
-    ]
+fn standard_attribute_property_is_localized(name: &str) -> bool {
+    matches!(name, "ToolTip" | "Format" | "EditFormat" | "Synonym")
 }
 
 fn parse_standard_attribute_property(
@@ -2092,7 +2125,7 @@ fn parse_standard_attribute_property(
         return parse_bool(value.trim(), field)
             .map(|value| MetaObservedPropertyValue::Boolean { value });
     }
-    if matches!(name, "ToolTip" | "Format" | "EditFormat" | "Synonym") {
+    if standard_attribute_property_is_localized(name) {
         if node.attributes().len() != 0 || !localized_string_is_valid(node) {
             return Err(ProjectionError::malformed(
                 field,

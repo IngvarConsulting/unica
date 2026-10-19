@@ -183,7 +183,6 @@ fn catalog_attribute_provider_keeps_contexts_closed_and_ignores_raw_item_keys() 
         "main:Catalog.Items",
         "main:Catalog.Items.Attribute.Header",
         "main:Catalog.Items.TabularSection.Lines",
-        "main:Catalog.Items.TabularSection.Lines.StandardAttribute.LineNumber",
     ] {
         let node = project(
             at,
@@ -191,6 +190,23 @@ fn catalog_attribute_provider_keeps_contexts_closed_and_ignores_raw_item_keys() 
             Some(SourceSetKind::Configuration),
         );
         assert_absent(&node);
+    }
+    // StandardAttribute has its own closed observation profile. Shared names
+    // retain tagged values there instead of inheriting the Attribute enums.
+    for source_kind in [None, Some(SourceSetKind::Configuration)] {
+        let standard = project(
+            "main:Catalog.Items.TabularSection.Lines.StandardAttribute.LineNumber",
+            payload(observations()),
+            source_kind,
+        );
+        assert!(standard["props"].get("Indexing").is_none());
+        for name in ["FullTextSearch", "DataHistory"] {
+            assert_eq!(
+                serde_json::from_str::<Value>(standard["props"][name].as_str().unwrap()).unwrap(),
+                json!({"kind": "text", "value": "Use"}),
+                "the independent standard attribute observation must survive: {standard}"
+            );
+        }
     }
     let mut document = payload(observations());
     document["kind"] = json!("Document");

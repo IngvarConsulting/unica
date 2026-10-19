@@ -1032,6 +1032,8 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 (field.starts_with("details.")
                     || field.starts_with("properties.")
                     || field.starts_with("relations.")
+                    || (field.starts_with("collections.tabularSections[")
+                        && field.contains("].standardAttributes"))
                     || local
                         .member_read_profile
                         .is_some_and(|profile| profile.owns_diagnostic(field)))
