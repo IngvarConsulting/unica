@@ -24,7 +24,18 @@ fn refuse_targets_outside_writable_profile(
     staged: &mut ApplyStagedState,
 ) -> Result<(), ApplyPlanError> {
     let at = request.at().to_string();
-    for relative in writable_profile_owner_chain(request, binding.source_kind()) {
+    let mut owner_chain = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for target in
+        std::iter::once(request.at()).chain(request.ops().iter().map(|operation| operation.at()))
+    {
+        for relative in writable_profile_owner_chain(target, binding.source_kind()) {
+            if seen.insert(relative.clone()) {
+                owner_chain.push(relative);
+            }
+        }
+    }
+    for relative in owner_chain {
         let Some(bytes) = staged
             .read(&relative)
             .map_err(|error| ApplyPlanError::staging(error, at.clone()))?
@@ -183,7 +194,7 @@ fn support_owner_relative(
 /// descriptor of every metadata segment, the wrapper of a nested form,
 /// template or command, and the attached content the kind owns.
 fn writable_profile_owner_chain(
-    request: &ApplyRequest,
+    at: &crate::domain::address::QualifiedAddress,
     source_kind: SourceSetKind,
 ) -> Vec<std::path::PathBuf> {
     use crate::domain::address::NodeKind;
@@ -199,7 +210,7 @@ fn writable_profile_owner_chain(
     ) {
         chain.push(std::path::PathBuf::from("Configuration.xml"));
     }
-    let segments = request.at().segments();
+    let segments = at.segments();
     let Some(owner) = segments.first() else {
         return chain;
     };

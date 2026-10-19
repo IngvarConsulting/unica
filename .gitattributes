@@ -51,3 +51,6 @@ tests/fixtures/acceptance/workspace-invalid-borrowing/** -text whitespace=cr-at-
 # Spreadsheet edit fixtures are 8.3.27 exports; BOM and CRLF are asserted.
 tests/fixtures/platform_8_3_27/mxl_edit/** -text -whitespace
 tests/fixtures/acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates/PlatformExport/** -text -whitespace
+
+# Keep the native-validated whole-template-removal fixture bytes on every host.
+tests/fixtures/v013/whole-template-removal/workspace/** -text -whitespace

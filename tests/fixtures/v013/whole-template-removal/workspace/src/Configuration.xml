@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+  <Configuration uuid="61dcd954-02c6-43e0-8001-353421908cc4">
+    <InternalInfo>
+      <xr:ContainedObject><xr:ClassId>9cd510cd-abfc-11d4-9434-004095e12fc7</xr:ClassId><xr:ObjectId>0bebaa0f-9107-4cba-8a6b-7977a31ecfdc</xr:ObjectId></xr:ContainedObject>
+      <xr:ContainedObject><xr:ClassId>9fcd25a0-4822-11d4-9414-008048da11f9</xr:ClassId><xr:ObjectId>f9fee83c-9f98-47fe-b1d5-a72bd7dfdf40</xr:ObjectId></xr:ContainedObject>
+      <xr:ContainedObject><xr:ClassId>e3687481-0a87-462c-a166-9f34594f9bba</xr:ClassId><xr:ObjectId>2d57d408-e560-4882-830b-3a098dc7f4d4</xr:ObjectId></xr:ContainedObject>
+      <xr:ContainedObject><xr:ClassId>9de14907-ec23-4a07-96f0-85521cb6b53b</xr:ClassId><xr:ObjectId>18c225ed-b221-4afa-b1a0-ca160c8f6497</xr:ObjectId></xr:ContainedObject>
+      <xr:ContainedObject><xr:ClassId>51f2d5d8-ea4d-4064-8892-82951750031e</xr:ClassId><xr:ObjectId>594efbbb-c1df-4d11-b68d-e04cc5f0f5b8</xr:ObjectId></xr:ContainedObject>
+      <xr:ContainedObject><xr:ClassId>e68182ea-4237-4383-967f-90c1e3370bc7</xr:ClassId><xr:ObjectId>5684e2cb-3747-4ace-8318-e374cfa0d325</xr:ObjectId></xr:ContainedObject>
+      <xr:ContainedObject><xr:ClassId>fb282519-d103-4dd3-bc12-cb271d631dfc</xr:ClassId><xr:ObjectId>c36ff556-3ec0-4456-a232-fe2c32f31e1f</xr:ObjectId></xr:ContainedObject>
+    </InternalInfo>
+    <Properties>
+      <Name>OwnTemplateRemoval</Name>
+      <Synonym/>
+      <Comment>Independent neutral test configuration</Comment>
+      <NamePrefix/>
+      <ConfigurationExtensionCompatibilityMode>Version8_3_27</ConfigurationExtensionCompatibilityMode>
+      <DefaultRunMode>ManagedApplication</DefaultRunMode>
+      <UsePurposes><v8:Value xsi:type="app:ApplicationUsePurpose">PlatformApplication</v8:Value></UsePurposes>
+      <ScriptVariant>English</ScriptVariant>
+      <DefaultRoles/>
+      <Vendor/>
+      <Version>1.0.0.0</Version>
+      <UpdateCatalogAddress/>
+      <IncludeHelpInContents>false</IncludeHelpInContents>
+      <UseManagedFormInOrdinaryApplication>false</UseManagedFormInOrdinaryApplication>
+      <UseOrdinaryFormInManagedApplication>false</UseOrdinaryFormInManagedApplication>
+      <AdditionalFullTextSearchDictionaries/>
+      <CommonSettingsStorage/>
+      <ReportsUserSettingsStorage/>
+      <ReportsVariantsStorage/>
+      <FormDataSettingsStorage/>
+      <DynamicListsUserSettingsStorage/>
+      <URLExternalDataStorage/>
+      <Content/>
+      <DefaultReportForm/>
+      <DefaultReportVariantForm/>
+      <DefaultReportSettingsForm/>
+      <DefaultReportAppearanceTemplate/>
+      <DefaultDynamicListSettingsForm/>
+      <DefaultSearchForm/>
+      <DefaultDataHistoryChangeHistoryForm/>
+      <DefaultDataHistoryVersionDataForm/>
+      <DefaultDataHistoryVersionDifferencesForm/>
+      <DefaultCollaborationSystemUsersChoiceForm/>
+      <RequiredMobileApplicationPermissions/>
+      <UsedMobileApplicationFunctionalities/>
+      <StandaloneConfigurationRestrictionRoles/>
+      <MobileApplicationURLs/>
+      <AllowedIncomingShareRequestTypes/>
+      <MainClientApplicationWindowMode>Normal</MainClientApplicationWindowMode>
+      <DefaultInterface/>
+      <DefaultStyle/>
+      <DefaultLanguage>Language.English</DefaultLanguage>
+      <BriefInformation/>
+      <DetailedInformation/>
+      <Copyright/>
+      <VendorInformationAddress/>
+      <ConfigurationInformationAddress/>
+      <DataLockControlMode>Managed</DataLockControlMode>
+      <ObjectAutonumerationMode>NotAutoFree</ObjectAutonumerationMode>
+      <ModalityUseMode>DontUse</ModalityUseMode>
+      <SynchronousPlatformExtensionAndAddInCallUseMode>DontUse</SynchronousPlatformExtensionAndAddInCallUseMode>
+      <InterfaceCompatibilityMode>TaxiEnableVersion8_2</InterfaceCompatibilityMode>
+      <DatabaseTablespacesUseMode>DontUse</DatabaseTablespacesUseMode>
+      <CompatibilityMode>Version8_3_27</CompatibilityMode>
+      <DefaultConstantsForm/>
+    </Properties>
+    <ChildObjects>
+      <Language>English</Language>
+      <Report>OwnRemovalReport</Report>
+    </ChildObjects>
+  </Configuration>
+</MetaDataObject>
