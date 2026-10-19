@@ -7,7 +7,10 @@ use crate::domain::metadata::{
     MetaCollection, MetaDiagnosticCode, MetaEditOperation, MetadataKind,
 };
 use crate::domain::metadata_operation::MetadataOperation as RegisteredMetadataOperation;
-use crate::domain::operation_contract::ArgumentShape;
+use crate::domain::operation_contract::{
+    metadata_help_create_input_schema, metadata_object_create_input_schema,
+    metadata_object_remove_input_schema, metadata_relation_input_schema, ArgumentShape,
+};
 use crate::domain::project_sources::SourceSetKind;
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use crate::infrastructure::logical_event_source::metadata_descriptor_relative;
@@ -474,6 +477,38 @@ fn reject_unknown_args_with(
     Ok(())
 }
 
+fn reject_unknown_input_args(
+    operation: &str,
+    args: &Map<String, Value>,
+    schema: &Value,
+    op_index: usize,
+) -> Result<(), ApplyPlanError> {
+    let shape = ArgumentShape::new(schema);
+    reject_unknown_args_with(
+        operation,
+        args,
+        |key| shape.property(key).is_some(),
+        op_index,
+    )
+}
+
+/// Keep conversion diagnostics at their existing stage, then consult the
+/// shared field type. Compound children are visited by their typed reader.
+fn check_input_field(
+    shape: ArgumentShape<'_>,
+    name: &str,
+    value: &Value,
+    path: &str,
+) -> Result<(), ApplyPlanError> {
+    shape
+        .property(name)
+        .expect("known Metadata input field")
+        .validate_field(value, path)
+        .map_err(|error| {
+            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(error.path)
+        })
+}
+
 fn required_object<'a>(
     args: &'a Map<String, Value>,
     name: &str,
@@ -646,7 +681,9 @@ fn parse_object_create(
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
-    reject_unknown_args("object.create", args, &["at", "values"], op_index)?;
+    let schema = metadata_object_create_input_schema();
+    let shape = ArgumentShape::new(schema);
+    reject_unknown_input_args("object.create", args, schema, op_index)?;
     let target = qualified_target(args, op_index, binding)?;
     if !matches!(target.segments(), [root] if root.kind() == NodeKind::Configuration) {
         return Err(ApplyPlanError::new(
@@ -656,9 +693,16 @@ fn parse_object_create(
         .at_path(format!("ops[{op_index}].args.at")));
     }
     let values = required_object(args, "values", op_index)?;
+    check_input_field(
+        shape,
+        "values",
+        &args["values"],
+        &format!("ops[{op_index}].args.values"),
+    )?;
+    let values_shape = shape.property("values").expect("object.create values");
     if let Some(field) = values
         .keys()
-        .find(|field| !["kind", "name"].contains(&field.as_str()))
+        .find(|field| values_shape.property(field).is_none())
     {
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::BadValue,
@@ -677,6 +721,12 @@ fn parse_object_create(
         ApplyPlanError::new(ApplyPlanErrorKind::BadValue, diagnostic.message)
             .at_path(format!("ops[{op_index}].args.values.kind"))
     })?;
+    check_input_field(
+        values_shape,
+        "kind",
+        &values["kind"],
+        &format!("ops[{op_index}].args.values.kind"),
+    )?;
     let name = values
         .get("name")
         .and_then(Value::as_str)
@@ -688,6 +738,12 @@ fn parse_object_create(
             )
             .at_path(format!("ops[{op_index}].args.values.name"))
         })?;
+    check_input_field(
+        values_shape,
+        "name",
+        &values["name"],
+        &format!("ops[{op_index}].args.values.name"),
+    )?;
     Ok(MetadataPlanKind::Create {
         kind,
         name: name.to_string(),
@@ -699,7 +755,8 @@ fn parse_object_remove(
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
-    reject_unknown_args("object.remove", args, &["at", "force"], op_index)?;
+    let schema = metadata_object_remove_input_schema();
+    reject_unknown_input_args("object.remove", args, schema, op_index)?;
     let target = qualified_target(args, op_index, binding)?;
     let (address, kind) = metadata_owner(&target, op_index)?;
     let name = target.segments()[0]
@@ -717,6 +774,14 @@ fn parse_object_remove(
             .at_path(format!("ops[{op_index}].args.force")));
         }
     };
+    if let Some(value) = args.get("force") {
+        check_input_field(
+            ArgumentShape::new(schema),
+            "force",
+            value,
+            &format!("ops[{op_index}].args.force"),
+        )?;
+    }
     Ok(MetadataPlanKind::Remove {
         target: address,
         kind,
@@ -730,7 +795,9 @@ fn parse_help_create(
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
-    reject_unknown_args("help.create", args, &["at", "values"], op_index)?;
+    let schema = metadata_help_create_input_schema();
+    let shape = ArgumentShape::new(schema);
+    reject_unknown_input_args("help.create", args, schema, op_index)?;
     let target = qualified_target(args, op_index, binding)?;
     let (address, _) = metadata_owner(&target, op_index)?;
     let name = target.segments()[0]
@@ -738,7 +805,17 @@ fn parse_help_create(
         .expect("metadata_owner proved the segment is named")
         .to_string();
     let values = required_object(args, "values", op_index)?;
-    if let Some(field) = values.keys().find(|field| field.as_str() != "lang") {
+    check_input_field(
+        shape,
+        "values",
+        &args["values"],
+        &format!("ops[{op_index}].args.values"),
+    )?;
+    let values_shape = shape.property("values").expect("help.create values");
+    if let Some(field) = values
+        .keys()
+        .find(|field| values_shape.property(field).is_none())
+    {
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::BadValue,
             format!("help.create values accept only `lang`, not `{field}`"),
@@ -756,6 +833,12 @@ fn parse_help_create(
             )
             .at_path(format!("ops[{op_index}].args.values.lang"))
         })?;
+    check_input_field(
+        values_shape,
+        "lang",
+        &values["lang"],
+        &format!("ops[{op_index}].args.values.lang"),
+    )?;
     Ok(MetadataPlanKind::HelpCreate {
         target: address,
         name,
@@ -1374,15 +1457,24 @@ fn parse_relation(
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
-    reject_unknown_args(operation, args, &["at", "values"], op_index)?;
+    let schema = metadata_relation_input_schema();
+    let shape = ArgumentShape::new(schema);
+    reject_unknown_input_args(operation, args, schema, op_index)?;
     let target = qualified_target(args, op_index, binding)?;
     let (owner, kind) = metadata_owner(&target, op_index)?;
     let values = required_object(args, "values", op_index)?;
+    check_input_field(
+        shape,
+        "values",
+        &args["values"],
+        &format!("ops[{op_index}].args.values"),
+    )?;
+    let values_shape = shape.property("values").expect("relation values");
     let relation = values.get("relation").cloned().unwrap_or(Value::Null);
     let targets = values.get("targets").cloned().unwrap_or(Value::Null);
     if values
         .keys()
-        .any(|key| !matches!(key.as_str(), "relation" | "targets"))
+        .any(|key| values_shape.property(key).is_none())
     {
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::BadValue,

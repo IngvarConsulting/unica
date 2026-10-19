@@ -14,7 +14,9 @@ pub(crate) use form::{FORM_DYNAMIC_LIST_KEYS, FORM_ELEMENT_EVENT_KEYS, FORM_ELEM
 #[cfg(test)]
 use metadata::IDENTIFIER_PATTERN;
 pub(crate) use metadata::{
-    metadata_element_input_schema, metadata_host_element_schema, MetadataSite,
+    metadata_borrow_input_schema, metadata_element_input_schema, metadata_help_create_input_schema,
+    metadata_host_element_schema, metadata_object_create_input_schema,
+    metadata_object_remove_input_schema, metadata_relation_input_schema, MetadataSite,
 };
 
 pub(crate) const MXL_MAX_ROW: i64 = 10_000;
@@ -112,6 +114,10 @@ impl<'a> ArgumentShape<'a> {
             .into_iter()
             .flatten()
             .filter_map(Value::as_str)
+    }
+
+    pub(crate) fn items(self) -> Option<Self> {
+        self.schema.get("items").map(Self::new)
     }
 
     pub(crate) fn variant(self, discriminator: &str, value: &str) -> Option<Self> {
