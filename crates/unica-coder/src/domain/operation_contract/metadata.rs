@@ -428,7 +428,7 @@ impl OperationContract {
                 "borrow" => (metadata_borrow_input_schema().clone(),
                     "The extension Configuration root: <extension-source-set>:Configuration.",
                     "Borrow or refresh the named parent object, preserving the extension's identity and local data.",
-                    "from is a qualified address in a distinct admitted parent source set: a named top-level object or Enum.EnumValue. Read that source first. overrides names supported transferred properties; an empty array is allowed for a top-level object but any overrides field is refused for EnumValue. Refresh preserves the established override set.",
+                    "exampleArgs is a template: replace parent and Sample with an existing object in a distinct admitted parent source set. from is a qualified address of a named top-level object or Enum.EnumValue; read that source first. overrides names supported transferred properties; an empty array is allowed for a top-level object but any overrides field is refused for EnumValue. Refresh preserves the established override set.",
                     json!({"from":"parent:Catalog.Sample"}), "skills/cfe-borrow/SKILL.md"),
                 _ => return None,
             };
@@ -495,7 +495,7 @@ impl OperationContract {
                 notes: if relation.is_none() {
                     "This owner kind has no supported relations. Its relation field rejects every value; there is no executable argument example on this node."
                 } else {
-                    "The owner kind narrows the relation and target shape. targets is nonempty; mode is selected by the operation name. Read targets first. Field existence, same-owner paths, source-class compatibility and the final nonempty EventSubscription source are checked by the planner. Existing XML namespaces and unrelated data are preserved."
+                    "exampleArgs is a template: replace Sample targets with existing objects or fields allowed for this owner. The owner kind narrows the relation and target shape. targets is nonempty; mode is selected by the operation name. Read targets first. Field existence, same-owner paths, source-class compatibility and the final nonempty EventSubscription source are checked by the planner. Existing XML namespaces and unrelated data are preserved."
                 },
                 example_args,
                 help: METADATA_HELP,
