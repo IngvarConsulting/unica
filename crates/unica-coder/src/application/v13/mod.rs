@@ -2,6 +2,7 @@ pub(crate) mod apply;
 pub(crate) mod check;
 pub(crate) mod diff;
 pub(crate) mod find;
+pub(crate) mod plan_diff;
 pub(crate) mod resolve;
 pub(crate) mod source_text;
 pub(crate) mod task_tools;

@@ -271,6 +271,7 @@ def audit_mcp(records, *, target_template=DCS_TEMPLATE, owner=None, required_ope
             if message["method"] == "tools/call":
                 calls.append({"index": start, "done": index, "params": message["params"],
                               "result": (payload.get("result") or {}).get("structuredContent"),
+                              "isError": "error" in payload or (payload.get("result") or {}).get("isError") is True,
                               "before": before["sourceSha256"], "after": record["sourceSha256"],
                               "filesBefore": before.get("sourceFilesSha256"),
                               "filesAfter": record.get("sourceFilesSha256"),
@@ -293,10 +294,20 @@ def audit_mcp(records, *, target_template=DCS_TEMPLATE, owner=None, required_ope
         data = result.get("data") or {}
         if tool not in allowed:
             raise ValueError("call outside the recorded MCP inventory")
-        if tool == "unica.view" and result.get("ok") is True:
-            for entry in data.get("can") or []:
-                if entry.get("implemented") is True and (entry.get("contract") or {}).get("argsSchema"):
-                    contracts[(args.get("at"), entry["op"])] = call["done"]
+        if tool == "unica.view" and result.get("ok") is True and not call["isError"]:
+            props = data.get("props")
+            if isinstance(props, dict):
+                op = props.get("op")
+                at = args.get("at")
+                suffix = ".Can." + op if isinstance(op, str) and op else None
+                contract = props.get("contract")
+                schema = contract.get("argsSchema") if isinstance(contract, dict) else None
+                if (isinstance(at, str) and suffix and at.endswith(suffix) and len(at) > len(suffix)
+                        and result.get("at") == at and data.get("at") == at and data.get("kind") == "Can"
+                        and props.get("implemented") is True and isinstance(schema, dict)
+                        and schema.get("type") == "object"):
+                    key = (at[:-len(suffix)], op)
+                    contracts[key] = min(contracts.get(key, call["done"]), call["done"])
         if tool == "unica.apply":
             files = call.get("filesBefore")
             after_files = call.get("filesAfter")
@@ -317,10 +328,6 @@ def audit_mcp(records, *, target_template=DCS_TEMPLATE, owner=None, required_ope
                 for operation in operations:
                     op = operation["op"]
                     target = operation.get("args", {}).get("at", args.get("at"))
-                    values = operation.get("args", {}).get("values") or {}
-                    # The public DCS contract also selects a dataset/variant
-                    # by name. That effective node may differ from the common
-                    # apply root, while still belonging to the same template.
                     owning_template = next((template for template in templates
                                             if isinstance(target, str) and
                                             (target == template or target.startswith(template + "."))), None)
@@ -339,10 +346,6 @@ def audit_mcp(records, *, target_template=DCS_TEMPLATE, owner=None, required_ope
                         owning_template = next(template for template in templates
                                                if template.rsplit(".Template.", 1)[-1] in names)
                     template = owning_template
-                    if isinstance(values.get("variant"), str) and values["variant"]:
-                        target = template + ".Setting." + values["variant"]
-                    elif isinstance(values.get("dataSet"), str) and values["dataSet"]:
-                        target = template + ".DataSet." + values["dataSet"]
                     if contracts.get((target, op), call["index"]) >= call["index"]:
                         raise ValueError("detailed contract did not precede the apply target/op")
                     ops.append((op, template))
@@ -511,7 +514,7 @@ def terminal_calls(calls):
                     raise ValueError("Task identity or state changed")
                 continue
             pending.pop(task_id)
-            terminal.append({**original, "done": call["done"], "after": call["after"], "filesAfter": call.get("filesAfter"), "rootsAfter": call.get("rootsAfter"), "result": call["result"]})
+            terminal.append({**original, "done": call["done"], "after": call["after"], "filesAfter": call.get("filesAfter"), "rootsAfter": call.get("rootsAfter"), "result": call["result"], "isError": original.get("isError", False) or call.get("isError", False)})
         elif name in {"unica.task.get", "unica.task.cancel"}:
             task_id = call["params"]["arguments"].get("taskId")
             if task_id not in pending or not task or task.get("taskId") != task_id:

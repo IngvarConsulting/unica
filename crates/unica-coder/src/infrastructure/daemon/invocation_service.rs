@@ -730,6 +730,11 @@ impl ActorBoundInvocation {
             return Err("source operation was cancelled before admission".into());
         }
         let revision = match self.tool {
+            crate::application::invocation_store::ToolIdentity::Diff
+                if self.arguments.contains_key("executionToken") =>
+            {
+                ActorExecutionRevision::UnpublishedApply(std::sync::atomic::AtomicBool::new(false))
+            }
             crate::application::invocation_store::ToolIdentity::Apply => {
                 ActorExecutionRevision::UnpublishedApply(std::sync::atomic::AtomicBool::new(false))
             }
@@ -1089,6 +1094,24 @@ impl ActorBoundExecution {
         preview: DomainResult,
     ) -> Result<String, crate::infrastructure::workspace_actor::SavedApplyPlanError> {
         self.invocation.actor.save_prepared_apply(prepared, preview)
+    }
+
+    pub(in crate::infrastructure::daemon) fn read_saved_apply_diff(
+        &self,
+        token: &str,
+        limit: usize,
+        cursor: Option<&str>,
+        cancellation: &CancellationToken,
+    ) -> Result<serde_json::Value, crate::infrastructure::workspace_actor::SavedApplyExecutionError>
+    {
+        let result =
+            self.invocation
+                .actor
+                .read_saved_apply_diff(token, limit, cursor, cancellation)?;
+        if let ActorExecutionRevision::UnpublishedApply(confirmed) = &self.revision {
+            confirmed.store(true, std::sync::atomic::Ordering::Release);
+        }
+        Ok(result)
     }
 
     pub(in crate::infrastructure::daemon) fn execute_saved_apply(

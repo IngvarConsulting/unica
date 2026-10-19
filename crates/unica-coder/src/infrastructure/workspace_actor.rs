@@ -1396,6 +1396,7 @@ impl std::fmt::Display for SavedApplyPlanError {
 
 #[derive(Debug)]
 pub(crate) enum SavedApplyExecutionError {
+    Busy,
     Unavailable(String),
     RegistryUnavailable,
     StateUnavailable(&'static str),
@@ -1407,6 +1408,7 @@ struct SavedApplyPlans {
     entries: HashMap<String, Arc<SavedApplyPlan>>,
 }
 struct SavedApplyPlan {
+    diff_layout: std::sync::OnceLock<crate::application::v13::plan_diff::PlanDiffLayout>,
     execution_lane: DeadlineLock<FailClosed>,
     state: Mutex<SavedApplyState>,
 }
@@ -1946,6 +1948,7 @@ impl<R> WorkspaceActor<R> {
         plans.entries.insert(
             token.clone(),
             Arc::new(SavedApplyPlan {
+                diff_layout: std::sync::OnceLock::new(),
                 execution_lane: DeadlineLock::fail_closed("saved apply execution lane is poisoned"),
                 state: Mutex::new(SavedApplyState::Pending {
                     batch: Box::new(prepared),
@@ -1954,6 +1957,85 @@ impl<R> WorkspaceActor<R> {
             }),
         );
         Ok(token)
+    }
+
+    pub(crate) fn read_saved_apply_diff(
+        &self,
+        token: &str,
+        limit: usize,
+        cursor: Option<&str>,
+        cancellation: &CancellationToken,
+    ) -> Result<serde_json::Value, SavedApplyExecutionError> {
+        let entry = self
+            .saved_apply_plans
+            .lock()
+            .map_err(|_| SavedApplyExecutionError::RegistryUnavailable)?
+            .entries
+            .get(token)
+            .cloned()
+            .ok_or_else(|| {
+                SavedApplyExecutionError::Unavailable(
+                    "executionToken is unavailable; request a fresh apply plan".into(),
+                )
+            })?;
+        let mut state = entry.state.try_lock().map_err(|error| match error {
+            std::sync::TryLockError::WouldBlock => SavedApplyExecutionError::Busy,
+            std::sync::TryLockError::Poisoned(_) => {
+                SavedApplyExecutionError::StateUnavailable("saved plan state is unavailable")
+            }
+        })?;
+        let SavedApplyState::Pending { batch, .. } = &mut *state else {
+            return Err(SavedApplyExecutionError::Unavailable(
+                "source preview is available only before saved plan execution".into(),
+            ));
+        };
+        let deadline = ProviderDeadline::no_deadline();
+        batch.deadline = deadline;
+        batch.cancellation = cancellation.clone();
+        batch
+            .transaction
+            .rebind_retained_apply_execution_context(deadline, cancellation);
+        let binding = self
+            .validate_prepared_apply(batch)
+            .map_err(SavedApplyExecutionError::Publication)?;
+        self.preview_prepared_apply_result(batch, &binding, ApplyEffectDisposition::Projected)
+            .map_err(SavedApplyExecutionError::Publication)?;
+        let checkpoint = || {
+            if cancellation.is_cancelled() {
+                Err("saved source read was cancelled".to_string())
+            } else {
+                Ok(())
+            }
+        };
+        let images = batch.transaction.saved_source_images();
+        let page_error = |message| {
+            if cancellation.is_cancelled() {
+                SavedApplyExecutionError::Publication(ApplyPublicationError::new(
+                    ApplyPublicationErrorKind::Cancelled,
+                    message,
+                ))
+            } else {
+                SavedApplyExecutionError::Unavailable(message)
+            }
+        };
+        if entry.diff_layout.get().is_none() {
+            let layout =
+                crate::application::v13::plan_diff::PlanDiffLayout::new(&images, checkpoint)
+                    .map_err(page_error)?;
+            let _ = entry.diff_layout.set(layout);
+        }
+        let key = serde_json::json!(["saved-source-diff-v1", token, batch.plan_identity, limit])
+            .to_string();
+        let mut page = entry
+            .diff_layout
+            .get()
+            .expect("initialized layout")
+            .page(&images, &key, limit, cursor, checkpoint)
+            .map_err(page_error)?;
+        page["planIdentity"] = serde_json::json!(batch.plan_identity);
+        page["sourceSet"] = serde_json::json!(batch.source_set.name);
+        checkpoint().map_err(page_error)?;
+        Ok(page)
     }
 
     pub(crate) fn execute_saved_apply(
@@ -9738,6 +9820,150 @@ pub(crate) mod tests {
             "{PLAN_COUNT} pending plans with {CHANGES_PER_PLAN} changes retained {many_change_plan_cost} handles after one-change plan cost {fixed_plan_cost}"
         );
         assert_eq!(tokens.len(), PLAN_COUNT + 1);
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn saved_source_diff_reads_without_write_lane_and_survives_busy_or_cancelled_reads() {
+        let fixture = actor_fixture("saved-source-diff-lanes", &["main"]);
+        write_actor_event_fixture(&fixture.roots[0]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let planning_cancel = CancellationToken::new();
+        let batch = prepare_property_effect_batch(&fixture, &binding, true, &planning_cancel);
+        fixture.actor.preview_prepared_apply(&batch).unwrap();
+        let token = fixture
+            .actor
+            .save_prepared_apply(
+                batch,
+                crate::domain::invocation::DomainResult::success("preview"),
+            )
+            .unwrap();
+        planning_cancel.cancel();
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+        let cancellation = CancellationToken::new();
+        let lane = fixture
+            .actor
+            .mutation_lane
+            .acquire_before(ProviderDeadline::no_deadline(), &cancellation, "test lane")
+            .unwrap();
+        let page = fixture
+            .actor
+            .read_saved_apply_diff(&token, 100, None, &cancellation)
+            .unwrap();
+        assert!(!page["chunks"].as_array().unwrap().is_empty());
+        for chunk in page["chunks"].as_array().unwrap() {
+            let path = chunk["path"].as_str().unwrap();
+            assert!(!Path::new(path).is_absolute());
+            assert!(!path.contains(".build"));
+            assert!(!path.contains("state.json"));
+        }
+        drop(lane);
+        let entry = fixture.actor.saved_apply_plans.lock().unwrap().entries[&token].clone();
+        let state = entry.state.lock().unwrap();
+        assert!(matches!(
+            fixture
+                .actor
+                .read_saved_apply_diff(&token, 100, None, &cancellation),
+            Err(super::SavedApplyExecutionError::Busy)
+        ));
+        drop(state);
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        assert!(
+            matches!(fixture.actor.read_saved_apply_diff(&token, 100, None, &cancelled), Err(super::SavedApplyExecutionError::Publication(error)) if error.kind() == super::ApplyPublicationErrorKind::Cancelled)
+        );
+        assert_eq!(
+            fixture
+                .actor
+                .read_saved_apply_diff(&token, 100, None, &cancellation)
+                .unwrap(),
+            page
+        );
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
+        let result = fixture
+            .actor
+            .execute_saved_apply(
+                &token,
+                ProviderDeadline::no_deadline(),
+                &cancellation,
+                finish_saved_apply_test,
+            )
+            .unwrap();
+        assert!(result.ok, "{}", result.summary);
+        assert!(fixture
+            .actor
+            .read_saved_apply_diff(&token, 100, None, &cancellation)
+            .is_err());
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn saved_source_diff_detects_changed_inputs_without_consuming_plan() {
+        let fixture = actor_fixture("saved-source-diff-stale", &["main"]);
+        let source = &fixture.roots[0];
+        let path = source.join("Module.bsl");
+        std::fs::write(&path, b"before").unwrap();
+        std::fs::write(source.join("Other.bsl"), b"unrelated").unwrap();
+        let binding = fixture.actor.bind_provider_root("main", source).unwrap();
+        let cancellation = CancellationToken::new();
+        let admission = fixture
+            .actor
+            .admit_apply(
+                &binding,
+                None,
+                true,
+                ProviderDeadline::no_deadline(),
+                &cancellation,
+            )
+            .unwrap();
+        let mut state = admission.staged_state().unwrap();
+        state
+            .replace("Module.bsl", b"before", b"after".to_vec())
+            .unwrap();
+        let batch = admission.prepare(state).unwrap();
+        fixture.actor.preview_prepared_apply(&batch).unwrap();
+        let token = fixture
+            .actor
+            .save_prepared_apply(
+                batch,
+                crate::domain::invocation::DomainResult::success("preview"),
+            )
+            .unwrap();
+        std::fs::write(source.join("Other.bsl"), b"unrelated edit").unwrap();
+        let page = fixture
+            .actor
+            .read_saved_apply_diff(&token, 100, None, &cancellation)
+            .unwrap();
+        assert_eq!(page["chunks"][0]["content"], "before");
+        assert_eq!(page["chunks"][1]["content"], "after");
+        std::fs::write(&path, b"foreign edit").unwrap();
+        assert!(
+            matches!(fixture.actor.read_saved_apply_diff(&token, 100, None, &cancellation), Err(super::SavedApplyExecutionError::Publication(error)) if error.kind() == super::ApplyPublicationErrorKind::ConcurrentRevision)
+        );
+        let entry = fixture.actor.saved_apply_plans.lock().unwrap().entries[&token].clone();
+        assert!(matches!(
+            *entry.state.lock().unwrap(),
+            super::SavedApplyState::Pending { .. }
+        ));
+        let result = fixture
+            .actor
+            .execute_saved_apply(
+                &token,
+                ProviderDeadline::no_deadline(),
+                &cancellation,
+                finish_saved_apply_test,
+            )
+            .unwrap();
+        assert!(!result.ok);
+        assert_eq!(std::fs::read(&path).unwrap(), b"foreign edit");
         fixture.cleanup();
     }
 
