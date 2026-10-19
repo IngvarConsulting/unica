@@ -1284,6 +1284,38 @@ fn write_control_with_deadline(
     Ok(())
 }
 
+fn workspace_service_command(
+    exe: &Path,
+    identity: &WorkspaceServiceIdentity,
+    config: WorkspaceServiceConfig,
+    token: &str,
+    build: &CoreIdentity,
+) -> Result<Command, String> {
+    let mut command = Command::new(exe);
+    command
+        .current_dir(persistent_provider_working_directory(
+            Path::new(&identity.workspace_root),
+            Path::new(&identity.source_root),
+        )?)
+        .arg("--workspace-service")
+        .arg("--core-identity")
+        .arg(build.as_str())
+        .arg("--workspace-root")
+        .arg(&identity.workspace_root)
+        .arg("--source-root")
+        .arg(&identity.source_root)
+        .arg("--service-dir")
+        .arg(identity.service_dir.display().to_string())
+        .arg("--token")
+        .arg(token)
+        .arg("--idle-secs")
+        .arg(config.idle_secs.to_string());
+    if let Some(plugin_root) = find_plugin_root(Path::new(&identity.workspace_root)) {
+        command.env("UNICA_PLUGIN_ROOT", plugin_root);
+    }
+    Ok(command)
+}
+
 impl ServiceSpawner for SystemServiceSpawner {
     fn spawn(
         &self,
@@ -1320,26 +1352,10 @@ impl ServiceSpawner for SystemServiceSpawner {
         // a test service binary is not the test process's build.
         let build = CoreIdentity::production();
         crate::infrastructure::daemon::identity::verify_executable_build(&exe, &build)?;
-        let mut command = Command::new(exe);
+        let mut command = workspace_service_command(&exe, identity, config, token, &build)?;
         command
-            .arg("--workspace-service")
-            .arg("--core-identity")
-            .arg(build.as_str())
-            .arg("--workspace-root")
-            .arg(&identity.workspace_root)
-            .arg("--source-root")
-            .arg(&identity.source_root)
-            .arg("--service-dir")
-            .arg(identity.service_dir.display().to_string())
-            .arg("--token")
-            .arg(token)
-            .arg("--idle-secs")
-            .arg(config.idle_secs.to_string())
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr));
-        if let Some(plugin_root) = find_plugin_root(Path::new(&identity.workspace_root)) {
-            command.env("UNICA_PLUGIN_ROOT", plugin_root);
-        }
         let mut child = ManagedStartupChild::spawn_configured(command)
             .map_err(|err| format!("failed to spawn workspace service: {err}"))?;
         let child_pid = child.id();
@@ -3066,7 +3082,7 @@ impl PersistentMcpSession {
 
     fn start_rlm_transport_pinned(
         context: &WorkspaceContext,
-        _source_root: &Path,
+        source_root: &Path,
         build_directory: &Path,
         cancellation: &CancellationToken,
     ) -> Result<Self, String> {
@@ -3077,7 +3093,8 @@ impl PersistentMcpSession {
             "could not locate Unica plugin root for workspace RLM service".to_string()
         })?;
         let program = resolve_bundled_tool(&plugin_root, "rlm-bsl-mcp", true)?.program;
-        let command = rlm_transport_command_for_build(program, context, build_directory)?;
+        let command =
+            rlm_transport_command_for_build(program, context, source_root, build_directory)?;
         Self::start_with_command(command, cancellation)
     }
 
@@ -3366,6 +3383,7 @@ fn rlm_transport_command(
     rlm_transport_command_for_build(
         program,
         context,
+        source_root,
         &rlm_generation_root(context, source_root)?,
     )
 }
@@ -3373,13 +3391,52 @@ fn rlm_transport_command(
 fn rlm_transport_command_for_build(
     program: PathBuf,
     context: &WorkspaceContext,
+    source_root: &Path,
     build_directory: &Path,
 ) -> Result<Command, String> {
     let mut command = Command::new(program);
     command
-        .current_dir(&context.cwd)
+        .current_dir(persistent_provider_working_directory(
+            &context.workspace_root,
+            source_root,
+        )?)
         .envs(rlm_process_environment(build_directory.to_path_buf()));
     Ok(command)
+}
+
+fn persistent_provider_working_directory(
+    workspace_root: &Path,
+    source_root: &Path,
+) -> Result<PathBuf, String> {
+    let candidate = short_private_runtime_dir()
+        .map_err(|error| format!("failed to prepare persistent provider directory: {error}"))?
+        .unwrap_or_else(env::temp_dir);
+    checked_persistent_provider_working_directory(&candidate, workspace_root, source_root)
+}
+
+fn checked_persistent_provider_working_directory(
+    candidate: &Path,
+    workspace_root: &Path,
+    source_root: &Path,
+) -> Result<PathBuf, String> {
+    let directory = normalize_path_identity(candidate)?;
+    let metadata = fs::metadata(&directory)
+        .map_err(|error| format!("failed to inspect persistent provider directory: {error}"))?;
+    if !metadata.is_dir() {
+        return Err("persistent provider working directory must be a directory".to_string());
+    }
+    for root in [workspace_root, source_root] {
+        let root = normalize_path_identity(root)?;
+        if crate::infrastructure::platform::filesystem::path_starts_with_host_root(
+            &directory, &root,
+        ) {
+            return Err(
+                "persistent provider working directory must be outside the workspace and source tree"
+                    .to_string(),
+            );
+        }
+    }
+    Ok(directory)
 }
 
 impl Drop for PersistentMcpSession {
@@ -3388,20 +3445,12 @@ impl Drop for PersistentMcpSession {
     }
 }
 
-/// A persistent session outlives the tool call that started it.
-/// While its working directory sits inside the source tree, the
-/// process holds that tree open, and `git worktree remove` fails long after the
-/// call returned (#204). The tree is addressed by `--source-dir` as an absolute
-/// path, so the working directory carries no information — it only holds.
-///
-/// The child therefore runs from the short private runtime directory it already
-/// uses for its socket, outside any workspace.
+/// Keep the analyzer's Unix socket names within the platform path budget.
 fn configure_bsl_analyzer_runtime_dir(command: &mut Command) -> Result<(), String> {
     if let Some(runtime_dir) = short_private_runtime_dir().map_err(|error| {
         format!("failed to prepare short runtime directory for bsl-analyzer: {error}")
     })? {
         command.env("XDG_RUNTIME_DIR", &runtime_dir);
-        command.current_dir(&runtime_dir);
     }
     Ok(())
 }
@@ -4666,7 +4715,10 @@ fn bsl_analyzer_command(
         // Workspace profile otherwise promotes stdio to a persistent broker.
         // The helper must own the analyzer it retires after invalidation.
         .env("BSL_MCP_BROKER", "0")
-        .current_dir(&context.cwd);
+        .current_dir(persistent_provider_working_directory(
+            &context.workspace_root,
+            &source_root,
+        )?);
     configure_bsl_analyzer_runtime_dir(&mut command)?;
     Ok(command)
 }
@@ -4732,6 +4784,16 @@ fn bsl_analyzer_cache_dir(
     }
     Ok(external)
 }
+
+#[cfg(test)]
+mod persistent_provider_cwd_command_tests;
+
+#[cfg(test)]
+#[path = "../../tests/platform/persistent_provider_cwd.rs"]
+mod persistent_provider_cwd_native_tests;
+
+#[cfg(test)]
+mod persistent_provider_cwd_selection_tests;
 
 #[cfg(test)]
 mod tests {
@@ -6250,22 +6312,23 @@ mod tests {
         cleanup(&context);
     }
 
-    /// #204. A persistent session outlives its tool call, so a working
-    /// directory inside the source tree keeps that tree open and
-    /// `git worktree remove` fails long after the call returned. The tree is
-    /// addressed by `--source-dir`, so the working directory only holds.
     #[test]
     fn bsl_analyzer_child_does_not_run_from_inside_the_workspace() {
-        let Some(runtime_dir) = short_private_runtime_dir().unwrap() else {
-            return;
-        };
-        let mut command = Command::new("bsl-analyzer");
-        command.current_dir(std::env::temp_dir().join("unica-worktree-under-test"));
-
-        configure_bsl_analyzer_runtime_dir(&mut command).unwrap();
-
-        assert_eq!(command.get_current_dir(), Some(runtime_dir.as_path()));
-        assert_eq!(runtime_dir.parent(), Some(Path::new("/tmp")));
+        let context = test_context("bsl-analyzer-external-cwd");
+        let source_root = context.workspace_root.join("src");
+        let command =
+            bsl_analyzer_command(Path::new("bsl-analyzer"), &context, &source_root).unwrap();
+        let directory = command.get_current_dir().expect("explicit analyzer cwd");
+        assert!(directory.is_dir());
+        for root in [&context.workspace_root, &source_root] {
+            assert!(
+                !crate::infrastructure::platform::filesystem::path_starts_with_host_root(
+                    &normalize_path_identity(directory).unwrap(),
+                    &normalize_path_identity(root).unwrap(),
+                )
+            );
+        }
+        cleanup(&context);
     }
 
     #[test]
