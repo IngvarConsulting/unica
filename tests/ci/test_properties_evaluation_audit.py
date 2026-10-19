@@ -8,6 +8,7 @@ import shutil
 import tempfile
 import types
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from unittest.mock import patch
 
@@ -35,6 +36,83 @@ class PropertiesEvidenceTests(unittest.TestCase):
             self.assertTrue(observed["descriptors"][props_driver.MODULE]["bom"])
             self.assertTrue(observed["descriptors"][props_driver.SUBSYSTEM]["crlf"])
 
+    def test_physical_export_exposes_bound_full_xml_owner_languages_and_retained_companions(self):
+        with tempfile.TemporaryDirectory() as raw:
+            workspace, before = self.prepared_workspace(Path(raw))
+            observed = json.loads(json.dumps(props_driver.verify_properties_images(workspace, before), ensure_ascii=False))
+            self.assertEqual(observed["sourceFilesBeforeSha256"], before)
+            self.assertEqual(set(observed["companions"]), {
+                "src/Roles/SalesReader/Ext/Rights.xml",
+                "src/Subsystems/Администрирование/Ext/CommandInterface.xml"})
+            expected = props_driver.expected_descriptor_images()
+            for target, path in props_driver.PATHS.items():
+                with self.subTest(target=target):
+                    descriptor = observed["descriptors"][target]
+                    kind, name = target.split(":", 1)[1].split(".", 1)
+                    self.assertEqual(descriptor["ownerName"], name)
+                    self.assertIs(descriptor["exactExpectedPostimage"], True)
+                    self.assertEqual(descriptor["expectedPostimageSHA256"], hashlib.sha256(expected[path]).hexdigest())
+                    for phase, image in [("before", (props_driver.SOURCE_FIXTURE / path).read_bytes()),
+                                         ("after", (workspace / path).read_bytes())]:
+                        evidence = descriptor[phase]
+                        self.assertEqual(evidence["xmlUtf8"].encode("utf-8"), image)
+                        self.assertEqual(evidence["sha256"], hashlib.sha256(image).hexdigest())
+                        self.assertEqual(evidence["bom"], image.startswith(b"\xef\xbb\xbf"))
+                        self.assertEqual(evidence["crlf"], b"\r\n" in image)
+                        parsed = ET.fromstring(evidence["xmlUtf8"])
+                        self.assertEqual(evidence["allLanguages"], list(dict.fromkeys(
+                            node.text for node in parsed.iter(props_driver.CORE + "lang"))))
+                        owner = parsed.find(props_driver.MD + kind)
+                        self.assertEqual(owner.findtext(props_driver.MD + "Properties/" + props_driver.MD + "Name"), name)
+                        self.assertEqual(evidence["ownerName"], name)
+                        self.assertEqual(evidence["languages"]["Synonym"], ["ru"])
+                    self.assertEqual(descriptor["before"]["sha256"], before[path])
+                    self.assertEqual(descriptor["after"]["sha256"], observed["sourceFilesSha256"][path])
+            subsystem = observed["descriptors"][props_driver.SUBSYSTEM]
+            self.assertEqual(subsystem["before"]["languages"]["Explanation"], ["ru"])
+            self.assertEqual(subsystem["after"]["languages"]["Explanation"], [])
+            for path, companion in observed["companions"].items():
+                self.assertIs(companion["byteEqual"], True)
+                self.assertEqual(companion["after"]["sha256"], observed["sourceFilesSha256"][path])
+                for phase in ["before", "after"]:
+                    evidence = companion[phase]
+                    self.assertEqual(evidence["xmlUtf8"].encode("utf-8"), (props_driver.SOURCE_FIXTURE / path).read_bytes())
+                    self.assertEqual(evidence["sha256"], before[path])
+                    ET.fromstring(evidence["xmlUtf8"])
+
+    def test_physical_export_inventories_languages_outside_the_edited_properties(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            fixture = root / "fixture"
+            shutil.copytree(props_driver.SOURCE_FIXTURE, fixture)
+            module = fixture / props_driver.PATHS[props_driver.MODULE]
+            original = module.read_bytes()
+            extra = (b'<extra:label xmlns:extra="urn:retained-fixture"><v8:item><v8:lang>en</v8:lang>'
+                     b'<v8:content>Retained extension label</v8:content></v8:item></extra:label>')
+            module.write_bytes(original.replace(b"</CommonModule>", extra + b"</CommonModule>"))
+            with patch.object(props_driver, "SOURCE_FIXTURE", fixture):
+                workspace, before = self.prepared_workspace(root)
+                observed = props_driver.verify_properties_images(workspace, before)
+            for phase in ["before", "after"]:
+                evidence = observed["descriptors"][props_driver.MODULE][phase]
+                self.assertEqual(evidence["languages"]["Synonym"], ["ru"])
+                self.assertEqual(evidence["allLanguages"], ["ru", "en"])
+                parsed = ET.fromstring(evidence["xmlUtf8"])
+                self.assertEqual(parsed.findtext(".//{urn:retained-fixture}label/" + props_driver.CORE + "item/"
+                                                 + props_driver.CORE + "content"), "Retained extension label")
+
+    def test_physical_verifier_rejects_unbound_descriptor_before_images(self):
+        for path in props_driver.PATHS.values():
+            for mutation in ["missing", "forged"]:
+                with self.subTest(path=path, mutation=mutation), tempfile.TemporaryDirectory() as raw:
+                    workspace, before = self.prepared_workspace(Path(raw))
+                    if mutation == "missing":
+                        del before[path]
+                    else:
+                        before[path] = hashlib.sha256((workspace / path).read_bytes()).hexdigest()
+                    with self.assertRaises(ValueError):
+                        props_driver.verify_properties_images(workspace, before)
+
     def test_physical_verifier_rejects_wrong_type_namespace_missing_and_foreign_edits(self):
         module = props_driver.PATHS[props_driver.MODULE]
         role = props_driver.PATHS[props_driver.ROLE]
@@ -50,6 +128,8 @@ class PropertiesEvidenceTests(unittest.TestCase):
             "lost BOM": (module, b"\xef\xbb\xbf", b""),
             "changed line endings": (module, b"\r\n", b"\n"),
             "foreign rights edit": ("src/Roles/SalesReader/Ext/Rights.xml", b"</Rights>", b"<!-- changed --></Rights>"),
+            "foreign command interface edit": ("src/Subsystems/Администрирование/Ext/CommandInterface.xml",
+                                                b"</CommandInterface>", b"<!-- changed --></CommandInterface>"),
         }
         for label, (path, old, new) in changes.items():
             with self.subTest(label=label), tempfile.TemporaryDirectory() as raw:

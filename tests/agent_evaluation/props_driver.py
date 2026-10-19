@@ -250,7 +250,29 @@ def verify_properties_images(workspace, source_before):
     """Verify requested namespaces, scalar values and all retained physical bytes."""
     expected = expected_descriptor_images()
     observations = {}
+
+    def bound_before_image(path):
+        raw = read_file(SOURCE_FIXTURE, path)
+        if source_before.get(path) != hashlib.sha256(raw).hexdigest():
+            raise ValueError("Properties before image is not bound to its recorded source hash")
+        return raw
+
+    def image_evidence(raw, owner=None):
+        languages = ET.fromstring(raw.decode("utf-8-sig")).iter(CORE + "lang")
+        image = {"xmlUtf8": raw.decode("utf-8"), "sha256": hashlib.sha256(raw).hexdigest(),
+                 "bom": raw.startswith(b"\xef\xbb\xbf"), "crlf": b"\r\n" in raw,
+                 "allLanguages": list(dict.fromkeys(node.text for node in languages))}
+        if owner is not None:
+            properties = owner.find(MD + "Properties")
+            image["ownerName"] = properties.findtext(MD + "Name")
+            image["uuid"] = owner.get("uuid")
+            image["languages"] = {key: [item.findtext(CORE + "lang") for item in node.findall(CORE + "item")]
+                                  for key in ["Synonym", "Explanation"]
+                                  if (node := properties.find(MD + key)) is not None}
+        return image
+
     for target, path in PATHS.items():
+        before_raw = bound_before_image(path)
         raw = read_file(workspace, path)
         root = ET.fromstring(raw.decode("utf-8-sig"))
         kind, name = target.split(":", 1)[1].split(".", 1)
@@ -277,18 +299,28 @@ def verify_properties_images(workspace, source_before):
                 raise ValueError("Properties descriptor has a wrong requested scalar value or type spelling")
         if raw != expected[path]:
             raise ValueError("Properties full descriptor postimage differs from the independent expected bytes")
-        observations[target] = {"path": path, "properties": values, "uuid": nodes[0].get("uuid"),
-                                "sha256": hashlib.sha256(raw).hexdigest(), "bom": raw.startswith(b"\xef\xbb\xbf"),
-                                "crlf": b"\r\n" in raw}
+        before_owner = ET.fromstring(before_raw.decode("utf-8-sig")).find(MD + kind)
+        before_image, after_image = image_evidence(before_raw, before_owner), image_evidence(raw, nodes[0])
+        observations[target] = {"path": path, "ownerName": name, "properties": values, "uuid": nodes[0].get("uuid"),
+                                "sha256": after_image["sha256"], "bom": after_image["bom"], "crlf": after_image["crlf"],
+                                "before": before_image, "after": after_image,
+                                "expectedPostimageSHA256": hashlib.sha256(expected[path]).hexdigest(),
+                                "exactExpectedPostimage": True}
     observed_files = {"src/" + path: digest for path, digest in source_file_hashes(workspace / "src").items()}
     expected_files = {**source_before, **{path: hashlib.sha256(raw).hexdigest() for path, raw in expected.items()}}
     if observed_files != expected_files:
         raise ValueError("Properties changed, created or removed an unrequested physical source file")
+    companions = {}
+    for path in ["src/Roles/SalesReader/Ext/Rights.xml", "src/Subsystems/Администрирование/Ext/CommandInterface.xml"]:
+        before_raw, raw = bound_before_image(path), read_file(workspace, path)
+        if raw != before_raw:
+            raise ValueError("Properties changed a retained companion's exact bytes")
+        companions[path] = {"before": image_evidence(before_raw), "after": image_evidence(raw), "byteEqual": True}
     project = read_file(workspace, "v8project.yaml")
     if project != (SOURCE_FIXTURE / "v8project.yaml").read_bytes():
         raise ValueError("Properties changed its project source map")
-    return {"descriptors": observations, "sourceFilesSha256": observed_files,
-            "projectSha256": hashlib.sha256(project).hexdigest()}
+    return {"descriptors": observations, "companions": companions, "sourceFilesBeforeSha256": dict(source_before),
+            "sourceFilesSha256": observed_files, "projectSha256": hashlib.sha256(project).hexdigest()}
 
 
 def evaluate(server, scenario, proof_root):
