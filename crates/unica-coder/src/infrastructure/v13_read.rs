@@ -47,6 +47,57 @@ use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
+#[cfg(test)]
+std::thread_local! {
+    static COMPLETED_VIEW_PROJECTION_PROBE_FOR_TEST: std::cell::RefCell<Option<(String, Vec<String>)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Counts successful complete typed projections of one address on this thread.
+#[cfg(test)]
+pub(crate) struct CompletedViewProjectionProbeForTest {
+    previous: Option<(String, Vec<String>)>,
+}
+
+#[cfg(test)]
+impl CompletedViewProjectionProbeForTest {
+    pub(crate) fn start(at: &str) -> Self {
+        Self {
+            previous: COMPLETED_VIEW_PROJECTION_PROBE_FOR_TEST
+                .with(|slot| slot.replace(Some((at.to_owned(), Vec::new())))),
+        }
+    }
+
+    pub(crate) fn revisions(&self) -> Vec<String> {
+        COMPLETED_VIEW_PROJECTION_PROBE_FOR_TEST.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .expect("projection observer is active")
+                .1
+                .clone()
+        })
+    }
+}
+
+#[cfg(test)]
+impl Drop for CompletedViewProjectionProbeForTest {
+    fn drop(&mut self) {
+        COMPLETED_VIEW_PROJECTION_PROBE_FOR_TEST.with(|slot| {
+            slot.replace(self.previous.take());
+        });
+    }
+}
+
+#[cfg(test)]
+fn observe_completed_view_projection_for_test(at: &QualifiedAddress, revision: &str) {
+    COMPLETED_VIEW_PROJECTION_PROBE_FOR_TEST.with(|slot| {
+        if let Some((target, revisions)) = slot.borrow_mut().as_mut() {
+            if target == &at.to_string() {
+                revisions.push(revision.to_owned());
+            }
+        }
+    });
+}
+
 const MAX_MODULE_BYTES: usize = 8 * 1024 * 1024;
 /// Logical read adapter over one actor-issued source capability. Its read
 /// identity is fixed at admission; the adapter never snapshots the tree.
@@ -1938,6 +1989,8 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                 "source revision changed during the typed read",
             ));
         }
+        #[cfg(test)]
+        observe_completed_view_projection_for_test(at, &admitted.revision);
         Ok(projected)
     }
 }
