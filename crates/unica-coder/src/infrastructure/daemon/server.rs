@@ -8235,7 +8235,7 @@ struct ActorLogicalReadLease {"#,
                     "right": "main:Catalog.Items",
                     "cursor": "opaque"
                 }),
-                // The schema publishes no diff cursor (#1218): an unknown argument.
+                // Comparison diff publishes no cursor (#1218): an unknown argument.
                 "bad_value",
             ),
             (
@@ -8384,6 +8384,16 @@ struct ActorLogicalReadLease {"#,
                 InvocationRequest::new(tool, arguments, workspace_hint.as_str(), 7_000).unwrap();
             direct_v5(&runtime, request).unwrap()
         };
+        let planned = call(
+            ToolIdentity::Apply,
+            serde_json::json!({
+                "at": "main:Catalog.Items",
+                "ops": [{"op": "props.set", "args": {"values": {"Comment": "saved empty cursor"}}}]
+            }),
+        );
+        assert!(planned.ok, "{planned:?}");
+        let token = planned.data.as_ref().unwrap()["executionToken"].clone();
+        assert!(token.as_str().is_some_and(|token| !token.is_empty()));
         let cases = [
             (ToolIdentity::View, serde_json::json!({}), false),
             (
@@ -8394,6 +8404,11 @@ struct ActorLogicalReadLease {"#,
             (
                 ToolIdentity::Search,
                 serde_json::json!({"query": "PagedNeedle", "limit": 1}),
+                true,
+            ),
+            (
+                ToolIdentity::Diff,
+                serde_json::json!({"executionToken": token, "limit": 1}),
                 true,
             ),
             (ToolIdentity::Check, serde_json::json!({}), false),
@@ -8445,7 +8460,7 @@ struct ActorLogicalReadLease {"#,
                 "{name} {arguments}: first page continuation"
             );
         }
-        // Diff publishes no cursor, so even an empty one stays unknown.
+        // Only saved-plan diff publishes a cursor; comparison keeps even an empty one unknown.
         let diff = call(
             ToolIdentity::Diff,
             serde_json::json!({
@@ -8456,6 +8471,85 @@ struct ActorLogicalReadLease {"#,
         );
         assert!(!diff.ok);
         assert_eq!(diff.diagnostics[0]["code"], "bad_value", "{diff:?}");
+    }
+
+    #[test]
+    fn saved_plan_diff_default_limit_pages_twenty_chunks_and_replays() {
+        let (_state, _workspace, runtime, workspace_hint) = empty_cursor_and_diff_fixture();
+        let source = std::path::Path::new(&workspace_hint).join("src");
+        let before = crate::test_support::tree_snapshot(&source);
+        let call = |tool, arguments| {
+            let request =
+                InvocationRequest::new(tool, arguments, workspace_hint.as_str(), 7_000).unwrap();
+            direct_v5(&runtime, request).unwrap()
+        };
+        // A real metadata edit produces more than twenty 2048-byte source chunks.
+        // Twenty ASCII chunks still fit the 64 KiB encoded-page bound.
+        let planned = call(
+            ToolIdentity::Apply,
+            serde_json::json!({
+                "at": "main:Catalog.Items",
+                "ops": [{"op": "props.set", "args": {"values": {"Comment": "x".repeat(50 * 1024)}}}]
+            }),
+        );
+        assert!(planned.ok, "{planned:?}");
+        assert_eq!(planned.data.as_ref().unwrap()["mode"], "preview");
+        let token = planned.data.as_ref().unwrap()["executionToken"].clone();
+        assert!(token.as_str().is_some_and(|token| !token.is_empty()));
+        let first_args = serde_json::json!({"executionToken": token.clone()});
+        let omitted = call(ToolIdentity::Diff, first_args.clone());
+        let explicit_twenty = call(
+            ToolIdentity::Diff,
+            serde_json::json!({"executionToken": token.clone(), "limit": 20}),
+        );
+        assert!(omitted.ok, "{omitted:?}");
+        assert!(explicit_twenty.ok, "{explicit_twenty:?}");
+        assert_eq!(
+            serde_json::to_value(&omitted).unwrap(),
+            serde_json::to_value(&explicit_twenty).unwrap(),
+            "omitting limit uses the same real twenty-chunk boundary"
+        );
+        let first = omitted.data.as_ref().unwrap();
+        assert_eq!(first["chunks"].as_array().unwrap().len(), 20);
+        assert_eq!(first["truncated"], true);
+        assert_eq!(first["planIdentity"].as_str(), planned.rev.as_deref());
+        assert_eq!(omitted.page.as_ref().unwrap()["stoppedBy"], "limit");
+        let cursor = omitted.cursor.as_deref().expect("more than twenty chunks");
+        assert_eq!(first["cursor"], cursor);
+        assert_eq!(omitted.next.len(), 1);
+        assert_eq!(omitted.next[0]["tool"], "unica.diff");
+        assert_eq!(omitted.next[0]["arguments"]["executionToken"], token);
+        assert_eq!(omitted.next[0]["arguments"]["limit"], 20);
+        assert_eq!(omitted.next[0]["arguments"]["cursor"], cursor);
+        let first_replay = call(ToolIdentity::Diff, first_args);
+        assert_eq!(
+            serde_json::to_value(&first_replay).unwrap(),
+            serde_json::to_value(&omitted).unwrap()
+        );
+        // Keep limit omitted when following the issued cursor as well.
+        let continuation_args = serde_json::json!({"executionToken": token, "cursor": cursor});
+        let last = call(ToolIdentity::Diff, continuation_args.clone());
+        assert!(last.ok, "{last:?}");
+        let tail = last.data.as_ref().unwrap();
+        let tail_len = tail["chunks"].as_array().unwrap().len();
+        assert!(tail_len > 0 && tail_len <= 20);
+        assert!(first["chunks"].as_array().unwrap().len() + tail_len > 20);
+        assert_eq!(tail["planIdentity"], first["planIdentity"]);
+        assert_eq!(tail["truncated"], false);
+        assert!(tail["cursor"].is_null());
+        assert!(last.cursor.is_none());
+        assert!(last.next.is_empty());
+        assert_eq!(last.page.as_ref().unwrap()["stoppedBy"], "complete");
+        let last_replay = call(ToolIdentity::Diff, continuation_args);
+        assert_eq!(
+            serde_json::to_value(&last_replay).unwrap(),
+            serde_json::to_value(&last).unwrap()
+        );
+        assert_eq!(
+            crate::test_support::tree_snapshot(&source),
+            before,
+            "planning and all saved-source page reads stay write-free"
+        );
     }
 
     #[test]

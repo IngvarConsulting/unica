@@ -2995,12 +2995,48 @@ mod tests {
             for (actual, expected) in received.iter().zip(minimal_calls) {
                 assert_eq!(Value::Object(actual.clone()), expected);
             }
-            for (name, required) in [
-                ("unica.docs", json!(["query"])),
-                ("unica.diff", json!(["left", "right"])),
+            for (name, pointer, required) in [
+                ("unica.docs", "/required", json!(["query"])),
+                ("unica.diff", "/else/required", json!(["left", "right"])),
+                ("unica.diff", "/then/required", json!(["executionToken"])),
             ] {
                 let tool = tools.iter().find(|tool| tool["name"] == name).unwrap();
-                assert_eq!(tool["inputSchema"]["required"], required);
+                assert_eq!(tool["inputSchema"].pointer(pointer), Some(&required));
+            }
+            let diff = tools
+                .iter()
+                .find(|tool| tool["name"] == "unica.diff")
+                .unwrap();
+            assert_eq!(diff["inputSchema"]["required"], json!([]));
+            let diff_validator = jsonschema::validator_for(&diff["inputSchema"])
+                .expect("valid conditional diff wire schema");
+            for arguments in [
+                json!({"left":"main:Catalog.Items", "right":"main:Catalog.Other"}),
+                json!({"left":"main:Catalog.Items", "right":"main:Catalog.Other", "limit":1000}),
+                json!({"executionToken":"saved-plan"}),
+                json!({"executionToken":"saved-plan", "limit":1, "cursor":""}),
+            ] {
+                assert!(
+                    diff_validator.is_valid(&arguments),
+                    "valid diff request: {arguments}"
+                );
+            }
+            for arguments in [
+                json!({}),
+                json!({"left":"main:Catalog.Items"}),
+                json!({"right":"main:Catalog.Other"}),
+                json!({"cursor":""}),
+                json!({"executionToken":""}),
+                json!({"executionToken":null}),
+                json!({"executionToken":"saved-plan", "left":"main:Catalog.Items", "right":"main:Catalog.Other"}),
+                json!({"left":"main:Catalog.Items", "right":"main:Catalog.Other", "cursor":""}),
+                json!({"executionToken":"saved-plan", "limit":51}),
+                json!({"executionToken":"saved-plan", "limit":0}),
+            ] {
+                assert!(
+                    !diff_validator.is_valid(&arguments),
+                    "invalid diff request: {arguments}"
+                );
             }
             client.shutdown().await;
         }

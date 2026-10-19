@@ -433,7 +433,7 @@ fn schema_for_plan_diff() -> Value {
     let saved = schema(
         json!({
             "executionToken": {"type": "string", "minLength": 1, "description": "Token from apply planning; reads stored before/after bytes without executing."},
-            "limit": {"type": "integer", "minimum": 1, "maximum": SOURCE_NAVIGATION_LIMIT_MAX, "default": SOURCE_NAVIGATION_LIMIT_DEFAULT,
+            "limit": {"type": "integer", "minimum": 1, "maximum": SOURCE_NAVIGATION_LIMIT_MAX,
                 "description": format!("Maximum saved source chunks; default {SOURCE_NAVIGATION_LIMIT_DEFAULT}. Pages are also bounded by encoded bytes.")},
             "cursor": cursor("Continue the same saved plan with the same limit. Only saved-plan reads support continuation.")
         }),
@@ -549,7 +549,11 @@ mod tests {
     fn saved_plan_diff_limits_follow_read_pages_without_restricting_comparisons() {
         let schema = super::schema_for_plan_diff();
         assert_eq!(schema["then"]["properties"]["limit"]["maximum"], 50);
-        assert_eq!(schema["then"]["properties"]["limit"]["default"], 20);
+        // #1210: form clients may copy defaults without selecting a branch.
+        // The runtime default stays 20; its schema annotation is omitted.
+        assert!(schema["then"]["properties"]["limit"]
+            .get("default")
+            .is_none());
         assert_eq!(schema["properties"]["limit"]["maximum"], 1000);
         assert_eq!(schema["else"]["properties"]["limit"]["maximum"], 1000);
     }
