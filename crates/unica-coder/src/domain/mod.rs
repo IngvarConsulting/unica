@@ -11,6 +11,7 @@ pub mod code_intelligence;
 pub mod diagnostics;
 pub mod documentation;
 pub mod engine;
+pub(crate) mod event_operation;
 pub mod events;
 pub mod form_edit;
 pub(crate) mod form_operation;
@@ -25,6 +26,7 @@ pub(crate) mod metadata;
 pub(crate) mod metadata_operation;
 #[allow(dead_code)]
 pub(crate) mod module_projection;
+pub(crate) mod mxl_operation;
 pub(crate) mod node_view;
 pub(crate) mod operation_contract;
 pub(crate) mod operation_deadline;

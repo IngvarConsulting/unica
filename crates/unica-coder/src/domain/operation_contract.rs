@@ -6,8 +6,10 @@ use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
+mod event;
 mod form;
 mod metadata;
+mod mxl;
 #[cfg(test)]
 pub(crate) use form::{form_element_enum, FORM_ELEMENT_KINDS};
 pub(crate) use form::{FORM_DYNAMIC_LIST_KEYS, FORM_ELEMENT_EVENT_KEYS, FORM_ELEMENT_NESTED_KEYS};
@@ -488,43 +490,6 @@ impl OperationContract {
             notes:"Operands are structured values. There is no shorthand or whole-schema JSON input. Unspecified properties and unrelated XML bytes are preserved; create template.add first, then compose operations. Preview makes no writes; execute its executionToken, read the post-image and check the template.",example_args,help:REPORTS_HELP})
     }
 
-    pub(crate) fn mxl(op: &str) -> Option<Self> {
-        let scalar = json!({"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"},{"type":"null"}]});
-        let (schema, target, effect, notes, example_args) = match op {
-            "mxl.set" | "area.add" => {
-                let cells = json!({"type":"object","minProperties":1,
-                    "propertyNames":{"type":"string","format":"unica-mxl-cell-address",
-                        "description":format!("R<row>C<column>, 1-based inside the area; row <= {MXL_MAX_ROW}, column <= {MXL_MAX_COLUMN}; leading zeros and plus are accepted")},
-                    "additionalProperties":scalar});
-                let columns = json!({"type":"integer","format":"unica-json-i64","minimum":1,"maximum":i64::MAX,
-                    "description":"Positive JSON integer serialized without a decimal point or exponent, in the signed 64-bit range; 1 is accepted, 1.0 and 1e0 are refused."});
-                let notes = "Read Template -> Area -> Body for ordered nonempty text cells; Body index is a reading ordinal, not RnCn. Parameter lists parameter names. The writer changes only the addressed cells, rows and areas; other content and bytes stay. A new cell has no own format. Refused before writing: a non-Rows or rowless area, a cell inside a merge it does not start, a cell holding a value or control, a cell that takes a parameter or template fill from its row, column, column-set or document format. Strings remain text; numbers/booleans are serialized as text; null is empty text and writes no new cell. Fonts, styles, merges and page properties are not public inputs. Create and execute template.add before addressing a new template.";
-                if op == "mxl.set" {
-                    (object(&[("at",text(true)),("values",object(&[("cells",cells),("columns",columns)], &["cells"]))], &["values"]),
-                    "An existing named area of a SpreadsheetDocument Template: <source-set>:<Owner>.<name>.Template.<name>.Area.<area>. The address names the area; a missing area is refused, create it with area.add on the template.",
-                    "Update cells of the existing named Rows area. Addressed parameter/template cells become ordinary text. Unaddressed cells and areas remain. A row below the area grows the area only when nothing follows it. Width grows to max(existing width, written column, columns); it never shrinks.",
-                    notes,
-                    json!({"values":{"columns":4,"cells":{"R1C1":"Item","R1C2":"Amount","R2C1":true,"R2C2":null}}}))
-                } else {
-                    (object(&[("at",text(true)),("items",json!({"type":"array","minItems":1,"items":object(&[("name",text(true)),("cells",cells),("columns",columns)], &["name","cells"])}))], &["items"]),
-                    "The existing SpreadsheetDocument Template itself: <source-set>:<Owner>.<name>.Template.<name>. Read its Area collection before choosing a new area name.",
-                    "Append new named Rows areas after every used row with their initial cells. An existing area name is refused; change it with mxl.set at its Area address. Width grows to max(existing width, written column, columns); it never shrinks.",
-                    notes,
-                    json!({"items":[{"name":"Header","columns":4,"cells":{"R1C1":"Item","R1C2":"Amount"}}]}))
-                }
-            }
-            _ => return None,
-        };
-        Some(Self {
-            schema,
-            target,
-            effect,
-            notes,
-            example_args,
-            help: REPORTS_HELP,
-        })
-    }
-
     pub(crate) fn normalize(&self, args: &Value, path: &str) -> Result<Value, ContractError> {
         validate(&self.schema, args, path)?;
         let mut args = args.clone();
@@ -939,7 +904,7 @@ mod tests {
 
     #[test]
     fn mxl_contract_checks_dynamic_keys_scalars_and_exact_integer_values() {
-        let contract = OperationContract::mxl("mxl.set").unwrap();
+        let contract = crate::domain::mxl_operation::MxlOperation::Set.contract();
         for key in ["R1C1", "R01C01", "R+1C+1", "R10000C1000"] {
             assert!(
                 contract
@@ -989,7 +954,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.path, "args.values.area");
         // `area.add` называет новую область и её начальные ячейки.
-        let area = OperationContract::mxl("area.add").unwrap();
+        let area = crate::domain::mxl_operation::MxlOperation::AreaAdd.contract();
         assert!(area
             .normalize(
                 &json!({"items":[{"name":"A","cells":{"R1C1":"x"},"columns":2}]}),

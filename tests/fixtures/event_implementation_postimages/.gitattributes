@@ -1,0 +1,2 @@
+*.bsl -text whitespace=-blank-at-eol,cr-at-eol
+*.xml -text whitespace=cr-at-eol
