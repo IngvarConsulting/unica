@@ -1112,19 +1112,21 @@ impl ActorBoundExecution {
                 ),
             );
         };
-        let result = self.invocation.actor.execute_saved_apply(
-            token,
-            match deadline {
-                crate::domain::operation_deadline::OperationDeadline::NoDeadline => {
-                    ProviderDeadline::no_deadline()
-                }
-                crate::domain::operation_deadline::OperationDeadline::Finite(deadline) => {
-                    ProviderDeadline::new(deadline)
-                }
-            },
-            cancellation,
-            finish,
-        )?;
+        // Adapt the caller's cutoff; this boundary must not start a new budget.
+        let deadline = match deadline {
+            crate::domain::operation_deadline::OperationDeadline::NoDeadline => {
+                ProviderDeadline::no_deadline()
+            }
+            crate::domain::operation_deadline::OperationDeadline::Finite(deadline) => {
+                ProviderDeadline::new(deadline)
+            }
+        };
+        #[cfg(test)]
+        test_control::record_apply_deadline(deadline);
+        let result =
+            self.invocation
+                .actor
+                .execute_saved_apply(token, deadline, cancellation, finish)?;
         confirmed.store(true, std::sync::atomic::Ordering::Release);
         Ok(result)
     }
@@ -2025,17 +2027,35 @@ pub(crate) mod test_control {
     }
 
     thread_local! {
-        static APPLY_DEADLINES: std::cell::RefCell<Vec<Option<Duration>>> =
+        static APPLY_DEADLINES: std::cell::RefCell<Vec<(super::ProviderDeadline, Option<Duration>)>> =
             const { std::cell::RefCell::new(Vec::new()) };
     }
 
-    /// The remaining operation time the apply admission handed to the actor.
+    /// The cutoff and remaining time handed to the actor at admission or saved execution.
     pub(super) fn record_apply_deadline(deadline: super::ProviderDeadline) {
-        APPLY_DEADLINES.with(|deadlines| deadlines.borrow_mut().push(deadline.remaining()));
+        APPLY_DEADLINES.with(|deadlines| {
+            deadlines
+                .borrow_mut()
+                .push((deadline, deadline.remaining()));
+        });
     }
 
     pub(crate) fn take_apply_deadlines() -> Vec<Option<Duration>> {
-        APPLY_DEADLINES.with(|deadlines| std::mem::take(&mut *deadlines.borrow_mut()))
+        APPLY_DEADLINES.with(|deadlines| {
+            std::mem::take(&mut *deadlines.borrow_mut())
+                .into_iter()
+                .map(|(_, remaining)| remaining)
+                .collect()
+        })
+    }
+
+    pub(crate) fn take_apply_deadline_values() -> Vec<super::ProviderDeadline> {
+        APPLY_DEADLINES.with(|deadlines| {
+            std::mem::take(&mut *deadlines.borrow_mut())
+                .into_iter()
+                .map(|(deadline, _)| deadline)
+                .collect()
+        })
     }
 
     pub(super) fn pause_admission(workspace: &Path) {

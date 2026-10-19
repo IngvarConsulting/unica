@@ -11683,6 +11683,117 @@ struct ActorLogicalReadLease {"#,
         );
     }
 
+    /// The saved-plan adapter carries the existing cutoff into real actor
+    /// publication. A finite cutoff must not become a fresh relative budget,
+    /// and an elapsed finite cutoff must not become absence or consume the plan.
+    #[test]
+    fn saved_apply_adapter_preserves_the_existing_cutoff_and_absence() {
+        use crate::domain::operation_deadline::OperationDeadline;
+        use crate::infrastructure::workspace_actor::{
+            ApplyPublicationErrorKind, SavedApplyExecutionError,
+        };
+
+        let now = Instant::now();
+        for deadline in [
+            OperationDeadline::Finite(now + Duration::from_secs(3_600)),
+            OperationDeadline::NoDeadline,
+            OperationDeadline::Finite(now - Duration::from_secs(1)),
+        ] {
+            let workspace = subsystem_picture_workspace("", true);
+            let source = workspace.path().join("src");
+            let before = crate::test_support::tree_snapshot(&source);
+            let runtime = bootstrap_runtime();
+            let preview = submit_canonical(
+                &runtime,
+                workspace.path(),
+                ToolIdentity::Apply,
+                serde_json::json!({
+                    "at": "main:Subsystem.Sales",
+                    "ops": [{"op": "props.set", "args": {"values": {"Comment": "same saved cutoff"}}}],
+                }),
+            );
+            assert!(preview.ok, "{preview:?}");
+            assert_eq!(crate::test_support::tree_snapshot(&source), before);
+            let token = preview.data.as_ref().unwrap()["executionToken"]
+                .as_str()
+                .unwrap();
+            let request = InvocationRequest::new(
+                ToolIdentity::Apply,
+                serde_json::json!({"executionToken": token}),
+                std::fs::canonicalize(workspace.path())
+                    .unwrap()
+                    .to_string_lossy(),
+                7_000,
+            )
+            .unwrap();
+            let cancellation = CancellationToken::new();
+            let execution = bind_workspace_invocation(
+                &request,
+                &runtime.workspace_actors,
+                Arc::clone(&runtime.deliveries),
+                Arc::clone(&runtime.provider_hosts),
+                Arc::clone(&runtime.runtime_resources),
+                None,
+                runtime.capture_response_deadline_for_test(),
+            )
+            .unwrap()
+            .begin_execution(&cancellation)
+            .unwrap();
+            let expired = deadline.is_elapsed_at(Instant::now());
+            let expected = match deadline {
+                OperationDeadline::NoDeadline => ProviderDeadline::no_deadline(),
+                OperationDeadline::Finite(cutoff) => ProviderDeadline::new(cutoff),
+            };
+            super::admission_test_control::take_apply_deadlines();
+            let result = execution.execute_saved_apply(
+                token,
+                &cancellation,
+                deadline,
+                |preview, publication| {
+                    publication.expect("a live cutoff publishes the actual saved plan");
+                    preview
+                },
+            );
+            let observed = super::admission_test_control::take_apply_deadline_values();
+            assert_eq!(observed.len(), 1);
+            if expired {
+                assert_eq!(observed[0].remaining(), Some(Duration::ZERO));
+                assert!(matches!(
+                    result,
+                    Err(SavedApplyExecutionError::Publication(error))
+                        if error.kind() == ApplyPublicationErrorKind::Deadline
+                ));
+                assert_eq!(crate::test_support::tree_snapshot(&source), before);
+                let retried = execution
+                    .execute_saved_apply(
+                        token,
+                        &cancellation,
+                        OperationDeadline::NoDeadline,
+                        |preview, publication| {
+                            publication.expect("expiry must leave the saved plan pending");
+                            preview
+                        },
+                    )
+                    .unwrap();
+                assert!(retried.ok, "{retried:?}");
+                assert_eq!(
+                    super::admission_test_control::take_apply_deadline_values(),
+                    [ProviderDeadline::no_deadline()]
+                );
+            } else {
+                assert_eq!(
+                    observed,
+                    [expected],
+                    "saved execution must preserve the input endpoint or its absence"
+                );
+                assert!(result.unwrap().ok);
+            }
+            assert!(std::fs::read_to_string(source.join("Subsystems/Sales.xml"))
+                .unwrap()
+                .contains("same saved cutoff"));
+        }
+    }
+
     /// #1338: only a binding that left the workspace actor is a changed
     /// workspace the caller may repeat; an invariant failure at the
     /// execution boundary stays an internal failure, and neither carries the
@@ -15057,11 +15168,12 @@ mod finite_deadline_guard {
     /// Constructors that start a finite operation deadline.
     const FINITE_DEADLINE_CONSTRUCTORS: [&str; 3] = ["from_budget", "new", "from_started_at"];
 
-    /// Production places that may still start a finite `ProviderDeadline`
+    /// Production places that may construct a finite `ProviderDeadline`
     /// (#1251). Each entry is a per-step safety bound, a deadline the user set
-    /// explicitly, a path the v0.13 wire does not reach, or search work moved
-    /// to #1254. Any other operation path admits work without a deadline; a
-    /// new constructor anywhere, or one more in a listed file, fails here.
+    /// explicitly, an adapter of an existing caller cutoff, a path the v0.13
+    /// wire does not reach, or search work moved to #1254. An existing-cutoff
+    /// adapter must have a test that rejects rearming its input as a budget.
+    /// A new constructor anywhere, or one more in a listed file, fails here.
     const FINITE_DEADLINE_ALLOW_LIST: &[(&str, usize, &str)] = &[
         (
             "application/code_intelligence.rs",
@@ -15082,6 +15194,11 @@ mod finite_deadline_guard {
             "infrastructure/application_ports.rs",
             1,
             "NATIVE_TYPED_INVOCATION_DEADLINE: legacy v0.12 surface",
+        ),
+        (
+            "infrastructure/daemon/invocation_service.rs",
+            1,
+            "saved apply adapts the existing caller cutoff; saved_apply_adapter_preserves_the_existing_cutoff_and_absence rejects rearming",
         ),
         (
             "infrastructure/daemon/runtime_v5.rs",
