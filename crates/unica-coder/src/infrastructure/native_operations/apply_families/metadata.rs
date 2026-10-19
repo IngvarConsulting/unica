@@ -7,6 +7,7 @@ use crate::domain::metadata::{
     MetaCollection, MetaDiagnosticCode, MetaEditOperation, MetadataKind,
 };
 use crate::domain::metadata_operation::MetadataOperation as RegisteredMetadataOperation;
+use crate::domain::operation_contract::ArgumentShape;
 use crate::domain::project_sources::SourceSetKind;
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use crate::infrastructure::logical_event_source::metadata_descriptor_relative;
@@ -252,6 +253,16 @@ pub(crate) fn parse_metadata_plan_operation_in(
         .at_path(format!("ops[{op_index}].args"))
     })?;
     if let Some(operation) = descriptor.and_then(OperationDescriptor::metadata_operation) {
+        let contract = operation.contract_at(None);
+        let shape = ArgumentShape::new(&contract.schema);
+        // Unknown outer keys precede address errors. Contextual legality is
+        // still checked by the target and typed conversion, in their order.
+        reject_unknown_args_with(
+            operation.name(),
+            object,
+            |key| shape.property(key).is_some(),
+            op_index,
+        )?;
         let kind = match operation {
             RegisteredMetadataOperation::AttributeAdd => {
                 parse_attribute_add(object, op_index, binding)?
@@ -262,8 +273,113 @@ pub(crate) fn parse_metadata_plan_operation_in(
             RegisteredMetadataOperation::AttributeRemove => {
                 parse_attribute_remove(object, op_index, binding)?
             }
+            RegisteredMetadataOperation::TabularSectionAdd => {
+                parse_member_add(MetaCollection::TabularSections, object, op_index, binding)?
+            }
+            RegisteredMetadataOperation::TabularSectionSet => parse_addressed_member_change(
+                operation.name(),
+                NodeKind::TabularSection,
+                MetaCollection::TabularSections,
+                AddressedMemberChange::Set,
+                object,
+                op_index,
+                binding,
+            )?,
+            RegisteredMetadataOperation::TabularSectionRemove => parse_addressed_member_change(
+                operation.name(),
+                NodeKind::TabularSection,
+                MetaCollection::TabularSections,
+                AddressedMemberChange::Remove,
+                object,
+                op_index,
+                binding,
+            )?,
+            RegisteredMetadataOperation::DimensionAdd => {
+                parse_member_add(MetaCollection::Dimensions, object, op_index, binding)?
+            }
+            RegisteredMetadataOperation::DimensionSet => parse_addressed_member_change(
+                operation.name(),
+                NodeKind::Dimension,
+                MetaCollection::Dimensions,
+                AddressedMemberChange::Set,
+                object,
+                op_index,
+                binding,
+            )?,
+            RegisteredMetadataOperation::DimensionRemove => parse_addressed_member_change(
+                operation.name(),
+                NodeKind::Dimension,
+                MetaCollection::Dimensions,
+                AddressedMemberChange::Remove,
+                object,
+                op_index,
+                binding,
+            )?,
+            RegisteredMetadataOperation::ResourceAdd => {
+                parse_member_add(MetaCollection::Resources, object, op_index, binding)?
+            }
+            RegisteredMetadataOperation::ResourceSet => parse_addressed_member_change(
+                operation.name(),
+                NodeKind::Resource,
+                MetaCollection::Resources,
+                AddressedMemberChange::Set,
+                object,
+                op_index,
+                binding,
+            )?,
+            RegisteredMetadataOperation::ResourceRemove => parse_addressed_member_change(
+                operation.name(),
+                NodeKind::Resource,
+                MetaCollection::Resources,
+                AddressedMemberChange::Remove,
+                object,
+                op_index,
+                binding,
+            )?,
+            RegisteredMetadataOperation::EnumValueAdd => {
+                parse_member_add(MetaCollection::EnumValues, object, op_index, binding)?
+            }
+            RegisteredMetadataOperation::EnumValueSet => parse_addressed_member_change(
+                operation.name(),
+                NodeKind::EnumValue,
+                MetaCollection::EnumValues,
+                AddressedMemberChange::Set,
+                object,
+                op_index,
+                binding,
+            )?,
+            RegisteredMetadataOperation::EnumValueRemove => parse_addressed_member_change(
+                operation.name(),
+                NodeKind::EnumValue,
+                MetaCollection::EnumValues,
+                AddressedMemberChange::Remove,
+                object,
+                op_index,
+                binding,
+            )?,
+            RegisteredMetadataOperation::ColumnAdd => {
+                parse_member_add(MetaCollection::Columns, object, op_index, binding)?
+            }
+            RegisteredMetadataOperation::ColumnSet => parse_addressed_member_change(
+                operation.name(),
+                NodeKind::Column,
+                MetaCollection::Columns,
+                AddressedMemberChange::Set,
+                object,
+                op_index,
+                binding,
+            )?,
+            RegisteredMetadataOperation::ColumnRemove => parse_addressed_member_change(
+                operation.name(),
+                NodeKind::Column,
+                MetaCollection::Columns,
+                AddressedMemberChange::Remove,
+                object,
+                op_index,
+                binding,
+            )?,
             RegisteredMetadataOperation::CommandAdd => {
-                parse_member_add(operation.name(), "commands", object, op_index, binding)?
+                parse_member_add(MetaCollection::Commands, object, op_index, binding)?
             }
             RegisteredMetadataOperation::CommandSet => parse_addressed_member_change(
                 operation.name(),
@@ -284,27 +400,32 @@ pub(crate) fn parse_metadata_plan_operation_in(
                 binding,
             )?,
         };
+        // Convert the target and payload first to retain their diagnostics.
+        // Only the shared envelope's requiredness and container types remain;
+        // nested fields were visited by the staged Metadata argument reader.
+        for key in shape.required_names() {
+            if !object.contains_key(key) {
+                return Err(ApplyPlanError::new(
+                    ApplyPlanErrorKind::BadValue,
+                    format!("`{key}` is required"),
+                )
+                .at_path(format!("ops[{op_index}].args.{key}")));
+            }
+        }
+        for (key, value) in object {
+            shape
+                .property(key)
+                .expect("known operation argument")
+                .validate_type(value, &format!("ops[{op_index}].args.{key}"))
+                .map_err(|error| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message)
+                        .at_path(error.path)
+                })?;
+        }
         return Ok(MetadataPlanOperation { kind });
     }
     let kind = match operation {
         "props.set" => parse_props_set(object, op_index, binding)?,
-        "tabularSection.add" => {
-            parse_member_add(operation, "tabularSections", object, op_index, binding)?
-        }
-        "tabularSection.set"
-        | "tabularSection.remove"
-        | "dimension.set"
-        | "dimension.remove"
-        | "resource.set"
-        | "resource.remove"
-        | "enumValue.set"
-        | "enumValue.remove"
-        | "column.set"
-        | "column.remove" => parse_addressed_member(operation, object, op_index, binding)?,
-        "dimension.add" => parse_member_add(operation, "dimensions", object, op_index, binding)?,
-        "resource.add" => parse_member_add(operation, "resources", object, op_index, binding)?,
-        "enumValue.add" => parse_member_add(operation, "enumValues", object, op_index, binding)?,
-        "column.add" => parse_member_add(operation, "columns", object, op_index, binding)?,
         "template.add" => parse_template_add(object, op_index, binding)?,
         "template.set" => parse_template_set(object, op_index, binding)?,
         "template.remove" => parse_template_remove(object, op_index, binding)?,
@@ -328,7 +449,16 @@ fn reject_unknown_args(
     allowed: &[&str],
     op_index: usize,
 ) -> Result<(), ApplyPlanError> {
-    if let Some(field) = args.keys().find(|field| !allowed.contains(&field.as_str())) {
+    reject_unknown_args_with(operation, args, |key| allowed.contains(&key), op_index)
+}
+
+fn reject_unknown_args_with(
+    operation: &str,
+    args: &Map<String, Value>,
+    accepts: impl Fn(&str) -> bool,
+    op_index: usize,
+) -> Result<(), ApplyPlanError> {
+    if let Some(field) = args.keys().find(|field| !accepts(field)) {
         // The refusal names the expected skeleton so the caller's first retry
         // does not have to discover the argument shape by another refusal.
         let expected = crate::domain::apply::OperationRegistry::closed()
@@ -839,7 +969,6 @@ fn parse_attribute_add(
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
-    reject_unknown_args("attribute.add", args, &["at", "items"], op_index)?;
     let target = qualified_target(args, op_index, binding)?;
     let (owner, kind, section) = match target.segments() {
         [_] => {
@@ -891,7 +1020,6 @@ fn parse_attribute_set(
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
-    reject_unknown_args("attribute.set", args, &["at", "values"], op_index)?;
     let target = qualified_target(args, op_index, binding)?;
     let (owner, kind, name, scope) = attribute_owner_and_name(&target, op_index)?;
     let mut values = required_object(args, "values", op_index)?.clone();
@@ -933,7 +1061,6 @@ fn parse_attribute_remove(
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
-    reject_unknown_args("attribute.remove", args, &["at"], op_index)?;
     let target = qualified_target(args, op_index, binding)?;
     let (owner, kind, name, scope) = attribute_owner_and_name(&target, op_index)?;
     let mut legacy = json!({"op": "remove", "collection": "attributes", "names": [name]});
@@ -956,13 +1083,11 @@ fn parse_attribute_remove(
 /// One member-collection add: `at` names the owner, `items` carry the new
 /// elements exactly as the typed metadata contract defines them.
 fn parse_member_add(
-    operation: &str,
-    collection: &str,
+    collection: MetaCollection,
     args: &Map<String, Value>,
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
-    reject_unknown_args(operation, args, &["at", "items"], op_index)?;
     let target = qualified_target(args, op_index, binding)?;
     let (owner, kind) = metadata_owner(&target, op_index)?;
     let items = required_array(args, "items", op_index)?.to_vec();
@@ -970,7 +1095,7 @@ fn parse_member_add(
         binding.source_set_name(),
         owner,
         kind,
-        json!({"op": "add", "collection": collection, "elements": items}),
+        json!({"op": "add", "collection": collection.as_str(), "elements": items}),
         |field| {
             format!(
                 "ops[{op_index}].args.{}",
@@ -978,44 +1103,6 @@ fn parse_member_add(
             )
         },
         op_index,
-    )
-}
-
-/// The node kind and typed collection of an addressed member operation.
-fn addressed_member(operation: &str) -> (NodeKind, MetaCollection) {
-    match operation.split_once('.').map(|(family, _)| family) {
-        Some("tabularSection") => (NodeKind::TabularSection, MetaCollection::TabularSections),
-        Some("dimension") => (NodeKind::Dimension, MetaCollection::Dimensions),
-        Some("resource") => (NodeKind::Resource, MetaCollection::Resources),
-        Some("enumValue") => (NodeKind::EnumValue, MetaCollection::EnumValues),
-        Some("column") => (NodeKind::Column, MetaCollection::Columns),
-        _ => unreachable!("only addressed member operations reach this parser"),
-    }
-}
-
-/// `<member>.set` and `<member>.remove` act on `Owner.Name.<Kind>.<Member>`:
-/// the address names the member, `set` carries only the changed fields in
-/// `values` (a rename is `newName`), and `remove` carries no arguments.
-fn parse_addressed_member(
-    operation: &str,
-    args: &Map<String, Value>,
-    op_index: usize,
-    binding: &ProviderRootBinding,
-) -> Result<MetadataPlanKind, ApplyPlanError> {
-    let (member_kind, collection) = addressed_member(operation);
-    let change = if operation.ends_with(".remove") {
-        AddressedMemberChange::Remove
-    } else {
-        AddressedMemberChange::Set
-    };
-    parse_addressed_member_change(
-        operation,
-        member_kind,
-        collection,
-        change,
-        args,
-        op_index,
-        binding,
     )
 }
 
@@ -1034,11 +1121,6 @@ fn parse_addressed_member_change(
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
-    let allowed: &[&str] = match change {
-        AddressedMemberChange::Set => &["at", "values"],
-        AddressedMemberChange::Remove => &["at"],
-    };
-    reject_unknown_args(operation, args, allowed, op_index)?;
     let target = qualified_target(args, op_index, binding)?;
     let (owner, kind, name) = metadata_member_target(&target, member_kind, op_index)?;
     if matches!(change, AddressedMemberChange::Remove) {
@@ -3204,6 +3286,10 @@ fn stage_help_create(
 
 #[cfg(test)]
 mod tests {
+    mod contract_shape_tests {
+        include!("metadata/contract_shape_tests.rs");
+    }
+
     use super::{
         parse_metadata_plan_operation, plan_metadata_batch, preserve_descriptor_image,
         set_ml_property,
@@ -3415,6 +3501,36 @@ mod tests {
                 Some("Lines"),
             ),
             (
+                "tabularSection.add",
+                "Document.Order",
+                MetaCollection::TabularSections,
+                None,
+            ),
+            (
+                "dimension.add",
+                "InformationRegister.Prices",
+                MetaCollection::Dimensions,
+                None,
+            ),
+            (
+                "resource.add",
+                "InformationRegister.Prices",
+                MetaCollection::Resources,
+                None,
+            ),
+            (
+                "enumValue.add",
+                "Enum.Kinds",
+                MetaCollection::EnumValues,
+                None,
+            ),
+            (
+                "column.add",
+                "DocumentJournal.All",
+                MetaCollection::Columns,
+                None,
+            ),
+            (
                 "command.add",
                 "Document.Order",
                 MetaCollection::Commands,
@@ -3441,7 +3557,9 @@ mod tests {
             else {
                 panic!("{operation} must plan a typed metadata addition");
             };
-            assert_eq!(target.as_str(), "Document.Order");
+            let owner = at.strip_prefix("main:").unwrap_or(at);
+            let owner = owner.split(".TabularSection.").next().unwrap();
+            assert_eq!(target.as_str(), owner);
             assert_eq!(actual, collection);
             assert_eq!(
                 scope.as_ref().map(|scope| scope.tabular_section.as_str()),
@@ -3800,6 +3918,183 @@ mod tests {
                 Some(format!("ops[3].args.values.{field}").as_str()),
                 "{field}: {error:?}"
             );
+        }
+    }
+
+    #[test]
+    fn typed_member_changes_keep_each_addressed_collection_and_caller_fields() {
+        use super::{AddressedFields, MetadataPlanKind};
+        use crate::domain::metadata::{MetaCollection, MetaEditOperation};
+        let fixture = MetadataFixture::new();
+        for (family, owner, leaf, collection) in [
+            (
+                "tabularSection",
+                "Document.Order",
+                "TabularSection",
+                MetaCollection::TabularSections,
+            ),
+            (
+                "dimension",
+                "InformationRegister.Prices",
+                "Dimension",
+                MetaCollection::Dimensions,
+            ),
+            (
+                "resource",
+                "InformationRegister.Prices",
+                "Resource",
+                MetaCollection::Resources,
+            ),
+            (
+                "enumValue",
+                "Enum.Kinds",
+                "EnumValue",
+                MetaCollection::EnumValues,
+            ),
+            (
+                "column",
+                "DocumentJournal.All",
+                "Column",
+                MetaCollection::Columns,
+            ),
+        ] {
+            for at in [
+                format!("{owner}.{leaf}.Member"),
+                format!("main:{owner}.{leaf}.Member"),
+            ] {
+                let operation = format!("{family}.set");
+                let parsed = parse_metadata_plan_operation(
+                    &operation,
+                    &json!({"at":at,"values":{"newName":"Changed","comment":"kept"}}),
+                    3,
+                    &fixture.binding,
+                )
+                .unwrap();
+                let MetadataPlanKind::Edit {
+                    target,
+                    operation:
+                        MetaEditOperation::Update {
+                            collection: actual,
+                            scope,
+                            elements,
+                        },
+                    addressed,
+                } = parsed.kind
+                else {
+                    panic!("{operation} must plan a typed metadata update");
+                };
+                assert_eq!(target.as_str(), owner, "{operation}");
+                assert_eq!(actual, collection, "{operation}");
+                assert!(scope.is_none(), "{operation}");
+                assert_eq!(elements.len(), 1, "{operation}");
+                assert_eq!(elements[0].name, "Member", "{operation}");
+                assert_eq!(
+                    elements[0].new_name.as_deref(),
+                    Some("Changed"),
+                    "{operation}"
+                );
+                assert_eq!(elements[0].comment.as_deref(), Some("kept"), "{operation}");
+                assert_eq!(addressed, Some(AddressedFields::Values), "{operation}");
+
+                let operation = format!("{family}.remove");
+                let parsed = parse_metadata_plan_operation(
+                    &operation,
+                    &json!({"at":at}),
+                    3,
+                    &fixture.binding,
+                )
+                .unwrap();
+                let MetadataPlanKind::Edit {
+                    target,
+                    operation:
+                        MetaEditOperation::Remove {
+                            collection: actual,
+                            scope,
+                            names,
+                        },
+                    addressed,
+                } = parsed.kind
+                else {
+                    panic!("{operation} must plan a typed metadata removal");
+                };
+                assert_eq!(target.as_str(), owner, "{operation}");
+                assert_eq!(actual, collection, "{operation}");
+                assert!(scope.is_none(), "{operation}");
+                assert_eq!(names, ["Member"], "{operation}");
+                assert_eq!(addressed, Some(AddressedFields::None), "{operation}");
+            }
+        }
+    }
+
+    #[test]
+    fn typed_member_operations_keep_writer_parser_refusal_order() {
+        let fixture = MetadataFixture::new();
+        for (family, owner, leaf) in [
+            ("tabularSection", "Document.Order", "TabularSection"),
+            ("dimension", "InformationRegister.Prices", "Dimension"),
+            ("resource", "InformationRegister.Prices", "Resource"),
+            ("enumValue", "Enum.Kinds", "EnumValue"),
+            ("column", "DocumentJournal.All", "Column"),
+        ] {
+            for verb in ["add", "set", "remove"] {
+                let operation = format!("{family}.{verb}");
+                let at = format!("main:{owner}.{leaf}.Member");
+                let mut samples = vec![
+                    (json!(false), ""),
+                    (json!({"at":null,"unknown":true}), ".unknown"),
+                    (json!({"at":42}), ".at"),
+                ];
+                if verb == "add" {
+                    samples.extend([
+                        (
+                            json!({"at":format!("main:{owner}"),"items":false}),
+                            ".items",
+                        ),
+                        (
+                            json!({"at":format!("main:{owner}"),"items":[{"name":" spaced "}]}),
+                            ".items[0].name",
+                        ),
+                        (json!({"at":at,"items":false}), ".at"),
+                    ]);
+                } else {
+                    samples.extend([
+                        (json!({"at":format!("main:{owner}")}), ".at"),
+                        (json!({"at":format!("main:{owner}.Attribute.Other")}), ".at"),
+                        (json!({"at":format!("main:{owner}.{leaf}")}), ".at"),
+                    ]);
+                    if verb == "set" {
+                        samples.extend([
+                            (json!({"at":at,"values":false}), ".values"),
+                            (json!({"at":at,"values":{}}), ".values"),
+                            (
+                                json!({"at":at,"values":{"name":42,"newName":false}}),
+                                ".values.name",
+                            ),
+                            (
+                                json!({"at":at,"values":{"newName":false,"unknown":true}}),
+                                ".values.unknown",
+                            ),
+                        ]);
+                    } else {
+                        samples.push((json!({"at":null,"values":false}), ".values"));
+                    }
+                }
+                for (args, path) in samples {
+                    let error =
+                        parse_metadata_plan_operation(&operation, &args, 3, &fixture.binding)
+                            .unwrap_err();
+                    assert_eq!(
+                        error.kind(),
+                        ApplyPlanErrorKind::BadValue,
+                        "{operation}: {args}"
+                    );
+                    assert_eq!(
+                        error.path(),
+                        Some(format!("ops[3].args{path}").as_str()),
+                        "{operation}: {args}: {error:?}"
+                    );
+                }
+            }
         }
     }
 

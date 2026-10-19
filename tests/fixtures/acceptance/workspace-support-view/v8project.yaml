@@ -1,0 +1,14 @@
+format: DESIGNER
+source-set:
+  - name: main
+    type: CONFIGURATION
+    path: main
+  - name: absent
+    type: CONFIGURATION
+    path: absent
+  - name: invalid
+    type: CONFIGURATION
+    path: invalid
+  - name: unreadable
+    type: CONFIGURATION
+    path: unreadable

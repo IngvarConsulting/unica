@@ -208,6 +208,8 @@ enum ApplyInputRole {
     SourceWrite,
     ReadOnly,
     SharedCache,
+    DirectoryMembership,
+    PathSpelling,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -235,12 +237,15 @@ impl ApplyInputContext {
             ApplyInputRole::SourceWrite => "source write target; the plan retains its original state to prevent overwriting changes",
             ApplyInputRole::ReadOnly => "read-only input; the plan was prepared using this input",
             ApplyInputRole::SharedCache => "shared cache input; the plan retains its original state for atomic publication of source and cache changes",
+            ApplyInputRole::DirectoryMembership => "directory membership input; the plan enumerated this directory to retain its identity and child names",
+            ApplyInputRole::PathSpelling => "path spelling input; the plan requires the exact names of this path and its ancestors",
         };
-        write!(
-            formatter,
-            "; input `{}`: {reason}",
-            self.relative_path.display()
-        )
+        let path = if self.relative_path.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            &self.relative_path
+        };
+        write!(formatter, "; input `{}`: {reason}", path.display())
     }
 }
 
@@ -664,10 +669,18 @@ impl CompileTransaction {
             .unwrap_or(self.retained_apply.len());
         self.retained_apply[..end]
             .iter()
-            .map(|change| crate::application::v13::plan_diff::SourceImage {
-                path: change.relative_path.to_string_lossy().replace('\\', "/"),
-                before: change.original.as_deref(),
-                after: change.current.as_deref(),
+            .map(|change| {
+                let (path_encoding, path) =
+                    crate::infrastructure::platform::filesystem::encode_relative_source_path(
+                        &change.relative_path,
+                    )
+                    .into_parts();
+                crate::application::v13::plan_diff::SourceImage {
+                    path_encoding,
+                    path,
+                    before: change.original.as_deref(),
+                    after: change.current.as_deref(),
+                }
             })
             .collect()
     }
@@ -733,7 +746,13 @@ impl CompileTransaction {
 
     fn validate_retained_path_spellings(&self) -> Result<(), RetainedApplyValidationError> {
         for guard in &self.retained_path_spellings {
-            guard.validate().map_err(retained_guard_validation_error)?;
+            guard.validate().map_err(|error| {
+                retained_guard_validation_error(
+                    error,
+                    guard.relative_path(),
+                    ApplyInputRole::PathSpelling,
+                )
+            })?;
         }
         Ok(())
     }
@@ -743,9 +762,13 @@ impl CompileTransaction {
         deltas: &[(PathBuf, Option<u8>)],
     ) -> Result<(), RetainedApplyValidationError> {
         for guard in &self.retained_namespaces {
-            guard
-                .validate(deltas)
-                .map_err(retained_guard_validation_error)?;
+            guard.validate(deltas).map_err(|error| {
+                retained_guard_validation_error(
+                    error,
+                    guard.relative_path(),
+                    ApplyInputRole::DirectoryMembership,
+                )
+            })?;
         }
         Ok(())
     }
@@ -2549,6 +2572,8 @@ fn validate_strict_relative_file_path(relative: &Path) -> Result<(), String> {
 
 fn retained_guard_validation_error(
     error: super::apply::ApplyStagingError,
+    relative_path: &Path,
+    role: ApplyInputRole,
 ) -> RetainedApplyValidationError {
     use super::apply::ApplyStagingErrorKind as Kind;
     let kind = match error.kind() {
@@ -2561,7 +2586,19 @@ fn retained_guard_validation_error(
         Kind::UnsupportedProvider => RetainedApplyValidationErrorKind::UnsupportedProvider,
         Kind::Invariant => RetainedApplyValidationErrorKind::Invariant,
     };
-    RetainedApplyValidationError::new(kind, error.to_string())
+    let error = RetainedApplyValidationError::new(kind, error.to_string());
+    if matches!(
+        kind,
+        RetainedApplyValidationErrorKind::ConcurrentRevision
+            | RetainedApplyValidationErrorKind::ContainmentIdentity
+    ) {
+        error.with_input(ApplyInputContext {
+            relative_path: relative_path.to_owned(),
+            role,
+        })
+    } else {
+        error
+    }
 }
 
 fn retained_apply_entry_checkpoint(

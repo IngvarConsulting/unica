@@ -1,0 +1,91 @@
+{
+  "id": "S-978-helper-invalidation",
+  "issue": 978,
+  "area": "Код BSL",
+  "task": "Изменить найденный метод через сохранённый apply и найти новое имя той же живой службой анализа; preview сохраняет исходный поиск, повтор токена сохраняет опубликованный результат",
+  "workspace": "tests/fixtures/acceptance/workspace-symbol",
+  "profile": "delivery",
+  "driver": "bsl-analyzer-invalidation",
+  "wire": [
+    {
+      "tool": "unica.search",
+      "args": {"query": "AcceptanceExistingSymbol1306", "role": "symbol"},
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data/matches/0/status", "eq": "ok"},
+        {"pointer": "/data/matches/0/hits/0/symbol", "eq": "AcceptanceExistingSymbol1306"},
+        {"pointer": "/data/matches/0/indexFreshness", "eq": "unknown"}
+      ],
+      "captures": {
+        "beforeModule": {"file": "src/CommonModules/SearchProbe/Ext/Module.bsl", "kind": "sha256"}
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.SearchProbe",
+        "ops": [{"op": "code.replace", "args": {
+          "at": "main:CommonModule.SearchProbe.Body",
+          "text": "Procedure AcceptanceChangedSymbol978() Export\nEndProcedure\n"
+        }}]
+      },
+      "expect": ["ok"],
+      "assertions": [{"pointer": "/data/mode", "eq": "preview"}],
+      "fileAssertions": [{"path": "src/CommonModules/SearchProbe/Ext/Module.bsl", "kind": "sha256", "eq": "$capture.beforeModule"}]
+    },
+    {
+      "tool": "unica.search",
+      "args": {"query": "AcceptanceExistingSymbol1306", "role": "symbol"},
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data/matches/0/status", "eq": "ok"},
+        {"pointer": "/data/matches/0/hits/0/symbol", "eq": "AcceptanceExistingSymbol1306"},
+        {"pointer": "/data/matches/0/indexFreshness", "eq": "unknown"}
+      ],
+      "fileAssertions": [{"path": "src/CommonModules/SearchProbe/Ext/Module.bsl", "kind": "sha256", "eq": "$capture.beforeModule"}]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {"executionToken": "$executionToken"},
+      "expect": ["ok"],
+      "assertions": [{"pointer": "/data/mode", "eq": "published"}],
+      "fileAssertions": [{"path": "src/CommonModules/SearchProbe/Ext/Module.bsl", "kind": "sha256", "notEq": "$capture.beforeModule"}],
+      "captures": {
+        "publishedData": {"pointer": "/data"},
+        "publishedRev": {"pointer": "/rev"},
+        "publishedModule": {"file": "src/CommonModules/SearchProbe/Ext/Module.bsl", "kind": "sha256"}
+      }
+    },
+    {
+      "tool": "unica.search",
+      "args": {"query": "AcceptanceChangedSymbol978", "role": "symbol"},
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data/matches/0/status", "eq": "ok"},
+        {"pointer": "/data/matches/0/hits/0/symbol", "eq": "AcceptanceChangedSymbol978"},
+        {"pointer": "/data/matches/0/indexFreshness", "eq": "unknown"},
+        {"pointer": "/data/matches/0/matches", "eq": {"returned": 1, "total": 1, "relation": "exact"}}
+      ]
+    },
+    {
+      "tool": "unica.search",
+      "args": {"query": "AcceptanceExistingSymbol1306", "role": "symbol"},
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data/matches/0/status", "eq": "empty"},
+        {"pointer": "/data/matches/0/indexFreshness", "eq": "unknown"},
+        {"pointer": "/data/matches/0/matches", "eq": {"returned": 0, "total": 0, "relation": "exact"}}
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {"executionToken": "$executionToken"},
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data", "eq": "$capture.publishedData"},
+        {"pointer": "/rev", "eq": "$capture.publishedRev"}
+      ],
+      "fileAssertions": [{"path": "src/CommonModules/SearchProbe/Ext/Module.bsl", "kind": "sha256", "eq": "$capture.publishedModule"}]
+    }
+  ]
+}

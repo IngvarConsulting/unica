@@ -379,6 +379,10 @@ type NamespaceObservation = (
 );
 
 impl RetainedNamespaceGuard {
+    pub(super) fn relative_path(&self) -> &Path {
+        &self.relative
+    }
+
     pub(super) fn rebind_execution_context(
         &mut self,
         deadline: ProviderDeadline,
@@ -597,6 +601,10 @@ pub(super) struct RetainedPathSpellingGuard {
 }
 
 impl RetainedPathSpellingGuard {
+    pub(super) fn relative_path(&self) -> &Path {
+        &self.relative
+    }
+
     pub(super) fn rebind_execution_context(
         &mut self,
         deadline: ProviderDeadline,
@@ -1848,42 +1856,90 @@ pub(crate) mod tests {
 
     #[test]
     fn enumerated_payload_changes_refuse_before_write_and_roll_back_late_writes() {
-        for late in [false, true] {
-            let temp = tempfile::tempdir().unwrap();
-            let root = temp.path();
-            std::fs::create_dir(root.join("Payload")).unwrap();
-            let original = root.join("Payload/Module.bsl");
-            let foreign = root.join("Payload/Added.bsl");
-            std::fs::write(&original, b"original").unwrap();
-            let authority =
-                crate::infrastructure::workspace_actor::apply_writer_authority_for_test();
-            let mut state = staged_with_authority(root, authority.clone());
-            assert_eq!(
-                state.enumerate_tree(Path::new("Payload")).unwrap(),
-                vec![PathBuf::from("Payload/Module.bsl")]
-            );
-            state.remove("Payload/Module.bsl", b"original").unwrap();
-            let transaction = state.finalize().unwrap();
-            if !late {
-                std::fs::write(&foreign, b"foreign").unwrap();
+        for relative in ["", "Payload"] {
+            for late in [false, true] {
+                let temp = tempfile::tempdir().unwrap();
+                let root = temp.path();
+                let directory = root.join(relative);
+                std::fs::create_dir_all(&directory).unwrap();
+                let module = Path::new(relative).join("Module.bsl");
+                let original = root.join(&module);
+                let foreign = directory.join("Added.bsl");
+                std::fs::write(&original, b"original").unwrap();
+                let authority =
+                    crate::infrastructure::workspace_actor::apply_writer_authority_for_test();
+                let mut state = staged_with_authority(root, authority.clone());
+                assert_eq!(
+                    state.enumerate_tree(Path::new(relative)).unwrap(),
+                    vec![module.clone()]
+                );
+                state.remove(&module, b"original").unwrap();
+                let transaction = state.finalize().unwrap();
+                if !late {
+                    std::fs::write(&foreign, b"foreign").unwrap();
+                }
+                let mut injected = false;
+                let result = transaction.commit_retained_apply_with(
+                    authority,
+                    || {
+                        if late && !original.exists() && !injected {
+                            std::fs::write(&foreign, b"foreign").unwrap();
+                            injected = true;
+                        }
+                        Ok(())
+                    },
+                    || Ok(()),
+                );
+                let error = result.expect_err("namespace race returned success");
+                let input = if relative.is_empty() { "." } else { relative };
+                assert!(error.contains(&format!("input `{input}`")), "{error}");
+                assert!(error.contains("directory membership input"), "{error}");
+                assert!(
+                    error.contains("the plan enumerated this directory"),
+                    "{error}"
+                );
+                assert!(!error.contains(&root.display().to_string()), "{error}");
+                assert_eq!(std::fs::read(&original).unwrap(), b"original");
+                assert_eq!(std::fs::read(&foreign).unwrap(), b"foreign");
+                assert_eq!(injected, late);
             }
-            let mut injected = false;
-            let result = transaction.commit_retained_apply_with(
-                authority,
-                || {
-                    if late && !original.exists() && !injected {
-                        std::fs::write(&foreign, b"foreign").unwrap();
-                        injected = true;
-                    }
-                    Ok(())
-                },
-                || Ok(()),
-            );
-            assert!(result.is_err(), "namespace race returned success");
-            assert_eq!(std::fs::read(&original).unwrap(), b"original");
-            assert_eq!(std::fs::read(&foreign).unwrap(), b"foreign");
-            assert_eq!(injected, late);
         }
+    }
+
+    #[test]
+    fn enumerated_directory_identity_conflict_names_its_dependency_before_writing() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::create_dir(root.join("Payload")).unwrap();
+        std::fs::write(root.join("Payload/Input.xml"), b"observed").unwrap();
+        std::fs::write(root.join("Module.bsl"), b"before").unwrap();
+        let mut state = staged(root);
+        state.enumerate_tree(Path::new("Payload")).unwrap();
+        state
+            .replace("Module.bsl", b"before", b"after".to_vec())
+            .unwrap();
+        let transaction = state.finalize().unwrap();
+        std::fs::rename(root.join("Payload"), root.join("RetainedPayload")).unwrap();
+        std::fs::create_dir(root.join("Payload")).unwrap();
+        std::fs::write(root.join("Payload/Input.xml"), b"foreign").unwrap();
+        let error = transaction.validate_retained_for_apply_typed().unwrap_err();
+        assert_eq!(
+            error.kind(),
+            super::super::compile_transaction::RetainedApplyValidationErrorKind::ConcurrentRevision
+        );
+        let message = error.to_string();
+        assert!(message.contains("input `Payload`"), "{message}");
+        assert!(message.contains("directory membership input"), "{message}");
+        assert!(!message.contains(&root.display().to_string()), "{message}");
+        assert_eq!(std::fs::read(root.join("Module.bsl")).unwrap(), b"before");
+        assert_eq!(
+            std::fs::read(root.join("Payload/Input.xml")).unwrap(),
+            b"foreign"
+        );
+        assert_eq!(
+            std::fs::read(root.join("RetainedPayload/Input.xml")).unwrap(),
+            b"observed"
+        );
     }
 
     #[test]
@@ -3106,10 +3162,20 @@ pub(crate) mod tests {
             assert!(state.planned_changes().is_empty());
             let transaction = state.finalize().unwrap();
             std::fs::rename(root.join(before), root.join(after)).unwrap();
+            let error = transaction.validate_retained_for_apply_typed().unwrap_err();
+            let message = error.to_string();
+            if root.join("Payload/Ext/CommandModule.bsl").is_file() {
+                assert!(message.contains("path spelling input"), "{message}");
+                assert!(
+                    message.contains("the plan requires the exact names"),
+                    "{message}"
+                );
+            }
             assert!(
-                transaction.validate_retained_for_apply_typed().is_err(),
-                "{before}"
+                message.contains("Payload/Ext/CommandModule.bsl"),
+                "{message}"
             );
+            assert!(!message.contains(&root.display().to_string()), "{message}");
             assert_eq!(std::fs::read(root.join(module_after)).unwrap(), b"original");
         }
     }

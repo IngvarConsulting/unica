@@ -688,6 +688,21 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
     fn notify_invalidation(&self, context: &WorkspaceContext, events: &[DomainEvent]) {
         WorkspaceServiceManager::new().notify_invalidation(context, events);
     }
+
+    fn notify_committed_changes(
+        &self,
+        context: &WorkspaceContext,
+        events: &[DomainEvent],
+        cancellation: &CancellationToken,
+        deadline: crate::domain::operation_deadline::OperationDeadline,
+    ) {
+        WorkspaceServiceManager::new().notify_committed_changes(
+            context,
+            events,
+            cancellation,
+            deadline,
+        );
+    }
 }
 
 fn normalize_code_intelligence_read_request(

@@ -66,6 +66,7 @@
           "pointer": "/data/chunks",
           "eq": [
             {
+              "pathEncoding": "utf8",
               "path": "CommonModules/Пример/Ext/Module.bsl",
               "side": "before",
               "present": true,
@@ -78,6 +79,7 @@
               "content": "\nКонецФункции\r\n\r\n// соседний метод сохраняется\r\nПроцедура Соседний() Экспорт\r\n    Сообщить(\"Сосед\");\r\n"
             },
             {
+              "pathEncoding": "utf8",
               "path": "CommonModules/Пример/Ext/Module.bsl",
               "side": "after",
               "present": true,
@@ -126,6 +128,7 @@
           "pointer": "/data/chunks",
           "eq": [
             {
+              "pathEncoding": "utf8",
               "path": "CommonModules/Пример/Ext/Module.bsl",
               "side": "before",
               "present": true,
@@ -179,6 +182,7 @@
           "pointer": "/data/chunks",
           "eq": [
             {
+              "pathEncoding": "utf8",
               "path": "CommonModules/Пример/Ext/Module.bsl",
               "side": "before",
               "present": true,
@@ -232,6 +236,7 @@
           "pointer": "/data/chunks",
           "eq": [
             {
+              "pathEncoding": "utf8",
               "path": "CommonModules/Пример/Ext/Module.bsl",
               "side": "after",
               "present": true,

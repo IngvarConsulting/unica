@@ -1,0 +1,312 @@
+{
+  "id": "S-986-subsystem-support-view",
+  "name": "view-preserves-subsystem-support-and-marker-errors",
+  "issue": 986,
+  "area": "Поддержка поставщика",
+  "task": "Прочитать поддержку объекта и каждой зарегистрированной подсистемы по логическому адресу, отличить отсутствие поддержки от повреждённого или нечитаемого маркера.",
+  "workspace": "tests/fixtures/acceptance/workspace-support-view",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Catalog.Items"
+        },
+        {
+          "pointer": "/data/props/support",
+          "eq": "locked"
+        },
+        {
+          "pointer": "/data/props/location",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/provider",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.Parent"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Subsystem.Parent"
+        },
+        {
+          "pointer": "/data/props/support",
+          "eq": "locked"
+        },
+        {
+          "pointer": "/data/props/directEditSafe",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/location",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/provider",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.Parent.Subsystem.Child"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Subsystem.Parent.Subsystem.Child"
+        },
+        {
+          "pointer": "/data/props/support",
+          "eq": "editableWithSupport"
+        },
+        {
+          "pointer": "/data/props/directEditSafe",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/location",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/provider",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.Parent"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Subsystem.Parent"
+        },
+        {
+          "pointer": "/data/props/support",
+          "eq": "locked"
+        },
+        {
+          "pointer": "/data/props/directEditSafe",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/location",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/provider",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "absent:Subsystem.Parent"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "absent:Subsystem.Parent"
+        },
+        {
+          "pointer": "/data/props/support",
+          "eq": "notSupported"
+        },
+        {
+          "pointer": "/data/props/directEditSafe",
+          "eq": null
+        },
+        {
+          "pointer": "/data/props/location",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/provider",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "absent:Catalog.Items"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "absent:Catalog.Items"
+        },
+        {
+          "pointer": "/data/props/support",
+          "eq": "supported"
+        },
+        {
+          "pointer": "/data/props/location",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/provider",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "invalid:Subsystem.Parent"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": false
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "provider_unavailable"
+        },
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "eq": "source_unreadable"
+        },
+        {
+          "pointer": "/diagnostics/0/outcome",
+          "eq": "fixSource"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "invalid:Catalog.Items"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": false
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "provider_unavailable"
+        },
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "eq": "source_unreadable"
+        },
+        {
+          "pointer": "/diagnostics/0/outcome",
+          "eq": "fixSource"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "unreadable:Subsystem.Parent"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": false
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "provider_unavailable"
+        },
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "eq": "source_unreadable"
+        },
+        {
+          "pointer": "/diagnostics/0/outcome",
+          "eq": "fixSource"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "unreadable:Catalog.Items"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": false
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "provider_unavailable"
+        },
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "eq": "source_unreadable"
+        },
+        {
+          "pointer": "/diagnostics/0/outcome",
+          "eq": "fixSource"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ]
+    }
+  ]
+}

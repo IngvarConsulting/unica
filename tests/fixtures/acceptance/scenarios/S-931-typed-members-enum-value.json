@@ -1,0 +1,834 @@
+{
+  "id": "S-931-typed-members-enum-value",
+  "issue": 931,
+  "area": "Реквизиты и состав",
+  "task": "Добавить, переименовать и удалить EnumValue через отдельные preview и executionToken: точные постобразы, UUID и остальные байты владельца и соседних исходников сохраняются",
+  "workspace": "tests/fixtures/acceptance/workspace-metadata-members",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Enum.LanguageAware"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Enum"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Enums/LanguageAware.xml",
+          "kind": "sha256",
+          "eq": "70fb99cbc2c28eb36f0181a2b32f397e46680613890665f45c6fa14b7f1db87d"
+        },
+        {
+          "path": "src/Enums/LanguageAware.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum[@uuid=\"44444444-4444-4444-8444-444444444444\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "LanguageAware"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "c4457e1ea26b6a4f40fd47db925fdb69c79754c52e76245449bcc011082d5a44"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "8fc4182ed0bcbc8670c62c55f88df347a7965f16bede2df092bbd45b77f6da40"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "135eb9e0ab9bddae4c34a52adc22182e42e8348289cfd92b543cf5150247861d"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "943bc5afe6c041f1710c435ec0ba0415a55840842345df7f5795c4101675d336"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/unrelated.txt",
+          "kind": "sha256",
+          "eq": "4d38ed0e80e746ae46273fd3cd6ac71c018669fa6061d581c9f860254f9ba40c"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "10588894ac1a018fd72eb6cb2948c4c0b20f36eab6ae2c0364d60412e63f37ca"
+        },
+        {
+          "path": "src/DocumentJournals/ДокументыОрганизации.xml",
+          "kind": "sha256",
+          "eq": "f0c09c8e666464fa725bd9d07fcc8fc64d1471467568da6c8370a6c988eaa118"
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "sha256",
+          "eq": "0fe585976e95b6efdc619abfe778c1ff8dca36c71c34f5c6213a56b67c5f7735"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Enum.LanguageAware",
+        "ops": [
+          {
+            "op": "enumValue.add",
+            "args": {
+              "items": [
+                {
+                  "name": "NewValue",
+                  "synonym": "New member",
+                  "comment": "new member comment"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        },
+        {
+          "pointer": "/changed/0/at",
+          "eq": "main:Enum.LanguageAware"
+        },
+        {
+          "pointer": "/changed/0/event",
+          "eq": "MetadataChanged"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Enums/LanguageAware.xml",
+          "kind": "sha256",
+          "eq": "70fb99cbc2c28eb36f0181a2b32f397e46680613890665f45c6fa14b7f1db87d"
+        },
+        {
+          "path": "src/Enums/LanguageAware.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum[@uuid=\"44444444-4444-4444-8444-444444444444\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "LanguageAware"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "c4457e1ea26b6a4f40fd47db925fdb69c79754c52e76245449bcc011082d5a44"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "8fc4182ed0bcbc8670c62c55f88df347a7965f16bede2df092bbd45b77f6da40"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "135eb9e0ab9bddae4c34a52adc22182e42e8348289cfd92b543cf5150247861d"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "943bc5afe6c041f1710c435ec0ba0415a55840842345df7f5795c4101675d336"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/unrelated.txt",
+          "kind": "sha256",
+          "eq": "4d38ed0e80e746ae46273fd3cd6ac71c018669fa6061d581c9f860254f9ba40c"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "10588894ac1a018fd72eb6cb2948c4c0b20f36eab6ae2c0364d60412e63f37ca"
+        },
+        {
+          "path": "src/DocumentJournals/ДокументыОрганизации.xml",
+          "kind": "sha256",
+          "eq": "f0c09c8e666464fa725bd9d07fcc8fc64d1471467568da6c8370a6c988eaa118"
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "sha256",
+          "eq": "0fe585976e95b6efdc619abfe778c1ff8dca36c71c34f5c6213a56b67c5f7735"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        },
+        {
+          "pointer": "/changed/0/at",
+          "eq": "main:Enum.LanguageAware"
+        },
+        {
+          "pointer": "/changed/0/event",
+          "eq": "MetadataChanged"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Enums/LanguageAware.xml",
+          "kind": "sha256",
+          "eq": "28375a47b4ecd12afd710ddf0834cdb9d3d32974f29d0f6b6ec39300311431a5"
+        },
+        {
+          "path": "src/Enums/LanguageAware.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum[@uuid=\"44444444-4444-4444-8444-444444444444\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "LanguageAware"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "c4457e1ea26b6a4f40fd47db925fdb69c79754c52e76245449bcc011082d5a44"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "8fc4182ed0bcbc8670c62c55f88df347a7965f16bede2df092bbd45b77f6da40"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "135eb9e0ab9bddae4c34a52adc22182e42e8348289cfd92b543cf5150247861d"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "943bc5afe6c041f1710c435ec0ba0415a55840842345df7f5795c4101675d336"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/unrelated.txt",
+          "kind": "sha256",
+          "eq": "4d38ed0e80e746ae46273fd3cd6ac71c018669fa6061d581c9f860254f9ba40c"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "10588894ac1a018fd72eb6cb2948c4c0b20f36eab6ae2c0364d60412e63f37ca"
+        },
+        {
+          "path": "src/DocumentJournals/ДокументыОрганизации.xml",
+          "kind": "sha256",
+          "eq": "f0c09c8e666464fa725bd9d07fcc8fc64d1471467568da6c8370a6c988eaa118"
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "sha256",
+          "eq": "0fe585976e95b6efdc619abfe778c1ff8dca36c71c34f5c6213a56b67c5f7735"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        },
+        {
+          "path": "src/Enums/LanguageAware.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"5dd8f897-2e33-4f5c-8982-1f363751d636\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "NewValue"
+          ]
+        },
+        {
+          "path": "src/Enums/LanguageAware.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"5dd8f897-2e33-4f5c-8982-1f363751d636\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
+          "eq": [
+            "new member comment"
+          ]
+        },
+        {
+          "path": "src/Enums/LanguageAware.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"5dd8f897-2e33-4f5c-8982-1f363751d636\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "New member"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Enum.LanguageAware.EnumValue.NewValue"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "EnumValue"
+        },
+        {
+          "pointer": "/data/props/comment",
+          "eq": "new member comment"
+        },
+        {
+          "pointer": "/data/props/synonym",
+          "eq": "New member"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Enums/LanguageAware.xml",
+          "kind": "sha256",
+          "eq": "28375a47b4ecd12afd710ddf0834cdb9d3d32974f29d0f6b6ec39300311431a5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Enum.LanguageAware.EnumValue.NewValue",
+        "ops": [
+          {
+            "op": "enumValue.set",
+            "args": {
+              "values": {
+                "newName": "NewValueRenamed",
+                "synonym": "Renamed member",
+                "comment": "updated member comment"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        },
+        {
+          "pointer": "/changed/0/at",
+          "eq": "main:Enum.LanguageAware"
+        },
+        {
+          "pointer": "/changed/0/event",
+          "eq": "MetadataChanged"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Enums/LanguageAware.xml",
+          "kind": "sha256",
+          "eq": "28375a47b4ecd12afd710ddf0834cdb9d3d32974f29d0f6b6ec39300311431a5"
+        },
+        {
+          "path": "src/Enums/LanguageAware.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum[@uuid=\"44444444-4444-4444-8444-444444444444\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "LanguageAware"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "c4457e1ea26b6a4f40fd47db925fdb69c79754c52e76245449bcc011082d5a44"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "8fc4182ed0bcbc8670c62c55f88df347a7965f16bede2df092bbd45b77f6da40"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "135eb9e0ab9bddae4c34a52adc22182e42e8348289cfd92b543cf5150247861d"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "943bc5afe6c041f1710c435ec0ba0415a55840842345df7f5795c4101675d336"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/unrelated.txt",
+          "kind": "sha256",
+          "eq": "4d38ed0e80e746ae46273fd3cd6ac71c018669fa6061d581c9f860254f9ba40c"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "10588894ac1a018fd72eb6cb2948c4c0b20f36eab6ae2c0364d60412e63f37ca"
+        },
+        {
+          "path": "src/DocumentJournals/ДокументыОрганизации.xml",
+          "kind": "sha256",
+          "eq": "f0c09c8e666464fa725bd9d07fcc8fc64d1471467568da6c8370a6c988eaa118"
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "sha256",
+          "eq": "0fe585976e95b6efdc619abfe778c1ff8dca36c71c34f5c6213a56b67c5f7735"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        },
+        {
+          "path": "src/Enums/LanguageAware.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"5dd8f897-2e33-4f5c-8982-1f363751d636\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "NewValue"
+          ]
+        },
+        {
+          "path": "src/Enums/LanguageAware.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"5dd8f897-2e33-4f5c-8982-1f363751d636\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
+          "eq": [
+            "new member comment"
+          ]
+        },
+        {
+          "path": "src/Enums/LanguageAware.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"5dd8f897-2e33-4f5c-8982-1f363751d636\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "New member"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        },
+        {
+          "pointer": "/changed/0/at",
+          "eq": "main:Enum.LanguageAware"
+        },
+        {
+          "pointer": "/changed/0/event",
+          "eq": "MetadataChanged"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Enums/LanguageAware.xml",
+          "kind": "sha256",
+          "eq": "83000bc2040eee4ea0e72545db3ec3727a28ad30325bbd655fbbca38fdb1511b"
+        },
+        {
+          "path": "src/Enums/LanguageAware.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum[@uuid=\"44444444-4444-4444-8444-444444444444\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "LanguageAware"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "c4457e1ea26b6a4f40fd47db925fdb69c79754c52e76245449bcc011082d5a44"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "8fc4182ed0bcbc8670c62c55f88df347a7965f16bede2df092bbd45b77f6da40"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "135eb9e0ab9bddae4c34a52adc22182e42e8348289cfd92b543cf5150247861d"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "943bc5afe6c041f1710c435ec0ba0415a55840842345df7f5795c4101675d336"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/unrelated.txt",
+          "kind": "sha256",
+          "eq": "4d38ed0e80e746ae46273fd3cd6ac71c018669fa6061d581c9f860254f9ba40c"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "10588894ac1a018fd72eb6cb2948c4c0b20f36eab6ae2c0364d60412e63f37ca"
+        },
+        {
+          "path": "src/DocumentJournals/ДокументыОрганизации.xml",
+          "kind": "sha256",
+          "eq": "f0c09c8e666464fa725bd9d07fcc8fc64d1471467568da6c8370a6c988eaa118"
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "sha256",
+          "eq": "0fe585976e95b6efdc619abfe778c1ff8dca36c71c34f5c6213a56b67c5f7735"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        },
+        {
+          "path": "src/Enums/LanguageAware.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"5dd8f897-2e33-4f5c-8982-1f363751d636\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "NewValueRenamed"
+          ]
+        },
+        {
+          "path": "src/Enums/LanguageAware.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"5dd8f897-2e33-4f5c-8982-1f363751d636\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
+          "eq": [
+            "updated member comment"
+          ]
+        },
+        {
+          "path": "src/Enums/LanguageAware.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"5dd8f897-2e33-4f5c-8982-1f363751d636\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "Renamed member"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Enum.LanguageAware.EnumValue.NewValueRenamed"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "EnumValue"
+        },
+        {
+          "pointer": "/data/props/comment",
+          "eq": "updated member comment"
+        },
+        {
+          "pointer": "/data/props/synonym",
+          "eq": "Renamed member"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Enums/LanguageAware.xml",
+          "kind": "sha256",
+          "eq": "83000bc2040eee4ea0e72545db3ec3727a28ad30325bbd655fbbca38fdb1511b"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Enum.LanguageAware.EnumValue.NewValueRenamed",
+        "ops": [
+          {
+            "op": "enumValue.remove"
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        },
+        {
+          "pointer": "/changed/0/at",
+          "eq": "main:Enum.LanguageAware"
+        },
+        {
+          "pointer": "/changed/0/event",
+          "eq": "MetadataChanged"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Enums/LanguageAware.xml",
+          "kind": "sha256",
+          "eq": "83000bc2040eee4ea0e72545db3ec3727a28ad30325bbd655fbbca38fdb1511b"
+        },
+        {
+          "path": "src/Enums/LanguageAware.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum[@uuid=\"44444444-4444-4444-8444-444444444444\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "LanguageAware"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "c4457e1ea26b6a4f40fd47db925fdb69c79754c52e76245449bcc011082d5a44"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "8fc4182ed0bcbc8670c62c55f88df347a7965f16bede2df092bbd45b77f6da40"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "135eb9e0ab9bddae4c34a52adc22182e42e8348289cfd92b543cf5150247861d"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "943bc5afe6c041f1710c435ec0ba0415a55840842345df7f5795c4101675d336"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/unrelated.txt",
+          "kind": "sha256",
+          "eq": "4d38ed0e80e746ae46273fd3cd6ac71c018669fa6061d581c9f860254f9ba40c"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "10588894ac1a018fd72eb6cb2948c4c0b20f36eab6ae2c0364d60412e63f37ca"
+        },
+        {
+          "path": "src/DocumentJournals/ДокументыОрганизации.xml",
+          "kind": "sha256",
+          "eq": "f0c09c8e666464fa725bd9d07fcc8fc64d1471467568da6c8370a6c988eaa118"
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "sha256",
+          "eq": "0fe585976e95b6efdc619abfe778c1ff8dca36c71c34f5c6213a56b67c5f7735"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        },
+        {
+          "path": "src/Enums/LanguageAware.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"5dd8f897-2e33-4f5c-8982-1f363751d636\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "NewValueRenamed"
+          ]
+        },
+        {
+          "path": "src/Enums/LanguageAware.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"5dd8f897-2e33-4f5c-8982-1f363751d636\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
+          "eq": [
+            "updated member comment"
+          ]
+        },
+        {
+          "path": "src/Enums/LanguageAware.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"5dd8f897-2e33-4f5c-8982-1f363751d636\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "Renamed member"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        },
+        {
+          "pointer": "/changed/0/at",
+          "eq": "main:Enum.LanguageAware"
+        },
+        {
+          "pointer": "/changed/0/event",
+          "eq": "MetadataChanged"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Enums/LanguageAware.xml",
+          "kind": "sha256",
+          "eq": "70fb99cbc2c28eb36f0181a2b32f397e46680613890665f45c6fa14b7f1db87d"
+        },
+        {
+          "path": "src/Enums/LanguageAware.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum[@uuid=\"44444444-4444-4444-8444-444444444444\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "LanguageAware"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "c4457e1ea26b6a4f40fd47db925fdb69c79754c52e76245449bcc011082d5a44"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "8fc4182ed0bcbc8670c62c55f88df347a7965f16bede2df092bbd45b77f6da40"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "135eb9e0ab9bddae4c34a52adc22182e42e8348289cfd92b543cf5150247861d"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "943bc5afe6c041f1710c435ec0ba0415a55840842345df7f5795c4101675d336"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/unrelated.txt",
+          "kind": "sha256",
+          "eq": "4d38ed0e80e746ae46273fd3cd6ac71c018669fa6061d581c9f860254f9ba40c"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "10588894ac1a018fd72eb6cb2948c4c0b20f36eab6ae2c0364d60412e63f37ca"
+        },
+        {
+          "path": "src/DocumentJournals/ДокументыОрганизации.xml",
+          "kind": "sha256",
+          "eq": "f0c09c8e666464fa725bd9d07fcc8fc64d1471467568da6c8370a6c988eaa118"
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "sha256",
+          "eq": "0fe585976e95b6efdc619abfe778c1ff8dca36c71c34f5c6213a56b67c5f7735"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        },
+        {
+          "path": "src/Enums/LanguageAware.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"5dd8f897-2e33-4f5c-8982-1f363751d636\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": []
+        }
+      ]
+    }
+  ]
+}

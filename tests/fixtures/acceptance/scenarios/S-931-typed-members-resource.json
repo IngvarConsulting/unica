@@ -1,0 +1,972 @@
+{
+  "id": "S-931-typed-members-resource",
+  "issue": 931,
+  "area": "Реквизиты и состав",
+  "task": "Добавить, переименовать и удалить Resource через отдельные preview и executionToken: точные постобразы, UUID и остальные байты владельца и соседних исходников сохраняются",
+  "workspace": "tests/fixtures/acceptance/workspace-metadata-members",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.CorpusRegister"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "InformationRegister"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "sha256",
+          "eq": "0fe585976e95b6efdc619abfe778c1ff8dca36c71c34f5c6213a56b67c5f7735"
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister[@uuid=\"e8084c5b-a93e-48ed-8340-c71e3315f4b2\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "CorpusRegister"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "c4457e1ea26b6a4f40fd47db925fdb69c79754c52e76245449bcc011082d5a44"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "8fc4182ed0bcbc8670c62c55f88df347a7965f16bede2df092bbd45b77f6da40"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "135eb9e0ab9bddae4c34a52adc22182e42e8348289cfd92b543cf5150247861d"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "943bc5afe6c041f1710c435ec0ba0415a55840842345df7f5795c4101675d336"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/unrelated.txt",
+          "kind": "sha256",
+          "eq": "4d38ed0e80e746ae46273fd3cd6ac71c018669fa6061d581c9f860254f9ba40c"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "10588894ac1a018fd72eb6cb2948c4c0b20f36eab6ae2c0364d60412e63f37ca"
+        },
+        {
+          "path": "src/DocumentJournals/ДокументыОрганизации.xml",
+          "kind": "sha256",
+          "eq": "f0c09c8e666464fa725bd9d07fcc8fc64d1471467568da6c8370a6c988eaa118"
+        },
+        {
+          "path": "src/Enums/LanguageAware.xml",
+          "kind": "sha256",
+          "eq": "70fb99cbc2c28eb36f0181a2b32f397e46680613890665f45c6fa14b7f1db87d"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.CorpusRegister",
+        "ops": [
+          {
+            "op": "resource.add",
+            "args": {
+              "items": [
+                {
+                  "name": "NewResource",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "number",
+                        "digits": 10,
+                        "fraction": 2,
+                        "sign": "any"
+                      }
+                    ]
+                  },
+                  "synonym": "New member",
+                  "comment": "new member comment"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        },
+        {
+          "pointer": "/changed/0/at",
+          "eq": "main:InformationRegister.CorpusRegister"
+        },
+        {
+          "pointer": "/changed/0/event",
+          "eq": "MetadataChanged"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "sha256",
+          "eq": "0fe585976e95b6efdc619abfe778c1ff8dca36c71c34f5c6213a56b67c5f7735"
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister[@uuid=\"e8084c5b-a93e-48ed-8340-c71e3315f4b2\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "CorpusRegister"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "c4457e1ea26b6a4f40fd47db925fdb69c79754c52e76245449bcc011082d5a44"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "8fc4182ed0bcbc8670c62c55f88df347a7965f16bede2df092bbd45b77f6da40"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "135eb9e0ab9bddae4c34a52adc22182e42e8348289cfd92b543cf5150247861d"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "943bc5afe6c041f1710c435ec0ba0415a55840842345df7f5795c4101675d336"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/unrelated.txt",
+          "kind": "sha256",
+          "eq": "4d38ed0e80e746ae46273fd3cd6ac71c018669fa6061d581c9f860254f9ba40c"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "10588894ac1a018fd72eb6cb2948c4c0b20f36eab6ae2c0364d60412e63f37ca"
+        },
+        {
+          "path": "src/DocumentJournals/ДокументыОрганизации.xml",
+          "kind": "sha256",
+          "eq": "f0c09c8e666464fa725bd9d07fcc8fc64d1471467568da6c8370a6c988eaa118"
+        },
+        {
+          "path": "src/Enums/LanguageAware.xml",
+          "kind": "sha256",
+          "eq": "70fb99cbc2c28eb36f0181a2b32f397e46680613890665f45c6fa14b7f1db87d"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        },
+        {
+          "pointer": "/changed/0/at",
+          "eq": "main:InformationRegister.CorpusRegister"
+        },
+        {
+          "pointer": "/changed/0/event",
+          "eq": "MetadataChanged"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "sha256",
+          "eq": "54b62879250974f14408a066249d59e9709f944ddff5397eeea29bec8bee77f9"
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister[@uuid=\"e8084c5b-a93e-48ed-8340-c71e3315f4b2\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "CorpusRegister"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "c4457e1ea26b6a4f40fd47db925fdb69c79754c52e76245449bcc011082d5a44"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "8fc4182ed0bcbc8670c62c55f88df347a7965f16bede2df092bbd45b77f6da40"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "135eb9e0ab9bddae4c34a52adc22182e42e8348289cfd92b543cf5150247861d"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "943bc5afe6c041f1710c435ec0ba0415a55840842345df7f5795c4101675d336"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/unrelated.txt",
+          "kind": "sha256",
+          "eq": "4d38ed0e80e746ae46273fd3cd6ac71c018669fa6061d581c9f860254f9ba40c"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "10588894ac1a018fd72eb6cb2948c4c0b20f36eab6ae2c0364d60412e63f37ca"
+        },
+        {
+          "path": "src/DocumentJournals/ДокументыОрганизации.xml",
+          "kind": "sha256",
+          "eq": "f0c09c8e666464fa725bd9d07fcc8fc64d1471467568da6c8370a6c988eaa118"
+        },
+        {
+          "path": "src/Enums/LanguageAware.xml",
+          "kind": "sha256",
+          "eq": "70fb99cbc2c28eb36f0181a2b32f397e46680613890665f45c6fa14b7f1db87d"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "NewResource"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
+          "eq": [
+            "new member comment"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "New member"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "xs:decimal"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}Digits",
+          "eq": [
+            "10"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}FractionDigits",
+          "eq": [
+            "2"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}AllowedSign",
+          "eq": [
+            "Any"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.CorpusRegister.Resource.NewResource"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Resource"
+        },
+        {
+          "pointer": "/data/props/comment",
+          "eq": "new member comment"
+        },
+        {
+          "pointer": "/data/props/synonym",
+          "eq": "New member"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "sha256",
+          "eq": "54b62879250974f14408a066249d59e9709f944ddff5397eeea29bec8bee77f9"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.CorpusRegister.Resource.NewResource",
+        "ops": [
+          {
+            "op": "resource.set",
+            "args": {
+              "values": {
+                "newName": "NewResourceRenamed",
+                "synonym": "Renamed member",
+                "comment": "updated member comment"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        },
+        {
+          "pointer": "/changed/0/at",
+          "eq": "main:InformationRegister.CorpusRegister"
+        },
+        {
+          "pointer": "/changed/0/event",
+          "eq": "MetadataChanged"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "sha256",
+          "eq": "54b62879250974f14408a066249d59e9709f944ddff5397eeea29bec8bee77f9"
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister[@uuid=\"e8084c5b-a93e-48ed-8340-c71e3315f4b2\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "CorpusRegister"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "c4457e1ea26b6a4f40fd47db925fdb69c79754c52e76245449bcc011082d5a44"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "8fc4182ed0bcbc8670c62c55f88df347a7965f16bede2df092bbd45b77f6da40"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "135eb9e0ab9bddae4c34a52adc22182e42e8348289cfd92b543cf5150247861d"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "943bc5afe6c041f1710c435ec0ba0415a55840842345df7f5795c4101675d336"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/unrelated.txt",
+          "kind": "sha256",
+          "eq": "4d38ed0e80e746ae46273fd3cd6ac71c018669fa6061d581c9f860254f9ba40c"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "10588894ac1a018fd72eb6cb2948c4c0b20f36eab6ae2c0364d60412e63f37ca"
+        },
+        {
+          "path": "src/DocumentJournals/ДокументыОрганизации.xml",
+          "kind": "sha256",
+          "eq": "f0c09c8e666464fa725bd9d07fcc8fc64d1471467568da6c8370a6c988eaa118"
+        },
+        {
+          "path": "src/Enums/LanguageAware.xml",
+          "kind": "sha256",
+          "eq": "70fb99cbc2c28eb36f0181a2b32f397e46680613890665f45c6fa14b7f1db87d"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "NewResource"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
+          "eq": [
+            "new member comment"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "New member"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "xs:decimal"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}Digits",
+          "eq": [
+            "10"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}FractionDigits",
+          "eq": [
+            "2"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}AllowedSign",
+          "eq": [
+            "Any"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        },
+        {
+          "pointer": "/changed/0/at",
+          "eq": "main:InformationRegister.CorpusRegister"
+        },
+        {
+          "pointer": "/changed/0/event",
+          "eq": "MetadataChanged"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "sha256",
+          "eq": "5b40735739bc32782c34e9e75885e127a103d2c29f050bcc3a2bcdc3988e42b2"
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister[@uuid=\"e8084c5b-a93e-48ed-8340-c71e3315f4b2\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "CorpusRegister"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "c4457e1ea26b6a4f40fd47db925fdb69c79754c52e76245449bcc011082d5a44"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "8fc4182ed0bcbc8670c62c55f88df347a7965f16bede2df092bbd45b77f6da40"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "135eb9e0ab9bddae4c34a52adc22182e42e8348289cfd92b543cf5150247861d"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "943bc5afe6c041f1710c435ec0ba0415a55840842345df7f5795c4101675d336"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/unrelated.txt",
+          "kind": "sha256",
+          "eq": "4d38ed0e80e746ae46273fd3cd6ac71c018669fa6061d581c9f860254f9ba40c"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "10588894ac1a018fd72eb6cb2948c4c0b20f36eab6ae2c0364d60412e63f37ca"
+        },
+        {
+          "path": "src/DocumentJournals/ДокументыОрганизации.xml",
+          "kind": "sha256",
+          "eq": "f0c09c8e666464fa725bd9d07fcc8fc64d1471467568da6c8370a6c988eaa118"
+        },
+        {
+          "path": "src/Enums/LanguageAware.xml",
+          "kind": "sha256",
+          "eq": "70fb99cbc2c28eb36f0181a2b32f397e46680613890665f45c6fa14b7f1db87d"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "NewResourceRenamed"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
+          "eq": [
+            "updated member comment"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "Renamed member"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "xs:decimal"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}Digits",
+          "eq": [
+            "10"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}FractionDigits",
+          "eq": [
+            "2"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}AllowedSign",
+          "eq": [
+            "Any"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.CorpusRegister.Resource.NewResourceRenamed"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Resource"
+        },
+        {
+          "pointer": "/data/props/comment",
+          "eq": "updated member comment"
+        },
+        {
+          "pointer": "/data/props/synonym",
+          "eq": "Renamed member"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "sha256",
+          "eq": "5b40735739bc32782c34e9e75885e127a103d2c29f050bcc3a2bcdc3988e42b2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.CorpusRegister.Resource.NewResourceRenamed",
+        "ops": [
+          {
+            "op": "resource.remove"
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        },
+        {
+          "pointer": "/changed/0/at",
+          "eq": "main:InformationRegister.CorpusRegister"
+        },
+        {
+          "pointer": "/changed/0/event",
+          "eq": "MetadataChanged"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "sha256",
+          "eq": "5b40735739bc32782c34e9e75885e127a103d2c29f050bcc3a2bcdc3988e42b2"
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister[@uuid=\"e8084c5b-a93e-48ed-8340-c71e3315f4b2\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "CorpusRegister"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "c4457e1ea26b6a4f40fd47db925fdb69c79754c52e76245449bcc011082d5a44"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "8fc4182ed0bcbc8670c62c55f88df347a7965f16bede2df092bbd45b77f6da40"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "135eb9e0ab9bddae4c34a52adc22182e42e8348289cfd92b543cf5150247861d"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "943bc5afe6c041f1710c435ec0ba0415a55840842345df7f5795c4101675d336"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/unrelated.txt",
+          "kind": "sha256",
+          "eq": "4d38ed0e80e746ae46273fd3cd6ac71c018669fa6061d581c9f860254f9ba40c"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "10588894ac1a018fd72eb6cb2948c4c0b20f36eab6ae2c0364d60412e63f37ca"
+        },
+        {
+          "path": "src/DocumentJournals/ДокументыОрганизации.xml",
+          "kind": "sha256",
+          "eq": "f0c09c8e666464fa725bd9d07fcc8fc64d1471467568da6c8370a6c988eaa118"
+        },
+        {
+          "path": "src/Enums/LanguageAware.xml",
+          "kind": "sha256",
+          "eq": "70fb99cbc2c28eb36f0181a2b32f397e46680613890665f45c6fa14b7f1db87d"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "NewResourceRenamed"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
+          "eq": [
+            "updated member comment"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "Renamed member"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "xs:decimal"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}Digits",
+          "eq": [
+            "10"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}FractionDigits",
+          "eq": [
+            "2"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}AllowedSign",
+          "eq": [
+            "Any"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        },
+        {
+          "pointer": "/changed/0/at",
+          "eq": "main:InformationRegister.CorpusRegister"
+        },
+        {
+          "pointer": "/changed/0/event",
+          "eq": "MetadataChanged"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "sha256",
+          "eq": "0fe585976e95b6efdc619abfe778c1ff8dca36c71c34f5c6213a56b67c5f7735"
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister[@uuid=\"e8084c5b-a93e-48ed-8340-c71e3315f4b2\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "CorpusRegister"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "c4457e1ea26b6a4f40fd47db925fdb69c79754c52e76245449bcc011082d5a44"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "8fc4182ed0bcbc8670c62c55f88df347a7965f16bede2df092bbd45b77f6da40"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "135eb9e0ab9bddae4c34a52adc22182e42e8348289cfd92b543cf5150247861d"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "kind": "sha256",
+          "eq": "943bc5afe6c041f1710c435ec0ba0415a55840842345df7f5795c4101675d336"
+        },
+        {
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/unrelated.txt",
+          "kind": "sha256",
+          "eq": "4d38ed0e80e746ae46273fd3cd6ac71c018669fa6061d581c9f860254f9ba40c"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "10588894ac1a018fd72eb6cb2948c4c0b20f36eab6ae2c0364d60412e63f37ca"
+        },
+        {
+          "path": "src/DocumentJournals/ДокументыОрганизации.xml",
+          "kind": "sha256",
+          "eq": "f0c09c8e666464fa725bd9d07fcc8fc64d1471467568da6c8370a6c988eaa118"
+        },
+        {
+          "path": "src/Enums/LanguageAware.xml",
+          "kind": "sha256",
+          "eq": "70fb99cbc2c28eb36f0181a2b32f397e46680613890665f45c6fa14b7f1db87d"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        },
+        {
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": []
+        }
+      ]
+    }
+  ]
+}

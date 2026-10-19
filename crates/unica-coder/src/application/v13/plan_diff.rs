@@ -8,6 +8,7 @@ const CHUNK_BYTES: usize = 2048;
 const PAGE_BYTES: usize = 64 * 1024;
 
 pub(crate) struct SourceImage<'a> {
+    pub(crate) path_encoding: &'static str,
     pub(crate) path: String,
     pub(crate) before: Option<&'a [u8]>,
     pub(crate) after: Option<&'a [u8]>,
@@ -33,7 +34,7 @@ impl PlanDiffLayout {
         let mut windows = Vec::new();
         let mut positions = 0usize;
         let mut order: Vec<_> = (0..images.len()).collect();
-        order.sort_by_key(|&index| &images[index].path);
+        order.sort_by_key(|&index| (images[index].path_encoding, &images[index].path));
         for image in order {
             checkpoint()?;
             let source = &images[image];
@@ -155,7 +156,7 @@ impl PlanDiffLayout {
                     ("base64", STANDARD.encode(&image[start..end]))
                 };
                 let chunk = json!({
-                    "path": source.path, "side": if window.after { "after" } else { "before" },
+                    "pathEncoding": source.path_encoding, "path": source.path, "side": if window.after { "after" } else { "before" },
                     "present": bytes.is_some(), "totalBytes": image.len(),
                     "rangeStart": window.range.start, "rangeEnd": window.range.end,
                     "startByte": start, "endByte": end, "encoding": encoding, "content": content
@@ -209,6 +210,11 @@ mod tests {
                     .page(images, "plan-a", limit, cursor.as_deref(), || Ok(()))
                     .unwrap()
             );
+            assert!(page["chunks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|chunk| chunk["pathEncoding"] == "utf8"));
             chunks.extend(page["chunks"].as_array().unwrap().clone());
             cursor = page["cursor"].as_str().map(str::to_owned);
             if cursor.is_none() {
@@ -219,9 +225,54 @@ mod tests {
     }
 
     #[test]
+    fn saved_source_pages_distinguish_equal_text_with_different_path_encodings() {
+        for (native_encoding, path) in [("base64-unix-bytes", "gA=="), ("base64-utf16le", "ANg=")] {
+            let images = [
+                SourceImage {
+                    path_encoding: "utf8",
+                    path: path.into(),
+                    before: Some(b"unicode-name"),
+                    after: None,
+                },
+                SourceImage {
+                    path_encoding: native_encoding,
+                    path: path.into(),
+                    before: Some(b"native-name"),
+                    after: None,
+                },
+            ];
+            let layout = PlanDiffLayout::new(&images, || Ok(())).unwrap();
+            let page = layout
+                .page(&images, "encoded-name-lookalikes", 4, None, || Ok(()))
+                .unwrap();
+            assert_eq!(
+                page,
+                layout
+                    .page(&images, "encoded-name-lookalikes", 4, None, || Ok(()))
+                    .unwrap()
+            );
+            assert_eq!(page["stoppedBy"], "complete");
+            let chunks = page["chunks"].as_array().unwrap();
+            assert_eq!(chunks.len(), 4);
+            assert!(chunks.iter().all(|chunk| chunk["path"] == path));
+            assert_eq!(chunks[0]["pathEncoding"], native_encoding);
+            assert_eq!(chunks[0]["side"], "before");
+            assert_eq!(chunks[0]["content"], "native-name");
+            assert_eq!(chunks[1]["pathEncoding"], native_encoding);
+            assert_eq!(chunks[1]["side"], "after");
+            assert_eq!(chunks[2]["pathEncoding"], "utf8");
+            assert_eq!(chunks[2]["side"], "before");
+            assert_eq!(chunks[2]["content"], "unicode-name");
+            assert_eq!(chunks[3]["pathEncoding"], "utf8");
+            assert_eq!(chunks[3]["side"], "after");
+        }
+    }
+
+    #[test]
     fn saved_source_pages_report_count_bytes_and_completion() {
         let body = vec![0; 100000];
         let images = [SourceImage {
+            path_encoding: "utf8",
             path: "Module.bsl".into(),
             before: None,
             after: Some(&body),
@@ -252,6 +303,7 @@ mod tests {
             }
         }
         let small = [SourceImage {
+            path_encoding: "utf8",
             path: "small".into(),
             before: None,
             after: Some(b"a"),
@@ -275,6 +327,7 @@ mod tests {
         let before = "\u{feff}Процедура Тест()\r\n\tПервый();\r\nКонецПроцедуры";
         let after = "\u{feff}Процедура Тест()\r\n\tПервый();\r\n\tВторой();\r\nКонецПроцедуры";
         let images = [SourceImage {
+            path_encoding: "utf8",
             path: "Module.bsl".into(),
             before: Some(before.as_bytes()),
             after: Some(after.as_bytes()),
@@ -292,16 +345,19 @@ mod tests {
         let binary: Vec<_> = (0..=255).cycle().take(18000).collect();
         let images = [
             SourceImage {
+                path_encoding: "utf8",
                 path: "a".into(),
                 before: None,
                 after: Some(text.as_bytes()),
             },
             SourceImage {
+                path_encoding: "utf8",
                 path: "b".into(),
                 before: Some(&binary),
                 after: None,
             },
             SourceImage {
+                path_encoding: "utf8",
                 path: "c".into(),
                 before: None,
                 after: Some(b""),
@@ -338,6 +394,7 @@ mod tests {
     fn saved_source_page_bound_counts_escaped_bytes_and_rejects_foreign_cursor() {
         let body = vec![0; 100000];
         let images = [SourceImage {
+            path_encoding: "utf8",
             path: "Module.bsl".into(),
             before: None,
             after: Some(&body),

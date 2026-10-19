@@ -43,6 +43,21 @@ metadata_operations!(
     AttributeAdd => ("attribute.add", MetadataAttributeContainer, Items),
     AttributeSet => ("attribute.set", MetadataAttribute, Values),
     AttributeRemove => ("attribute.remove", MetadataAttribute, Target),
+    TabularSectionAdd => ("tabularSection.add", MetadataTabularSections, Items),
+    TabularSectionSet => ("tabularSection.set", MetadataTabularSection, Values),
+    TabularSectionRemove => ("tabularSection.remove", MetadataTabularSection, Target),
+    DimensionAdd => ("dimension.add", MetadataDimensions, Items),
+    DimensionSet => ("dimension.set", MetadataDimension, Values),
+    DimensionRemove => ("dimension.remove", MetadataDimension, Target),
+    ResourceAdd => ("resource.add", MetadataResources, Items),
+    ResourceSet => ("resource.set", MetadataResource, Values),
+    ResourceRemove => ("resource.remove", MetadataResource, Target),
+    EnumValueAdd => ("enumValue.add", MetadataEnumValues, Items),
+    EnumValueSet => ("enumValue.set", MetadataEnumValue, Values),
+    EnumValueRemove => ("enumValue.remove", MetadataEnumValue, Target),
+    ColumnAdd => ("column.add", MetadataColumns, Items),
+    ColumnSet => ("column.set", MetadataColumn, Values),
+    ColumnRemove => ("column.remove", MetadataColumn, Target),
     CommandAdd => ("command.add", MetadataCommands, Items),
     CommandSet => ("command.set", MetadataCommand, Values),
     CommandRemove => ("command.remove", MetadataCommand, Target),
@@ -58,6 +73,41 @@ impl MetadataOperation {
                 OperationContract::metadata_member_set(MetaCollection::Attributes, site)
             }
             Self::AttributeRemove => OperationContract::metadata_member_remove(),
+            Self::TabularSectionAdd => {
+                OperationContract::metadata_member_add(MetaCollection::TabularSections, site)
+            }
+            Self::TabularSectionSet => {
+                OperationContract::metadata_member_set(MetaCollection::TabularSections, site)
+            }
+            Self::TabularSectionRemove => OperationContract::metadata_member_remove(),
+            Self::DimensionAdd => {
+                OperationContract::metadata_member_add(MetaCollection::Dimensions, site)
+            }
+            Self::DimensionSet => {
+                OperationContract::metadata_member_set(MetaCollection::Dimensions, site)
+            }
+            Self::DimensionRemove => OperationContract::metadata_member_remove(),
+            Self::ResourceAdd => {
+                OperationContract::metadata_member_add(MetaCollection::Resources, site)
+            }
+            Self::ResourceSet => {
+                OperationContract::metadata_member_set(MetaCollection::Resources, site)
+            }
+            Self::ResourceRemove => OperationContract::metadata_member_remove(),
+            Self::EnumValueAdd => {
+                OperationContract::metadata_member_add(MetaCollection::EnumValues, site)
+            }
+            Self::EnumValueSet => {
+                OperationContract::metadata_member_set(MetaCollection::EnumValues, site)
+            }
+            Self::EnumValueRemove => OperationContract::metadata_member_remove(),
+            Self::ColumnAdd => {
+                OperationContract::metadata_member_add(MetaCollection::Columns, site)
+            }
+            Self::ColumnSet => {
+                OperationContract::metadata_member_set(MetaCollection::Columns, site)
+            }
+            Self::ColumnRemove => OperationContract::metadata_member_remove(),
             Self::CommandAdd => {
                 OperationContract::metadata_member_add(MetaCollection::Commands, site)
             }
@@ -76,7 +126,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn registration_metadata_preserves_attribute_and_command_operations() {
+    fn registration_metadata_preserves_all_typed_member_operations() {
         for (operation, name, applicability, skeleton) in [
             (
                 MetadataOperation::AttributeAdd,
@@ -94,6 +144,96 @@ mod tests {
                 MetadataOperation::AttributeRemove,
                 "attribute.remove",
                 OperationApplicability::MetadataAttribute,
+                OperationSkeleton::Target,
+            ),
+            (
+                MetadataOperation::TabularSectionAdd,
+                "tabularSection.add",
+                OperationApplicability::MetadataTabularSections,
+                OperationSkeleton::Items,
+            ),
+            (
+                MetadataOperation::TabularSectionSet,
+                "tabularSection.set",
+                OperationApplicability::MetadataTabularSection,
+                OperationSkeleton::Values,
+            ),
+            (
+                MetadataOperation::TabularSectionRemove,
+                "tabularSection.remove",
+                OperationApplicability::MetadataTabularSection,
+                OperationSkeleton::Target,
+            ),
+            (
+                MetadataOperation::DimensionAdd,
+                "dimension.add",
+                OperationApplicability::MetadataDimensions,
+                OperationSkeleton::Items,
+            ),
+            (
+                MetadataOperation::DimensionSet,
+                "dimension.set",
+                OperationApplicability::MetadataDimension,
+                OperationSkeleton::Values,
+            ),
+            (
+                MetadataOperation::DimensionRemove,
+                "dimension.remove",
+                OperationApplicability::MetadataDimension,
+                OperationSkeleton::Target,
+            ),
+            (
+                MetadataOperation::ResourceAdd,
+                "resource.add",
+                OperationApplicability::MetadataResources,
+                OperationSkeleton::Items,
+            ),
+            (
+                MetadataOperation::ResourceSet,
+                "resource.set",
+                OperationApplicability::MetadataResource,
+                OperationSkeleton::Values,
+            ),
+            (
+                MetadataOperation::ResourceRemove,
+                "resource.remove",
+                OperationApplicability::MetadataResource,
+                OperationSkeleton::Target,
+            ),
+            (
+                MetadataOperation::EnumValueAdd,
+                "enumValue.add",
+                OperationApplicability::MetadataEnumValues,
+                OperationSkeleton::Items,
+            ),
+            (
+                MetadataOperation::EnumValueSet,
+                "enumValue.set",
+                OperationApplicability::MetadataEnumValue,
+                OperationSkeleton::Values,
+            ),
+            (
+                MetadataOperation::EnumValueRemove,
+                "enumValue.remove",
+                OperationApplicability::MetadataEnumValue,
+                OperationSkeleton::Target,
+            ),
+            (
+                MetadataOperation::ColumnAdd,
+                "column.add",
+                OperationApplicability::MetadataColumns,
+                OperationSkeleton::Items,
+            ),
+            (
+                MetadataOperation::ColumnSet,
+                "column.set",
+                OperationApplicability::MetadataColumn,
+                OperationSkeleton::Values,
+            ),
+            (
+                MetadataOperation::ColumnRemove,
+                "column.remove",
+                OperationApplicability::MetadataColumn,
                 OperationSkeleton::Target,
             ),
             (
@@ -128,6 +268,54 @@ mod tests {
             "",
         ] {
             assert!(!MetadataOperation::is_named(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn tabular_section_add_contract_keeps_owner_context_for_nested_attributes() {
+        for (owner, allows_fill) in [
+            (MetadataKind::Document, false),
+            (MetadataKind::Report, true),
+        ] {
+            let contract = MetadataOperation::TabularSectionAdd.contract_at(Some(MetadataSite {
+                owner,
+                in_section: false,
+            }));
+            let fields = &contract.schema["properties"]["items"]["items"]["properties"];
+            let attributes = &fields["attributes"]["items"]["properties"];
+            assert!(attributes.get("type").is_some(), "{owner:?}");
+            assert_eq!(
+                attributes.get("fillValue").is_some(),
+                allows_fill,
+                "{owner:?}"
+            );
+            assert!(contract
+                .normalize(
+                    &json!({"items":[{"name":"Lines","attributes":[{"name":"Value"}]}]}),
+                    "args",
+                )
+                .is_ok());
+            assert_eq!(
+                contract
+                    .normalize(
+                        &json!({"items":[{"name":"Lines","attributes":[{
+                            "name":"Value",
+                            "type":{"variants":[{"kind":"boolean"}]},
+                            "fillValue":{"kind":"boolean","value":true}
+                        }]}]}),
+                        "args",
+                    )
+                    .is_ok(),
+                allows_fill,
+                "{owner:?}"
+            );
+            let set = MetadataOperation::TabularSectionSet.contract_at(Some(MetadataSite {
+                owner,
+                in_section: true,
+            }));
+            assert!(set.schema["properties"]["values"]["properties"]
+                .get("attributes")
+                .is_none());
         }
     }
 

@@ -180,6 +180,24 @@ pub(crate) fn parse_typed_meta_local_info(
     target: &MetadataAddress,
     support: MetaSupportStatus,
 ) -> Result<MetaLocalInfo, MetaFailure> {
+    parse_typed_meta_local_info_inner(descriptor_preimage, target, support, None)
+}
+
+pub(crate) fn parse_typed_meta_local_info_for_source(
+    descriptor_preimage: &[u8],
+    target: &MetadataAddress,
+    support: MetaSupportStatus,
+    source_kind: crate::domain::project_sources::SourceSetKind,
+) -> Result<MetaLocalInfo, MetaFailure> {
+    parse_typed_meta_local_info_inner(descriptor_preimage, target, support, Some(source_kind))
+}
+
+fn parse_typed_meta_local_info_inner(
+    descriptor_preimage: &[u8],
+    target: &MetadataAddress,
+    support: MetaSupportStatus,
+    source_kind: Option<crate::domain::project_sources::SourceSetKind>,
+) -> Result<MetaLocalInfo, MetaFailure> {
     let identity = super::validation_context::inspect_metadata_image_identity(descriptor_preimage)
         .map_err(|error| {
             let diagnostic = MetaDiagnostic::error(
@@ -322,10 +340,16 @@ pub(crate) fn parse_typed_meta_local_info(
         target,
         &mut diagnostics,
     );
+    let format =
+        crate::infrastructure::platform_xml_owner::root_version_literal(xml, doc.root_element());
+    let member_read_profile = source_kind.and_then(|source| {
+        crate::domain::metadata::MetaMemberReadProfile::for_source(source, kind, format.as_deref())
+    });
     let collection_route = |tag, nested_attributes, field| {
         TypedRootCollectionRoute::new(kind, tag, nested_attributes, field)
     };
     Ok(MetaLocalInfo {
+        member_read_profile,
         metadata_path: target.clone(),
         kind,
         details,
@@ -347,7 +371,8 @@ pub(crate) fn parse_typed_meta_local_info(
             tabular_sections: typed_root_collection(
                 xml,
                 child_objects,
-                collection_route("TabularSection", true, "collections.tabularSections"),
+                collection_route("TabularSection", true, "collections.tabularSections")
+                    .with_member_read_profile(member_read_profile),
                 target,
                 &mut diagnostics,
             ),
@@ -1220,6 +1245,7 @@ pub(super) fn typed_relations(
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct TypedRootCollectionRoute<'a> {
+    member_read_profile: Option<crate::domain::metadata::MetaMemberReadProfile>,
     owner_kind: MetadataKind,
     tag: &'a str,
     nested_attributes: bool,
@@ -1234,11 +1260,19 @@ impl<'a> TypedRootCollectionRoute<'a> {
         field: &'a str,
     ) -> Self {
         Self {
+            member_read_profile: None,
             owner_kind,
             tag,
             nested_attributes,
             field,
         }
+    }
+    fn with_member_read_profile(
+        mut self,
+        profile: Option<crate::domain::metadata::MetaMemberReadProfile>,
+    ) -> Self {
+        self.member_read_profile = profile;
+        self
     }
 }
 
@@ -1252,12 +1286,15 @@ pub(super) fn typed_root_collection(
     if !super::info_projection::meta_info_collection_is_applicable(route.owner_kind, route.tag) {
         return Vec::new();
     }
-    typed_elements_with_diagnostics(
+    typed_elements_profiled(
         xml,
         parent,
-        route.tag,
-        route.nested_attributes,
-        route.field,
+        ElementReadRoute {
+            tag: route.tag,
+            nested_attributes: route.nested_attributes,
+            field: route.field,
+            profile: route.member_read_profile,
+        },
         target,
         diagnostics,
     )
@@ -1325,13 +1362,41 @@ pub(super) fn typed_elements_with_diagnostics(
     target: &MetadataAddress,
     diagnostics: &mut Vec<MetaDiagnostic>,
 ) -> Vec<MetaElementData> {
+    typed_elements_profiled(
+        xml,
+        parent,
+        ElementReadRoute {
+            tag,
+            nested_attributes,
+            field,
+            profile: None,
+        },
+        target,
+        diagnostics,
+    )
+}
+
+struct ElementReadRoute<'a> {
+    tag: &'a str,
+    nested_attributes: bool,
+    field: &'a str,
+    profile: Option<crate::domain::metadata::MetaMemberReadProfile>,
+}
+
+fn typed_elements_profiled(
+    xml: &str,
+    parent: Option<roxmltree::Node<'_, '_>>,
+    route: ElementReadRoute<'_>,
+    target: &MetadataAddress,
+    diagnostics: &mut Vec<MetaDiagnostic>,
+) -> Vec<MetaElementData> {
     let Some(parent) = parent else {
         return Vec::new();
     };
     super::info_projection::direct_children_with_namespace(
         parent,
         super::info_projection::MD_CLASSES_NAMESPACE,
-        tag,
+        route.tag,
     )
     .into_iter()
     .enumerate()
@@ -1339,10 +1404,11 @@ pub(super) fn typed_elements_with_diagnostics(
         typed_element(
             xml,
             node,
-            nested_attributes,
-            &format!("{field}[{index}]"),
+            route.nested_attributes,
+            &format!("{}[{index}]", route.field),
             target,
             diagnostics,
+            route.profile,
         )
     })
     .collect()
@@ -1355,6 +1421,7 @@ fn typed_element(
     field: &str,
     target: &MetadataAddress,
     diagnostics: &mut Vec<MetaDiagnostic>,
+    member_profile: Option<crate::domain::metadata::MetaMemberReadProfile>,
 ) -> Option<MetaElementData> {
     let properties_readback =
         match super::info_projection::project_optional_collection_item_properties(node, field) {
@@ -1387,6 +1454,7 @@ fn typed_element(
             fill_value: None,
             addressing_dimension: None,
             properties: properties_readback,
+            property_limits: Vec::new(),
             attributes: Vec::new(),
         });
     };
@@ -1481,18 +1549,30 @@ fn typed_element(
         None
     };
     let attributes = if nested_attributes {
-        typed_elements_with_diagnostics(
+        typed_elements_profiled(
             xml,
             super::info_projection::direct_md_child(node, "ChildObjects"),
-            "Attribute",
-            false,
-            &format!("{field}.attributes"),
+            ElementReadRoute {
+                tag: "Attribute",
+                nested_attributes: false,
+                field: &format!("{field}.attributes"),
+                profile: member_profile,
+            },
             target,
             diagnostics,
         )
     } else {
         Vec::new()
     };
+    let (profile_properties, property_limits) = member_profile.map_or_else(
+        || (Vec::new(), Vec::new()),
+        |profile| super::member_properties::observe(node, profile, field, target, diagnostics),
+    );
+    incomplete |= !property_limits.is_empty();
+    let properties_readback = properties_readback
+        .into_iter()
+        .chain(profile_properties)
+        .collect();
     Some(MetaElementData {
         name,
         incomplete,
@@ -1503,6 +1583,7 @@ fn typed_element(
         fill_value,
         addressing_dimension,
         properties: properties_readback,
+        property_limits,
         attributes,
     })
 }

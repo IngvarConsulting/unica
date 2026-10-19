@@ -1,0 +1,154 @@
+{
+  "id": "S-1721-form-lifecycle",
+  "name": "owned-form-lifecycle-publishes-and-removes-all-three-resources",
+  "issue": 1721,
+  "area": "Формы",
+  "task": "form.add, form.set и отдельный form.remove проходят preview → executionToken → независимое чтение: создание регистрирует форму и три её ресурса, назначение меняет только слот владельца, удаление убирает регистрацию, слот, descriptor, Form.xml и Module.bsl, сохраняя соседнюю форму.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {"at": "main:Catalog.Валюты"},
+      "expect": ["ok"],
+      "captures": {
+        "ownerBefore": {"kind": "sha256", "file": "src/Catalogs/Валюты.xml"},
+        "neighbourDescriptor": {"kind": "sha256", "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента.xml"},
+        "neighbourContent": {"kind": "sha256", "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"},
+        "neighbourModule": {"kind": "sha256", "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form/Module.bsl"}
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [{"op": "form.add", "args": {"items": [{"name": "Lifecycle", "type": "ObjectForm"}]}}]
+      },
+      "expect": ["ok"],
+      "assertions": [{"pointer": "/data/mode", "eq": "preview"}],
+      "captures": {"addToken": {"pointer": "/data/executionToken"}},
+      "fileAssertions": [
+        {"path": "src/Catalogs/Валюты.xml", "kind": "sha256", "eq": "$capture.ownerBefore"},
+        {"path": "src/Catalogs/Валюты/Forms/Lifecycle.xml", "kind": "exists", "eq": false},
+        {"path": "src/Catalogs/Валюты/Forms/Lifecycle/Ext/Form.xml", "kind": "exists", "eq": false},
+        {"path": "src/Catalogs/Валюты/Forms/Lifecycle/Ext/Form/Module.bsl", "kind": "exists", "eq": false}
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {"executionToken": "$capture.addToken"},
+      "expect": ["ok"],
+      "assertions": [{"pointer": "/data/mode", "eq": "published"}],
+      "captures": {
+        "ownerAdded": {"kind": "sha256", "file": "src/Catalogs/Валюты.xml"},
+        "descriptor": {"kind": "sha256", "file": "src/Catalogs/Валюты/Forms/Lifecycle.xml"},
+        "content": {"kind": "sha256", "file": "src/Catalogs/Валюты/Forms/Lifecycle/Ext/Form.xml"},
+        "module": {"kind": "sha256", "file": "src/Catalogs/Валюты/Forms/Lifecycle/Ext/Form/Module.bsl"}
+      },
+      "fileAssertions": [
+        {"path": "src/Catalogs/Валюты.xml", "kind": "xml", "select": "./{*}Catalog/{*}ChildObjects/{*}Form", "eq": ["ФормаЭлемента", "ФормаСписка", "Lifecycle"]},
+        {"path": "src/Catalogs/Валюты.xml", "kind": "xml", "select": "./{*}Catalog/{*}Properties/{*}DefaultObjectForm", "eq": ["Catalog.Валюты.Form.ФормаЭлемента"]},
+        {"path": "src/Catalogs/Валюты/Forms/Lifecycle.xml", "kind": "xml", "select": "./{*}Form/{*}Properties/{*}Name", "eq": ["Lifecycle"]},
+        {"path": "src/Catalogs/Валюты/Forms/Lifecycle.xml", "kind": "xml", "select": "./{*}Form/{*}Properties/{*}FormType", "eq": ["Managed"]},
+        {"path": "src/Catalogs/Валюты/Forms/Lifecycle/Ext/Form.xml", "kind": "xml", "select": "./{*}Attributes/{*}Attribute[@name='Объект']/{*}MainAttribute", "eq": ["true"]},
+        {"path": "src/Catalogs/Валюты/Forms/Lifecycle/Ext/Form/Module.bsl", "kind": "exists", "eq": true}
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {"at": "main:Catalog.Валюты.Form.Lifecycle.Metadata"},
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data/kind", "eq": "Metadata"},
+        {"pointer": "/data/props/Name", "eq": "Lifecycle"},
+        {"pointer": "/data/props/FormType", "eq": "Managed"}
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {"at": "main:Catalog.Валюты.Form.Lifecycle"},
+      "expect": ["ok"],
+      "assertions": [{"pointer": "/data/kind", "eq": "Form"}]
+    },
+    {
+      "tool": "unica.view",
+      "args": {"at": "main:Catalog.Валюты.Form.Lifecycle.Module.Form"},
+      "expect": ["ok"],
+      "assertions": [{"pointer": "/data/kind", "eq": "Module"}]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [{"op": "form.set", "args": {"values": {"defaultObjectForm": "Lifecycle"}}}]
+      },
+      "expect": ["ok"],
+      "assertions": [{"pointer": "/data/mode", "eq": "preview"}],
+      "captures": {"setToken": {"pointer": "/data/executionToken"}},
+      "fileAssertions": [
+        {"path": "src/Catalogs/Валюты.xml", "kind": "sha256", "eq": "$capture.ownerAdded"},
+        {"path": "src/Catalogs/Валюты/Forms/Lifecycle.xml", "kind": "sha256", "eq": "$capture.descriptor"},
+        {"path": "src/Catalogs/Валюты/Forms/Lifecycle/Ext/Form.xml", "kind": "sha256", "eq": "$capture.content"},
+        {"path": "src/Catalogs/Валюты/Forms/Lifecycle/Ext/Form/Module.bsl", "kind": "sha256", "eq": "$capture.module"}
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {"executionToken": "$capture.setToken"},
+      "expect": ["ok"],
+      "assertions": [{"pointer": "/data/mode", "eq": "published"}],
+      "captures": {"ownerSet": {"kind": "sha256", "file": "src/Catalogs/Валюты.xml"}},
+      "fileAssertions": [
+        {"path": "src/Catalogs/Валюты.xml", "kind": "xml", "select": "./{*}Catalog/{*}Properties/{*}DefaultObjectForm", "eq": ["Catalog.Валюты.Form.Lifecycle"]},
+        {"path": "src/Catalogs/Валюты/Forms/Lifecycle.xml", "kind": "sha256", "eq": "$capture.descriptor"},
+        {"path": "src/Catalogs/Валюты/Forms/Lifecycle/Ext/Form.xml", "kind": "sha256", "eq": "$capture.content"},
+        {"path": "src/Catalogs/Валюты/Forms/Lifecycle/Ext/Form/Module.bsl", "kind": "sha256", "eq": "$capture.module"}
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {"at": "main:Catalog.Валюты"},
+      "expect": ["ok"],
+      "fileAssertions": [
+        {"path": "src/Catalogs/Валюты.xml", "kind": "xml", "select": "./{*}Catalog/{*}Properties/{*}DefaultObjectForm", "eq": ["Catalog.Валюты.Form.Lifecycle"]},
+        {"path": "src/Catalogs/Валюты.xml", "kind": "xml", "select": "./{*}Catalog/{*}ChildObjects/{*}Form", "eq": ["ФормаЭлемента", "ФормаСписка", "Lifecycle"]}
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {"at": "main:Catalog.Валюты.Form.Lifecycle", "ops": [{"op": "form.remove"}]},
+      "expect": ["ok"],
+      "assertions": [{"pointer": "/data/mode", "eq": "preview"}],
+      "captures": {"removeToken": {"pointer": "/data/executionToken"}},
+      "fileAssertions": [
+        {"path": "src/Catalogs/Валюты.xml", "kind": "sha256", "eq": "$capture.ownerSet"},
+        {"path": "src/Catalogs/Валюты/Forms/Lifecycle.xml", "kind": "sha256", "eq": "$capture.descriptor"},
+        {"path": "src/Catalogs/Валюты/Forms/Lifecycle/Ext/Form.xml", "kind": "sha256", "eq": "$capture.content"},
+        {"path": "src/Catalogs/Валюты/Forms/Lifecycle/Ext/Form/Module.bsl", "kind": "sha256", "eq": "$capture.module"}
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {"executionToken": "$capture.removeToken"},
+      "expect": ["ok"],
+      "assertions": [{"pointer": "/data/mode", "eq": "published"}],
+      "fileAssertions": [
+        {"path": "src/Catalogs/Валюты/Forms/Lifecycle.xml", "kind": "exists", "eq": false},
+        {"path": "src/Catalogs/Валюты/Forms/Lifecycle/Ext/Form.xml", "kind": "exists", "eq": false},
+        {"path": "src/Catalogs/Валюты/Forms/Lifecycle/Ext/Form/Module.bsl", "kind": "exists", "eq": false},
+        {"path": "src/Catalogs/Валюты.xml", "kind": "xml", "select": "./{*}Catalog/{*}ChildObjects/{*}Form", "eq": ["ФормаЭлемента", "ФормаСписка"]},
+        {"path": "src/Catalogs/Валюты.xml", "kind": "xml", "select": "./{*}Catalog/{*}Properties/{*}DefaultObjectForm", "eq": [""]},
+        {"path": "src/Catalogs/Валюты/Forms/ФормаЭлемента.xml", "kind": "sha256", "eq": "$capture.neighbourDescriptor"},
+        {"path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml", "kind": "sha256", "eq": "$capture.neighbourContent"},
+        {"path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form/Module.bsl", "kind": "sha256", "eq": "$capture.neighbourModule"}
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {"at": "main:Catalog.Валюты"},
+      "expect": ["ok"],
+      "fileAssertions": [
+        {"path": "src/Catalogs/Валюты.xml", "kind": "xml", "select": "./{*}Catalog/{*}ChildObjects/{*}Form", "eq": ["ФормаЭлемента", "ФормаСписка"]},
+        {"path": "src/Catalogs/Валюты.xml", "kind": "xml", "select": "./{*}Catalog/{*}Properties/{*}DefaultObjectForm", "eq": [""]}
+      ]
+    }
+  ]
+}

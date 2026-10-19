@@ -59,8 +59,10 @@ fn changes_support_state(
 /// Vendor-support gate of the canonical mutation path. When the actor's
 /// support policy is `deny`, a request whose owner is a vendor object with
 /// the rule `locked`, or whose configuration is on support with changes
-/// disabled, refuses `invalid_state` before any family stages a byte. The
-/// owner is the top-level metadata object of the addressed node, or the
+/// disabled, refuses `invalid_state` before any family stages a byte.
+/// Removing a vendor object also requires its own rule to be `off-support`:
+/// permission to edit it does not permit its removal.
+/// The owner is the top-level metadata object of the addressed node, or the
 /// configuration root for root-level targets; nested forms, templates and
 /// attributes inherit the rule of their owner, as they do in the platform.
 fn refuse_targets_on_locked_vendor_objects(
@@ -112,9 +114,28 @@ fn refuse_targets_on_locked_vendor_objects(
     else {
         return Ok(());
     };
-    let locked =
-        support_root_uuid_from_bytes(&bytes).and_then(|uuid| state.object_rule(&uuid)) == Some(0);
-    if locked {
+    let support_rule =
+        support_root_uuid_from_bytes(&bytes).and_then(|uuid| state.object_rule(&uuid));
+    if matches!(support_rule, Some(0 | 1))
+        && request
+            .ops()
+            .iter()
+            .any(|operation| operation.name() == "object.remove")
+    {
+        let rule_name = if support_rule == Some(0) {
+            "locked"
+        } else {
+            "editable"
+        };
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidState,
+            format!(
+                "`{owner}` is a vendor object with the support rule `{rule_name}`; set `off-support` with `supportRule.set` in a separate apply before removal"
+            ),
+        )
+        .at_path(at));
+    }
+    if support_rule == Some(0) {
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::InvalidState,
             format!(
@@ -1678,6 +1699,146 @@ mod tests {
         }
     }
 
+    #[test]
+    fn vendor_object_removal_requires_separate_off_support_apply() {
+        use crate::test_support::tree_snapshot;
+
+        for rule in [1, 0] {
+            let fixture = ApplySeamFixture::new();
+            let marker = fixture.source_dir().join("Ext/ParentConfigurations.bin");
+            std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+            std::fs::write(&marker, vendor_removal_support_marker(rule, true)).unwrap();
+            let before = tree_snapshot(&fixture.source_dir());
+            if rule == 1 {
+                let ordinary = seam_request(
+                    "main:Document.First",
+                    "props.set",
+                    serde_json::json!({"values": {"Comment": "editable"}}),
+                );
+                let (staged, _) =
+                    plan_hidden_v13_apply(&ordinary, &fixture.binding, &fixture.admission())
+                        .expect("the editable rule still permits ordinary property edits");
+                assert!(!staged.planned_changes().is_empty());
+            }
+            for force in [false, true] {
+                let request = seam_request(
+                    "main:Document.First",
+                    "object.remove",
+                    serde_json::json!({"force": force}),
+                );
+                let error = plan_hidden_v13_apply(&request, &fixture.binding, &fixture.admission())
+                    .expect_err("a vendor object must be off support before removal");
+                assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);
+                assert!(error.to_string().contains("off-support"), "{error}");
+                assert!(error.to_string().contains("supportRule.set"), "{error}");
+                assert!(error.to_string().contains("separate apply"), "{error}");
+                assert_eq!(tree_snapshot(&fixture.source_dir()), before);
+            }
+        }
+    }
+
+    fn vendor_removal_support_marker(rule: u8, editing_enabled: bool) -> String {
+        let global_flag = u8::from(!editing_enabled);
+        format!(
+            "\u{feff}{{6,{global_flag},1,dddddddd-dddd-4ddd-8ddd-dddddddddddd,0,33333333-3333-4333-8333-333333333333,\"1.0\",\"Vendor\",\"VendorConf\",3,{rule},0,11111111-1111-4111-8111-111111111111,11111111-1111-4111-8111-111111111111}}"
+        )
+    }
+
+    #[test]
+    fn vendor_object_removal_preserves_allowed_support_states() {
+        use crate::test_support::tree_snapshot;
+
+        for (policy, marker) in [
+            ("deny", None),
+            ("deny", Some(vendor_removal_support_marker(2, true))),
+            ("deny", Some("\u{feff}{6,0,0}".to_string())),
+            (
+                "deny",
+                Some(vendor_removal_support_marker(0, true).replace(
+                    "11111111-1111-4111-8111-111111111111",
+                    "22222222-2222-4222-8222-222222222222",
+                )),
+            ),
+            ("warn", Some(vendor_removal_support_marker(0, false))),
+            ("warn", Some(vendor_removal_support_marker(1, true))),
+            ("off", Some(vendor_removal_support_marker(0, false))),
+            ("off", Some(vendor_removal_support_marker(1, true))),
+        ] {
+            let fixture = ApplySeamFixture::new();
+            std::fs::write(
+                fixture
+                    .source_dir()
+                    .parent()
+                    .unwrap()
+                    .join(".v8-project.json"),
+                serde_json::json!({"editingAllowedCheck": policy}).to_string(),
+            )
+            .unwrap();
+            if let Some(marker) = marker {
+                let path = fixture.source_dir().join("Ext/ParentConfigurations.bin");
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, marker).unwrap();
+            }
+            let before = tree_snapshot(&fixture.source_dir());
+            let request = seam_request(
+                "main:Document.First",
+                "object.remove",
+                serde_json::json!({}),
+            );
+            let (mut staged, _) =
+                plan_hidden_v13_apply(&request, &fixture.binding, &fixture.admission())
+                    .unwrap_or_else(|error| panic!("allowed removal under {policy}: {error}"));
+            assert!(staged
+                .read(std::path::Path::new("Documents/First.xml"))
+                .unwrap()
+                .is_none());
+            assert_eq!(tree_snapshot(&fixture.source_dir()), before);
+        }
+    }
+
+    #[test]
+    fn support_removal_and_object_removal_require_separate_batches_under_every_policy() {
+        use crate::test_support::tree_snapshot;
+
+        for policy in ["deny", "warn", "off"] {
+            let fixture = ApplySeamFixture::new();
+            std::fs::write(
+                fixture
+                    .source_dir()
+                    .parent()
+                    .unwrap()
+                    .join(".v8-project.json"),
+                serde_json::json!({"editingAllowedCheck": policy}).to_string(),
+            )
+            .unwrap();
+            let marker = fixture.source_dir().join("Ext/ParentConfigurations.bin");
+            std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+            std::fs::write(marker, vendor_removal_support_marker(1, true)).unwrap();
+            let before = tree_snapshot(&fixture.source_dir());
+            let request = ApplyRequest::parse(
+                serde_json::json!({
+                    "at": "main:Document.First",
+                    "ops": [
+                        {"op": "supportRule.set", "args": {"values": {"rule": "off-support"}}},
+                        {"op": "object.remove", "args": {}}
+                    ], "dryRun": true
+                })
+                .as_object()
+                .unwrap(),
+                &["main"],
+            )
+            .unwrap();
+            let error = plan_hidden_v13_apply(&request, &fixture.binding, &fixture.admission())
+                .expect_err("support removal cannot authorize removal in the same apply");
+            assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);
+            assert!(
+                error.to_string().contains("separate apply"),
+                "{policy}: {error}"
+            );
+            assert_eq!(tree_snapshot(&fixture.source_dir()), before);
+        }
+    }
+
     /// The vendor-support gate of the canonical path: a locked vendor object
     /// refuses every family before a byte is staged, the support operations
     /// stay the way out of the lock, and a source without the marker is not
@@ -1872,18 +2033,29 @@ mod tests {
         )
         .unwrap();
         let admission = fixture.admission();
+        let before = snapshot();
+        for (operation, args) in [
+            (
+                "props.set",
+                serde_json::json!({"values": {"Comment": "edited"}}),
+            ),
+            ("object.remove", serde_json::json!({})),
+        ] {
+            let request = seam_request("main:Document.Second", operation, args);
+            let error = plan_hidden_v13_apply(&request, &fixture.binding, &admission).unwrap_err();
+            assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);
+            assert!(error.to_string().contains("changes disabled"), "{error}");
+            assert_eq!(snapshot(), before);
+        }
+
+        // Without the marker the source is not on support and edits plan.
+        std::fs::remove_file(ext.join("ParentConfigurations.bin")).unwrap();
+        let admission = fixture.admission();
         let request = seam_request(
             "main:Document.Second",
             "props.set",
             serde_json::json!({"values": {"Comment": "edited"}}),
         );
-        let error = plan_hidden_v13_apply(&request, &fixture.binding, &admission).unwrap_err();
-        assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);
-        assert!(error.to_string().contains("changes disabled"), "{error}");
-
-        // Without the marker the source is not on support and edits plan.
-        std::fs::remove_file(ext.join("ParentConfigurations.bin")).unwrap();
-        let admission = fixture.admission();
         plan_hidden_v13_apply(&request, &fixture.binding, &admission)
             .expect("a source without the support marker is editable");
     }
