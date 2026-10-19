@@ -4296,7 +4296,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: apply operation `props.set` does not apply to Configuration `main:Configuration`",
+      "refusal": "bad_value: apply operation `props.set` does not apply to Configuration `main:Configuration`; it addresses `Kind.Name`, `Role.Name` or `Subsystem.Name`",
       "assertions": [
         {
           "pointer": "/diagnostics/0/code",
@@ -4304,7 +4304,7 @@
         },
         {
           "pointer": "/at",
-          "eq": "ops[0].args.at"
+          "eq": "ops[0].at"
         },
         {
           "pointer": "/data",
@@ -4522,7 +4522,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: apply operation `props.set` does not apply to Method `main:CommonModule.GoogleПереводчик.Method.ДоступныеЯзыки`",
+      "refusal": "bad_value: apply operation `props.set` does not apply to Method `main:CommonModule.GoogleПереводчик.Method.ДоступныеЯзыки`; it applies at `main:CommonModule.GoogleПереводч",
       "assertions": [
         {
           "pointer": "/diagnostics/0/code",
@@ -4530,7 +4530,7 @@
         },
         {
           "pointer": "/at",
-          "eq": "ops[0].args.at"
+          "eq": "ops[0].at"
         },
         {
           "pointer": "/data",
@@ -4748,7 +4748,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: apply operation `props.set` does not apply to Subsystem `main:Subsystem.Администрирование.Subsystem.КонтрольРаботыПользователей`",
+      "refusal": "bad_value: apply operation `props.set` does not apply to Subsystem `main:Subsystem.Администрирование.Subsystem.КонтрольРаботыПользователей`; it applies at `main:Subsystem.",
       "assertions": [
         {
           "pointer": "/diagnostics/0/code",
@@ -4756,7 +4756,7 @@
         },
         {
           "pointer": "/at",
-          "eq": "ops[0].args.at"
+          "eq": "ops[0].at"
         },
         {
           "pointer": "/data",
