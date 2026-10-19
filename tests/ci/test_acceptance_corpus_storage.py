@@ -7,6 +7,7 @@ that the per-scenario manifest still catches a dropped scenario or step.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -135,12 +136,61 @@ class StableIdentifierTests(CorpusStorageTestCase):
 class ParallelAdditionMergeTests(CorpusStorageTestCase):
     """Two branches from one base each add a scenario; Git merges both."""
 
-    def git(self, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+    def git(self, *args: str, check: bool = True, environment=None) -> subprocess.CompletedProcess:
+        # Fixture commands finish before their temporary repository is removed.
         return subprocess.run(
             ["git", "-c", "user.name=corpus", "-c", "user.email=corpus@example.invalid",
-             "-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main", *args],
-            cwd=self.root, check=check, capture_output=True, text=True,
+             "-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main",
+             "-c", "maintenance.auto=false", "-c", "gc.auto=0", *args],
+            cwd=self.root, check=check, capture_output=True, text=True, env=environment,
         )
+
+    def test_fixture_disables_automatic_git_maintenance(self) -> None:
+        trace = Path(self.temporary.name) / "git-events.jsonl"
+        environment = {
+            **os.environ,
+            "GIT_TRACE2_EVENT": str(trace),
+            "GIT_DEFAULT_HASH": "sha1",
+        }
+        self.git("init", "-q", environment=environment)
+        for key, value in {
+            "maintenance.auto": "true",
+            "maintenance.autoDetach": "true",
+            "gc.auto": "1",
+            "gc.autoDetach": "true",
+            "gc.packRefs": "true",
+        }.items():
+            self.git("config", "--local", key, value, environment=environment)
+        # Legacy Git samples objects/17 before deciding whether to run auto GC.
+        probes = (
+            ("corpus auto maintenance probe 292\n", "17b35c298a39253c30a199a9de6353612e5515b7"),
+            ("corpus auto maintenance probe 629\n", "17d44b6a0959537b29986286eafd64fe88fe071c"),
+        )
+        for index, (body, _) in enumerate(probes):
+            (self.root / f".fixture-gc-probe-{index}").write_bytes(body.encode("utf-8"))
+        self.git("add", "-A", environment=environment)
+        for _, object_id in probes:
+            self.assertTrue((self.root / ".git" / "objects" / object_id[:2] / object_id[2:]).is_file())
+        self.git("commit", "-q", "-m", "base", environment=environment)
+        events = [json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines()]
+        self.assertTrue(any(event.get("event") == "exit" for event in events))
+        self.assertTrue(any(
+            event.get("event") == "cmd_name" and event.get("name") == "commit"
+            for event in events
+        ))
+        workers = []
+        for event in events:
+            arguments = event.get("argv", [])
+            if (event.get("event") == "child_start"
+                    and arguments[:2] in (["git", "maintenance"], ["git", "gc"])
+                    and "--detach" in arguments):
+                workers.append(event)
+            hierarchy = event.get("hierarchy", "").split("/")
+            if (event.get("event") == "cmd_name"
+                    and any(name in {"gc", "maintenance"} for name in hierarchy[:-1])
+                    and hierarchy[-1] not in {"gc", "maintenance"}):
+                workers.append(event)
+        self.assertEqual(workers, [], "automatic Git workers can race temporary-directory cleanup")
 
     def commit_all(self, message: str) -> None:
         self.git("add", "-A")
