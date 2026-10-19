@@ -9375,6 +9375,24 @@ mod tests {
             let mut foreign = None;
             if case.starts_with("root-") {
                 let displaced = context.cwd.join("displaced-root");
+                #[cfg(windows)]
+                {
+                    // Windows blocks an ancestor rename while a descendant directory is open.
+                    // Keep the root anchor; release only the recovery descendant after proving it.
+                    let error = std::fs::rename(&private.root, &displaced)
+                        .expect_err("an open recovery descendant must prevent the root rename");
+                    assert_eq!(
+                        error.kind(),
+                        std::io::ErrorKind::PermissionDenied,
+                        "{case}: unexpected error while the recovery descendant is open: {error}"
+                    );
+                    drop(
+                        private
+                            .recovery_anchor
+                            .take()
+                            .expect("the recovery descendant is retained before the rename"),
+                    );
+                }
                 std::fs::rename(&private.root, &displaced).unwrap();
                 actual_recovery = displaced.join("recovery");
                 if case == "root-replaced" {
