@@ -514,7 +514,7 @@ def terminal_calls(calls):
                     raise ValueError("Task identity or state changed")
                 continue
             pending.pop(task_id)
-            terminal.append({**original, "done": call["done"], "after": call["after"], "filesAfter": call.get("filesAfter"), "rootsAfter": call.get("rootsAfter"), "result": call["result"], "isError": call.get("isError", False)})
+            terminal.append({**original, "done": call["done"], "after": call["after"], "filesAfter": call.get("filesAfter"), "rootsAfter": call.get("rootsAfter"), "result": call["result"], "isError": original.get("isError", False) or call.get("isError", False)})
         elif name in {"unica.task.get", "unica.task.cancel"}:
             task_id = call["params"]["arguments"].get("taskId")
             if task_id not in pending or not task or task.get("taskId") != task_id:

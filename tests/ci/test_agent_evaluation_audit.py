@@ -73,6 +73,8 @@ class AgentEvaluationAuditTests(unittest.TestCase):
             self.assertTrue(observations.exists(), "MXL evaluation must save actual physical observations")
             actual = json.loads(observations.read_text())
             self.assertGreater(len(actual["fileAssertions"]), 10)
+            self.assertEqual([entry["observed"] for entry in actual["fileAssertions"][-4:]],
+                             [["Товар"], ["Сумма"], ["Agent1311"], ["12.5"]])
             self.assertTrue(actual["preservedTemplatesSha256"])
             self.assertIn("Agent1311", actual["registeredTemplates"])
             self.assertEqual(json.loads((proof / "manifest.json").read_text())["fileObservationsSha256"],
@@ -127,6 +129,30 @@ class AgentEvaluationAuditTests(unittest.TestCase):
             with self.subTest(physical_mutation=name), tempfile.TemporaryDirectory() as raw:
                 with self.assertRaises(ValueError):
                     evaluate_mxl_fixture(Path(raw), mutation)
+
+    def test_mxl_physical_outcome_rejects_collapsed_cells_that_preserve_frozen_assertions(self):
+        from tests.agent_evaluation.mxl_driver import PREFIX
+        from tests.ci.acceptance_controls import assert_value, file_value
+
+        def collapse_cells(workspace, scenario):
+            body = workspace / (PREFIX + "Templates/Agent1311/Ext/Template.xml")
+            text = body.read_text()
+            for first, second in [("Товар", "Сумма"), ("Agent1311", "12.5")]:
+                first_item = f"<v8:item><v8:content>{first}</v8:content></v8:item>"
+                second_item = f"<v8:item><v8:content>{second}</v8:content></v8:item>"
+                separate = f"<c><c><tl>{first_item}</tl></c></c>\n<c><c><tl>{second_item}</tl></c></c>"
+                collapsed = f"<c><c><tl>{first_item}{second_item}</tl></c></c><c><c/></c>"
+                self.assertIn(separate, text, "the counterexample must collapse both real cells")
+                text = text.replace(separate, collapsed)
+            body.write_text(text)
+            # The old row-wide oracle sees identical ordered text lists even
+            # though both requested columns have collapsed into column one.
+            for step in scenario["wire"]:
+                for assertion in step.get("fileAssertions", []):
+                    assert_value(file_value(workspace, assertion), assertion, {})
+
+        with tempfile.TemporaryDirectory() as raw, self.assertRaises(ValueError):
+            evaluate_mxl_fixture(Path(raw), collapse_cells)
 
     def test_detailed_can_authorizes_only_its_exact_successful_preceding_target_and_operation(self):
         import copy
@@ -218,9 +244,11 @@ class AgentEvaluationAuditTests(unittest.TestCase):
         ]
         asynchronous[4:4] = completion
         audit(asynchronous)
-        asynchronous[5]["payload"]["result"]["isError"] = True
-        with self.assertRaisesRegex(ValueError, "detailed contract"):
-            audit(asynchronous)
+        for broken_reply in [3, 5]:
+            failed = copy.deepcopy(asynchronous)
+            failed[broken_reply]["payload"]["result"]["isError"] = True
+            with self.subTest(failed_async_reply=broken_reply), self.assertRaisesRegex(ValueError, "detailed contract"):
+                audit(failed)
         missing = copy.deepcopy(trace)
         del missing[2:4]
         with self.assertRaisesRegex(ValueError, "detailed contract"):

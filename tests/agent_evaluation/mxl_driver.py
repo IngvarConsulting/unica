@@ -66,6 +66,13 @@ def verify_mxl_images(workspace, scenario, source_before, registered_before):
     assertions = [assertion for step in scenario["wire"] for assertion in step.get("fileAssertions", [])]
     if not assertions:
         raise ValueError("MXL evaluation omitted its physical file assertions")
+    sheet = "{http://v8.1c.ru/8.2/data/spreadsheet}"
+    core = "{http://v8.1c.ru/8.1/data/core}"
+    for row, column, text in [(0, 1, "Товар"), (0, 2, "Сумма"), (1, 1, "Agent1311"), (1, 2, "12.5")]:
+        assertions.append({"kind": "xml", "path": PREFIX + "Templates/Agent1311/Ext/Template.xml",
+            "select": f"./{sheet}rowsItem[{sheet}index='{row}']/{sheet}row/{sheet}c[{column}]"
+                      f"/{sheet}c/{sheet}tl/{core}item/{core}content[.!='']",
+            "eq": [text]})
     observations = []
     for assertion in assertions:
         observed = file_value(workspace, assertion)
