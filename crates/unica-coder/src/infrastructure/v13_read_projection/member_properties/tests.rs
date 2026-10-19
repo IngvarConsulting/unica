@@ -5,6 +5,8 @@ use crate::domain::project_sources::SourceSetKind;
 use crate::infrastructure::logical_tree::route_logical_address;
 use serde_json::{json, Value};
 
+mod catalog_attribute;
+
 fn observed_properties() -> Value {
     json!([
         {"name": "LineNumberLength", "value": {"kind": "unsignedInteger", "value": 5}},

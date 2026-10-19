@@ -5,6 +5,8 @@ use crate::domain::project_sources::SourceSetKind;
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use serde_json::json;
 
+mod catalog_attribute;
+
 // These are retained native platform exports, not output of Unica's writer.
 const CATALOG: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -29,7 +31,7 @@ fn read(xml: &str, owner: &str, source_kind: Option<SourceSetKind>) -> MetaLocal
     .unwrap_or_else(|failure| panic!("{owner}: {failure:?}"))
 }
 
-fn assert_no_pilot_properties(element: &MetaElementData) {
+fn assert_no_section_properties(element: &MetaElementData) {
     for name in ["LineNumberLength", "Use"] {
         assert!(
             !element
@@ -43,6 +45,19 @@ fn assert_no_pilot_properties(element: &MetaElementData) {
     }
 }
 
+fn assert_no_pilot_properties(element: &MetaElementData) {
+    assert_no_section_properties(element);
+    assert!(
+        !element
+            .properties
+            .iter()
+            .any(|property| property.name == "ToolTip"),
+        "unproved ToolTip on {}: {:?}",
+        element.name,
+        element.properties
+    );
+}
+
 fn assert_profile_absent(info: &MetaLocalInfo) {
     assert!(info.member_read_profile.is_none(), "{info:?}");
     assert!(!info.collections.tabular_sections.is_empty(), "{info:?}");
@@ -50,6 +65,15 @@ fn assert_profile_absent(info: &MetaLocalInfo) {
         assert_no_pilot_properties(section);
         for column in &section.attributes {
             assert_no_pilot_properties(column);
+            assert!(
+                !column.properties.iter().any(|property| {
+                    matches!(
+                        property.name.as_str(),
+                        "Indexing" | "FullTextSearch" | "DataHistory"
+                    )
+                }),
+                "unproved attribute properties must remain unpublished"
+            );
         }
     }
 }
@@ -146,6 +170,6 @@ fn catalog_tabular_native_context_does_not_propagate_to_header_or_column_attribu
         .collect::<Vec<_>>();
     assert!(!columns.is_empty());
     for column in columns {
-        assert_no_pilot_properties(column);
+        assert_no_section_properties(column);
     }
 }
