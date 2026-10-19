@@ -7,6 +7,7 @@ use crate::domain::metadata::{
     MetaCollection, MetaDiagnosticCode, MetaEditOperation, MetadataKind,
 };
 use crate::domain::metadata_operation::MetadataOperation as RegisteredMetadataOperation;
+use crate::domain::operation_contract::ArgumentShape;
 use crate::domain::project_sources::SourceSetKind;
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use crate::infrastructure::logical_event_source::metadata_descriptor_relative;
@@ -252,6 +253,16 @@ pub(crate) fn parse_metadata_plan_operation_in(
         .at_path(format!("ops[{op_index}].args"))
     })?;
     if let Some(operation) = descriptor.and_then(OperationDescriptor::metadata_operation) {
+        let contract = operation.contract_at(None);
+        let shape = ArgumentShape::new(&contract.schema);
+        // Unknown outer keys precede address errors. Contextual legality is
+        // still checked by the target and typed conversion, in their order.
+        reject_unknown_args_with(
+            operation.name(),
+            object,
+            |key| shape.property(key).is_some(),
+            op_index,
+        )?;
         let kind = match operation {
             RegisteredMetadataOperation::AttributeAdd => {
                 parse_attribute_add(object, op_index, binding)?
@@ -262,13 +273,9 @@ pub(crate) fn parse_metadata_plan_operation_in(
             RegisteredMetadataOperation::AttributeRemove => {
                 parse_attribute_remove(object, op_index, binding)?
             }
-            RegisteredMetadataOperation::TabularSectionAdd => parse_member_add(
-                operation.name(),
-                MetaCollection::TabularSections,
-                object,
-                op_index,
-                binding,
-            )?,
+            RegisteredMetadataOperation::TabularSectionAdd => {
+                parse_member_add(MetaCollection::TabularSections, object, op_index, binding)?
+            }
             RegisteredMetadataOperation::TabularSectionSet => parse_addressed_member_change(
                 operation.name(),
                 NodeKind::TabularSection,
@@ -287,13 +294,9 @@ pub(crate) fn parse_metadata_plan_operation_in(
                 op_index,
                 binding,
             )?,
-            RegisteredMetadataOperation::DimensionAdd => parse_member_add(
-                operation.name(),
-                MetaCollection::Dimensions,
-                object,
-                op_index,
-                binding,
-            )?,
+            RegisteredMetadataOperation::DimensionAdd => {
+                parse_member_add(MetaCollection::Dimensions, object, op_index, binding)?
+            }
             RegisteredMetadataOperation::DimensionSet => parse_addressed_member_change(
                 operation.name(),
                 NodeKind::Dimension,
@@ -312,13 +315,9 @@ pub(crate) fn parse_metadata_plan_operation_in(
                 op_index,
                 binding,
             )?,
-            RegisteredMetadataOperation::ResourceAdd => parse_member_add(
-                operation.name(),
-                MetaCollection::Resources,
-                object,
-                op_index,
-                binding,
-            )?,
+            RegisteredMetadataOperation::ResourceAdd => {
+                parse_member_add(MetaCollection::Resources, object, op_index, binding)?
+            }
             RegisteredMetadataOperation::ResourceSet => parse_addressed_member_change(
                 operation.name(),
                 NodeKind::Resource,
@@ -337,13 +336,9 @@ pub(crate) fn parse_metadata_plan_operation_in(
                 op_index,
                 binding,
             )?,
-            RegisteredMetadataOperation::EnumValueAdd => parse_member_add(
-                operation.name(),
-                MetaCollection::EnumValues,
-                object,
-                op_index,
-                binding,
-            )?,
+            RegisteredMetadataOperation::EnumValueAdd => {
+                parse_member_add(MetaCollection::EnumValues, object, op_index, binding)?
+            }
             RegisteredMetadataOperation::EnumValueSet => parse_addressed_member_change(
                 operation.name(),
                 NodeKind::EnumValue,
@@ -362,13 +357,9 @@ pub(crate) fn parse_metadata_plan_operation_in(
                 op_index,
                 binding,
             )?,
-            RegisteredMetadataOperation::ColumnAdd => parse_member_add(
-                operation.name(),
-                MetaCollection::Columns,
-                object,
-                op_index,
-                binding,
-            )?,
+            RegisteredMetadataOperation::ColumnAdd => {
+                parse_member_add(MetaCollection::Columns, object, op_index, binding)?
+            }
             RegisteredMetadataOperation::ColumnSet => parse_addressed_member_change(
                 operation.name(),
                 NodeKind::Column,
@@ -387,13 +378,9 @@ pub(crate) fn parse_metadata_plan_operation_in(
                 op_index,
                 binding,
             )?,
-            RegisteredMetadataOperation::CommandAdd => parse_member_add(
-                operation.name(),
-                MetaCollection::Commands,
-                object,
-                op_index,
-                binding,
-            )?,
+            RegisteredMetadataOperation::CommandAdd => {
+                parse_member_add(MetaCollection::Commands, object, op_index, binding)?
+            }
             RegisteredMetadataOperation::CommandSet => parse_addressed_member_change(
                 operation.name(),
                 NodeKind::Command,
@@ -413,6 +400,28 @@ pub(crate) fn parse_metadata_plan_operation_in(
                 binding,
             )?,
         };
+        // Convert the target and payload first to retain their diagnostics.
+        // Only the shared envelope's requiredness and container types remain;
+        // nested fields were visited by the staged Metadata argument reader.
+        for key in shape.required_names() {
+            if !object.contains_key(key) {
+                return Err(ApplyPlanError::new(
+                    ApplyPlanErrorKind::BadValue,
+                    format!("`{key}` is required"),
+                )
+                .at_path(format!("ops[{op_index}].args.{key}")));
+            }
+        }
+        for (key, value) in object {
+            shape
+                .property(key)
+                .expect("known operation argument")
+                .validate_type(value, &format!("ops[{op_index}].args.{key}"))
+                .map_err(|error| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message)
+                        .at_path(error.path)
+                })?;
+        }
         return Ok(MetadataPlanOperation { kind });
     }
     let kind = match operation {
@@ -440,7 +449,16 @@ fn reject_unknown_args(
     allowed: &[&str],
     op_index: usize,
 ) -> Result<(), ApplyPlanError> {
-    if let Some(field) = args.keys().find(|field| !allowed.contains(&field.as_str())) {
+    reject_unknown_args_with(operation, args, |key| allowed.contains(&key), op_index)
+}
+
+fn reject_unknown_args_with(
+    operation: &str,
+    args: &Map<String, Value>,
+    accepts: impl Fn(&str) -> bool,
+    op_index: usize,
+) -> Result<(), ApplyPlanError> {
+    if let Some(field) = args.keys().find(|field| !accepts(field)) {
         // The refusal names the expected skeleton so the caller's first retry
         // does not have to discover the argument shape by another refusal.
         let expected = crate::domain::apply::OperationRegistry::closed()
@@ -951,7 +969,6 @@ fn parse_attribute_add(
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
-    reject_unknown_args("attribute.add", args, &["at", "items"], op_index)?;
     let target = qualified_target(args, op_index, binding)?;
     let (owner, kind, section) = match target.segments() {
         [_] => {
@@ -1003,7 +1020,6 @@ fn parse_attribute_set(
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
-    reject_unknown_args("attribute.set", args, &["at", "values"], op_index)?;
     let target = qualified_target(args, op_index, binding)?;
     let (owner, kind, name, scope) = attribute_owner_and_name(&target, op_index)?;
     let mut values = required_object(args, "values", op_index)?.clone();
@@ -1045,7 +1061,6 @@ fn parse_attribute_remove(
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
-    reject_unknown_args("attribute.remove", args, &["at"], op_index)?;
     let target = qualified_target(args, op_index, binding)?;
     let (owner, kind, name, scope) = attribute_owner_and_name(&target, op_index)?;
     let mut legacy = json!({"op": "remove", "collection": "attributes", "names": [name]});
@@ -1068,13 +1083,11 @@ fn parse_attribute_remove(
 /// One member-collection add: `at` names the owner, `items` carry the new
 /// elements exactly as the typed metadata contract defines them.
 fn parse_member_add(
-    operation: &str,
     collection: MetaCollection,
     args: &Map<String, Value>,
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
-    reject_unknown_args(operation, args, &["at", "items"], op_index)?;
     let target = qualified_target(args, op_index, binding)?;
     let (owner, kind) = metadata_owner(&target, op_index)?;
     let items = required_array(args, "items", op_index)?.to_vec();
@@ -1108,11 +1121,6 @@ fn parse_addressed_member_change(
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
-    let allowed: &[&str] = match change {
-        AddressedMemberChange::Set => &["at", "values"],
-        AddressedMemberChange::Remove => &["at"],
-    };
-    reject_unknown_args(operation, args, allowed, op_index)?;
     let target = qualified_target(args, op_index, binding)?;
     let (owner, kind, name) = metadata_member_target(&target, member_kind, op_index)?;
     if matches!(change, AddressedMemberChange::Remove) {
@@ -3278,6 +3286,10 @@ fn stage_help_create(
 
 #[cfg(test)]
 mod tests {
+    mod contract_shape_tests {
+        include!("metadata/contract_shape_tests.rs");
+    }
+
     use super::{
         parse_metadata_plan_operation, plan_metadata_batch, preserve_descriptor_image,
         set_ml_property,

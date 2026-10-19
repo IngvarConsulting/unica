@@ -29,6 +29,7 @@ check:
   - crates/unica-coder/src/infrastructure/task_lifecycle_link_store_v5.rs::no_deadline_links_preserve_exact_cas_and_reopen_terminal_winner
   - crates/unica-coder/src/infrastructure/daemon/server.rs::default_operation_paths_reach_providers_without_a_deadline
   - crates/unica-coder/src/infrastructure/daemon/server.rs::production_operation_paths_start_no_new_finite_deadline
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::saved_apply_adapter_preserves_the_existing_cutoff_and_absence
   - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks
   - crates/unica-coder/src/infrastructure/internal_adapters.rs::diagnostics_analyze_without_configured_timeout_runs_without_process_timeout
 gap: https://github.com/IngvarConsulting/unica/issues/1119

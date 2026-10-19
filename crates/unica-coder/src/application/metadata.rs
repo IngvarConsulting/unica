@@ -15,6 +15,9 @@ use crate::domain::metadata::{
     MetadataKind, MetadataReference, MetadataType, MetadataTypeVariant, NumberSign,
     RelationEditMode, StringLengthMode, METADATA_PROPERTY_SPECS,
 };
+use crate::domain::operation_contract::{
+    metadata_element_input_schema, metadata_host_element_schema, ArgumentShape,
+};
 use crate::domain::source_target::{
     metadata_address_kind_spellings, MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20,
     RECALCULATION_KIND_SPELLINGS,
@@ -1013,6 +1016,66 @@ fn parse_property_changes(
     MetaPropertyChanges::convert(kind, inputs)
 }
 
+/// Read shared shape facts at the existing conversion stages. Primitive
+/// conversion retains the established diagnostics; the contract also checks
+/// the value, so changing only Can's field type changes productive admission.
+struct MetadataArgumentReader<'a> {
+    object: &'a Map<String, Value>,
+    shape: ArgumentShape<'a>,
+    field: &'a str,
+}
+
+impl<'a> MetadataArgumentReader<'a> {
+    fn new(object: &'a Map<String, Value>, schema: &'a Value, field: &'a str) -> Self {
+        Self {
+            object,
+            shape: ArgumentShape::new(schema),
+            field,
+        }
+    }
+
+    fn reject_unknown(&self) -> Result<(), MetaDiagnostic> {
+        reject_unknown_shape_fields(self.object, self.shape, &format!("{}.", self.field))
+    }
+
+    fn read<T>(
+        &self,
+        key: &str,
+        convert: impl FnOnce(&Map<String, Value>, &str, &str) -> Result<T, MetaDiagnostic>,
+    ) -> Result<T, MetaDiagnostic> {
+        let field = format!("{}.{key}", self.field);
+        let converted = convert(self.object, key, &field)?;
+        if let Some(value) = self.object.get(key) {
+            let shape = self.shape.property(key).expect("known typed input field");
+            shape.validate_field(value, &field).map_err(|error| {
+                let message = if key == "indexing" {
+                    "`indexing` must be DontIndex, Index or IndexWithAdditionalOrder".into()
+                } else {
+                    error.message
+                };
+                invalid(error.path, message)
+            })?;
+        } else if self.shape.requires(key) {
+            return Err(invalid(field, format!("`{key}` is required")));
+        }
+        Ok(converted)
+    }
+}
+
+fn reject_unknown_shape_fields(
+    object: &Map<String, Value>,
+    shape: ArgumentShape<'_>,
+    prefix: &str,
+) -> Result<(), MetaDiagnostic> {
+    if let Some(name) = object.keys().find(|name| shape.property(name).is_none()) {
+        return Err(invalid(
+            format!("{prefix}{name}"),
+            format!("unknown field `{name}`"),
+        ));
+    }
+    Ok(())
+}
+
 fn parse_element_input(
     value: &Value,
     field: &str,
@@ -1021,104 +1084,72 @@ fn parse_element_input(
     let object = value
         .as_object()
         .ok_or_else(|| invalid(field, "element must be an object"))?;
-    let allowed = if allows_attributes {
-        &[
-            "name",
-            "synonym",
-            "comment",
-            "type",
-            "required",
-            "fillValue",
-            "attributes",
-            "position",
-            "templateType",
-            "indexing",
-        ][..]
-    } else {
-        &[
-            "name",
-            "synonym",
-            "comment",
-            "type",
-            "required",
-            "fillValue",
-            "position",
-            "indexing",
-        ][..]
-    };
-    reject_unknown_fields(object, allowed, &format!("{field}."))?;
+    let reader = MetadataArgumentReader::new(
+        object,
+        metadata_element_input_schema(false, allows_attributes),
+        field,
+    );
+    reader.reject_unknown()?;
     let attributes_field = format!("{field}.attributes");
-    let attributes = object
-        .get("attributes")
-        .map(|_| {
-            let attributes = required_array_at(object, "attributes", &attributes_field)?;
-            if attributes.is_empty() {
-                return Err(invalid(
-                    &attributes_field,
-                    "nested attributes must not be empty",
-                ));
-            }
-            attributes
-                .iter()
-                .enumerate()
-                .map(|(index, element)| {
-                    parse_element_input(element, &format!("{attributes_field}[{index}]"), false)
-                })
-                .collect::<Result<Vec<_>, _>>()
-        })
-        .transpose()?;
-    Ok(MetaElementInput {
-        name: required_string_at(object, "name", &format!("{field}.name"))?,
-        synonym: optional_string_at(object, "synonym", &format!("{field}.synonym"))?,
-        comment: optional_string_at(object, "comment", &format!("{field}.comment"))?,
-        r#type: object
-            .get("type")
-            .map(|value| parse_metadata_type(value, &format!("{field}.type")))
-            .transpose()?,
-        required: optional_bool_at(object, "required", &format!("{field}.required"))?,
-        fill_value: object
-            .get("fillValue")
-            .map(|value| parse_fill_value(value, &format!("{field}.fillValue")))
-            .transpose()?,
-        attributes,
-        position: object
-            .get("position")
-            .map(|value| parse_position(value, &format!("{field}.position")))
-            .transpose()?,
-        template_type: object
-            .get("templateType")
-            .map(|value| {
-                let field = format!("{field}.templateType");
-                let value = value
-                    .as_str()
-                    .ok_or_else(|| invalid(&field, "`templateType` must be a string"))?;
-                MetaTemplateKind::parse(value).map_err(|diagnostic| diagnostic.with_field(field))
+    let attributes = reader.read("attributes", |object, key, _| {
+        object
+            .get(key)
+            .map(|_| {
+                let attributes = required_array_at(object, "attributes", &attributes_field)?;
+                if attributes.is_empty() {
+                    return Err(invalid(
+                        &attributes_field,
+                        "nested attributes must not be empty",
+                    ));
+                }
+                attributes
+                    .iter()
+                    .enumerate()
+                    .map(|(index, element)| {
+                        parse_element_input(element, &format!("{attributes_field}[{index}]"), false)
+                    })
+                    .collect::<Result<Vec<_>, _>>()
             })
-            .transpose()?,
-        indexing: parse_indexing(object, field)?,
+            .transpose()
+    })?;
+    Ok(MetaElementInput {
+        name: reader.read("name", required_string_at)?,
+        synonym: reader.read("synonym", optional_string_at)?,
+        comment: reader.read("comment", optional_string_at)?,
+        r#type: reader.read("type", |object, key, field| {
+            object
+                .get(key)
+                .map(|value| parse_metadata_type(value, field))
+                .transpose()
+        })?,
+        required: reader.read("required", optional_bool_at)?,
+        fill_value: reader.read("fillValue", |object, key, field| {
+            object
+                .get(key)
+                .map(|value| parse_fill_value(value, field))
+                .transpose()
+        })?,
+        attributes,
+        position: reader.read("position", |object, key, field| {
+            object
+                .get(key)
+                .map(|value| parse_position(value, field))
+                .transpose()
+        })?,
+        template_type: reader.read("templateType", |object, key, field| {
+            object
+                .get(key)
+                .map(|value| {
+                    let value = value
+                        .as_str()
+                        .ok_or_else(|| invalid(field, "`templateType` must be a string"))?;
+                    MetaTemplateKind::parse(value)
+                        .map_err(|diagnostic| diagnostic.with_field(field))
+                })
+                .transpose()
+        })?,
+        indexing: reader.read("indexing", optional_string_at)?,
     })
-}
-
-/// `indexing`: the platform's closed set for attribute, dimension, resource
-/// and column indexing.
-fn parse_indexing(
-    object: &Map<String, Value>,
-    field: &str,
-) -> Result<Option<String>, MetaDiagnostic> {
-    let Some(value) = object.get("indexing") else {
-        return Ok(None);
-    };
-    let field = format!("{field}.indexing");
-    let value = value
-        .as_str()
-        .ok_or_else(|| invalid(&field, "`indexing` must be a string"))?;
-    match value {
-        "DontIndex" | "Index" | "IndexWithAdditionalOrder" => Ok(Some(value.to_string())),
-        _ => Err(invalid(
-            &field,
-            "`indexing` must be DontIndex, Index or IndexWithAdditionalOrder",
-        )),
-    }
 }
 
 fn parse_element_update(
@@ -1128,40 +1159,34 @@ fn parse_element_update(
     let object = value
         .as_object()
         .ok_or_else(|| invalid(field, "element must be an object"))?;
-    reject_unknown_fields(
-        object,
-        &[
-            "name",
-            "newName",
-            "synonym",
-            "comment",
-            "type",
-            "required",
-            "fillValue",
-            "position",
-            "indexing",
-        ],
-        &format!("{field}."),
-    )?;
+    let reader =
+        MetadataArgumentReader::new(object, metadata_element_input_schema(true, false), field);
+    reader.reject_unknown()?;
     Ok(MetaElementUpdateInput {
-        indexing: parse_indexing(object, field)?,
-        name: required_string_at(object, "name", &format!("{field}.name"))?,
-        new_name: optional_string_at(object, "newName", &format!("{field}.newName"))?,
-        synonym: optional_string_at(object, "synonym", &format!("{field}.synonym"))?,
-        comment: optional_string_at(object, "comment", &format!("{field}.comment"))?,
-        r#type: object
-            .get("type")
-            .map(|value| parse_metadata_type(value, &format!("{field}.type")))
-            .transpose()?,
-        required: optional_bool_at(object, "required", &format!("{field}.required"))?,
-        fill_value: object
-            .get("fillValue")
-            .map(|value| parse_fill_value(value, &format!("{field}.fillValue")))
-            .transpose()?,
-        position: object
-            .get("position")
-            .map(|value| parse_position(value, &format!("{field}.position")))
-            .transpose()?,
+        indexing: reader.read("indexing", optional_string_at)?,
+        name: reader.read("name", required_string_at)?,
+        new_name: reader.read("newName", optional_string_at)?,
+        synonym: reader.read("synonym", optional_string_at)?,
+        comment: reader.read("comment", optional_string_at)?,
+        r#type: reader.read("type", |object, key, field| {
+            object
+                .get(key)
+                .map(|value| parse_metadata_type(value, field))
+                .transpose()
+        })?,
+        required: reader.read("required", optional_bool_at)?,
+        fill_value: reader.read("fillValue", |object, key, field| {
+            object
+                .get(key)
+                .map(|value| parse_fill_value(value, field))
+                .transpose()
+        })?,
+        position: reader.read("position", |object, key, field| {
+            object
+                .get(key)
+                .map(|value| parse_position(value, field))
+                .transpose()
+        })?,
     })
 }
 
@@ -1169,10 +1194,12 @@ fn parse_position(value: &Value, field: &str) -> Result<MetaPosition, MetaDiagno
     let object = value
         .as_object()
         .ok_or_else(|| invalid(field, "position must be an object"))?;
-    reject_unknown_fields(object, &["before", "after"], &format!("{field}."))?;
+    let schema = position_schema();
+    let reader = MetadataArgumentReader::new(object, &schema, field);
+    reader.reject_unknown()?;
     MetaPosition::new_at(
-        optional_string_at(object, "before", &format!("{field}.before"))?,
-        optional_string_at(object, "after", &format!("{field}.after"))?,
+        reader.read("before", optional_string_at)?,
+        reader.read("after", optional_string_at)?,
         field,
     )
 }
@@ -1181,12 +1208,25 @@ fn parse_metadata_type(value: &Value, field: &str) -> Result<MetadataType, MetaD
     let object = value
         .as_object()
         .ok_or_else(|| invalid(field, "type must be a structured object"))?;
-    reject_unknown_fields(object, &["variants"], &format!("{field}."))?;
-    let variants = required_array_at(object, "variants", &format!("{field}.variants"))?
-        .iter()
-        .enumerate()
-        .map(|(index, value)| parse_type_variant(value, index, field))
-        .collect::<Result<Vec<_>, _>>()?;
+    let schema = metadata_type_schema();
+    let reader = MetadataArgumentReader::new(object, &schema, field);
+    reader.reject_unknown()?;
+    let variants = reader.read("variants", |object, key, path| {
+        required_array_at(object, key, path).and_then(|values| {
+            values
+                .iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    parse_type_variant(
+                        value,
+                        index,
+                        field,
+                        &schema["properties"]["variants"]["items"],
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+    })?;
     MetadataType::new(variants).map_err(|mut diagnostic| {
         if let Some(domain_field) = diagnostic.field.as_deref() {
             if let Some(suffix) = domain_field.strip_prefix("type") {
@@ -1201,101 +1241,90 @@ fn parse_type_variant(
     value: &Value,
     index: usize,
     field: &str,
+    schema: &Value,
 ) -> Result<MetadataTypeVariant, MetaDiagnostic> {
     let variant_field = format!("{field}.variants[{index}]");
     let object = value
         .as_object()
         .ok_or_else(|| invalid(&variant_field, "type variant must be an object"))?;
     let kind = required_string_at(object, "kind", &format!("{variant_field}.kind"))?;
-    let (allowed, variant) = match kind.as_str() {
-        "string" => (
-            &["kind", "length", "allowedLength"][..],
-            MetadataTypeVariant::String {
-                length: required_u32(object, "length", &variant_field)?,
-                allowed_length: match required_string_at(
-                    object,
-                    "allowedLength",
-                    &format!("{variant_field}.allowedLength"),
-                )?
+    let variant = match kind.as_str() {
+        "string" => MetadataTypeVariant::String {
+            length: required_u32(object, "length", &variant_field)?,
+            allowed_length: match required_string_at(
+                object,
+                "allowedLength",
+                &format!("{variant_field}.allowedLength"),
+            )?
+            .as_str()
+            {
+                "variable" => StringLengthMode::Variable,
+                "fixed" => StringLengthMode::Fixed,
+                value => {
+                    return Err(invalid(
+                        format!("{variant_field}.allowedLength"),
+                        format!("unsupported allowedLength `{value}`"),
+                    ))
+                }
+            },
+        },
+        "number" => MetadataTypeVariant::Number {
+            digits: required_u32(object, "digits", &variant_field)?,
+            fraction: required_u32(object, "fraction", &variant_field)?,
+            sign: match required_string_at(object, "sign", &format!("{variant_field}.sign"))?
                 .as_str()
-                {
-                    "variable" => StringLengthMode::Variable,
-                    "fixed" => StringLengthMode::Fixed,
-                    value => {
-                        return Err(invalid(
-                            format!("{variant_field}.allowedLength"),
-                            format!("unsupported allowedLength `{value}`"),
-                        ))
-                    }
-                },
+            {
+                "any" => NumberSign::Any,
+                "nonNegative" => NumberSign::NonNegative,
+                value => {
+                    return Err(invalid(
+                        format!("{variant_field}.sign"),
+                        format!("unsupported number sign `{value}`"),
+                    ))
+                }
             },
-        ),
-        "number" => (
-            &["kind", "digits", "fraction", "sign"][..],
-            MetadataTypeVariant::Number {
-                digits: required_u32(object, "digits", &variant_field)?,
-                fraction: required_u32(object, "fraction", &variant_field)?,
-                sign: match required_string_at(object, "sign", &format!("{variant_field}.sign"))?
-                    .as_str()
-                {
-                    "any" => NumberSign::Any,
-                    "nonNegative" => NumberSign::NonNegative,
-                    value => {
-                        return Err(invalid(
-                            format!("{variant_field}.sign"),
-                            format!("unsupported number sign `{value}`"),
-                        ))
-                    }
-                },
+        },
+        "boolean" => MetadataTypeVariant::Boolean,
+        "uuid" => MetadataTypeVariant::Uuid,
+        "date" => MetadataTypeVariant::Date {
+            fractions: match required_string_at(
+                object,
+                "fractions",
+                &format!("{variant_field}.fractions"),
+            )?
+            .as_str()
+            {
+                "date" => DateFractions::Date,
+                "time" => DateFractions::Time,
+                "dateTime" => DateFractions::DateTime,
+                value => {
+                    return Err(invalid(
+                        format!("{variant_field}.fractions"),
+                        format!("unsupported date fractions `{value}`"),
+                    ))
+                }
             },
-        ),
-        "boolean" => (&["kind"][..], MetadataTypeVariant::Boolean),
-        "uuid" => (&["kind"][..], MetadataTypeVariant::Uuid),
-        "date" => (
-            &["kind", "fractions"][..],
-            MetadataTypeVariant::Date {
-                fractions: match required_string_at(
-                    object,
-                    "fractions",
-                    &format!("{variant_field}.fractions"),
-                )?
-                .as_str()
-                {
-                    "date" => DateFractions::Date,
-                    "time" => DateFractions::Time,
-                    "dateTime" => DateFractions::DateTime,
-                    value => {
-                        return Err(invalid(
-                            format!("{variant_field}.fractions"),
-                            format!("unsupported date fractions `{value}`"),
-                        ))
-                    }
-                },
+        },
+        "binaryData" => MetadataTypeVariant::BinaryData {
+            length: required_u32(object, "length", &variant_field)?,
+            allowed_length: match required_string_at(
+                object,
+                "allowedLength",
+                &format!("{variant_field}.allowedLength"),
+            )?
+            .as_str()
+            {
+                "variable" => StringLengthMode::Variable,
+                "fixed" => StringLengthMode::Fixed,
+                value => {
+                    return Err(invalid(
+                        format!("{variant_field}.allowedLength"),
+                        format!("unsupported allowedLength `{value}`"),
+                    ))
+                }
             },
-        ),
-        "binaryData" => (
-            &["kind", "length", "allowedLength"][..],
-            MetadataTypeVariant::BinaryData {
-                length: required_u32(object, "length", &variant_field)?,
-                allowed_length: match required_string_at(
-                    object,
-                    "allowedLength",
-                    &format!("{variant_field}.allowedLength"),
-                )?
-                .as_str()
-                {
-                    "variable" => StringLengthMode::Variable,
-                    "fixed" => StringLengthMode::Fixed,
-                    value => {
-                        return Err(invalid(
-                            format!("{variant_field}.allowedLength"),
-                            format!("unsupported allowedLength `{value}`"),
-                        ))
-                    }
-                },
-            },
-        ),
-        "valueStorage" => (&["kind"][..], MetadataTypeVariant::ValueStorage),
+        },
+        "valueStorage" => MetadataTypeVariant::ValueStorage,
         "reference" | "definedType" => {
             let raw = required_string_at(
                 object,
@@ -1303,12 +1332,11 @@ fn parse_type_variant(
                 &format!("{variant_field}.metadataPath"),
             )?;
             let metadata_path = parse_address(&raw, &format!("{variant_field}.metadataPath"))?;
-            let variant = if kind == "reference" {
+            if kind == "reference" {
                 MetadataTypeVariant::Reference { metadata_path }
             } else {
                 MetadataTypeVariant::DefinedType { metadata_path }
-            };
-            (&["kind", "metadataPath"][..], variant)
+            }
         }
         _ => {
             return Err(invalid(
@@ -1317,7 +1345,17 @@ fn parse_type_variant(
             ))
         }
     };
-    reject_unknown_fields(object, allowed, &format!("{variant_field}."))?;
+    let shape = ArgumentShape::new(schema)
+        .variant("kind", &kind)
+        .expect("converted metadata type variant");
+    reject_unknown_shape_fields(object, shape, &format!("{variant_field}."))?;
+    for (key, value) in object {
+        shape
+            .property(key)
+            .expect("known variant field")
+            .validate_type(value, &format!("{variant_field}.{key}"))
+            .map_err(|error| invalid(error.path, error.message))?;
+    }
     Ok(variant)
 }
 
@@ -1326,17 +1364,10 @@ fn parse_fill_value(value: &Value, field: &str) -> Result<MetaFillValue, MetaDia
         .as_object()
         .ok_or_else(|| invalid(field, "fillValue must be a structured object"))?;
     let kind = required_string_at(object, "kind", &format!("{field}.kind"))?;
-    let (allowed, converted) = match kind.as_str() {
-        "string" => (
-            &["kind", "value"][..],
-            MetaFillValue::String(required_string_value(object, "value", field)?),
-        ),
-        "number" => (
-            &["kind", "value"][..],
-            MetaFillValue::Number(required_string_value(object, "value", field)?),
-        ),
-        "boolean" => (
-            &["kind", "value"][..],
+    let converted = match kind.as_str() {
+        "string" => MetaFillValue::String(required_string_value(object, "value", field)?),
+        "number" => MetaFillValue::Number(required_string_value(object, "value", field)?),
+        "boolean" => {
             MetaFillValue::Boolean(object.get("value").and_then(Value::as_bool).ok_or_else(
                 || {
                     invalid(
@@ -1344,20 +1375,14 @@ fn parse_fill_value(value: &Value, field: &str) -> Result<MetaFillValue, MetaDia
                         "boolean fill value must be a boolean",
                     )
                 },
-            )?),
-        ),
-        "dateTime" => (
-            &["kind", "value"][..],
-            MetaFillValue::DateTime(required_string_value(object, "value", field)?),
-        ),
+            )?)
+        }
+        "dateTime" => MetaFillValue::DateTime(required_string_value(object, "value", field)?),
         "reference" => {
             let raw = required_string_at(object, "metadataPath", &format!("{field}.metadataPath"))?;
-            (
-                &["kind", "metadataPath"][..],
-                MetaFillValue::Reference(MetadataReference {
-                    metadata_path: parse_address(&raw, &format!("{field}.metadataPath"))?,
-                }),
-            )
+            MetaFillValue::Reference(MetadataReference {
+                metadata_path: parse_address(&raw, &format!("{field}.metadataPath"))?,
+            })
         }
         _ => {
             return Err(invalid(
@@ -1366,7 +1391,18 @@ fn parse_fill_value(value: &Value, field: &str) -> Result<MetaFillValue, MetaDia
             ))
         }
     };
-    reject_unknown_fields(object, allowed, &format!("{field}."))?;
+    let schema = fill_value_schema();
+    let shape = ArgumentShape::new(&schema)
+        .variant("kind", &kind)
+        .expect("converted fill value variant");
+    reject_unknown_shape_fields(object, shape, &format!("{field}."))?;
+    for (key, value) in object {
+        shape
+            .property(key)
+            .expect("known fill value field")
+            .validate_type(value, &format!("{field}.{key}"))
+            .map_err(|error| invalid(error.path, error.message))?;
+    }
     Ok(converted)
 }
 
@@ -1971,35 +2007,7 @@ fn host_visible_operation_schema() -> Value {
             .expect("root property schema is always an object")
             .remove("unconstrained");
     }
-    let element = json!({
-        "type": "object",
-        "required": ["name"],
-        "properties": {
-            "name": {"type": "string", "minLength": 1},
-            "newName": {"type": "string", "minLength": 1},
-            "synonym": {"type": "string"},
-            "comment": {"type": "string"},
-            "required": {"type": "boolean"},
-            "type": schema_reference("metadataType"),
-            "fillValue": schema_reference("fillValue"),
-            "templateType": {
-                "type": "string",
-                "enum": MetaTemplateKind::ALL
-                    .iter()
-                    .copied()
-                    .map(MetaTemplateKind::as_str)
-                    .collect::<Vec<_>>(),
-                "description": "Template kind for a new templates element; omitted it defaults to SpreadsheetDocument (ADR-0072).",
-            },
-            "position": schema_reference("position"),
-            "attributes": {
-                "type": "array",
-                "minItems": 1,
-                "items": {"type": "object", "required": ["name"]},
-            },
-        },
-        "description": "Collection element; the legal fields depend on the object kind and collection.",
-    });
+    let element = metadata_host_element_schema();
     let collection_operation = |tag: MetaEditOperationTag, payload_name: &str, payload: Value| {
         json!({
             "type": "object",
@@ -2829,6 +2837,15 @@ mod tests {
                 fresh: Vec::new(),
                 publication_warnings: Vec::new(),
             })
+        }
+        fn notify_committed_changes(
+            &self,
+            context: &WorkspaceContext,
+            events: &[crate::domain::events::DomainEvent],
+            _cancellation: &CancellationToken,
+            _deadline: crate::domain::operation_deadline::OperationDeadline,
+        ) {
+            self.notify_invalidation(context, events);
         }
 
         fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}

@@ -7342,6 +7342,14 @@ pub(crate) fn run_daemon(config: DaemonServerConfig) -> Result<(), String> {
     run_daemon_configured(config, |runtime| runtime)
 }
 
+#[cfg(test)]
+pub(crate) fn run_daemon_until_for_test(
+    config: DaemonServerConfig,
+    stop: Arc<AtomicBool>,
+) -> Result<(), String> {
+    run_daemon_configured_until(config, |runtime| runtime, || stop.load(Ordering::Acquire))
+}
+
 fn run_daemon_configured(
     config: DaemonServerConfig,
     configure_runtime: impl FnOnce(V5ReceiptRuntime) -> V5ReceiptRuntime,

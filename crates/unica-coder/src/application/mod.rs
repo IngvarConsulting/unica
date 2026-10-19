@@ -2994,6 +2994,15 @@ pub(crate) mod tests {
         ) -> Result<CacheReport, String> {
             unreachable!("workspace discovery must not run")
         }
+        fn notify_committed_changes(
+            &self,
+            context: &WorkspaceContext,
+            events: &[crate::domain::events::DomainEvent],
+            _cancellation: &CancellationToken,
+            _deadline: crate::domain::operation_deadline::OperationDeadline,
+        ) {
+            self.notify_invalidation(context, events);
+        }
 
         fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {
             unreachable!("workspace discovery must not run")
@@ -3234,6 +3243,15 @@ pub(crate) mod tests {
                 fresh: Vec::new(),
                 publication_warnings: Vec::new(),
             })
+        }
+        fn notify_committed_changes(
+            &self,
+            context: &WorkspaceContext,
+            events: &[crate::domain::events::DomainEvent],
+            _cancellation: &CancellationToken,
+            _deadline: crate::domain::operation_deadline::OperationDeadline,
+        ) {
+            self.notify_invalidation(context, events);
         }
 
         fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
@@ -3728,6 +3746,15 @@ pub(crate) mod tests {
                 publication_warnings: Vec::new(),
             })
         }
+        fn notify_committed_changes(
+            &self,
+            context: &WorkspaceContext,
+            events: &[crate::domain::events::DomainEvent],
+            _cancellation: &CancellationToken,
+            _deadline: crate::domain::operation_deadline::OperationDeadline,
+        ) {
+            self.notify_invalidation(context, events);
+        }
 
         fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
     }
@@ -3853,6 +3880,15 @@ pub(crate) mod tests {
                 fresh: Vec::new(),
                 publication_warnings: Vec::new(),
             })
+        }
+        fn notify_committed_changes(
+            &self,
+            context: &WorkspaceContext,
+            events: &[crate::domain::events::DomainEvent],
+            _cancellation: &CancellationToken,
+            _deadline: crate::domain::operation_deadline::OperationDeadline,
+        ) {
+            self.notify_invalidation(context, events);
         }
 
         fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
@@ -5181,6 +5217,15 @@ pub(crate) mod tests {
                     fresh: Vec::new(),
                     publication_warnings: Vec::new(),
                 })
+            }
+            fn notify_committed_changes(
+                &self,
+                context: &WorkspaceContext,
+                events: &[crate::domain::events::DomainEvent],
+                _cancellation: &CancellationToken,
+                _deadline: crate::domain::operation_deadline::OperationDeadline,
+            ) {
+                self.notify_invalidation(context, events);
             }
 
             fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
@@ -8659,6 +8704,15 @@ pub(crate) mod tests {
                     publication_warnings: Vec::new(),
                 })
             }
+            fn notify_committed_changes(
+                &self,
+                context: &WorkspaceContext,
+                events: &[crate::domain::events::DomainEvent],
+                _cancellation: &CancellationToken,
+                _deadline: crate::domain::operation_deadline::OperationDeadline,
+            ) {
+                self.notify_invalidation(context, events);
+            }
 
             fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
         }
@@ -8824,6 +8878,15 @@ pub(crate) mod tests {
                     publication_warnings: Vec::new(),
                 })
             }
+            fn notify_committed_changes(
+                &self,
+                context: &WorkspaceContext,
+                events: &[crate::domain::events::DomainEvent],
+                _cancellation: &CancellationToken,
+                _deadline: crate::domain::operation_deadline::OperationDeadline,
+            ) {
+                self.notify_invalidation(context, events);
+            }
 
             fn notify_invalidation(&self, _context: &WorkspaceContext, events: &[DomainEvent]) {
                 self.invalidated
@@ -8939,6 +9002,15 @@ pub(crate) mod tests {
                 _cache_access: CacheAccess,
             ) -> Result<CacheReport, String> {
                 panic!("post-commit cache_report must not run after transactional persistence")
+            }
+            fn notify_committed_changes(
+                &self,
+                context: &WorkspaceContext,
+                events: &[crate::domain::events::DomainEvent],
+                _cancellation: &CancellationToken,
+                _deadline: crate::domain::operation_deadline::OperationDeadline,
+            ) {
+                self.notify_invalidation(context, events);
             }
 
             fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
@@ -9067,6 +9139,15 @@ pub(crate) mod tests {
                 publication_warnings: Vec::new(),
             })
         }
+        fn notify_committed_changes(
+            &self,
+            context: &WorkspaceContext,
+            events: &[crate::domain::events::DomainEvent],
+            _cancellation: &CancellationToken,
+            _deadline: crate::domain::operation_deadline::OperationDeadline,
+        ) {
+            self.notify_invalidation(context, events);
+        }
 
         fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
     }
@@ -9146,6 +9227,15 @@ pub(crate) mod tests {
                 fresh: Vec::new(),
                 publication_warnings: Vec::new(),
             })
+        }
+        fn notify_committed_changes(
+            &self,
+            context: &WorkspaceContext,
+            events: &[crate::domain::events::DomainEvent],
+            _cancellation: &CancellationToken,
+            _deadline: crate::domain::operation_deadline::OperationDeadline,
+        ) {
+            self.notify_invalidation(context, events);
         }
 
         fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}

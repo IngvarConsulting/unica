@@ -277,9 +277,21 @@ impl CanonicalV13ReadService {
                     "execution requires only a nonempty executionToken",
                 );
             }
-            return invocation.execute_saved_apply(token.as_str().unwrap(), cancellation, |mut result, publication| {
+            let deadline = crate::domain::operation_deadline::OperationDeadline::NoDeadline;
+            return invocation.execute_saved_apply(token.as_str().unwrap(), cancellation, deadline, |mut result, publication| {
                 match publication {
                     Ok(publication) => {
+                        if publication.effects().disposition() == ApplyEffectDisposition::Committed
+                            && !publication.effects().events().is_empty()
+                        {
+                            use crate::application::ports::ApplicationPorts;
+                            self.ports.notify_committed_changes(
+                                invocation.workspace_context(),
+                                publication.effects().events(),
+                                cancellation,
+                                deadline,
+                            );
+                        }
                         result.summary = "metadata apply published atomically".into();
                         result.rev = Some(publication.rev().to_owned());
                         if let Some(data) = result.data.as_mut() {
