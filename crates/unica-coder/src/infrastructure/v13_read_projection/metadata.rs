@@ -124,6 +124,9 @@ fn project_metadata(
             })
             .collect::<Vec<_>>();
         let relations = metadata_relations(address, payload);
+        if matches!(address.segments(), [owner] if owner.kind() == NodeKind::ScheduledJob) {
+            branches.push(BranchRef::new(format!("{address}.Schedule"), 1));
+        }
         if !relations.is_empty() {
             branches.push(BranchRef::new(
                 format!("{}.{}", address, NodeKind::Relation.as_str()),
@@ -158,6 +161,45 @@ fn project_metadata(
         ));
     }
     let first = &suffix[0];
+    if matches!(address.segments(), [owner, schedule]
+        if owner.kind() == NodeKind::ScheduledJob && schedule.kind() == NodeKind::Schedule)
+    {
+        let properties = payload
+            .get("properties")
+            .and_then(Value::as_object)
+            .ok_or_else(|| {
+                ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
+                    "schedule reader returned a non-object payload",
+                )
+            })?;
+        let props = selected_scalar_props(
+            &Value::Object(properties.clone()),
+            &[
+                "state",
+                "BeginDate",
+                "EndDate",
+                "BeginTime",
+                "EndTime",
+                "CompletionTime",
+                "CompletionInterval",
+                "RepeatPeriodInDay",
+                "RepeatPause",
+                "WeekDayInMonth",
+                "DayInMonth",
+                "WeeksPeriod",
+                "DaysRepeatPeriod",
+                "WeekDays",
+                "Months",
+            ],
+        );
+        return Ok(NodeViewData::Node(NodeView::new(
+            address.to_string(),
+            "Schedule",
+            "Schedule",
+            props,
+        )));
+    }
     if first.kind() == NodeKind::Relation {
         if suffix.len() > 1 || first.name().is_some() {
             return Err(ViewError::new(
