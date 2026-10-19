@@ -16,7 +16,7 @@ from tests.ci.test_acceptance_scenarios import AcceptanceServer, REPO_ROOT
 from tests.ci.test_unica_mcp_smoke import snapshot_workspace_files
 
 
-FIXTURE = REPO_ROOT / "tests/fixtures/v013/whole-template-removal/workspace"
+FIXTURE = REPO_ROOT / "tests/fixtures/acceptance/workspace-whole-template-removal"
 OWNER = "Reports/OwnRemovalReport.xml"
 TEMPLATES = "Reports/OwnRemovalReport/Templates"
 RED = f"{TEMPLATES}/OwnDiagram/Ext/Template/Items/RedSquare/Picture.png"

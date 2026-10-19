@@ -1,6 +1,7 @@
 # Удаление целого макета
 
-Собственная конфигурация XML 2.20 содержит отчёт `OwnRemovalReport` и два
+Фикстура [workspace-whole-template-removal](../../acceptance/workspace-whole-template-removal/)
+содержит собственную конфигурацию XML 2.20: отчёт `OwnRemovalReport` и два
 макета GraphicalSchema. `OwnDiagram` включает два нарисованных квадрата PNG,
 `KeepDiagram` служит соседним макетом для проверки сохранности.
 

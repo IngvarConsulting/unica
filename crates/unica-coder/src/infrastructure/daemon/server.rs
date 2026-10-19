@@ -15905,7 +15905,7 @@ fn main() {
 
     fn own_removal_workspace() -> tempfile::TempDir {
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/v013/whole-template-removal/workspace");
+            .join("../../tests/fixtures/acceptance/workspace-whole-template-removal");
         let workspace = tempfile::tempdir().unwrap();
         for relative in OWN_REMOVAL_FILES {
             let source = fixture.join(relative);
