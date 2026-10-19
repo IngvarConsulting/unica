@@ -16,7 +16,6 @@ check:
   - tests/ci/test_whole_template_plan_diff.py::WholeTemplatePlanDiffWireTests.test_owner_mutation_makes_diff_and_apply_stale_without_overwriting_it
   - tests/ci/test_whole_template_plan_diff.py::WholeTemplatePlanDiffWireTests.test_file_membership_mutation_makes_diff_and_apply_stale_without_overwriting_it
   - tests/ci/test_whole_template_plan_diff.py::WholeTemplatePlanDiffWireTests.test_picture_bytes_mutation_makes_diff_and_apply_stale_without_overwriting_it
-gap: https://github.com/IngvarConsulting/unica/issues/991
 ---
 
 # Макет можно удалить целиком без поддержки его содержимого
