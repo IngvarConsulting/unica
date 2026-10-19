@@ -12704,10 +12704,13 @@ struct ActorLogicalReadLease {"#,
         for kind in ["Caller", "Callee"] {
             let at = format!("{method}.{kind}");
             let first = view(serde_json::json!({"at": at, "limit": 1}));
-            assert!(first.ok, "{first:?}");
+            assert!(first.ok, "the initial saved call-graph page succeeds");
             let cursor = first.cursor.unwrap();
             let second = view(serde_json::json!({"at": at, "limit": 1, "cursor": cursor}));
-            assert!(second.ok && second.cursor.is_some(), "{second:?}");
+            assert!(
+                second.ok && second.cursor.is_some(),
+                "saved successor succeeds and continues"
+            );
             saved.push((at, cursor, second));
         }
         assert_eq!(provider.0.load(Ordering::SeqCst), 4);
@@ -12732,7 +12735,7 @@ struct ActorLogicalReadLease {"#,
                 view(serde_json::json!({"at": at, "limit": 1, "cursor": second.cursor}));
             assert!(
                 final_page.ok && final_page.cursor.is_none(),
-                "{final_page:?}"
+                "the final saved call-graph page succeeds and finishes pagination"
             );
             assert_eq!(
                 final_page.data.as_ref().unwrap()["items"][0]["at"],
