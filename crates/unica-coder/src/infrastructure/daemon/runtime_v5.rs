@@ -34,7 +34,7 @@ use crate::application::receipt_ledger::{
     TerminalDigest, DIRECT_TERMINAL_RETENTION_MS,
 };
 use crate::application::receipt_ledger_actor::ReceiptLedgerActor;
-use crate::domain::cancellation::CancellationToken;
+use crate::domain::cancellation::{CancellationToken, FactualOutcomeAuthority};
 use crate::domain::refusal::RefusalCode;
 use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
 use crate::infrastructure::receipt_ledger::arm_receipt_row_directory_sync_fault;
@@ -239,12 +239,18 @@ impl V5ActiveTaskCancellations {
         }
     }
 
-    fn protected_started(&self, task_id: crate::domain::invocation::TaskId) -> bool {
+    fn outcome_authority(
+        &self,
+        task_id: crate::domain::invocation::TaskId,
+    ) -> FactualOutcomeAuthority {
         self.tokens
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&task_id)
-            .is_some_and(CancellationToken::protected_process_started)
+            .map_or(
+                FactualOutcomeAuthority::Cancellable,
+                CancellationToken::factual_outcome_authority,
+            )
     }
 
     fn is_empty(&self) -> bool {
@@ -403,9 +409,9 @@ impl PipelineSlot {
 fn task_outcome_after_cancel(
     candidate: ReceiptTerminalOutcome,
     cancel_requested: bool,
-    protected_started: bool,
+    authority: FactualOutcomeAuthority,
 ) -> ReceiptTerminalOutcome {
-    if cancel_requested && !protected_started {
+    if cancel_requested && authority == FactualOutcomeAuthority::Cancellable {
         ReceiptTerminalOutcome::Cancelled
     } else {
         candidate
@@ -4496,8 +4502,10 @@ impl V5ReceiptRuntime {
                 self.hooks
                     .callback_invocation_id(reservation.key().invocation_id());
                 let result = prepared.execute(cancellation.clone());
-                let protected_started = cancellation.protected_process_started();
-                let outcome = if cancellation.is_cancelled() && !protected_started {
+                let authority = cancellation.factual_outcome_authority();
+                let outcome = if cancellation.is_cancelled()
+                    && authority == FactualOutcomeAuthority::Cancellable
+                {
                     ReceiptTerminalOutcome::Cancelled
                 } else {
                     match result {
@@ -4806,8 +4814,8 @@ impl V5ReceiptRuntime {
             .event(V5ReceiptRuntimeEventKind::ExecuteEntered, self.epoch_ms());
         self.hooks.callback_invocation_id(invocation_id);
         let result = prepared.execute(cancellation.clone());
-        let protected_started = cancellation.protected_process_started();
-        if cancellation.is_cancelled() && !protected_started {
+        let authority = cancellation.factual_outcome_authority();
+        if cancellation.is_cancelled() && authority == FactualOutcomeAuthority::Cancellable {
             ReceiptTerminalOutcome::Cancelled
         } else {
             match result {
@@ -5277,8 +5285,10 @@ impl V5ReceiptRuntime {
                 .event(V5ReceiptRuntimeEventKind::ExecuteEntered, epoch_ms);
             self.hooks.callback_invocation_id(invocation_id);
             let result = prepared.execute(cancellation.clone());
-            let protected_started = cancellation.protected_process_started();
-            let outcome = if cancellation.is_cancelled() && !protected_started {
+            let authority = cancellation.factual_outcome_authority();
+            let outcome = if cancellation.is_cancelled()
+                && authority == FactualOutcomeAuthority::Cancellable
+            {
                 ReceiptTerminalOutcome::Cancelled
             } else {
                 match result {
@@ -5336,19 +5346,20 @@ impl V5ReceiptRuntime {
             .event(V5ReceiptRuntimeEventKind::ExecuteEntered, epoch_ms);
         self.hooks.callback_invocation_id(invocation_id);
         let result = prepared.execute(cancellation.clone());
-        let protected_started = cancellation.protected_process_started();
-        let outcome = if cancellation.is_cancelled() && !protected_started {
-            ReceiptTerminalOutcome::Cancelled
-        } else {
-            match result {
-                Ok(result) => ReceiptTerminalOutcome::Completed {
-                    result: Box::new(result),
-                },
-                Err(failure) => ReceiptTerminalOutcome::Failed {
-                    reason: V5SafeFailureReason::of_execution_failure(&failure),
-                },
-            }
-        };
+        let authority = cancellation.factual_outcome_authority();
+        let outcome =
+            if cancellation.is_cancelled() && authority == FactualOutcomeAuthority::Cancellable {
+                ReceiptTerminalOutcome::Cancelled
+            } else {
+                match result {
+                    Ok(result) => ReceiptTerminalOutcome::Completed {
+                        result: Box::new(result),
+                    },
+                    Err(failure) => ReceiptTerminalOutcome::Failed {
+                        reason: V5SafeFailureReason::of_execution_failure(&failure),
+                    },
+                }
+            };
         if self.hooks.crash_after_side_effect() {
             return Err(ReceiptLedgerError::StoreUnavailable);
         }
@@ -5389,8 +5400,10 @@ impl V5ReceiptRuntime {
                     runtime.epoch_ms(),
                 );
                 let result = prepared.execute(cancellation.clone());
-                let protected_started = cancellation.protected_process_started();
-                let outcome = if cancellation.is_cancelled() && !protected_started {
+                let authority = cancellation.factual_outcome_authority();
+                let outcome = if cancellation.is_cancelled()
+                    && authority == FactualOutcomeAuthority::Cancellable
+                {
                     ReceiptTerminalOutcome::Cancelled
                 } else {
                     match result {
@@ -5477,7 +5490,7 @@ impl V5ReceiptRuntime {
         let outcome = task_outcome_after_cancel(
             candidate,
             record.cancel_requested,
-            self.active_task_cancellations.protected_started(task_id),
+            self.active_task_cancellations.outcome_authority(task_id),
         );
         let terminal = match canonical_v5_terminal(&outcome) {
             Ok(terminal) => terminal,

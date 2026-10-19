@@ -3,7 +3,7 @@ use crate::application::shared_work::{
     SharedWorkProducer,
 };
 use crate::domain::cache::CacheAccess;
-use crate::domain::cancellation::CancellationToken;
+use crate::domain::cancellation::{CancellationToken, FactualOutcomeAuthority};
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::events::DomainEvent;
 use crate::domain::invocation::{DomainResult, SafeIdentityHash};
@@ -1410,12 +1410,26 @@ struct SavedApplyPlan {
     execution_lane: DeadlineLock<FailClosed>,
     state: Mutex<SavedApplyState>,
 }
+#[derive(Clone)]
+struct SavedApplyOutcome {
+    result: DomainResult,
+    authority: FactualOutcomeAuthority,
+}
+
+impl SavedApplyOutcome {
+    fn record_authority(&self, cancellation: &CancellationToken) {
+        if self.authority == FactualOutcomeAuthority::CommittedWorkspaceApply {
+            cancellation.record_committed_apply();
+        }
+    }
+}
+
 enum SavedApplyState {
     Pending {
         batch: Box<PreparedApplyBatch>,
         preview: DomainResult,
     },
-    Completed(DomainResult),
+    Completed(SavedApplyOutcome),
     Running,
 }
 
@@ -1967,8 +1981,9 @@ impl<R> WorkspaceActor<R> {
         let mut state = entry.state.lock().map_err(|_| {
             SavedApplyExecutionError::StateUnavailable("saved apply execution state is unavailable")
         })?;
-        if let SavedApplyState::Completed(result) = &*state {
-            return Ok(result.clone());
+        if let SavedApplyState::Completed(outcome) = &*state {
+            outcome.record_authority(cancellation);
+            return Ok(outcome.result.clone());
         }
         // Waiting for either lane must leave the exact pending plan usable.
         let publication_lane = self
@@ -1998,8 +2013,23 @@ impl<R> WorkspaceActor<R> {
             .rebind_retained_apply_execution_context(deadline, cancellation);
         let publication = self.publish_prepared_apply_under_lane(*batch, &publication_lane);
         drop(publication_lane);
+        let authority = match &publication {
+            Ok(publication)
+                if publication.effects().disposition() == ApplyEffectDisposition::Committed
+                    && publication.commit_count > 0 =>
+            {
+                FactualOutcomeAuthority::CommittedWorkspaceApply
+            }
+            _ => FactualOutcomeAuthority::Cancellable,
+        };
+        if authority == FactualOutcomeAuthority::CommittedWorkspaceApply {
+            cancellation.record_committed_apply();
+        }
         let result = finish(preview, publication);
-        *state = SavedApplyState::Completed(result.clone());
+        *state = SavedApplyState::Completed(SavedApplyOutcome {
+            result: result.clone(),
+            authority,
+        });
         Ok(result)
     }
 
@@ -2811,7 +2841,7 @@ pub(crate) mod tests {
         WorkspaceSourceSetInput,
     };
     use crate::domain::address::QualifiedAddress;
-    use crate::domain::cancellation::CancellationToken;
+    use crate::domain::cancellation::{CancellationToken, FactualOutcomeAuthority};
     use crate::domain::code_intelligence::ProviderDeadline;
     use crate::domain::events::DomainEventKind;
     use crate::domain::platform_profile::PlatformProfile;
@@ -9740,13 +9770,19 @@ pub(crate) mod tests {
             )
             .unwrap();
         let executions = std::sync::atomic::AtomicUsize::new(0);
+        let execution_cancellation = CancellationToken::new();
         let result = fixture
             .actor
             .execute_saved_apply(
                 &token,
                 ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
+                &execution_cancellation,
                 |result, publication| {
+                    assert_eq!(
+                        execution_cancellation.factual_outcome_authority(),
+                        FactualOutcomeAuthority::CommittedWorkspaceApply
+                    );
+                    assert!(!execution_cancellation.protected_process_started());
                     executions.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     finish_saved_apply_test(result, publication)
                 },
@@ -9756,15 +9792,21 @@ pub(crate) mod tests {
         assert_eq!(result.data.as_ref().unwrap()["commits"], 1);
         let published = snapshot_tree(&fixture.roots[0]);
         assert_ne!(published, before);
+        let replay_cancellation = CancellationToken::new();
         let replay = fixture
             .actor
             .execute_saved_apply(
                 &token,
                 ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
+                &replay_cancellation,
                 |_, _| panic!("a token may not publish twice"),
             )
             .unwrap();
+        assert_eq!(
+            replay_cancellation.factual_outcome_authority(),
+            FactualOutcomeAuthority::CommittedWorkspaceApply
+        );
+        assert!(!replay_cancellation.protected_process_started());
         assert_eq!(replay, result);
         assert_eq!(snapshot_tree(&fixture.roots[0]), published);
         assert_eq!(executions.load(std::sync::atomic::Ordering::SeqCst), 1);
