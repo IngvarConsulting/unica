@@ -691,7 +691,8 @@ def stop_owned_daemons(state, binary):
                     raise TimeoutError("owned evaluation daemon survived cleanup")
 
 
-def evaluate(server, scenario, proof_root, *, fixture=FIXTURE, source="src", changed_paths=None, auditor=None):
+def evaluate(server, scenario, proof_root, *, fixture=FIXTURE, source="src", changed_paths=None, auditor=None,
+             help_ref="references/use-cases/reports-printing.md", source_roots=None):
     is_dcs_contract = fixture == FIXTURE and auditor is None
     auditor = audit_dcs_contract if is_dcs_contract else (auditor or audit_mcp)
     proof = proof_root / (scenario["id"] + "-" + uuid.uuid4().hex)
@@ -706,7 +707,7 @@ def evaluate(server, scenario, proof_root, *, fixture=FIXTURE, source="src", cha
     shutil.copy2(fixture / "AGENTS.md", server.workspace / "AGENTS.md")
     for name in ("prompt.md", "AGENTS.md", "output.schema.json"):
         shutil.copy2(fixture / name, proof / name)
-    help_path = packet / "references/use-cases/reports-printing.md"
+    help_path = packet / help_ref
     agents = (proof / "AGENTS.md").read_text().replace("{{HELP_PATH}}", str(help_path))
     (proof / "AGENTS.md").write_text(agents)
     (server.workspace / "AGENTS.md").write_text(agents)
@@ -719,7 +720,7 @@ def evaluate(server, scenario, proof_root, *, fixture=FIXTURE, source="src", cha
     command += ["-c", f"mcp_servers.unica.tools={tool_settings}"]
     recorder = REPO / "tests/agent_evaluation/mcp_recorder.py"
     arguments = [str(recorder), str(binary), str(proof / "mcp.jsonl"), str(server.workspace / source), str(server.workspace),
-                 json.dumps({"cf": f"{source}/cf"})]
+                 json.dumps(source_roots if source_roots is not None else {"cf": f"{source}/cf"})]
     for key, value in {"command": sys.executable, "args": arguments, "cwd": str(packet),
                        "env": {key: value for key, value in environment.items() if key.startswith("UNICA_")}}.items():
         # JSON is a valid TOML scalar/array. TOML dictionaries use '='.

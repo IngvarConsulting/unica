@@ -120,8 +120,12 @@ LAST_VERIFIED_CASE_CONTRACT_SHA256 = (
 # --jobs 1 run on 8.3.27.2074 processes all 66 cases without a source error:
 # 57 pass and the same nine of #1369 stay accepted-normalized, so the run is
 # not a pass. Keep LAST_VERIFIED.
+# #1751 removed the unsupported type argument from the three DCS field.add
+# calls. Two independent 66-case generations on f1982d917 agree on the new
+# public-call contract below. This pin only admits the candidate corpus;
+# the current platform round-trip has not passed. Keep LAST_VERIFIED.
 EXPECTED_CASE_CONTRACT_SHA256: str | None = (
-    "bbd782e757485d65be77ebd9c2b0d7602b1ad2634c6ae7045397c88aa5598a4c"
+    "7b9ecc3dbe53a0feb0c90a3e004b7a69c8f6062616235ed41d45de8461445df9"
 )
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 300.0
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -920,6 +924,25 @@ def compare_xml_snapshots(left: dict, right: dict) -> dict:
         "xml": xml_comparison,
         "nonXml": non_xml_comparison,
         "directories": directory_comparison,
+    }
+
+
+def source_semantic_retention(comparison: dict, dcs_retention: dict) -> dict:
+    """Admit evidenced DCS defaults without exempting any other source change."""
+    retained_dcs_paths = {
+        item["path"] for item in dcs_retention["files"] if item["preserved"]
+    }
+    changed_xml = set(comparison["xml"]["changed"])
+    return {
+        "preserved": (
+            dcs_retention["preserved"]
+            and not comparison["added"]
+            and not comparison["removed"]
+            and comparison["nonXml"]["equal"]
+            and comparison["directories"]["equal"]
+            and changed_xml <= retained_dcs_paths
+        ),
+        "allowedDcsDefaultPaths": sorted(changed_xml & retained_dcs_paths),
     }
 
 
@@ -4203,6 +4226,7 @@ def run_checkpoint(
     try:
         source_comparison = compare_xml_snapshots(source_snapshot, export_snapshots[0])
         dcs_retention = compare_dcs_retention(source_snapshot, export_snapshots[0])
+        source_retention = source_semantic_retention(source_comparison, dcs_retention)
         roundtrip_comparison = compare_xml_snapshots(
             export_snapshots[0], export_snapshots[1]
         )
@@ -4226,7 +4250,7 @@ def run_checkpoint(
         verdict = "rejected"
     elif not roundtrip_comparison["equal"] or not round2_owners_valid:
         verdict = "unstable-roundtrip"
-    elif not source_comparison["equal"] or not round1_owners_valid:
+    elif not source_retention["preserved"] or not round1_owners_valid:
         verdict = "accepted-normalized"
     else:
         verdict = "pass"
@@ -4243,6 +4267,7 @@ def run_checkpoint(
         "durationMs": sum(entry["durationMs"] for entry in commands),
         "platformAliasedModulesDropped": sorted(set(platform_aliased_modules)),
         "sourceComparison": source_comparison,
+        "sourceSemanticRetention": source_retention,
         "dcsSemanticRetention": dcs_retention,
         "roundtripComparison": roundtrip_comparison,
         "evidenceSha256": evidence_hashes(),

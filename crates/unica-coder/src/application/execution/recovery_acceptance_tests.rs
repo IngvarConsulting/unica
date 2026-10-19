@@ -1,5 +1,6 @@
 //! Public-API sequences for recovery, competing delivery transitions and join
 //! rejection. Confirming a synthetic commit proves the P1 model, not storage.
+use super::test_support::{Archive as DurableCatalog, Fixture as ExecutionCoordinator};
 use super::*;
 use crate::domain::execution::{FailureReason, HolderObservation, Tool};
 use crate::domain::invocation::DomainResult;
@@ -32,7 +33,7 @@ fn confirm(owner: &mut ExecutionCoordinator, effects: Vec<Effect>) -> Vec<Effect
     let mut observed = Vec::new();
     while let Some(effect) = pending.pop_front() {
         match effect {
-            Effect::Commit(request) => pending.extend(owner.complete(request.committed()).unwrap()),
+            Effect::Commit(request) => pending.extend(owner.commit(request).unwrap()),
             other => observed.push(other),
         }
     }
@@ -187,7 +188,7 @@ fn acceptance_ineligible_joins_preserve_state_and_release_both_alias_ids() {
         );
         assert_eq!(owner.holder_count(&primary), 0);
         assert_eq!(owner.catalog().unwrap().encode(), before);
-        let effects = owner.complete(pending.committed()).unwrap();
+        let effects = owner.commit(pending).unwrap();
         let member = match effects.as_slice() {
             [Effect::Attached(member)] => *member,
             other => panic!("eligible retry after {mismatch:?}: {other:?}"),
@@ -231,7 +232,7 @@ fn acceptance_pending_ack_and_expose_follow_commit_order_without_resurrection() 
         assert_eq!(owner.catalog().unwrap().encode(), before);
         assert!(!owner.inspect(&primary).unwrap().public_task());
         assert!(owner.inspect(&primary).unwrap().acknowledgement().is_none());
-        let effects = owner.complete(first.committed()).unwrap();
+        let effects = owner.commit(first).unwrap();
         let observed = confirm(&mut owner, effects);
         let record = owner.lookup_task(primary.task_id()).unwrap();
         if expose_first {
@@ -240,14 +241,14 @@ fn acceptance_pending_ack_and_expose_follow_commit_order_without_resurrection() 
             );
             assert!(record.public_task());
             assert!(!record.compacted());
-            assert_eq!(record.producer(), Some(&factual));
-            assert_eq!(record.primary(), Some(&factual));
+            assert_eq!(record.producer(), Some(&factual.descriptor()));
+            assert_eq!(record.primary(), Some(&factual.descriptor()));
         } else {
             assert_rejected(&observed, &primary, Error::Compacted);
             assert!(!record.public_task());
             assert!(record.compacted());
-            assert!(record.producer().is_none());
-            assert!(record.primary().is_none());
+            assert!(owner.store(&primary).producer().is_none());
+            assert!(owner.store(&primary).primary().is_none());
         }
         let ack = record.acknowledgement().unwrap();
         assert_eq!(ack.digest(), factual.digest());
@@ -285,12 +286,12 @@ fn acceptance_restore_unbegun_requires_recovery_commit_and_never_regrants_run() 
         reopened.submit(primary.clone(), &capability, window()),
         Err(Error::RecoveryRequired)
     ));
-    assert!(reopened.complete(recovery.committed()).unwrap().is_empty());
+    assert!(reopened.commit(recovery).unwrap().is_empty());
     assert!(!reopened.recovering());
     let interrupted = CanonicalOutcome::failed(FailureReason::Interrupted);
     let record = reopened.lookup_task(primary.task_id()).unwrap();
-    assert_eq!(record.primary(), Some(&interrupted));
-    assert_eq!(record.producer(), Some(&interrupted));
+    assert_eq!(record.primary(), Some(&interrupted.descriptor()));
+    assert_eq!(record.producer(), Some(&interrupted.descriptor()));
     assert!(record.run().is_none());
     assert!(!record.public_task());
     let recovered = reopened.catalog().unwrap().encode();
@@ -349,12 +350,12 @@ fn acceptance_restore_cancel_only_preserves_refusal_without_a_task_promise() {
         reopened.lookup_task(primary.task_id()),
         Err(Error::NotAccepted)
     ));
-    assert!(reopened
-        .complete(submission.committed())
-        .unwrap()
-        .is_empty());
+    assert!(reopened.commit(submission).unwrap().is_empty());
     let record = reopened.lookup_task(primary.task_id()).unwrap();
-    assert_eq!(record.primary(), Some(&CanonicalOutcome::cancelled()));
+    assert_eq!(
+        record.primary(),
+        Some(&CanonicalOutcome::cancelled().descriptor())
+    );
     assert!(record.run().is_none());
     assert!(!record.public_task());
     let cancelled = reopened.catalog().unwrap().encode();
@@ -434,8 +435,8 @@ fn acceptance_restore_compacted_ack_keeps_dedup_ids_and_first_ack_time() {
     let record = reopened.lookup_task(primary.task_id()).unwrap();
     assert!(record.compacted());
     assert!(!record.public_task());
-    assert!(record.producer().is_none());
-    assert!(record.primary().is_none());
+    assert!(reopened.store(&primary).producer().is_none());
+    assert!(reopened.store(&primary).primary().is_none());
     assert_eq!(record.acknowledgement().unwrap().digest(), factual.digest());
     assert_eq!(
         record
@@ -472,10 +473,10 @@ fn acceptance_valid_readback_cannot_replace_confirmed_owner_or_window() {
             confirm(&mut other, publication).as_slice(),
             [Effect::Task(_)]
         ));
-        let actual = Record::decode(&other.inspect(&primary).unwrap().encode()).unwrap();
-        assert!(actual.revision() > owner.inspect(&primary).unwrap().revision());
-        assert_eq!(actual.revision(), pending.candidate().revision());
-        let effects = owner.complete(pending.readback(actual)).unwrap();
+        let actual = StoredRecord::decode(&other.store(&primary).encode()).unwrap();
+        assert!(actual.record().revision() > owner.inspect(&primary).unwrap().revision());
+        assert_eq!(actual.record().revision(), pending.candidate().revision());
+        let effects = owner.readback(pending, actual).unwrap();
         if different_owner || different_window {
             assert!(matches!(effects.as_slice(), [Effect::FailStop]));
             assert!(owner.unavailable());

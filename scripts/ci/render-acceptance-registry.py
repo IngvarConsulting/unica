@@ -172,6 +172,7 @@ def load_apply_registry() -> tuple[list[tuple[str, str, str, str]], set[str]]:
         "Role": "RoleOperation", "Support": "SupportOperation",
         "Metadata": "MetadataOperation", "Form": "FormOperation",
         "Mxl": "MxlOperation", "Event": "EventOperation", "Dcs": "Primitive",
+        "Properties": "PropertiesOperation",
     }
     typed = {operation_type: _registration_metadata(family) for family, operation_type in typed_families.items()}
     typed_names = {(entry[1], entry[0]) for metadata in typed.values() for entry in metadata.values()}

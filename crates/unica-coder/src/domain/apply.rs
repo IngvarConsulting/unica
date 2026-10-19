@@ -9,6 +9,7 @@ use crate::domain::mxl_operation::MxlOperation;
 use crate::domain::node_view::OperationRef;
 use crate::domain::platform_profile::PlatformProfile;
 use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
+use crate::domain::properties_operation::{PropertiesOperation, PropertiesSite};
 use crate::domain::refusal::RefusalCode;
 use crate::domain::role_operation::RoleOperation;
 use crate::domain::support_operation::SupportOperation;
@@ -737,12 +738,7 @@ impl OperationApplicability {
                     && site.source.kind() == SourceSetKind::Extension
             }
             Self::Metadata => site.metadata_object().is_some(),
-            Self::MetadataOrRoleOrSubsystem => {
-                site.metadata_object().is_some()
-                    || matches!(segments, [only]
-                        if only.name().is_some()
-                            && matches!(only.kind(), NodeKind::Role | NodeKind::Subsystem))
-            }
+            Self::MetadataOrRoleOrSubsystem => PropertiesSite::from_address(site.at()).is_some(),
             Self::MetadataAttributeContainer => {
                 site.metadata_owner_with(MetaCollection::Attributes)
                     || site
@@ -1049,6 +1045,7 @@ enum TypedOperation {
     Form(FormOperation),
     Role(RoleOperation),
     Support(SupportOperation),
+    Properties(PropertiesOperation),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1221,6 +1218,23 @@ pub(crate) const IMPLEMENTED_APPLY_OPERATIONS: &[&str] = &[
 ];
 
 impl OperationDescriptor {
+    const fn properties(operation: PropertiesOperation) -> Self {
+        Self {
+            name: operation.name(),
+            family: OperationFamily::Properties,
+            applicability: operation.applicability(),
+            skeleton: operation.skeleton(),
+            typed_operation: Some(TypedOperation::Properties(operation)),
+        }
+    }
+
+    pub(crate) const fn properties_operation(self) -> Option<PropertiesOperation> {
+        match self.typed_operation {
+            Some(TypedOperation::Properties(operation)) => Some(operation),
+            _ => None,
+        }
+    }
+
     const fn metadata(operation: MetadataOperation) -> Self {
         Self {
             name: operation.name(),
@@ -1542,6 +1556,12 @@ impl OperationDescriptor {
         self,
         site: &OperationSite<'_>,
     ) -> Option<super::operation_contract::OperationContract> {
+        if self.family == OperationFamily::Properties {
+            let profile = PropertiesSite::from_address(site.at())?;
+            return self
+                .properties_operation()
+                .map(|operation| operation.contract(profile));
+        }
         if self.family == OperationFamily::Metadata {
             let owner = site
                 .segments()
@@ -1590,6 +1610,14 @@ pub(super) const fn operation_names_equal(left: &str, right: &str) -> bool {
 }
 
 macro_rules! operation_descriptor {
+    (($name:literal, Properties, $applicability:ident, $skeleton:ident)) => {
+        compile_error!(
+            "Properties operations must register a typed PropertiesOperation with a mandatory contextual contract"
+        )
+    };
+    ((PropertiesOperation::$variant:ident)) => {
+        OperationDescriptor::properties(PropertiesOperation::$variant)
+    };
     (($name:literal, Dcs, $applicability:ident, $skeleton:ident)) => {
         compile_error!(
             "Dcs operations must register a typed Primitive with a mandatory contract"
@@ -1669,7 +1697,7 @@ operation_descriptors!(
     (MetadataOperation::ObjectBorrow),
     (MetadataOperation::ObjectCreate),
     (MetadataOperation::ObjectRemove),
-    ("props.set", Properties, MetadataOrRoleOrSubsystem, Values),
+    (PropertiesOperation::Set),
     (MetadataOperation::RelationAdd),
     (MetadataOperation::RelationRemove),
     (MetadataOperation::RelationReplace),
@@ -2835,6 +2863,7 @@ mod tests {
     use crate::domain::address::QualifiedAddress;
     use crate::domain::platform_profile::PlatformProfile;
     use crate::domain::project_sources::SourceSetKind;
+    use crate::domain::properties_operation::{PropertiesOperation, PropertiesSite};
     use serde_json::{json, Value};
 
     fn address(raw: &str) -> QualifiedAddress {
@@ -3157,6 +3186,12 @@ mod tests {
 
     fn typed_registration_is_consistent(descriptor: OperationDescriptor) -> bool {
         let (family, name, applicability, skeleton) = match descriptor.typed_operation {
+            Some(TypedOperation::Properties(operation)) => (
+                OperationFamily::Properties,
+                operation.name(),
+                operation.applicability(),
+                operation.skeleton(),
+            ),
             Some(TypedOperation::Dcs(operation)) => (
                 OperationFamily::Dcs,
                 operation.name(),
@@ -3209,6 +3244,7 @@ mod tests {
                         | OperationFamily::Support
                         | OperationFamily::Form
                         | OperationFamily::Metadata
+                        | OperationFamily::Properties
                 )
             }
         };
@@ -3216,7 +3252,76 @@ mod tests {
             && descriptor.name() == name
             && descriptor.applicability == applicability
             && descriptor.skeleton == skeleton
-            && descriptor.argument_contract().is_some()
+            && (descriptor.argument_contract().is_some()
+                || descriptor.properties_operation().is_some_and(|operation| {
+                    operation.contract(PropertiesSite::Role).schema.is_object()
+                }))
+    }
+
+    #[test]
+    fn properties_registration_requires_its_typed_identity_and_proven_context() {
+        let valid = OperationDescriptor::properties(PropertiesOperation::Set);
+        assert!(typed_registration_is_consistent(valid));
+        assert!(valid.argument_contract().is_none());
+        assert_eq!(
+            OPERATION_DESCRIPTORS
+                .iter()
+                .filter(|row| row.family() == OperationFamily::Properties)
+                .collect::<Vec<_>>(),
+            vec![&valid]
+        );
+        for invalid in [
+            OperationDescriptor {
+                typed_operation: None,
+                ..valid
+            },
+            OperationDescriptor {
+                name: "future.descriptorMutation",
+                typed_operation: None,
+                ..valid
+            },
+            OperationDescriptor {
+                typed_operation: Some(TypedOperation::Role(RoleOperation::Create)),
+                ..valid
+            },
+            OperationDescriptor {
+                name: "props.other",
+                ..valid
+            },
+            OperationDescriptor {
+                family: OperationFamily::Metadata,
+                ..valid
+            },
+            OperationDescriptor {
+                applicability: OperationApplicability::Metadata,
+                ..valid
+            },
+            OperationDescriptor {
+                skeleton: OperationSkeleton::Items,
+                ..valid
+            },
+        ] {
+            assert!(!typed_registration_is_consistent(invalid), "{invalid:?}");
+        }
+        let source =
+            SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+        for (raw, expected) in [
+            ("main:CommonModule.Utilities", true),
+            ("main:Role.Reader", true),
+            ("main:Subsystem.Sales", true),
+            ("main:Configuration", false),
+            ("main:Catalog.Items.Attribute.Code", false),
+            ("main:Subsystem.Sales.Subsystem.Child", false),
+        ] {
+            let at = QualifiedAddress::parse(raw).unwrap();
+            let site = OperationSite::new(&at, source).unwrap();
+            assert_eq!(
+                valid.argument_contract_at(&site).is_some(),
+                expected,
+                "{raw}"
+            );
+            assert_eq!(valid.applies_at(&site), expected, "{raw}");
+        }
     }
 
     #[test]

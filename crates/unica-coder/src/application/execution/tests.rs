@@ -1,3 +1,5 @@
+use super::hydration::*;
+use super::test_support::{Archive as DurableCatalog, Fixture as ExecutionCoordinator};
 use super::*;
 use crate::domain::execution::{HolderObservation, Tool};
 use crate::domain::invocation::DomainResult;
@@ -39,7 +41,7 @@ fn settle(c: &mut ExecutionCoordinator, effects: Vec<Effect>) -> Vec<Effect> {
     let mut done = Vec::new();
     while let Some(effect) = queue.pop_front() {
         match effect {
-            Effect::Commit(r) => queue.extend(c.complete(r.committed()).unwrap()),
+            Effect::Commit(r) => queue.extend(c.commit(r).unwrap()),
             other => done.push(other),
         }
     }
@@ -68,7 +70,7 @@ fn accepted_and_begin_commits_are_required_before_a_single_run_permit() {
     let acceptance = commit_request(c.submit(k.clone(), &owner(), window()).unwrap());
     assert_eq!(c.lookup_task(k.task_id()), Err(Error::NotAccepted));
     // No AcceptedPermit exists while the acceptance commit is pending.
-    let mut effects = c.complete(acceptance.committed()).unwrap();
+    let mut effects = c.commit(acceptance).unwrap();
     assert!(!effects.iter().any(|e| matches!(e, Effect::Run(_))));
     let accepted = match effects.remove(0) {
         Effect::Accepted(p) => p,
@@ -90,7 +92,7 @@ fn early_cancel_has_no_task_entitlement_and_submit_never_runs() {
     assert!(settle(&mut c, e).is_empty());
     assert_eq!(
         c.lookup_task(k.task_id()).unwrap().primary(),
-        Some(&CanonicalOutcome::cancelled())
+        Some(&CanonicalOutcome::cancelled().descriptor())
     );
     assert!(matches!(
         State::from_record(c.inspect(&k).unwrap().clone())
@@ -160,10 +162,10 @@ fn queued_factual_outcome_survives_cancel_expose_and_known_rollback() {
     assert!(c.report(run.finish(result.clone())).unwrap().is_empty());
     assert!(c.expose_task(&k).unwrap().is_empty());
     let retry = commit_request(c.complete(cancel.rolled_back()).unwrap());
-    let effects = c.complete(retry.committed()).unwrap();
+    let effects = c.commit(retry).unwrap();
     settle(&mut c, effects);
     let record = c.inspect(&k).unwrap();
-    assert_eq!(record.producer(), Some(&result));
+    assert_eq!(record.producer(), Some(&result.descriptor()));
     assert!(record.cancel_requested());
     assert!(record.public_task());
 }
@@ -178,14 +180,26 @@ fn metadata_conflict_redecides_factual_outcome_without_new_execution() {
     let pending = commit_request(c.report(run.finish(result.clone())).unwrap());
     // A competing durable metadata change is produced by the same pure model.
     let old = State::from_record(c.inspect(&k).unwrap().clone()).unwrap();
-    let (exposed, _) = old.decide(Event::ExposeTask).unwrap().unwrap().into_parts();
+    let (exposed, _, payloads) = old.decide(Event::ExposeTask).unwrap().unwrap().into_parts();
     let effects = c
-        .complete(pending.readback(exposed.record().clone()))
+        .readback(
+            pending,
+            payloads
+                .assemble(exposed.record().clone(), Some(c.store(&k)))
+                .unwrap(),
+        )
         .unwrap();
     let effects = settle(&mut c, effects);
     assert!(!effects.iter().any(|e| matches!(e, Effect::Run(_))));
-    assert_eq!(c.inspect(&k).unwrap().producer(), Some(&result));
+    assert_eq!(
+        c.inspect(&k).unwrap().producer(),
+        Some(&result.descriptor())
+    );
     assert!(c.inspect(&k).unwrap().public_task());
+    assert_eq!(c.store(&k).producer(), Some(&result));
+    let loaded = c.prepare_task(&k).unwrap().loaded(c.store(&k)).unwrap();
+    assert!(matches!(c.complete_read(loaded).unwrap(),
+        ReadPublication::Task(permit) if permit.outcome() == &result));
 }
 
 #[test]
@@ -198,8 +212,8 @@ fn exact_readback_and_duplicate_callback_never_repeat_the_run_permit() {
         stamp: request.stamp.clone(),
         resolution: Resolution::Committed,
     };
-    let actual = request.candidate().clone();
-    let effects = c.complete(request.readback(actual)).unwrap();
+    let actual = c.assemble(&request);
+    let effects = c.readback(request, actual).unwrap();
     assert!(matches!(&effects[..], [Effect::Run(_)]));
     assert!(matches!(c.complete(duplicate), Err(Error::StaleCompletion)));
 }
@@ -253,11 +267,11 @@ fn recovery_preserves_primary_and_drops_aliases_without_replaying() {
     settle(&mut c, e);
     assert_eq!(
         c.observe_holder(&k, member),
-        Ok(HolderObservation::Terminal(&result))
+        Ok(HolderObservation::Terminal(&result.descriptor()))
     );
     assert_eq!(
         c.inspect(&k).unwrap().primary(),
-        Some(&CanonicalOutcome::cancelled())
+        Some(&CanonicalOutcome::cancelled().descriptor())
     );
     let bytes = c.catalog().unwrap().encode();
     assert!(!String::from_utf8_lossy(&bytes).contains(&alias.task_id().to_string()));
@@ -274,9 +288,12 @@ fn recovery_preserves_primary_and_drops_aliases_without_replaying() {
     );
     assert_eq!(
         restored.inspect(&k).unwrap().primary(),
-        Some(&CanonicalOutcome::cancelled())
+        Some(&CanonicalOutcome::cancelled().descriptor())
     );
-    assert_eq!(restored.inspect(&k).unwrap().producer(), Some(&result));
+    assert_eq!(
+        restored.inspect(&k).unwrap().producer(),
+        Some(&result.descriptor())
+    );
 }
 
 #[test]
@@ -301,9 +318,7 @@ fn begun_recovery_requires_commit_and_admits_no_old_worker_evidence() {
         .any(|e| matches!(e, Effect::Run(_))));
     assert_eq!(
         restored.lookup_task(k.task_id()).unwrap().producer(),
-        Some(&CanonicalOutcome::failed(
-            model::FailureReason::OutcomeUncertain
-        ))
+        Some(&CanonicalOutcome::failed(model::FailureReason::OutcomeUncertain).descriptor())
     );
 }
 
@@ -316,9 +331,9 @@ fn strict_decode_rejects_noncanonical_payload_and_impossible_record() {
     let mut c = coordinator();
     let k = key();
     accept(&mut c, &k);
-    let mut value = serde_json::to_value(c.inspect(&k).unwrap()).unwrap();
-    value["primary_digest"] = serde_json::json!(vec![0; 32]);
-    assert!(serde_json::from_value::<Record>(value).is_err());
+    let mut value = serde_json::to_value(c.store(&k)).unwrap();
+    value["record"]["primary_digest"] = serde_json::json!(vec![0; 32]);
+    assert!(serde_json::from_value::<StoredRecord>(value).is_err());
 }
 
 fn task_permit(c: &mut ExecutionCoordinator, k: &Key) -> TaskPublicationPermit {
@@ -340,13 +355,11 @@ fn frontend_choice_never_acks_after_task_and_keeps_built_direct() {
     settle(&mut c, e);
     let mut task = DeliveryChoice::new(k.clone());
     task.return_task(task_permit(&mut c, &k)).unwrap();
-    assert!(task
-        .build_direct(c.prepare_direct(&k, &owner()).unwrap())
-        .is_err());
+    assert!(task.build_direct(c.direct(&k, &owner()).unwrap()).is_err());
     assert_eq!(task.ack_digest(), None);
     let mut direct = DeliveryChoice::new(k.clone());
     direct
-        .build_direct(c.prepare_direct(&k, &owner()).unwrap())
+        .build_direct(c.direct(&k, &owner()).unwrap())
         .unwrap();
     assert!(direct.return_task(task_permit(&mut c, &k)).is_err());
     // An ACK transport failure has no transition capable of clearing DirectBuilt.
@@ -370,7 +383,7 @@ fn admission_refusal_retains_accepted_identity_without_begin_or_run() {
     assert!(settle(&mut c, e).is_empty());
     assert_eq!(
         c.lookup_task(k.task_id()).unwrap().primary(),
-        Some(&expected)
+        Some(&expected.descriptor())
     );
     assert_eq!(c.inspect(&k).unwrap().run(), None);
     assert!(matches!(
@@ -395,7 +408,7 @@ fn first_acknowledgement_is_immutable_across_duplicates_and_reopen() {
     settle(&mut c, e);
     let pending = commit_request(c.acknowledge(&k, &owner(), result.digest(), 9_000).unwrap());
     assert!(c.inspect(&k).unwrap().acknowledgement().is_none());
-    let effects = c.complete(pending.committed()).unwrap();
+    let effects = c.commit(pending).unwrap();
     settle(&mut c, effects);
     let ack = *c.inspect(&k).unwrap().acknowledgement().unwrap();
     assert_eq!(ack.digest(), result.digest());
@@ -438,7 +451,7 @@ fn publication_requires_committed_outcome_exact_key_and_live_direct_right() {
         c.prepare_direct(&k, &owner()),
         Err(Error::NotRunnable)
     ));
-    let effects = c.complete(pending.committed()).unwrap();
+    let effects = c.commit(pending).unwrap();
     settle(&mut c, effects);
     assert!(matches!(
         c.prepare_direct(&k, &OwnerCapability::new([99; 32])),
@@ -452,10 +465,10 @@ fn publication_requires_committed_outcome_exact_key_and_live_direct_right() {
     );
     let mut wrong_direct = DeliveryChoice::new(other_key);
     assert_eq!(
-        wrong_direct.build_direct(c.prepare_direct(&k, &owner()).unwrap()),
+        wrong_direct.build_direct(c.direct(&k, &owner()).unwrap()),
         Err(Error::IdentityCollision)
     );
-    let prepared_before_ack = c.prepare_direct(&k, &owner()).unwrap();
+    let prepared_before_ack = c.direct(&k, &owner()).unwrap();
     let e = c.acknowledge(&k, &owner(), result.digest(), 9_000).unwrap();
     settle(&mut c, e);
     assert!(c.inspect(&k).unwrap().public_task());
@@ -546,9 +559,7 @@ fn owner_mismatch_readback_cannot_issue_begin_authority_and_old_epoch_cannot_run
         .submit(k.clone(), &OwnerCapability::new([99; 32]), window())
         .unwrap();
     settle(&mut other, e);
-    let effects = c
-        .complete(pending.readback(other.inspect(&k).unwrap().clone()))
-        .unwrap();
+    let effects = c.readback(pending, other.store(&k).clone()).unwrap();
     assert!(matches!(
         &effects[..],
         [Effect::Rejected {

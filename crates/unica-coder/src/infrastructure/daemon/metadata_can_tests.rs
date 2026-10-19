@@ -181,6 +181,174 @@ fn assert_parity(
     }
 }
 
+fn assert_props_can_and_preview(at: &str, preview_args: Value, samples: &[(Value, bool)]) {
+    let fixture = Fixture::new("workspace");
+    let runtime = runtime();
+    let before = crate::test_support::tree_snapshot(&fixture.source);
+    let project_before = std::fs::read(fixture.workspace.join("v8project.yaml")).unwrap();
+    let operation_at = format!("{at}.Can.props.set");
+    let detailed = call(
+        &runtime,
+        &fixture,
+        ToolIdentity::View,
+        json!({"at":operation_at}),
+    );
+    assert!(detailed.ok, "{operation_at}: {detailed:?}");
+    assert_eq!(detailed.at.as_deref(), Some(operation_at.as_str()));
+    let data = detailed.data.unwrap();
+    assert_eq!(data["at"], operation_at);
+    assert_eq!(data["kind"], "Can");
+    assert_eq!(data["props"]["op"], "props.set");
+    assert_eq!(data["props"]["implemented"], true);
+    let contract = &data["props"]["contract"];
+    let schema = &contract["argsSchema"];
+    assert_eq!(schema["additionalProperties"], false);
+    assert_eq!(
+        schema["properties"]["values"]["additionalProperties"],
+        false
+    );
+    assert!(contract["exampleArgs"].get("at").is_none());
+    let oracle = jsonschema::validator_for(schema).expect("Props Can publishes valid JSON Schema");
+    assert!(oracle.is_valid(&preview_args), "{at}: {preview_args}");
+    for (args, expected) in samples {
+        assert_eq!(oracle.is_valid(args), *expected, "{at}: {args}");
+    }
+    for args in [
+        json!({}),
+        json!({"values":null}),
+        json!({"values":[]}),
+        json!({"values":{}}),
+        json!({"values":{"Comment":null}}),
+        json!({"values":{"Comment":false}}),
+        json!({"values":{"UnknownProperty":"x"}}),
+        json!({"values":{"Comment":"x"},"unknown":true}),
+        json!({"values":{"Comment":"x"},"at":at}),
+    ] {
+        assert!(!oracle.is_valid(&args), "{at}: {args}");
+    }
+    assert_eq!(crate::test_support::tree_snapshot(&fixture.source), before);
+    assert_eq!(
+        std::fs::read(fixture.workspace.join("v8project.yaml")).unwrap(),
+        project_before
+    );
+
+    let preview = call(
+        &runtime,
+        &fixture,
+        ToolIdentity::Apply,
+        json!({"at":at,"ops":[{"op":"props.set","args":preview_args}]}),
+    );
+    assert!(preview.ok, "real props.set preview at {at}: {preview:?}");
+    let planned = preview.data.unwrap();
+    assert_eq!(planned["mode"], "preview");
+    assert!(planned["executionToken"]
+        .as_str()
+        .is_some_and(|token| !token.is_empty()));
+    assert!(planned["effects"]
+        .as_u64()
+        .is_some_and(|effects| effects > 0));
+    assert_eq!(crate::test_support::tree_snapshot(&fixture.source), before);
+    assert_eq!(
+        std::fs::read(fixture.workspace.join("v8project.yaml")).unwrap(),
+        project_before
+    );
+}
+
+#[test]
+fn props_set_common_module_can_is_contextual_and_previews_without_writes() {
+    let at = "main:CommonModule.GoogleПереводчик";
+    assert_eq!(
+        crate::domain::logical_route::classify_route(
+            &crate::domain::address::QualifiedAddress::parse(at).unwrap(),
+            crate::domain::platform_profile::PlatformProfile::v8_3_27(),
+        ),
+        Some(crate::domain::logical_route::RouteClass::Module)
+    );
+    assert_props_can_and_preview(
+        at,
+        json!({"values":{"Comment":"Properties CommonModule preview","ClientOrdinaryApplication":false}}),
+        &[
+            (json!({"values":{"Comment":"","Synonym":""}}), true),
+            (json!({"values":{"ClientOrdinaryApplication":true}}), true),
+            (json!({"values":{"ClientOrdinaryApplication":false}}), true),
+            (
+                json!({"values":{"ReturnValuesReuse":"DuringRequest"}}),
+                true,
+            ),
+            (
+                json!({"values":{"ClientOrdinaryApplication":"false"}}),
+                false,
+            ),
+            (json!({"values":{"ReturnValuesReuse":"Unknown"}}), false),
+            (
+                json!({"values":{"comment":"lowercase is not a Metadata alias"}}),
+                false,
+            ),
+            (json!({"values":{"IncludeInCommandInterface":false}}), false),
+            (
+                json!({"values":{"Type":{"variants":[{"kind":"boolean"}]}}}),
+                false,
+            ),
+        ],
+    );
+}
+
+#[test]
+fn props_set_role_can_is_contextual_and_previews_without_writes() {
+    assert_props_can_and_preview(
+        "main:Role.SalesReader",
+        json!({"values":{"synonym":"Properties role preview","Comment":"Independent alias groups"}}),
+        &[
+            (json!({"values":{"Synonym":"","comment":""}}), true),
+            (json!({"values":{"synonym":"","Comment":""}}), true),
+            (json!({"values":{"Synonym":"a","synonym":"a"}}), false),
+            (json!({"values":{"Comment":"a","comment":"b"}}), false),
+            (json!({"values":{"ClientOrdinaryApplication":false}}), false),
+            (json!({"values":{"IncludeInCommandInterface":false}}), false),
+            (json!({"values":{"Explanation":"Subsystem only"}}), false),
+        ],
+    );
+}
+
+#[test]
+fn props_set_subsystem_can_is_contextual_and_previews_without_writes() {
+    assert_props_can_and_preview(
+        "main:Subsystem.Администрирование",
+        json!({"values":{"Comment":"Properties subsystem preview","explanation":"","IncludeInCommandInterface":false}}),
+        &[
+            (
+                json!({"values":{"synonym":"","Comment":"","explanation":""}}),
+                true,
+            ),
+            (
+                json!({"values":{"Synonym":"","comment":"","Explanation":""}}),
+                true,
+            ),
+            (
+                json!({"values":{"IncludeHelpInContents":true,"includeInCommandInterface":false,"UseOneCommand":true}}),
+                true,
+            ),
+            (
+                json!({"values":{"includeHelpInContents":false,"IncludeInCommandInterface":true,"useOneCommand":false}}),
+                true,
+            ),
+            (json!({"values":{"IncludeHelpInContents":"true"}}), false),
+            (
+                json!({"values":{"includeInCommandInterface":"false"}}),
+                false,
+            ),
+            (json!({"values":{"UseOneCommand":0}}), false),
+            (json!({"values":{"Comment":"a","comment":"a"}}), false),
+            (
+                json!({"values":{"IncludeInCommandInterface":true,"includeInCommandInterface":false}}),
+                false,
+            ),
+            (json!({"values":{"ClientOrdinaryApplication":true}}), false),
+            (json!({"values":{"Content":[]}}), false),
+        ],
+    );
+}
+
 #[test]
 fn seven_metadata_can_contracts_publish_and_real_arguments_preview_without_writes() {
     let fixture = Fixture::with_extension();
