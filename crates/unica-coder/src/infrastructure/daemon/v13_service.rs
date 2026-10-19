@@ -3789,7 +3789,7 @@ fn saved_apply_execution_error_result(error: SavedApplyExecutionError) -> Domain
         SavedApplyExecutionError::Busy => error_result_detailed(
             None,
             RefusalDetail::BackendBusy,
-            "saved plan is busy; retry the read after the current operation",
+            "saved plan is busy; retry after the current operation",
         ),
         SavedApplyExecutionError::Unavailable(message) => {
             error_result(None, RefusalCode::BadValue, message)
