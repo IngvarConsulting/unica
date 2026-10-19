@@ -8,6 +8,7 @@ use unica_address::address::{member_address, AddressSegment, NodeKind, Qualified
 use unica_refusal::{RefusalCode, RefusalDetail};
 
 mod form;
+mod form_appearance;
 mod member_properties;
 mod metadata;
 mod role;
