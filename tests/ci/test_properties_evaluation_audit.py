@@ -97,15 +97,23 @@ class PropertiesEvidenceTests(unittest.TestCase):
             at = target + ".Can.props.set"
             call("unica.view", {"at": at}, {"ok": True, "at": at, "data": {"at": at, "kind": "Can", "props": {
                 "op": "props.set", "implemented": True, "contract": {"argsSchema": {"type": "object", "additionalProperties": False}}}}})
-        operations = [
-            {"op": "props.set", "args": {"at": props_driver.MODULE, "values": props_driver.TARGET_VALUES[props_driver.MODULE]}},
-            {"op": "props.set", "args": {"at": props_driver.ROLE, "values": {"synonym": "Agent1721 role", "Comment": "Agent1721 role comment"}}},
-            {"op": "props.set", "args": {"at": props_driver.SUBSYSTEM, "values": {"Synonym": "Agent1721 subsystem", "comment": "Agent1721 subsystem comment", "explanation": "", "IncludeInCommandInterface": False}}},
-        ]
-        call("unica.apply", {"at": props_driver.MODULE, "ops": operations},
-             {"ok": True, "data": {"mode": "preview", "effects": 3, "planHash": "sha256:props", "executionToken": "props-token"}})
-        call("unica.apply", {"executionToken": "props-token"},
-             {"ok": True, "data": {"mode": "published", "effects": 3, "planHash": "sha256:props"}}, before, after)
+        values_by_target = {
+            props_driver.MODULE: props_driver.TARGET_VALUES[props_driver.MODULE],
+            props_driver.ROLE: {"synonym": "Agent1721 role", "Comment": "Agent1721 role comment"},
+            props_driver.SUBSYSTEM: {"Synonym": "Agent1721 subsystem", "comment": "Agent1721 subsystem comment",
+                                     "explanation": "", "IncludeInCommandInterface": False},
+        }
+        current = before
+        for index, (target, values) in enumerate(values_by_target.items()):
+            token, plan_hash = f"props-token-{index}", f"sha256:props-{index}"
+            call("unica.apply", {"at": target, "ops": [{"op": "props.set", "args": {"values": values}}]},
+                 {"ok": True, "data": {"mode": "preview", "effects": 1,
+                  "planHash": plan_hash, "executionToken": token}}, current, current)
+            next_image = {**current, props_driver.PATHS[target]: after[props_driver.PATHS[target]]}
+            call("unica.apply", {"executionToken": token},
+                 {"ok": True, "data": {"mode": "published", "effects": 1, "planHash": plan_hash}},
+                 current, next_image)
+            current = next_image
         for target in props_driver.PATHS:
             call("unica.view", {"at": target}, {"ok": True, "data": {}}, after, after)
             result = ({"ok": False, "data": {"tool": "bsl-analyzer", "stage": "manifest"},
@@ -144,7 +152,7 @@ class PropertiesEvidenceTests(unittest.TestCase):
                     props_driver.audit(records)
 
     def test_audit_rejects_missing_contract_token_swap_source_write_and_alias_loss(self):
-        for mutation in ["missing contract", "token swap", "preview writes", "foreign publication", "string boolean", "lost mixed aliases", "abandoned mixed aliases", "provider I/O failure"]:
+        for mutation in ["missing contract", "token swap", "preview writes", "foreign publication", "string boolean", "lost mixed aliases", "abandoned mixed aliases", "provider I/O failure", "sibling target", "unknown outer target"]:
             with self.subTest(mutation=mutation):
                 records = copy.deepcopy(self.accepted_records())
                 requests = [r for r in records if r["direction"] == "request" and r["payload"].get("method") == "tools/call"]
@@ -166,7 +174,13 @@ class PropertiesEvidenceTests(unittest.TestCase):
                                    and r["payload"]["params"]["arguments"].get("at") == props_driver.MODULE)
                     response = next(r for r in records if r["direction"] == "response" and r["payload"]["id"] == request["payload"]["id"])
                     response["payload"]["result"]["structuredContent"]["diagnostics"][0]["detailCode"] = "provider_io_error"
+                elif mutation in {"sibling target", "unknown outer target"}:
+                    preview["payload"]["params"]["arguments"]["ops"][0]["args"]["at"] = props_driver.MODULE
+                    preview["payload"]["params"]["arguments"]["at"] = (
+                        props_driver.ROLE if mutation == "sibling target" else "main:Configuration")
                 else:
+                    preview = next(r for r in requests if "ops" in r["payload"]["params"]["arguments"]
+                                   and r["payload"]["params"]["arguments"]["at"] == props_driver.ROLE)
                     if mutation == "abandoned mixed aliases":
                         request = copy.deepcopy(preview)
                         response = copy.deepcopy(next(r for r in records if r["direction"] == "response" and r["payload"]["id"] == preview["payload"]["id"]))
@@ -174,7 +188,7 @@ class PropertiesEvidenceTests(unittest.TestCase):
                         response["payload"]["result"]["structuredContent"]["data"]["executionToken"] = "abandoned-token"
                         index = records.index(preview)
                         records[index:index] = [request, response]
-                    values = preview["payload"]["params"]["arguments"]["ops"][1]["args"]["values"]
+                    values = preview["payload"]["params"]["arguments"]["ops"][0]["args"]["values"]
                     values["Synonym"] = values.pop("synonym")
                 with self.assertRaises(ValueError):
                     props_driver.audit(records)

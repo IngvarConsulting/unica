@@ -1127,6 +1127,8 @@ fn parse_properties(
     // internal carrier key, not part of the published property arguments.
     let mut payload = args.clone();
     payload.remove("at");
+    let contract = operation.contract(site);
+    reject_unknown_input_args(operation.name(), &payload, &contract.schema, op_index)?;
     let intent = decode_properties(
         operation,
         site,
@@ -3671,6 +3673,38 @@ mod tests {
         .unwrap_err();
         assert_eq!(misplaced.kind(), ApplyPlanErrorKind::BadValue);
         assert_eq!(misplaced.path(), Some("ops[4].args.items"));
+    }
+
+    #[test]
+    fn properties_unknown_envelope_names_values_before_decoding_the_payload() {
+        let fixture = MetadataFixture::new();
+        for at in [
+            "main:Document.Order",
+            "main:Role.Reader",
+            "main:Subsystem.Sales",
+        ] {
+            for (mut args, field) in [
+                (json!({"props":{"Comment":"wrong envelope"}}), "props"),
+                (
+                    json!({"values":false,"command":"wrong envelope"}),
+                    "command",
+                ),
+            ] {
+                args["at"] = json!(at);
+                let error = parse_metadata_plan_operation("props.set", &args, 3, &fixture.binding)
+                    .unwrap_err();
+                assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{at}: {error}");
+                let path = format!("ops[3].args.{field}");
+                assert_eq!(error.path(), Some(path.as_str()), "{at}: {error}");
+                assert_eq!(
+                    error.to_string(),
+                    format!(
+                        "operation does not accept argument `{field}`; `props.set` expects `values`"
+                    ),
+                    "{at}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -151,6 +151,8 @@ def audit(records):
                 arguments = operation.get("args") or {}
                 target = arguments.get("at", args.get("at"))
                 values = arguments.get("values")
+                if args.get("at") not in PATHS or target != args["at"]:
+                    raise ValueError("Properties plan target is outside its fixed owner scope")
                 if (operation.get("op") != "props.set" or target not in PATHS
                         or set(arguments) - {"at", "values"} or not isinstance(values, dict) or not values):
                     raise ValueError("Properties plan includes an unrequested operation, target or argument")
