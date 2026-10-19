@@ -1,5 +1,6 @@
 use crate::domain::cancellation::{cancelled_error, CancellationToken};
 use crate::domain::events::{DomainEvent, DomainEventKind};
+use crate::domain::operation_deadline::OperationDeadline;
 use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
@@ -511,7 +512,27 @@ impl<'a> WorkspaceServiceManager<'a> {
     }
 
     pub fn notify_invalidation(&self, context: &WorkspaceContext, events: &[DomainEvent]) {
-        if events.is_empty() {
+        self.notify_changes(context, events, &CancellationToken::new(), None);
+    }
+
+    pub(crate) fn notify_committed_changes(
+        &self,
+        context: &WorkspaceContext,
+        events: &[DomainEvent],
+        cancellation: &CancellationToken,
+        deadline: OperationDeadline,
+    ) {
+        self.notify_changes(context, events, cancellation, Some(deadline));
+    }
+
+    fn notify_changes(
+        &self,
+        context: &WorkspaceContext,
+        events: &[DomainEvent],
+        cancellation: &CancellationToken,
+        caller_deadline: Option<OperationDeadline>,
+    ) {
+        if events.is_empty() || invalidation_wait_stopped(cancellation, caller_deadline) {
             return;
         }
         let services_dir = context.cache_root.join("services");
@@ -523,7 +544,14 @@ impl<'a> WorkspaceServiceManager<'a> {
             return;
         };
         let workspace_root = workspace_root.display().to_string();
+        #[cfg(test)]
+        notify_invalidation_dispatch_for_test(context, 0);
+        #[cfg(test)]
+        let mut dispatched = 0;
         for entry in entries.flatten() {
+            if invalidation_wait_stopped(cancellation, caller_deadline) {
+                break;
+            }
             let service_dir = entry.path();
             let lock_identity = WorkspaceServiceIdentity {
                 key: String::new(),
@@ -537,17 +565,38 @@ impl<'a> WorkspaceServiceManager<'a> {
             if record.workspace_root != workspace_root {
                 continue;
             }
-            let _ = self.connector.send(
-                &record,
-                ServiceRequest {
-                    token: record.token.clone(),
-                    kind: ServiceRequestKind::Invalidate {
-                        events: typed_events.clone(),
-                    },
+            if invalidation_wait_stopped(cancellation, caller_deadline) {
+                break;
+            }
+            let request = ServiceRequest {
+                token: record.token.clone(),
+                kind: ServiceRequestKind::Invalidate {
+                    events: typed_events.clone(),
                 },
-                &CancellationToken::new(),
-                SERVICE_REQUEST_TIMEOUT,
-            );
+            };
+            match caller_deadline {
+                Some(deadline) => {
+                    let _ = self
+                        .connector
+                        .send_before(&record, request, cancellation, deadline);
+                }
+                None => {
+                    let _ = self.connector.send(
+                        &record,
+                        request,
+                        cancellation,
+                        SERVICE_REQUEST_TIMEOUT,
+                    );
+                }
+            }
+            #[cfg(test)]
+            {
+                dispatched += 1;
+                notify_invalidation_dispatch_for_test(context, dispatched);
+            }
+            if invalidation_wait_stopped(cancellation, caller_deadline) {
+                break;
+            }
         }
     }
 
@@ -661,6 +710,37 @@ fn is_retryable_workspace_service_transport_error(error: &str) -> bool {
     .any(|prefix| error.starts_with(prefix))
 }
 
+#[cfg(test)]
+type InvalidationDispatchHook = dyn Fn(usize) + Send + Sync;
+
+#[cfg(test)]
+fn invalidation_dispatch_hooks() -> &'static Mutex<HashMap<PathBuf, Arc<InvalidationDispatchHook>>>
+{
+    static HOOKS: std::sync::OnceLock<Mutex<HashMap<PathBuf, Arc<InvalidationDispatchHook>>>> =
+        std::sync::OnceLock::new();
+    HOOKS.get_or_init(Mutex::default)
+}
+
+#[cfg(test)]
+fn notify_invalidation_dispatch_for_test(context: &WorkspaceContext, dispatched: usize) {
+    let hook = invalidation_dispatch_hooks()
+        .lock()
+        .unwrap()
+        .get(&context.workspace_root)
+        .cloned();
+    if let Some(hook) = hook {
+        hook(dispatched);
+    }
+}
+
+fn invalidation_wait_stopped(
+    cancellation: &CancellationToken,
+    deadline: Option<OperationDeadline>,
+) -> bool {
+    cancellation.is_cancelled()
+        || deadline.is_some_and(|deadline| deadline.is_elapsed_at(Instant::now()))
+}
+
 fn cancellation_error(cancellation: &CancellationToken) -> Result<(), String> {
     if cancellation.is_cancelled() {
         Err(cancelled_error("workspace service operation stopped"))
@@ -683,6 +763,14 @@ trait ServiceConnector {
         cancellation: &CancellationToken,
         budget: Duration,
     ) -> Result<ServiceResponse, String>;
+
+    fn send_before(
+        &self,
+        record: &WorkspaceServiceRecord,
+        request: ServiceRequest,
+        cancellation: &CancellationToken,
+        deadline: OperationDeadline,
+    ) -> Result<ServiceResponse, String>;
 }
 
 trait ServiceSpawner {
@@ -701,6 +789,10 @@ struct SystemServiceSpawner;
 
 trait ConnectorClock {
     fn elapsed(&self) -> Duration;
+
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
 }
 
 struct SystemClock(Instant);
@@ -734,6 +826,29 @@ impl Deadline {
         self.budget
             .checked_sub(clock.elapsed().saturating_sub(self.started))
             .filter(|remaining| !remaining.is_zero())
+    }
+}
+
+trait ConnectorRequestDeadline {
+    fn remaining_or_timeout(&self, clock: &dyn ConnectorClock) -> Result<Option<Duration>, String>;
+}
+
+impl ConnectorRequestDeadline for Deadline {
+    fn remaining_or_timeout(&self, clock: &dyn ConnectorClock) -> Result<Option<Duration>, String> {
+        self.remaining(clock)
+            .map(Some)
+            .ok_or_else(|| workspace_service_request_timeout_error(self.budget))
+    }
+}
+
+impl ConnectorRequestDeadline for OperationDeadline {
+    fn remaining_or_timeout(&self, clock: &dyn ConnectorClock) -> Result<Option<Duration>, String> {
+        match self.remaining_at(clock.now()) {
+            Some(remaining) if remaining.is_zero() => {
+                Err("timeout: workspace service operation deadline elapsed".into())
+            }
+            remaining => Ok(remaining),
+        }
     }
 }
 
@@ -783,6 +898,23 @@ impl ServiceConnector for SystemServiceConnector {
             &clock,
         )
     }
+
+    fn send_before(
+        &self,
+        record: &WorkspaceServiceRecord,
+        request: ServiceRequest,
+        cancellation: &CancellationToken,
+        deadline: OperationDeadline,
+    ) -> Result<ServiceResponse, String> {
+        self.send_with_deadline(
+            record,
+            request,
+            cancellation,
+            &deadline,
+            &SystemConnectorIo,
+            &SystemClock::new(),
+        )
+    }
 }
 
 impl SystemServiceConnector {
@@ -796,6 +928,18 @@ impl SystemServiceConnector {
         clock: &dyn ConnectorClock,
     ) -> Result<ServiceResponse, String> {
         let deadline = Deadline::new(clock, budget);
+        self.send_with_deadline(record, request, cancellation, &deadline, io, clock)
+    }
+
+    fn send_with_deadline(
+        &self,
+        record: &WorkspaceServiceRecord,
+        request: ServiceRequest,
+        cancellation: &CancellationToken,
+        deadline: &dyn ConnectorRequestDeadline,
+        io: &dyn ConnectorIo,
+        clock: &dyn ConnectorClock,
+    ) -> Result<ServiceResponse, String> {
         let operation_id = request.kind.operation_id().map(str::to_owned);
         cancellation_error(cancellation)?;
         let connect_cap = if request.kind.is_control() {
@@ -803,19 +947,20 @@ impl SystemServiceConnector {
         } else {
             SERVICE_CONNECT_TIMEOUT
         };
-        let connect_timeout = remaining_or_timeout(&deadline, clock)?.min(connect_cap);
+        let connect_timeout = remaining_or_timeout(deadline, clock)?
+            .map_or(connect_cap, |remaining| remaining.min(connect_cap));
         let mut stream = match io.connect(record.port, connect_timeout) {
             Ok(stream) => stream,
             Err(error) => {
                 cancellation_error(cancellation)?;
-                remaining_or_timeout(&deadline, clock)?;
+                remaining_or_timeout(deadline, clock)?;
                 return Err(format!("failed to connect workspace service: {error}"));
             }
         };
         cancellation_error(cancellation)?;
         if let Err(error) = stream.set_read_timeout(Some(Duration::from_millis(100))) {
             cancellation_error(cancellation)?;
-            remaining_or_timeout(&deadline, clock)?;
+            remaining_or_timeout(deadline, clock)?;
             return Err(format!(
                 "failed to set workspace service read timeout: {error}"
             ));
@@ -824,7 +969,7 @@ impl SystemServiceConnector {
         if let Err(error) = write_with_deadline(
             stream.as_mut(),
             payload.as_bytes(),
-            &deadline,
+            deadline,
             clock,
             cancellation,
         ) {
@@ -832,16 +977,16 @@ impl SystemServiceConnector {
             return Err(error);
         }
         if let Err(error) =
-            write_with_deadline(stream.as_mut(), b"\n", &deadline, clock, cancellation)
+            write_with_deadline(stream.as_mut(), b"\n", deadline, clock, cancellation)
         {
             self.cancel_after_error(&error, operation_id.as_deref(), record, io, clock);
             return Err(error);
         }
-        if let Err(error) = flush_with_deadline(stream.as_mut(), &deadline, clock, cancellation) {
+        if let Err(error) = flush_with_deadline(stream.as_mut(), deadline, clock, cancellation) {
             self.cancel_after_error(&error, operation_id.as_deref(), record, io, clock);
             return Err(error);
         }
-        let result = read_service_response(stream.as_mut(), &deadline, clock, cancellation);
+        let result = read_service_response(stream.as_mut(), deadline, clock, cancellation);
         if let Err(error) = &result {
             self.cancel_after_error(error, operation_id.as_deref(), record, io, clock);
         }
@@ -933,7 +1078,7 @@ impl SystemServiceConnector {
 
 fn read_service_response(
     stream: &mut dyn ConnectorStream,
-    deadline: &Deadline,
+    deadline: &dyn ConnectorRequestDeadline,
     clock: &dyn ConnectorClock,
     cancellation: &CancellationToken,
 ) -> Result<ServiceResponse, String> {
@@ -942,8 +1087,11 @@ fn read_service_response(
     loop {
         cancellation_error(cancellation)?;
         let remaining = remaining_or_timeout(deadline, clock)?;
-        if let Err(error) = stream.set_read_timeout(Some(remaining.min(Duration::from_millis(100))))
-        {
+        if let Err(error) = stream.set_read_timeout(Some(
+            remaining.map_or(Duration::from_millis(100), |remaining| {
+                remaining.min(Duration::from_millis(100))
+            }),
+        )) {
             cancellation_error(cancellation)?;
             remaining_or_timeout(deadline, clock)?;
             return Err(format!(
@@ -992,12 +1140,10 @@ fn response_line_too_large() -> String {
 }
 
 fn remaining_or_timeout(
-    deadline: &Deadline,
+    deadline: &dyn ConnectorRequestDeadline,
     clock: &dyn ConnectorClock,
-) -> Result<Duration, String> {
-    deadline
-        .remaining(clock)
-        .ok_or_else(|| workspace_service_request_timeout_error(deadline.budget))
+) -> Result<Option<Duration>, String> {
+    deadline.remaining_or_timeout(clock)
 }
 
 fn workspace_service_request_timeout_error(budget: Duration) -> String {
@@ -1024,7 +1170,7 @@ fn remaining_or_control_timeout(
 fn write_with_deadline(
     stream: &mut dyn ConnectorStream,
     bytes: &[u8],
-    deadline: &Deadline,
+    deadline: &dyn ConnectorRequestDeadline,
     clock: &dyn ConnectorClock,
     cancellation: &CancellationToken,
 ) -> Result<(), String> {
@@ -1032,9 +1178,11 @@ fn write_with_deadline(
     while written < bytes.len() {
         cancellation_error(cancellation)?;
         let remaining = remaining_or_timeout(deadline, clock)?;
-        if let Err(error) =
-            stream.set_write_timeout(Some(remaining.min(Duration::from_millis(100))))
-        {
+        if let Err(error) = stream.set_write_timeout(Some(
+            remaining.map_or(Duration::from_millis(100), |remaining| {
+                remaining.min(Duration::from_millis(100))
+            }),
+        )) {
             cancellation_error(cancellation)?;
             remaining_or_timeout(deadline, clock)?;
             return Err(format!(
@@ -1073,16 +1221,18 @@ fn write_with_deadline(
 
 fn flush_with_deadline(
     stream: &mut dyn ConnectorStream,
-    deadline: &Deadline,
+    deadline: &dyn ConnectorRequestDeadline,
     clock: &dyn ConnectorClock,
     cancellation: &CancellationToken,
 ) -> Result<(), String> {
     loop {
         cancellation_error(cancellation)?;
         let remaining = remaining_or_timeout(deadline, clock)?;
-        if let Err(error) =
-            stream.set_write_timeout(Some(remaining.min(Duration::from_millis(100))))
-        {
+        if let Err(error) = stream.set_write_timeout(Some(
+            remaining.map_or(Duration::from_millis(100), |remaining| {
+                remaining.min(Duration::from_millis(100))
+            }),
+        )) {
             cancellation_error(cancellation)?;
             remaining_or_timeout(deadline, clock)?;
             return Err(format!(
@@ -1463,6 +1613,8 @@ struct WorkspaceServiceRuntimeState {
     #[cfg(test)]
     authenticated_request_hook: Mutex<Option<Arc<AuthenticatedWorkspaceRequestHook>>>,
     #[cfg(test)]
+    invalidation_response_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
     provider_sessions_drained_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
     caller_detached_hook: Mutex<Option<Arc<DetachedWorkspaceCallerHook>>>,
@@ -1567,6 +1719,8 @@ impl WorkspaceServiceRuntime {
             handler_started_hook: Mutex::new(None),
             #[cfg(test)]
             authenticated_request_hook: Mutex::new(None),
+            #[cfg(test)]
+            invalidation_response_hook: Mutex::new(None),
             #[cfg(test)]
             provider_sessions_drained_hook: Mutex::new(None),
             #[cfg(test)]
@@ -3992,7 +4146,22 @@ fn handle_workspace_service_request(
             write_service_response(stream, &runtime.cancel_operation(&operation_id), true)?;
         }
         ServiceRequestKind::Invalidate { events } => {
-            write_service_response(stream, &runtime.invalidate(&events), false)?;
+            let response = runtime.invalidate(&events);
+            #[cfg(test)]
+            {
+                let hook = runtime
+                    .actor
+                    .runtime_projection()
+                    .0
+                    .invalidation_response_hook
+                    .lock()
+                    .unwrap()
+                    .clone();
+                if let Some(hook) = hook {
+                    hook();
+                }
+            }
+            write_service_response(stream, &response, false)?;
         }
         ServiceRequestKind::Shutdown => {
             write_service_response(stream, &runtime.begin_shutdown(), false)?;
@@ -4600,7 +4769,20 @@ mod tests {
             executable: &Path,
             cleanup_gate: Option<PathBuf>,
         ) -> Self {
-            let identity = WorkspaceServiceIdentity::new(context, source_root).unwrap();
+            Self::start_in_directory(context, source_root, executable, cleanup_gate, None)
+        }
+
+        fn start_in_directory(
+            context: &WorkspaceContext,
+            source_root: &Path,
+            executable: &Path,
+            cleanup_gate: Option<PathBuf>,
+            service_dir: Option<PathBuf>,
+        ) -> Self {
+            let mut identity = WorkspaceServiceIdentity::new(context, source_root).unwrap();
+            if let Some(service_dir) = service_dir {
+                identity.service_dir = service_dir;
+            }
             let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
             listener.set_nonblocking(true).unwrap();
             let record = test_record(
@@ -4764,6 +4946,56 @@ mod tests {
         }
     }
 
+    // The real service prepares and executes every operation. Held executions
+    // are declared known-long only for this fixture's scheduling; no process
+    // starts and the original cancellation token retains ordinary safe points.
+    struct HeldApplyTaskService {
+        inner: Arc<dyn crate::infrastructure::daemon::server::CanonicalInvocationService>,
+    }
+
+    impl crate::infrastructure::daemon::server::CanonicalInvocationService for HeldApplyTaskService {
+        fn prepare(
+            &self,
+            invocation: &crate::infrastructure::daemon::server::ActorBoundInvocation,
+        ) -> Result<
+            crate::application::operation_descriptors::ExecutionClass,
+            Box<crate::domain::invocation::DomainResult>,
+        > {
+            let class = self.inner.prepare(invocation)?;
+            Ok(
+                if invocation.tool() == crate::application::invocation_store::ToolIdentity::Apply
+                    && invocation.arguments().contains_key("executionToken")
+                {
+                    crate::application::operation_descriptors::ExecutionClass::KnownLong(
+                        crate::application::operation_descriptors::KnownLongReason::ExternalProcess,
+                    )
+                } else {
+                    class
+                },
+            )
+        }
+
+        fn execute(
+            &self,
+            invocation: &crate::infrastructure::daemon::server::ActorBoundExecution,
+            cancellation: CancellationToken,
+        ) -> Result<
+            crate::domain::invocation::DomainResult,
+            crate::domain::invocation::InvocationFailure,
+        > {
+            assert!(
+                !cancellation.protected_process_started(),
+                "fixture classification must not protect a process"
+            );
+            let result = self.inner.execute(invocation, cancellation.clone());
+            assert!(
+                !cancellation.protected_process_started(),
+                "canonical XML Apply must not acquire process authority"
+            );
+            result
+        }
+    }
+
     struct CanonicalInvalidationFixture {
         context: WorkspaceContext,
         executable: PathBuf,
@@ -4774,6 +5006,14 @@ mod tests {
 
     impl CanonicalInvalidationFixture {
         fn new() -> Self {
+            Self::with_held_apply_schedule(false)
+        }
+
+        fn new_for_held_apply() -> Self {
+            Self::with_held_apply_schedule(true)
+        }
+
+        fn with_held_apply_schedule(held: bool) -> Self {
             use crate::infrastructure::daemon::server::actor_capacity_tests::{
                 canonical_v13_service, LiveV5Daemon,
             };
@@ -4813,7 +5053,15 @@ mod tests {
                 output.status.success(),
                 "compile controlled resident provider"
             );
-            let daemon = LiveV5Daemon::start_with_owned_stop(canonical_v13_service());
+            let inner = canonical_v13_service();
+            let service: Arc<
+                dyn crate::infrastructure::daemon::server::CanonicalInvocationService,
+            > = if held {
+                Arc::new(HeldApplyTaskService { inner })
+            } else {
+                inner
+            };
+            let daemon = LiveV5Daemon::start_with_owned_stop(service);
             let owner = daemon.owner();
             Self {
                 context,
@@ -4898,6 +5146,311 @@ mod tests {
             if let (Some(mut daemon), Some(owner)) = (self.daemon.take(), self.owner.take()) {
                 daemon.stop(owner);
             }
+        }
+    }
+
+    struct InvalidationDispatchRegistration(PathBuf);
+
+    impl InvalidationDispatchRegistration {
+        fn install(context: &WorkspaceContext, hook: Arc<InvalidationDispatchHook>) -> Self {
+            assert!(invalidation_dispatch_hooks()
+                .lock()
+                .unwrap()
+                .insert(context.workspace_root.clone(), hook)
+                .is_none());
+            Self(context.workspace_root.clone())
+        }
+    }
+
+    impl Drop for InvalidationDispatchRegistration {
+        fn drop(&mut self) {
+            invalidation_dispatch_hooks()
+                .lock()
+                .unwrap()
+                .remove(&self.0);
+        }
+    }
+
+    struct InvalidationTestRelease(Arc<(Mutex<bool>, Condvar)>);
+
+    impl Drop for InvalidationTestRelease {
+        fn drop(&mut self) {
+            *self.0 .0.lock().unwrap() = true;
+            self.0 .1.notify_all();
+        }
+    }
+
+    #[test]
+    fn canonical_saved_apply_cancel_finishes_before_the_real_helper_ack_is_released() {
+        use crate::infrastructure::daemon::protocol_v5::V5DaemonTaskSnapshot;
+        use crate::infrastructure::daemon::server::actor_capacity_tests::V5Submission;
+
+        let fixture = CanonicalInvalidationFixture::new_for_held_apply();
+        let (module, expected) = fixture.prepare_snapshot_module("\n");
+        let helper = fixture.helper();
+        assert!(helper.snapshot().contains("AcceptanceExistingSymbol1306"));
+        let preview = fixture.plan(SNAPSHOT_AFTER);
+        assert!(preview.ok, "{preview:?}");
+        let token = preview.data.as_ref().unwrap()["executionToken"]
+            .as_str()
+            .unwrap();
+        let (entered, observed) = mpsc::channel();
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        *helper
+            .runtime
+            .actor
+            .runtime_projection()
+            .0
+            .invalidation_response_hook
+            .lock()
+            .unwrap() = Some(Arc::new({
+            let release = Arc::clone(&release);
+            move || {
+                entered.send(()).unwrap();
+                let mut released = release.0.lock().unwrap();
+                while !*released {
+                    released = release.1.wait(released).unwrap();
+                }
+            }
+        }));
+        // Declared after both owners: unwind releases the real helper before shutdown.
+        let cleanup = InvalidationTestRelease(Arc::clone(&release));
+        let request = crate::infrastructure::daemon::protocol::InvocationRequest::new(
+            crate::application::invocation_store::ToolIdentity::Apply,
+            json!({"executionToken": token}),
+            fixture.context.workspace_root.to_string_lossy(),
+            7_000,
+        )
+        .unwrap();
+        let daemon = fixture.daemon.as_ref().unwrap();
+        let owner = fixture.owner.as_ref().unwrap();
+        let V5Submission::Task(task) = daemon.submit(owner, &request) else {
+            panic!("an unacknowledged helper must keep the canonical apply in a Task");
+        };
+        observed.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(helper
+            .runtime
+            .analyzer_invalidated()
+            .load(Ordering::Acquire));
+        assert!(helper.runtime.rlm_invalidated().load(Ordering::Acquire));
+        assert_eq!(fs::read(&module).unwrap(), expected);
+        let source_identity = crate::infrastructure::platform::filesystem::file_identity(
+            &fs::File::open(&module).unwrap(),
+        )
+        .unwrap();
+        let state = fs::read(fixture.context.cache_root.join("state.json")).unwrap();
+        let cache: Value = serde_json::from_slice(&state).unwrap();
+        assert_eq!(cache["caches"]["bsl_index"]["status"], "stale");
+        assert_eq!(cache["caches"]["bsl_diagnostics"]["status"], "stale");
+        daemon.cancel(owner, task);
+        let terminal = daemon.wait_terminal(owner, task, Duration::from_secs(2));
+        assert!(
+            !*release.0.lock().unwrap(),
+            "terminal must precede ACK release"
+        );
+        let V5DaemonTaskSnapshot::Completed { result, .. } = terminal else {
+            panic!("committed apply must retain its Completed receipt: {terminal:?}");
+        };
+        assert!(result.ok, "{result:?}");
+        assert!(result.rev.is_some());
+        assert!(!result.changed.is_empty());
+        assert_eq!(
+            result.data.as_ref().unwrap()["planHash"],
+            preview.data.as_ref().unwrap()["planHash"]
+        );
+        let notifications = helper.notifications();
+        assert_eq!(notifications.len(), 1);
+        assert_eq!(fixture.apply(json!({"executionToken": token})), *result);
+        assert_eq!(
+            helper.notifications(),
+            notifications,
+            "saved replay must not notify again"
+        );
+        assert_eq!(fs::read(&module).unwrap(), expected);
+        assert_eq!(
+            crate::infrastructure::platform::filesystem::file_identity(
+                &fs::File::open(&module).unwrap(),
+            )
+            .unwrap(),
+            source_identity
+        );
+        assert_eq!(
+            fs::read(fixture.context.cache_root.join("state.json")).unwrap(),
+            state
+        );
+        drop(cleanup);
+        assert!(helper.snapshot().contains("AcceptanceChangedSymbol978"));
+        helper.stop_and_verify();
+    }
+
+    #[test]
+    fn canonical_saved_apply_cancel_before_dispatch_or_between_records_keeps_unknown_old_results() {
+        use crate::domain::code_intelligence::{
+            CodeIntelligenceContext, CodeIntelligenceProvider, ProviderDeadline, SearchRequest,
+        };
+        use crate::infrastructure::daemon::protocol_v5::V5DaemonTaskSnapshot;
+        use crate::infrastructure::daemon::server::actor_capacity_tests::V5Submission;
+
+        for stop_after in [0, 1] {
+            let fixture = CanonicalInvalidationFixture::new_for_held_apply();
+            let (module, expected) = fixture.prepare_snapshot_module("\n");
+            let helper = fixture.helper();
+            let replica = CanonicalInvalidationHelper::start_in_directory(
+                &fixture.context,
+                &fixture.context.workspace_root.join("src"),
+                &fixture.executable,
+                None,
+                Some(
+                    fixture
+                        .context
+                        .cache_root
+                        .join("services/controlled-second-record"),
+                ),
+            );
+            let source_root = fixture.context.workspace_root.join("src");
+            let context = CodeIntelligenceContext::new(
+                fixture.context.clone(),
+                crate::domain::source_roots::ResolvedSourceRoot {
+                    source_set: Some("main".into()),
+                    path: source_root.clone(),
+                },
+            );
+            let symbol = || {
+                crate::infrastructure::code_intelligence::BslAnalyzerProvider::new().search(
+                    &SearchRequest {
+                        query: "Acceptance".into(),
+                        limit: 20,
+                    },
+                    &context,
+                    ProviderDeadline::from_budget(Duration::from_secs(10)),
+                    &CancellationToken::new(),
+                )
+            };
+            let primary_identity = helper.runtime.identity();
+            let mut initial = Vec::new();
+            write_ready_rlm_status_for_current_source(&fixture.context, &source_root);
+            for current in [&helper, &replica] {
+                // Select this controlled resident using the ordinary provider adapter.
+                write_record(primary_identity, current.record.clone());
+                let bsl = symbol();
+                assert_eq!(bsl.hits.len(), 1, "{bsl:?}");
+                assert_eq!(bsl.index_freshness.as_deref(), Some("unknown"));
+                let rlm = send_test_request(
+                    &current.record,
+                    ServiceRequestKind::RlmMcp {
+                        operation_id: Uuid::new_v4().to_string(),
+                        operation: WorkspaceRlmOperation::Search {
+                            query: "Acceptance".into(),
+                            limit: 20,
+                        },
+                        timeout_seconds: 10,
+                        timeout_nanos: 0,
+                    },
+                );
+                assert!(rlm.ok, "{rlm:?}");
+                assert_eq!(rlm.index_freshness.as_deref(), Some("unknown"));
+                initial.push((
+                    bsl.hits,
+                    current.pids(),
+                    rlm.result_text,
+                    rlm.index_build_id,
+                ));
+            }
+            write_record(primary_identity, helper.record.clone());
+            let preview = fixture.plan(SNAPSHOT_AFTER);
+            assert!(preview.ok, "{preview:?}");
+            let token = preview.data.as_ref().unwrap()["executionToken"]
+                .as_str()
+                .unwrap();
+            let (entered, observed) = mpsc::channel();
+            let release = Arc::new((Mutex::new(false), Condvar::new()));
+            let registration = InvalidationDispatchRegistration::install(
+                &fixture.context,
+                Arc::new({
+                    let release = Arc::clone(&release);
+                    move |dispatched| {
+                        if dispatched == stop_after {
+                            entered.send(()).unwrap();
+                            let mut released = release.0.lock().unwrap();
+                            while !*released {
+                                released = release.1.wait(released).unwrap();
+                            }
+                        }
+                    }
+                }),
+            );
+            let cleanup = InvalidationTestRelease(Arc::clone(&release));
+            let request = crate::infrastructure::daemon::protocol::InvocationRequest::new(
+                crate::application::invocation_store::ToolIdentity::Apply,
+                json!({"executionToken": token}),
+                fixture.context.workspace_root.to_string_lossy(),
+                7_000,
+            )
+            .unwrap();
+            let daemon = fixture.daemon.as_ref().unwrap();
+            let owner = fixture.owner.as_ref().unwrap();
+            let V5Submission::Task(task) = daemon.submit(owner, &request) else {
+                panic!("dispatch gate must retain the canonical apply Task");
+            };
+            observed.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert_eq!(fs::read(&module).unwrap(), expected);
+            let state = fs::read(fixture.context.cache_root.join("state.json")).unwrap();
+            let cache: Value = serde_json::from_slice(&state).unwrap();
+            assert_eq!(cache["caches"]["bsl_index"]["status"], "stale");
+            assert_eq!(cache["caches"]["bsl_diagnostics"]["status"], "stale");
+            daemon.cancel(owner, task);
+            drop(cleanup);
+            let terminal = daemon.wait_terminal(owner, task, Duration::from_secs(2));
+            let V5DaemonTaskSnapshot::Completed { result, .. } = terminal else {
+                panic!("committed publication must remain Completed: {terminal:?}");
+            };
+            assert!(result.ok, "{result:?}");
+            drop(registration);
+            assert_eq!(
+                helper.notifications().len() + replica.notifications().len(),
+                stop_after
+            );
+            let notifications = [helper.notifications(), replica.notifications()];
+            assert_eq!(fixture.apply(json!({"executionToken": token})), *result);
+            assert_eq!(
+                [helper.notifications(), replica.notifications()],
+                notifications
+            );
+            assert_eq!(
+                fs::read(fixture.context.cache_root.join("state.json")).unwrap(),
+                state
+            );
+            for (current, (old_hits, pids, old_rlm, build_id)) in
+                [&helper, &replica].into_iter().zip(initial)
+            {
+                if !current.notifications().is_empty() {
+                    continue;
+                }
+                write_record(primary_identity, current.record.clone());
+                let old_bsl = symbol();
+                assert_eq!(old_bsl.hits, old_hits);
+                assert_eq!(old_bsl.index_freshness.as_deref(), Some("unknown"));
+                assert_eq!(current.pids(), pids);
+                let rlm = send_test_request(
+                    &current.record,
+                    ServiceRequestKind::RlmMcp {
+                        operation_id: Uuid::new_v4().to_string(),
+                        operation: WorkspaceRlmOperation::Search {
+                            query: "Acceptance".into(),
+                            limit: 20,
+                        },
+                        timeout_seconds: 10,
+                        timeout_nanos: 0,
+                    },
+                );
+                assert!(rlm.ok, "{rlm:?}");
+                assert_eq!(rlm.result_text, old_rlm);
+                assert_eq!(rlm.index_build_id, build_id);
+                assert_eq!(rlm.index_freshness.as_deref(), Some("unknown"));
+            }
+            write_record(primary_identity, helper.record.clone());
+            replica.stop_and_verify();
+            helper.stop_and_verify();
         }
     }
 
@@ -9567,6 +10120,173 @@ fn main() {
         }
     }
 
+    struct AnchoredConnectorClock {
+        started: Instant,
+        elapsed: ManualClock,
+    }
+
+    impl ConnectorClock for AnchoredConnectorClock {
+        fn elapsed(&self) -> Duration {
+            self.elapsed.elapsed()
+        }
+        fn now(&self) -> Instant {
+            self.started + self.elapsed.elapsed()
+        }
+    }
+
+    struct TimedAckIo {
+        clock: ManualClock,
+        advance_per_read: Duration,
+        connect_timeouts: Arc<Mutex<Vec<Duration>>>,
+        cancel_after_reads: Option<(CancellationToken, usize)>,
+    }
+
+    impl ConnectorIo for TimedAckIo {
+        fn connect(&self, _port: u16, timeout: Duration) -> io::Result<Box<dyn ConnectorStream>> {
+            self.connect_timeouts.lock().unwrap().push(timeout);
+            Ok(Box::new(ChunkStream {
+                chunks: [b"{\"ok\":".to_vec(), b"true}\n".to_vec()].into(),
+                chunk_offset: 0,
+                clock: self.clock.clone(),
+                advance_per_read: self.advance_per_read,
+                cancel_after_reads: self.cancel_after_reads.clone(),
+                reads: 0,
+            }))
+        }
+    }
+
+    #[test]
+    fn committed_invalidation_records_share_the_exact_finite_deadline_through_ack() {
+        struct DeadlineConnector {
+            clock: AnchoredConnectorClock,
+            io: TimedAckIo,
+            seen: std::cell::RefCell<Vec<OperationDeadline>>,
+            succeeded: std::cell::RefCell<Vec<bool>>,
+        }
+        impl ServiceConnector for DeadlineConnector {
+            fn send(
+                &self,
+                _: &WorkspaceServiceRecord,
+                _: ServiceRequest,
+                _: &CancellationToken,
+                _: Duration,
+            ) -> Result<ServiceResponse, String> {
+                panic!("committed invalidation must retain the caller deadline");
+            }
+            fn send_before(
+                &self,
+                record: &WorkspaceServiceRecord,
+                request: ServiceRequest,
+                cancellation: &CancellationToken,
+                deadline: OperationDeadline,
+            ) -> Result<ServiceResponse, String> {
+                self.seen.borrow_mut().push(deadline);
+                let result = SYSTEM_SERVICE_CONNECTOR.send_with_deadline(
+                    record,
+                    request,
+                    cancellation,
+                    &deadline,
+                    &self.io,
+                    &self.clock,
+                );
+                self.succeeded.borrow_mut().push(result.is_ok());
+                result
+            }
+        }
+        let context = test_context("committed-invalidation-aggregate");
+        for source in ["src", "extension"] {
+            let identity =
+                WorkspaceServiceIdentity::new(&context, &context.workspace_root.join(source))
+                    .unwrap();
+            write_record(
+                &identity,
+                test_record(&identity, 1, CoreIdentity::production().as_str()),
+            );
+        }
+        let started = Instant::now();
+        let deadline = OperationDeadline::Finite(started + Duration::from_secs(60));
+        let elapsed = ManualClock::default();
+        let connect_timeouts = Arc::new(Mutex::new(Vec::new()));
+        let connector = DeadlineConnector {
+            clock: AnchoredConnectorClock {
+                started,
+                elapsed: elapsed.clone(),
+            },
+            io: TimedAckIo {
+                clock: elapsed,
+                advance_per_read: Duration::from_secs(18),
+                connect_timeouts: Arc::clone(&connect_timeouts),
+                cancel_after_reads: None,
+            },
+            seen: Default::default(),
+            succeeded: Default::default(),
+        };
+        let spawner = RecordingSpawner::default();
+        WorkspaceServiceManager::with_io(&connector, &spawner).notify_committed_changes(
+            &context,
+            &[DomainEvent::new(
+                DomainEventKind::ModuleChanged,
+                "main:CommonModule.SearchProbe",
+            )],
+            &CancellationToken::new(),
+            deadline,
+        );
+        assert_eq!(*connector.seen.borrow(), [deadline, deadline]);
+        assert_eq!(
+            *connector.succeeded.borrow(),
+            [true, false],
+            "the second ACK must not get a replenished budget"
+        );
+        assert_eq!(
+            *connect_timeouts.lock().unwrap(),
+            [
+                SERVICE_CONTROL_CONNECT_TIMEOUT,
+                SERVICE_CONTROL_CONNECT_TIMEOUT
+            ]
+        );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn no_deadline_invalidation_keeps_late_fragmented_ack_and_observes_original_cancellation() {
+        for cancel in [false, true] {
+            let elapsed = ManualClock::default();
+            let clock = AnchoredConnectorClock {
+                started: Instant::now(),
+                elapsed: elapsed.clone(),
+            };
+            let cancellation = CancellationToken::new();
+            let connect_timeouts = Arc::new(Mutex::new(Vec::new()));
+            let io = TimedAckIo {
+                clock: elapsed,
+                advance_per_read: Duration::from_secs(180),
+                connect_timeouts: Arc::clone(&connect_timeouts),
+                cancel_after_reads: cancel.then(|| (cancellation.clone(), 2)),
+            };
+            let result = SYSTEM_SERVICE_CONNECTOR.send_with_deadline(
+                &connector_test_record(),
+                connector_test_request(ServiceRequestKind::Invalidate { events: vec![] }),
+                &cancellation,
+                &OperationDeadline::NoDeadline,
+                &io,
+                &clock,
+            );
+            assert_eq!(clock.elapsed(), Duration::from_secs(360));
+            assert_eq!(
+                *connect_timeouts.lock().unwrap(),
+                [SERVICE_CONTROL_CONNECT_TIMEOUT]
+            );
+            if cancel {
+                assert!(result.unwrap_err().starts_with("cancelled:"));
+            } else {
+                assert!(
+                    result.unwrap().ok,
+                    "absence must survive the old120s cutoff and a fragmented ACK"
+                );
+            }
+        }
+    }
+
     #[test]
     fn cancellable_connector_deadline_is_aggregate() {
         let clock = ManualClock::default();
@@ -10706,6 +11426,16 @@ fn main() {
     fn service_record_with_shutting_down_ping_is_not_reusable() {
         struct ShuttingDownConnector;
         impl ServiceConnector for ShuttingDownConnector {
+            fn send_before(
+                &self,
+                _record: &WorkspaceServiceRecord,
+                _request: ServiceRequest,
+                _cancellation: &CancellationToken,
+                _deadline: OperationDeadline,
+            ) -> Result<ServiceResponse, String> {
+                unreachable!("this fixture exercises only finite legacy requests")
+            }
+
             fn send(
                 &self,
                 _record: &WorkspaceServiceRecord,
@@ -10740,6 +11470,16 @@ fn main() {
     fn spawn_wait_rejects_shutting_down_record() {
         struct ShuttingDownConnector;
         impl ServiceConnector for ShuttingDownConnector {
+            fn send_before(
+                &self,
+                _record: &WorkspaceServiceRecord,
+                _request: ServiceRequest,
+                _cancellation: &CancellationToken,
+                _deadline: OperationDeadline,
+            ) -> Result<ServiceResponse, String> {
+                unreachable!("this fixture exercises only finite legacy requests")
+            }
+
             fn send(
                 &self,
                 _record: &WorkspaceServiceRecord,
@@ -11534,6 +12274,16 @@ fn main() {
         struct StaleRlmConnector;
 
         impl ServiceConnector for StaleRlmConnector {
+            fn send_before(
+                &self,
+                _record: &WorkspaceServiceRecord,
+                _request: ServiceRequest,
+                _cancellation: &CancellationToken,
+                _deadline: OperationDeadline,
+            ) -> Result<ServiceResponse, String> {
+                unreachable!("this fixture exercises only finite legacy requests")
+            }
+
             fn send(
                 &self,
                 _record: &WorkspaceServiceRecord,
@@ -12102,6 +12852,16 @@ fn main() {
     }
 
     impl ServiceConnector for ResetRlmConnector {
+        fn send_before(
+            &self,
+            _record: &WorkspaceServiceRecord,
+            _request: ServiceRequest,
+            _cancellation: &CancellationToken,
+            _deadline: OperationDeadline,
+        ) -> Result<ServiceResponse, String> {
+            unreachable!("this fixture exercises only finite legacy requests")
+        }
+
         fn send(
             &self,
             _record: &WorkspaceServiceRecord,
@@ -12148,6 +12908,16 @@ fn main() {
     struct CancelAfterRlmReadyConnector;
 
     impl ServiceConnector for CancelAfterRlmReadyConnector {
+        fn send_before(
+            &self,
+            _record: &WorkspaceServiceRecord,
+            _request: ServiceRequest,
+            _cancellation: &CancellationToken,
+            _deadline: OperationDeadline,
+        ) -> Result<ServiceResponse, String> {
+            unreachable!("this fixture exercises only finite legacy requests")
+        }
+
         fn send(
             &self,
             _record: &WorkspaceServiceRecord,
@@ -12174,6 +12944,16 @@ fn main() {
     }
 
     impl ServiceConnector for ResetBslConnector {
+        fn send_before(
+            &self,
+            _record: &WorkspaceServiceRecord,
+            _request: ServiceRequest,
+            _cancellation: &CancellationToken,
+            _deadline: OperationDeadline,
+        ) -> Result<ServiceResponse, String> {
+            unreachable!("this fixture exercises only finite legacy requests")
+        }
+
         fn send(
             &self,
             record: &WorkspaceServiceRecord,
@@ -12252,6 +13032,16 @@ fn main() {
     }
 
     impl ServiceConnector for TypedFailureBslConnector {
+        fn send_before(
+            &self,
+            _record: &WorkspaceServiceRecord,
+            _request: ServiceRequest,
+            _cancellation: &CancellationToken,
+            _deadline: OperationDeadline,
+        ) -> Result<ServiceResponse, String> {
+            unreachable!("this fixture exercises only finite legacy requests")
+        }
+
         fn send(
             &self,
             _record: &WorkspaceServiceRecord,
@@ -12278,6 +13068,16 @@ fn main() {
     }
 
     impl ServiceConnector for RecordingConnector {
+        fn send_before(
+            &self,
+            _record: &WorkspaceServiceRecord,
+            _request: ServiceRequest,
+            _cancellation: &CancellationToken,
+            _deadline: OperationDeadline,
+        ) -> Result<ServiceResponse, String> {
+            unreachable!("this fixture exercises only finite legacy requests")
+        }
+
         fn send(
             &self,
             _record: &WorkspaceServiceRecord,

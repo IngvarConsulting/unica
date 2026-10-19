@@ -1095,6 +1095,7 @@ impl ActorBoundExecution {
         &self,
         token: &str,
         cancellation: &CancellationToken,
+        deadline: crate::domain::operation_deadline::OperationDeadline,
         finish: impl FnOnce(
             DomainResult,
             Result<
@@ -1113,7 +1114,14 @@ impl ActorBoundExecution {
         };
         let result = self.invocation.actor.execute_saved_apply(
             token,
-            ProviderDeadline::no_deadline(),
+            match deadline {
+                crate::domain::operation_deadline::OperationDeadline::NoDeadline => {
+                    ProviderDeadline::no_deadline()
+                }
+                crate::domain::operation_deadline::OperationDeadline::Finite(deadline) => {
+                    ProviderDeadline::new(deadline)
+                }
+            },
             cancellation,
             finish,
         )?;

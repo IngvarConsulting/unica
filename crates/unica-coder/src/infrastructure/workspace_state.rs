@@ -663,6 +663,16 @@ mod tests {
                 access,
             )
         }
+        fn notify_committed_changes(
+            &self,
+            context: &WorkspaceContext,
+            events: &[crate::domain::events::DomainEvent],
+            _cancellation: &CancellationToken,
+            _deadline: crate::domain::operation_deadline::OperationDeadline,
+        ) {
+            self.notify_invalidation(context, events);
+        }
+
         fn notify_invalidation(
             &self,
             _: &WorkspaceContext,

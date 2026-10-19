@@ -2830,6 +2830,15 @@ mod tests {
                 publication_warnings: Vec::new(),
             })
         }
+        fn notify_committed_changes(
+            &self,
+            context: &WorkspaceContext,
+            events: &[crate::domain::events::DomainEvent],
+            _cancellation: &CancellationToken,
+            _deadline: crate::domain::operation_deadline::OperationDeadline,
+        ) {
+            self.notify_invalidation(context, events);
+        }
 
         fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
     }

@@ -715,6 +715,14 @@ pub(crate) trait ApplicationPorts: Send + Sync {
     ) -> Result<CacheReport, String>;
 
     fn notify_invalidation(&self, context: &WorkspaceContext, events: &[DomainEvent]);
+
+    fn notify_committed_changes(
+        &self,
+        context: &WorkspaceContext,
+        events: &[DomainEvent],
+        cancellation: &CancellationToken,
+        deadline: crate::domain::operation_deadline::OperationDeadline,
+    );
 }
 
 #[cfg(test)]
