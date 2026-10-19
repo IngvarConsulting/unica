@@ -7,10 +7,10 @@ check:
   - crates/unica-coder/src/infrastructure/v13_read_projection/member_properties/tests/catalog_attribute.rs::catalog_attribute_provider_keeps_contexts_closed_and_ignores_raw_item_keys
   - crates/unica-coder/src/infrastructure/v13_read/tests/catalog_tabular_properties.rs::catalog_tabular_profile_reaches_public_collection_and_detail_without_writes
   - crates/unica-coder/src/infrastructure/v13_read_projection/member_properties/tests.rs::catalog_tabular_provider_profile_does_not_publish_unknown_names_or_raw_item_keys
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::form_projection_uses_a_positive_nested_scalar_allowlist
+  - crates/unica-coder/src/infrastructure/v13_read/tests/form.rs::form_projection_uses_a_positive_nested_scalar_allowlist
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::role_right_projection_never_serializes_an_unbounded_rights_array_into_props
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::metadata_node_props_carry_the_observed_object_properties
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::metadata_node_props_lay_out_the_per_kind_facts_by_role
+  - crates/unica-coder/src/infrastructure/v13_read/tests/metadata.rs::metadata_node_props_carry_the_observed_object_properties
+  - crates/unica-coder/src/infrastructure/v13_read/tests/metadata.rs::metadata_node_props_lay_out_the_per_kind_facts_by_role
 ---
 
 # Свойства объекта доступны в его логическом узле

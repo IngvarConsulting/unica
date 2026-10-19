@@ -1,7 +1,7 @@
 ---
 id: INV.SOURCE.SERVICE-SEQUENCES-ARE-BRANCHES
 check:
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::declared_service_kinds_finally_get_their_subject
+  - crates/unica-coder/src/infrastructure/v13_read/tests/metadata.rs::declared_service_kinds_finally_get_their_subject
 ---
 
 # Методы и параметры служб читаются по отдельным адресам
