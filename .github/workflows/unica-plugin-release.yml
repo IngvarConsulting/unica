@@ -331,7 +331,8 @@ jobs:
           components: clippy
       # Clippy не пишет общий ключ первым: его check-артефактов недостаточно
       # для прогрева тестов, а точный cache hit впоследствии не перезаписать.
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Кэш зависимостей для Clippy # zizmor: ignore[cache-poisoning] restore-only; область PR не читается main/tag, job публикует только SARIF, поставочные артефакты собираются отдельно
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: test-rust-platforms
           save-if: false
