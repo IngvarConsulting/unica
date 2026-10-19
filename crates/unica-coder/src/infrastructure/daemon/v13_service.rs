@@ -16,6 +16,9 @@ use crate::application::operation_descriptors::ExecutionClass;
 use crate::application::result_store::{
     SearchCursorBinding, SearchCursorStore, StoredSearchCursor, ViewCursorBinding, ViewCursorStore,
 };
+use crate::application::source_navigation::{
+    SOURCE_NAVIGATION_LIMIT_DEFAULT, SOURCE_NAVIGATION_LIMIT_MAX,
+};
 use crate::application::tool_contracts::SurfaceRelease;
 use crate::application::v13::apply::parse_request as parse_apply_request;
 use crate::application::v13::find::{FindIndex, FindRequest};
@@ -521,6 +524,9 @@ impl CanonicalV13ReadService {
             Ok(token) => {
                 result.data.as_mut().expect("apply plan data exists")["executionToken"] =
                     json!(token);
+                result
+                    .next
+                    .push(json!({"tool": "unica.diff", "arguments": {"executionToken": token}}));
                 result
                     .next
                     .push(json!({"tool": "unica.apply", "arguments": {"executionToken": token}}));
@@ -2300,6 +2306,85 @@ impl CanonicalV13ReadService {
         cancellation: &CancellationToken,
     ) -> DomainResult {
         let arguments = invocation.arguments();
+        if arguments.contains_key("executionToken") {
+            let Some(token) = arguments
+                .get("executionToken")
+                .and_then(Value::as_str)
+                .filter(|token| !token.is_empty())
+            else {
+                return error_result(
+                    None,
+                    RefusalCode::BadValue,
+                    "diff executionToken must be a nonempty string",
+                );
+            };
+            if arguments
+                .keys()
+                .any(|key| !matches!(key.as_str(), "executionToken" | "limit" | "cursor"))
+            {
+                return error_result(
+                    None,
+                    RefusalCode::BadValue,
+                    "saved-plan diff accepts only executionToken, limit and cursor",
+                );
+            }
+            let limit = match arguments.get("limit") {
+                None => SOURCE_NAVIGATION_LIMIT_DEFAULT,
+                Some(value) => match bounded_usize(value)
+                    .filter(|limit| *limit <= SOURCE_NAVIGATION_LIMIT_MAX)
+                {
+                    Some(limit) => limit,
+                    None => {
+                        return error_result(
+                            None,
+                            RefusalCode::BadValue,
+                            "saved-plan diff limit must be an integer from 1 through 50",
+                        )
+                    }
+                },
+            };
+            let cursor = match arguments.get("cursor") {
+                None => None,
+                Some(Value::String(cursor)) => Some(cursor.as_str()),
+                Some(_) => {
+                    return error_result(
+                        None,
+                        RefusalCode::BadValue,
+                        "diff cursor must be a string",
+                    )
+                }
+            };
+            return match invocation.read_saved_apply_diff(token, limit, cursor, cancellation) {
+                Ok(page) => {
+                    let mut result =
+                        DomainResult::success("exact saved source ranges read without execution");
+                    if let Some(cursor) = page["cursor"].as_str() {
+                        result.cursor = Some(cursor.to_owned());
+                        result.next.push(json!({"tool": "unica.diff", "arguments": {"executionToken": token, "limit": limit, "cursor": cursor}}));
+                    }
+                    let mut page = page;
+                    let stopped_by = page
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("stoppedBy")
+                        .expect("saved source page has a stop reason");
+                    result.page = Some(json!({"stoppedBy": stopped_by}));
+                    result.data = Some(page);
+                    result
+                }
+                Err(error) => saved_apply_execution_error_result(error),
+            };
+        }
+        if let Some(unknown) = arguments
+            .keys()
+            .find(|name| !matches!(name.as_str(), "left" | "right" | "limit"))
+        {
+            return error_result(
+                None,
+                RefusalCode::BadValue,
+                format!("canonical invocation has unknown argument `{unknown}`"),
+            );
+        }
         let Some(left) = arguments.get("left").and_then(Value::as_str) else {
             return error_result(
                 None,
@@ -3701,6 +3786,11 @@ fn apply_staging_refusal(
 
 fn saved_apply_execution_error_result(error: SavedApplyExecutionError) -> DomainResult {
     match error {
+        SavedApplyExecutionError::Busy => error_result_detailed(
+            None,
+            RefusalDetail::BackendBusy,
+            "saved plan is busy; retry after the current operation",
+        ),
         SavedApplyExecutionError::Unavailable(message) => {
             error_result(None, RefusalCode::BadValue, message)
         }
@@ -5156,6 +5246,11 @@ mod tests {
         use super::SavedApplyExecutionError;
         use crate::infrastructure::workspace_actor::ApplyPublicationError;
         for (error, code, outcome) in [
+            (
+                SavedApplyExecutionError::Busy,
+                "task_backend_failed",
+                "retry",
+            ),
             (
                 SavedApplyExecutionError::RegistryUnavailable,
                 "invalid_state",

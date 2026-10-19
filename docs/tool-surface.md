@@ -67,15 +67,17 @@ Confirm workspace source-set admission, or validate one logical node: readabilit
 
 ### `unica.diff`
 
-Compare two readable logical nodes of the same kind without changing files.
+Compare readable logical nodes, or read exact source changes from a saved apply plan before execution.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `left` | string | да | Qualified logical address of the left node. |
-| `limit` | integer | нет | Maximum differences to return, from 1 to 1000; omit for 100. A truncated answer has no continuation: compare smaller nodes or raise limit. |
-| `right` | string | да | Qualified logical address of the right node. |
+| `cursor` | string | только в ветви | Continue the same saved plan with the same limit. Only saved-plan reads support continuation. |
+| `executionToken` | string | по ветви | Token from apply planning; reads stored before/after bytes without executing. |
+| `left` | string | по ветви | Qualified logical address of the left node. |
+| `limit` | integer | нет | Maximum saved source chunks; default 20. Pages are also bounded by encoded bytes. |
+| `right` | string | по ветви | Qualified logical address of the right node. |
 
-**Результат сейчас:** Сравнивает два узла одного логического вида и возвращает bounded JSON changes без общей ревизии исходников и без вычисляемого словаря `can`; сравнение сужается адресами узлов, фильтра нет. Курсора нет: усечённый ответ (`truncated: true`) называет усечение и советует сравнить узлы поменьше или поднять `limit` (отвечают типизированным `data`)
+**Результат сейчас:** Сравнивает два узла одного логического вида и возвращает bounded JSON changes без общей ревизии исходников и без вычисляемого словаря `can`; сравнение сужается адресами узлов, фильтра нет. Курсора нет: усечённый ответ (`truncated: true`) называет усечение и советует сравнить узлы поменьше или поднять `limit`. Для left/right limit по умолчанию равен 100, максимум — 1000. Альтернатива executionToken читает точные сохранённые диапазоны before/after с контекстом до исполнения плана; страницы по умолчанию содержат до 20 chunks (максимум 50), также ограничены размером; page.stoppedBy сообщает limit/bytes/complete, cursor привязан к плану и limit. Входы плана проверяются без записи. Каждый chunk явно задаёт pathEncoding: utf8 для текста компонентов с /, base64-unix-bytes для точных native Unix bytes или base64-utf16le для точных Windows UTF-16LE units; группировка — (pathEncoding, path, side), кодировка пути независима от encoding содержимого. (отвечают типизированным `data`)
 
 **Целевой контракт:** Добавить предметные diff-проекции и продолжение сохранённого сравнения
 
@@ -83,6 +85,7 @@ Compare two readable logical nodes of the same kind without changing files.
 
 - Сравнить две логические проекции одного вида
 - Доказать равенство узлов без чтения физических файлов
+- Проверить точные исходники сохранённого плана по страницам перед исполнением
 
 ## docs
 

@@ -5024,6 +5024,82 @@ pub(crate) fn host_path_text(path: String) -> String {
     path
 }
 
+/// Lossless public text for a validated relative path. Construction stays
+/// inside the platform facade so consumers cannot select a native codec.
+pub(crate) struct EncodedRelativePath {
+    encoding: &'static str,
+    text: String,
+}
+
+impl EncodedRelativePath {
+    pub(crate) fn into_parts(self) -> (&'static str, String) {
+        (self.encoding, self.text)
+    }
+}
+
+/// The caller has already validated normal relative components. Preserve
+/// native component contents; only component boundaries become public `/`.
+pub(crate) fn encode_relative_source_path(relative: &Path) -> EncodedRelativePath {
+    #[cfg(any(unix, windows))]
+    use base64::{engine::general_purpose::STANDARD, Engine};
+
+    let components = relative
+        .components()
+        .map(|component| match component {
+            std::path::Component::Normal(name) => name,
+            _ => unreachable!("retained source path was validated before binding"),
+        })
+        .collect::<Vec<_>>();
+    if let Some(text) = components
+        .iter()
+        .map(|name| name.to_str())
+        .collect::<Option<Vec<_>>>()
+    {
+        return EncodedRelativePath {
+            encoding: "utf8",
+            text: text.join("/"),
+        };
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let mut bytes = Vec::new();
+        for (index, component) in components.iter().enumerate() {
+            if index > 0 {
+                bytes.push(b'/');
+            }
+            bytes.extend_from_slice(component.as_bytes());
+        }
+        EncodedRelativePath {
+            encoding: "base64-unix-bytes",
+            text: STANDARD.encode(bytes),
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        let mut bytes = Vec::new();
+        for (index, component) in components.iter().enumerate() {
+            if index > 0 {
+                bytes.extend_from_slice(&u16::from(b'/').to_le_bytes());
+            }
+            for unit in component.encode_wide() {
+                bytes.extend_from_slice(&unit.to_le_bytes());
+            }
+        }
+        EncodedRelativePath {
+            encoding: "base64-utf16le",
+            text: STANDARD.encode(bytes),
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        // The retained apply fingerprint rejects non-Unicode paths on hosts
+        // without a stable native encoding before a transaction is bound.
+        unreachable!("non-Unicode retained source path requires Unix or Windows")
+    }
+}
+
 /// Returns a version-stable byte representation for persistent path identity.
 /// Valid Unicode paths retain their UTF-8 contract on every supported host;
 /// non-Unicode paths use an explicit, platform-tagged native encoding instead
@@ -6412,6 +6488,309 @@ mod tests {
     use std::io;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[cfg(unix)]
+    #[test]
+    fn saved_source_diff_keeps_literal_backslash_and_nested_paths_distinct() {
+        use super::RetainedDirectoryCapability;
+        use crate::application::v13::plan_diff::PlanDiffLayout;
+        use crate::domain::cancellation::CancellationToken;
+        use crate::domain::code_intelligence::ProviderDeadline;
+        use crate::infrastructure::native_operations::apply::ApplyStagedState;
+        use std::collections::{BTreeMap, BTreeSet};
+        use std::fs;
+        use std::path::Path;
+        use std::sync::Arc;
+
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("A")).unwrap();
+        let literal = Path::new(r"A\B.bin");
+        let nested = Path::new("A/B.bin");
+        fs::write(root.path().join(literal), b"literal-before").unwrap();
+        fs::write(root.path().join(nested), b"nested-before").unwrap();
+        let canonical = fs::canonicalize(root.path()).unwrap();
+        let mut staged = ApplyStagedState::from_retained_root(
+            Arc::new(RetainedDirectoryCapability::open(&canonical).unwrap()),
+            ProviderDeadline::no_deadline(),
+            CancellationToken::new(),
+            crate::infrastructure::workspace_actor::apply_writer_authority_for_test(),
+        )
+        .forbid_generated_subtree();
+        let enumerated = staged.enumerate_tree(Path::new("")).unwrap();
+        assert_eq!(enumerated.len(), 2);
+        assert!(enumerated.contains(&literal.to_path_buf()));
+        assert!(enumerated.contains(&nested.to_path_buf()));
+        staged
+            .replace(literal, b"literal-before", b"literal-after".to_vec())
+            .unwrap();
+        staged
+            .replace(nested, b"nested-before", b"nested-after".to_vec())
+            .unwrap();
+        let transaction = staged.finalize().unwrap();
+        let images = transaction.saved_source_images();
+        assert_eq!(images.len(), 2);
+        let distinct_paths = images
+            .iter()
+            .map(|image| image.path.as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            distinct_paths.len(),
+            2,
+            "different retained files must keep different public diff paths"
+        );
+        let expected = BTreeMap::from([
+            ((r"A\B.bin", "before"), "literal-before"),
+            ((r"A\B.bin", "after"), "literal-after"),
+            (("A/B.bin", "before"), "nested-before"),
+            (("A/B.bin", "after"), "nested-after"),
+        ]);
+        let layout = PlanDiffLayout::new(&images, || Ok(())).unwrap();
+        let mut cursor = None;
+        let mut observed = BTreeMap::new();
+        loop {
+            let page = layout
+                .page(
+                    &images,
+                    "distinct-retained-source-paths",
+                    1,
+                    cursor.as_deref(),
+                    || Ok(()),
+                )
+                .unwrap();
+            assert_eq!(
+                page,
+                layout
+                    .page(
+                        &images,
+                        "distinct-retained-source-paths",
+                        1,
+                        cursor.as_deref(),
+                        || Ok(())
+                    )
+                    .unwrap()
+            );
+            let chunks = page["chunks"].as_array().unwrap();
+            assert_eq!(chunks.len(), 1);
+            let chunk = &chunks[0];
+            assert_eq!(chunk["encoding"], "utf8");
+            assert_eq!(chunk["startByte"], 0);
+            let key = (
+                chunk["path"].as_str().unwrap().to_owned(),
+                chunk["side"].as_str().unwrap().to_owned(),
+            );
+            let content = chunk["content"].as_str().unwrap().to_owned();
+            assert!(observed.insert(key, content).is_none());
+            cursor = page["cursor"].as_str().map(str::to_owned);
+            if cursor.is_none() {
+                assert_eq!(page["stoppedBy"], "complete");
+                break;
+            }
+            assert_eq!(page["stoppedBy"], "limit");
+        }
+        let expected = expected
+            .into_iter()
+            .map(|((path, side), content)| ((path.to_owned(), side.to_owned()), content.to_owned()))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(observed, expected);
+        assert_eq!(
+            fs::read(root.path().join(literal)).unwrap(),
+            b"literal-before"
+        );
+        assert_eq!(
+            fs::read(root.path().join(nested)).unwrap(),
+            b"nested-before"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn saved_source_diff_keeps_native_names_and_replacement_character_distinct() {
+        use super::RetainedDirectoryCapability;
+        use crate::application::v13::plan_diff::PlanDiffLayout;
+        use crate::domain::cancellation::CancellationToken;
+        use crate::domain::code_intelligence::ProviderDeadline;
+        use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
+        use crate::infrastructure::native_operations::apply::ApplyStagedState;
+        use crate::infrastructure::revision_artifact_policy::{
+            RevisionArtifactDisposition, RevisionArtifactPolicy,
+        };
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        use std::collections::{BTreeMap, BTreeSet};
+        use std::ffi::OsString;
+        use std::fs;
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        use std::path::Path;
+        use std::sync::Arc;
+
+        let root = tempfile::tempdir().unwrap();
+        let prefix = Path::new("Documents/First/Templates/T/Ext/Template");
+        fs::create_dir_all(root.path().join(prefix)).unwrap();
+        let names = [
+            OsString::from_vec(b"A-\x80.bin".to_vec()),
+            OsString::from_vec(b"A-\x81.bin".to_vec()),
+            OsString::from("A-\u{fffd}.bin"),
+        ];
+        let files = names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| {
+                let relative = prefix.join(name);
+                let bytes = vec![0, 0x80 + u8::try_from(index).unwrap(), 0xff];
+                fs::write(root.path().join(&relative), &bytes).unwrap();
+                (relative, bytes)
+            })
+            .collect::<Vec<_>>();
+        let policy = RevisionArtifactPolicy::from_source_profile(
+            SourceSetKind::Configuration,
+            SourceFormat::PlatformXml,
+            SourceProfile::platform_xml_8_3_27_format_2_20(),
+        )
+        .unwrap();
+        let canonical = fs::canonicalize(root.path()).unwrap();
+        let retained = Arc::new(RetainedDirectoryCapability::open(&canonical).unwrap());
+        assert!(!retained
+            .child_name_comparator()
+            .unwrap()
+            .names_equivalent(&names[0], &names[1])
+            .unwrap());
+        let mut staged = ApplyStagedState::from_retained_root(
+            retained,
+            ProviderDeadline::no_deadline(),
+            CancellationToken::new(),
+            crate::infrastructure::workspace_actor::apply_writer_authority_for_test(),
+        )
+        .forbid_generated_subtree();
+        let enumerated = staged.enumerate_tree(prefix).unwrap();
+        assert_eq!(enumerated.len(), files.len());
+        for (relative, bytes) in &files {
+            assert!(enumerated.contains(relative));
+            assert_eq!(
+                policy.classify(relative),
+                RevisionArtifactDisposition::Content
+            );
+            staged.remove(relative, bytes).unwrap();
+        }
+        let transaction = staged.finalize().unwrap();
+        let images = transaction.saved_source_images();
+        assert_eq!(images.len(), files.len());
+        assert_eq!(
+            images
+                .iter()
+                .map(|image| image.path.as_str())
+                .collect::<BTreeSet<_>>()
+                .len(),
+            files.len(),
+            "the two native names and literal replacement character must remain distinct"
+        );
+        let layout = PlanDiffLayout::new(&images, || Ok(())).unwrap();
+        let mut cursor = None;
+        let mut observed = BTreeMap::new();
+        let mut public_paths = BTreeSet::new();
+        loop {
+            let page = layout
+                .page(
+                    &images,
+                    "native-retained-paths",
+                    1,
+                    cursor.as_deref(),
+                    || Ok(()),
+                )
+                .unwrap();
+            assert_eq!(
+                page,
+                layout
+                    .page(
+                        &images,
+                        "native-retained-paths",
+                        1,
+                        cursor.as_deref(),
+                        || Ok(())
+                    )
+                    .unwrap()
+            );
+            let chunks = page["chunks"].as_array().unwrap();
+            assert_eq!(chunks.len(), 1);
+            let chunk = &chunks[0];
+            let encoding = chunk["pathEncoding"].as_str().unwrap();
+            let path = chunk["path"].as_str().unwrap();
+            public_paths.insert((encoding.to_owned(), path.to_owned()));
+            let native = match encoding {
+                "utf8" => {
+                    assert!(path.ends_with("A-\u{fffd}.bin"));
+                    path.as_bytes().to_vec()
+                }
+                "base64-unix-bytes" => STANDARD.decode(path).unwrap(),
+                _ => panic!("unexpected Unix path encoding"),
+            };
+            let content = chunk["content"].as_str().unwrap();
+            let bytes = match chunk["encoding"].as_str().unwrap() {
+                "utf8" => content.as_bytes().to_vec(),
+                "base64" => STANDARD.decode(content).unwrap(),
+                _ => panic!("unexpected content encoding"),
+            };
+            let side = chunk["side"].as_str().unwrap().to_owned();
+            assert_eq!(chunk["present"], side == "before");
+            assert!(observed.insert((native, side), bytes).is_none());
+            cursor = page["cursor"].as_str().map(str::to_owned);
+            if cursor.is_none() {
+                assert_eq!(page["stoppedBy"], "complete");
+                break;
+            }
+            assert_eq!(page["stoppedBy"], "limit");
+        }
+        assert_eq!(public_paths.len(), 3);
+        assert_eq!(
+            public_paths
+                .iter()
+                .filter(|(encoding, _)| encoding == "utf8")
+                .count(),
+            1
+        );
+        assert_eq!(
+            public_paths
+                .iter()
+                .filter(|(encoding, _)| encoding == "base64-unix-bytes")
+                .count(),
+            2
+        );
+        let mut expected = BTreeMap::new();
+        for (relative, bytes) in &files {
+            let native = relative.as_os_str().as_bytes().to_vec();
+            expected.insert((native.clone(), "before".to_owned()), bytes.clone());
+            expected.insert((native, "after".to_owned()), Vec::new());
+            assert_eq!(fs::read(root.path().join(relative)).unwrap(), *bytes);
+        }
+        assert_eq!(observed, expected);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn saved_source_path_preserves_native_utf16_components() {
+        use super::encode_relative_source_path;
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        use std::ffi::OsString;
+        use std::os::windows::ffi::OsStringExt;
+        use std::path::{Path, PathBuf};
+
+        let mut path = PathBuf::from("Payload");
+        path.push(OsString::from_wide(&[
+            0xd800,
+            u16::from(b'.'),
+            u16::from(b'b'),
+        ]));
+        let (encoding, text) = encode_relative_source_path(&path).into_parts();
+        assert_eq!(encoding, "base64-utf16le");
+        let expected = "Payload/"
+            .encode_utf16()
+            .chain([0xd800, u16::from(b'.'), u16::from(b'b')])
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>();
+        assert_eq!(STANDARD.decode(text).unwrap(), expected);
+        let (encoding, text) =
+            encode_relative_source_path(Path::new(r"Payload\Обычный.bin")).into_parts();
+        assert_eq!(encoding, "utf8");
+        assert_eq!(text, "Payload/Обычный.bin");
+    }
 
     #[test]
     fn file_lock_contention_classifier_preserves_real_errors() {
