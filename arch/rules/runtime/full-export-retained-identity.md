@@ -18,6 +18,11 @@ check:
   - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::runner_unwind_retains_private_stage_for_late_writer
   - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::confirmed_spawn_failure_cleans_unused_private_stage
   - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::windows_pending_writer_scrub_failure_preserves_data_and_retries_without_unlink
+  - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::confirmed_spawn_failure_preserves_unexpected_staged_output
+  - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::invalid_staged_xml_never_changes_visible_target
+  - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::platform_executable_or_install_swap_after_runner_prevents_publication
+  - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::staged_replacement_after_completion_capture_remains_unowned
+  - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::output_appearing_after_absent_completion_capture_remains_unowned
 gap: https://github.com/IngvarConsulting/unica/issues/981
 ---
 

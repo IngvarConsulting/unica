@@ -1532,43 +1532,30 @@ impl<'a> VerifiedFullDumpAdapter<'a> {
         {
             prepared.private.confirm_execution_finished();
         }
+        let staged_capture = if output_result
+            .as_ref()
+            .is_ok_and(|output| output.status_success && !output.timed_out && !output.cancelled)
+        {
+            prepared.private.capture_finished_staged_tree().map(Some)
+        } else {
+            Ok(None)
+        };
         let output_result = output_result.map_err(|failure| failure.message().to_string());
         let platform_recheck = prepared.platform_attestation.recheck();
         let config_cleanup = prepared.private.remove_effective_config();
-        let output = match (output_result, platform_recheck, config_cleanup) {
-            (Ok(output), Ok(()), Ok(())) => output,
-            (Err(error), Ok(()), Ok(())) => {
-                finish_prepared!(dump_failure(
-                    tool_name,
-                    redactor(&error),
-                    None,
-                    None,
-                    Some(reported_command),
-                ));
-            }
-            (Ok(_), Err(platform_error), Ok(())) => {
-                finish_prepared!(dump_failure(
-                    tool_name,
-                    format!(
-                        "platform trust check immediately after v8-runner failed: {platform_error}"
-                    ),
-                    None,
-                    None,
-                    Some(reported_command),
-                ));
-            }
-            (Ok(_), Ok(()), Err(cleanup_error)) => {
-                finish_prepared!(dump_failure(
-                    tool_name,
-                    cleanup_error,
-                    None,
-                    None,
-                    Some(reported_command),
-                ));
-            }
-            (output_result, platform_recheck, config_cleanup) => {
+        let (output, staged_snapshot) = match (
+            output_result,
+            staged_capture,
+            platform_recheck,
+            config_cleanup,
+        ) {
+            (Ok(output), Ok(snapshot), Ok(()), Ok(())) => (output, snapshot),
+            (output_result, staged_capture, platform_recheck, config_cleanup) => {
                 let mut errors = Vec::new();
                 if let Err(error) = output_result {
+                    errors.push(redactor(&error));
+                }
+                if let Err(error) = staged_capture {
                     errors.push(redactor(&error));
                 }
                 if let Err(error) = platform_recheck {
@@ -1609,20 +1596,29 @@ impl<'a> VerifiedFullDumpAdapter<'a> {
             ));
         }
 
-        let staged_snapshot =
-            match validate_staged_dump(&prepared.private.staged_tree, prepared.source_kind) {
-                Ok(snapshot) => snapshot,
-                Err(error) => {
-                    finish_prepared!(dump_failure(
-                        tool_name,
-                        error,
-                        Some(redactor(&output.stdout)),
-                        Some(redactor(&output.stderr)),
-                        Some(reported_command),
-                    ));
-                }
-            };
-        prepared.private.remember_staged_tree(&staged_snapshot);
+        let Some(staged_snapshot) = staged_snapshot else {
+            finish_prepared!(dump_failure(
+                tool_name,
+                "v8-runner did not confirm successful completion of the staged dump".to_string(),
+                Some(redactor(&output.stdout)),
+                Some(redactor(&output.stderr)),
+                Some(reported_command),
+            ));
+        };
+        run_publication_hook(PublicationCheckpoint::AfterStagedCapture);
+        if let Err(error) = validate_staged_dump_snapshot(
+            &prepared.private.staged_tree,
+            prepared.source_kind,
+            &staged_snapshot,
+        ) {
+            finish_prepared!(dump_failure(
+                tool_name,
+                error,
+                Some(redactor(&output.stdout)),
+                Some(redactor(&output.stderr)),
+                Some(reported_command),
+            ));
+        }
         if cancellation.is_cancelled() {
             finish_prepared!(cancelled_dump_outcome(tool_name, &output, reported_command));
         }
@@ -4095,6 +4091,29 @@ impl PrivateDumpStage {
         Ok(())
     }
 
+    fn capture_finished_staged_tree(&mut self) -> Result<TreeSnapshot, String> {
+        self.verify_execution_location()?;
+        let snapshot = self
+            .execution_anchor()
+            .capture_child(OsStr::new("staged-source"), &self.staged_tree)?;
+        self.verify_execution_location()?;
+        self.remember_staged_tree(&snapshot);
+        Ok(snapshot)
+    }
+
+    fn verify_execution_location(&self) -> Result<(), String> {
+        let root = self.bound_root_for_reporting()?;
+        let identity =
+            root.capture_child_root_identity(OsStr::new("execution"), &self.execution)?;
+        if identity != Some(self.execution_identity) {
+            return Err(format!(
+                "private execution directory identity changed at its original name: {}",
+                self.execution.display()
+            ));
+        }
+        Ok(())
+    }
+
     fn remember_staged_tree(&mut self, snapshot: &TreeSnapshot) {
         self.staged_snapshot = Some(snapshot.clone());
     }
@@ -5920,7 +5939,16 @@ fn capture_directory_snapshot_recursive(
 
 fn validate_staged_dump(root: &Path, kind: SourceSetKind) -> Result<TreeSnapshot, String> {
     let snapshot = TreeSnapshot::capture_target(root)?;
-    let TreeSnapshot::Directory { entries, .. } = &snapshot else {
+    validate_staged_dump_snapshot(root, kind, &snapshot)?;
+    Ok(snapshot)
+}
+
+fn validate_staged_dump_snapshot(
+    root: &Path,
+    kind: SourceSetKind,
+    snapshot: &TreeSnapshot,
+) -> Result<(), String> {
+    let TreeSnapshot::Directory { entries, .. } = snapshot else {
         return Err(format!(
             "v8-runner did not create the private staged dump directory: {}",
             root.display()
@@ -5955,7 +5983,7 @@ fn validate_staged_dump(root: &Path, kind: SourceSetKind) -> Result<TreeSnapshot
         }
         validate_staged_xml(&root.join(&entry.relative_path), &entry.kind)?;
     }
-    Ok(snapshot)
+    Ok(())
 }
 
 fn validate_required_owner(path: &Path, kind: SourceSetKind) -> Result<(), String> {
@@ -6902,6 +6930,7 @@ fn rename_child_no_replace(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PublicationCheckpoint {
+    AfterStagedCapture,
     AfterBackup,
     BeforeStageInstall,
     BeforeSealedPublishRename,
@@ -9170,6 +9199,7 @@ mod tests {
         create_stage: bool,
         private_paths: std::cell::RefCell<Option<(PathBuf, PathBuf, PathBuf)>>,
         pending_writer: std::cell::RefCell<Option<WaitingDumpWriter>>,
+        spawn_output_snapshot: std::cell::RefCell<Option<TreeSnapshot>>,
     }
 
     impl IncompleteDumpRunner {
@@ -9179,6 +9209,7 @@ mod tests {
                 create_stage,
                 private_paths: std::cell::RefCell::new(None),
                 pending_writer: std::cell::RefCell::new(None),
+                spawn_output_snapshot: std::cell::RefCell::new(None),
             }
         }
 
@@ -9253,7 +9284,14 @@ mod tests {
         ) -> Result<ProcessOutput, crate::infrastructure::internal_adapters::ProcessStreamFailure>
         {
             if matches!(self.finish, IncompleteRunnerFinish::SpawnFailure) {
-                self.remember_paths(command);
+                let stage = self.remember_paths(command);
+                if self.create_stage {
+                    std::fs::create_dir(&stage).unwrap();
+                    std::fs::write(stage.join("foreign.txt"), b"unowned spawn-failure sentinel")
+                        .unwrap();
+                    self.spawn_output_snapshot
+                        .replace(Some(super::capture_tree_target_nofollow(&stage).unwrap()));
+                }
                 return Err(
                     crate::infrastructure::internal_adapters::ProcessStreamFailure::Spawn(
                         "the operating system refused to launch the runner".into(),
@@ -9374,6 +9412,217 @@ mod tests {
             super::capture_tree_target_nofollow(&target).unwrap(),
             before
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn confirmed_spawn_failure_preserves_unexpected_staged_output() {
+        let (root, context, _) = workspace("spawn-failure-foreign-output");
+        let target = context.cwd.join("src");
+        seed_valid_target(&target);
+        let before = super::capture_tree_target_nofollow(&target).unwrap();
+        let platform = fixed_platform(&root);
+        let runner = IncompleteDumpRunner::new(IncompleteRunnerFinish::SpawnFailure, true);
+
+        let result = VerifiedFullDumpAdapter::with_dependencies(
+            &runner,
+            &platform,
+            PathBuf::from("fake-v8-runner"),
+        )
+        .invoke(
+            "unica.build.dump",
+            FullDumpInvocation::BuildDump,
+            &args(),
+            &context,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+
+        assert!(!result.ok, "{result:?}");
+        assert!(result.changes.is_empty());
+        assert!(result.errors.join("\n").contains("refused to launch"));
+        let (private, config, stage) = runner.private_paths.borrow().clone().unwrap();
+        assert!(!config.exists());
+        assert_eq!(
+            super::capture_tree_target_nofollow(&stage).unwrap(),
+            *runner.spawn_output_snapshot.borrow().as_ref().unwrap(),
+            "a failure to spawn cannot grant ownership of unexpected output"
+        );
+        assert_eq!(
+            std::fs::read(stage.join("foreign.txt")).unwrap(),
+            b"unowned spawn-failure sentinel"
+        );
+        assert_eq!(
+            super::capture_tree_target_nofollow(&target).unwrap(),
+            before
+        );
+        assert_retained_directory_artifact(&result, &private);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn staged_replacement_after_completion_capture_remains_unowned() {
+        let (root, context, _) = workspace("staged-replacement-after-completion");
+        let target = context.cwd.join("src");
+        seed_valid_target(&target);
+        let before = super::capture_tree_target_nofollow(&target).unwrap();
+        let platform = fixed_platform(&root);
+        let runner = DumpRunner::valid();
+        let replacement = root.join("foreign-staged-source");
+        std::fs::create_dir(&replacement).unwrap();
+        std::fs::write(
+            replacement.join("Configuration.xml"),
+            valid_configuration_owner(),
+        )
+        .unwrap();
+        std::fs::write(
+            replacement.join("Catalogs.xml"),
+            format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="{TARGET_EXPORT_FORMAT}"><Catalog/></MetaDataObject>"#
+            ),
+        )
+        .unwrap();
+        let expected_replacement = super::capture_tree_target_nofollow(&replacement).unwrap();
+        let displaced = root.join("original-staged-source");
+        let retained = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let hook_retained = std::rc::Rc::clone(&retained);
+        let hook_workspace = context.cwd.clone();
+        let hook_displaced = displaced.clone();
+
+        let result = with_publication_hook(
+            PublicationCheckpoint::AfterStagedCapture,
+            move || {
+                let private = std::fs::read_dir(&hook_workspace)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path())
+                    .find(|path| {
+                        path.file_name()
+                            .unwrap()
+                            .to_string_lossy()
+                            .starts_with(".unica-dump-guard-")
+                    })
+                    .unwrap();
+                let stage = private.join("execution/staged-source");
+                let original = super::capture_tree_target_nofollow(&stage).unwrap();
+                std::fs::rename(&stage, &hook_displaced).unwrap();
+                std::fs::rename(&replacement, &stage).unwrap();
+                *hook_retained.borrow_mut() = Some((private, stage, original));
+            },
+            || invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context),
+        );
+
+        assert!(!result.ok, "{result:?}");
+        assert!(result.changes.is_empty());
+        assert!(
+            result
+                .errors
+                .join("\n")
+                .contains("bytes or identity changed"),
+            "validation must use the first captured owner identity: {result:?}"
+        );
+        assert_eq!(
+            super::capture_tree_target_nofollow(&target).unwrap(),
+            before
+        );
+        let retained = retained.borrow();
+        let (private, stage, original) = retained.as_ref().expect("capture hook must run");
+        assert_eq!(
+            super::capture_tree_target_nofollow(stage).unwrap(),
+            expected_replacement,
+            "cleanup must preserve every identity and byte of the replacement"
+        );
+        assert_eq!(
+            super::capture_tree_target_nofollow(&displaced).unwrap(),
+            *original,
+            "the first observed tree must not be reclassified as the replacement"
+        );
+        assert_retained_directory_artifact(&result, private);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    struct EmptySuccessfulDumpRunner;
+
+    impl ProcessRunner for EmptySuccessfulDumpRunner {
+        fn run(&self, _command: &ProcessCommand) -> Result<ProcessOutput, String> {
+            Ok(ProcessOutput {
+                status_success: true,
+                status: "0".into(),
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+                stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
+            })
+        }
+    }
+
+    #[test]
+    fn output_appearing_after_absent_completion_capture_remains_unowned() {
+        let (root, context, _) = workspace("staged-appearance-after-completion");
+        let target = context.cwd.join("src");
+        seed_valid_target(&target);
+        let before = super::capture_tree_target_nofollow(&target).unwrap();
+        let platform = fixed_platform(&root);
+        let retained = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let hook_retained = std::rc::Rc::clone(&retained);
+        let hook_workspace = context.cwd.clone();
+
+        let result = with_publication_hook(
+            PublicationCheckpoint::AfterStagedCapture,
+            move || {
+                let private = std::fs::read_dir(&hook_workspace)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path())
+                    .find(|path| {
+                        path.file_name()
+                            .unwrap()
+                            .to_string_lossy()
+                            .starts_with(".unica-dump-guard-")
+                    })
+                    .unwrap();
+                let stage = private.join("execution/staged-source");
+                assert!(!stage.exists());
+                std::fs::create_dir(&stage).unwrap();
+                std::fs::write(stage.join("Configuration.xml"), valid_configuration_owner())
+                    .unwrap();
+                std::fs::write(stage.join("foreign.txt"), b"appeared after observation").unwrap();
+                let snapshot = super::capture_tree_target_nofollow(&stage).unwrap();
+                *hook_retained.borrow_mut() = Some((private, stage, snapshot));
+            },
+            || {
+                VerifiedFullDumpAdapter::with_dependencies(
+                    &EmptySuccessfulDumpRunner,
+                    &platform,
+                    PathBuf::from("fake-v8-runner"),
+                )
+                .invoke(
+                    "unica.build.dump",
+                    FullDumpInvocation::BuildDump,
+                    &args(),
+                    &context,
+                    &CancellationToken::new(),
+                )
+                .unwrap()
+            },
+        );
+
+        assert!(!result.ok, "{result:?}");
+        assert!(result.changes.is_empty());
+        assert!(result.errors.join("\n").contains("did not create"));
+        assert_eq!(
+            super::capture_tree_target_nofollow(&target).unwrap(),
+            before
+        );
+        let retained = retained.borrow();
+        let (private, stage, snapshot) = retained.as_ref().expect("capture hook must run");
+        assert_eq!(
+            super::capture_tree_target_nofollow(stage).unwrap(),
+            *snapshot
+        );
+        assert_retained_directory_artifact(&result, private);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -9535,6 +9784,38 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    fn assert_failed_dump_has_no_owned_private_debris(
+        context: &WorkspaceContext,
+        result: &crate::application::AdapterOutcome,
+    ) {
+        assert!(
+            std::fs::read_dir(&context.cwd).unwrap().all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".unica-dump-guard-")),
+            "a finished attempt must discard its own rejected output: {result:?}"
+        );
+        assert!(
+            !result
+                .errors
+                .iter()
+                .any(|error| error.contains("private cleanup")),
+            "source rejection must not fabricate an ownership/cleanup error: {result:?}"
+        );
+        assert!(
+            !result
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("debris may remain")),
+            "source rejection must not claim retained debris after successful cleanup: {result:?}"
+        );
+        assert!(
+            result.artifacts.is_empty(),
+            "a completely discarded private attempt has no retained recovery artifact: {result:?}"
+        );
+    }
+
     #[test]
     fn invalid_staged_xml_never_changes_visible_target() {
         for (case, owner_xml, expected) in [
@@ -9581,6 +9862,7 @@ mod tests {
                 std::fs::read_to_string(target.join("Configuration.xml")).unwrap(),
                 valid_configuration_owner()
             );
+            assert_failed_dump_has_no_owned_private_debris(&context, &result);
             std::fs::remove_dir_all(root).unwrap();
         }
     }
@@ -9775,6 +10057,7 @@ mod tests {
                         || result.errors.join("\n").contains("attestation")),
                 "{case}: {result:?}"
             );
+            assert_failed_dump_has_no_owned_private_debris(&context, &result);
             std::fs::remove_dir_all(root).unwrap();
         }
     }
