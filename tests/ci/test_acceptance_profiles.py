@@ -38,7 +38,9 @@ class AcceptanceProfileTests(unittest.TestCase):
                 backend.poll.return_value = None
                 proxy = Mock()
                 proxy.request.side_effect = RuntimeError("proxy setup sentinel")
-                with patch.object(driver.subprocess, "Popen", return_value=backend), patch.object(
+                with patch("tests.ci.acceptance_profiles.host_target", return_value="linux-x64"), patch.object(
+                    driver.subprocess, "Popen", return_value=backend
+                ), patch.object(
                     driver, "assert_owned_legacy_broker"
                 ), patch.object(driver, "LegacyBrokerProxy", return_value=proxy,
                                side_effect=RuntimeError("proxy setup sentinel") if stage == "construct" else None):
