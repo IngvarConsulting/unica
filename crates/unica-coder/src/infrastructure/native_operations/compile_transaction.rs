@@ -661,6 +661,30 @@ pub(crate) enum PlannedChangeKind {
 }
 
 impl CompileTransaction {
+    pub(crate) fn saved_source_images(
+        &self,
+    ) -> Vec<crate::application::v13::plan_diff::SourceImage<'_>> {
+        let end = self
+            .retained_apply_cache_start
+            .unwrap_or(self.retained_apply.len());
+        self.retained_apply[..end]
+            .iter()
+            .map(|change| {
+                let (path_encoding, path) =
+                    crate::infrastructure::platform::filesystem::encode_relative_source_path(
+                        &change.relative_path,
+                    )
+                    .into_parts();
+                crate::application::v13::plan_diff::SourceImage {
+                    path_encoding,
+                    path,
+                    before: change.original.as_deref(),
+                    after: change.current.as_deref(),
+                }
+            })
+            .collect()
+    }
+
     pub(crate) fn new() -> Self {
         Self::default()
     }

@@ -1,0 +1,609 @@
+{
+  "id": "S-1468-help-execute",
+  "issue": 1468,
+  "area": "Метаданные",
+  "task": "Создать встроенную справку через canonical preview и сохранённый executionToken; независимо прочитать Help.xml, HTML и false у формы без свойства, сохранить соседние исходники и проверить повтор create-only.",
+  "workspace": "tests/fixtures/acceptance/workspace-resolve",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Can.help.create"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Can"
+        },
+        {
+          "pointer": "/data/props/op",
+          "eq": "help.create"
+        },
+        {
+          "pointer": "/data/props/implemented",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/additionalProperties",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/contract/exampleArgs/at",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "before0": {
+          "file": "src/Catalogs/Items.xml",
+          "kind": "sha256"
+        },
+        "before1": {
+          "file": "src/Catalogs/Items/Ext/ManagerModule.bsl",
+          "kind": "sha256"
+        },
+        "before2": {
+          "file": "src/Catalogs/Items/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        },
+        "before3": {
+          "file": "src/Catalogs/Items/Forms/Main.xml",
+          "kind": "sha256"
+        },
+        "before4": {
+          "file": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "before5": {
+          "file": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        },
+        "before6": {
+          "file": "src/CommonForms/Main.xml",
+          "kind": "sha256"
+        },
+        "before7": {
+          "file": "src/CommonForms/Main/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "before8": {
+          "file": "src/CommonForms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        },
+        "before9": {
+          "file": "src/CommonModules/Probe.xml",
+          "kind": "sha256"
+        },
+        "before10": {
+          "file": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256"
+        },
+        "before11": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items/Forms/Main.xml",
+          "kind": "xml",
+          "select": "./{*}Form/{*}Properties/{*}IncludeHelpInContents",
+          "eq": []
+        },
+        {
+          "path": "src/Catalogs/Items/Ext/Help.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Catalogs/Items/Ext/Help/ru.html",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items",
+        "ops": [
+          {
+            "op": "help.create",
+            "args": {
+              "values": {
+                "lang": "ru"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        }
+      ],
+      "captures": {
+        "helpToken": {
+          "pointer": "/data/executionToken"
+        },
+        "helpPlanHash": {
+          "pointer": "/data/planHash"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0"
+        },
+        {
+          "path": "src/Catalogs/Items/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.before1"
+        },
+        {
+          "path": "src/Catalogs/Items/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.before2"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.before3"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.before4"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.before5"
+        },
+        {
+          "path": "src/CommonForms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.before6"
+        },
+        {
+          "path": "src/CommonForms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.before7"
+        },
+        {
+          "path": "src/CommonForms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.before8"
+        },
+        {
+          "path": "src/CommonModules/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.before9"
+        },
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.before10"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.before11"
+        },
+        {
+          "path": "src/Catalogs/Items/Ext/Help.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Catalogs/Items/Ext/Help/ru.html",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.helpToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/planHash",
+          "eq": "$capture.helpPlanHash"
+        }
+      ],
+      "captures": {
+        "helpXml": {
+          "file": "src/Catalogs/Items/Ext/Help.xml",
+          "kind": "sha256"
+        },
+        "helpHtml": {
+          "file": "src/Catalogs/Items/Ext/Help/ru.html",
+          "kind": "sha256"
+        },
+        "helpForm": {
+          "file": "src/Catalogs/Items/Forms/Main.xml",
+          "kind": "sha256"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0"
+        },
+        {
+          "path": "src/Catalogs/Items/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.before1"
+        },
+        {
+          "path": "src/Catalogs/Items/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.before2"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.before4"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.before5"
+        },
+        {
+          "path": "src/CommonForms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.before6"
+        },
+        {
+          "path": "src/CommonForms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.before7"
+        },
+        {
+          "path": "src/CommonForms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.before8"
+        },
+        {
+          "path": "src/CommonModules/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.before9"
+        },
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.before10"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.before11"
+        },
+        {
+          "path": "src/Catalogs/Items/Ext/Help.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/extrnprops}Page",
+          "eq": [
+            "ru"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items/Ext/Help/ru.html",
+          "kind": "exists",
+          "eq": true
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main.xml",
+          "kind": "xml",
+          "select": "./{*}Form/{*}Properties/{*}IncludeHelpInContents",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main.xml",
+          "kind": "xml",
+          "select": "./{*}Form/{*}Properties/{*}FormType",
+          "eq": [
+            "Managed"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Form.Main.Metadata"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Metadata"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0"
+        },
+        {
+          "path": "src/Catalogs/Items/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.before1"
+        },
+        {
+          "path": "src/Catalogs/Items/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.before2"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.before4"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.before5"
+        },
+        {
+          "path": "src/CommonForms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.before6"
+        },
+        {
+          "path": "src/CommonForms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.before7"
+        },
+        {
+          "path": "src/CommonForms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.before8"
+        },
+        {
+          "path": "src/CommonModules/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.before9"
+        },
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.before10"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.before11"
+        },
+        {
+          "path": "src/Catalogs/Items/Ext/Help.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/extrnprops}Page",
+          "eq": [
+            "ru"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items/Ext/Help/ru.html",
+          "kind": "exists",
+          "eq": true
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main.xml",
+          "kind": "xml",
+          "select": "./{*}Form/{*}Properties/{*}IncludeHelpInContents",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main.xml",
+          "kind": "xml",
+          "select": "./{*}Form/{*}Properties/{*}FormType",
+          "eq": [
+            "Managed"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0"
+        },
+        {
+          "path": "src/Catalogs/Items/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.before1"
+        },
+        {
+          "path": "src/Catalogs/Items/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.before2"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.before4"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.before5"
+        },
+        {
+          "path": "src/CommonForms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.before6"
+        },
+        {
+          "path": "src/CommonForms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.before7"
+        },
+        {
+          "path": "src/CommonForms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.before8"
+        },
+        {
+          "path": "src/CommonModules/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.before9"
+        },
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.before10"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.before11"
+        },
+        {
+          "path": "src/Catalogs/Items/Ext/Help.xml",
+          "kind": "sha256",
+          "eq": "$capture.helpXml"
+        },
+        {
+          "path": "src/Catalogs/Items/Ext/Help/ru.html",
+          "kind": "sha256",
+          "eq": "$capture.helpHtml"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.helpForm"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items",
+        "ops": [
+          {
+            "op": "help.create",
+            "args": {
+              "values": {
+                "lang": "ru"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_state: embedded help already exists; addHelp is create-only",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args"
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "invalid_state"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0"
+        },
+        {
+          "path": "src/Catalogs/Items/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.before1"
+        },
+        {
+          "path": "src/Catalogs/Items/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.before2"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.before4"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.before5"
+        },
+        {
+          "path": "src/CommonForms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.before6"
+        },
+        {
+          "path": "src/CommonForms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.before7"
+        },
+        {
+          "path": "src/CommonForms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.before8"
+        },
+        {
+          "path": "src/CommonModules/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.before9"
+        },
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.before10"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.before11"
+        },
+        {
+          "path": "src/Catalogs/Items/Ext/Help.xml",
+          "kind": "sha256",
+          "eq": "$capture.helpXml"
+        },
+        {
+          "path": "src/Catalogs/Items/Ext/Help/ru.html",
+          "kind": "sha256",
+          "eq": "$capture.helpHtml"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.helpForm"
+        }
+      ]
+    }
+  ]
+}
