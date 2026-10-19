@@ -5,8 +5,8 @@ check:
   - crates/unica-coder/src/domain/address.rs::body_line_suffix_rejects_malformed_ranges_and_other_nodes
   - crates/unica-coder/src/domain/address.rs::a_hash_inside_a_free_text_dcs_item_is_not_a_body_line_selector
   - crates/unica-coder/src/domain/address.rs::metadata_is_a_terminal_nameless_form_descriptor_and_keeps_operation_queries
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::form_metadata_has_its_own_descriptor_properties_and_resource_identity
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::form_metadata_rejects_orphans_and_does_not_follow_descriptor_links
+  - crates/unica-coder/src/infrastructure/v13_read/tests/form.rs::form_metadata_has_its_own_descriptor_properties_and_resource_identity
+  - crates/unica-coder/src/infrastructure/v13_read/tests/form.rs::form_metadata_rejects_orphans_and_does_not_follow_descriptor_links
   - crates/unica-coder/src/domain/address.rs::qualified_addresses_are_table_driven_canonical_and_arbitrarily_deep
   - crates/unica-coder/src/domain/address.rs::qualified_addresses_reject_unqualified_malformed_and_noncanonical_roots
   - crates/unica-coder/src/domain/address.rs::metadata_aliases_reuse_v12_evidence_while_structural_aliases_stay_separate

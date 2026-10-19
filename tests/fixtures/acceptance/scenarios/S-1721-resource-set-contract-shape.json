@@ -1,0 +1,415 @@
+{
+  "id": "S-1721-resource-set-contract-shape",
+  "name": "resource-set-shares-contract-shape-with-productive-preview",
+  "issue": 1721,
+  "area": "Реквизиты и состав",
+  "task": "Подробный Can существующего ресурса и productive preview используют общую структуру аргументов: строковый comment даёт executionToken, составные неверные аргументы сохраняют исходный индекс и порядок диагностики, preview и отказы сохраняют байты всех исходников фикстуры.",
+  "workspace": "tests/fixtures/acceptance/workspace-metadata-members",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.CorpusRegister.Resource.Value"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Resource"
+        }
+      ],
+      "captures": {
+        "file0": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Items.xml"
+        },
+        "file1": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl"
+        },
+        "file2": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl"
+        },
+        "file3": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl"
+        },
+        "file4": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Items/Commands/Refresh/Ext/unrelated.txt"
+        },
+        "file5": {
+          "kind": "sha256",
+          "file": "src/Configuration.xml"
+        },
+        "file6": {
+          "kind": "sha256",
+          "file": "src/DocumentJournals/ДокументыОрганизации.xml"
+        },
+        "file7": {
+          "kind": "sha256",
+          "file": "src/Enums/LanguageAware.xml"
+        },
+        "file8": {
+          "kind": "sha256",
+          "file": "src/InformationRegisters/CorpusRegister.xml"
+        },
+        "file9": {
+          "kind": "sha256",
+          "file": "src/Languages/Русский.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.CorpusRegister.Resource.Value.Can.resource.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/op",
+          "eq": "resource.set"
+        },
+        {
+          "pointer": "/data/props/implemented",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.CorpusRegister.Resource.Value",
+        "ops": [
+          {
+            "op": "resource.set",
+            "args": {
+              "values": {
+                "comment": "shared shape probe"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        }
+      ],
+      "captures": {
+        "token": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "$capture.file0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl",
+          "eq": "$capture.file1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "eq": "$capture.file2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "eq": "$capture.file3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/unrelated.txt",
+          "eq": "$capture.file4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.file5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/DocumentJournals/ДокументыОрганизации.xml",
+          "eq": "$capture.file6"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Enums/LanguageAware.xml",
+          "eq": "$capture.file7"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "eq": "$capture.file8"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.file9"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.CorpusRegister",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "must stay unpublished"
+              }
+            }
+          },
+          {
+            "op": "resource.set",
+            "args": {
+              "at": "main:InformationRegister.CorpusRegister.Resource.Value",
+              "values": {
+                "newName": false,
+                "fillValue": {
+                  "kind": "invalid"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `newName` must be a string",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[1].args.values.newName"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "$capture.file0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl",
+          "eq": "$capture.file1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "eq": "$capture.file2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "eq": "$capture.file3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/unrelated.txt",
+          "eq": "$capture.file4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.file5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/DocumentJournals/ДокументыОрганизации.xml",
+          "eq": "$capture.file6"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Enums/LanguageAware.xml",
+          "eq": "$capture.file7"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "eq": "$capture.file8"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.file9"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.CorpusRegister.Resource.Value",
+        "ops": [
+          {
+            "op": "resource.set",
+            "args": {
+              "values": {
+                "type": {
+                  "variants": [
+                    {
+                      "kind": "string",
+                      "length": false,
+                      "allowedLength": "variable"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `length` must be an unsigned 32-bit integer",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.type.variants[0].length"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "$capture.file0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl",
+          "eq": "$capture.file1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "eq": "$capture.file2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "eq": "$capture.file3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/unrelated.txt",
+          "eq": "$capture.file4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.file5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/DocumentJournals/ДокументыОрганизации.xml",
+          "eq": "$capture.file6"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Enums/LanguageAware.xml",
+          "eq": "$capture.file7"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "eq": "$capture.file8"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.file9"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.CorpusRegister.Resource.Value"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Resource"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "$capture.file0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items/Commands/Blocked/Ext/CommandModule.bsl",
+          "eq": "$capture.file1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items/Commands/Keep/Ext/CommandModule.bsl",
+          "eq": "$capture.file2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl",
+          "eq": "$capture.file3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items/Commands/Refresh/Ext/unrelated.txt",
+          "eq": "$capture.file4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.file5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/DocumentJournals/ДокументыОрганизации.xml",
+          "eq": "$capture.file6"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Enums/LanguageAware.xml",
+          "eq": "$capture.file7"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/InformationRegisters/CorpusRegister.xml",
+          "eq": "$capture.file8"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "$capture.file9"
+        }
+      ]
+    }
+  ]
+}

@@ -40,6 +40,7 @@ import queue
 import re
 import threading
 import time
+from contextlib import ExitStack
 import os
 import shutil
 import subprocess
@@ -772,16 +773,29 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         ("CommandSet", "command.set", "MetadataCommand", "Values"),
         ("CommandRemove", "command.remove", "MetadataCommand", "Target"),
     ]
+    FORM_CONTEXT = [
+        ("Add", "form.add", "MetadataForms", "Items"),
+        ("Set", "form.set", "MetadataForms", "Values"),
+        ("Remove", "form.remove", "Form", "Target"),
+        ("ItemAdd", "item.add", "FormItemContainer", "Items"),
+        ("ItemRemove", "item.remove", "FormItem", "Target"),
+        ("ItemMove", "item.move", "FormItem", "Values"),
+        ("AttributeAdd", "attribute.add", "Form", "Items"),
+        ("CommandAdd", "command.add", "Form", "Items"),
+        ("EventBind", "event.bind", "FormEvent", "Values"),
+    ]
     CONTEXT_ROWS = [
         (name, "Metadata", applicability, skeleton)
         for _, name, applicability, skeleton in METADATA_CONTEXT
     ] + [
-        ("attribute.add", "Form", "Form", "Items"),
-        ("command.add", "Form", "Form", "Items"),
+        (name, "Form", applicability, skeleton)
+        for _, name, applicability, skeleton in FORM_CONTEXT
     ]
     CONTEXT_REGISTRATIONS = "".join(
         f"(MetadataOperation::{variant})," for variant, _, _, _ in METADATA_CONTEXT
-    ) + "(FormOperation::AttributeAdd), (FormOperation::CommandAdd),"
+    ) + "".join(
+        f"(FormOperation::{variant})," for variant, _, _, _ in FORM_CONTEXT
+    )
 
     def renderer(self):
         module_path = REPO_ROOT / "scripts" / "ci" / "render-acceptance-registry.py"
@@ -888,19 +902,21 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             self.assertIn(operation, implemented)
             self.assertIn(f"| `{operation}` | `values` | да | ", rendered)
 
-    def test_partial_typed_rows_preserve_colliding_names_and_raw_neighbors(self) -> None:
+    def test_typed_rows_preserve_colliding_names_and_raw_neighbors(self) -> None:
         metadata = (REPO_ROOT / "crates/unica-coder/src/domain/role_operation.rs").read_text(encoding="utf-8")
         registry, _ = self.registration_fixture(
             '(RoleOperation::Create), (RoleOperation::RightAdd), (RoleOperation::RightSet),\n'
             '(MetadataOperation::AttributeAdd),\n'
             '(MetadataOperation::AttributeSet),\n'
             '("object.create", Metadata, Configuration, Values),\n'
+            '(FormOperation::Add), (FormOperation::Set), (FormOperation::Remove),\n'
             '(FormOperation::AttributeAdd),\n'
             '(MetadataOperation::AttributeRemove),\n'
             '(MetadataOperation::CommandAdd),\n'
             '(MetadataOperation::CommandSet), (MetadataOperation::CommandRemove),\n'
-            '("item.add", Form, FormItemContainer, Items),\n'
-            '(FormOperation::CommandAdd),',
+            '(FormOperation::ItemAdd),\n'
+            '(FormOperation::CommandAdd),\n'
+            '(FormOperation::ItemRemove), (FormOperation::ItemMove), (FormOperation::EventBind),',
             metadata,
             {
                 "metadata_operation.rs": '''metadata_operations!(
@@ -910,10 +926,6 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
                     CommandAdd => ("command.add", MetadataCommands, Items),
                     CommandSet => ("command.set", MetadataCommand, Values),
                     CommandRemove => ("command.remove", MetadataCommand, Target),
-                );''',
-                "form_operation.rs": '''form_operations!(
-                    AttributeAdd => ("attribute.add", Form, Items),
-                    CommandAdd => ("command.add", Form, Items),
                 );''',
             },
             complete_context=False,
@@ -925,6 +937,9 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("attribute.add", "Metadata", "MetadataAttributeContainer", "Items"),
             ("attribute.set", "Metadata", "MetadataAttribute", "Values"),
             ("object.create", "Metadata", "Configuration", "Values"),
+            ("form.add", "Form", "MetadataForms", "Items"),
+            ("form.set", "Form", "MetadataForms", "Values"),
+            ("form.remove", "Form", "Form", "Target"),
             ("attribute.add", "Form", "Form", "Items"),
             ("attribute.remove", "Metadata", "MetadataAttribute", "Target"),
             ("command.add", "Metadata", "MetadataCommands", "Items"),
@@ -932,16 +947,19 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("command.remove", "Metadata", "MetadataCommand", "Target"),
             ("item.add", "Form", "FormItemContainer", "Items"),
             ("command.add", "Form", "Form", "Items"),
+            ("item.remove", "Form", "FormItem", "Target"),
+            ("item.move", "Form", "FormItem", "Values"),
+            ("event.bind", "Form", "FormEvent", "Values"),
             ("supportCapability.set", "Support", "Configuration", "Values"),
             ("supportRule.set", "Support", "SupportRule", "Values"),
         ])
 
-    def test_partial_typed_families_keep_the_remaining_raw_operations(self) -> None:
+    def test_partial_metadata_and_fully_typed_form_keep_registry_rows(self) -> None:
         module = self.renderer()
         registry, implemented = module.load_apply_registry()
         for family, migrated_names, remaining in [
             ("Metadata", {name for _, name, _, _ in self.METADATA_CONTEXT}, 13),
-            ("Form", {"attribute.add", "command.add"}, 7),
+            ("Form", {name for _, name, _, _ in self.FORM_CONTEXT}, 0),
         ]:
             self.assertEqual(
                 [entry for entry in registry if entry[1] == family and entry[0] in migrated_names],
@@ -952,7 +970,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         self.assertEqual(len(registry), 122)
         self.assertEqual(len({entry[0] for entry in registry}), 120)
 
-    def test_partial_typed_metadata_cannot_be_missing_duplicated_or_registered_as_raw(self) -> None:
+    def test_contextual_typed_metadata_cannot_be_missing_duplicated_or_registered_as_raw(self) -> None:
         role_metadata = (REPO_ROOT / "crates/unica-coder/src/domain/role_operation.rs").read_text(encoding="utf-8")
         roles = "(RoleOperation::Create), (RoleOperation::RightAdd), (RoleOperation::RightSet),\n"
         table = roles + self.CONTEXT_REGISTRATIONS
@@ -966,9 +984,9 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             self.assertIn(last_row, metadata)
             raw = f'("command.add", {family}, {applicability}, Items),'
             other_type = "FormOperation" if family == "Metadata" else "MetadataOperation"
-            variants = [variant for variant, _, _, _ in self.METADATA_CONTEXT] if family == "Metadata" else ["AttributeAdd", "CommandAdd"]
+            operations = self.METADATA_CONTEXT if family == "Metadata" else self.FORM_CONTEXT
             without_family = table
-            for variant in variants:
+            for variant, _, _, _ in operations:
                 without_family = without_family.replace(f"({operation_type}::{variant}),", "")
             cases = {
                 "unknown typed family": (table.replace(f"{operation_type}::AttributeAdd", "OtherOperation::AttributeAdd"), metadata),
@@ -976,7 +994,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
                 "wrong typed family": (table.replace(f"{operation_type}::AttributeAdd", f"{other_type}::AttributeAdd"), metadata),
                 "missing registration": (table.replace(f"({operation_type}::CommandAdd),", ""), metadata),
                 "all family registrations missing": (without_family, metadata),
-                "both partial families missing": (roles, metadata),
+                "both contextual families missing": (roles, metadata),
                 "duplicate registration": (table + f"({operation_type}::CommandAdd),", metadata),
                 "raw instead of typed": (table.replace(f"({operation_type}::CommandAdd),", raw), metadata),
                 "raw beside complete typed": (table + raw, metadata),
@@ -992,16 +1010,23 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
                 "duplicate metadata variant": (table, metadata.replace(last_row, f'    AttributeAdd => ("command.add", {applicability}, Items),\n')),
                 "duplicate metadata name": (table, metadata.replace(last_row, f'    CommandAdd => ("attribute.add", {applicability}, Items),\n')),
             }
-            if family == "Metadata":
-                for variant, name, applicability, skeleton in self.METADATA_CONTEXT:
-                    if variant == "CommandAdd":
-                        continue  # The common cases above already mutate this variant.
-                    registration = f"({operation_type}::{variant}),"
-                    raw_attribute = f'("{name}", Metadata, {applicability}, {skeleton}),'
-                    cases[f"missing {name} registration"] = (table.replace(registration, ""), metadata)
-                    cases[f"duplicate {name} registration"] = (table + registration, metadata)
-                    cases[f"raw {name} instead of typed"] = (table.replace(registration, raw_attribute), metadata)
-                    cases[f"raw {name} beside complete typed"] = (table + raw_attribute, metadata)
+            for variant, name, applicability, skeleton in operations:
+                registration = f"({operation_type}::{variant}),"
+                raw_operation = f'("{name}", {family}, {applicability}, {skeleton}),'
+                cases[f"wrong {name} typed family"] = (
+                    table.replace(registration, f"({other_type}::{variant}),"), metadata,
+                )
+                if variant == "CommandAdd":
+                    continue  # The common cases above already mutate this variant.
+                cases[f"missing {name} registration"] = (table.replace(registration, ""), metadata)
+                cases[f"duplicate {name} registration"] = (table + registration, metadata)
+                cases[f"raw {name} instead of typed"] = (table.replace(registration, raw_operation), metadata)
+                cases[f"raw {name} beside complete typed"] = (table + raw_operation, metadata)
+            if family == "Form":
+                renamed_metadata = metadata.replace('"command.add"', '"command.probe"')
+                cases["raw unknown form name"] = (table + '("future.operation", Form, Form, Items),', metadata)
+                cases["raw original form name after literal rename"] = (table + raw, renamed_metadata)
+                cases["raw renamed form name"] = (table + '("command.probe", Form, Form, Items),', renamed_metadata)
             for case, (source, family_metadata) in cases.items():
                 with self.subTest(family=family, case=case), self.assertRaises(RuntimeError):
                     self.registration_fixture(
@@ -1311,7 +1336,7 @@ class DeliveredAcceptanceServer(AcceptanceServer):
             self._closed = True
 
 
-def run_corpus(test_case, corpus, plugin=None, scenario_driver=None):
+def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cleanup=None):
     default_workspace = corpus["workspace"]
     mismatches = []
     with tempfile.TemporaryDirectory(
@@ -1420,7 +1445,11 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None):
                     server.close()
                     server = fresh_server(current_workspace)
         finally:
-            server.close()
+            try:
+                server.close()
+            finally:
+                if fixture_cleanup is not None:
+                    fixture_cleanup()
     test_case.assertEqual(
         mismatches,
         [],
@@ -1448,7 +1477,11 @@ class AcceptanceDeliveryCorpusRunTests(unittest.TestCase):
             subprocess.run([sys.executable, "-m", "tests.ci.acceptance_profiles", "--stage-analyzer", str(plugin)],
                            cwd=REPO_ROOT, timeout=90, check=True)
             from tests.ci.acceptance_diagnostics import prepare_diagnostic_case
-            run_corpus(self, corpus, plugin, scenario_driver=prepare_diagnostic_case)
+            with ExitStack() as fixtures:
+                def prepare(server, scenario):
+                    return prepare_diagnostic_case(server, scenario, plugin=plugin, fixtures=fixtures)
+                run_corpus(self, corpus, plugin, scenario_driver=prepare,
+                           fixture_cleanup=fixtures.close)
     def test_pinned_resident_reports_real_baseline_author_and_scope_facts(self):
         from tests.ci.acceptance_profiles import stage_analyzer, host_target
         from tests.ci.acceptance_diagnostics import resident_filter_evidence

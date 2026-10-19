@@ -84,7 +84,8 @@ fn compile_registration_with_declarations(entry: &str, metadata: &str, form: &st
         enum OperationFamily {{ Role, Support, Metadata, Form }}
         pub(super) enum OperationApplicability {{
             Configuration, SupportRule, MetadataAttributeContainer,
-            MetadataAttribute, MetadataCommands, MetadataCommand, Form, FormItemContainer,
+            MetadataAttribute, MetadataCommands, MetadataCommand, MetadataForms,
+            Form, FormItemContainer, FormItem, FormEvent,
             MetadataTabularSections, MetadataTabularSection,
             MetadataDimensions, MetadataDimension, MetadataResources, MetadataResource,
             MetadataEnumValues, MetadataEnumValue, MetadataColumns, MetadataColumn,
@@ -203,9 +204,11 @@ fn typed_contextual_registrations_compile_and_migrated_raw_tuples_are_rejected()
         r#"(MetadataOperation::AttributeAdd), (MetadataOperation::AttributeSet),
             (MetadataOperation::AttributeRemove), (MetadataOperation::CommandAdd),
             (MetadataOperation::CommandSet), (MetadataOperation::CommandRemove),
+            (FormOperation::Add), (FormOperation::Set), (FormOperation::Remove),
+            (FormOperation::ItemAdd), (FormOperation::ItemRemove), (FormOperation::ItemMove),
             (FormOperation::AttributeAdd), (FormOperation::CommandAdd),
-            ("object.create", Metadata, Configuration, Values),
-            ("item.add", Form, FormItemContainer, Items)"#,
+            (FormOperation::EventBind),
+            ("object.create", Metadata, Configuration, Values)"#,
     );
     assert!(
         typed.status.success(),
@@ -229,8 +232,16 @@ fn typed_contextual_registrations_compile_and_migrated_raw_tuples_are_rejected()
         ("Metadata", "command.add", "MetadataCommands", "Items"),
         ("Metadata", "command.set", "MetadataCommand", "Values"),
         ("Metadata", "command.remove", "MetadataCommand", "Target"),
+        ("Form", "form.add", "MetadataForms", "Items"),
+        ("Form", "form.set", "MetadataForms", "Values"),
+        ("Form", "form.remove", "Form", "Target"),
+        ("Form", "item.add", "FormItemContainer", "Items"),
+        ("Form", "item.remove", "FormItem", "Target"),
+        ("Form", "item.move", "FormItem", "Values"),
         ("Form", "attribute.add", "Form", "Items"),
         ("Form", "command.add", "Form", "Items"),
+        ("Form", "event.bind", "FormEvent", "Values"),
+        ("Form", "future.operation", "Form", "Items"),
     ] {
         let legacy = compile_registration(&format!(
             r#"("{name}", {family}, {applicability}, {skeleton})"#
@@ -240,13 +251,12 @@ fn typed_contextual_registrations_compile_and_migrated_raw_tuples_are_rejected()
             "{family} {name} must require its typed registration"
         );
         let expected_diagnostic = if family == "Metadata" {
-            "Typed Metadata operations must register a MetadataOperation with a mandatory contextual contract"
+            "evaluation panicked: Typed Metadata operations must register a MetadataOperation with a mandatory contextual contract"
         } else {
-            "Form attribute.add and command.add must register a typed FormOperation with a mandatory contract"
+            "Form operations must register a typed FormOperation with a mandatory contract"
         };
         assert!(
-            String::from_utf8_lossy(&legacy.stderr)
-                .contains(&format!("evaluation panicked: {expected_diagnostic}")),
+            String::from_utf8_lossy(&legacy.stderr).contains(expected_diagnostic),
             "{}",
             String::from_utf8_lossy(&legacy.stderr)
         );
@@ -348,7 +358,7 @@ fn inline_metadata_member_registrations_require_their_typed_variants() {
 }
 
 #[test]
-fn raw_contextual_registration_guards_follow_the_actual_literal_table() {
+fn raw_metadata_guards_follow_literals_while_the_form_family_requires_typed_registration() {
     let metadata = metadata_declaration(
         include_str!("../src/domain/metadata_operation.rs"),
         "metadata_operations",
@@ -357,10 +367,20 @@ fn raw_contextual_registration_guards_follow_the_actual_literal_table() {
         include_str!("../src/domain/form_operation.rs"),
         "form_operations",
     );
-    for (family, applicability, original) in [
-        ("Metadata", "MetadataAttributeContainer", "attribute.add"),
-        ("Metadata", "MetadataResources", "resource.add"),
-        ("Form", "Form", "attribute.add"),
+    for (family, applicability, variant, original) in [
+        (
+            "Metadata",
+            "MetadataAttributeContainer",
+            "AttributeAdd",
+            "attribute.add",
+        ),
+        (
+            "Metadata",
+            "MetadataResources",
+            "ResourceAdd",
+            "resource.add",
+        ),
+        ("Form", "Form", "AttributeAdd", "attribute.add"),
     ] {
         let probe = format!("{}.probe", original.split_once('.').unwrap().0);
         let changed_metadata = if family == "Metadata" {
@@ -373,7 +393,17 @@ fn raw_contextual_registration_guards_follow_the_actual_literal_table() {
         } else {
             form.clone()
         };
-        for (name, allowed) in [(probe.as_str(), false), (original, true)] {
+        let typed = compile_registration_with_declarations(
+            &format!("({family}Operation::{variant})"),
+            &changed_metadata,
+            &changed_form,
+        );
+        assert!(
+            typed.status.success(),
+            "{family} renamed literal: {}",
+            String::from_utf8_lossy(&typed.stderr)
+        );
+        for (name, allowed) in [(probe.as_str(), false), (original, family == "Metadata")] {
             let result = compile_registration_with_declarations(
                 &format!(r#"("{name}", {family}, {applicability}, Items)"#),
                 &changed_metadata,

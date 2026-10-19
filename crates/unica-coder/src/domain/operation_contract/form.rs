@@ -3,6 +3,7 @@
 //! отказывает `bad_value` до записи, а не теряется молча.
 
 use super::{object, text, OperationContract};
+use crate::domain::form_operation::FormOperation;
 use serde_json::{json, Value};
 
 const FORM_HELP: &str = "skills/form-edit/SKILL.md";
@@ -472,14 +473,10 @@ const FORM_SLOTS: [&str; 13] = [
 ];
 
 impl OperationContract {
-    /// Контракты ещё не типизированных операций формы.
-    pub(crate) fn form(op: &str) -> Option<Self> {
-        if op == "item.move" {
-            return Some(Self::form_move());
-        }
+    pub(crate) fn form(operation: FormOperation) -> Self {
         let at = || ("at", text(true));
-        let (schema, target, effect, notes, example_args) = match op {
-            "form.add" => (
+        let (schema, target, effect, notes, example_args) = match operation {
+            FormOperation::Add => (
                 object(&[at(), ("items", json!({"type":"array","minItems":1,"items":object(&[
                     ("name",json!({"type":"string","pattern":r"\S","description":"New form name, unused by the owner."})),
                     ("type",json!({"type":"string","default":"ObjectForm","enum":[
@@ -490,7 +487,7 @@ impl OperationContract {
                 "Fill the new form with item.add, attribute.add and event.bind at its address after the plan is executed; within one apply call a later operation may already address it.",
                 json!({"items":[{"name":"Sample","type":"ObjectForm"}]}),
             ),
-            "form.set" => {
+            FormOperation::Set => {
                 let slot = json!({"type":"string","pattern":r"\S",
                     "description":"A form name of this owner."});
                 let mut values = object(
@@ -506,28 +503,28 @@ impl OperationContract {
                     json!({"values":{"defaultObjectForm":"Sample"}}),
                 )
             }
-            "form.remove" => (
+            FormOperation::Remove => (
                 object(&[at()], &[]),
                 "The existing form: <source-set>:<Kind>.<Name>.Form.<Form>.",
                 "Remove the form with its files and clear owner slots that pointed at it.",
                 "The form is named by its address; the operation takes no other arguments.",
                 json!({}),
             ),
-            "item.add" => (
+            FormOperation::ItemAdd => (
                 object(&[at(), ("items", json!({"type":"array","minItems":1,"items":element_item_schema(&[])}))], &["items"]),
                 "The form <source-set>:<Kind>.<Name>.Form.<Form> or its container item ….Item.<Group>[.Item.<Nested>…] (group, pages, page, table, command bar).",
                 "Add each listed element, without nested content, at the end of the addressed container or after its sibling `after`. Identifiers and companion items (ContextMenu, ExtendedTooltip, table additions) are written by the operation.",
                 "Each item is one element; its keys depend on its type. A nested element is added by a separate item.add at the address of its container; a handler is bound with event.bind at ….Item.<Element>.Event.<Event>. children, columns, elements, commandBar, autoCmdBar, autoCommandBar, contextMenu, extendedTooltip, html, on and handlers are refused. A command bar takes only buttons. Cross-field rules are checked by the planner: dynamic-list keys of a table need _dynList: true; a button takes one of command, commandName, stdCommand.",
                 json!({"items":[{"name":"Sample","type":"InputField"}]}),
             ),
-            "item.remove" => (
+            FormOperation::ItemRemove => (
                 object(&[at()], &[]),
                 "The existing item: <source-set>:<Kind>.<Name>.Form.<Form>.Item.<Element>[.Item.<Nested>…].",
                 "Remove the item with its nested items and companions.",
                 "The item is named by its address; the operation takes no other arguments.",
                 json!({}),
             ),
-            "event.bind" => (
+            FormOperation::EventBind => (
                 object(&[at(), ("values", object(&[
                     ("handler",json!({"type":"string","pattern":r"\S","description":"Handler procedure in the form module."})),
                     ("callType",json!({"type":"string","enum":["Before","After","Override"],
@@ -538,16 +535,18 @@ impl OperationContract {
                 "The event and its item are named by the address.",
                 json!({"values":{"handler":"Sample"}}),
             ),
-            _ => return None,
+            FormOperation::ItemMove => return Self::form_move(),
+            FormOperation::AttributeAdd => return Self::form_attribute_add(),
+            FormOperation::CommandAdd => return Self::form_command_add(),
         };
-        Some(Self {
+        Self {
             schema,
             target,
             effect,
             notes,
             example_args,
             help: FORM_HELP,
-        })
+        }
     }
 
     pub(crate) fn form_attribute_add() -> Self {
@@ -613,7 +612,7 @@ impl OperationContract {
     /// Контракт `item.add` на командной панели: она принимает только
     /// кнопки, и контракт узла публикует один вид.
     pub(crate) fn form_item_add_in_command_bar() -> Self {
-        let mut contract = Self::form("item.add").expect("item.add contract");
+        let mut contract = Self::form(FormOperation::ItemAdd);
         contract.schema["properties"]["items"]["items"] = element_item_schema(&["Button"]);
         contract.target = "A command bar: the form's ….Item.<Form>КоманднаяПанель, a table's ….Item.<Table>.Item.<Table>КоманднаяПанель, or a CommandBar item.";
         contract.example_args =
@@ -666,7 +665,7 @@ mod tests {
     /// а не по общему «ни одна альтернатива не подошла» (#1447).
     #[test]
     fn item_add_refuses_a_key_of_another_kind_at_its_exact_path() {
-        let contract = OperationContract::form("item.add").unwrap();
+        let contract = OperationContract::form(FormOperation::ItemAdd);
         for (item, path) in [
             (
                 json!({"name":"A","type":"InputField","backColor":"web:Red"}),
@@ -728,7 +727,7 @@ mod tests {
 
     #[test]
     fn text_document_field_requires_a_binding_path_in_the_closed_contract() {
-        let contract = OperationContract::form("item.add").unwrap();
+        let contract = OperationContract::form(FormOperation::ItemAdd);
         let valid = json!({"name":"Protocol","type":"TextDocumentField","path":"ProtocolValue"});
         assert!(contract
             .normalize(&json!({"items":[valid]}), "args")
@@ -747,18 +746,20 @@ mod tests {
     #[test]
     fn form_contracts_accept_their_examples() {
         for op in [
-            "form.add",
-            "form.set",
-            "form.remove",
-            "item.add",
-            "item.remove",
-            "item.move",
-            "event.bind",
+            FormOperation::Add,
+            FormOperation::Set,
+            FormOperation::Remove,
+            FormOperation::ItemAdd,
+            FormOperation::ItemRemove,
+            FormOperation::ItemMove,
+            FormOperation::AttributeAdd,
+            FormOperation::CommandAdd,
+            FormOperation::EventBind,
         ] {
-            let contract = OperationContract::form(op).unwrap();
+            let contract = OperationContract::form(op);
             assert!(
                 contract.normalize(&contract.example_args, "args").is_ok(),
-                "{op}"
+                "{op:?}"
             );
         }
         let implement = OperationContract::event("event.implement").unwrap();
