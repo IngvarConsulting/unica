@@ -205,7 +205,7 @@ impl ViewCursorError {
 
     pub(crate) const fn message(self) -> &'static str {
         match self {
-            Self::Invalid => "view cursor does not belong to this question and owner",
+            Self::Invalid => "view cursor is invalid, expired, or belongs to another question",
             Self::CapacityExceeded => "new view snapshot exceeds the temporary retained-state budget; earlier continuations remain available",
             Self::OwnerUnavailable => "view cursor owner is unavailable",
             Self::EntropyUnavailable => "view cursor entropy is unavailable",
