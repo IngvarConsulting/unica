@@ -74,11 +74,14 @@ fn metadata_element_fields(attributes: bool) -> Map<String, Value> {
     if attributes {
         fields.insert(
             "attributes".into(),
-            json!({"type":"array","minItems":1,
-            "items":metadata_element_input_schema(false, false)}),
+            metadata_element_attributes_schema(metadata_element_input_schema(false, false).clone()),
         );
     }
     fields
+}
+
+fn metadata_element_attributes_schema(items: Value) -> Value {
+    json!({"type":"array","minItems":1,"items":items})
 }
 
 /// Existing internal input: update also carries the synthetic selector name.
@@ -158,9 +161,14 @@ fn metadata_element_schema(
     if spec.allows_nested_attributes && !update {
         fields.insert(
             "attributes".into(),
-            json!({"type":"array","minItems":1,
-            "items":metadata_element_schema(MetaCollection::Attributes, false,
-                site.map(|site| MetadataSite { in_section: true, ..site }))}),
+            metadata_element_attributes_schema(metadata_element_schema(
+                MetaCollection::Attributes,
+                false,
+                site.map(|site| MetadataSite {
+                    in_section: true,
+                    ..site
+                }),
+            )),
         );
     }
     let mut schema = json!({"type":"object","additionalProperties":false,"properties":fields});

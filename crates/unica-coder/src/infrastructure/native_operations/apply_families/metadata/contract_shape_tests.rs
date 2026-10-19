@@ -384,6 +384,23 @@ fn fill_shape_uses_the_same_owner_and_tabular_context_as_the_productive_reader()
         }
     }
     for (owner, allows_fill) in [("Document.Order", false), ("Report.Sales", true)] {
+        for (attributes, expected) in [
+            (json!(false), false),
+            (json!({}), false),
+            (json!([]), false),
+            (
+                json!([{"name":"Value","type":{"variants":[{"kind":"boolean"}]}}]),
+                true,
+            ),
+        ] {
+            compare_schema_and_parser(
+                &fixture,
+                "tabularSection.add",
+                &format!("main:{owner}"),
+                json!({"items":[{"name":"Lines","attributes":attributes}]}),
+                expected,
+            );
+        }
         for (attribute, structurally_valid) in [
             (
                 json!({"name":"Value","type":{"variants":[{"kind":"boolean"}]},"fillValue":{"kind":"boolean","value":true}}),
