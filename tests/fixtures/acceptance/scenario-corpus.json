@@ -7658,7 +7658,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` first"
+     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
     }
    ]
   },
@@ -7687,7 +7687,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` first"
+     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
     }
    ]
   },
@@ -7717,7 +7717,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` first"
+     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
     }
    ]
   },
@@ -7747,7 +7747,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` first"
+     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
     }
    ]
   },
@@ -7905,7 +7905,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "invalid_state: the configuration is on vendor support with changes disabled; enable editing with `supportCapability.set` first"
+     "refusal": "invalid_state: the configuration is on vendor support with changes disabled; enable editing with `supportCapability.set` in a separate apply before ordinary edits"
     }
    ]
   },
@@ -8080,7 +8080,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` first"
+     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
     }
    ]
   },

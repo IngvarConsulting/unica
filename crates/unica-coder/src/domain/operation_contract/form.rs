@@ -4,10 +4,10 @@
 
 use super::{object, text, OperationContract};
 use crate::domain::form_operation::FormOperation;
+use crate::domain::module_projection::FormCallType;
 use serde_json::{json, Value};
 
 const FORM_HELP: &str = "skills/form-edit/SKILL.md";
-const EVENT_HELP: &str = "skills/form-events/SKILL.md";
 
 /// Вид элемента, который создаёт `item.add`: имя вида в `type`, его
 /// синонимы и ключи, которые генератор элемента (`form::emit_form_*`)
@@ -527,7 +527,7 @@ impl OperationContract {
             FormOperation::EventBind => (
                 object(&[at(), ("values", object(&[
                     ("handler",json!({"type":"string","pattern":r"\S","description":"Handler procedure in the form module."})),
-                    ("callType",json!({"type":"string","enum":["Before","After","Override"],
+                    ("callType",json!({"type":"string","enum":FormCallType::ALL.map(FormCallType::as_str),
                         "description":"Only in an extension form."})),
                 ], &["handler"]))], &["values"]),
                 "An event of the form or its item: <source-set>:<Kind>.<Name>.Form.<Form>[.Item.<Element>…].Event.<Event>, as view lists it.",
@@ -618,28 +618,6 @@ impl OperationContract {
         contract.example_args =
             json!({"items":[{"name":"Sample","type":"Button","stdCommand":"Close"}]});
         contract
-    }
-
-    /// Контракт `event.implement`: привязка и процедура по адресу события.
-    pub(crate) fn event(op: &str) -> Option<Self> {
-        (op == "event.implement").then(|| Self {
-            schema: object(
-                &[
-                    ("at", text(true)),
-                    (
-                        "callType",
-                        json!({"type":"string","enum":["Before","After","Override"],
-                            "description":"Only in an extension form."}),
-                    ),
-                ],
-                &[],
-            ),
-            target: "An event node: a form or item event ….Form.<Form>[.Item.<Element>…].Event.<Event>, or an object module event <source-set>:<Kind>.<Name>.Event.<Event>.",
-            effect: "Write the handler procedure into the module and, for a form event, its binding.",
-            notes: "The event is named by the address; the handler name follows the platform convention.",
-            example_args: json!({}),
-            help: EVENT_HELP,
-        })
     }
 }
 
@@ -762,8 +740,6 @@ mod tests {
                 "{op:?}"
             );
         }
-        let implement = OperationContract::event("event.implement").unwrap();
-        assert!(implement.normalize(&implement.example_args, "args").is_ok());
     }
 
     #[test]

@@ -6,8 +6,10 @@ use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
+mod event;
 mod form;
 mod metadata;
+mod mxl;
 #[cfg(test)]
 pub(crate) use form::{form_element_enum, FORM_ELEMENT_KINDS};
 pub(crate) use form::{FORM_DYNAMIC_LIST_KEYS, FORM_ELEMENT_EVENT_KEYS, FORM_ELEMENT_NESTED_KEYS};
@@ -16,7 +18,8 @@ use metadata::IDENTIFIER_PATTERN;
 pub(crate) use metadata::{
     metadata_borrow_input_schema, metadata_element_input_schema, metadata_help_create_input_schema,
     metadata_host_element_schema, metadata_object_create_input_schema,
-    metadata_object_remove_input_schema, metadata_relation_input_schema, MetadataSite,
+    metadata_object_remove_input_schema, metadata_predefined_element_input_schema,
+    metadata_relation_input_schema, MetadataSite,
 };
 
 pub(crate) const MXL_MAX_ROW: i64 = 10_000;
@@ -118,6 +121,13 @@ impl<'a> ArgumentShape<'a> {
 
     pub(crate) fn items(self) -> Option<Self> {
         self.schema.get("items").map(Self::new)
+    }
+
+    pub(crate) fn additional_properties(self) -> Option<Self> {
+        self.schema
+            .get("additionalProperties")
+            .filter(|schema| schema.is_object())
+            .map(Self::new)
     }
 
     pub(crate) fn variant(self, discriminator: &str, value: &str) -> Option<Self> {
@@ -480,56 +490,6 @@ impl OperationContract {
             notes:"Operands are structured values. There is no shorthand or whole-schema JSON input. Unspecified properties and unrelated XML bytes are preserved; create template.add first, then compose operations. Preview makes no writes; execute its executionToken, read the post-image and check the template.",example_args,help:REPORTS_HELP})
     }
 
-    pub(crate) fn mxl(op: &str) -> Option<Self> {
-        let scalar = json!({"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"},{"type":"null"}]});
-        let (schema, target, effect, notes, example_args) = match op {
-            "mxl.set" | "area.add" => {
-                let cells = json!({"type":"object","minProperties":1,
-                    "propertyNames":{"type":"string","format":"unica-mxl-cell-address",
-                        "description":format!("R<row>C<column>, 1-based inside the area; row <= {MXL_MAX_ROW}, column <= {MXL_MAX_COLUMN}; leading zeros and plus are accepted")},
-                    "additionalProperties":scalar});
-                let columns = json!({"type":"integer","format":"unica-json-i64","minimum":1,"maximum":i64::MAX,
-                    "description":"Positive JSON integer serialized without a decimal point or exponent, in the signed 64-bit range; 1 is accepted, 1.0 and 1e0 are refused."});
-                let notes = "Read Template -> Area -> Body for ordered nonempty text cells; Body index is a reading ordinal, not RnCn. Parameter lists parameter names. The writer changes only the addressed cells, rows and areas; other content and bytes stay. A new cell has no own format. Refused before writing: a non-Rows or rowless area, a cell inside a merge it does not start, a cell holding a value or control, a cell that takes a parameter or template fill from its row, column, column-set or document format. Strings remain text; numbers/booleans are serialized as text; null is empty text and writes no new cell. Fonts, styles, merges and page properties are not public inputs. Create and execute template.add before addressing a new template.";
-                if op == "mxl.set" {
-                    (object(&[("at",text(true)),("values",object(&[("cells",cells),("columns",columns)], &["cells"]))], &["values"]),
-                    "An existing named area of a SpreadsheetDocument Template: <source-set>:<Owner>.<name>.Template.<name>.Area.<area>. The address names the area; a missing area is refused, create it with area.add on the template.",
-                    "Update cells of the existing named Rows area. Addressed parameter/template cells become ordinary text. Unaddressed cells and areas remain. A row below the area grows the area only when nothing follows it. Width grows to max(existing width, written column, columns); it never shrinks.",
-                    notes,
-                    json!({"values":{"columns":4,"cells":{"R1C1":"Item","R1C2":"Amount","R2C1":true,"R2C2":null}}}))
-                } else {
-                    (object(&[("at",text(true)),("items",json!({"type":"array","minItems":1,"items":object(&[("name",text(true)),("cells",cells),("columns",columns)], &["name","cells"])}))], &["items"]),
-                    "The existing SpreadsheetDocument Template itself: <source-set>:<Owner>.<name>.Template.<name>. Read its Area collection before choosing a new area name.",
-                    "Append new named Rows areas after every used row with their initial cells. An existing area name is refused; change it with mxl.set at its Area address. Width grows to max(existing width, written column, columns); it never shrinks.",
-                    notes,
-                    json!({"items":[{"name":"Header","columns":4,"cells":{"R1C1":"Item","R1C2":"Amount"}}]}))
-                }
-            }
-            "template.add" => {
-                let kinds: Vec<_> = crate::domain::metadata::MetaTemplateKind::ALL
-                    .iter()
-                    .map(|kind| kind.as_str())
-                    .collect();
-                let kind = json!({"default":"SpreadsheetDocument","anyOf":[{"type":"string","enum":kinds},{"not":{"type":"string"}}]});
-                (object(&[("at",text(true)),("items",json!({"type":"array","minItems":1,"items":object(&[
-                    ("name",text(true)),("templateType",kind),("synonym",json!({}))], &["name"])}))], &["items"]),
-                "An existing metadata owner that exposes template.add in can. Read its Template collection before choosing a new valid 1C identifier.",
-                "Register a new template and its initial content. The new address exists only after execution of the saved plan; preview does not create it.",
-                "The kind vocabulary comes from MetaTemplateKind. Current initial-content synthesis supports SpreadsheetDocument and DataCompositionSchema; HTMLDocument, TextDocument and BinaryData are typed refusals (tracked gap #992). Missing or non-string templateType uses SpreadsheetDocument for compatibility. synonym is accepted but currently ignored. A new DCS has no dataset. For MXL, add areas with area.add on the template, then change their cells with mxl.set at Template.<name>.Area.<area>; view returns a node projection, not a round-trip JSON DSL.",
-                json!({"items":[{"name":"PrintLayout","templateType":"SpreadsheetDocument"}]}))
-            }
-            _ => return None,
-        };
-        Some(Self {
-            schema,
-            target,
-            effect,
-            notes,
-            example_args,
-            help: REPORTS_HELP,
-        })
-    }
-
     pub(crate) fn normalize(&self, args: &Value, path: &str) -> Result<Value, ContractError> {
         validate(&self.schema, args, path)?;
         let mut args = args.clone();
@@ -784,43 +744,33 @@ mod tests {
     use crate::domain::role_operation::RoleOperation;
 
     #[test]
-    fn typed_member_contracts_have_no_legacy_string_fallback() {
-        for site in [
-            None,
-            Some(MetadataSite {
-                owner: crate::domain::metadata::MetadataKind::Document,
-                in_section: true,
-            }),
-        ] {
-            for operation in [
-                "attribute.add",
-                "attribute.set",
-                "attribute.remove",
-                "tabularSection.add",
-                "tabularSection.set",
-                "tabularSection.remove",
-                "dimension.add",
-                "dimension.set",
-                "dimension.remove",
-                "resource.add",
-                "resource.set",
-                "resource.remove",
-                "enumValue.add",
-                "enumValue.set",
-                "enumValue.remove",
-                "column.add",
-                "column.set",
-                "column.remove",
-                "command.add",
-                "command.set",
-                "command.remove",
-            ] {
-                assert!(OperationContract::metadata_at(operation, site).is_none());
-                let descriptor = OperationRegistry::closed().lookup(operation).unwrap();
+    fn typed_metadata_contracts_cover_each_registered_identity_and_site() {
+        let sites = std::iter::once(None).chain(
+            crate::domain::metadata::MetadataKind::ALL
+                .iter()
+                .flat_map(|owner| {
+                    [false, true].map(|in_section| {
+                        Some(MetadataSite {
+                            owner: *owner,
+                            in_section,
+                        })
+                    })
+                }),
+        );
+        for site in sites {
+            for descriptor in OperationRegistry::closed()
+                .descriptors()
+                .iter()
+                .filter(|descriptor| descriptor.family() == OperationFamily::Metadata)
+            {
+                let operation = descriptor
+                    .metadata_operation()
+                    .expect("every Metadata registration is typed");
+                let contract = operation.contract_at(site);
+                assert_eq!(contract.schema["type"], "object", "{}", operation.name());
+                assert_eq!(contract.schema["additionalProperties"], false);
+                assert_eq!(contract.schema["properties"]["at"]["type"], "string");
                 assert!(descriptor.argument_contract().is_some());
-            }
-            for operation in ["template.set", "predefinedItem.remove"] {
-                assert!(OperationContract::metadata_at(operation, site).is_some());
             }
         }
     }
@@ -954,7 +904,7 @@ mod tests {
 
     #[test]
     fn mxl_contract_checks_dynamic_keys_scalars_and_exact_integer_values() {
-        let contract = OperationContract::mxl("mxl.set").unwrap();
+        let contract = crate::domain::mxl_operation::MxlOperation::Set.contract();
         for key in ["R1C1", "R01C01", "R+1C+1", "R10000C1000"] {
             assert!(
                 contract
@@ -1004,7 +954,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.path, "args.values.area");
         // `area.add` называет новую область и её начальные ячейки.
-        let area = OperationContract::mxl("area.add").unwrap();
+        let area = crate::domain::mxl_operation::MxlOperation::AreaAdd.contract();
         assert!(area
             .normalize(
                 &json!({"items":[{"name":"A","cells":{"R1C1":"x"},"columns":2}]}),
@@ -1019,7 +969,7 @@ mod tests {
         ] {
             assert!(area.normalize(&args, "args").is_err(), "{args}");
         }
-        let creation = OperationContract::mxl("template.add").unwrap();
+        let creation = OperationContract::metadata_template_add();
         for kind in [
             Value::Null,
             json!(7),

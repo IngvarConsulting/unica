@@ -1,6 +1,7 @@
 //! Metadata argument shapes shared by Can and staged decoding.
 
-use super::{object, text, OperationContract};
+use super::{object, text, OperationContract, REPORTS_HELP};
+use crate::domain::metadata::{MetadataKind, RelationEditMode};
 use serde_json::{json, Map, Value};
 
 const METADATA_HELP: &str = "skills/meta-edit/SKILL.md";
@@ -258,79 +259,84 @@ fn metadata_element_schema(
     schema
 }
 
-/// Fields of a predefined item: `add` names a new item with its `id`, `set`
-/// changes an existing one, named by the address (a rename is `newName`).
-/// With an owner kind only the fields that kind accepts are published.
+/// The existing host input knows every predefined field. Identifier, UUID
+/// and owner legality remain with the typed converters in their old order.
+pub(crate) fn metadata_predefined_element_input_schema(update: bool) -> &'static Value {
+    use crate::domain::metadata::{metadata_type_schema, MetaPredefinedAccountType};
+    static ADD: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+    static UPDATE: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+    let cache = if update { &UPDATE } else { &ADD };
+    cache.get_or_init(|| {
+        let name = json!({"type":"string","minLength":1});
+        let flags = json!({"type":"object","additionalProperties":{"type":"boolean"}});
+        let fields = Map::from_iter([
+            ("id".into(), json!({"type":"string","minLength":1})),
+            ("name".into(), name.clone()),
+            ("code".into(), text(false)),
+            ("description".into(), text(false)),
+            ("isFolder".into(), json!({"type":"boolean"})),
+            ("type".into(), metadata_type_schema()),
+            ("accountType".into(), json!({"type":"string","enum":MetaPredefinedAccountType::ALL.iter().map(|kind| kind.as_str()).collect::<Vec<_>>()})),
+            ("offBalance".into(), json!({"type":"boolean"})),
+            ("order".into(), text(false)),
+            ("accountingFlags".into(), flags.clone()),
+            ("extDimensionTypes".into(), json!({"type":"array","items":{"type":"object","additionalProperties":false,
+                "required":["name"],"properties":{"name":name,"turnover":{"type":"boolean"},"accountingFlags":flags}}})),
+            ("actionPeriodIsBase".into(), json!({"type":"boolean"})),
+        ]);
+        json!({"type":"object","additionalProperties":false,
+            "required":if update { json!(["id"]) } else { json!(["id", "name"]) },
+            "properties":fields})
+    })
+}
+
+/// The canonical address selects the item; the host's optional `name`
+/// becomes `newName`. Publish only the fields the owner kind accepts.
 fn predefined_item_schema(
     update: bool,
     owner: Option<crate::domain::metadata::MetadataKind>,
 ) -> Value {
-    use crate::domain::metadata::{metadata_predefined_kind_fields, metadata_type_schema};
+    use crate::domain::metadata::metadata_predefined_kind_fields;
+    let input = metadata_predefined_element_input_schema(update);
+    let input_fields = input["properties"]
+        .as_object()
+        .expect("predefined input fields");
+    let mut name = input_fields["name"].clone();
+    name.as_object_mut()
+        .expect("name field")
+        .remove("minLength");
+    name["pattern"] = json!(IDENTIFIER_PATTERN);
     let mut fields = Map::new();
     if update {
-        fields.insert(
-            "newName".into(),
-            json!({"type":"string","pattern":IDENTIFIER_PATTERN}),
-        );
+        fields.insert("newName".into(), name);
     } else {
-        fields.insert(
-            "id".into(),
-            json!({"type":"string","pattern":"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"}),
-        );
-        fields.insert(
-            "name".into(),
-            json!({"type":"string","pattern":IDENTIFIER_PATTERN}),
-        );
+        let mut id = input_fields["id"].clone();
+        id.as_object_mut().expect("id field").remove("minLength");
+        id["pattern"] =
+            json!("^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$");
+        fields.insert("id".into(), id);
+        fields.insert("name".into(), name);
     }
     let kind_fields = owner.map(metadata_predefined_kind_fields);
-    for (name, schema) in [
-        ("code", json!({"type":"string"})),
-        ("description", json!({"type":"string"})),
-        ("isFolder", json!({"type":"boolean"})),
-        ("type", metadata_type_schema()),
-        (
-            "accountType",
-            json!({"type":"string","enum":["Active","Passive","ActivePassive"]}),
-        ),
-        ("offBalance", json!({"type":"boolean"})),
-        ("order", json!({"type":"string"})),
-        (
-            "accountingFlags",
-            json!({"type":"object","additionalProperties":{"type":"boolean"}}),
-        ),
-        (
-            "extDimensionTypes",
-            json!({"type":"array","items":{"type":"object","additionalProperties":false,
-                "required":["name"],"properties":{"name":{"type":"string","minLength":1},
-                "turnover":{"type":"boolean"},
-                "accountingFlags":{"type":"object","additionalProperties":{"type":"boolean"}}}}}),
-        ),
-        ("actionPeriodIsBase", json!({"type":"boolean"})),
-    ] {
-        let common = matches!(name, "code" | "description");
-        if common || kind_fields.is_none_or(|allowed| allowed.contains(&name)) {
-            fields.insert(name.into(), schema);
+    for (name, schema) in input_fields {
+        if matches!(name.as_str(), "id" | "name") {
+            continue;
+        }
+        let common = matches!(name.as_str(), "code" | "description");
+        if common || kind_fields.is_none_or(|allowed| allowed.contains(&name.as_str())) {
+            fields.insert(name.clone(), schema.clone());
         }
     }
     let mut schema = json!({"type":"object","additionalProperties":false,"properties":fields});
     if update {
         schema["minProperties"] = json!(1);
     } else {
-        schema["required"] = json!(["id", "name"]);
+        schema["required"] = input["required"].clone();
     }
     schema
 }
 
 impl OperationContract {
-    /// Contracts of the member operations of a metadata object: `*.add` on
-    /// the owner (attributes also on a tabular section), `*.set` and
-    /// `*.remove` on the member itself. The schema publishes the fields the
-    /// typed writer accepts for the collection; the planner parses the same
-    /// arguments with the writer's own request parser.
-    pub(crate) fn metadata(op: &str) -> Option<Self> {
-        Self::metadata_at(op, None)
-    }
-
     pub(in crate::domain) fn metadata_member_add(
         collection: crate::domain::metadata::MetaCollection,
         site: Option<MetadataSite>,
@@ -402,161 +408,190 @@ impl OperationContract {
         }
     }
 
-    /// The contract on a concrete node: fields whose legality depends on the
-    /// owner kind or on the tabular section are narrowed to that node.
-    pub(crate) fn metadata_at(op: &str, site: Option<MetadataSite>) -> Option<Self> {
-        let (family, verb) = op.split_once('.')?;
-        let owner = site.map(|site| site.owner);
-        let at = || ("at", text(true));
-        if family == "object" {
-            let (schema, target, effect, notes, example_args, help) = match verb {
-                "create" => {
-                    let mut schema = metadata_object_create_input_schema().clone();
-                    schema["properties"]["values"]["properties"]["name"]["pattern"] = json!(IDENTIFIER_PATTERN);
-                    (schema,
-                        "The Configuration root: <source-set>:Configuration.",
-                        "Create and register a new metadata object with its minimal supported files.",
-                        "Choose an unused valid 1C identifier. The operation accepts kind and name; configure properties and members with subsequent operations in the same apply call.",
-                        json!({"values":{"kind":"Catalog","name":"Sample"}}),
-                        "skills/meta-add/SKILL.md")
+    pub(crate) fn metadata_object_create() -> Self {
+        let mut schema = metadata_object_create_input_schema().clone();
+        schema["properties"]["values"]["properties"]["name"]["pattern"] = json!(IDENTIFIER_PATTERN);
+        Self {
+            schema,
+            target: "The Configuration root: <source-set>:Configuration.",
+            effect: "Create and register a new metadata object with its minimal supported files.",
+            notes: "Choose an unused valid 1C identifier. The operation accepts kind and name; configure properties and members with subsequent operations in the same apply call.",
+            example_args: json!({"values":{"kind":"Catalog","name":"Sample"}}),
+            help: "skills/meta-add/SKILL.md",
+        }
+    }
+
+    pub(crate) fn metadata_object_remove() -> Self {
+        Self {
+            schema: metadata_object_remove_input_schema().clone(),
+            target: "The existing metadata object: <source-set>:<Kind>.<Name>.",
+            effect: "Remove the object descriptor, its resource directory and its registration; update subsystem membership.",
+            notes: "References from other objects are checked. force=true keeps those references and reports references_kept; it does not repair them. Under the deny support policy, a vendor object must be taken off support in a separate apply call first.",
+            example_args: json!({}),
+            help: METADATA_HELP,
+        }
+    }
+
+    pub(crate) fn metadata_object_borrow() -> Self {
+        Self {
+            schema: metadata_borrow_input_schema().clone(),
+            target: "The extension Configuration root: <extension-source-set>:Configuration.",
+            effect: "Borrow or refresh the named parent object, preserving the extension's identity and local data.",
+            notes: "exampleArgs is a template: replace parent and Sample with an existing object in a distinct admitted parent source set. from is a qualified address of a named top-level object or Enum.EnumValue; read that source first. overrides names supported transferred properties; an empty array is allowed for a top-level object but any overrides field is refused for EnumValue. Refresh preserves the established override set.",
+            example_args: json!({"from":"parent:Catalog.Sample"}),
+            help: "skills/cfe-borrow/SKILL.md",
+        }
+    }
+
+    pub(crate) fn metadata_help_create() -> Self {
+        Self {
+            schema: metadata_help_create_input_schema().clone(),
+            target: "The existing metadata object: <source-set>:<Kind>.<Name>.",
+            effect: "Create Ext/Help.xml and Ext/Help/<lang>.html; add IncludeHelpInContents=false to owner forms that lack that property.",
+            notes: "lang is required and contains only ASCII letters and digits, for example ru or en. Creation is refused if help already exists; existing help and forms are preserved. Plan this root-inspecting operation before other changes in the batch.",
+            example_args: json!({"values":{"lang":"ru"}}),
+            help: METADATA_HELP,
+        }
+    }
+
+    pub(crate) fn metadata_relation(mode: RelationEditMode, owner: Option<MetadataKind>) -> Self {
+        use crate::domain::metadata::{
+            metadata_relation_specs, metadata_relation_values_schema, MetaRelation,
+        };
+        let relation = owner
+            .map(|kind| {
+                metadata_relation_specs(kind)
+                    .first()
+                    .map(|spec| spec.relation)
+            })
+            .unwrap_or(Some(MetaRelation::Owners));
+        let example_args = relation
+            .map(|relation| {
+                let targets = match relation {
+                    MetaRelation::Owners | MetaRelation::BasedOn => {
+                        json!([{"metadataPath":"Catalog.Sample"}])
+                    }
+                    MetaRelation::RegisterRecords => {
+                        json!([{"metadataPath":"InformationRegister.Sample"}])
+                    }
+                    MetaRelation::InputByString => {
+                        json!([{"fieldPath":"Catalog.Sample.Attribute.Code"}])
+                    }
+                    MetaRelation::Source => {
+                        json!([{"kind":"family","sourceClass":"catalogObject"}])
+                    }
+                };
+                json!({"values":{"relation":relation.as_str(),"targets":targets}})
+            })
+            .unwrap_or_else(|| json!({}));
+        let mut schema = metadata_relation_input_schema().clone();
+        schema["properties"]["values"] = metadata_relation_values_schema(owner);
+        Self {
+            schema,
+            target:
+                "The existing metadata object that owns this relation: <source-set>:<Kind>.<Name>.",
+            effect: match mode {
+                RelationEditMode::Add => {
+                    "Add the listed relation targets, preserving existing targets."
                 }
-                "remove" => (metadata_object_remove_input_schema().clone(),
-                    "The existing metadata object: <source-set>:<Kind>.<Name>.",
-                    "Remove the object descriptor, its resource directory and its registration; update subsystem membership.",
-                    "References from other objects are checked. force=true keeps those references and reports references_kept; it does not repair them. Under the deny support policy, a vendor object must be taken off support in a separate apply call first.",
-                    json!({}), METADATA_HELP),
-                "borrow" => (metadata_borrow_input_schema().clone(),
-                    "The extension Configuration root: <extension-source-set>:Configuration.",
-                    "Borrow or refresh the named parent object, preserving the extension's identity and local data.",
-                    "exampleArgs is a template: replace parent and Sample with an existing object in a distinct admitted parent source set. from is a qualified address of a named top-level object or Enum.EnumValue; read that source first. overrides names supported transferred properties; an empty array is allowed for a top-level object but any overrides field is refused for EnumValue. Refresh preserves the established override set.",
-                    json!({"from":"parent:Catalog.Sample"}), "skills/cfe-borrow/SKILL.md"),
-                _ => return None,
-            };
-            return Some(Self {
-                schema,
-                target,
-                effect,
-                notes,
-                example_args,
-                help,
-            });
+                RelationEditMode::Remove => {
+                    "Remove the listed relation targets, preserving other targets."
+                }
+                RelationEditMode::Replace => {
+                    "Replace the relation's logical targets with the listed set."
+                }
+            },
+            notes: if relation.is_none() {
+                "This owner kind has no supported relations. Its relation field rejects every value; there is no executable argument example on this node."
+            } else {
+                "exampleArgs is a template: replace Sample targets with existing objects or fields allowed for this owner. The owner kind narrows the relation and target shape. targets is nonempty; mode is selected by the operation name. Read targets first. Field existence, same-owner paths, source-class compatibility and the final nonempty EventSubscription source are checked by the planner. Existing XML namespaces and unrelated data are preserved."
+            },
+            example_args,
+            help: METADATA_HELP,
         }
-        if family == "help" && verb == "create" {
-            return Some(Self {
-                schema: metadata_help_create_input_schema().clone(),
-                target: "The existing metadata object: <source-set>:<Kind>.<Name>.",
-                effect: "Create Ext/Help.xml and Ext/Help/<lang>.html; add IncludeHelpInContents=false to owner forms that lack that property.",
-                notes: "lang is required and contains only ASCII letters and digits, for example ru or en. Creation is refused if help already exists; existing help and forms are preserved. Plan this root-inspecting operation before other changes in the batch.",
-                example_args: json!({"values":{"lang":"ru"}}),
-                help: METADATA_HELP,
-            });
+    }
+
+    pub(crate) fn metadata_predefined_add(owner: Option<MetadataKind>) -> Self {
+        Self {
+            schema: object(&[("at", text(true)), ("items", json!({"type":"array","minItems":1,"items":predefined_item_schema(false, owner)}))], &["items"]),
+            target: "A metadata object with predefined items: <source-set>:<Kind>.<Name>. Read its PredefinedItem branch first; a new item needs a new UUID id and a new name.",
+            effect: "Add predefined items to Ext/Predefined.xml of the owner; the file is created with the first item.",
+            notes: "Predefined items are named by their address; there is no id or name selector argument. Item names are unique within the owner at every depth; an add or rename onto a used name is refused. The fields beyond code and description depend on the owner kind.",
+            example_args: json!({"items":[{"id":"a1b2c3d4-1111-4111-8111-111111111111","name":"Sample","description":"Sample item"}]}),
+            help: METADATA_HELP,
         }
-        if family == "relation" && matches!(verb, "add" | "remove" | "replace") {
-            use crate::domain::metadata::{
-                metadata_relation_specs, metadata_relation_values_schema, MetaRelation,
-            };
-            let relation = owner
-                .map(|kind| {
-                    metadata_relation_specs(kind)
-                        .first()
-                        .map(|spec| spec.relation)
-                })
-                .unwrap_or(Some(MetaRelation::Owners));
-            let example_args = relation
-                .map(|relation| {
-                    let targets = match relation {
-                        MetaRelation::Owners | MetaRelation::BasedOn => {
-                            json!([{"metadataPath":"Catalog.Sample"}])
-                        }
-                        MetaRelation::RegisterRecords => {
-                            json!([{"metadataPath":"InformationRegister.Sample"}])
-                        }
-                        MetaRelation::InputByString => {
-                            json!([{"fieldPath":"Catalog.Sample.Attribute.Code"}])
-                        }
-                        MetaRelation::Source => {
-                            json!([{"kind":"family","sourceClass":"catalogObject"}])
-                        }
-                    };
-                    json!({"values":{"relation":relation.as_str(),"targets":targets}})
-                })
-                .unwrap_or_else(|| json!({}));
-            let mut schema = metadata_relation_input_schema().clone();
-            schema["properties"]["values"] = metadata_relation_values_schema(owner);
-            return Some(Self {
-                schema,
-                target: "The existing metadata object that owns this relation: <source-set>:<Kind>.<Name>.",
-                effect: match verb {
-                    "add" => "Add the listed relation targets, preserving existing targets.",
-                    "remove" => "Remove the listed relation targets, preserving other targets.",
-                    "replace" => "Replace the relation's logical targets with the listed set.",
-                    _ => unreachable!("the relation verb was checked"),
-                },
-                notes: if relation.is_none() {
-                    "This owner kind has no supported relations. Its relation field rejects every value; there is no executable argument example on this node."
-                } else {
-                    "exampleArgs is a template: replace Sample targets with existing objects or fields allowed for this owner. The owner kind narrows the relation and target shape. targets is nonempty; mode is selected by the operation name. Read targets first. Field existence, same-owner paths, source-class compatibility and the final nonempty EventSubscription source are checked by the planner. Existing XML namespaces and unrelated data are preserved."
-                },
-                example_args,
-                help: METADATA_HELP,
-            });
+    }
+
+    pub(crate) fn metadata_predefined_set(owner: Option<MetadataKind>) -> Self {
+        Self {
+            schema: object(&[("at", text(true)), ("values", predefined_item_schema(true, owner))], &["values"]),
+            target: "The existing item: <source-set>:<Kind>.<Name>.PredefinedItem.<ItemName>. The id is not an input.",
+            effect: "Change the listed fields of the item; newName renames it. Unlisted fields stay.",
+            notes: "Predefined items are named by their address; there is no id or name selector argument. Item names are unique within the owner at every depth; an add or rename onto a used name is refused. The fields beyond code and description depend on the owner kind.",
+            example_args: json!({"values":{"description":"Sample item"}}),
+            help: METADATA_HELP,
         }
-        if family == "predefinedItem" {
-            let (schema, target, effect, example_args) = match verb {
-                "add" => (
-                    object(&[at(), ("items", json!({"type":"array","minItems":1,"items":predefined_item_schema(false, owner)}))], &["items"]),
-                    "A metadata object with predefined items: <source-set>:<Kind>.<Name>. Read its PredefinedItem branch first; a new item needs a new UUID id and a new name.",
-                    "Add predefined items to Ext/Predefined.xml of the owner; the file is created with the first item.",
-                    json!({"items":[{"id":"a1b2c3d4-1111-4111-8111-111111111111","name":"Sample","description":"Sample item"}]}),
-                ),
-                "set" => (
-                    object(&[at(), ("values", predefined_item_schema(true, owner))], &["values"]),
-                    "The existing item: <source-set>:<Kind>.<Name>.PredefinedItem.<ItemName>. The id is not an input.",
-                    "Change the listed fields of the item; newName renames it. Unlisted fields stay.",
-                    json!({"values":{"description":"Sample item"}}),
-                ),
-                "remove" => (
-                    object(&[at()], &[]),
-                    "The existing item: <source-set>:<Kind>.<Name>.PredefinedItem.<ItemName>.",
-                    "Remove the item with its nested items; the file is removed with the last item.",
-                    json!({}),
-                ),
-                _ => return None,
-            };
-            return Some(Self {
-                schema,
-                target,
-                effect,
-                notes: "Predefined items are named by their address; there is no id or name selector argument. Item names are unique within the owner at every depth; an add or rename onto a used name is refused. The fields beyond code and description depend on the owner kind.",
-                example_args,
-                help: METADATA_HELP,
-            });
+    }
+
+    pub(crate) fn metadata_predefined_remove() -> Self {
+        Self {
+            schema: object(&[("at", text(true))], &[]),
+            target: "The existing item: <source-set>:<Kind>.<Name>.PredefinedItem.<ItemName>.",
+            effect: "Remove the item with its nested items; the file is removed with the last item.",
+            notes: "Predefined items are named by their address; there is no id or name selector argument. Item names are unique within the owner at every depth; an add or rename onto a used name is refused. The fields beyond code and description depend on the owner kind.",
+            example_args: json!({}),
+            help: METADATA_HELP,
         }
-        if family == "template" {
-            let (schema, effect, example_args) = match verb {
-                "set" => (
-                    object(&[at(), ("values", json!({"type":"object","additionalProperties":false,"minProperties":1,
-                        "properties":{"synonym":{"type":"string"},"comment":{"type":"string"},
-                            "templateType":{"type":"string","enum":crate::domain::metadata::MetaTemplateKind::ALL.iter().map(|kind| kind.as_str()).collect::<Vec<_>>()}}}))], &["values"]),
-                    "Change the listed properties of the template descriptor. Unlisted properties stay.",
-                    json!({"values":{"synonym":"Sample"}}),
-                ),
-                "remove" => (
-                    object(&[at()], &[]),
-                    "Remove the template descriptor and its content, and clear owner properties that pointed at it.",
-                    json!({}),
-                ),
-                _ => return None,
-            };
-            return Some(Self {
-                schema,
-                target: "The existing template: <source-set>:<Kind>.<Name>.Template.<T>.",
-                effect,
-                notes: "The template is named by its address; there is no name argument.",
-                example_args,
-                help: METADATA_HELP,
-            });
+    }
+
+    pub(crate) fn metadata_template_add() -> Self {
+        let kinds: Vec<_> = crate::domain::metadata::MetaTemplateKind::ALL
+            .iter()
+            .map(|kind| kind.as_str())
+            .collect();
+        let kind = json!({"default":"SpreadsheetDocument","anyOf":[{"type":"string","enum":kinds},{"not":{"type":"string"}}]});
+        Self {
+            schema: object(&[("at",text(true)),("items",json!({"type":"array","minItems":1,"items":object(&[
+                ("name",text(true)),("templateType",kind),("synonym",json!({}))], &["name"])}))], &["items"]),
+            target: "An existing metadata owner that exposes template.add in can. Read its Template collection before choosing a new valid 1C identifier.",
+            effect: "Register a new template and its initial content. The new address exists only after execution of the saved plan; preview does not create it.",
+            notes: "The kind vocabulary comes from MetaTemplateKind. Current initial-content synthesis supports SpreadsheetDocument and DataCompositionSchema; HTMLDocument, TextDocument and BinaryData are typed refusals (tracked gap #992). Missing or non-string templateType uses SpreadsheetDocument for compatibility. synonym is accepted but currently ignored. A new DCS has no dataset. For MXL, add areas with area.add on the template, then change their cells with mxl.set at Template.<name>.Area.<area>; view returns a node projection, not a round-trip JSON DSL.",
+            example_args: json!({"items":[{"name":"PrintLayout","templateType":"SpreadsheetDocument"}]}),
+            help: REPORTS_HELP,
         }
-        None
+    }
+
+    pub(crate) fn metadata_template_set() -> Self {
+        Self {
+            schema: object(
+                &[
+                    ("at", text(true)),
+                    (
+                        "values",
+                        json!({"type":"object","additionalProperties":false,"minProperties":1,
+                "properties":{"synonym":{"type":"string"},"comment":{"type":"string"},
+                    "templateType":{"type":"string","enum":crate::domain::metadata::MetaTemplateKind::ALL.iter().map(|kind| kind.as_str()).collect::<Vec<_>>()}}}),
+                    ),
+                ],
+                &["values"],
+            ),
+            target: "The existing template: <source-set>:<Kind>.<Name>.Template.<T>.",
+            effect:
+                "Change the listed properties of the template descriptor. Unlisted properties stay.",
+            notes: "The template is named by its address; there is no name argument.",
+            example_args: json!({"values":{"synonym":"Sample"}}),
+            help: METADATA_HELP,
+        }
+    }
+
+    pub(crate) fn metadata_template_remove() -> Self {
+        Self {
+            schema: object(&[("at", text(true))], &[]),
+            target: "The existing template: <source-set>:<Kind>.<Name>.Template.<T>.",
+            effect: "Remove the template descriptor and its content, and clear owner properties that pointed at it.",
+            notes: "The template is named by its address; there is no name argument.",
+            example_args: json!({}),
+            help: METADATA_HELP,
+        }
     }
 }

@@ -100,7 +100,7 @@ fn refuse_targets_on_locked_vendor_objects(
     if !state.global_editing_enabled() {
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::InvalidState,
-            "the configuration is on vendor support with changes disabled; enable editing with `supportCapability.set` first",
+            "the configuration is on vendor support with changes disabled; enable editing with `supportCapability.set` in a separate apply before ordinary edits",
         )
         .at_path(at));
     }
@@ -117,10 +117,10 @@ fn refuse_targets_on_locked_vendor_objects(
     let support_rule =
         support_root_uuid_from_bytes(&bytes).and_then(|uuid| state.object_rule(&uuid));
     if matches!(support_rule, Some(0 | 1))
-        && request
-            .ops()
-            .iter()
-            .any(|operation| operation.name() == "object.remove")
+        && request.ops().iter().any(|operation| {
+            crate::domain::metadata_operation::MetadataOperation::named(operation.name())
+                == Some(crate::domain::metadata_operation::MetadataOperation::ObjectRemove)
+        })
     {
         let rule_name = if support_rule == Some(0) {
             "locked"
@@ -139,7 +139,7 @@ fn refuse_targets_on_locked_vendor_objects(
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::InvalidState,
             format!(
-                "`{owner}` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` first"
+                "`{owner}` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
             ),
         )
         .at_path(at));
@@ -271,120 +271,6 @@ impl ParsedApplyOperation {
     fn same_family(&self, other: &Self) -> bool {
         std::mem::discriminant(self) == std::mem::discriminant(other)
     }
-}
-
-/// A planner that already reconciled its events against its own staged
-/// changes reports them tied to every path the batch changed: the request
-/// finalizer then keeps an event only while all of those paths stay changed
-/// in the final postimage.
-/// Object and manager events by their Russian names, as developers write them.
-const RUSSIAN_EVENT_NAMES: &[(&str, &str)] = &[
-    ("ПередЗаписью", "BeforeWrite"),
-    ("ПриЗаписи", "OnWrite"),
-    ("ПередУдалением", "BeforeDelete"),
-    ("ОбработкаЗаполнения", "Filling"),
-    ("ОбработкаПроверкиЗаполнения", "FillCheckProcessing"),
-    ("ПриКопировании", "OnCopy"),
-    ("ПриУстановкеНовогоНомера", "OnSetNewNumber"),
-    ("ПриУстановкеНовогоКода", "OnSetNewCode"),
-    ("ОбработкаПроведения", "Posting"),
-    ("ОбработкаУдаленияПроведения", "UndoPosting"),
-    ("ОбработкаПолученияДанныхВыбора", "ChoiceDataGetProcessing"),
-    ("ОбработкаПолученияФормы", "FormGetProcessing"),
-    (
-        "ОбработкаПолученияПолейПредставления",
-        "PresentationFieldsGetProcessing",
-    ),
-    (
-        "ОбработкаПолученияПредставления",
-        "PresentationGetProcessing",
-    ),
-    (
-        "ОбработкаФормированияИзВерсииИсторииДанных",
-        "GenerateFromDataHistoryVersionProcessing",
-    ),
-    (
-        "ОбработкаПослеЗаписиВерсийИсторииДанных",
-        "AfterWriteDataHistoryVersionsProcessing",
-    ),
-];
-
-const MANAGER_EVENTS: &[&str] = &[
-    "ChoiceDataGetProcessing",
-    "FormGetProcessing",
-    "PresentationFieldsGetProcessing",
-    "PresentationGetProcessing",
-    "AfterWriteDataHistoryVersionsProcessing",
-];
-
-/// `Owner.Name.Event.ПриЗаписи` is how a developer names an object event; the
-/// event planner addresses the module that hosts it
-/// (`Owner.Name.Module.Object.Event.OnWrite`). Both spellings are accepted:
-/// the module role follows the owner kind and the event, and Russian event
-/// names map onto the registry. Anything else passes through unchanged.
-fn canonical_event_args(args: serde_json::Value) -> serde_json::Value {
-    use crate::domain::address::{NodeKind, QualifiedAddress};
-    let Some(raw) = args.get("at").and_then(serde_json::Value::as_str) else {
-        return args;
-    };
-    let Ok(address) = QualifiedAddress::parse(raw) else {
-        return args;
-    };
-    let segments = address.segments();
-    let english = |name: &str| -> String {
-        RUSSIAN_EVENT_NAMES
-            .iter()
-            .find(|(russian, _)| *russian == name)
-            .map_or_else(|| name.to_string(), |(_, english)| (*english).to_string())
-    };
-    let rewritten = match segments {
-        [owner, event] if event.kind() == NodeKind::Event => {
-            let (Some(owner_name), Some(event_name)) = (owner.name(), event.name()) else {
-                return args;
-            };
-            let event_name = english(event_name);
-            let role = if MANAGER_EVENTS.contains(&event_name.as_str()) {
-                "Manager"
-            } else {
-                match owner.kind() {
-                    NodeKind::InformationRegister
-                    | NodeKind::AccumulationRegister
-                    | NodeKind::AccountingRegister
-                    | NodeKind::CalculationRegister => "RecordSet",
-                    NodeKind::Constant => "ValueManager",
-                    _ => "Object",
-                }
-            };
-            format!(
-                "{}:{}.{owner_name}.Module.{role}.Event.{event_name}",
-                address.source_set(),
-                owner.kind().as_str()
-            )
-        }
-        [owner, module, role, event]
-            if module.kind() == NodeKind::Module && event.kind() == NodeKind::Event =>
-        {
-            let (Some(owner_name), Some(role_name), Some(event_name)) = (
-                owner.name(),
-                role.name().or(Some(role.kind().as_str())),
-                event.name(),
-            ) else {
-                return args;
-            };
-            format!(
-                "{}:{}.{owner_name}.Module.{role_name}.Event.{}",
-                address.source_set(),
-                owner.kind().as_str(),
-                english(event_name)
-            )
-        }
-        _ => return args,
-    };
-    let mut args = args;
-    if let Some(object) = args.as_object_mut() {
-        object.insert("at".to_string(), serde_json::Value::String(rewritten));
-    }
-    args
 }
 
 /// The event planner reports through its own error type; the apply seam
@@ -601,7 +487,9 @@ fn parse_family_operation(
         return Err(hidden_apply_family_unimplemented(op_index));
     };
     let args = serde_json::Value::Object(operation.args().clone());
-    if operation.name() == "object.borrow" {
+    if descriptor.metadata_operation()
+        == Some(crate::domain::metadata_operation::MetadataOperation::ObjectBorrow)
+    {
         return borrow::parse(&args, op_index, binding).map(ParsedApplyOperation::Borrow);
     }
     let parsed = match descriptor.family() {
@@ -633,8 +521,13 @@ fn parse_family_operation(
             ParsedApplyOperation::FormResource(IndexedPlanOperation::new(op_index, parsed))
         }
         OperationFamily::Dcs | OperationFamily::Mxl => {
-            let parsed =
-                dcs_mxl::parse_dcs_mxl_plan_operation(operation.name(), &args, op_index, binding)?;
+            let parsed = dcs_mxl::parse_dcs_mxl_plan_operation_in(
+                Some(descriptor),
+                operation.name(),
+                &args,
+                op_index,
+                binding,
+            )?;
             ParsedApplyOperation::DcsMxl(IndexedPlanOperation::new(op_index, parsed))
         }
         OperationFamily::Code => {
@@ -656,13 +549,15 @@ fn parse_family_operation(
             ParsedApplyOperation::Xdto(IndexedPlanOperation::new(op_index, parsed))
         }
         OperationFamily::Event => {
-            let args = canonical_event_args(args);
-            let parsed =
-                crate::infrastructure::native_operations::event::parse_event_implement_args(
-                    &args,
-                    &format!("ops[{op_index}].args"),
-                )
-                .map_err(event_plan_error_to_apply)?;
+            let operation = descriptor
+                .event_operation()
+                .ok_or_else(|| hidden_apply_family_unimplemented(op_index))?;
+            let parsed = crate::infrastructure::native_operations::event::parse_event_operation(
+                operation,
+                args,
+                &format!("ops[{op_index}].args"),
+            )
+            .map_err(event_plan_error_to_apply)?;
             ParsedApplyOperation::Event(IndexedPlanOperation::new(op_index, parsed))
         }
     };
