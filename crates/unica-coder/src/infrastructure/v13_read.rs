@@ -1043,6 +1043,8 @@ impl<'a> LogicalViewReadAuthority<'a> {
                             .strip_prefix(prefix)
                             .is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '[']))
                     })
+                    || (field.starts_with("collections.tabularSections[")
+                        && field.contains("].standardAttributes"))
                     || local
                         .member_read_profile
                         .is_some_and(|profile| profile.owns_diagnostic(field)))

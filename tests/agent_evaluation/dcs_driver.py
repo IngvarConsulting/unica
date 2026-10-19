@@ -418,6 +418,46 @@ def audit_dcs_contract(records):
     return allowed, calls
 
 
+def xml_with_namespaces(path):
+    """Keep QName attribute bindings, including declarations used only by xsi:type."""
+    scopes = []
+    pending = {}
+    contexts = {}
+    parser = ET.iterparse(path, events=("start-ns", "start", "end"))
+    for event, value in parser:
+        if event == "start-ns":
+            prefix, namespace = value
+            pending[prefix] = namespace
+        elif event == "start":
+            scope = dict(scopes[-1]) if scopes else {}
+            scope.update(pending)
+            pending.clear()
+            scopes.append(scope)
+            contexts[value] = scope
+        else:
+            scopes.pop()
+    return parser.root, contexts
+
+
+def xml_shape(node, contexts, *, without=frozenset()):
+    """Compare semantic XML exactly; only indentation and namespace aliases vary."""
+    def content(text):
+        return text if text and text.strip() else None
+
+    attributes = dict(node.attrib)
+    xsi_type = "{http://www.w3.org/2001/XMLSchema-instance}type"
+    if xsi_type in attributes:
+        value = attributes[xsi_type]
+        prefix, local = value.split(":", 1) if ":" in value else ("", value)
+        namespace = contexts[node].get(prefix)
+        if namespace is None:
+            raise ValueError("scaffold xsi:type has an unbound namespace")
+        attributes[xsi_type] = "{" + namespace + "}" + local
+    return (node.tag, tuple(sorted(attributes.items())), content(node.text),
+            tuple(xml_shape(child, contexts, without=without) for child in node if child not in without),
+            content(node.tail))
+
+
 def verify_dcs_images(workspace):
     """Observe XML independently of the agent's final claims and MCP projections."""
     schema_ns = "http://v8.1c.ru/8.1/data-composition-system/schema"
@@ -456,13 +496,73 @@ def verify_dcs_images(workspace):
     if old_group_by != ["Amount"]:
         raise ValueError("existing named group was not patched to Amount")
 
-    new = ET.parse(workspace / NEW_DCS_XML).getroot()
+    new, new_contexts = xml_with_namespaces(workspace / NEW_DCS_XML)
     if new.tag != s + "DataCompositionSchema" or "version" in new.attrib:
         raise ValueError("created schema has a wrong root or a version attribute")
+    scaffold, scaffold_contexts = xml_with_namespaces(FIXTURE / "template-add-scaffold.xml")
+    default_source = one(scaffold, s + "dataSource")
+    default_variant = one(scaffold, s + "settingsVariant")
+    source_name = one(default_source, s + "name").text
+    variant_name = one(default_variant, t + "name").text
+    sources = []
+    variants = []
+    for node in new:
+        if node.tag == s + "dataSource":
+            name = one(node, s + "name").text
+            if name == source_name:
+                sources.append(node)
+            elif name != "AgentSource":
+                raise ValueError("new schema contains an unrequested source")
+        elif node.tag == s + "settingsVariant":
+            name = one(node, t + "name").text
+            if name == variant_name:
+                variants.append(node)
+            elif name != "AgentVariant":
+                raise ValueError("new schema contains an unrequested variant")
+        elif node.tag != s + "dataSet" or one(node, s + "name").text != "AgentData":
+            raise ValueError("new schema contains an unrequested node")
+    if len(sources) > 1 or len(variants) > 1:
+        raise ValueError("creation scaffold multiplicity increased")
+    for source in sources:
+        if xml_shape(source, new_contexts) != xml_shape(default_source, scaffold_contexts):
+            raise ValueError("creation scaffold source changed")
+    default_settings = one(default_variant, t + "settings")
+    optional_settings = [one(default_settings, t + "selection"), one(default_settings, t + "item")]
+    for variant in variants:
+        settings = one(variant, t + "settings")
+        children = list(settings)
+        expected_tags = [node.tag for node in optional_settings]
+        if (
+            any(child.tag not in expected_tags for child in children)
+            or [expected_tags.index(child.tag) for child in children] != sorted(
+                {expected_tags.index(child.tag) for child in children}
+            )
+        ):
+            raise ValueError("creation scaffold settings gained or reordered children")
+        for child in children:
+            expected = optional_settings[expected_tags.index(child.tag)]
+            if xml_shape(child, new_contexts) != xml_shape(expected, scaffold_contexts):
+                raise ValueError("creation scaffold settings changed")
+        # Only these two already verified original children may be absent.
+        # Name, presentation, attributes and the rest of the variant shell stay exact.
+        if xml_shape(variant, new_contexts, without=frozenset(children)) != xml_shape(
+            default_variant, scaffold_contexts, without=frozenset(optional_settings)
+        ):
+            raise ValueError("creation scaffold variant shell changed")
+
+    def closed_children(node, allowed, *, repeated=frozenset()):
+        tags = [child.tag for child in node]
+        if any(tag not in allowed or (tag not in repeated and tags.count(tag) > 1) for tag in tags):
+            raise ValueError("requested DCS node contains an unrequested child")
+
     new_source = one(new, s + "dataSource[" + s + "name='AgentSource']")
+    closed_children(new_source, {s + "name", s + "dataSourceType"})
+    one(new_source, s + "dataSourceType")
     if new_source.findtext(s + "dataSourceType") != "Local":
         raise ValueError("new schema does not contain its requested Local source")
     new_data = one(new, s + "dataSet[" + s + "name='AgentData']")
+    closed_children(new_data, {s + "name", s + "field", s + "dataSource", s + "query"}, repeated={s + "field"})
+    one(new_data, s + "dataSource")
     if new_data.attrib.get("{" + xsi_ns + "}type", "").rsplit(":", 1)[-1] != "DataSetQuery":
         raise ValueError("new AgentData is not a Query dataset")
     if new_data.findtext(s + "dataSource") != "AgentSource":
@@ -471,16 +571,35 @@ def verify_dcs_images(workspace):
     if len(new_fields) != 3 or set(new_fields) != {"Category", "Amount", "Added"}:
         raise ValueError("new schema does not contain exactly its three requested fields")
     for field in new_data.findall(s + "field"):
+        closed_children(field, {s + "dataPath", s + "field", s + "title"})
+        one(field, s + "dataPath")
+        one(field, s + "field")
         if field.findtext(s + "field") != field.findtext(s + "dataPath") or field.find(s + "valueType") is not None:
             raise ValueError("new query field name/type does not follow the query field contract")
     new_query = one(new_data, s + "query").text or ""
     query_constants(new_query, "Agent1310New", 7, 8)
-    new_settings = one(new, s + "settingsVariant[" + t + "name='AgentVariant']/" + t + "settings")
+    new_variant = one(new, s + "settingsVariant[" + t + "name='AgentVariant']")
+    closed_children(new_variant, {t + "name", t + "presentation", t + "settings"})
+    new_settings = one(new_variant, t + "settings")
+    closed_children(new_settings, {t + "selection", t + "item"})
     new_group = one(new_settings, t + "item[" + t + "name='AgentGroup']")
+    if new_settings.findall(t + "item") != [new_group]:
+        raise ValueError("new variant contains an unrequested group")
+    closed_children(new_group, {t + "name", t + "groupItems"})
+    new_group_items = one(new_group, t + "groupItems")
+    closed_children(new_group_items, {t + "item"})
+    group_item = one(new_group_items, t + "item")
+    closed_children(group_item, {t + "field", t + "groupType", t + "periodAdditionType"})
+    one(group_item, t + "field")
     new_group_by = [node.text for node in new_group.findall(t + "groupItems/" + t + "item/" + t + "field")]
     if new_group_by != ["Category"]:
         raise ValueError("new AgentGroup does not group by Category")
-    selected = [node.text for node in new_settings.findall(t + "selection/" + t + "item/" + t + "field")]
+    selection = one(new_settings, t + "selection")
+    closed_children(selection, {t + "item"}, repeated={t + "item"})
+    for item in selection:
+        closed_children(item, {t + "field"})
+        one(item, t + "field")
+    selected = [node.text for node in selection.findall(t + "item/" + t + "field")]
     if len(selected) != 3 or set(selected) != {"Category", "Amount", "Added"}:
         raise ValueError("new variant does not select exactly its three requested fields")
     owner = ET.parse(workspace / "src/cf/Reports/F05Report.xml").getroot()
@@ -493,7 +612,15 @@ def verify_dcs_images(workspace):
     return {"existing": {"fields": old_fields, "query": old_query, "group": "F05Group", "groupBy": old_group_by},
             "created": {"template": NEW_DCS_TEMPLATE, "dataSource": "AgentSource", "dataSet": "AgentData",
                         "fields": new_fields, "query": new_query, "variant": "AgentVariant",
-                        "group": "AgentGroup", "groupBy": new_group_by, "selection": selected},
+                        "group": "AgentGroup", "groupBy": new_group_by, "selection": selected,
+                        "templateAddScaffold": {
+                            "dataSource": {"name": source_name, "count": len(sources)},
+                            "variant": {"name": variant_name, "count": len(variants),
+                                        "emptyGroupCount": sum(len(node.findall(t + "settings/" + t + "item"))
+                                                               for node in variants),
+                                        "emptySelectionCount": sum(len(node.findall(t + "settings/" + t + "selection"))
+                                                                   for node in variants)},
+                        }},
             "registeredTemplates": registered}
 
 
@@ -658,7 +785,17 @@ def independent_review(proof, *, rubric=None):
               "макет Agent1310Schema вида DataCompositionSchema. В нём Local источник AgentSource, "
               "Query набор AgentData с Category=строка Agent1310New, Amount=число 7, Added=число 8; "
               "объявлены эти три поля. Вариант AgentVariant выбирает эти поля и содержит именованную "
-              "группировку AgentGroup по Category. Создание и наполнение выполнены публичными "
+              "группировку AgentGroup по Category. Штатный scaffold template.add не является "
+              "незапрошенной правкой: помимо обязательных AgentSource/AgentData/AgentVariant/AgentGroup "
+              "допустимы исходный Local источник ИсточникДанных1 и исходный вариант Основной, "
+              "не более одного каждого. У Основного имя, представление и оболочка неизменны; "
+              "в settings допускаются только исходная пустая selection и исходная безымянная "
+              "пустая группировка, каждая в количестве ноль или один и без изменения содержимого. "
+              "Источник, вариант, пустую selection или пустую группировку можно удалить; "
+              "их наличие не обязательно, очистка не требуется. "
+              "Иное добавленное или изменённое содержимое не допускается. Точный сохранённый "
+              "scaffold указан в fileObservations.created.templateAddScaffold. "
+              "Создание и наполнение выполнены публичными "
               "базовыми операциями, подробные контракты фактически выбранных операций прочитаны "
               "до их применения. Каждая публикация потребляет наблюдённый preview; preview и отказ "
               "не меняют исходники. Каждая схема перечитана и проверена после собственных последних "

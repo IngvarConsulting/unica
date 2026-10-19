@@ -953,6 +953,17 @@ fn documentation_registry(
 /// поэтому разделение детерминированно и не гадает.
 pub(crate) fn documentation_locator(query: &str) -> Option<&str> {
     let trimmed = query.trim();
+    // Синтакс-помощник выдаёт пути вроде `objects/Global context/...`.
+    // Пробелы внутри такого пути не превращают локатор во фразу для поиска.
+    if trimmed
+        .strip_prefix("platform-syntax-help:")
+        .and_then(|rest| rest.split_once(':'))
+        .is_some_and(|(corpus, path)| {
+            !corpus.is_empty() && !corpus.contains(char::is_whitespace) && !path.is_empty()
+        })
+    {
+        return Some(trimmed);
+    }
     if trimmed.contains(char::is_whitespace) {
         return None;
     }
@@ -2812,6 +2823,7 @@ mod tests {
         for locator in [
             "configuration-help:main:catalogs/valuty.html",
             "https://its.1c.ru/db/v8std/content/456/hdoc",
+            "platform-syntax-help:syntax-context:objects/Global context/methods/catalog27/ActiveWindow4049.html",
         ] {
             assert_eq!(
                 super::documentation_locator(locator),
@@ -2823,6 +2835,8 @@ mod tests {
             "СтрНайти",
             "как удалить элемент массива",
             "РегистрыСведений СрезПоследних",
+            "Вопрос: как удалить элемент массива",
+            "question: how to remove an array element",
             "",
         ] {
             assert_eq!(
@@ -2831,6 +2845,36 @@ mod tests {
                 "`{question}` — это вопрос, а не путь страницы"
             );
         }
+    }
+
+    #[test]
+    fn canonical_v13_docs_opens_a_platform_locator_with_spaces_without_searching() {
+        let recorder = std::sync::Arc::new(RecordingProvider::default());
+        let _stand_in = install_stand_in(std::sync::Arc::clone(&recorder));
+        let dir = tempfile::tempdir().expect("workspace");
+        let workspace = dir.path().to_path_buf();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let locator = "platform-syntax-help:syntax-context:objects/Global context/methods/catalog27/ActiveWindow4049.html";
+        let result = canonical_v13_docs_search(
+            &context,
+            &format!("  {locator}  "),
+            Some("platform-help"),
+            &CancellationToken::default(),
+        );
+        assert!(result.ok, "{result:?}");
+        assert_eq!(
+            result.data.as_ref().unwrap()["document"]["documentId"],
+            locator
+        );
+        assert!(recorder.seen.lock().unwrap().is_empty());
+        let gets = recorder.seen_gets.lock().unwrap();
+        assert_eq!(gets.len(), 1);
+        assert_eq!(gets[0].0, locator);
     }
 
     #[test]

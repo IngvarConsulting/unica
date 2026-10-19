@@ -273,3 +273,32 @@ impl MetaInfoDetails {
         }
     }
 }
+
+/// Closed vocabulary of properties observed on a source StandardAttribute.
+pub(crate) const META_STANDARD_ATTRIBUTE_PROPERTY_NAMES: &[&str] = &[
+    "LinkByType",
+    "FillChecking",
+    "MultiLine",
+    "FillFromFillingValue",
+    "CreateOnInput",
+    "TypeReductionMode",
+    "MaxValue",
+    "ToolTip",
+    "ExtendedEdit",
+    "Format",
+    "ChoiceForm",
+    "QuickChoice",
+    "ChoiceHistoryOnInput",
+    "EditFormat",
+    "PasswordMode",
+    "DataHistory",
+    "MarkNegatives",
+    "MinValue",
+    "Synonym",
+    "Comment",
+    "FullTextSearch",
+    "ChoiceParameterLinks",
+    "FillValue",
+    "Mask",
+    "ChoiceParameters",
+];

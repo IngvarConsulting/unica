@@ -833,3 +833,24 @@ fn missing_write_mode_does_not_claim_complete_registrar_evidence() {
         }
     }
 }
+
+#[test]
+fn typed_tabular_section_preserves_the_declared_standard_attributes() {
+    let xml = include_bytes!("../../../../../../tests/fixtures/acceptance/workspace-tabular-standard/src/Catalogs/Items.xml");
+    let target = crate::domain::source_target::MetadataAddress::parse(
+        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+        "Catalog.Items",
+    )
+    .unwrap();
+    let local = parse_typed_meta_local_info(xml, &target, MetaSupportStatus::Locked).unwrap();
+    let section = serde_json::to_value(&local.collections.tabular_sections[0]).unwrap();
+    assert_eq!(section["attributes"].as_array().unwrap().len(), 10);
+    assert_eq!(section["standardAttributes"][0]["name"], "LineNumber");
+    assert_eq!(
+        section["standardAttributes"][0]["properties"]
+            .as_array()
+            .unwrap()
+            .len(),
+        25
+    );
+}

@@ -931,6 +931,13 @@ fn validate_name(name: &str, field: &str) -> Result<(), MetaDiagnostic> {
     }
 }
 
+/// Role and subsystem creation accept surrounding whitespace; object.create
+/// keeps its separate strict identifier contract.
+pub(crate) fn canonical_creation_identifier(raw: &str) -> Option<&str> {
+    let name = raw.trim();
+    metadata_identifier_is_valid(name).then_some(name)
+}
+
 pub(crate) fn metadata_identifier_is_valid(value: &str) -> bool {
     let mut chars = value.chars();
     let Some(first) = chars.next() else {

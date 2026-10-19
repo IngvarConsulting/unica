@@ -1,0 +1,115 @@
+{
+  "id": "S-1537-docs-locator-spaces",
+  "issue": 1537,
+  "area": "Справка",
+  "task": "Открыть точную страницу платформенной справки по локатору с пробелом, выполнить обычный поиск и получить отказ для отсутствующей страницы без подмены поиском",
+  "workspace": "tests/fixtures/acceptance/workspace-docs-locator",
+  "wire": [
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "АктивноеОкно",
+        "source": "platform-help"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/sections/0/hits/0/documentId",
+          "eq": "platform-syntax-help:syntax-context:objects/Global context/methods/catalog27/ActiveWindow4049.html"
+        }
+      ],
+      "captures": {
+        "pageId": {
+          "pointer": "/data/sections/0/hits/0/documentId"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "platform/8.3.27.2074/shcntx_ru.hbk",
+          "kind": "sha256",
+          "eq": "7986a7d3c82931e47bf5c100438689a1fa7583a49a3a3583c3185746fcfb60ab"
+        }
+      ]
+    },
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "$capture.pageId",
+        "source": "platform-help"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/document/documentId",
+          "eq": "platform-syntax-help:syntax-context:objects/Global context/methods/catalog27/ActiveWindow4049.html"
+        },
+        {
+          "pointer": "/data/document/text",
+          "eq": "Глобальный контекст.АктивноеОкно Точный текст страницы с пробелом в пути."
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "platform/8.3.27.2074/shcntx_ru.hbk",
+          "kind": "sha256",
+          "eq": "7986a7d3c82931e47bf5c100438689a1fa7583a49a3a3583c3185746fcfb60ab"
+        }
+      ]
+    },
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "КонтрольПоиска",
+        "source": "platform-help"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/document",
+          "absent": true
+        },
+        {
+          "pointer": "/data/sections/0/hits/0/documentId",
+          "eq": "platform-syntax-help:syntax-context:control/SearchControl.html"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "platform/8.3.27.2074/shcntx_ru.hbk",
+          "kind": "sha256",
+          "eq": "7986a7d3c82931e47bf5c100438689a1fa7583a49a3a3583c3185746fcfb60ab"
+        }
+      ]
+    },
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "platform-syntax-help:syntax-context:objects/Global context/methods/catalog27/MissingPage.html",
+        "source": "platform-help"
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "platform/8.3.27.2074/shcntx_ru.hbk",
+          "kind": "sha256",
+          "eq": "7986a7d3c82931e47bf5c100438689a1fa7583a49a3a3583c3185746fcfb60ab"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        }
+      ],
+      "refusal": "not_found: documentation page `platform-syntax-help:syntax-context:objects/Global context/methods/catalog27/MissingPage.html` was not found: страницы \"objects/Global conte"
+    }
+  ]
+}
