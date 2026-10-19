@@ -6,6 +6,7 @@ use crate::domain::refusal::{RefusalCode, RefusalDetail};
 use crate::infrastructure::logical_tree::{LogicalReader, LogicalTreeRoute};
 use serde_json::{json, Map, Value};
 
+mod member_properties;
 mod role;
 use role::project_role;
 
@@ -16,7 +17,7 @@ pub(super) fn project_typed_payload(
     route: &LogicalTreeRoute,
     payload: Value,
 ) -> Result<NodeViewData, ViewError> {
-    project_typed_payload_inner(route, payload, None)
+    project_typed_payload_inner(route, payload, None, None)
 }
 
 pub(super) fn project_typed_payload_with_form_events(
@@ -24,13 +25,22 @@ pub(super) fn project_typed_payload_with_form_events(
     payload: Value,
     events: &[EventProjection],
 ) -> Result<NodeViewData, ViewError> {
-    project_typed_payload_inner(route, payload, Some(events))
+    project_typed_payload_inner(route, payload, Some(events), None)
+}
+
+pub(super) fn project_typed_payload_for_source(
+    route: &LogicalTreeRoute,
+    payload: Value,
+    source_kind: crate::domain::project_sources::SourceSetKind,
+) -> Result<NodeViewData, ViewError> {
+    project_typed_payload_inner(route, payload, None, Some(source_kind))
 }
 
 fn project_typed_payload_inner(
     route: &LogicalTreeRoute,
     payload: Value,
     form_events: Option<&[EventProjection]>,
+    source_kind: Option<crate::domain::project_sources::SourceSetKind>,
 ) -> Result<NodeViewData, ViewError> {
     validate_reader_payload(route.reader(), &payload)?;
     if route.at().form_metadata_owner().is_some() {
@@ -72,7 +82,23 @@ fn project_typed_payload_inner(
     let suffix = &route.at().segments()[root_depth.min(route.at().segments().len())..];
     match route.reader() {
         LogicalReader::Configuration => return project_configuration(route.at(), &payload, suffix),
-        LogicalReader::Metadata => return project_metadata(route.at(), &payload, suffix),
+        LogicalReader::Metadata => {
+            let profile = source_kind
+                .filter(|kind| {
+                    *kind == crate::domain::project_sources::SourceSetKind::Configuration
+                })
+                .filter(|_| {
+                    route
+                        .at()
+                        .segments()
+                        .first()
+                        .is_some_and(|part| part.kind() == NodeKind::Catalog)
+                })
+                .filter(|_| payload.get("kind").and_then(Value::as_str) == Some("Catalog"))
+                .and_then(|_| payload.get("memberReadProfile"))
+                .and_then(|value| serde_json::from_value(value.clone()).ok());
+            return project_metadata(route.at(), &payload, suffix, profile);
+        }
         LogicalReader::Form => return project_form(route.at(), &payload, suffix, form_events),
         LogicalReader::Role => return project_role(route.at(), &payload, suffix),
         LogicalReader::Subsystem => return project_subsystem(route.at(), &payload, suffix),
@@ -1187,6 +1213,7 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
             "relations",
             "collections",
             "predefinedItems",
+            "memberReadProfile",
             // Заимствование расширением: только в наборе вида `extension`.
             "belonging",
             "parentId",
@@ -1392,6 +1419,7 @@ fn project_metadata(
     address: &QualifiedAddress,
     payload: &Value,
     suffix: &[AddressSegment],
+    member_profile: Option<crate::domain::metadata::MetaMemberReadProfile>,
 ) -> Result<NodeViewData, ViewError> {
     if suffix.is_empty() {
         let mut props = selected_scalar_props(
@@ -1533,7 +1561,7 @@ fn project_metadata(
                 first.kind().as_str(),
                 Map::new(),
             ),
-            metadata_items(address, first.kind(), collection),
+            metadata_items(address, first.kind(), collection, member_profile),
         )));
     }
     let name = first.name().ok_or_else(|| {
@@ -1579,11 +1607,16 @@ fn project_metadata(
                     kind.as_str(),
                     Map::new(),
                 ),
-                metadata_items(address, kind, next),
+                metadata_items(address, kind, next, member_profile),
             )));
         }
     }
-    Ok(NodeViewData::Node(metadata_item_node(address, kind, item)))
+    Ok(NodeViewData::Node(metadata_item_node(
+        address,
+        kind,
+        item,
+        member_profile,
+    )))
 }
 
 fn metadata_limits(payload: &Value) -> Vec<String> {
@@ -1846,7 +1879,12 @@ fn metadata_details(payload: &Value) -> Option<&Value> {
         .and_then(|adjacent| adjacent.get("details"))
 }
 
-fn metadata_items(address: &QualifiedAddress, kind: NodeKind, value: &Value) -> Vec<Value> {
+fn metadata_items(
+    address: &QualifiedAddress,
+    kind: NodeKind,
+    value: &Value,
+    member_profile: Option<crate::domain::metadata::MetaMemberReadProfile>,
+) -> Vec<Value> {
     value
         .as_array()
         .into_iter()
@@ -1854,12 +1892,17 @@ fn metadata_items(address: &QualifiedAddress, kind: NodeKind, value: &Value) -> 
         .filter_map(|item| {
             let name = item.get("name")?.as_str()?;
             let child = address.member(name).ok()?;
-            serde_json::to_value(metadata_item_node(&child, kind, item)).ok()
+            serde_json::to_value(metadata_item_node(&child, kind, item, member_profile)).ok()
         })
         .collect()
 }
 
-fn metadata_item_node(address: &QualifiedAddress, kind: NodeKind, item: &Value) -> NodeView {
+fn metadata_item_node(
+    address: &QualifiedAddress,
+    kind: NodeKind,
+    item: &Value,
+    member_profile: Option<crate::domain::metadata::MetaMemberReadProfile>,
+) -> NodeView {
     let mut props = selected_scalar_props(
         item,
         &[
@@ -1938,6 +1981,17 @@ fn metadata_item_node(address: &QualifiedAddress, kind: NodeKind, item: &Value) 
                 (count > 0).then(|| BranchRef::new(format!("{}.{}", address, kind.as_str()), count))
             }),
     );
+    let (member_props, member_limits) = member_profile
+        .and_then(|profile| {
+            profile
+                .context_for_address(address, kind)
+                .map(|context| (profile, context))
+        })
+        .map_or_else(
+            || (Map::new(), Vec::new()),
+            |(profile, context)| member_properties::project(profile, context, item),
+        );
+    props.extend(member_props);
     NodeView::new(
         address.to_string(),
         kind.as_str(),
@@ -1948,6 +2002,7 @@ fn metadata_item_node(address: &QualifiedAddress, kind: NodeKind, item: &Value) 
         props,
     )
     .with_branches(branches)
+    .with_limits(member_limits)
 }
 
 fn project_subsystem(

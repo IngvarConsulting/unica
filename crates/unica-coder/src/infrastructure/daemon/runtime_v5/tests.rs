@@ -457,6 +457,221 @@ fn cancel_during_actor_admission_after_handoff_never_begins_and_keeps_the_daemon
         .expect("daemon exits cleanly");
 }
 
+/// The real canonical service performs the Apply. The fixture declares its
+/// held execution-token calls known-long after real preparation succeeds.
+/// Only the post-result safe point is held; original cancellation can release it.
+struct CommittedApplyCancellationService {
+    inner: Arc<dyn CanonicalInvocationService>,
+    entered: mpsc::Sender<DomainResult>,
+    release: IdleIndexGate,
+    executions: AtomicUsize,
+}
+
+impl CanonicalInvocationService for CommittedApplyCancellationService {
+    fn prepare(
+        &self,
+        invocation: &super::super::server::ActorBoundInvocation,
+    ) -> Result<ExecutionClass, Box<DomainResult>> {
+        let class = self.inner.prepare(invocation)?;
+        Ok(
+            if invocation.tool() == crate::application::invocation_store::ToolIdentity::Apply
+                && invocation.arguments().contains_key("executionToken")
+            {
+                // Test scheduling only: this class does not start or protect a process.
+                ExecutionClass::KnownLong(KnownLongReason::ExternalProcess)
+            } else {
+                class
+            },
+        )
+    }
+
+    fn execute(
+        &self,
+        invocation: &super::super::server::ActorBoundExecution,
+        cancellation: CancellationToken,
+    ) -> Result<DomainResult, InvocationFailure> {
+        let result = self.inner.execute(invocation, cancellation.clone())?;
+        if invocation.tool() == crate::application::invocation_store::ToolIdentity::Apply
+            && invocation.arguments().contains_key("executionToken")
+        {
+            assert!(
+                !cancellation.protected_process_started(),
+                "the canonical XML Apply must not acquire external-process authority"
+            );
+            self.executions.fetch_add(1, Ordering::SeqCst);
+            let _ = self.entered.send(result.clone());
+            let (released, changed) = &*self.release;
+            let mut released = released.lock().unwrap();
+            while !*released && !cancellation.is_cancelled() {
+                released = changed
+                    .wait_timeout(released, Duration::from_millis(10))
+                    .unwrap()
+                    .0;
+            }
+        }
+        Ok(result)
+    }
+}
+
+#[test]
+fn committed_canonical_apply_and_saved_replay_keep_their_receipts_after_task_cancel() {
+    let workspace =
+        super::super::server::actor_capacity_tests::subsystem_picture_workspace("", false);
+    let descriptor = workspace.path().join("src/Subsystems/Sales.xml");
+    let before = std::fs::read(&descriptor).unwrap();
+    let (entered, results) = mpsc::channel();
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let service = Arc::new(CommittedApplyCancellationService {
+        inner: super::super::server::actor_capacity_tests::canonical_v13_service(),
+        entered,
+        release: Arc::clone(&release),
+        executions: AtomicUsize::new(0),
+    });
+    let mut daemon = PromisedWorkIdleDaemon::with_service(Duration::from_secs(60), service.clone());
+    // This guard drops before the daemon guard, also during assertion unwind.
+    let cleanup = IdleInvocationRelease(Arc::clone(&release));
+    let mut owner = daemon.owner();
+    let token = promised_work_preview_over_tcp(&mut owner, workspace.path());
+    assert_eq!(std::fs::read(&descriptor).unwrap(), before);
+    let mut published = None;
+    let mut terminal_results = Vec::new();
+    let mut invalid_terminals = Vec::new();
+    for (attempt, committed) in [
+        ("published", true),
+        ("saved replay", true),
+        ("no-op", false),
+    ] {
+        let execution_token = if committed {
+            token.clone()
+        } else {
+            promised_work_preview_over_tcp(&mut owner, workspace.path())
+        };
+        let invocation = V5InvocationRequest::new(
+            InvocationId::new(),
+            TaskId::new(),
+            V5ToolIdentity::Apply,
+            json!({"executionToken": execution_token})
+                .as_object()
+                .unwrap()
+                .clone(),
+            unica_bootstrap::ResolvedWorkspace::launch_cwd(
+                std::fs::canonicalize(workspace.path())
+                    .unwrap()
+                    .display()
+                    .to_string(),
+            ),
+            7000,
+        )
+        .unwrap();
+        let initial = submitted_task_snapshot(Ok(idle_request_over_tcp(
+            &mut owner,
+            V5ClientRequest::SubmitInvocation {
+                invocation: invocation.clone(),
+            },
+        )));
+        assert_eq!(initial.task_id(), invocation.reserved_task_id());
+        let result = results.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(
+            result.ok,
+            "{attempt}: canonical Apply must finish before the safe point"
+        );
+        assert!(
+            !*release.0.lock().unwrap(),
+            "the observer barrier stays closed"
+        );
+        let bytes = std::fs::read(&descriptor).unwrap();
+        assert!(String::from_utf8_lossy(&bytes).contains("kept across idle"));
+        assert_ne!(bytes, before);
+        let identity = crate::infrastructure::platform::filesystem::file_identity(
+            &std::fs::File::open(&descriptor).unwrap(),
+        )
+        .unwrap();
+        let state = std::fs::read(workspace.path().join(".build/unica/state.json")).unwrap();
+        if let Some((original_bytes, original_identity, original_state, original_result)) =
+            &published
+        {
+            assert_eq!(
+                &bytes, original_bytes,
+                "{attempt}: no second source publication"
+            );
+            assert_eq!(
+                &identity, original_identity,
+                "{attempt}: source identity must survive replay"
+            );
+            assert_eq!(
+                &state, original_state,
+                "{attempt}: no second cache publication"
+            );
+            if committed {
+                assert_eq!(
+                    &result, original_result,
+                    "saved token replay must keep the exact result"
+                );
+            }
+        } else {
+            assert!(!result.changed.is_empty());
+            assert!(result.rev.is_some());
+            published = Some((bytes.clone(), identity, state.clone(), result.clone()));
+        }
+        let _ = idle_request_over_tcp(
+            &mut owner,
+            V5ClientRequest::CancelTask {
+                task_id: invocation.reserved_task_id(),
+            },
+        );
+        let terminal = idle_task_terminal_over_tcp(&mut owner, &invocation);
+        assert!(
+            !*release.0.lock().unwrap(),
+            "terminal must precede external barrier release"
+        );
+        if committed {
+            match &terminal {
+                V5DaemonTaskSnapshot::Completed { result: actual, .. } => {
+                    assert_eq!(
+                        actual.as_ref(),
+                        &result,
+                        "{attempt}: published receipt must survive cancellation"
+                    );
+                }
+                _ => invalid_terminals.push(attempt),
+            }
+        } else {
+            assert!(
+                matches!(terminal, V5DaemonTaskSnapshot::Cancelled { .. }),
+                "a no-op without a committed effect remains cancellable"
+            );
+        }
+        assert_eq!(std::fs::read(&descriptor).unwrap(), bytes);
+        assert_eq!(
+            std::fs::read(workspace.path().join(".build/unica/state.json")).unwrap(),
+            state
+        );
+        let executions = service.executions.load(Ordering::SeqCst);
+        let exact_repeat = submitted_task_snapshot(Ok(idle_request_over_tcp(
+            &mut owner,
+            V5ClientRequest::SubmitInvocation { invocation },
+        )));
+        assert_eq!(
+            exact_repeat, terminal,
+            "exact receipt replay must retain its terminal"
+        );
+        assert_eq!(
+            service.executions.load(Ordering::SeqCst),
+            executions,
+            "exact receipt replay may not execute the service again"
+        );
+        terminal_results.push(terminal);
+    }
+    assert_eq!(service.executions.load(Ordering::SeqCst), 3);
+    cleanup.release();
+    release_promised_work_owner(owner);
+    assert_eq!(terminal_results.len(), 3);
+    assert!(
+        invalid_terminals.is_empty(),
+        "published Apply receipts were replaced after cancellation: {invalid_terminals:?}"
+    );
+}
+
 #[test]
 fn protected_mutation_preserves_success_and_failure_after_cancel_request() {
     let cancellation = CancellationToken::new();
@@ -469,14 +684,14 @@ fn protected_mutation_preserves_success_and_failure_after_cancel_request() {
         result: Box::new(DomainResult::success("provider confirmed database change")),
     };
     assert!(matches!(
-        task_outcome_after_cancel(succeeded, true, true),
+        task_outcome_after_cancel(succeeded, true, cancellation.factual_outcome_authority()),
         ReceiptTerminalOutcome::Completed { .. }
     ));
     let failed = ReceiptTerminalOutcome::Failed {
         reason: V5SafeFailureReason::InvocationFailed,
     };
     assert!(matches!(
-        task_outcome_after_cancel(failed, true, true),
+        task_outcome_after_cancel(failed, true, cancellation.factual_outcome_authority()),
         ReceiptTerminalOutcome::Failed { .. }
     ));
     let mut refusal = DomainResult::success("provider result could not be verified");
@@ -485,7 +700,7 @@ fn protected_mutation_preserves_success_and_failure_after_cancel_request() {
         result: Box::new(refusal),
     };
     assert!(matches!(
-        task_outcome_after_cancel(refused, true, true),
+        task_outcome_after_cancel(refused, true, cancellation.factual_outcome_authority()),
         ReceiptTerminalOutcome::Completed { .. }
     ));
     assert!(matches!(
@@ -494,7 +709,7 @@ fn protected_mutation_preserves_success_and_failure_after_cancel_request() {
                 result: Box::new(DomainResult::success("no dispatch")),
             },
             true,
-            false,
+            FactualOutcomeAuthority::Cancellable,
         ),
         ReceiptTerminalOutcome::Cancelled
     ));

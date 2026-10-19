@@ -959,6 +959,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
         insert_serialized(&mut payload, "details", &local.details)?;
         insert_serialized(&mut payload, "support", &local.support)?;
         insert_serialized(&mut payload, "properties", &local.properties)?;
+        if let Some(profile) = local.member_read_profile {
+            insert_serialized(&mut payload, "memberReadProfile", &profile)?;
+        }
         insert_serialized(&mut payload, "declarations", &local.declarations)?;
         insert_serialized(&mut payload, "relations", &local.relations)?;
         let collections = serde_json::to_value(&local.collections).map_err(|error| {
@@ -977,7 +980,10 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 let field = diagnostic.field.as_deref()?;
                 (field.starts_with("details.")
                     || field.starts_with("properties.")
-                    || field.starts_with("relations."))
+                    || field.starts_with("relations.")
+                    || local
+                        .member_read_profile
+                        .is_some_and(|profile| profile.owns_diagnostic(field)))
                 .then(|| {
                     json!({
                         "field": field,
@@ -1899,7 +1905,12 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
             self.form_view(&route, admitted)?
         } else {
             let payload = self.typed_payload_for(&route, admitted)?;
-            let projected = project_typed_payload(&route, payload)?;
+            let projected =
+                crate::infrastructure::v13_read_projection::project_typed_payload_for_source(
+                    &route,
+                    payload,
+                    self.read.source_set_kind(),
+                )?;
             self.with_template_body_branches(projected, &route)?
         };
         // Модуль формы без `Form.xml` платформа не выгружает: ветви модуля у

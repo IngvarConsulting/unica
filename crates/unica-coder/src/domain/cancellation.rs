@@ -1,5 +1,5 @@
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU8, Ordering},
     Arc, Mutex,
 };
 
@@ -9,12 +9,23 @@ pub fn cancelled_error(detail: impl AsRef<str>) -> String {
     format!("{CANCELLED_PREFIX} {}", detail.as_ref())
 }
 
+/// Proven execution facts affect terminal classification, never observation
+/// of the caller's original cancellation signal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum FactualOutcomeAuthority {
+    Cancellable,
+    StartedExternalProcess,
+    CommittedWorkspaceApply,
+}
+
 #[derive(Debug, Clone)]
 pub struct CancellationToken {
     own_signal: Arc<AtomicBool>,
     observed_signals: Arc<[Arc<AtomicBool>]>,
     dispatch_gate: Arc<Mutex<()>>,
     protected_started: Arc<AtomicBool>,
+    factual_outcome: Arc<AtomicU8>,
     protect_on_spawn: bool,
 }
 
@@ -26,6 +37,7 @@ impl Default for CancellationToken {
             observed_signals: Arc::from([own_signal]),
             dispatch_gate: Arc::new(Mutex::new(())),
             protected_started: Arc::new(AtomicBool::new(false)),
+            factual_outcome: Arc::new(AtomicU8::new(FactualOutcomeAuthority::Cancellable as u8)),
             protect_on_spawn: false,
         }
     }
@@ -59,6 +71,7 @@ impl CancellationToken {
             observed_signals: Arc::from(observed_signals),
             dispatch_gate: Arc::clone(&self.dispatch_gate),
             protected_started: Arc::new(AtomicBool::new(false)),
+            factual_outcome: Arc::new(AtomicU8::new(FactualOutcomeAuthority::Cancellable as u8)),
             protect_on_spawn: false,
         }
     }
@@ -107,6 +120,27 @@ impl CancellationToken {
         release()?;
         self.protected_started.store(true, Ordering::Release);
         Ok(())
+    }
+
+    /// Records an already confirmed actor publication. This is unconditional:
+    /// cancellation cannot erase an effect that has actually committed.
+    pub(crate) fn record_committed_apply(&self) {
+        self.factual_outcome.store(
+            FactualOutcomeAuthority::CommittedWorkspaceApply as u8,
+            Ordering::Release,
+        );
+    }
+
+    pub(crate) fn factual_outcome_authority(&self) -> FactualOutcomeAuthority {
+        if self.factual_outcome.load(Ordering::Acquire)
+            == FactualOutcomeAuthority::CommittedWorkspaceApply as u8
+        {
+            FactualOutcomeAuthority::CommittedWorkspaceApply
+        } else if self.protected_process_started() {
+            FactualOutcomeAuthority::StartedExternalProcess
+        } else {
+            FactualOutcomeAuthority::Cancellable
+        }
     }
 
     pub(crate) fn protected_process_started(&self) -> bool {
@@ -215,6 +249,45 @@ mod tests {
         released.handoff_with_gate(|| Ok(())).unwrap();
         released.cancel();
         assert!(released.protected_process_started());
+    }
+
+    #[test]
+    fn committed_apply_fact_survives_cancel_without_protecting_a_process_or_child() {
+        use super::FactualOutcomeAuthority;
+
+        let original = CancellationToken::new();
+        let clone = original.clone();
+        let earlier_child = original.linked_child();
+        original.cancel();
+        original.record_committed_apply();
+        assert!(original.is_cancelled());
+        assert!(clone.is_cancelled());
+        assert!(!original.protected_process_started());
+        assert_eq!(
+            original.factual_outcome_authority(),
+            FactualOutcomeAuthority::CommittedWorkspaceApply
+        );
+        assert_eq!(
+            clone.factual_outcome_authority(),
+            FactualOutcomeAuthority::CommittedWorkspaceApply
+        );
+        assert_eq!(
+            earlier_child.factual_outcome_authority(),
+            FactualOutcomeAuthority::Cancellable
+        );
+        let later_child = original.linked_child();
+        assert!(later_child.is_cancelled());
+        assert_eq!(
+            later_child.factual_outcome_authority(),
+            FactualOutcomeAuthority::Cancellable
+        );
+        let independent = CancellationToken::new();
+        let child = independent.linked_child();
+        child.record_committed_apply();
+        assert_eq!(
+            independent.factual_outcome_authority(),
+            FactualOutcomeAuthority::Cancellable
+        );
     }
 
     #[test]
