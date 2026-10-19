@@ -6,7 +6,9 @@ import importlib.util
 import json
 import tempfile
 import unittest
+from argparse import Namespace
 from pathlib import Path
+from unittest.mock import patch
 
 
 MODULE_PATH = Path(__file__).resolve().parents[2] / "scripts" / "ci" / "build-site.py"
@@ -97,6 +99,72 @@ class MergeResultsTests(unittest.TestCase):
         self.assertEqual(list(stored), ["main"])
         self.assertTrue((stored["main"][1] / "a-result.json").is_file())
 
+    def test_queue_results_survive_publishing_another_profile_and_can_be_read_back(self) -> None:
+        """Ночная публикация сохраняет архив очереди, его записи и подпись."""
+        module = load_module()
+        with tempfile.TemporaryDirectory(prefix="queue-retention-") as temporary:
+            root = Path(temporary)
+            queue, large = root / "queue", root / "large"
+            self.record(queue, "queue-case", 100, "queue-case")
+            self.record(large, "large-case", 200, "large-case")
+            queue_run = {"profile": "queue", "sha": "queue-sha", "at": "2026-10-20T01:00:00Z"}
+            (queue / "run.json").write_text(json.dumps(queue_run), encoding="utf-8")
+            (large / "run.json").write_text(json.dumps({
+                "profile": "large", "sha": "large-sha", "at": "2026-10-20T02:00:00Z",
+            }), encoding="utf-8")
+            published = root / "before" / "site"
+            renders = []
+
+            def fetch(url: str, target: Path) -> bool:
+                source = published / url.removeprefix("https://site/")
+                if not source.is_file():
+                    return False
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(source.read_bytes())
+                return True
+
+            def render(command: list[str], **_kwargs) -> None:
+                results = Path(command[-1])
+                renders.append({
+                    path.name: json.loads(path.read_text(encoding="utf-8"))
+                    for path in results.glob("*-result.json")
+                })
+
+            args = Namespace(
+                line=[f"main={queue}"], site=None, allure_command="allure",
+                run_sha="queue-sha", run_url="https://x/runs/1", run_at=queue_run["at"],
+            )
+            with (
+                patch.object(module, "fetch", side_effect=fetch),
+                patch.object(module.shutil, "which", return_value="allure"),
+                patch.object(module.subprocess, "run", side_effect=render),
+            ):
+                module.build_reports(published, args)
+                queue_archive = (published / "data/main/results/queue.tar.gz").read_bytes()
+
+                args.line = [f"main={large}"]
+                args.site = "https://site"
+                args.run_sha = "large-sha"
+                args.run_url = "https://x/runs/2"
+                args.run_at = "2026-10-20T02:00:00Z"
+                after = root / "after" / "site"
+                module.build_reports(after, args)
+
+                retained = after / "data/main/results/queue.tar.gz"
+                self.assertTrue(retained.is_file(), "публикация large потеряла архив queue")
+                self.assertEqual(retained.read_bytes(), queue_archive)
+                self.assertEqual(set(renders[1]), {"queue-case-result.json", "large-case-result.json"})
+                self.assertEqual(renders[1]["queue-case-result.json"], renders[0]["queue-case-result.json"])
+
+                published = after
+                stored = module.stored_results("https://site", "main", root / "read-back")
+                self.assertEqual(set(stored), {"queue", "large"})
+                self.assertEqual(module.signature_of(stored["queue"][1]), queue_run)
+                self.assertEqual(
+                    (stored["queue"][1] / "queue-case-result.json").read_bytes(),
+                    (queue / "queue-case-result.json").read_bytes(),
+                )
+
 
 class SiteProfilesTests(unittest.TestCase):
     """Профили ворот, доходящие до сайта, сайт обязан хранить и читать назад."""
@@ -107,8 +175,8 @@ class SiteProfilesTests(unittest.TestCase):
         run_tests = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(run_tests)
 
-        # `pr` и `queue` на сайт не идут; всё остальное сайт кладёт по профилям.
-        reaching = set(run_tests.PROFILES) - {"pr", "queue"}
+        # PR на сайт не идёт; очередь main публикуется после merge_group.
+        reaching = set(run_tests.PROFILES) - {"pr"}
         self.assertTrue(reaching <= set(site.SITE_PROFILES), reaching - set(site.SITE_PROFILES))
         self.assertTrue(set(site.LARGE_PROFILES) <= reaching)
 
