@@ -108,6 +108,29 @@ impl<'a> ArgumentShape<'a> {
             .filter_map(Value::as_str)
     }
 
+    pub(crate) fn alias_groups(self) -> impl Iterator<Item = Vec<&'a str>> {
+        self.schema["x-unica-alias-groups"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|group| {
+                group
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .collect()
+            })
+    }
+
+    pub(crate) fn minimum_properties(self) -> Option<u64> {
+        self.schema["minProperties"].as_u64()
+    }
+
+    pub(crate) fn has_default(self) -> bool {
+        self.schema.get("default").is_some()
+    }
+
     pub(crate) fn required_names(self) -> impl Iterator<Item = &'a str> {
         self.schema["required"]
             .as_array()

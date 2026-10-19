@@ -3,7 +3,10 @@
 use crate::domain::invocation::{DomainResult, InvocationId, TaskId};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::sync::Arc;
+pub(crate) mod storage;
+use storage::{PayloadChange, PayloadDelta};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(crate) enum Tool {
@@ -78,6 +81,7 @@ pub(crate) fn digest(bytes: &[u8]) -> [u8; 32] {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct AttemptId([u8; 32]);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct RunIdentity {
     attempt: AttemptId,
     generation: u64,
@@ -113,8 +117,9 @@ enum OutcomeValue {
 #[derive(Clone, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CanonicalOutcome {
-    bytes: Vec<u8>,
+    bytes: Arc<[u8]>,
     digest: [u8; 32],
+    kind: OutcomeKind,
 }
 impl<'de> Deserialize<'de> for CanonicalOutcome {
     fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
@@ -123,11 +128,13 @@ impl<'de> Deserialize<'de> for CanonicalOutcome {
         struct Encoded {
             bytes: Vec<u8>,
             digest: [u8; 32],
+            kind: OutcomeKind,
         }
         let encoded = Encoded::deserialize(decoder)?;
         let outcome = Self {
-            bytes: encoded.bytes,
+            bytes: encoded.bytes.into(),
             digest: encoded.digest,
+            kind: encoded.kind,
         };
         if !outcome.valid() {
             return Err(serde::de::Error::custom("invalid canonical outcome"));
@@ -145,10 +152,16 @@ impl std::fmt::Debug for CanonicalOutcome {
 }
 impl CanonicalOutcome {
     fn of(value: OutcomeValue) -> Self {
+        let kind = match &value {
+            OutcomeValue::Completed { result } => OutcomeKind::Completed { ok: result.ok },
+            OutcomeValue::Failed { reason } => OutcomeKind::Failed(*reason),
+            OutcomeValue::Cancelled => OutcomeKind::Cancelled,
+        };
         let bytes = serde_json::to_vec(&value).expect("typed outcome serializes");
         Self {
             digest: digest(&bytes),
-            bytes,
+            bytes: bytes.into(),
+            kind,
         }
     }
     pub(crate) fn completed(result: DomainResult) -> Self {
@@ -174,8 +187,54 @@ impl CanonicalOutcome {
             .is_some_and(|v| Self::of(v) == *self)
     }
     fn is_admission_rejection(&self) -> bool {
-        matches!(serde_json::from_slice::<OutcomeValue>(&self.bytes),
-            Ok(OutcomeValue::Completed { result }) if !result.ok)
+        self.kind == (OutcomeKind::Completed { ok: false })
+    }
+    pub(crate) fn descriptor(&self) -> OutcomeDescriptor {
+        OutcomeDescriptor {
+            kind: self.kind,
+            digest: self.digest,
+            length: self.bytes.len() as u64,
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn weak_bytes(&self) -> std::sync::Weak<[u8]> {
+        Arc::downgrade(&self.bytes)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) enum OutcomeKind {
+    Completed { ok: bool },
+    Failed(FailureReason),
+    Cancelled,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct OutcomeDescriptor {
+    kind: OutcomeKind,
+    digest: [u8; 32],
+    length: u64,
+}
+impl OutcomeDescriptor {
+    pub(crate) fn kind(&self) -> OutcomeKind {
+        self.kind
+    }
+    pub(crate) fn digest(&self) -> [u8; 32] {
+        self.digest
+    }
+    pub(crate) fn length(&self) -> u64 {
+        self.length
+    }
+    fn is_admission_rejection(&self) -> bool {
+        self.kind == (OutcomeKind::Completed { ok: false })
+    }
+    fn valid(&self) -> bool {
+        match self.kind {
+            OutcomeKind::Completed { .. } => self.length > 0,
+            OutcomeKind::Failed(reason) => *self == CanonicalOutcome::failed(reason).descriptor(),
+            OutcomeKind::Cancelled => *self == CanonicalOutcome::cancelled().descriptor(),
+        }
     }
 }
 
@@ -276,7 +335,7 @@ struct Holder {
 pub(crate) enum HolderObservation<'a> {
     Working,
     Cancelled,
-    Terminal(&'a CanonicalOutcome),
+    Terminal(&'a OutcomeDescriptor),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -310,8 +369,8 @@ impl AckRecord {
     }
 }
 
-/// The complete durable projection. It deliberately has no alias or holder
-/// fields: serializing an entire live State is not an available operation.
+/// Compact execution metadata, not a validated stored aggregate. There are no
+/// alias/holder fields or bodies; decoding is confined to StoredRecord.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Record {
@@ -320,34 +379,34 @@ pub(crate) struct Record {
     accepted: Option<Accepted>,
     begun: Option<Begun>,
     cancel_requested: bool,
-    producer: Option<CanonicalOutcome>,
+    producer: Option<OutcomeDescriptor>,
     producer_digest: Option<[u8; 32]>,
-    primary_override: Option<CanonicalOutcome>,
+    primary_override: Option<OutcomeDescriptor>,
     primary_digest: Option<[u8; 32]>,
     acknowledgement: Option<AckRecord>,
     public_task: bool,
     compacted: bool,
 }
-impl<'de> Deserialize<'de> for Record {
-    fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Encoded {
-            key: Key,
-            revision: u64,
-            accepted: Option<Accepted>,
-            begun: Option<Begun>,
-            cancel_requested: bool,
-            producer: Option<CanonicalOutcome>,
-            producer_digest: Option<[u8; 32]>,
-            primary_override: Option<CanonicalOutcome>,
-            primary_digest: Option<[u8; 32]>,
-            acknowledgement: Option<AckRecord>,
-            public_task: bool,
-            compacted: bool,
-        }
-        let e = Encoded::deserialize(decoder)?;
-        let record = Self {
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EncodedRecord {
+    key: Key,
+    revision: u64,
+    accepted: Option<Accepted>,
+    begun: Option<Begun>,
+    cancel_requested: bool,
+    producer: Option<OutcomeDescriptor>,
+    producer_digest: Option<[u8; 32]>,
+    primary_override: Option<OutcomeDescriptor>,
+    primary_digest: Option<[u8; 32]>,
+    acknowledgement: Option<AckRecord>,
+    public_task: bool,
+    compacted: bool,
+}
+impl EncodedRecord {
+    fn validate(self) -> Result<Record, Error> {
+        let e = self;
+        let record = Record {
             key: e.key,
             revision: e.revision,
             accepted: e.accepted,
@@ -361,12 +420,11 @@ impl<'de> Deserialize<'de> for Record {
             public_task: e.public_task,
             compacted: e.compacted,
         };
-        record
-            .validate()
-            .map_err(|_| serde::de::Error::custom("invalid execution record"))?;
+        record.validate()?;
         Ok(record)
     }
 }
+
 impl Record {
     pub(crate) fn key(&self) -> &Key {
         &self.key
@@ -374,10 +432,10 @@ impl Record {
     pub(crate) fn revision(&self) -> u64 {
         self.revision
     }
-    pub(crate) fn producer(&self) -> Option<&CanonicalOutcome> {
+    pub(crate) fn producer(&self) -> Option<&OutcomeDescriptor> {
         self.producer.as_ref()
     }
-    pub(crate) fn primary(&self) -> Option<&CanonicalOutcome> {
+    pub(crate) fn primary(&self) -> Option<&OutcomeDescriptor> {
         self.primary_override.as_ref().or(self.producer.as_ref())
     }
     pub(crate) fn cancel_requested(&self) -> bool {
@@ -412,14 +470,10 @@ impl Record {
     pub(crate) fn encode(&self) -> Vec<u8> {
         serde_json::to_vec(self).expect("closed record serializes")
     }
-    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        let record: Self = serde_json::from_slice(bytes).map_err(|_| Error::InvalidRecord)?;
-        record.validate()?;
-        Ok(record)
-    }
     pub(crate) fn validate(&self) -> Result<(), Error> {
-        let cancelled_digest = CanonicalOutcome::cancelled().digest();
-        let interrupted_digest = CanonicalOutcome::failed(FailureReason::Interrupted).digest();
+        let cancelled = CanonicalOutcome::cancelled().descriptor();
+        let cancelled_digest = cancelled.digest();
+        let interrupted = CanonicalOutcome::failed(FailureReason::Interrupted).descriptor();
         let invalid = self.revision == 0
             || self.accepted.as_ref().is_some_and(|a| {
                 ObservationWindow::new(a.window.received_epoch_ms, a.window.budget_ms).is_err()
@@ -445,22 +499,21 @@ impl Record {
                 .is_some_and(|o| !o.valid() || Some(o.digest()) != self.producer_digest)
             || self.primary_override.as_ref().is_some_and(|o| {
                 !self.key.tool.is_read()
-                    || *o != CanonicalOutcome::cancelled()
+                    || *o != cancelled
                     || Some(o.digest()) != self.primary_digest
             })
             || (self.primary_override.is_some() && self.begun.is_none())
             || self
                 .primary()
                 .is_some_and(|o| Some(o.digest()) != self.primary_digest)
-            || (!self.compacted && self.primary_digest.is_some() && self.primary().is_none())
+            || (self.primary_digest.is_some() && self.primary().is_none())
             || (self.producer_digest.is_some() && self.primary_digest.is_none())
             // The current model can terminalize an unbegun attempt only by
             // early cancellation or recovery. It cannot invent execution.
             || (self.begun.is_none()
-                && self.producer_digest.is_some_and(|d| {
-                    d != interrupted_digest && !(self.cancel_requested && d == cancelled_digest)
-                        && !self.producer.as_ref().is_some_and(CanonicalOutcome::is_admission_rejection)
-                        && !self.compacted
+                && self.producer.is_some_and(|o| {
+                    o != interrupted && !(self.cancel_requested && o == cancelled)
+                        && !o.is_admission_rejection()
                 }))
             || (self.compacted
                 && self.primary_digest != self.producer_digest
@@ -469,42 +522,13 @@ impl Record {
             || (self.compacted
                 && (self.acknowledgement.is_none()
                     || self.public_task
-                    || self.producer.is_some()
-                    || self.primary_override.is_some()
                     || self.producer_digest.is_none()))
-            || (!self.compacted && self.producer_digest.is_some() && self.producer.is_none());
+            || (self.producer_digest.is_some() && self.producer.is_none());
         if invalid {
             Err(Error::InvalidRecord)
         } else {
             Ok(())
         }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct DurableCatalog {
-    records: Vec<Record>,
-}
-impl DurableCatalog {
-    pub(crate) fn new(records: Vec<Record>) -> Result<Self, Error> {
-        let mut invocations = HashSet::new();
-        let mut tasks = HashSet::new();
-        for r in &records {
-            r.validate()?;
-            if !invocations.insert(r.key.invocation) || !tasks.insert(r.key.task) {
-                return Err(Error::IdentityCollision);
-            }
-        }
-        Ok(Self { records })
-    }
-    pub(crate) fn records(&self) -> &[Record] {
-        &self.records
-    }
-    pub(crate) fn encode(&self) -> Vec<u8> {
-        serde_json::to_vec(&self.records).expect("closed catalog serializes")
-    }
-    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        Self::new(serde_json::from_slice(bytes).map_err(|_| Error::InvalidRecord)?)
     }
 }
 
@@ -585,6 +609,8 @@ impl State {
             || (old.begun.is_some() && record.begun != old.begun)
             || (old.cancel_requested && !record.cancel_requested)
             || (old.producer_digest.is_some() && record.producer_digest != old.producer_digest)
+            || (old.producer.is_some() && record.producer != old.producer)
+            || (old.primary_override.is_some() && record.primary_override != old.primary_override)
             || (old.primary_digest.is_some() && record.primary_digest != old.primary_digest)
             || (old.acknowledgement.is_some() && record.acknowledgement != old.acknowledgement)
             || (old.public_task && !record.public_task)
@@ -601,6 +627,7 @@ impl State {
         let mut next = self.clone();
         let r = &mut next.record;
         let mut intents = Vec::new();
+        let mut payloads = PayloadDelta::keep();
         match event {
             Event::Submit { owner_hash, window } => {
                 if let Some(a) = &r.accepted {
@@ -615,7 +642,8 @@ impl State {
                     let o = CanonicalOutcome::cancelled();
                     r.primary_digest = Some(o.digest());
                     r.producer_digest = Some(o.digest());
-                    r.producer = Some(o);
+                    r.producer = Some(o.descriptor());
+                    payloads.producer = PayloadChange::Set(o);
                 } else {
                     intents.push(Intent::Accepted);
                 }
@@ -634,14 +662,16 @@ impl State {
                     let o = CanonicalOutcome::cancelled();
                     r.primary_digest = Some(o.digest());
                     r.producer_digest = Some(o.digest());
-                    r.producer = Some(o);
+                    r.producer = Some(o.descriptor());
+                    payloads.producer = PayloadChange::Set(o);
                 } else if r.key.tool.is_read() && !next.holders.is_empty() {
                     if r.primary_override.is_some() {
                         return Ok(None);
                     }
                     let o = CanonicalOutcome::cancelled();
                     r.primary_digest = Some(o.digest());
-                    r.primary_override = Some(o);
+                    r.primary_override = Some(o.descriptor());
+                    payloads.primary_override = PayloadChange::Set(o);
                     if next.holders.values().all(|h| h.cancelled) {
                         r.cancel_requested = true;
                         next.joins_closed = true;
@@ -698,7 +728,8 @@ impl State {
                 if r.primary_override.is_none() {
                     r.primary_digest = Some(outcome.digest());
                 }
-                r.producer = Some(outcome);
+                r.producer = Some(outcome.descriptor());
+                payloads.producer = PayloadChange::Set(outcome);
                 next.joins_closed = true;
             }
             Event::AdmissionRejected(outcome) => {
@@ -716,7 +747,8 @@ impl State {
                 }
                 r.producer_digest = Some(outcome.digest());
                 r.primary_digest = Some(outcome.digest());
-                r.producer = Some(outcome);
+                r.producer = Some(outcome.descriptor());
+                payloads.producer = PayloadChange::Set(outcome);
             }
             Event::ExposeTask => {
                 if r.accepted.is_none() {
@@ -827,7 +859,8 @@ impl State {
                 if r.primary_override.is_none() {
                     r.primary_digest = Some(o.digest());
                 }
-                r.producer = Some(o);
+                r.producer = Some(o.descriptor());
+                payloads.producer = PayloadChange::Set(o);
                 next.joins_closed = true;
             }
         }
@@ -836,8 +869,8 @@ impl State {
             && r.producer_digest.is_some()
             && next.holders.is_empty()
         {
-            r.producer = None;
-            r.primary_override = None;
+            payloads.producer = PayloadChange::Drop;
+            payloads.primary_override = PayloadChange::Drop;
             r.compacted = true;
         }
         r.revision = r.revision.checked_add(1).ok_or(Error::Overflow)?;
@@ -845,6 +878,7 @@ impl State {
         Ok(Some(Transition {
             state: next,
             intents,
+            payloads,
         }))
     }
 }
@@ -888,10 +922,11 @@ pub(crate) enum Intent {
 pub(crate) struct Transition {
     state: State,
     intents: Vec<Intent>,
+    payloads: PayloadDelta,
 }
 impl Transition {
-    pub(crate) fn into_parts(self) -> (State, Vec<Intent>) {
-        (self.state, self.intents)
+    pub(crate) fn into_parts(self) -> (State, Vec<Intent>, PayloadDelta) {
+        (self.state, self.intents, self.payloads)
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

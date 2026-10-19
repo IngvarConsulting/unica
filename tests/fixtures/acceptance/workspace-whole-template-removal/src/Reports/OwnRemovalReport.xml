@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+  <Report uuid="1b765934-6773-4139-bb35-0ace8ab52ac0">
+    <InternalInfo>
+      <xr:GeneratedType name="ReportObject.OwnRemovalReport" category="Object"><xr:TypeId>24a0db84-6489-4094-b871-6721616ebe8a</xr:TypeId><xr:ValueId>22ad1c06-38b0-4fcc-aa46-6d98c44613b6</xr:ValueId></xr:GeneratedType>
+      <xr:GeneratedType name="ReportManager.OwnRemovalReport" category="Manager"><xr:TypeId>466d8ba6-42e2-42bb-99f7-8d7a6c66d298</xr:TypeId><xr:ValueId>24e6e72e-27f1-4ba1-9a12-90fcb5be57a7</xr:ValueId></xr:GeneratedType>
+    </InternalInfo>
+    <Properties>
+      <Name>OwnRemovalReport</Name>
+      <Synonym/>
+      <Comment>Independent owner with selected and neighboring templates</Comment>
+      <UseStandardCommands>true</UseStandardCommands>
+      <DefaultForm/>
+      <AuxiliaryForm/>
+      <MainDataCompositionSchema/>
+      <DefaultSettingsForm/>
+      <AuxiliarySettingsForm/>
+      <DefaultVariantForm/>
+      <VariantsStorage/>
+      <SettingsStorage/>
+      <IncludeHelpInContents>false</IncludeHelpInContents>
+      <ExtendedPresentation/>
+      <Explanation/>
+    </Properties>
+    <ChildObjects>
+      <Template>OwnDiagram</Template>
+      <Template>KeepDiagram</Template>
+    </ChildObjects>
+  </Report>
+</MetaDataObject>

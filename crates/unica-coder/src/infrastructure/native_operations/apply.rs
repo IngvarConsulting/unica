@@ -780,6 +780,22 @@ impl ApplyStagedState {
         self.enumerate_tree_with_limits(relative, 256, MAX_APPLY_NAMESPACE_ENTRIES)
     }
 
+    /// Retain the enumerated membership and distinguish a missing root from
+    /// an existing empty directory. Both observations remain apply preconditions.
+    pub(crate) fn enumerate_tree_with_root_absence(
+        &mut self,
+        relative: &Path,
+    ) -> Result<(Vec<PathBuf>, bool), ApplyStagingError> {
+        let files = self.enumerate_tree(relative)?;
+        let guard = self.namespaces.get(relative).ok_or_else(|| {
+            ApplyStagingError::new(
+                ApplyStagingErrorKind::Invariant,
+                "enumerated namespace proof is missing",
+            )
+        })?;
+        Ok((files, guard.children.is_none()))
+    }
+
     fn enumerate_tree_with_limits(
         &mut self,
         relative: &Path,

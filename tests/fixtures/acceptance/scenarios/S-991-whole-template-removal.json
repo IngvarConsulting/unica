@@ -1,0 +1,867 @@
+{
+  "id": "S-991-whole-template-removal",
+  "issue": 991,
+  "profile": "source",
+  "workspace": "tests/fixtures/acceptance/workspace-whole-template-removal",
+  "area": "Макеты",
+  "task": "Удалить целиком два исправных макета GraphicalSchema: сначала сохранить соседний макет и оба PNG, затем прочитать полный состав удаления макета с вложенными изображениями, применить тот же executionToken и проверить точный повтор результата.",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.OwnRemovalReport",
+        "ops": [
+          {
+            "op": "template.remove",
+            "args": {
+              "at": "main:Report.OwnRemovalReport.Template.KeepDiagram"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        },
+        {
+          "pointer": "/rev",
+          "notEq": ""
+        }
+      ],
+      "captures": {
+        "keepToken": {
+          "pointer": "/data/executionToken"
+        },
+        "keepPlanIdentity": {
+          "pointer": "/rev"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "144eb3dd22581e3e23deb8d18982b735ee2c917335221d43abb5f7be93144ac6"
+        },
+        {
+          "path": "src/Languages/English.xml",
+          "kind": "sha256",
+          "eq": "8810207db9d27bc5b541bce3b0f3653ecdf5faa7b23fa455d464fd20ff7877b7"
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport.xml",
+          "kind": "sha256",
+          "eq": "74afb1bbe9b96c4e6be883642249f1230cd195143c7aa3c6ed91fd3386f7352e"
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/KeepDiagram.xml",
+          "kind": "sha256",
+          "eq": "4523b92edd69b4be0f4ce137551f75c0da9a942dfc65df1cd6f75220e2afd039"
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/KeepDiagram/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "53fefa0c8281e70179dce63a78242debc34b8c6a178a95e95d9d16b08c045ecc"
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram.xml",
+          "kind": "sha256",
+          "eq": "c6652b9a7e3092df8cad9e6a64cbd4fc233c7444a6c902a45d7d28082e209a0a"
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "aabf2591e79c06e2a54acc839d7c636da3d232bb647cad3a15d3265583976b66"
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template/Items/BlueSquare/Picture.png",
+          "kind": "sha256",
+          "eq": "01aa5961b04e2388b99311a25f4d6cdf5a4048c454536d6a3e92ef73b4ea0c84"
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template/Items/RedSquare/Picture.png",
+          "kind": "sha256",
+          "eq": "d237a2843d19c06a4091bcc816f29ad41091d313be42c0c7a762c6e446ecd8d7"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        },
+        {
+          "path": ".build",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.diff",
+      "args": {
+        "executionToken": "$capture.keepToken",
+        "limit": 20
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/sourceSet",
+          "eq": "main"
+        },
+        {
+          "pointer": "/data/planIdentity",
+          "eq": "$capture.keepPlanIdentity"
+        },
+        {
+          "pointer": "/data/chunks",
+          "eq": [
+            {
+              "pathEncoding": "utf8",
+              "path": "Reports/OwnRemovalReport.xml",
+              "side": "before",
+              "present": true,
+              "totalBytes": 1644,
+              "rangeStart": 1480,
+              "rangeEnd": 1644,
+              "startByte": 1480,
+              "endByte": 1644,
+              "encoding": "utf8",
+              "content": "    </Properties>\n    <ChildObjects>\n      <Template>OwnDiagram</Template>\n      <Template>KeepDiagram</Template>\n    </ChildObjects>\n  </Report>\n</MetaDataObject>\n"
+            },
+            {
+              "pathEncoding": "utf8",
+              "path": "Reports/OwnRemovalReport.xml",
+              "side": "after",
+              "present": true,
+              "totalBytes": 1605,
+              "rangeStart": 1480,
+              "rangeEnd": 1605,
+              "startByte": 1480,
+              "endByte": 1605,
+              "encoding": "utf8",
+              "content": "    </Properties>\n    <ChildObjects>\n      <Template>OwnDiagram</Template>\n    </ChildObjects>\n  </Report>\n</MetaDataObject>\n"
+            },
+            {
+              "pathEncoding": "utf8",
+              "path": "Reports/OwnRemovalReport/Templates/KeepDiagram.xml",
+              "side": "before",
+              "present": true,
+              "totalBytes": 699,
+              "rangeStart": 0,
+              "rangeEnd": 699,
+              "startByte": 0,
+              "endByte": 699,
+              "encoding": "utf8",
+              "content": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:app=\"http://v8.1c.ru/8.2/managed-application/core\" xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"2.20\">\n  <Template uuid=\"3868fb18-705f-4cde-953f-f8ef0576b5b9\">\n    <Properties>\n      <Name>KeepDiagram</Name>\n      <Synonym/>\n      <Comment>Independent neutral graphical template</Comment>\n      <TemplateType>GraphicalSchema</TemplateType>\n    </Properties>\n  </Template>\n</MetaDataObject>\n"
+            },
+            {
+              "pathEncoding": "utf8",
+              "path": "Reports/OwnRemovalReport/Templates/KeepDiagram.xml",
+              "side": "after",
+              "present": false,
+              "totalBytes": 0,
+              "rangeStart": 0,
+              "rangeEnd": 0,
+              "startByte": 0,
+              "endByte": 0,
+              "encoding": "utf8",
+              "content": ""
+            },
+            {
+              "pathEncoding": "utf8",
+              "path": "Reports/OwnRemovalReport/Templates/KeepDiagram/Ext/Template.xml",
+              "side": "before",
+              "present": true,
+              "totalBytes": 863,
+              "rangeStart": 0,
+              "rangeEnd": 863,
+              "startByte": 0,
+              "endByte": 863,
+              "encoding": "utf8",
+              "content": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<GraphicalSchema xmlns=\"http://v8.1c.ru/8.3/xcf/scheme\" xmlns:sch=\"http://v8.1c.ru/8.2/data/graphscheme\" xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"2.20\">\n  <BackColor>style:FieldBackColor</BackColor>\n  <GridEnabled>true</GridEnabled>\n  <DrawGridMode>Lines</DrawGridMode>\n  <GridHorizontalStep>20</GridHorizontalStep>\n  <GridVerticalStep>20</GridVerticalStep>\n  <PrintParameters>\n    <TopMargin>10</TopMargin><LeftMargin>10</LeftMargin><BottomMargin>10</BottomMargin><RightMargin>10</RightMargin>\n    <BlackAndWhite>false</BlackAndWhite><FitPageMode>Auto</FitPageMode>\n  </PrintParameters>\n  <Items>\n  </Items>\n</GraphicalSchema>\n"
+            },
+            {
+              "pathEncoding": "utf8",
+              "path": "Reports/OwnRemovalReport/Templates/KeepDiagram/Ext/Template.xml",
+              "side": "after",
+              "present": false,
+              "totalBytes": 0,
+              "rangeStart": 0,
+              "rangeEnd": 0,
+              "startByte": 0,
+              "endByte": 0,
+              "encoding": "utf8",
+              "content": ""
+            }
+          ]
+        },
+        {
+          "pointer": "/data/truncated",
+          "eq": false
+        },
+        {
+          "pointer": "/data/cursor",
+          "eq": null
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "complete"
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        },
+        {
+          "pointer": "/next",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "144eb3dd22581e3e23deb8d18982b735ee2c917335221d43abb5f7be93144ac6"
+        },
+        {
+          "path": "src/Languages/English.xml",
+          "kind": "sha256",
+          "eq": "8810207db9d27bc5b541bce3b0f3653ecdf5faa7b23fa455d464fd20ff7877b7"
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport.xml",
+          "kind": "sha256",
+          "eq": "74afb1bbe9b96c4e6be883642249f1230cd195143c7aa3c6ed91fd3386f7352e"
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/KeepDiagram.xml",
+          "kind": "sha256",
+          "eq": "4523b92edd69b4be0f4ce137551f75c0da9a942dfc65df1cd6f75220e2afd039"
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/KeepDiagram/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "53fefa0c8281e70179dce63a78242debc34b8c6a178a95e95d9d16b08c045ecc"
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram.xml",
+          "kind": "sha256",
+          "eq": "c6652b9a7e3092df8cad9e6a64cbd4fc233c7444a6c902a45d7d28082e209a0a"
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "aabf2591e79c06e2a54acc839d7c636da3d232bb647cad3a15d3265583976b66"
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template/Items/BlueSquare/Picture.png",
+          "kind": "sha256",
+          "eq": "01aa5961b04e2388b99311a25f4d6cdf5a4048c454536d6a3e92ef73b4ea0c84"
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template/Items/RedSquare/Picture.png",
+          "kind": "sha256",
+          "eq": "d237a2843d19c06a4091bcc816f29ad41091d313be42c0c7a762c6e446ecd8d7"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        },
+        {
+          "path": ".build",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.keepToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "144eb3dd22581e3e23deb8d18982b735ee2c917335221d43abb5f7be93144ac6"
+        },
+        {
+          "path": "src/Languages/English.xml",
+          "kind": "sha256",
+          "eq": "8810207db9d27bc5b541bce3b0f3653ecdf5faa7b23fa455d464fd20ff7877b7"
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport.xml",
+          "kind": "sha256",
+          "eq": "90369e93f7c2e07c4a2c722de1e72ff04e62e02b986689ac27df0353ac409d07"
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram.xml",
+          "kind": "sha256",
+          "eq": "c6652b9a7e3092df8cad9e6a64cbd4fc233c7444a6c902a45d7d28082e209a0a"
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "aabf2591e79c06e2a54acc839d7c636da3d232bb647cad3a15d3265583976b66"
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template/Items/BlueSquare/Picture.png",
+          "kind": "sha256",
+          "eq": "01aa5961b04e2388b99311a25f4d6cdf5a4048c454536d6a3e92ef73b4ea0c84"
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template/Items/RedSquare/Picture.png",
+          "kind": "sha256",
+          "eq": "d237a2843d19c06a4091bcc816f29ad41091d313be42c0c7a762c6e446ecd8d7"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/KeepDiagram.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/KeepDiagram/Ext/Template.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Report/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Template",
+          "eq": [
+            "OwnDiagram"
+          ]
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Report/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}MainDataCompositionSchema",
+          "eq": [
+            ""
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.OwnRemovalReport",
+        "ops": [
+          {
+            "op": "template.remove",
+            "args": {
+              "at": "main:Report.OwnRemovalReport.Template.OwnDiagram"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        },
+        {
+          "pointer": "/rev",
+          "notEq": ""
+        }
+      ],
+      "captures": {
+        "ownToken": {
+          "pointer": "/data/executionToken"
+        },
+        "ownPlanIdentity": {
+          "pointer": "/rev"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "144eb3dd22581e3e23deb8d18982b735ee2c917335221d43abb5f7be93144ac6"
+        },
+        {
+          "path": "src/Languages/English.xml",
+          "kind": "sha256",
+          "eq": "8810207db9d27bc5b541bce3b0f3653ecdf5faa7b23fa455d464fd20ff7877b7"
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport.xml",
+          "kind": "sha256",
+          "eq": "90369e93f7c2e07c4a2c722de1e72ff04e62e02b986689ac27df0353ac409d07"
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram.xml",
+          "kind": "sha256",
+          "eq": "c6652b9a7e3092df8cad9e6a64cbd4fc233c7444a6c902a45d7d28082e209a0a"
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "aabf2591e79c06e2a54acc839d7c636da3d232bb647cad3a15d3265583976b66"
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template/Items/BlueSquare/Picture.png",
+          "kind": "sha256",
+          "eq": "01aa5961b04e2388b99311a25f4d6cdf5a4048c454536d6a3e92ef73b4ea0c84"
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template/Items/RedSquare/Picture.png",
+          "kind": "sha256",
+          "eq": "d237a2843d19c06a4091bcc816f29ad41091d313be42c0c7a762c6e446ecd8d7"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/KeepDiagram.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/KeepDiagram/Ext/Template.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.diff",
+      "args": {
+        "executionToken": "$capture.ownToken",
+        "limit": 20
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/sourceSet",
+          "eq": "main"
+        },
+        {
+          "pointer": "/data/planIdentity",
+          "eq": "$capture.ownPlanIdentity"
+        },
+        {
+          "pointer": "/data/chunks",
+          "eq": [
+            {
+              "pathEncoding": "utf8",
+              "path": "Reports/OwnRemovalReport.xml",
+              "side": "before",
+              "present": true,
+              "totalBytes": 1605,
+              "rangeStart": 1459,
+              "rangeEnd": 1605,
+              "startByte": 1459,
+              "endByte": 1605,
+              "encoding": "utf8",
+              "content": "      <Explanation/>\n    </Properties>\n    <ChildObjects>\n      <Template>OwnDiagram</Template>\n    </ChildObjects>\n  </Report>\n</MetaDataObject>\n"
+            },
+            {
+              "pathEncoding": "utf8",
+              "path": "Reports/OwnRemovalReport.xml",
+              "side": "after",
+              "present": true,
+              "totalBytes": 1567,
+              "rangeStart": 1459,
+              "rangeEnd": 1567,
+              "startByte": 1459,
+              "endByte": 1567,
+              "encoding": "utf8",
+              "content": "      <Explanation/>\n    </Properties>\n    <ChildObjects>\n    </ChildObjects>\n  </Report>\n</MetaDataObject>\n"
+            },
+            {
+              "pathEncoding": "utf8",
+              "path": "Reports/OwnRemovalReport/Templates/OwnDiagram.xml",
+              "side": "before",
+              "present": true,
+              "totalBytes": 698,
+              "rangeStart": 0,
+              "rangeEnd": 698,
+              "startByte": 0,
+              "endByte": 698,
+              "encoding": "utf8",
+              "content": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:app=\"http://v8.1c.ru/8.2/managed-application/core\" xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"2.20\">\n  <Template uuid=\"f8f8afe9-cb7a-4892-8038-5dedff073451\">\n    <Properties>\n      <Name>OwnDiagram</Name>\n      <Synonym/>\n      <Comment>Independent neutral graphical template</Comment>\n      <TemplateType>GraphicalSchema</TemplateType>\n    </Properties>\n  </Template>\n</MetaDataObject>\n"
+            },
+            {
+              "pathEncoding": "utf8",
+              "path": "Reports/OwnRemovalReport/Templates/OwnDiagram.xml",
+              "side": "after",
+              "present": false,
+              "totalBytes": 0,
+              "rangeStart": 0,
+              "rangeEnd": 0,
+              "startByte": 0,
+              "endByte": 0,
+              "encoding": "utf8",
+              "content": ""
+            },
+            {
+              "pathEncoding": "utf8",
+              "path": "Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template.xml",
+              "side": "before",
+              "present": true,
+              "totalBytes": 2804,
+              "rangeStart": 0,
+              "rangeEnd": 2804,
+              "startByte": 0,
+              "endByte": 2048,
+              "encoding": "utf8",
+              "content": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<GraphicalSchema xmlns=\"http://v8.1c.ru/8.3/xcf/scheme\" xmlns:sch=\"http://v8.1c.ru/8.2/data/graphscheme\" xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"2.20\">\n  <BackColor>style:FieldBackColor</BackColor>\n  <GridEnabled>true</GridEnabled>\n  <DrawGridMode>Lines</DrawGridMode>\n  <GridHorizontalStep>20</GridHorizontalStep>\n  <GridVerticalStep>20</GridVerticalStep>\n  <PrintParameters>\n    <TopMargin>10</TopMargin><LeftMargin>10</LeftMargin><BottomMargin>10</BottomMargin><RightMargin>10</RightMargin>\n    <BlackAndWhite>false</BlackAndWhite><FitPageMode>Auto</FitPageMode>\n  </PrintParameters>\n  <Items>\n    <Decoration id=\"1\">\n      <Properties>\n        <Name>RedSquare</Name>\n        <Title/>\n        <ToolTip/>\n        <TabOrder>1</TabOrder>\n        <BackColor>auto</BackColor>\n        <TextColor>style:FormTextColor</TextColor>\n        <LineColor>style:BorderColor</LineColor>\n        <GroupNumber>0</GroupNumber>\n        <ZOrder>1</ZOrder>\n        <Hyperlink>false</Hyperlink>\n        <Transparent>false</Transparent>\n        <Font kind=\"AutoFont\"/>\n        <HorizontalAlign>Right</HorizontalAlign>\n        <VerticalAlign>Center</VerticalAlign>\n        <PictureLocation>Center</PictureLocation>\n        <Location top=\"10\" left=\"10\" bottom=\"26\" right=\"26\"/>\n        <Picture><xr:Abs>Picture.png</xr:Abs><xr:LoadTransparent>false</xr:LoadTransparent></Picture>\n        <PictureSize>AutoSize</PictureSize>\n        <Shape>None</Shape>\n        <FlipMode>0</FlipMode>\n        <Angle xsi:type=\"xs:decimal\">0</Angle>\n      </Properties>\n    </Decoration>\n    <Decoration id=\"2\">\n      <Properties>\n        <Name>BlueSquare</Name>\n        <Title/>\n        <ToolTip/>\n        <TabOrder>2</TabOrder>\n        <BackColor>auto</BackColor>\n        <TextColor>style:FormTextColor</TextC"
+            },
+            {
+              "pathEncoding": "utf8",
+              "path": "Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template.xml",
+              "side": "before",
+              "present": true,
+              "totalBytes": 2804,
+              "rangeStart": 0,
+              "rangeEnd": 2804,
+              "startByte": 2048,
+              "endByte": 2804,
+              "encoding": "utf8",
+              "content": "olor>\n        <LineColor>style:BorderColor</LineColor>\n        <GroupNumber>0</GroupNumber>\n        <ZOrder>2</ZOrder>\n        <Hyperlink>false</Hyperlink>\n        <Transparent>false</Transparent>\n        <Font kind=\"AutoFont\"/>\n        <HorizontalAlign>Right</HorizontalAlign>\n        <VerticalAlign>Center</VerticalAlign>\n        <PictureLocation>Center</PictureLocation>\n        <Location top=\"10\" left=\"42\" bottom=\"26\" right=\"58\"/>\n        <Picture><xr:Abs>Picture.png</xr:Abs><xr:LoadTransparent>false</xr:LoadTransparent></Picture>\n        <PictureSize>AutoSize</PictureSize>\n        <Shape>None</Shape>\n        <FlipMode>0</FlipMode>\n        <Angle xsi:type=\"xs:decimal\">0</Angle>\n      </Properties>\n    </Decoration>\n  </Items>\n</GraphicalSchema>\n"
+            },
+            {
+              "pathEncoding": "utf8",
+              "path": "Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template.xml",
+              "side": "after",
+              "present": false,
+              "totalBytes": 0,
+              "rangeStart": 0,
+              "rangeEnd": 0,
+              "startByte": 0,
+              "endByte": 0,
+              "encoding": "utf8",
+              "content": ""
+            },
+            {
+              "pathEncoding": "utf8",
+              "path": "Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template/Items/BlueSquare/Picture.png",
+              "side": "before",
+              "present": true,
+              "totalBytes": 82,
+              "rangeStart": 0,
+              "rangeEnd": 82,
+              "startByte": 0,
+              "endByte": 82,
+              "encoding": "base64",
+              "content": "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAGUlEQVR42mMwCLjznxLMMGrAqAGjBgwXAwCnOVsfNpg5ZwAAAABJRU5ErkJggg=="
+            },
+            {
+              "pathEncoding": "utf8",
+              "path": "Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template/Items/BlueSquare/Picture.png",
+              "side": "after",
+              "present": false,
+              "totalBytes": 0,
+              "rangeStart": 0,
+              "rangeEnd": 0,
+              "startByte": 0,
+              "endByte": 0,
+              "encoding": "utf8",
+              "content": ""
+            },
+            {
+              "pathEncoding": "utf8",
+              "path": "Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template/Items/RedSquare/Picture.png",
+              "side": "before",
+              "present": true,
+              "totalBytes": 82,
+              "rangeStart": 0,
+              "rangeEnd": 82,
+              "startByte": 0,
+              "endByte": 82,
+              "encoding": "base64",
+              "content": "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAGUlEQVR42mO4Y2DwnxLMMGrAqAGjBgwXAwDreTsfuRSn8gAAAABJRU5ErkJggg=="
+            },
+            {
+              "pathEncoding": "utf8",
+              "path": "Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template/Items/RedSquare/Picture.png",
+              "side": "after",
+              "present": false,
+              "totalBytes": 0,
+              "rangeStart": 0,
+              "rangeEnd": 0,
+              "startByte": 0,
+              "endByte": 0,
+              "encoding": "utf8",
+              "content": ""
+            }
+          ]
+        },
+        {
+          "pointer": "/data/truncated",
+          "eq": false
+        },
+        {
+          "pointer": "/data/cursor",
+          "eq": null
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "complete"
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        },
+        {
+          "pointer": "/next",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "144eb3dd22581e3e23deb8d18982b735ee2c917335221d43abb5f7be93144ac6"
+        },
+        {
+          "path": "src/Languages/English.xml",
+          "kind": "sha256",
+          "eq": "8810207db9d27bc5b541bce3b0f3653ecdf5faa7b23fa455d464fd20ff7877b7"
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport.xml",
+          "kind": "sha256",
+          "eq": "90369e93f7c2e07c4a2c722de1e72ff04e62e02b986689ac27df0353ac409d07"
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram.xml",
+          "kind": "sha256",
+          "eq": "c6652b9a7e3092df8cad9e6a64cbd4fc233c7444a6c902a45d7d28082e209a0a"
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "aabf2591e79c06e2a54acc839d7c636da3d232bb647cad3a15d3265583976b66"
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template/Items/BlueSquare/Picture.png",
+          "kind": "sha256",
+          "eq": "01aa5961b04e2388b99311a25f4d6cdf5a4048c454536d6a3e92ef73b4ea0c84"
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template/Items/RedSquare/Picture.png",
+          "kind": "sha256",
+          "eq": "d237a2843d19c06a4091bcc816f29ad41091d313be42c0c7a762c6e446ecd8d7"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/KeepDiagram.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/KeepDiagram/Ext/Template.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.ownToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "144eb3dd22581e3e23deb8d18982b735ee2c917335221d43abb5f7be93144ac6"
+        },
+        {
+          "path": "src/Languages/English.xml",
+          "kind": "sha256",
+          "eq": "8810207db9d27bc5b541bce3b0f3653ecdf5faa7b23fa455d464fd20ff7877b7"
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport.xml",
+          "kind": "sha256",
+          "eq": "95cbd575152b9cf37f6a6f966d284b5bd2893a005ae9da70db50f650a8436ac6"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/KeepDiagram.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/KeepDiagram/Ext/Template.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template/Items/BlueSquare/Picture.png",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template/Items/RedSquare/Picture.png",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Report/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Template",
+          "eq": []
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Report/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}MainDataCompositionSchema",
+          "eq": [
+            ""
+          ]
+        }
+      ],
+      "captures": {
+        "publishedOwn": {
+          "pointer": ""
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.ownToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "",
+          "eq": "$capture.publishedOwn"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "144eb3dd22581e3e23deb8d18982b735ee2c917335221d43abb5f7be93144ac6"
+        },
+        {
+          "path": "src/Languages/English.xml",
+          "kind": "sha256",
+          "eq": "8810207db9d27bc5b541bce3b0f3653ecdf5faa7b23fa455d464fd20ff7877b7"
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport.xml",
+          "kind": "sha256",
+          "eq": "95cbd575152b9cf37f6a6f966d284b5bd2893a005ae9da70db50f650a8436ac6"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/KeepDiagram.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/KeepDiagram/Ext/Template.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template/Items/BlueSquare/Picture.png",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template/Items/RedSquare/Picture.png",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Report/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Template",
+          "eq": []
+        },
+        {
+          "path": "src/Reports/OwnRemovalReport.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Report/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}MainDataCompositionSchema",
+          "eq": [
+            ""
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,5 +1,8 @@
 use super::validate_platform_xml_binding;
 use crate::application::metadata::{parse_metadata_request, MetadataOperation, MetadataRequest};
+use crate::application::properties::{
+    decode_properties, PropertiesIntent, RolePropertyChanges, SubsystemPropertyChanges,
+};
 use crate::domain::address::{NodeKind, QualifiedAddress};
 use crate::domain::apply::OperationDescriptor;
 use crate::domain::events::{DomainEvent, DomainEventKind};
@@ -12,6 +15,7 @@ use crate::domain::operation_contract::{
     metadata_object_remove_input_schema, metadata_relation_input_schema, ArgumentShape,
 };
 use crate::domain::project_sources::SourceSetKind;
+use crate::domain::properties_operation::{PropertiesOperation, PropertiesSite};
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use crate::infrastructure::logical_event_source::metadata_descriptor_relative;
 use crate::infrastructure::metadata_kinds::{metadata_kind_by_directory, metadata_layout};
@@ -87,14 +91,19 @@ enum MetadataPlanKind {
         owner: MetadataAddress,
         name: String,
     },
-    /// `props.set` on a role or subsystem: descriptor kinds outside the typed
-    /// metadata writer, edited through their own small property sets.
-    SimpleProps {
-        kind: NodeKind,
+    /// Role and subsystem descriptors keep their own typed patches while
+    /// sharing the existing staged-state and publication path.
+    DescriptorProperties {
         name: String,
         relative: PathBuf,
-        values: Map<String, Value>,
+        changes: DescriptorPropertyChanges,
     },
+}
+
+#[derive(Debug, Clone)]
+enum DescriptorPropertyChanges {
+    Role(RolePropertyChanges),
+    Subsystem(SubsystemPropertyChanges),
 }
 
 /// Local composition belongs to the final descriptor, after every operation
@@ -255,6 +264,10 @@ pub(crate) fn parse_metadata_plan_operation_in(
         )
         .at_path(format!("ops[{op_index}].args"))
     })?;
+    if let Some(operation) = descriptor.and_then(OperationDescriptor::properties_operation) {
+        let kind = parse_properties(operation, object, op_index, binding)?;
+        return Ok(MetadataPlanOperation { kind });
+    }
     if let Some(operation) = descriptor.and_then(OperationDescriptor::metadata_operation) {
         let member_contract = operation
             .member_collection()
@@ -526,11 +539,7 @@ pub(crate) fn parse_metadata_plan_operation_in(
         }
         return Ok(MetadataPlanOperation { kind });
     }
-    let kind = match operation {
-        "props.set" => parse_props_set(object, op_index, binding)?,
-        _ => return Err(hidden_apply_family_unimplemented(op_index)),
-    };
-    Ok(MetadataPlanOperation { kind })
+    Err(hidden_apply_family_unimplemented(op_index))
 }
 
 fn reject_unknown_args(
@@ -1100,46 +1109,58 @@ fn parse_legacy_edit(
     })
 }
 
-fn parse_props_set(
+fn parse_properties(
+    operation: PropertiesOperation,
     args: &Map<String, Value>,
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
-    reject_unknown_args("props.set", args, &["at", "values"], op_index)?;
     let target = qualified_target(args, op_index, binding)?;
-    if let [only] = target.segments() {
-        if matches!(only.kind(), NodeKind::Role | NodeKind::Subsystem) {
-            let name = only
-                .name()
-                .ok_or_else(|| {
-                    ApplyPlanError::new(ApplyPlanErrorKind::BadValue, "the target must be named")
-                        .at_path(format!("ops[{op_index}].args.at"))
-                })?
-                .to_string();
-            let relative = if only.kind() == NodeKind::Role {
-                PathBuf::from("Roles").join(format!("{name}.xml"))
-            } else {
-                PathBuf::from("Subsystems").join(format!("{name}.xml"))
-            };
-            let values = required_object(args, "values", op_index)?.clone();
-            return Ok(MetadataPlanKind::SimpleProps {
-                kind: only.kind(),
-                name,
-                relative,
-                values,
+    let site = PropertiesSite::from_address(&target).ok_or_else(|| {
+        ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            "properties require a named top-level metadata object, role or subsystem",
+        )
+        .at_path(format!("ops[{op_index}].args.at"))
+    })?;
+    // ApplyRequest has already resolved the operation address. It is an
+    // internal carrier key, not part of the published property arguments.
+    let mut payload = args.clone();
+    payload.remove("at");
+    let contract = operation.contract(site);
+    reject_unknown_input_args(operation.name(), &payload, &contract.schema, op_index)?;
+    let intent = decode_properties(
+        operation,
+        site,
+        &Value::Object(payload),
+        &format!("ops[{op_index}].args"),
+    )
+    .map_err(|error| {
+        ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(error.path)
+    })?;
+    let (directory, changes) = match intent {
+        PropertiesIntent::Metadata(values) => {
+            let (target, _) = metadata_owner(&target, op_index)?;
+            return Ok(MetadataPlanKind::Edit {
+                target,
+                operation: MetaEditOperation::SetProperties { values },
+                addressed: None,
             });
         }
-    }
-    let (owner, kind) = metadata_owner(&target, op_index)?;
-    let values = required_object(args, "values", op_index)?.clone();
-    parse_legacy_edit(
-        binding.source_set_name(),
-        owner,
-        kind,
-        json!({"op": "setProperties", "values": values}),
-        |field| format!("ops[{op_index}].args.{field}"),
-        op_index,
-    )
+        PropertiesIntent::Role(values) => ("Roles", DescriptorPropertyChanges::Role(values)),
+        PropertiesIntent::Subsystem(values) => {
+            ("Subsystems", DescriptorPropertyChanges::Subsystem(values))
+        }
+    };
+    let name = target.segments()[0]
+        .name()
+        .expect("proven named property owner")
+        .to_string();
+    Ok(MetadataPlanKind::DescriptorProperties {
+        relative: PathBuf::from(directory).join(format!("{name}.xml")),
+        name,
+        changes,
+    })
 }
 
 /// `attribute.add` on the owner adds header attributes; on
@@ -1720,19 +1741,17 @@ pub(crate) fn plan_metadata_batch(
                 )?;
                 continue;
             }
-            MetadataPlanKind::SimpleProps {
-                kind,
+            MetadataPlanKind::DescriptorProperties {
                 name,
                 relative,
-                values,
+                changes,
             } => {
-                stage_simple_props(
+                stage_descriptor_properties(
                     &mut staged,
                     authority.source_kind(),
-                    *kind,
                     name,
                     relative,
-                    values,
+                    changes,
                     op_index,
                     &mut provisional,
                 )?;
@@ -2665,13 +2684,12 @@ fn replace_property_block(text: &str, tag: &str, replacement: &str) -> Option<St
 }
 
 #[allow(clippy::too_many_arguments)]
-fn stage_simple_props(
+fn stage_descriptor_properties(
     staged: &mut ApplyStagedState,
     source_kind: SourceSetKind,
-    kind: NodeKind,
     name: &str,
     relative: &std::path::Path,
-    values: &Map<String, Value>,
+    changes: &DescriptorPropertyChanges,
     op_index: usize,
     provisional: &mut Vec<ProvisionalApplyEffect>,
 ) -> Result<(), ApplyPlanError> {
@@ -2697,48 +2715,22 @@ fn stage_simple_props(
         )
         .at_path(at_path.clone())
     })?;
-    let text_value = |key: &str| -> Result<Option<String>, ApplyPlanError> {
-        let Some(value) = values.get(key) else {
-            return Ok(None);
-        };
-        value
-            .as_str()
-            .map(str::to_string)
-            .ok_or_else(|| {
-                ApplyPlanError::new(
-                    ApplyPlanErrorKind::BadValue,
-                    format!("property `{key}` takes a string"),
-                )
-                .at_path(format!("ops[{op_index}].args.values.{key}"))
-            })
-            .map(Some)
-    };
-    let postimage_text = match kind {
-        NodeKind::Role => {
-            for key in values.keys() {
-                if !matches!(key.as_str(), "synonym" | "Synonym" | "comment" | "Comment") {
-                    return Err(ApplyPlanError::new(
-                        ApplyPlanErrorKind::BadValue,
-                        format!("role properties accept `synonym` and `comment`, not `{key}`"),
-                    )
-                    .at_path(format!("ops[{op_index}].args.values.{key}")));
-                }
-            }
+    let (kind, postimage_text) = match changes {
+        DescriptorPropertyChanges::Role(RolePropertyChanges { synonym, comment }) => {
             let mut text = source.clone();
             let indent = "\t\t\t";
-            if let Some(synonym) = text_value("synonym")?.or(text_value("Synonym")?) {
+            if let Some(synonym) = synonym {
                 let lang = staged_text_language(staged, source_kind, op_index)?;
-                text = set_ml_property(&text, "Synonym", indent, &lang, &synonym).ok_or_else(
-                    || {
+                text =
+                    set_ml_property(&text, "Synonym", indent, &lang, synonym).ok_or_else(|| {
                         ApplyPlanError::new(
                             ApplyPlanErrorKind::InvalidSource,
                             "the role descriptor has no Synonym property",
                         )
                         .at_path(at_path.clone())
-                    },
-                )?;
+                    })?;
             }
-            if let Some(comment) = text_value("comment")?.or(text_value("Comment")?) {
+            if let Some(comment) = comment {
                 let block = if comment.is_empty() {
                     format!("{indent}<Comment/>")
                 } else {
@@ -2758,13 +2750,18 @@ fn stage_simple_props(
                     .at_path(at_path.clone())
                 })?;
             }
-            text
+            (NodeKind::Role, text)
         }
-        NodeKind::Subsystem => {
-            // Parsing proves the descriptor is a subsystem. The properties are
-            // then edited in place: regenerating the descriptor from the parsed
-            // model kept one language of Synonym and Explanation and dropped
-            // the others (#909).
+        DescriptorPropertyChanges::Subsystem(SubsystemPropertyChanges {
+            synonym,
+            comment,
+            explanation,
+            include_help_in_contents,
+            include_in_command_interface,
+            use_one_command,
+        }) => {
+            // Prove the descriptor before its existing local XML edits. The
+            // typed patch changes only the configuration's default language.
             crate::infrastructure::native_operations::common::parse_subsystem_edit_model(
                 &source,
                 &relative.display().to_string(),
@@ -2775,7 +2772,6 @@ fn stage_simple_props(
             })?;
             let mut text = source.clone();
             let indent = "\t\t\t";
-            let mut lang = None;
             let missing = |tag: &str| {
                 ApplyPlanError::new(
                     ApplyPlanErrorKind::InvalidSource,
@@ -2783,63 +2779,51 @@ fn stage_simple_props(
                 )
                 .at_path(at_path.clone())
             };
-            for (key, value) in values {
-                let bool_text = || -> Result<String, ApplyPlanError> {
-                    match value {
-                        Value::Bool(flag) => Ok(flag.to_string()),
-                        Value::String(text) if text == "true" || text == "false" => {
-                            Ok(text.clone())
-                        }
-                        _ => Err(ApplyPlanError::new(
-                            ApplyPlanErrorKind::BadValue,
-                            format!("property `{key}` takes a boolean"),
-                        )
-                        .at_path(format!("ops[{op_index}].args.values.{key}"))),
-                    }
-                };
-                let flag_tag = match key.as_str() {
-                    "synonym" | "Synonym" | "explanation" | "Explanation" => {
-                        let tag = if key.eq_ignore_ascii_case("synonym") {
-                            "Synonym"
-                        } else {
-                            "Explanation"
-                        };
-                        let value = text_value(key)?.unwrap_or_default();
-                        if lang.is_none() {
-                            lang = Some(staged_text_language(staged, source_kind, op_index)?);
-                        }
-                        let lang = lang.as_deref().expect("the language was just resolved");
-                        text = set_ml_property(&text, tag, indent, lang, &value)
-                            .ok_or_else(|| missing(tag))?;
-                        continue;
-                    }
-                    "comment" | "Comment" => {
-                        let comment = text_value(key)?.unwrap_or_default();
-                        text = set_plain_property(&text, "Comment", &comment)
-                            .ok_or_else(|| missing("Comment"))?;
-                        continue;
-                    }
-                    "includeHelpInContents" | "IncludeHelpInContents" => "IncludeHelpInContents",
-                    "includeInCommandInterface" | "IncludeInCommandInterface" => {
-                        "IncludeInCommandInterface"
-                    }
-                    "useOneCommand" | "UseOneCommand" => "UseOneCommand",
-                    other => {
-                        return Err(ApplyPlanError::new(
-                            ApplyPlanErrorKind::BadValue,
-                            format!(
-                                "subsystem properties accept synonym, comment, explanation, includeHelpInContents, includeInCommandInterface and useOneCommand, not `{other}`"
-                            ),
-                        )
-                        .at_path(format!("ops[{op_index}].args.values.{other}")))
-                    }
-                };
-                text = set_plain_property(&text, flag_tag, &bool_text()?)
-                    .ok_or_else(|| missing(flag_tag))?;
+            let lang = if synonym.is_some() || explanation.is_some() {
+                Some(staged_text_language(staged, source_kind, op_index)?)
+            } else {
+                None
+            };
+            if let Some(synonym) = synonym {
+                text = set_ml_property(
+                    &text,
+                    "Synonym",
+                    indent,
+                    lang.as_deref()
+                        .expect("localized patch retained its language"),
+                    synonym,
+                )
+                .ok_or_else(|| missing("Synonym"))?;
             }
-            text
+            if let Some(comment) = comment {
+                text = set_plain_property(&text, "Comment", comment)
+                    .ok_or_else(|| missing("Comment"))?;
+            }
+            if let Some(explanation) = explanation {
+                text = set_ml_property(
+                    &text,
+                    "Explanation",
+                    indent,
+                    lang.as_deref()
+                        .expect("localized patch retained its language"),
+                    explanation,
+                )
+                .ok_or_else(|| missing("Explanation"))?;
+            }
+            if let Some(value) = include_help_in_contents {
+                text = set_plain_property(&text, "IncludeHelpInContents", &value.to_string())
+                    .ok_or_else(|| missing("IncludeHelpInContents"))?;
+            }
+            if let Some(value) = include_in_command_interface {
+                text = set_plain_property(&text, "IncludeInCommandInterface", &value.to_string())
+                    .ok_or_else(|| missing("IncludeInCommandInterface"))?;
+            }
+            if let Some(value) = use_one_command {
+                text = set_plain_property(&text, "UseOneCommand", &value.to_string())
+                    .ok_or_else(|| missing("UseOneCommand"))?;
+            }
+            (NodeKind::Subsystem, text)
         }
-        _ => unreachable!("simple props are parsed for roles and subsystems only"),
     };
     let postimage = preserve_descriptor_image(&preimage, &source, &postimage_text);
     if postimage == preimage {
@@ -3197,6 +3181,25 @@ fn stage_template_set(
     Ok(())
 }
 
+/// Include indentation and its newline only when the confirmed registration
+/// is the sole token on that line; compact XML and comments keep their bytes.
+fn template_removal_registration_span(
+    source: &str,
+    range: std::ops::Range<usize>,
+) -> std::ops::Range<usize> {
+    let line_start = source[..range.start].rfind('\n').map_or(0, |at| at + 1);
+    let only_indent = source[line_start..range.start]
+        .chars()
+        .all(|character| matches!(character, ' ' | '\t' | '\r'));
+    if only_indent && source[range.end..].starts_with("\r\n") {
+        line_start..range.end + 2
+    } else if only_indent && source[range.end..].starts_with('\n') {
+        line_start..range.end + 1
+    } else {
+        range
+    }
+}
+
 fn stage_template_remove(
     staged: &mut ApplyStagedState,
     authority: &MetadataApplyAuthority<'_>,
@@ -3209,43 +3212,93 @@ fn stage_template_remove(
     require_untouched_staged_state(staged, "template.remove", &at_path)?;
     let (owner_relative, owner_preimage, owner_source) =
         owner_descriptor_and_text(staged, authority, owner, op_index)?;
-    let (deregistered, removed) =
-        crate::infrastructure::native_operations::meta::remove::remove_metadata_child_text_with_flag(
-            &owner_source,
-            "Template",
-            name,
-        );
-    if !removed {
-        return Err(ApplyPlanError::new(
-            ApplyPlanErrorKind::NotFound,
-            format!("`{}` has no template `{name}`", owner.as_str()),
-        )
-        .at_path(at_path));
-    }
-    let reference = format!("{}.Template.{name}", owner.as_str());
-    let mut owner_text = deregistered;
-    for property in ["MainDataCompositionSchema", "DefaultTemplate"] {
-        let filled = format!("<{property}>{reference}</{property}>");
-        if owner_text.contains(&filled) {
-            owner_text = owner_text.replace(&filled, &format!("<{property}/>"));
-        }
-    }
-    let mut touched = Vec::new();
+    let owner_source = owner_source.trim_start_matches('\u{feff}').to_string();
     let templates_dir = owner_relative.with_extension("").join("Templates");
     let descriptor_relative = templates_dir.join(format!("{name}.xml"));
-    if let Some(preimage) = staged
+    let descriptor_preimage = staged
         .read(&descriptor_relative)
         .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
-    {
-        staged
-            .remove(&descriptor_relative, &preimage)
-            .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
-        touched.push(descriptor_relative);
-    }
+        .ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidSource,
+                "registered template descriptor is missing",
+            )
+            .at_path(at_path.clone())
+        })?;
     let payload_relative = templates_dir.join(name);
-    let files = staged
-        .enumerate_tree(&payload_relative)
+    let (files, payload_absent) = staged
+        .enumerate_tree_with_root_absence(&payload_relative)
         .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+    let inherited = if payload_absent && authority.source_kind() == SourceSetKind::Extension {
+        let configuration = staged
+            .read(Path::new("Configuration.xml"))
+            .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+            .ok_or_else(|| {
+                ApplyPlanError::new(
+                    ApplyPlanErrorKind::InvalidSource,
+                    "extension root descriptor is missing",
+                )
+                .at_path(at_path.clone())
+            })?;
+        crate::infrastructure::native_operations::meta::template_removal_has_inherited_owners(
+            &configuration,
+            &owner_preimage,
+            &descriptor_preimage,
+        )
+        .map_err(|message| {
+            ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path(at_path.clone())
+        })?
+    } else {
+        false
+    };
+    let identity =
+        crate::infrastructure::native_operations::meta::validate_template_removal_identity(
+            &owner_source,
+            &descriptor_preimage,
+            owner,
+            name,
+            inherited,
+        )
+        .map_err(|message| {
+            ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path(at_path.clone())
+        })?;
+    if !inherited && files.is_empty() {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidSource,
+            "template content is missing",
+        )
+        .at_path(at_path.clone()));
+    }
+    if let Some(kind) = identity.template_type.as_deref() {
+        if let Some(primary) =
+            crate::infrastructure::native_operations::meta::template_removal_primary_path(kind)
+        {
+            let bytes = staged
+                .read(&payload_relative.join(primary))
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+            match bytes {
+                Some(bytes) => crate::infrastructure::native_operations::meta::validate_template_removal_primary_image(kind, &bytes)
+                    .map_err(|message| ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path(at_path.clone()))?,
+                None if inherited => {},
+                None => return Err(ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, "template primary resource is missing")
+                    .at_path(at_path.clone())),
+            }
+        }
+    }
+    let reference = format!("{}.Template.{name}", owner.as_str());
+    let registration = template_removal_registration_span(&owner_source, identity.registration);
+    let mut owner_edits = identity.reference_edits;
+    owner_edits.push((registration, String::new()));
+    owner_edits.sort_by_key(|edit| std::cmp::Reverse(edit.0.start));
+    let mut owner_text = owner_source.clone();
+    for (range, replacement) in owner_edits {
+        owner_text.replace_range(range, &replacement);
+    }
+    let mut touched = Vec::new();
+    staged
+        .remove(&descriptor_relative, &descriptor_preimage)
+        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+    touched.push(descriptor_relative);
     for relative in files {
         if let Some(preimage) = staged
             .read(&relative)
@@ -3689,6 +3742,38 @@ mod tests {
         .unwrap_err();
         assert_eq!(misplaced.kind(), ApplyPlanErrorKind::BadValue);
         assert_eq!(misplaced.path(), Some("ops[4].args.items"));
+    }
+
+    #[test]
+    fn properties_unknown_envelope_names_values_before_decoding_the_payload() {
+        let fixture = MetadataFixture::new();
+        for at in [
+            "main:Document.Order",
+            "main:Role.Reader",
+            "main:Subsystem.Sales",
+        ] {
+            for (mut args, field) in [
+                (json!({"props":{"Comment":"wrong envelope"}}), "props"),
+                (
+                    json!({"values":false,"command":"wrong envelope"}),
+                    "command",
+                ),
+            ] {
+                args["at"] = json!(at);
+                let error = parse_metadata_plan_operation("props.set", &args, 3, &fixture.binding)
+                    .unwrap_err();
+                assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{at}: {error}");
+                let path = format!("ops[3].args.{field}");
+                assert_eq!(error.path(), Some(path.as_str()), "{at}: {error}");
+                assert_eq!(
+                    error.to_string(),
+                    format!(
+                        "operation does not accept argument `{field}`; `props.set` expects `values`"
+                    ),
+                    "{at}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -6283,6 +6368,212 @@ mod tests {
 	</Subsystem>
 </MetaDataObject>
 "#;
+
+    #[test]
+    fn properties_typed_patches_compose_and_preserve_descriptor_companions() {
+        let retained_translation =
+            "<v8:item><v8:lang>en</v8:lang><v8:content>Retained translation</v8:content></v8:item>";
+        let role = READER_ROLE_XML.replace(
+            "<Synonym/>",
+            &format!("<Synonym>{retained_translation}</Synonym>"),
+        );
+        let subsystem = SALES_SUBSYSTEM_XML.replace(
+            "<Synonym/>",
+            &format!("<Synonym>{retained_translation}</Synonym>"),
+        );
+        let fixture = MetadataFixture::with_files(&[
+            ("Configuration.xml", RU_CONFIGURATION_XML),
+            ("Languages/Русский.xml", &language_xml("Русский", "ru")),
+            ("Documents/Order.xml", ORDER_XML),
+            ("Roles/Reader.xml", &role),
+            (
+                "Roles/Reader/Ext/Rights.xml",
+                "<Rights>retained role content</Rights>",
+            ),
+            ("Subsystems/Sales.xml", &subsystem),
+            (
+                "Subsystems/Sales/Ext/CommandInterface.xml",
+                "<CommandInterface>retained interface</CommandInterface>",
+            ),
+            (
+                "Documents/Order/Ext/ObjectModule.bsl",
+                "// retained module\r\n",
+            ),
+        ]);
+        let before = crate::test_support::tree_snapshot(fixture.binding.source_root());
+        let staged = plan_all(&fixture, &[
+            ("props.set", json!({"at":"main:Document.Order","values":{"Comment":"first"}})),
+            ("attribute.add", json!({"at":"main:Document.Order","items":[{"name":"Total"}]})),
+            ("props.set", json!({"at":"main:Document.Order","values":{"Comment":"final"}})),
+            ("props.set", json!({"at":"main:Role.Reader","values":{"synonym":"Reader edited","Comment":"clear later"}})),
+            ("props.set", json!({"at":"main:Role.Reader","values":{"comment":""}})),
+            ("props.set", json!({"at":"main:Subsystem.Sales","values":{
+                "synonym":"Sales edited","comment":"first","Explanation":"About sales",
+                "IncludeHelpInContents":false,"includeInCommandInterface":false,"useOneCommand":true
+            }})),
+            ("props.set", json!({"at":"main:Subsystem.Sales","values":{"Comment":"last"}})),
+        ]).unwrap();
+        let texts = staged_texts(&staged);
+        assert_eq!(
+            texts.keys().cloned().collect::<Vec<_>>(),
+            vec![
+                PathBuf::from("Documents/Order.xml"),
+                PathBuf::from("Roles/Reader.xml"),
+                PathBuf::from("Subsystems/Sales.xml"),
+            ]
+        );
+        let order = &texts[Path::new("Documents/Order.xml")];
+        assert!(order.contains("<Comment>final</Comment>"));
+        assert!(order.contains("<Name>Total</Name>"));
+        let role = &texts[Path::new("Roles/Reader.xml")];
+        assert!(role.contains("<Comment/>"));
+        assert!(role.contains(retained_translation));
+        assert!(
+            ml_values(role, "Reader", "Synonym").contains(&("ru".into(), "Reader edited".into()))
+        );
+        let sales = &texts[Path::new("Subsystems/Sales.xml")];
+        assert!(sales.contains("<Comment>last</Comment>"));
+        assert!(sales.contains("<IncludeHelpInContents>false</IncludeHelpInContents>"));
+        assert!(sales.contains("<IncludeInCommandInterface>false</IncludeInCommandInterface>"));
+        assert!(sales.contains("<UseOneCommand>true</UseOneCommand>"));
+        assert!(sales.contains("<Picture/>"));
+        assert!(sales.contains("<Content/>"));
+        assert!(sales.contains(retained_translation));
+        assert!(
+            ml_values(sales, "Sales", "Synonym").contains(&("ru".into(), "Sales edited".into()))
+        );
+        assert_eq!(
+            ml_values(sales, "Sales", "Explanation"),
+            vec![("ru".into(), "About sales".into())]
+        );
+        assert_eq!(
+            crate::test_support::tree_snapshot(fixture.binding.source_root()),
+            before
+        );
+    }
+
+    #[test]
+    fn properties_argument_errors_precede_missing_or_damaged_descriptor_state() {
+        let fixture = MetadataFixture::with_files(&[
+            ("Configuration.xml", RU_CONFIGURATION_XML),
+            ("Languages/Русский.xml", &language_xml("Русский", "ru")),
+            ("Documents/Order.xml", ORDER_XML),
+            ("Roles/Reader.xml", READER_ROLE_XML),
+            ("Subsystems/Sales.xml", "<"),
+        ]);
+        std::fs::write(
+            fixture.binding.source_root().join("Roles/Reader.xml"),
+            [0xff],
+        )
+        .unwrap();
+        let before = crate::test_support::tree_snapshot(fixture.binding.source_root());
+        for (at, expected_state) in [
+            ("main:Role.Missing", ApplyPlanErrorKind::NotFound),
+            ("main:Role.Reader", ApplyPlanErrorKind::InvalidSource),
+            ("main:Subsystem.Sales", ApplyPlanErrorKind::InvalidSource),
+        ] {
+            for (values, path) in [
+                (json!({"comment":false}), "ops[5].args.values.comment"),
+                (json!({}), "ops[5].args.values"),
+                (
+                    json!({"Comment":"a","comment":"a"}),
+                    "ops[5].args.values.comment",
+                ),
+            ] {
+                let error = parse_metadata_plan_operation(
+                    "props.set",
+                    &json!({"at":at,"values":values}),
+                    5,
+                    &fixture.binding,
+                )
+                .unwrap_err();
+                assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{at}: {error}");
+                assert_eq!(error.path(), Some(path), "{at}: {error}");
+            }
+            let admission = fixture.admission();
+            let parsed = fixture.parse(
+                "props.set",
+                json!({"at":at,"values":{"comment":"valid"}}),
+                5,
+            );
+            let error = plan_metadata_batch(
+                admission.staged_state().unwrap(),
+                admission
+                    .metadata_planning_authority(&fixture.binding)
+                    .unwrap(),
+                &[parsed],
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), expected_state, "{at}: {error}");
+            assert_eq!(error.path(), Some("ops[5].args.at"));
+            assert_eq!(
+                crate::test_support::tree_snapshot(fixture.binding.source_root()),
+                before
+            );
+        }
+    }
+
+    #[test]
+    fn properties_late_failure_and_stale_inputs_publish_no_partial_patch() {
+        for relative in [
+            "Configuration.xml",
+            "Languages/Русский.xml",
+            "Roles/Reader.xml",
+        ] {
+            let fixture = MetadataFixture::with_files(&[
+                ("Configuration.xml", RU_CONFIGURATION_XML),
+                ("Languages/Русский.xml", &language_xml("Русский", "ru")),
+                ("Documents/Order.xml", ORDER_XML),
+                ("Roles/Reader.xml", READER_ROLE_XML),
+            ]);
+            let before = crate::test_support::tree_snapshot(fixture.binding.source_root());
+            let admission = fixture.admission();
+            let error = plan_metadata_batch(
+                admission.staged_state().unwrap(),
+                admission
+                    .metadata_planning_authority(&fixture.binding)
+                    .unwrap(),
+                &[
+                    fixture.parse(
+                        "props.set",
+                        json!({"at":"main:Role.Reader","values":{"synonym":"not published"}}),
+                        0,
+                    ),
+                    fixture.parse(
+                        "attribute.remove",
+                        json!({"at":"main:Document.Order.Attribute.Missing"}),
+                        1,
+                    ),
+                ],
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), ApplyPlanErrorKind::NotFound);
+            assert_eq!(error.path(), Some("ops[1].args.at"));
+            assert_eq!(
+                crate::test_support::tree_snapshot(fixture.binding.source_root()),
+                before
+            );
+            let staged = plan_all(
+                &fixture,
+                &[(
+                    "props.set",
+                    json!({"at":"main:Role.Reader","values":{"synonym":"not published"}}),
+                )],
+            )
+            .unwrap();
+            let path = fixture.binding.source_root().join(relative);
+            let mut changed = std::fs::read(&path).unwrap();
+            changed.extend_from_slice(b"<!-- concurrent edit -->");
+            std::fs::write(path, changed).unwrap();
+            let concurrent = crate::test_support::tree_snapshot(fixture.binding.source_root());
+            let error = staged.finalize().unwrap_err();
+            assert_eq!(error.kind(), crate::infrastructure::native_operations::apply::ApplyStagingErrorKind::ConcurrentRevision, "{relative}");
+            assert_eq!(
+                crate::test_support::tree_snapshot(fixture.binding.source_root()),
+                concurrent
+            );
+        }
+    }
 
     #[test]
     fn new_multilingual_values_take_the_configuration_default_language() {
