@@ -810,6 +810,13 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         f"(FormOperation::{variant})," for variant, _, _, _ in FORM_CONTEXT
     )
 
+    MXL_EVENT_ROWS = [
+        ("mxl.set", "Mxl", "MxlArea", "Values"),
+        ("area.add", "Mxl", "Mxl", "Items"),
+        ("event.implement", "Event", "Event", "Target"),
+    ]
+    MXL_EVENT_REGISTRATIONS = "(MxlOperation::Set), (MxlOperation::AreaAdd), (EventOperation::Implement),"
+
     def renderer(self):
         module_path = REPO_ROOT / "scripts" / "ci" / "render-acceptance-registry.py"
         spec = importlib.util.spec_from_file_location("render_acceptance_registry", module_path)
@@ -848,10 +855,10 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             self.assertIn(operation, implemented)
             self.assertIn(f"| `{operation}` | `{args}` | да | ", rendered)
 
-    def registration_fixture(self, table, metadata, additional_metadata=None, *, complete_support=True, complete_context=True):
+    def registration_fixture(self, table, metadata, additional_metadata=None, *, complete_support=True, complete_context=True, complete_mxl_event=True):
         # A family-focused fixture keeps unrelated typed families complete.
         sources = dict(additional_metadata or {})
-        for family in ["support", "metadata", "form"]:
+        for family in ["support", "metadata", "form", "mxl", "event"]:
             filename = f"{family}_operation.rs"
             if filename not in sources:
                 sources[filename] = (REPO_ROOT / "crates/unica-coder/src/domain" / filename).read_text(encoding="utf-8")
@@ -859,6 +866,8 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             table += "\n(SupportOperation::CapabilitySet), (SupportOperation::RuleSet),"
         if complete_context:
             table += "\n" + self.CONTEXT_REGISTRATIONS
+        if complete_mxl_event:
+            table += "\n" + self.MXL_EVENT_REGISTRATIONS
         module = self.renderer()
         with tempfile.TemporaryDirectory(prefix="typed-registry-") as raw:
             root = Path(raw)
@@ -898,7 +907,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("supportCapability.set", "Support", "Configuration", "Values"),
             ("query.set", "Dcs", "DcsQuery", "Values"),
             ("supportRule.set", "Support", "SupportRule", "Values"),
-        ] + self.CONTEXT_ROWS)
+        ] + self.CONTEXT_ROWS + self.MXL_EVENT_ROWS)
 
     def test_support_rows_keep_their_arguments_order_and_implemented_status(self) -> None:
         module = self.renderer()
@@ -968,7 +977,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("event.bind", "Form", "FormEvent", "Values"),
             ("supportCapability.set", "Support", "Configuration", "Values"),
             ("supportRule.set", "Support", "SupportRule", "Values"),
-        ])
+        ] + self.MXL_EVENT_ROWS)
 
     def test_fully_typed_metadata_and_form_keep_registry_rows(self) -> None:
         module = self.renderer()
@@ -1048,10 +1057,53 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
                         source, role_metadata, {filename: family_metadata}, complete_context=False,
                     )
 
+    def test_mxl_and_event_rows_are_complete_and_fail_closed(self) -> None:
+        role_source = (REPO_ROOT / "crates/unica-coder/src/domain/role_operation.rs").read_text(encoding="utf-8")
+        roles = "(RoleOperation::Create), (RoleOperation::RightAdd), (RoleOperation::RightSet),"
+        table = roles + self.MXL_EVENT_REGISTRATIONS
+        actual, _ = self.registration_fixture(table, role_source, complete_mxl_event=False)
+        self.assertEqual([row for row in actual if row[1] in {"Mxl", "Event"}], self.MXL_EVENT_ROWS)
+        for family, variants in [
+            ("Mxl", [("Set", "mxl.set", "MxlArea", "Values"), ("AreaAdd", "area.add", "Mxl", "Items")]),
+            ("Event", [("Implement", "event.implement", "Event", "Target")]),
+        ]:
+            filename = f"{family.lower()}_operation.rs"
+            metadata = (REPO_ROOT / "crates/unica-coder/src/domain" / filename).read_text(encoding="utf-8")
+            for variant, name, applicability, skeleton in variants:
+                registration = f"({family}Operation::{variant}),"
+                row = f'{variant} => ("{name}", {applicability}, {skeleton})'
+                raw = f'("{name}", {family}, {applicability}, {skeleton}),'
+                cases = {
+                    "missing": (table.replace(registration, ""), metadata),
+                    "duplicate": (table + registration, metadata),
+                    "wrong family": (table.replace(registration, f"(FormOperation::{variant}),"), metadata),
+                    "unknown variant": (table.replace(registration, f"({family}Operation::Unknown),"), metadata),
+                    "raw replacement": (table.replace(registration, raw), metadata),
+                    "raw beside": (table + raw, metadata),
+                    "raw unknown": (table + f'("future.operation", {family}, Form, Items),', metadata),
+                    "raw renamed bypass": (table + raw, metadata.replace(f'"{name}"', '"future.operation"')),
+                    "raw new spelling": (table + f'("future.operation", {family}, Form, Items),', metadata.replace(f'"{name}"', '"future.operation"')),
+                    "metadata missing": (table, None),
+                    "metadata empty": (table, f"{family.lower()}_operations!();"),
+                    "metadata row missing": (table, metadata.replace(row + ",", "")),
+                    "metadata incomplete": (table, metadata.replace(row, f'{variant} => ("{name}", {applicability})')),
+                    "metadata nonliteral": (table, metadata.replace(row, f'{variant} => (NAME, {applicability}, {skeleton})')),
+                    "metadata repeated": (table, metadata + f'\n{family.lower()}_operations!(Probe => ("future.operation", Form, Items),);'),
+                }
+                for case, (source, changed_metadata) in cases.items():
+                    with self.subTest(family=family, variant=variant, case=case), self.assertRaises(RuntimeError):
+                        self.registration_fixture(source, role_source, {filename: changed_metadata}, complete_mxl_event=False)
+        registry, _ = self.renderer().load_apply_registry()
+        self.assertEqual(registry[100:102], self.MXL_EVENT_ROWS[:2])
+        self.assertEqual(registry[121], self.MXL_EVENT_ROWS[2])
+        self.assertEqual(registry[99][0], "dataSetLink.remove")
+        self.assertEqual(registry[102][0], "valueType.add")
+        self.assertEqual(registry[120][0], "code.replace")
+
     def test_typed_role_rows_stay_between_their_raw_registry_neighbors(self) -> None:
         metadata = (REPO_ROOT / "crates/unica-coder/src/domain/role_operation.rs").read_text(encoding="utf-8")
         registry, _ = self.registration_fixture(
-            '("mxl.set", Mxl, MxlArea, Values),\n'
+            '("field.add", Dcs, DcsDataSet, Items),\n'
             '(RoleOperation::Create),\n'
             '(RoleOperation::RightAdd),\n'
             '// A comment is not a descriptor: (OtherOperation::Hidden),\n'
@@ -1060,14 +1112,14 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             metadata,
         )
         self.assertEqual(registry, [
-            ("mxl.set", "Mxl", "MxlArea", "Values"),
+            ("field.add", "Dcs", "DcsDataSet", "Items"),
             ("role.create", "Role", "Configuration", "Values"),
             ("right.add", "Role", "Role", "Items"),
             ("right.set", "Role", "RoleRight", "Values"),
             ("query.set", "Dcs", "DcsQuery", "Values"),
             ("supportCapability.set", "Support", "Configuration", "Values"),
             ("supportRule.set", "Support", "SupportRule", "Values"),
-        ] + self.CONTEXT_ROWS)
+        ] + self.CONTEXT_ROWS + self.MXL_EVENT_ROWS)
 
     def test_role_metadata_survives_split_impls_and_unrelated_helpers(self) -> None:
         metadata = (REPO_ROOT / "crates/unica-coder/src/domain/role_operation.rs").read_text(encoding="utf-8")
@@ -1091,7 +1143,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("right.set", "Role", "RoleRight", "Values"),
             ("supportCapability.set", "Support", "Configuration", "Values"),
             ("supportRule.set", "Support", "SupportRule", "Values"),
-        ] + self.CONTEXT_ROWS)
+        ] + self.CONTEXT_ROWS + self.MXL_EVENT_ROWS)
 
     def test_unknown_or_incomplete_typed_metadata_cannot_silently_drop_a_role(self) -> None:
         metadata = (REPO_ROOT / "crates/unica-coder/src/domain/role_operation.rs").read_text(encoding="utf-8")
@@ -1213,7 +1265,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         )
         table = "(RoleOperation::Create), (RoleOperation::RightAdd), (RoleOperation::RightSet),"
         expected, implemented = self.registration_fixture(table, metadata)
-        for family in ["Role", "Support", "Metadata", "Form"]:
+        for family in ["Role", "Support", "Metadata", "Form", "Mxl", "Event"]:
             family_prefix = prefix.replace("role_operations", f"{family.lower()}_operations")
             filename = f"{family.lower()}_operation.rs"
             family_metadata = (REPO_ROOT / "crates/unica-coder/src/domain" / filename).read_text(encoding="utf-8")

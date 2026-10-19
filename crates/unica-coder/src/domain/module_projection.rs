@@ -334,6 +334,31 @@ pub(crate) struct InterfaceProjection {
     pub(crate) methods: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FormCallType {
+    Before,
+    After,
+    Override,
+}
+
+impl FormCallType {
+    pub(crate) const ALL: [Self; 3] = [Self::Before, Self::After, Self::Override];
+
+    pub(crate) fn from_xml(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|call_type| call_type.as_str() == value)
+    }
+
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Before => "Before",
+            Self::After => "After",
+            Self::Override => "Override",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum EventState {
@@ -590,13 +615,28 @@ mod tests {
     use super::{
         BindingFact, BodyLine, BranchKind, CommonModuleProperties, CompilationFacts,
         CompilationProjection, EventProjection, EventState, ExtensionKind, ExtensionProjection,
-        HandleProjection, InterfaceKind, InterfaceProjection, MethodKind, MethodParameter,
-        MethodProjection, ModuleIdentity, ModuleProjectionSet, ModuleProperties, RegionProjection,
+        FormCallType, HandleProjection, InterfaceKind, InterfaceProjection, MethodKind,
+        MethodParameter, MethodProjection, ModuleIdentity, ModuleProjectionSet, ModuleProperties,
+        RegionProjection,
     };
     use crate::domain::address::{NodeKind, QualifiedAddress};
     use crate::domain::apply::OperationRegistry;
     use crate::domain::platform_profile::ModuleRole;
     use serde_json::{json, Value};
+
+    #[test]
+    fn form_call_type_vocabulary_preserves_xml_spelling_and_order() {
+        assert_eq!(
+            FormCallType::ALL.map(FormCallType::as_str),
+            ["Before", "After", "Override"]
+        );
+        for call_type in FormCallType::ALL {
+            assert_eq!(FormCallType::from_xml(call_type.as_str()), Some(call_type));
+        }
+        for value in ["Instead", "before", " Before", "After ", ""] {
+            assert_eq!(FormCallType::from_xml(value), None, "{value}");
+        }
+    }
 
     fn identity(props: ModuleProperties) -> ModuleIdentity {
         ModuleIdentity {
