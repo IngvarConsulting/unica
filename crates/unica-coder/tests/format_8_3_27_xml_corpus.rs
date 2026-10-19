@@ -1937,7 +1937,7 @@ fn dcs_component_ops(template: &str) -> Vec<Value> {
     add(
         ".DataSet.Main",
         "field.add",
-        json!({"items":[{"dataPath":"Value","type":"String"},{"dataPath":"Amount","type":"Number(15,2)"}]}),
+        json!({"items":[{"dataPath":"Value"},{"dataPath":"Amount"}]}),
     );
     add(
         ".DataSet.CatalogObject",
@@ -1961,7 +1961,7 @@ fn dcs_component_ops(template: &str) -> Vec<Value> {
         add(
             &format!(".DataSet.Combined.DataSet.{member}"),
             "field.add",
-            json!({"items":[{"dataPath":"Value","type":"String"}]}),
+            json!({"items":[{"dataPath":"Value"}]}),
         );
     }
     add(
@@ -2060,7 +2060,7 @@ fn dcs_mutation_ops(case_id: &str) -> Vec<Value> {
     let base = "main:Report.CorpusReport.Template.CorpusDcs";
     let mut ops = match case_id {
         "dcs-edit-owned-template" => vec![
-            json!({"at":format!("{base}.DataSet.Main"),"op":"field.add","args":{"items":[{"dataPath":"Added","type":"String"}]}}),
+            json!({"at":format!("{base}.DataSet.Main"),"op":"field.add","args":{"items":[{"dataPath":"Added"}]}}),
             json!({"at":format!("{base}.Setting.Main"),"op":"selection.add","args":{"items":[{"field":"Added"}]}}),
         ],
         "dcs-edit-add-parameter-after-settings" => {

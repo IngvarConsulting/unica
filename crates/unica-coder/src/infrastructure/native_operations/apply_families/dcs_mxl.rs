@@ -1,7 +1,8 @@
 use super::metadata::qualified_target;
 use super::validate_platform_xml_binding;
 use crate::domain::address::{member_address, NodeKind, QualifiedAddress};
-use crate::domain::apply::{OperationDescriptor, OperationFamily};
+use crate::domain::apply::OperationDescriptor;
+use crate::domain::dcs_operation::{DcsIntent, Primitive};
 use crate::domain::events::{DomainEvent, DomainEventKind};
 use crate::domain::mxl_operation::MxlOperation;
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
@@ -20,8 +21,7 @@ use serde_json::{Map, Value};
 #[derive(Debug, Clone)]
 struct DcsPrimitivePlan {
     template: MetadataAddress,
-    operation: crate::infrastructure::native_operations::dcs_primitives::Primitive,
-    args: Map<String, Value>,
+    intent: DcsIntent,
     target: crate::infrastructure::native_operations::dcs_primitives::Target,
 }
 
@@ -42,7 +42,7 @@ struct MxlEdit {
 
 #[derive(Debug, Clone)]
 enum DcsMxlPlanKind {
-    Dcs(DcsPrimitivePlan),
+    Dcs(Box<DcsPrimitivePlan>),
     Mxl(Vec<MxlEdit>),
     Unsupported,
 }
@@ -252,11 +252,9 @@ pub(crate) fn parse_dcs_mxl_plan_operation_in(
     })?;
     let kind = match descriptor.and_then(OperationDescriptor::mxl_operation) {
         Some(operation) => parse_mxl_operation(operation, object, op_index, binding)?,
-        None => match crate::application::v13::apply::dispatch_family(operation) {
-            Some(OperationFamily::Dcs) => {
-                parse_dcs_operation(operation, object, op_index, binding)?
-            }
-            _ => DcsMxlPlanKind::Unsupported,
+        None => match descriptor.and_then(OperationDescriptor::dcs_operation) {
+            Some(operation) => parse_dcs_operation(operation, object, op_index, binding)?,
+            None => DcsMxlPlanKind::Unsupported,
         },
     };
     Ok(DcsMxlPlanOperation {
@@ -266,17 +264,13 @@ pub(crate) fn parse_dcs_mxl_plan_operation_in(
 }
 
 fn parse_dcs_operation(
-    operation: &str,
+    operation: Primitive,
     args: &Map<String, Value>,
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<DcsMxlPlanKind, ApplyPlanError> {
-    let Some(contract) = crate::domain::operation_contract::OperationContract::dcs(operation)
-    else {
-        return Ok(DcsMxlPlanKind::Unsupported);
-    };
-    let normalized = contract
-        .normalize(
+    let intent = operation
+        .decode(
             &Value::Object(args.clone()),
             &format!("ops[{op_index}].args"),
         )
@@ -287,53 +281,94 @@ fn parse_dcs_operation(
             )
             .at_path(error.path)
         })?;
-    let args = normalized
-        .as_object()
-        .expect("the DCS contract requires object arguments");
     let address = qualified_target(args, op_index, binding)?;
     let target = dcs_target(&address, op_index)?;
-    if !target.query && matches!(operation, "query.set" | "query.patch") {
+    let (query_operation, variant_operation, structure_operation, terminal_kind) = match operation {
+        Primitive::QuerySet | Primitive::QueryPatch => (true, false, false, None),
+        Primitive::VariantSet | Primitive::VariantRemove => (false, true, false, None),
+        Primitive::StructurePatch | Primitive::StructureRemove => (false, false, true, None),
+        Primitive::FieldRemove | Primitive::FieldSet | Primitive::FieldRoleSet => {
+            (false, false, false, Some(NodeKind::Field))
+        }
+        Primitive::ParameterRemove | Primitive::ParameterSet | Primitive::ParameterRename => {
+            (false, false, false, Some(NodeKind::Parameter))
+        }
+        Primitive::DataSourceSet | Primitive::DataSourceRemove => {
+            (false, false, false, Some(NodeKind::DataSource))
+        }
+        Primitive::CalculatedFieldSet | Primitive::CalculatedFieldRemove => {
+            (false, false, false, Some(NodeKind::CalculatedField))
+        }
+        Primitive::TotalSet | Primitive::TotalRemove => {
+            (false, false, false, Some(NodeKind::Total))
+        }
+        Primitive::DataSourceAdd
+        | Primitive::DataSetAdd
+        | Primitive::DataSetSet
+        | Primitive::DataSetRemove
+        | Primitive::FieldAdd
+        | Primitive::ParameterAdd
+        | Primitive::ParameterReorder
+        | Primitive::CalculatedFieldAdd
+        | Primitive::TotalAdd
+        | Primitive::VariantAdd
+        | Primitive::FilterAdd
+        | Primitive::FilterSet
+        | Primitive::FilterRemove
+        | Primitive::FilterClear
+        | Primitive::SelectionAdd
+        | Primitive::SelectionClear
+        | Primitive::OrderAdd
+        | Primitive::OrderClear
+        | Primitive::DataParameterAdd
+        | Primitive::DataParameterSet
+        | Primitive::OutputParameterSet
+        | Primitive::ConditionalAppearanceAdd
+        | Primitive::ConditionalAppearanceClear
+        | Primitive::StructureAdd
+        | Primitive::StructureSet
+        | Primitive::DataSetLinkAdd
+        | Primitive::SelectionSet
+        | Primitive::SelectionRemove
+        | Primitive::OrderSet
+        | Primitive::OrderRemove
+        | Primitive::DataParameterRemove
+        | Primitive::OutputParameterRemove
+        | Primitive::ConditionalAppearanceRemove
+        | Primitive::DataSetLinkSet
+        | Primitive::DataSetLinkRemove => (false, false, false, None),
+    };
+    let name = operation.name();
+    if !target.query && query_operation {
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::BadValue,
-            format!("{operation} addresses the dataset's query: `DataSet.D.Query`"),
+            format!("{name} addresses the dataset's query: `DataSet.D.Query`"),
         )
         .at_path(format!("ops[{op_index}].args.at")));
     }
-    if target.query && !matches!(operation, "query.set" | "query.patch") {
+    if target.query && !query_operation {
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::BadValue,
-            format!("{operation} addresses the dataset, not its Query"),
+            format!("{name} addresses the dataset, not its Query"),
         )
         .at_path(format!("ops[{op_index}].args.at")));
     }
-    // Операции подузла исполняются по его адресу (#1354): поле, параметр
-    // или вариант называет адрес, а не аргумент.
-    if matches!(operation, "variant.set" | "variant.remove")
+    if variant_operation
         && (target.variant.is_empty() || target.terminal.is_some() || !target.structure.is_empty())
     {
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::BadValue,
-            format!("{operation} addresses a settings variant: `Template.T.Setting.S`"),
+            format!("{name} addresses a settings variant: `Template.T.Setting.S`"),
         )
         .at_path(format!("ops[{op_index}].args.at")));
     }
-    // Элемент структуры правится и удаляется по своему адресу; новый
-    // элемент добавляется в контейнер, который называет адрес (#1357).
-    if matches!(operation, "structure.patch" | "structure.remove") && target.structure.is_empty() {
+    if structure_operation && target.structure.is_empty() {
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::BadValue,
-            format!("{operation} addresses a named structure item: `Template.T.Setting.S.Item.I`"),
+            format!("{name} addresses a named structure item: `Template.T.Setting.S.Item.I`"),
         )
         .at_path(format!("ops[{op_index}].args.at")));
     }
-    let terminal_kind = match operation {
-        "field.remove" | "field.set" | "fieldRole.set" => Some(NodeKind::Field),
-        "parameter.remove" | "parameter.set" | "parameter.rename" => Some(NodeKind::Parameter),
-        "dataSource.set" | "dataSource.remove" => Some(NodeKind::DataSource),
-        "calculatedField.set" | "calculatedField.remove" => Some(NodeKind::CalculatedField),
-        "total.set" | "total.remove" => Some(NodeKind::Total),
-        _ => None,
-    };
     if let Some(expected) = terminal_kind {
         if !target
             .terminal
@@ -347,20 +382,16 @@ fn parse_dcs_operation(
             .at_path(format!("ops[{op_index}].args.at")));
         }
     }
-    let operation =
-        crate::infrastructure::native_operations::dcs_primitives::Primitive::parse(operation)
-            .expect("every DCS contract has a primitive");
-    Ok(DcsMxlPlanKind::Dcs(DcsPrimitivePlan {
+    Ok(DcsMxlPlanKind::Dcs(Box::new(DcsPrimitivePlan {
         template: target.template,
-        operation,
-        args: args.clone(),
+        intent,
         target: crate::infrastructure::native_operations::dcs_primitives::Target {
             datasets: target.datasets,
             variant: target.variant,
             structure: target.structure,
             terminal: target.terminal.map(|(_, name)| name),
         },
-    }))
+    })))
 }
 
 use crate::domain::operation_contract::parse_mxl_cell_address as parse_cell_address;
@@ -619,6 +650,93 @@ pub(crate) fn plan_dcs_mxl_batch(
     Ok((staged, provisional))
 }
 
+/// Discharge removed-source obligations against the complete request image,
+/// after all family runs and before request-level effect reconciliation.
+pub(super) fn validate_final_dcs_resources<'a>(
+    staged: &mut ApplyStagedState,
+    binding: &ProviderRootBinding,
+    operations: impl IntoIterator<Item = &'a IndexedPlanOperation<DcsMxlPlanOperation>>,
+) -> Result<(), ApplyPlanError> {
+    let mut templates =
+        std::collections::BTreeMap::<String, (MetadataAddress, Vec<(String, usize)>)>::new();
+    for operation in operations {
+        let DcsMxlPlanKind::Dcs(edit) = &operation.operation().kind else {
+            continue;
+        };
+        if !matches!(edit.intent.operation(), Primitive::DataSourceRemove) {
+            continue;
+        }
+        let name = edit
+            .target
+            .terminal
+            .as_ref()
+            .expect("the typed source removal has an addressed DataSource");
+        let (_, removed) = templates
+            .entry(edit.template.as_str().to_string())
+            .or_insert_with(|| (edit.template.clone(), Vec::new()));
+        if !removed.iter().any(|(previous, _)| previous == name) {
+            removed.push((name.clone(), operation.index()));
+        }
+    }
+    let mut first_dangling = None;
+    for (template, removed) in templates.into_values() {
+        let first_index = removed[0].1;
+        let at_path = format!("ops[{first_index}].args.at");
+        let relative = attached_resource_relative(&template, "Template.xml", binding.source_kind())
+            .map_err(|message| {
+                ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(at_path.clone())
+            })?;
+        let bytes = staged
+            .read(&relative)
+            .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+            .ok_or_else(|| {
+                ApplyPlanError::new(
+                    ApplyPlanErrorKind::NotFound,
+                    "the data composition schema template was not found",
+                )
+                .at_path(at_path.clone())
+            })?;
+        let body = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&bytes);
+        let text = std::str::from_utf8(body).map_err(|_| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidSource,
+                "the data composition schema is not UTF-8",
+            )
+            .at_path(at_path.clone())
+        })?;
+        let document = roxmltree::Document::parse(text).map_err(|error| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidSource,
+                format!("the data composition schema is not well-formed XML: {error}"),
+            )
+            .at_path(at_path.clone())
+        })?;
+        let root = document.root_element();
+        crate::infrastructure::native_operations::dcs::require_dcs_root(root).map_err(
+            |message| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path(at_path)
+            },
+        )?;
+        for (name, op_index) in removed {
+            use crate::infrastructure::native_operations::dcs_primitives::{
+                declares_data_source, references_data_source,
+            };
+            if !declares_data_source(root, &name) && references_data_source(root, &name) {
+                first_dangling =
+                    Some(first_dangling.map_or(op_index, |previous: usize| previous.min(op_index)));
+            }
+        }
+    }
+    if let Some(op_index) = first_dangling {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            "dataSource is still referenced by a dataset",
+        )
+        .at_path(format!("ops[{op_index}].args")));
+    }
+    Ok(())
+}
+
 /// The template format filter of the canonical path, read from the staged
 /// template descriptor: a DCS operation applies to a data composition schema
 /// and `mxl.set` to a spreadsheet only. The filter is the registry's
@@ -799,13 +917,7 @@ fn apply_dcs_edit(
 ) -> Result<(), ApplyPlanError> {
     use crate::infrastructure::native_operations::dcs_primitives::{apply, ApplyError};
     let apply_with = |xml_text: &mut String, lang: Option<&str>| {
-        apply(
-            xml_text,
-            edit.operation.as_str(),
-            &edit.args,
-            &edit.target,
-            lang,
-        )
+        apply(xml_text, &edit.intent, &edit.target, lang)
     };
     let result = match apply_with(xml_text, None) {
         Err(ApplyError::TextLanguageRequired) => {
@@ -816,8 +928,11 @@ fn apply_dcs_edit(
         result => result,
     };
     result.map_err(|error| {
-        ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.to_string())
-            .at_path(format!("ops[{op_index}].args"))
+        let path = error
+            .argument_path()
+            .map(|path| format!("ops[{op_index}].args.{path}"))
+            .unwrap_or_else(|| format!("ops[{op_index}].args"));
+        ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.to_string()).at_path(path)
     })
 }
 
@@ -931,7 +1046,10 @@ fn stage_mxl_edit(
 mod tests {
     use super::DcsMxlPlanKind;
     use super::{parse_cell_address, parse_dcs_mxl_plan_operation, plan_dcs_mxl_batch};
-    use crate::infrastructure::native_operations::apply::ApplyPlanErrorKind;
+    use crate::domain::apply::ApplyRequest;
+    use crate::infrastructure::native_operations::apply::{
+        ApplyPlanError, ApplyPlanErrorKind, ApplyStagedState, PlannedApplyEffects, StagedFileState,
+    };
     use crate::infrastructure::native_operations::apply_families::request::IndexedPlanOperation;
     use crate::infrastructure::native_operations::apply_families::tests::ApplySeamFixture;
     use serde_json::json;
@@ -940,6 +1058,456 @@ mod tests {
     const SCHEMA: &str = include_str!(
         "../../../../../../tests/fixtures/acceptance/workspace/src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml"
     );
+    const COMPOSED_TEMPLATE: &str = "main:Report.Versions.Template.Schema";
+    const COMPOSED_RELATIVE: &str = "Reports/Versions/Templates/Schema/Ext/Template.xml";
+    const REMOVED_SOURCE: &str =
+        "<dataSource><name>Local</name><dataSourceType>Local</dataSourceType></dataSource>";
+    const REMOVED_DATASET: &str = "<dataSet xsi:type=\"DataSetQuery\"><name>Data</name><dataSource>Lo<!-- reference -->c&#97;l</dataSource><query>ВЫБРАТЬ 1 КАК Amount</query></dataSet>";
+    const REMOVED_SELECTION: &str =
+        "<t:item xsi:type=\"t:SelectedItemField\"><t:field>Amount</t:field></t:item>";
+
+    /// A complete addressed resource for common-planner composition tests.
+    /// Its literal neighbours make the whole staged postimage the oracle.
+    fn composed_dcs_fixture() -> (ApplySeamFixture, String) {
+        let fixture = ApplySeamFixture::new();
+        let source = fixture.source_dir();
+        let configuration = source.join("Configuration.xml");
+        let original = std::fs::read_to_string(&configuration).unwrap();
+        std::fs::write(
+            configuration,
+            original.replace("<ChildObjects>", "<ChildObjects><Report>Versions</Report>"),
+        )
+        .unwrap();
+        std::fs::create_dir_all(source.join("Reports/Versions/Templates/Schema/Ext")).unwrap();
+        std::fs::write(source.join("Reports/Versions.xml"), r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Report uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><Properties><Name>Versions</Name><Comment/></Properties><ChildObjects><Template>Schema</Template></ChildObjects></Report></MetaDataObject>"#).unwrap();
+        std::fs::write(source.join("Reports/Versions/Templates/Schema.xml"), r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Template uuid="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"><Properties><Name>Schema</Name><TemplateType>DataCompositionSchema</TemplateType></Properties></Template></MetaDataObject>"#).unwrap();
+        let xml = format!(
+            "\u{feff}<DataCompositionSchema xmlns=\"http://v8.1c.ru/8.1/data-composition-system/schema\" xmlns:t=\"http://v8.1c.ru/8.1/data-composition-system/settings\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\r\n{REMOVED_SOURCE}\n<dataSource><name>Kept</name><dataSourceType>External</dataSourceType></dataSource>\r\n{REMOVED_DATASET}\n<dataSet xsi:type=\"DataSetQuery\"><name>Neighbour</name><dataSource>Kept</dataSource><query>ВЫБРАТЬ 2 КАК Kept</query></dataSet>\r\n<settingsVariant><t:name>Main</t:name><t:settings><t:selection><t:item xsi:type=\"t:SelectedItemFolder\">{REMOVED_SELECTION}<t:item xsi:type=\"t:SelectedItemField\"><t:field>Kept</t:field></t:item><t:placement>Auto</t:placement></t:item><t:item xsi:type=\"t:SelectedItemAuto\"/></t:selection></t:settings></settingsVariant>\n<!-- unchanged --><?outside exact?></DataCompositionSchema>"
+        );
+        std::fs::write(source.join(COMPOSED_RELATIVE), xml.as_bytes()).unwrap();
+        (fixture, xml)
+    }
+
+    fn plan_composed_dcs(
+        fixture: &ApplySeamFixture,
+        at: &str,
+        ops: serde_json::Value,
+    ) -> Result<(ApplyStagedState, PlannedApplyEffects), ApplyPlanError> {
+        let args = json!({"at":at,"ops":ops,"dryRun":true});
+        let request = ApplyRequest::parse(args.as_object().unwrap(), &["main"]).unwrap();
+        let admission = fixture.admission();
+        super::super::plan_hidden_v13_apply(&request, &fixture.binding, &admission)
+    }
+
+    fn projected_source_tree(
+        staged: &ApplyStagedState,
+        before: &std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>,
+    ) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
+        let mut projected = before.clone();
+        for change in staged.planned_changes() {
+            match change.current {
+                StagedFileState::Bytes(bytes) => {
+                    projected.insert(change.relative_path, bytes);
+                }
+                StagedFileState::Absent => {
+                    projected.remove(&change.relative_path);
+                }
+            }
+        }
+        projected
+    }
+
+    #[test]
+    fn dcs_productive_integer_indices_use_json_schema_number_semantics() {
+        for spelling in ["0", "0.0", "0e0"] {
+            for slot in ["index", "parentIndexes"] {
+                let (fixture, original) = composed_dcs_fixture();
+                let source_before = crate::test_support::tree_snapshot(&fixture.source_dir());
+                let (index, parent) = if slot == "index" {
+                    (spelling, "0")
+                } else {
+                    ("0", spelling)
+                };
+                let values: serde_json::Value = serde_json::from_str(&format!(
+                    r#"{{"index":{index},"parentIndexes":[{parent}]}}"#
+                ))
+                .unwrap();
+                let args = json!({
+                    "at":format!("{COMPOSED_TEMPLATE}.Setting.Main"),
+                    "ops":[{"op":"selection.remove","args":{"values":values}}],
+                    "dryRun":true,
+                });
+                let request = ApplyRequest::parse(args.as_object().unwrap(), &["main"]).unwrap();
+                let admission = fixture.admission();
+                let (staged, _) =
+                    super::super::plan_hidden_v13_apply(&request, &fixture.binding, &admission)
+                        .unwrap_or_else(|error| {
+                            panic!("{slot}={spelling} denotes the same integer index: {error:?}")
+                        });
+                let changes = staged.planned_changes();
+                assert_eq!(changes.len(), 1, "{slot}={spelling}");
+                assert_eq!(changes[0].relative_path, Path::new(COMPOSED_RELATIVE));
+                let StagedFileState::Bytes(current) = &changes[0].current else {
+                    panic!("the selected Template keeps XML bytes");
+                };
+                assert_eq!(
+                    current.as_slice(),
+                    original.replace(REMOVED_SELECTION, "").as_bytes(),
+                    "{slot}={spelling} must remove only the nested zero-th selection"
+                );
+                assert_eq!(
+                    crate::test_support::tree_snapshot(&fixture.source_dir()),
+                    source_before,
+                    "planning must not publish {slot}={spelling}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn dcs_final_template_accepts_source_removal_before_its_referencing_dataset() {
+        let (fixture, original) = composed_dcs_fixture();
+        let source_before = crate::test_support::tree_snapshot(&fixture.source_dir());
+        let args = json!({
+            "at":COMPOSED_TEMPLATE,
+            "ops":[
+                {"op":"dataSource.remove","args":{"at":format!("{COMPOSED_TEMPLATE}.DataSource.Local")}},
+                {"op":"dataSet.remove","args":{"at":format!("{COMPOSED_TEMPLATE}.DataSet.Data")}},
+            ],
+            "dryRun":true,
+        });
+        let request = ApplyRequest::parse(args.as_object().unwrap(), &["main"]).unwrap();
+        let admission = fixture.admission();
+        let (staged, _) =
+            super::super::plan_hidden_v13_apply(&request, &fixture.binding, &admission)
+                .expect("the final Template has no reference to the removed source");
+        let changes = staged.planned_changes();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].relative_path, Path::new(COMPOSED_RELATIVE));
+        let StagedFileState::Bytes(current) = &changes[0].current else {
+            panic!("the composed Template keeps XML bytes");
+        };
+        assert_eq!(
+            current.as_slice(),
+            original
+                .replace(REMOVED_SOURCE, "")
+                .replace(REMOVED_DATASET, "")
+                .as_bytes(),
+            "the final whole Template must retain the other source, dataset and settings exactly"
+        );
+        assert_eq!(
+            crate::test_support::tree_snapshot(&fixture.source_dir()),
+            source_before,
+            "a valid final staged image must remain a preview"
+        );
+    }
+
+    #[test]
+    fn dcs_final_source_refusal_keeps_original_index_and_decoded_reference_without_publication() {
+        let (fixture, _) = composed_dcs_fixture();
+        let source_before = crate::test_support::tree_snapshot(&fixture.source_dir());
+        let args = json!({
+            "at":COMPOSED_TEMPLATE,
+            "ops":[
+                {"op":"filter.clear","args":{"at":format!("{COMPOSED_TEMPLATE}.Setting.Main")}},
+                {"op":"dataSource.remove","args":{"at":format!("{COMPOSED_TEMPLATE}.DataSource.Local")}},
+            ],
+            "dryRun":true,
+        });
+        let request = ApplyRequest::parse(args.as_object().unwrap(), &["main"]).unwrap();
+        let admission = fixture.admission();
+        let error =
+            match super::super::plan_hidden_v13_apply(&request, &fixture.binding, &admission) {
+                Err(error) => error,
+                Ok(_) => {
+                    panic!("a final reference split by a comment and entity must prevent removal")
+                }
+            };
+        assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
+        assert_eq!(error.path(), Some("ops[1].args"));
+        assert!(error
+            .to_string()
+            .contains("dataSource is still referenced by a dataset"));
+        assert_eq!(
+            crate::test_support::tree_snapshot(&fixture.source_dir()),
+            source_before,
+            "late resource refusal must not publish a partial Template"
+        );
+    }
+
+    #[test]
+    fn dcs_final_source_refusal_sees_nested_union_and_discards_prior_family_staging() {
+        let (fixture, original) = composed_dcs_fixture();
+        let nested = "<dataSet xsi:type=\"DataSetUnion\"><name>Union</name><item xsi:type=\"DataSetQuery\"><name>Nested</name><dataSource>Lo<!-- nested reference -->c&#97;l</dataSource><query>ВЫБРАТЬ 3</query></item></dataSet>";
+        let source = original.replacen(
+            "<settingsVariant>",
+            &format!("{nested}<settingsVariant>"),
+            1,
+        );
+        std::fs::write(
+            fixture.source_dir().join(COMPOSED_RELATIVE),
+            source.as_bytes(),
+        )
+        .unwrap();
+        let source_before = crate::test_support::tree_snapshot(&fixture.source_dir());
+        let result = plan_composed_dcs(
+            &fixture,
+            "main:Report.Versions",
+            json!([
+                {"op":"props.set","args":{"at":"main:Report.Versions","values":{"Comment":"must not publish"}}},
+                {"op":"dataSource.remove","args":{"at":format!("{COMPOSED_TEMPLATE}.DataSource.Local")}},
+                {"op":"dataSet.remove","args":{"at":format!("{COMPOSED_TEMPLATE}.DataSet.Data")}},
+            ]),
+        );
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => {
+                panic!("the surviving nested Union member still references the removed source")
+            }
+        };
+        assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
+        assert_eq!(error.path(), Some("ops[1].args"));
+        assert!(error
+            .to_string()
+            .contains("dataSource is still referenced by a dataset"));
+        assert_eq!(
+            crate::test_support::tree_snapshot(&fixture.source_dir()),
+            source_before,
+            "late DCS refusal must discard both the Template and earlier metadata staging"
+        );
+    }
+
+    #[test]
+    fn dcs_final_source_readdition_satisfies_obligation_and_preserves_neighbours() {
+        let (fixture, original) = composed_dcs_fixture();
+        let source_before = crate::test_support::tree_snapshot(&fixture.source_dir());
+        let (staged, _) = plan_composed_dcs(&fixture, COMPOSED_TEMPLATE, json!([
+            {"op":"dataSource.remove","args":{"at":format!("{COMPOSED_TEMPLATE}.DataSource.Local")}},
+            {"op":"dataSource.add","args":{"items":[{"name":"Local"}]}},
+        ]))
+        .expect("a final declaration with the same name satisfies the source reference");
+        let changes = staged.planned_changes();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].relative_path, Path::new(COMPOSED_RELATIVE));
+        let StagedFileState::Bytes(current) = &changes[0].current else {
+            panic!("the final Template keeps XML bytes");
+        };
+        assert!(current.starts_with(b"\xef\xbb\xbf"));
+        let text = std::str::from_utf8(&current[3..]).unwrap();
+        let document = roxmltree::Document::parse(text).unwrap();
+        let namespace = crate::infrastructure::native_operations::dcs::DCS_SCHEMA_NS;
+        let sources = document
+            .root_element()
+            .children()
+            .filter(|node| {
+                node.has_tag_name((namespace, "dataSource"))
+                    && node.children().any(|child| {
+                        child.has_tag_name((namespace, "name")) && child.text() == Some("Local")
+                    })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(sources.len(), 1);
+        assert!(sources[0].children().any(|node| {
+            node.has_tag_name((namespace, "dataSourceType")) && node.text() == Some("Local")
+        }));
+        let mut neighbours = text.to_string();
+        neighbours.replace_range(sources[0].range(), "");
+        assert_eq!(
+            neighbours,
+            original
+                .trim_start_matches('\u{feff}')
+                .replace(REMOVED_SOURCE, ""),
+            "every byte outside the re-created source must remain exact"
+        );
+        assert_eq!(
+            crate::test_support::tree_snapshot(&fixture.source_dir()),
+            source_before
+        );
+    }
+
+    #[test]
+    fn dcs_final_source_obligations_span_separated_family_runs() {
+        let (fixture, original) = composed_dcs_fixture();
+        let source_before = crate::test_support::tree_snapshot(&fixture.source_dir());
+        let (staged, _) = plan_composed_dcs(&fixture, "main:Report.Versions", json!([
+            {"op":"dataSource.remove","args":{"at":format!("{COMPOSED_TEMPLATE}.DataSource.Local")}},
+            {"op":"props.set","args":{"at":"main:Report.Versions","values":{"Comment":"separate run"}}},
+            {"op":"dataSet.remove","args":{"at":format!("{COMPOSED_TEMPLATE}.DataSet.Data")}},
+        ]))
+        .expect("DCS obligations are discharged after the entire request, across metadata runs");
+        let mut expected = source_before.clone();
+        expected.insert(
+            std::path::PathBuf::from(COMPOSED_RELATIVE),
+            original
+                .replace(REMOVED_SOURCE, "")
+                .replace(REMOVED_DATASET, "")
+                .into_bytes(),
+        );
+        let report_path = std::path::PathBuf::from("Reports/Versions.xml");
+        let report = std::str::from_utf8(&source_before[&report_path]).unwrap();
+        expected.insert(
+            report_path,
+            report
+                .replace("<Comment/>", "<Comment>separate run</Comment>")
+                .into_bytes(),
+        );
+        assert_eq!(projected_source_tree(&staged, &source_before), expected);
+        assert_eq!(
+            crate::test_support::tree_snapshot(&fixture.source_dir()),
+            source_before
+        );
+    }
+
+    #[test]
+    fn dcs_final_source_refusals_follow_operation_order_across_template_groups() {
+        let (fixture, original) = composed_dcs_fixture();
+        let source = fixture.source_dir();
+        let owner_path = source.join("Reports/Versions.xml");
+        let owner = std::fs::read_to_string(&owner_path).unwrap();
+        std::fs::write(&owner_path, owner.replace("<Template>Schema</Template>", "<Template>Schema</Template><Template>ASchema</Template><Template>ZSchema</Template>")).unwrap();
+        let descriptor =
+            std::fs::read_to_string(source.join("Reports/Versions/Templates/Schema.xml")).unwrap();
+        for (name, uuid, body) in [
+            (
+                "ASchema",
+                "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+                original.replace("Kept", "Other"),
+            ),
+            (
+                "ZSchema",
+                "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+                original.clone(),
+            ),
+        ] {
+            std::fs::create_dir_all(source.join(format!("Reports/Versions/Templates/{name}/Ext")))
+                .unwrap();
+            std::fs::write(
+                source.join(format!("Reports/Versions/Templates/{name}.xml")),
+                descriptor
+                    .replace("<Name>Schema</Name>", &format!("<Name>{name}</Name>"))
+                    .replace("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", uuid),
+            )
+            .unwrap();
+            std::fs::write(
+                source.join(format!(
+                    "Reports/Versions/Templates/{name}/Ext/Template.xml"
+                )),
+                body.as_bytes(),
+            )
+            .unwrap();
+        }
+        let source_before = crate::test_support::tree_snapshot(&source);
+        let result = plan_composed_dcs(
+            &fixture,
+            "main:Report.Versions",
+            json!([
+                {"op":"dataSource.remove","args":{"at":"main:Report.Versions.Template.ASchema.DataSource.Local"}},
+                {"op":"dataSource.remove","args":{"at":"main:Report.Versions.Template.ZSchema.DataSource.Local"}},
+                {"op":"dataSource.add","args":{"at":"main:Report.Versions.Template.ASchema","items":[{"name":"Local"}]}},
+                {"op":"dataSource.remove","args":{"at":"main:Report.Versions.Template.ASchema.DataSource.Other"}},
+            ]),
+        );
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("both final Templates retain a reference to an absent source"),
+        };
+        assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
+        assert_eq!(error.path(), Some("ops[1].args"));
+        assert_eq!(crate::test_support::tree_snapshot(&source), source_before);
+    }
+
+    #[test]
+    fn dcs_query_fields_refuse_explicit_type_but_keep_other_patches_and_cleanup() {
+        let (fixture, original) = composed_dcs_fixture();
+        let stale_type = r#"<valueType><v8:Type xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema">xs:string</v8:Type></valueType>"#;
+        let field = format!(
+            "<field xsi:type=\"DataSetFieldField\"><dataPath>Amount</dataPath><field>Amount</field>{stale_type}<appearance/></field>"
+        );
+        let source =
+            original.replacen("<name>Data</name>", &format!("<name>Data</name>{field}"), 1);
+        std::fs::write(
+            fixture.source_dir().join(COMPOSED_RELATIVE),
+            source.as_bytes(),
+        )
+        .unwrap();
+        let source_before = crate::test_support::tree_snapshot(&fixture.source_dir());
+        let dataset_at = format!("{COMPOSED_TEMPLATE}.DataSet.Data");
+        let field_at = format!("{dataset_at}.Field.Amount");
+        let plan = |ops| {
+            let args = json!({"at":COMPOSED_TEMPLATE,"ops":ops,"dryRun":true});
+            let request = ApplyRequest::parse(args.as_object().unwrap(), &["main"]).unwrap();
+            let admission = fixture.admission();
+            super::super::plan_hidden_v13_apply(&request, &fixture.binding, &admission)
+        };
+        let (staged, _) = plan(json!([
+            {"op":"field.add","args":{"at":dataset_at,"items":[{"dataPath":"Added"}]}},
+            {"op":"field.set","args":{"at":field_at,"values":{"presentationExpression":"Amount + 1"}}},
+        ]))
+        .expect("Query fields still accept additions and patches without an explicit type");
+        let changes = staged.planned_changes();
+        assert_eq!(changes.len(), 1);
+        let StagedFileState::Bytes(current) = &changes[0].current else {
+            panic!("the patched Query fields keep XML bytes");
+        };
+        let text = std::str::from_utf8(current)
+            .unwrap()
+            .trim_start_matches('\u{feff}');
+        let document = roxmltree::Document::parse(text).unwrap();
+        let namespace = crate::infrastructure::native_operations::dcs::DCS_SCHEMA_NS;
+        let field_by_path = |path| {
+            document
+                .descendants()
+                .find(|node| {
+                    node.has_tag_name((namespace, "field"))
+                        && node.children().any(|child| {
+                            child.has_tag_name((namespace, "dataPath"))
+                                && child.text() == Some(path)
+                        })
+                })
+                .unwrap()
+        };
+        assert!(!field_by_path("Added")
+            .children()
+            .any(|node| node.has_tag_name((namespace, "valueType"))));
+        let patched = field_by_path("Amount");
+        assert!(!patched
+            .children()
+            .any(|node| node.has_tag_name((namespace, "valueType"))));
+        assert!(patched.children().any(|node| {
+            node.has_tag_name((namespace, "presentationExpression"))
+                && node.text() == Some("Amount + 1")
+        }));
+        assert!(patched
+            .children()
+            .any(|node| node.has_tag_name((namespace, "appearance"))));
+
+        for (operation, args, path) in [
+            (
+                "field.add",
+                json!({"at":dataset_at,"items":[{"dataPath":"Added","type":"string"}]}),
+                "ops[0].args.items[0].type",
+            ),
+            (
+                "field.set",
+                json!({"at":field_at,"values":{"type":"string"}}),
+                "ops[0].args.values.type",
+            ),
+        ] {
+            let error = match plan(json!([{"op":operation,"args":args}])) {
+                Err(error) => error,
+                Ok(_) => panic!(
+                    "{operation}: a Query field derives its type and must refuse an explicit type"
+                ),
+            };
+            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{operation}");
+            assert_eq!(error.path(), Some(path), "{operation}: {error}");
+        }
+        assert_eq!(
+            crate::test_support::tree_snapshot(&fixture.source_dir()),
+            source_before,
+            "Query field refusal and preview must not publish source changes"
+        );
+    }
 
     #[test]
     fn typed_mxl_decoder_normalizes_before_target_and_keeps_exact_integer_grammar() {
@@ -1613,7 +2181,10 @@ mod tests {
             let DcsMxlPlanKind::Dcs(edit) = plan.kind else {
                 panic!("DCS operation")
             };
-            assert_eq!(edit.args["items"][0]["dataPath"], json!("Amount"));
+            let super::DcsIntent::FieldAdd(items) = edit.intent else {
+                panic!("field.add keeps its typed intent");
+            };
+            assert_eq!(items[0].data_path, "Amount");
         }
         assert!(field(json!({"dataPath":"","name":"Amount"})).is_err());
         let query = |values| {
@@ -1633,7 +2204,10 @@ mod tests {
             let DcsMxlPlanKind::Dcs(edit) = plan.kind else {
                 panic!("DCS operation")
             };
-            assert_eq!(edit.args["values"]["query"], json!("ВЫБРАТЬ 1"));
+            let super::DcsIntent::QuerySet(query) = edit.intent else {
+                panic!("query.set keeps its typed intent");
+            };
+            assert_eq!(query, "ВЫБРАТЬ 1");
         }
         assert!(query(json!({"query":"","text":"ВЫБРАТЬ 1"})).is_err());
     }
@@ -1787,7 +2361,7 @@ mod tests {
             .lookup("dcs.set")
             .is_none());
         assert!(
-            crate::infrastructure::native_operations::dcs_primitives::Primitive::parse("dcs.set")
+            crate::infrastructure::native_operations::dcs_primitives::Primitive::named("dcs.set")
                 .is_none()
         );
     }
@@ -1809,7 +2383,13 @@ mod tests {
         let DcsMxlPlanKind::Dcs(edit) = operation.kind else {
             panic!("DCS")
         };
-        assert_eq!(edit.args["items"][0]["title"], json!("Итого [шт] @user"));
+        let super::DcsIntent::FieldAdd(items) = edit.intent else {
+            panic!("field.add keeps its typed intent");
+        };
+        assert_eq!(
+            items[0].title.as_ref().unwrap().value(),
+            &json!("Итого [шт] @user")
+        );
     }
 }
 

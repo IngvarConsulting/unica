@@ -1,5 +1,4 @@
 use super::{apply, ApplyError, Primitive, Target, C, S, T, V, X};
-use crate::domain::operation_contract::OperationContract;
 use roxmltree::{Document, Node};
 use serde_json::{json, Value};
 
@@ -166,14 +165,11 @@ fn run_in(
             }
             let mut single = args.clone();
             single["items"] = Value::Array(vec![item]);
-            apply(
-                &mut candidate,
-                operation.as_str(),
-                single.as_object().unwrap(),
-                &item_target,
-                Some(lang),
-            )
-            .map_err(|error| error.to_string())?;
+            let intent = operation
+                .decode(&single, "args")
+                .map_err(|error| format!("{}: {}", error.path, error.message))?;
+            apply(&mut candidate, &intent, &item_target, Some(lang))
+                .map_err(|error| error.to_string())?;
         }
         *xml = candidate;
         return Ok(());
@@ -192,14 +188,10 @@ fn run_in(
     {
         args.as_object_mut().unwrap().remove("values");
     }
-    apply(
-        xml,
-        operation.as_str(),
-        args.as_object().unwrap(),
-        &target,
-        Some(lang),
-    )
-    .map_err(|error| error.to_string())
+    let intent = operation
+        .decode(&args, "args")
+        .map_err(|error| format!("{}: {}", error.path, error.message))?;
+    apply(xml, &intent, &target, Some(lang)).map_err(|error| error.to_string())
 }
 
 fn normalized(operation: Primitive, mut args: Value) -> Value {
@@ -209,16 +201,16 @@ fn normalized(operation: Primitive, mut args: Value) -> Value {
         .get("values")
         .and_then(Value::as_object)
         .is_some_and(serde_json::Map::is_empty)
-        && OperationContract::dcs(operation.as_str()).unwrap().schema["properties"]
+        && operation.contract().schema["properties"]
             .get("values")
             .is_none();
     if bare {
         args.as_object_mut().unwrap().remove("values");
     }
-    let mut normalized = OperationContract::dcs(operation.as_str())
-        .unwrap()
-        .normalize(&args, "args")
-        .unwrap_or_else(|error| panic!("{}: {error:?}", operation.as_str()));
+    let mut normalized = operation
+        .contract()
+        .normalize_dcs(&args, "args")
+        .unwrap_or_else(|error| panic!("{}: {error:?}", operation.name()));
     if let Some((key, value)) = subnode {
         normalized["values"][key] = value;
     }
@@ -278,7 +270,7 @@ fn assert_refuses(xml: &str, operation: Primitive, args: Value, selected: &Targe
     assert!(
         run(&mut tentative, operation, args, selected).is_err(),
         "{} must reject this input",
-        operation.as_str()
+        operation.name()
     );
 }
 
@@ -326,7 +318,7 @@ fn prefixed_root_and_shadowed_prefixes_keep_untouched_nodes_exact() {
 fn field_alias_normalization_and_query_derived_type_reach_the_writer() {
     let args = normalized(
         Primitive::FieldAdd,
-        json!({"items":[{"dataPath":"Added","name":"Wrong","type":"String","title":"Added"}]}),
+        json!({"items":[{"dataPath":"Added","name":"Wrong","title":"Added"}]}),
     );
     let mut xml = query_schema("SELECT 1 AS Amount");
     run(&mut xml, Primitive::FieldAdd, args, &target(&["Data"], "")).unwrap();
@@ -957,7 +949,7 @@ fn nested_union_operations_do_not_select_outer_or_descendant_fields_implicitly()
     run(
         &mut xml,
         Primitive::FieldSet,
-        json!({"values":{"field":"Value","title":"Inner updated","type":"String"}}),
+        json!({"values":{"field":"Value","title":"Inner updated"}}),
         &target(&["Union", "Inner"], ""),
     )
     .unwrap();
@@ -1408,9 +1400,9 @@ fn parameter_multiple_defaults_and_available_values_follow_full_sequence() {
     assert_eq!(direct_text(available[0], S, "value"), "A");
     assert_eq!(direct_text(parameter, S, "use"), "Always");
     assert_eq!(direct_text(parameter, S, "denyIncompleteValues"), "true");
-    assert!(OperationContract::dcs("parameter.add")
-        .unwrap()
-        .normalize(
+    assert!(Primitive::ParameterAdd
+        .contract()
+        .normalize_dcs(
             &json!({"items":[{"name":"Bad","availableValues":[{"presentation":"Missing value"}]}]}),
             "args"
         )
@@ -1697,30 +1689,35 @@ fn equal_parameter_values_preserve_original_prefixes_attributes_comments_and_whi
             xml,
             original,
             "{} must preserve equal typed property bytes",
-            operation.as_str()
+            operation.name()
         );
     }
 }
 
 #[test]
-fn data_source_remove_detects_decoded_reference_split_by_comment_and_entity() {
+fn data_source_reference_decodes_comments_and_entities_and_keeps_its_namespace() {
     let original = query_schema("SELECT 1 AS Amount").replace(
         "<dataSource>Local</dataSource>",
         "<dataSource>Lo<!-- reference -->c&#97;l</dataSource>",
     );
-    let mut xml = original.clone();
-    let args = normalized(
-        Primitive::DataSourceRemove,
-        json!({"values":{"name":"Local"}}),
+    let document = Document::parse(&original).unwrap();
+    assert!(super::references_data_source(
+        document.root_element(),
+        "Local"
+    ));
+    assert!(!super::references_data_source(
+        document.root_element(),
+        "Other"
+    ));
+    let foreign = original.replace(
+        "<dataSource>Lo<!-- reference -->c&#97;l</dataSource>",
+        "<f:dataSource xmlns:f='urn:foreign'>Lo<!-- reference -->c&#97;l</f:dataSource>",
     );
-    assert!(run(
-        &mut xml,
-        Primitive::DataSourceRemove,
-        args,
-        &target(&[], "")
-    )
-    .is_err());
-    assert_eq!(xml, original);
+    let document = Document::parse(&foreign).unwrap();
+    assert!(!super::references_data_source(
+        document.root_element(),
+        "Local"
+    ));
 }
 
 #[test]
@@ -1933,12 +1930,12 @@ fn equal_typed_string_preserves_split_text_cdata_comment_bytes_but_spaces_are_no
 fn dcs_component_writer_refuses_wrong_existing_root_without_a_postimage() {
     let original = "<garbage/>";
     let mut candidate = original.to_string();
+    let intent = Primitive::DataSourceAdd
+        .decode(&json!({"items":[{"name":"Data","kind":"Local"}]}), "args")
+        .unwrap();
     let error = apply(
         &mut candidate,
-        "dataSource.add",
-        json!({"items":[{"name":"Data","kind":"Local"}]})
-            .as_object()
-            .unwrap(),
+        &intent,
         &Target {
             datasets: Vec::new(),
             variant: String::new(),
@@ -2222,7 +2219,7 @@ fn plain_string_titles_of_new_nodes_use_the_given_default_language() {
     ] {
         let args = normalized(operation, args);
         run_in(&mut xml, operation, args, &selected, "en")
-            .unwrap_or_else(|error| panic!("{}: {error}", operation.as_str()));
+            .unwrap_or_else(|error| panic!("{}: {error}", operation.name()));
     }
     assert!(!xml.contains("<v8:lang>ru</v8:lang>"), "{xml}");
     let doc = Document::parse(&xml).unwrap();
@@ -2325,7 +2322,7 @@ fn plain_string_title_sets_keep_other_translations() {
     ] {
         let args = normalized(operation, args);
         run_in(&mut xml, operation, args, &selected, "en")
-            .unwrap_or_else(|error| panic!("{}: {error}", operation.as_str()));
+            .unwrap_or_else(|error| panic!("{}: {error}", operation.name()));
     }
     assert!(
         xml.contains(kept),
@@ -2477,14 +2474,9 @@ fn plain_string_text_without_a_language_is_a_typed_refusal() {
         Primitive::FieldAdd,
         json!({"items":[{"dataPath":"Added","title":"Added"}]}),
     );
-    let error = apply(
-        &mut xml,
-        Primitive::FieldAdd.as_str(),
-        args.as_object().unwrap(),
-        &selected,
-        None,
-    )
-    .expect_err("a plain-string title needs a language");
+    let intent = Primitive::FieldAdd.decode(&args, "args").unwrap();
+    let error = apply(&mut xml, &intent, &selected, None)
+        .expect_err("a plain-string title needs a language");
     assert_eq!(error, ApplyError::TextLanguageRequired);
     assert_eq!(xml, original);
 
@@ -2492,13 +2484,7 @@ fn plain_string_text_without_a_language_is_a_typed_refusal() {
         Primitive::FieldAdd,
         json!({"items":[{"dataPath":"Added","title":{"en":"Added"}}]}),
     );
-    apply(
-        &mut xml,
-        Primitive::FieldAdd.as_str(),
-        args.as_object().unwrap(),
-        &selected,
-        None,
-    )
-    .unwrap();
+    let intent = Primitive::FieldAdd.decode(&args, "args").unwrap();
+    apply(&mut xml, &intent, &selected, None).unwrap();
     assert!(xml.contains("<v8:lang>en</v8:lang>"), "{xml}");
 }

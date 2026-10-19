@@ -22,6 +22,9 @@ pub(crate) mod code_intelligence;
 pub(crate) mod deferred_delivery;
 pub(crate) mod diagnostics;
 pub(crate) mod documentation;
+// P1 owner is default-compiled; P3 connects the production execution route.
+#[allow(dead_code)]
+pub(crate) mod execution;
 // This seam is intentionally dormant while production remains on v0.12.
 #[allow(dead_code)]
 pub(crate) mod invocation;

@@ -817,6 +817,18 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
     ]
     MXL_EVENT_REGISTRATIONS = "(MxlOperation::Set), (MxlOperation::AreaAdd), (EventOperation::Implement),"
 
+    DCS_FIXTURE_METADATA = '''dcs_operations!(
+        DataSourceAdd => ("dataSource.add", DcsSchema, Items, Vec<DataSourceSpec>),
+        QuerySet => ("query.set", DcsQuery, Values, String),
+        DataSetRemove => ("dataSet.remove", DcsData, Target, ()),
+    );'''
+    DCS_FIXTURE_REGISTRATIONS = "(Primitive::DataSourceAdd), (Primitive::QuerySet), (Primitive::DataSetRemove),"
+    DCS_FIXTURE_ROWS = [
+        ("dataSource.add", "Dcs", "DcsSchema", "Items"),
+        ("query.set", "Dcs", "DcsQuery", "Values"),
+        ("dataSet.remove", "Dcs", "DcsData", "Target"),
+    ]
+
     def renderer(self):
         module_path = REPO_ROOT / "scripts" / "ci" / "render-acceptance-registry.py"
         spec = importlib.util.spec_from_file_location("render_acceptance_registry", module_path)
@@ -855,9 +867,10 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             self.assertIn(operation, implemented)
             self.assertIn(f"| `{operation}` | `{args}` | да | ", rendered)
 
-    def registration_fixture(self, table, metadata, additional_metadata=None, *, complete_support=True, complete_context=True, complete_mxl_event=True):
+    def registration_fixture(self, table, metadata, additional_metadata=None, *, complete_support=True, complete_context=True, complete_mxl_event=True, complete_dcs=True):
         # A family-focused fixture keeps unrelated typed families complete.
         sources = dict(additional_metadata or {})
+        sources.setdefault("dcs_operation.rs", self.DCS_FIXTURE_METADATA)
         for family in ["support", "metadata", "form", "mxl", "event"]:
             filename = f"{family}_operation.rs"
             if filename not in sources:
@@ -868,6 +881,8 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             table += "\n" + self.CONTEXT_REGISTRATIONS
         if complete_mxl_event:
             table += "\n" + self.MXL_EVENT_REGISTRATIONS
+        if complete_dcs:
+            table += "\n" + self.DCS_FIXTURE_REGISTRATIONS
         module = self.renderer()
         with tempfile.TemporaryDirectory(prefix="typed-registry-") as raw:
             root = Path(raw)
@@ -894,7 +909,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         registry, _ = self.registration_fixture(
             '(RoleOperation::Create), (RoleOperation::RightAdd), (RoleOperation::RightSet),\n'
             '(SupportOperation::CapabilitySet),\n'
-            '("query.set", Dcs, DcsQuery, Values),\n'
+            '("valueType.add", Xdto, XdtoPackage, Values),\n'
             '(SupportOperation::RuleSet),',
             metadata,
             {"support_operation.rs": support_metadata},
@@ -905,9 +920,9 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("right.add", "Role", "Role", "Items"),
             ("right.set", "Role", "RoleRight", "Values"),
             ("supportCapability.set", "Support", "Configuration", "Values"),
-            ("query.set", "Dcs", "DcsQuery", "Values"),
+            ("valueType.add", "Xdto", "XdtoPackage", "Values"),
             ("supportRule.set", "Support", "SupportRule", "Values"),
-        ] + self.CONTEXT_ROWS + self.MXL_EVENT_ROWS)
+        ] + self.CONTEXT_ROWS + self.MXL_EVENT_ROWS + self.DCS_FIXTURE_ROWS)
 
     def test_support_rows_keep_their_arguments_order_and_implemented_status(self) -> None:
         module = self.renderer()
@@ -931,7 +946,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             '(MetadataOperation::AttributeAdd),\n'
             '(MetadataOperation::AttributeSet),\n'
             '(MetadataOperation::ObjectCreate),\n'
-            '("query.set", Dcs, DcsQuery, Values),\n'
+            '("valueType.add", Xdto, XdtoPackage, Values),\n'
             '(FormOperation::Add), (FormOperation::Set), (FormOperation::Remove),\n'
             '(FormOperation::AttributeAdd),\n'
             '(MetadataOperation::AttributeRemove),\n'
@@ -961,7 +976,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("attribute.add", "Metadata", "MetadataAttributeContainer", "Items"),
             ("attribute.set", "Metadata", "MetadataAttribute", "Values"),
             ("object.create", "Metadata", "Configuration", "Values"),
-            ("query.set", "Dcs", "DcsQuery", "Values"),
+            ("valueType.add", "Xdto", "XdtoPackage", "Values"),
             ("form.add", "Form", "MetadataForms", "Items"),
             ("form.set", "Form", "MetadataForms", "Values"),
             ("form.remove", "Form", "Form", "Target"),
@@ -977,7 +992,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("event.bind", "Form", "FormEvent", "Values"),
             ("supportCapability.set", "Support", "Configuration", "Values"),
             ("supportRule.set", "Support", "SupportRule", "Values"),
-        ] + self.MXL_EVENT_ROWS)
+        ] + self.MXL_EVENT_ROWS + self.DCS_FIXTURE_ROWS)
 
     def test_fully_typed_metadata_and_form_keep_registry_rows(self) -> None:
         module = self.renderer()
@@ -994,6 +1009,160 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             self.assertLessEqual(migrated_names, implemented)
         self.assertEqual(len(registry), 122)
         self.assertEqual(len({entry[0] for entry in registry}), 120)
+
+    def test_dcs_rows_keep_all_53_metadata_and_original_registry_positions(self) -> None:
+        module = self.renderer()
+        registry, implemented = module.load_apply_registry()
+        expected = [
+            (name, "Dcs", applicability, skeleton)
+            for name, applicability, skeleton in [
+                ("dataSource.add", "DcsSchema", "Items"),
+                ("dataSource.set", "DcsDataSource", "Values"),
+                ("dataSource.remove", "DcsDataSource", "Target"),
+                ("dataSet.add", "DcsDataContainer", "Items"),
+                ("dataSet.set", "DcsData", "Values"),
+                ("dataSet.remove", "DcsData", "Target"),
+                ("field.add", "DcsData", "Items"),
+                ("field.set", "DcsField", "Values"),
+                ("field.remove", "DcsField", "Target"),
+                ("fieldRole.set", "DcsField", "Values"),
+                ("parameter.add", "DcsSchema", "Items"),
+                ("parameter.set", "DcsParameter", "Values"),
+                ("parameter.remove", "DcsParameter", "Target"),
+                ("parameter.rename", "DcsParameter", "Values"),
+                ("parameter.reorder", "DcsSchema", "Items"),
+                ("calculatedField.add", "DcsSchema", "Items"),
+                ("calculatedField.remove", "DcsCalculatedField", "Target"),
+                ("total.add", "DcsSchema", "Items"),
+                ("total.remove", "DcsTotal", "Target"),
+                ("variant.add", "DcsSchema", "Items"),
+                ("variant.set", "DcsSettings", "Values"),
+                ("variant.remove", "DcsSettings", "Target"),
+                ("query.set", "DcsQuery", "Values"),
+                ("query.patch", "DcsQuery", "Values"),
+                ("filter.add", "DcsSettingsContainer", "Items"),
+                ("filter.set", "DcsSettingsContainer", "Values"),
+                ("filter.remove", "DcsSettingsContainer", "Values"),
+                ("filter.clear", "DcsSettingsContainer", "Values"),
+                ("selection.add", "DcsSettingsContainer", "Items"),
+                ("selection.clear", "DcsSettingsContainer", "Values"),
+                ("order.add", "DcsSettingsContainer", "Items"),
+                ("order.clear", "DcsSettingsContainer", "Values"),
+                ("dataParameter.add", "DcsSettings", "Items"),
+                ("dataParameter.set", "DcsSettings", "Values"),
+                ("outputParameter.set", "DcsSettingsContainer", "Values"),
+                ("conditionalAppearance.add", "DcsSettingsContainer", "Items"),
+                ("conditionalAppearance.clear", "DcsSettingsContainer", "Values"),
+                ("structure.add", "DcsSettingsContainer", "Items"),
+                ("structure.set", "DcsSettings", "Values"),
+                ("structure.patch", "DcsStructureItem", "Values"),
+                ("structure.remove", "DcsStructureItem", "Target"),
+                ("dataSetLink.add", "DcsSchema", "Items"),
+                ("calculatedField.set", "DcsCalculatedField", "Values"),
+                ("total.set", "DcsTotal", "Values"),
+                ("selection.set", "DcsSettingsContainer", "Values"),
+                ("selection.remove", "DcsSettingsContainer", "Values"),
+                ("order.set", "DcsSettingsContainer", "Values"),
+                ("order.remove", "DcsSettingsContainer", "Values"),
+                ("dataParameter.remove", "DcsSettings", "Values"),
+                ("outputParameter.remove", "DcsSettingsContainer", "Values"),
+                ("conditionalAppearance.remove", "DcsSettingsContainer", "Values"),
+                ("dataSetLink.set", "DcsSchema", "Values"),
+                ("dataSetLink.remove", "DcsSchema", "Values"),
+            ]
+        ]
+        self.assertEqual(registry[47:100], expected)
+        self.assertEqual([row for row in registry if row[1] == "Dcs"], expected)
+        self.assertEqual(registry[46][0], "right.set")
+        self.assertEqual(registry[100][0], "mxl.set")
+        self.assertLessEqual({row[0] for row in expected}, implemented)
+
+    def test_typed_dcs_rows_keep_payload_metadata_and_raw_registry_neighbors(self) -> None:
+        role_source = (REPO_ROOT / "crates/unica-coder/src/domain/role_operation.rs").read_text(encoding="utf-8")
+        registry, _ = self.registration_fixture(
+            '(RoleOperation::Create), (RoleOperation::RightAdd), (RoleOperation::RightSet),\n'
+            '(Primitive::QuerySet), ("valueType.add", Xdto, XdtoPackage, Values),\n'
+            '(Primitive::DataSetRemove), ("code.replace", Code, Code, Text),\n'
+            '(Primitive::DataSourceAdd),',
+            role_source, complete_dcs=False,
+        )
+        self.assertEqual(registry, [
+            ("role.create", "Role", "Configuration", "Values"),
+            ("right.add", "Role", "Role", "Items"),
+            ("right.set", "Role", "RoleRight", "Values"),
+            ("query.set", "Dcs", "DcsQuery", "Values"),
+            ("valueType.add", "Xdto", "XdtoPackage", "Values"),
+            ("dataSet.remove", "Dcs", "DcsData", "Target"),
+            ("code.replace", "Code", "Code", "Text"),
+            ("dataSource.add", "Dcs", "DcsSchema", "Items"),
+            ("supportCapability.set", "Support", "Configuration", "Values"),
+            ("supportRule.set", "Support", "SupportRule", "Values"),
+        ] + self.CONTEXT_ROWS + self.MXL_EVENT_ROWS)
+
+    def test_dcs_metadata_and_registrations_are_complete_and_fail_closed(self) -> None:
+        role_source = (REPO_ROOT / "crates/unica-coder/src/domain/role_operation.rs").read_text(encoding="utf-8")
+        roles = "(RoleOperation::Create), (RoleOperation::RightAdd), (RoleOperation::RightSet),\n"
+        table = roles + self.DCS_FIXTURE_REGISTRATIONS
+        metadata = self.DCS_FIXTURE_METADATA
+        self.registration_fixture(table, role_source, complete_dcs=False)
+        row = 'QuerySet => ("query.set", DcsQuery, Values, String)'
+        cases = {
+            "unknown typed family": (table.replace("Primitive::QuerySet", "DcsOperation::QuerySet"), metadata),
+            "unknown variant": (table.replace("Primitive::QuerySet", "Primitive::Unknown"), metadata),
+            "wrong typed family": (table.replace("Primitive::QuerySet", "MetadataOperation::QuerySet"), metadata),
+            "all family registrations missing": (roles, metadata),
+            "raw unknown name": (table + '("future.operation", Dcs, DcsSchema, Items),', metadata),
+            "raw original name after rename": (
+                table + '("query.set", Dcs, DcsQuery, Values),', metadata.replace('"query.set"', '"query.probe"'),
+            ),
+            "raw renamed family name": (
+                table + '("query.probe", Dcs, DcsQuery, Values),', metadata.replace('"query.set"', '"query.probe"'),
+            ),
+            "unparsed registration": (table + "unexpected_registration!(),", metadata),
+            "missing metadata file": (table, None),
+            "missing metadata table": (table, metadata.replace("dcs_operations!", "previous_operations!")),
+            "repeated metadata table": (table, metadata + '\ndcs_operations!(Extra => ("extra.add", DcsSchema, Items, String),);'),
+            "empty metadata table": (table, "dcs_operations!();"),
+            "unterminated metadata table": (table, 'dcs_operations!(QuerySet => ("query.set", DcsQuery, Values, String),'),
+            "missing metadata row": (table, metadata.replace(row + ",", "")),
+            "unsupported metadata row": (table, metadata.replace(row, "QuerySet => operation_metadata()")),
+            "unparsed trailing metadata": (table, metadata.replace(row + ",", row + ", unexpected!(),")),
+            "nonliteral metadata name": (table, metadata.replace(row, 'QuerySet => (QUERY_SET, DcsQuery, Values, String)')),
+            "duplicate metadata variant": (table, metadata.replace("QuerySet =>", "DataSourceAdd =>")),
+            "duplicate metadata name": (table, metadata.replace('"query.set"', '"dataSource.add"')),
+        }
+        for variant, (name, family, applicability, skeleton) in zip(
+            ["DataSourceAdd", "QuerySet", "DataSetRemove"], self.DCS_FIXTURE_ROWS, strict=True,
+        ):
+            registration = f"(Primitive::{variant}),"
+            raw = f'("{name}", {family}, {applicability}, {skeleton}),'
+            cases[f"missing {name}"] = (table.replace(registration, ""), metadata)
+            cases[f"duplicate {name}"] = (table + registration, metadata)
+            cases[f"raw {name} replacement"] = (table.replace(registration, raw), metadata)
+            cases[f"raw {name} beside complete typed"] = (table + raw, metadata)
+        for case, (source, changed_metadata) in cases.items():
+            with self.subTest(case=case), self.assertRaises(RuntimeError):
+                self.registration_fixture(
+                    source, role_source, {"dcs_operation.rs": changed_metadata}, complete_dcs=False,
+                )
+
+    def test_dcs_payload_type_syntax_is_consumed_without_skipping_metadata(self) -> None:
+        role_source = (REPO_ROOT / "crates/unica-coder/src/domain/role_operation.rs").read_text(encoding="utf-8")
+        roles = "(RoleOperation::Create), (RoleOperation::RightAdd), (RoleOperation::RightSet),"
+        for payload in ["DataSourceSpec", "LocalizedText", "Vec<String>", "Vec < DataSourceSpec >", "()", "(\n )"]:
+            changed = self.DCS_FIXTURE_METADATA.replace("Vec<DataSourceSpec>", payload)
+            with self.subTest(payload=payload):
+                registry, _ = self.registration_fixture(roles, role_source, {"dcs_operation.rs": changed})
+                self.assertEqual([row for row in registry if row[1] == "Dcs"], self.DCS_FIXTURE_ROWS)
+        for payload in ["", "Vec<>", "Vec<DataSourceSpec", "Vec<DataSourceSpec>>", "Vec<String, Other>", "payload()", "String, Extra", "("]:
+            changed = self.DCS_FIXTURE_METADATA.replace("Vec<DataSourceSpec>", payload)
+            with self.subTest(payload=payload), self.assertRaises(RuntimeError):
+                self.registration_fixture(roles, role_source, {"dcs_operation.rs": changed})
+        without_payload = self.DCS_FIXTURE_METADATA.replace(
+            "Items, Vec<DataSourceSpec>", "Items",
+        )
+        with self.assertRaises(RuntimeError):
+            self.registration_fixture(roles, role_source, {"dcs_operation.rs": without_payload})
 
     def test_contextual_typed_metadata_cannot_be_missing_duplicated_or_registered_as_raw(self) -> None:
         role_metadata = (REPO_ROOT / "crates/unica-coder/src/domain/role_operation.rs").read_text(encoding="utf-8")
@@ -1103,23 +1272,23 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
     def test_typed_role_rows_stay_between_their_raw_registry_neighbors(self) -> None:
         metadata = (REPO_ROOT / "crates/unica-coder/src/domain/role_operation.rs").read_text(encoding="utf-8")
         registry, _ = self.registration_fixture(
-            '("field.add", Dcs, DcsDataSet, Items),\n'
+            '("valueType.add", Xdto, XdtoPackage, Values),\n'
             '(RoleOperation::Create),\n'
             '(RoleOperation::RightAdd),\n'
             '// A comment is not a descriptor: (OtherOperation::Hidden),\n'
             '(RoleOperation::RightSet),\n'
-            '("query.set", Dcs, DcsQuery, Values),',
+            '("code.replace", Code, Code, Text),',
             metadata,
         )
         self.assertEqual(registry, [
-            ("field.add", "Dcs", "DcsDataSet", "Items"),
+            ("valueType.add", "Xdto", "XdtoPackage", "Values"),
             ("role.create", "Role", "Configuration", "Values"),
             ("right.add", "Role", "Role", "Items"),
             ("right.set", "Role", "RoleRight", "Values"),
-            ("query.set", "Dcs", "DcsQuery", "Values"),
+            ("code.replace", "Code", "Code", "Text"),
             ("supportCapability.set", "Support", "Configuration", "Values"),
             ("supportRule.set", "Support", "SupportRule", "Values"),
-        ] + self.CONTEXT_ROWS + self.MXL_EVENT_ROWS)
+        ] + self.CONTEXT_ROWS + self.MXL_EVENT_ROWS + self.DCS_FIXTURE_ROWS)
 
     def test_role_metadata_survives_split_impls_and_unrelated_helpers(self) -> None:
         metadata = (REPO_ROOT / "crates/unica-coder/src/domain/role_operation.rs").read_text(encoding="utf-8")
@@ -1143,11 +1312,11 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("right.set", "Role", "RoleRight", "Values"),
             ("supportCapability.set", "Support", "Configuration", "Values"),
             ("supportRule.set", "Support", "SupportRule", "Values"),
-        ] + self.CONTEXT_ROWS + self.MXL_EVENT_ROWS)
+        ] + self.CONTEXT_ROWS + self.MXL_EVENT_ROWS + self.DCS_FIXTURE_ROWS)
 
     def test_unknown_or_incomplete_typed_metadata_cannot_silently_drop_a_role(self) -> None:
         metadata = (REPO_ROOT / "crates/unica-coder/src/domain/role_operation.rs").read_text(encoding="utf-8")
-        table = '("query.set", Dcs, DcsQuery, Values),\n' + "\n".join(
+        table = '("valueType.add", Xdto, XdtoPackage, Values),\n' + "\n".join(
             f"(RoleOperation::{variant})," for variant in ["Create", "RightAdd", "RightSet"]
         )
         last_row = '    RightSet => ("right.set", RoleRight, Values),\n'
@@ -1156,7 +1325,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             "unknown typed family": (table.replace("RoleOperation::Create", "OtherOperation::Create"), metadata),
             "unknown variant": (table.replace("RoleOperation::Create", "RoleOperation::Missing"), metadata),
             "missing registration": (table.replace("(RoleOperation::RightSet),", ""), metadata),
-            "all typed registrations missing": ('("query.set", Dcs, DcsQuery, Values),', metadata),
+            "all typed registrations missing": ('("valueType.add", Xdto, XdtoPackage, Values),', metadata),
             "duplicate registration": (table + "\n(RoleOperation::Create),", metadata),
             "missing metadata file": (table, None),
             "missing metadata table": (table, metadata.replace("\nrole_operations!(", "\nprevious_role_operations!(")),
@@ -1265,10 +1434,12 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         )
         table = "(RoleOperation::Create), (RoleOperation::RightAdd), (RoleOperation::RightSet),"
         expected, implemented = self.registration_fixture(table, metadata)
-        for family in ["Role", "Support", "Metadata", "Form", "Mxl", "Event"]:
+        for family in ["Role", "Support", "Metadata", "Form", "Mxl", "Event", "Dcs"]:
             family_prefix = prefix.replace("role_operations", f"{family.lower()}_operations")
             filename = f"{family.lower()}_operation.rs"
-            family_metadata = (REPO_ROOT / "crates/unica-coder/src/domain" / filename).read_text(encoding="utf-8")
+            family_metadata = self.DCS_FIXTURE_METADATA if family == "Dcs" else (
+                REPO_ROOT / "crates/unica-coder/src/domain" / filename
+            ).read_text(encoding="utf-8")
             with self.subTest(family=family):
                 role_source = family_prefix + metadata if family == "Role" else metadata
                 actual, actual_implemented = self.registration_fixture(

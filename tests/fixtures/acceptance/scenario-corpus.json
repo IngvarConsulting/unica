@@ -10731,14 +10731,15 @@
        "pointer": "/data/items",
        "eq": [
         {
-         "index": 0,
-         "parentIndex": null,
-         "axis": null,
-         "kind": "Group",
-         "name": "F05Group",
-         "groupBy": [
-          "Amount"
-         ]
+         "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Item.F05Group",
+         "kind": "Item",
+         "title": "F05Group",
+         "props": {
+          "kind": "Group",
+          "groupBy": [
+           "Amount"
+          ]
+         }
         }
        ]
       }

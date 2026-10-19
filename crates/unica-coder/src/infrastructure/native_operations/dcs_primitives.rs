@@ -9,180 +9,10 @@ use roxmltree::{Document, Node};
 use serde_json::{Map, Value};
 use std::ops::Range;
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum Primitive {
-    DataSourceAdd,
-    DataSourceSet,
-    DataSourceRemove,
-    DataSetAdd,
-    DataSetSet,
-    DataSetRemove,
-    FieldAdd,
-    FieldSet,
-    FieldRemove,
-    FieldRoleSet,
-    ParameterAdd,
-    ParameterSet,
-    ParameterRemove,
-    ParameterRename,
-    ParameterReorder,
-    CalculatedFieldAdd,
-    CalculatedFieldRemove,
-    TotalAdd,
-    TotalRemove,
-    VariantAdd,
-    VariantSet,
-    VariantRemove,
-    QuerySet,
-    QueryPatch,
-    FilterAdd,
-    FilterSet,
-    FilterRemove,
-    FilterClear,
-    SelectionAdd,
-    SelectionClear,
-    OrderAdd,
-    OrderClear,
-    DataParameterAdd,
-    DataParameterSet,
-    OutputParameterSet,
-    ConditionalAppearanceAdd,
-    ConditionalAppearanceClear,
-    StructureAdd,
-    StructureSet,
-    StructurePatch,
-    StructureRemove,
-    DataSetLinkAdd,
-    CalculatedFieldSet,
-    TotalSet,
-    SelectionSet,
-    SelectionRemove,
-    OrderSet,
-    OrderRemove,
-    DataParameterRemove,
-    OutputParameterRemove,
-    ConditionalAppearanceRemove,
-    DataSetLinkSet,
-    DataSetLinkRemove,
-}
-impl Primitive {
-    pub(crate) fn parse(name: &str) -> Option<Self> {
-        Some(match name {
-            "dataSource.add" => Self::DataSourceAdd,
-            "dataSource.set" => Self::DataSourceSet,
-            "dataSource.remove" => Self::DataSourceRemove,
-            "dataSet.add" => Self::DataSetAdd,
-            "dataSet.set" => Self::DataSetSet,
-            "dataSet.remove" => Self::DataSetRemove,
-            "field.add" => Self::FieldAdd,
-            "field.set" => Self::FieldSet,
-            "field.remove" => Self::FieldRemove,
-            "fieldRole.set" => Self::FieldRoleSet,
-            "parameter.add" => Self::ParameterAdd,
-            "parameter.set" => Self::ParameterSet,
-            "parameter.remove" => Self::ParameterRemove,
-            "parameter.rename" => Self::ParameterRename,
-            "parameter.reorder" => Self::ParameterReorder,
-            "calculatedField.add" => Self::CalculatedFieldAdd,
-            "calculatedField.remove" => Self::CalculatedFieldRemove,
-            "total.add" => Self::TotalAdd,
-            "total.remove" => Self::TotalRemove,
-            "variant.add" => Self::VariantAdd,
-            "variant.set" => Self::VariantSet,
-            "variant.remove" => Self::VariantRemove,
-            "query.set" => Self::QuerySet,
-            "query.patch" => Self::QueryPatch,
-            "filter.add" => Self::FilterAdd,
-            "filter.set" => Self::FilterSet,
-            "filter.remove" => Self::FilterRemove,
-            "filter.clear" => Self::FilterClear,
-            "selection.add" => Self::SelectionAdd,
-            "selection.clear" => Self::SelectionClear,
-            "order.add" => Self::OrderAdd,
-            "order.clear" => Self::OrderClear,
-            "dataParameter.add" => Self::DataParameterAdd,
-            "dataParameter.set" => Self::DataParameterSet,
-            "outputParameter.set" => Self::OutputParameterSet,
-            "conditionalAppearance.add" => Self::ConditionalAppearanceAdd,
-            "conditionalAppearance.clear" => Self::ConditionalAppearanceClear,
-            "structure.add" => Self::StructureAdd,
-            "structure.set" => Self::StructureSet,
-            "structure.patch" => Self::StructurePatch,
-            "structure.remove" => Self::StructureRemove,
-            "dataSetLink.add" => Self::DataSetLinkAdd,
-            "calculatedField.set" => Self::CalculatedFieldSet,
-            "total.set" => Self::TotalSet,
-            "selection.set" => Self::SelectionSet,
-            "selection.remove" => Self::SelectionRemove,
-            "order.set" => Self::OrderSet,
-            "order.remove" => Self::OrderRemove,
-            "dataParameter.remove" => Self::DataParameterRemove,
-            "outputParameter.remove" => Self::OutputParameterRemove,
-            "conditionalAppearance.remove" => Self::ConditionalAppearanceRemove,
-            "dataSetLink.set" => Self::DataSetLinkSet,
-            "dataSetLink.remove" => Self::DataSetLinkRemove,
-
-            _ => return None,
-        })
-    }
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::DataSourceAdd => "dataSource.add",
-            Self::DataSourceSet => "dataSource.set",
-            Self::DataSourceRemove => "dataSource.remove",
-            Self::DataSetAdd => "dataSet.add",
-            Self::DataSetSet => "dataSet.set",
-            Self::DataSetRemove => "dataSet.remove",
-            Self::FieldAdd => "field.add",
-            Self::FieldSet => "field.set",
-            Self::FieldRemove => "field.remove",
-            Self::FieldRoleSet => "fieldRole.set",
-            Self::ParameterAdd => "parameter.add",
-            Self::ParameterSet => "parameter.set",
-            Self::ParameterRemove => "parameter.remove",
-            Self::ParameterRename => "parameter.rename",
-            Self::ParameterReorder => "parameter.reorder",
-            Self::CalculatedFieldAdd => "calculatedField.add",
-            Self::CalculatedFieldRemove => "calculatedField.remove",
-            Self::TotalAdd => "total.add",
-            Self::TotalRemove => "total.remove",
-            Self::VariantAdd => "variant.add",
-            Self::VariantSet => "variant.set",
-            Self::VariantRemove => "variant.remove",
-            Self::QuerySet => "query.set",
-            Self::QueryPatch => "query.patch",
-            Self::FilterAdd => "filter.add",
-            Self::FilterSet => "filter.set",
-            Self::FilterRemove => "filter.remove",
-            Self::FilterClear => "filter.clear",
-            Self::SelectionAdd => "selection.add",
-            Self::SelectionClear => "selection.clear",
-            Self::OrderAdd => "order.add",
-            Self::OrderClear => "order.clear",
-            Self::DataParameterAdd => "dataParameter.add",
-            Self::DataParameterSet => "dataParameter.set",
-            Self::OutputParameterSet => "outputParameter.set",
-            Self::ConditionalAppearanceAdd => "conditionalAppearance.add",
-            Self::ConditionalAppearanceClear => "conditionalAppearance.clear",
-            Self::StructureAdd => "structure.add",
-            Self::StructureSet => "structure.set",
-            Self::StructurePatch => "structure.patch",
-            Self::StructureRemove => "structure.remove",
-            Self::DataSetLinkAdd => "dataSetLink.add",
-            Self::CalculatedFieldSet => "calculatedField.set",
-            Self::TotalSet => "total.set",
-            Self::SelectionSet => "selection.set",
-            Self::SelectionRemove => "selection.remove",
-            Self::OrderSet => "order.set",
-            Self::OrderRemove => "order.remove",
-            Self::DataParameterRemove => "dataParameter.remove",
-            Self::OutputParameterRemove => "outputParameter.remove",
-            Self::ConditionalAppearanceRemove => "conditionalAppearance.remove",
-            Self::DataSetLinkSet => "dataSetLink.set",
-            Self::DataSetLinkRemove => "dataSetLink.remove",
-        }
-    }
-}
+use crate::domain::dcs_arguments::*;
+use crate::domain::dcs_operation::DcsIntent;
+#[cfg(test)]
+pub(crate) use crate::domain::dcs_operation::Primitive;
 
 const ROOT_ORDER: &[&str] = &[
     "dataSource",
@@ -295,6 +125,24 @@ fn text(parent: Node<'_, '_>, ns: &str, name: &str) -> String {
         })
         .unwrap_or_default()
 }
+
+pub(super) fn declares_data_source(root: Node<'_, '_>, name: &str) -> bool {
+    root.children()
+        .any(|node| is(node, S, "dataSource") && text(node, S, "name") == name)
+}
+
+pub(super) fn references_data_source(root: Node<'_, '_>, name: &str) -> bool {
+    root.descendants().any(|node| {
+        is(node, S, "dataSource")
+            && !node.children().any(|child| child.is_element())
+            && node
+                .children()
+                .filter(Node::is_text)
+                .filter_map(|child| child.text())
+                .collect::<String>()
+                == name
+    })
+}
 fn unique<'a, 'i>(
     nodes: impl Iterator<Item = Node<'a, 'i>>,
     what: &str,
@@ -322,7 +170,7 @@ fn named<'a, 'i>(
         name,
     )
 }
-fn string<'a>(object: &'a Map<String, Value>, key: &str) -> &'a str {
+fn atom_string<'a>(object: &'a Map<String, Value>, key: &str) -> &'a str {
     object.get(key).and_then(Value::as_str).unwrap_or("")
 }
 fn value_text(value: &Value) -> String {
@@ -847,7 +695,7 @@ fn scalar_value(
             {
                 return Err("unexpected StandardPeriod property".to_string());
             }
-            string(object, "variant")
+            atom_string(object, "variant")
         } else {
             value
                 .as_str()
@@ -976,21 +824,25 @@ fn value_type(value: &str) -> Result<String, String> {
 }
 fn parameter_value_type(
     node: Option<Node<'_, '_>>,
-    values: &Map<String, Value>,
+    values: &ParameterPatch,
 ) -> Result<Option<String>, String> {
-    if let Some(kind) = values.get("valueType").and_then(Value::as_str) {
+    if let Some(kind) = &values.value_type {
         return canonical_value_type(kind).map(Some);
     }
-    let nil = values.get("value").is_some_and(Value::is_null);
+    let nil = values
+        .value
+        .as_ref()
+        .is_some_and(|value| value.value().is_null());
     let fragment;
     let document;
-    let declaration = if !string(values, "type").is_empty() {
-        fragment = value_type(string(values, "type"))?;
-        document = Document::parse(&fragment).map_err(|error| error.to_string())?;
-        Some(document.root_element())
-    } else {
-        node.and_then(|node| child(node, S, "valueType"))
-    };
+    let declaration =
+        if let Some(kind) = values.type_name.as_deref().filter(|kind| !kind.is_empty()) {
+            fragment = value_type(kind)?;
+            document = Document::parse(&fragment).map_err(|error| error.to_string())?;
+            Some(document.root_element())
+        } else {
+            node.and_then(|node| child(node, S, "valueType"))
+        };
     let Some(declaration) = declaration else {
         return Ok(None);
     };
@@ -1007,135 +859,93 @@ fn parameter_value_type(
     }
     Ok(types.into_iter().next())
 }
-fn restriction(tag: &str, value: &Value) -> Result<String, String> {
-    let object = value.as_object().ok_or("restriction must be an object")?;
+fn restriction(tag: &str, value: &Restriction) -> String {
     let mut body = String::new();
-    for key in ["field", "condition", "group", "order"] {
-        if let Some(value) = object.get(key) {
-            if !value.is_boolean() {
-                return Err("restriction values must be boolean".to_string());
-            }
-            body += &simple(key, &value_text(value), S);
+    for (key, flag) in [
+        ("field", value.field),
+        ("condition", value.condition),
+        ("group", value.group),
+        ("order", value.order),
+    ] {
+        if let Some(flag) = flag {
+            body += &simple(key, &flag.to_string(), S);
         }
     }
-    Ok(xml(tag, &body, S))
+    xml(tag, &body, S)
 }
 fn available_values(
-    values: &Value,
+    values: &[AvailableValue],
     kind: Option<&str>,
     lang: Option<&str>,
 ) -> Result<String, String> {
     let mut body = String::new();
-    for item in values
-        .as_array()
-        .ok_or("availableValues must be an array")?
-    {
-        let value = item.get("value").ok_or("available value requires value")?;
-        let mut entry = scalar_value("value", value, kind, S, lang)?;
-        if let Some(title) = item.get("presentation") {
-            entry += &mltext("presentation", title, S, lang)?;
+    for item in values {
+        let mut entry = scalar_value("value", item.value.value(), kind, S, lang)?;
+        if let Some(title) = &item.presentation {
+            entry += &mltext("presentation", title.value(), S, lang)?;
         }
         body += &xml("availableValue", &entry, S);
     }
     Ok(body)
 }
-fn field_fragment(
-    item: &Map<String, Value>,
-    query: bool,
-    lang: Option<&str>,
-) -> Result<String, String> {
-    let name = string(item, "dataPath");
-    let field = item.get("field").and_then(Value::as_str).unwrap_or(name);
-    if !string(item, "type").is_empty() {
-        super::dcs_xml::parse_value_type(string(item, "type"))?;
+fn field_fragment(item: &FieldSpec, lang: Option<&str>) -> Result<String, String> {
+    let name = &item.data_path;
+    if let Some(kind) = item.type_name.as_deref().filter(|kind| !kind.is_empty()) {
+        super::dcs_xml::parse_value_type(kind)?;
     }
-    let mut body = simple("dataPath", name, S) + &simple("field", field, S);
-    if let Some(title) = item.get("title") {
-        body += &mltext("title", title, S, lang)?;
+    let mut body =
+        simple("dataPath", name, S) + &simple("field", item.field.as_deref().unwrap_or(name), S);
+    if let Some(title) = &item.title {
+        body += &mltext("title", title.value(), S, lang)?;
     }
-    for key in ["useRestriction", "attributeUseRestriction"] {
-        if let Some(value) = item.get(key) {
-            body += &restriction(key, value)?;
-        }
+    if let Some(value) = &item.use_restriction {
+        body += &restriction("useRestriction", value);
     }
-    if let Some(expression) = item.get("presentationExpression") {
-        body += &simple("presentationExpression", &value_text(expression), S);
+    if let Some(value) = &item.attribute_use_restriction {
+        body += &restriction("attributeUseRestriction", value);
     }
-    if !query && !string(item, "type").is_empty() {
-        body += &value_type(string(item, "type"))?;
+    if let Some(expression) = &item.presentation_expression {
+        body += &simple("presentationExpression", expression, S);
+    }
+    if let Some(kind) = item.type_name.as_deref().filter(|kind| !kind.is_empty()) {
+        body += &value_type(kind)?;
     }
     Ok(typed("field", "DataSetFieldField", &body, S))
 }
-fn filter_fragment(item: &Map<String, Value>, lang: Option<&str>) -> Result<String, String> {
-    let mut body = String::new();
-    if let Some(use_flag) = item.get("use") {
-        body += &simple("use", &value_text(use_flag), T);
+fn filter_fragment(item: &FilterSpec, lang: Option<&str>) -> Result<String, String> {
+    let mut body = item
+        .meta
+        .use_flag
+        .map(|flag| simple("use", &flag.to_string(), T))
+        .unwrap_or_default();
+    body += &typed("left", "dcscor:Field", &escape_xml(&item.field), T);
+    body += &simple("comparisonType", item.comparison.as_str(), T);
+    if let Some(value) = &item.value {
+        body += &scalar_value("right", value.value(), item.value_type.as_deref(), T, lang)?;
     }
-    body += &typed(
-        "left",
-        "dcscor:Field",
-        &escape_xml(string(item, "field")),
-        T,
-    );
-    body += &simple(
-        "comparisonType",
-        item.get("comparison")
-            .and_then(Value::as_str)
-            .unwrap_or("Equal"),
-        T,
-    );
-    if let Some(value) = item.get("value") {
-        body += &scalar_value(
-            "right",
-            value,
-            item.get("valueType").and_then(Value::as_str),
-            T,
-            lang,
-        )?;
-    }
-    for key in ["viewMode", "userSettingID", "userSettingPresentation"] {
-        if let Some(value) = item.get(key) {
-            body += &simple(key, &value_text(value), T);
+    for (key, value) in settings_text_fields(&item.meta).into_iter().skip(1) {
+        if let Some(value) = value {
+            body += &simple(key, &value, T);
         }
     }
     Ok(typed("item", "dcsset:FilterItemComparison", &body, T))
 }
-fn total_groups(value: &Value) -> Result<String, String> {
-    if let Some(group) = value.as_str() {
-        return Ok(simple("group", group, S));
-    }
-    value
-        .as_array()
-        .ok_or("group must be a string or array of strings")?
+fn total_groups(groups: &[String]) -> String {
+    groups
         .iter()
-        .map(|group| {
-            group
-                .as_str()
-                .map(|group| simple("group", group, S))
-                .ok_or_else(|| "total group must be text".to_string())
-        })
-        .collect::<Result<Vec<_>, _>>()
-        .map(|groups| groups.join(""))
+        .map(|group| simple("group", group, S))
+        .collect::<String>()
 }
 fn selection_container<'a, 'i>(
     setting: Node<'a, 'i>,
-    values: &Map<String, Value>,
+    parents: &[DcsIndex],
 ) -> Result<Node<'a, 'i>, String> {
     let mut container = child(setting, T, "selection").ok_or("selection collection missing")?;
-    for index in values
-        .get("parentIndexes")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        let index = index
-            .as_u64()
-            .and_then(|index| usize::try_from(index).ok())
-            .ok_or("parent index must be nonnegative integer")?;
+    for index in parents {
         container = container
             .children()
             .filter(|node| is(*node, T, "item"))
-            .nth(index)
+            .nth(index.get())
             .ok_or("selection parent index was not found")?;
         if !qtype(container, T, "SelectedItemFolder") {
             return Err("selection parent must be a folder".to_string());
@@ -1143,20 +953,21 @@ fn selection_container<'a, 'i>(
     }
     Ok(container)
 }
-fn group_items(fields: &[Value]) -> Result<String, String> {
-    let mut body = String::new();
-    for field in fields {
-        let field = field.as_str().ok_or("groupBy items must be text")?;
-        body += &typed(
-            "item",
-            "dcsset:GroupItemField",
-            &(simple("field", field, T)
-                + &simple("groupType", "Items", T)
-                + &simple("periodAdditionType", "None", T)),
-            T,
-        );
-    }
-    Ok(xml("groupItems", &body, T))
+fn group_items(fields: &[String]) -> String {
+    let body = fields
+        .iter()
+        .map(|field| {
+            typed(
+                "item",
+                "dcsset:GroupItemField",
+                &(simple("field", field, T)
+                    + &simple("groupType", "Items", T)
+                    + &simple("periodAdditionType", "None", T)),
+                T,
+            )
+        })
+        .collect::<String>();
+    xml("groupItems", &body, T)
 }
 const TABLE_ORDER: &[&str] = &[
     "use",
@@ -1188,17 +999,6 @@ const CHART_ORDER: &[&str] = &[
     "itemsViewMode",
     "userSettingPresentation",
 ];
-const STRUCTURE_PROPERTIES: &[&str] = &[
-    "use",
-    "columnsViewMode",
-    "rowsViewMode",
-    "pointsViewMode",
-    "seriesViewMode",
-    "viewMode",
-    "userSettingID",
-    "itemsViewMode",
-    "userSettingPresentation",
-];
 fn structure_order(node: Node<'_, '_>) -> &'static [&'static str] {
     if is(node, T, "settings") {
         SETTINGS_ORDER
@@ -1210,1776 +1010,754 @@ fn structure_order(node: Node<'_, '_>) -> &'static [&'static str] {
         GROUP_ORDER
     }
 }
-fn structure_property(
-    tag: &str,
-    value: &Value,
-    kind: &str,
-    lang: Option<&str>,
-) -> Result<String, String> {
-    if (matches!(tag, "columnsViewMode" | "rowsViewMode") && kind != "table")
-        || (matches!(tag, "pointsViewMode" | "seriesViewMode") && kind != "chart")
-    {
-        return Err(format!("{tag} is incompatible with {kind}"));
-    }
-    if tag == "userSettingPresentation" {
-        mltext(tag, value, T, lang)
-    } else {
-        Ok(simple(tag, &value_text(value), T))
-    }
+fn settings_text_fields(meta: &SettingsMeta<String>) -> [(&'static str, Option<String>); 4] {
+    [
+        ("use", meta.use_flag.map(|flag| flag.to_string())),
+        (
+            "viewMode",
+            meta.view_mode.map(|value| value.as_str().to_string()),
+        ),
+        ("userSettingID", meta.user_setting_id.clone()),
+        (
+            "userSettingPresentation",
+            meta.user_setting_presentation.clone(),
+        ),
+    ]
 }
-fn structure_fragment(item: &Map<String, Value>, lang: Option<&str>) -> Result<String, String> {
-    let kind = item.get("kind").and_then(Value::as_str).unwrap_or("group");
+fn structure_text_fields(meta: &StructureMeta) -> [(&'static str, Option<String>); 8] {
+    [
+        ("use", meta.settings.use_flag.map(|flag| flag.to_string())),
+        (
+            "columnsViewMode",
+            meta.columns_view_mode
+                .map(|value| value.as_str().to_string()),
+        ),
+        (
+            "rowsViewMode",
+            meta.rows_view_mode.map(|value| value.as_str().to_string()),
+        ),
+        (
+            "pointsViewMode",
+            meta.points_view_mode
+                .map(|value| value.as_str().to_string()),
+        ),
+        (
+            "seriesViewMode",
+            meta.series_view_mode
+                .map(|value| value.as_str().to_string()),
+        ),
+        (
+            "viewMode",
+            meta.settings
+                .view_mode
+                .map(|value| value.as_str().to_string()),
+        ),
+        ("userSettingID", meta.settings.user_setting_id.clone()),
+        (
+            "itemsViewMode",
+            meta.items_view_mode.map(|value| value.as_str().to_string()),
+        ),
+    ]
+}
+fn structure_property(tag: &str, value: &str, kind: StructureKind) -> Result<String, String> {
+    if (matches!(tag, "columnsViewMode" | "rowsViewMode") && kind != StructureKind::Table)
+        || (matches!(tag, "pointsViewMode" | "seriesViewMode") && kind != StructureKind::Chart)
+    {
+        return Err(format!("{tag} is incompatible with {}", kind.as_str()));
+    }
+    Ok(simple(tag, value, T))
+}
+fn structure_fragment(item: &StructureSpec, lang: Option<&str>) -> Result<String, String> {
     let mut body = item
-        .get("use")
-        .map(|flag| simple("use", &value_text(flag), T))
+        .meta
+        .settings
+        .use_flag
+        .map(|flag| simple("use", &flag.to_string(), T))
         .unwrap_or_default();
-    if let Some(name) = item.get("name") {
-        body += &simple("name", &value_text(name), T);
+    if let Some(name) = &item.name {
+        body += &simple("name", name, T);
     }
-    if kind == "group" {
-        if let Some(fields) = item
-            .get("groupBy")
-            .and_then(Value::as_array)
-            .filter(|v| !v.is_empty())
-        {
-            body += &group_items(fields)?;
+    if item.kind == StructureKind::Group {
+        if let Some(fields) = item.group_by.as_ref().filter(|fields| !fields.is_empty()) {
+            body += &group_items(fields);
         }
     }
-    for key in STRUCTURE_PROPERTIES.iter().filter(|key| **key != "use") {
-        if let Some(value) = item.get(*key) {
-            body += &structure_property(key, value, kind, lang)?;
+    for (key, value) in structure_text_fields(&item.meta).into_iter().skip(1) {
+        if let Some(value) = value {
+            body += &structure_property(key, &value, item.kind)?;
         }
     }
-    let wire = match kind {
-        "group" => "dcsset:StructureItemGroup",
-        "table" => "dcsset:StructureItemTable",
-        "chart" => "dcsset:StructureItemChart",
-        _ => return Err("unknown structure kind".to_string()),
+    if let Some(value) = &item.meta.settings.user_setting_presentation {
+        body += &mltext("userSettingPresentation", value.value(), T, lang)?;
+    }
+    let wire = match item.kind {
+        StructureKind::Group => "dcsset:StructureItemGroup",
+        StructureKind::Table => "dcsset:StructureItemTable",
+        StructureKind::Chart => "dcsset:StructureItemChart",
     };
     Ok(typed("item", wire, &body, T))
 }
 
-/// Apply one normalized operation to captured XML. The caller owns atomic
-/// publication and discards this tentative image if any operation fails.
-///
-/// `lang` is the `LanguageCode` plain-string multilingual values are written
-/// in. The caller may pass `None` to avoid resolving the default language for
-/// operations that write no such value; an operation that does need it then
-/// fails with [`ApplyError::TextLanguageRequired`] and leaves `xml_text`
-/// unchanged.
+/// Apply one decoded operation to a tentative XML image. Publication belongs
+/// to the request planner; failure leaves the caller's image unchanged.
 pub(crate) fn apply(
     xml_text: &mut String,
-    operation: &str,
-    args: &Map<String, Value>,
+    intent: &DcsIntent,
     target: &Target,
     lang: Option<&str>,
 ) -> Result<(), ApplyError> {
     let mut candidate = xml_text.clone();
-    apply_candidate(&mut candidate, operation, args, target, lang).map_err(|message| {
-        if message == TEXT_LANGUAGE_REQUIRED {
-            ApplyError::TextLanguageRequired
-        } else {
-            ApplyError::Invalid(message)
-        }
-    })?;
+    apply_item(&mut candidate, intent, target, lang)?;
     Document::parse(&candidate).map_err(|error| ApplyError::Invalid(error.to_string()))?;
     *xml_text = candidate;
     Ok(())
 }
-
-/// Why [`apply`] left the schema unchanged.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ApplyError {
-    /// The operation writes a plain-string multilingual value and no language
-    /// was given.
     TextLanguageRequired,
-    /// The operation does not apply to this schema.
     Invalid(String),
+    InvalidArgument { path: String, message: String },
 }
-
+impl ApplyError {
+    fn argument(path: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::InvalidArgument {
+            path: path.into(),
+            message: message.into(),
+        }
+    }
+    pub(crate) fn argument_path(&self) -> Option<&str> {
+        match self {
+            Self::InvalidArgument { path, .. } => Some(path),
+            Self::TextLanguageRequired | Self::Invalid(_) => None,
+        }
+    }
+}
+impl From<String> for ApplyError {
+    fn from(message: String) -> Self {
+        if message == TEXT_LANGUAGE_REQUIRED {
+            Self::TextLanguageRequired
+        } else {
+            Self::Invalid(message)
+        }
+    }
+}
+impl From<&str> for ApplyError {
+    fn from(message: &str) -> Self {
+        message.to_string().into()
+    }
+}
 impl std::fmt::Display for ApplyError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::TextLanguageRequired => formatter.write_str(TEXT_LANGUAGE_REQUIRED),
-            Self::Invalid(message) => formatter.write_str(message),
-        }
-    }
-}
-
-fn apply_candidate(
-    xml_text: &mut String,
-    operation: &str,
-    args: &Map<String, Value>,
-    target: &Target,
-    lang: Option<&str>,
-) -> Result<(), String> {
-    let empty = Map::new();
-    let values = args
-        .get("values")
-        .and_then(Value::as_object)
-        .unwrap_or(&empty);
-    if operation == "parameter.reorder" {
-        let items = args
-            .get("items")
-            .and_then(Value::as_array)
-            .ok_or("parameter list required")?;
-        let document = Document::parse(xml_text).map_err(|e| e.to_string())?;
-        let parameters = document
-            .root_element()
-            .children()
-            .filter(|node| is(*node, S, "parameter"))
-            .collect::<Vec<_>>();
-        if items.len() != parameters.len() {
-            return Err("reorder needs every parameter exactly once".to_string());
-        }
-        let mut used = std::collections::HashSet::new();
-        let mut replacements = Vec::new();
-        for (slot, item) in parameters.iter().zip(items) {
-            let name = item
-                .get("name")
-                .and_then(Value::as_str)
-                .ok_or("parameter name required")?;
-            if !used.insert(name) {
-                return Err("duplicate parameter in reorder".to_string());
+            Self::Invalid(message) | Self::InvalidArgument { message, .. } => {
+                formatter.write_str(message)
             }
-            let parameter = unique(
-                parameters
-                    .iter()
-                    .copied()
-                    .filter(|node| text(*node, S, "name") == name),
-                name,
-            )?;
-            replacements.push((slot.range(), xml_text[parameter.range()].to_string()));
         }
-        for (range, replacement) in replacements.into_iter().rev() {
-            xml_text.replace_range(range, &replacement);
-        }
-        return Ok(());
     }
-    if let Some(items) = args.get("items").and_then(Value::as_array) {
-        for item in items {
-            apply_item(
-                xml_text,
-                operation,
-                item.as_object().ok_or("item must be an object")?,
-                target,
-                lang,
-            )?;
-        }
-        return Ok(());
-    }
-    apply_item(xml_text, operation, values, target, lang)
 }
-
+fn apply_many<T>(
+    xml_text: &mut String,
+    items: &[T],
+    mut apply: impl FnMut(&mut String, &T, &str) -> Result<(), ApplyError>,
+) -> Result<(), ApplyError> {
+    for (index, item) in items.iter().enumerate() {
+        apply(xml_text, item, &format!("items[{index}]"))?;
+    }
+    Ok(())
+}
+fn parse_document(xml_text: &str) -> Result<Document<'_>, ApplyError> {
+    Document::parse(xml_text).map_err(|error| ApplyError::Invalid(error.to_string()))
+}
 fn apply_item(
     xml_text: &mut String,
-    operation: &str,
-    values: &Map<String, Value>,
+    intent: &DcsIntent,
     target: &Target,
     lang: Option<&str>,
-) -> Result<(), String> {
-    let document = Document::parse(xml_text).map_err(|e| e.to_string())?;
-    let root = document.root_element();
-    super::dcs::require_dcs_root(root)?;
-    match operation {
-        "dataSource.add" => {
-            let name = string(values, "name");
-            if root
-                .children()
-                .any(|node| is(node, S, "dataSource") && text(node, S, "name") == name)
-            {
-                return Err(format!("dataSource {name} already exists"));
-            }
-            let kind = values
-                .get("kind")
-                .and_then(Value::as_str)
-                .unwrap_or("Local");
-            let fragment = xml(
-                "dataSource",
-                &(simple("name", name, S) + &simple("dataSourceType", kind, S)),
-                S,
-            );
-            insert(
-                xml_text,
-                root.range(),
-                &fragment,
-                S,
-                "dataSource",
-                ROOT_ORDER,
-            )
+) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    if !matches!(intent, DcsIntent::ParameterReorder(_)) {
+        super::dcs::require_dcs_root(document.root_element())?;
+    }
+    match intent {
+        DcsIntent::DataSourceAdd(items) => {
+            apply_many(xml_text, items, |xml, item, _| add_data_source(xml, item))
         }
-        "dataSource.set" | "dataSource.remove" => {
-            let name = target
-                .terminal
-                .as_deref()
-                .ok_or("address a named DataSource")?;
-            let source = named(root, S, "dataSource", "name", name)?;
-            if operation.ends_with("remove") {
-                if root.descendants().any(|node| {
-                    is(node, S, "dataSource")
-                        && !node.children().any(|n| n.is_element())
-                        && node
-                            .children()
-                            .filter(Node::is_text)
-                            .filter_map(|node| node.text())
-                            .collect::<String>()
-                            == name
-                }) {
-                    return Err("dataSource is still referenced by a dataset".to_string());
-                }
-                let range = source.range();
-                xml_text.replace_range(range, "");
-                Ok(())
-            } else {
-                upsert(
-                    xml_text,
-                    source.range(),
-                    S,
-                    "dataSourceType",
-                    &simple("dataSourceType", string(values, "kind"), S),
-                    &["name", "dataSourceType"],
-                )
-            }
-        }
-        "dataSet.add" => {
-            let parent = if target.datasets.is_empty() {
-                root
-            } else {
-                dataset(root, target)?
-            };
-            let tag = if target.datasets.is_empty() {
-                "dataSet"
-            } else {
-                "item"
-            };
-            if tag == "item" && !qtype(parent, S, "DataSetUnion") {
-                return Err("only a Union dataset accepts child datasets".to_string());
-            }
-            let name = string(values, "name");
-            if parent
-                .children()
-                .any(|node| is(node, S, tag) && text(node, S, "name") == name)
-            {
-                return Err(format!("dataset {name} already exists"));
-            }
-            let kind = values
-                .get("kind")
-                .and_then(Value::as_str)
-                .unwrap_or("Query");
-            match kind {
-                "Query"
-                    if string(values, "query").is_empty() || values.contains_key("objectName") =>
-                {
-                    return Err("Query requires query and accepts no objectName".to_string())
-                }
-                "Object"
-                    if string(values, "objectName").is_empty() || values.contains_key("query") =>
-                {
-                    return Err("Object requires objectName and accepts no query".to_string())
-                }
-                "Union"
-                    if values.contains_key("dataSource")
-                        || values.contains_key("query")
-                        || values.contains_key("objectName") =>
-                {
-                    return Err("Union members are composed separately".to_string())
-                }
-                _ => {}
-            }
-            if string(values, "query").trim_start().starts_with('@') {
-                return Err("query takes text, not @file".to_string());
-            }
-            let mut body = simple("name", name, S);
-            if kind != "Union" {
-                named(root, S, "dataSource", "name", string(values, "dataSource"))?;
-                body += &simple("dataSource", string(values, "dataSource"), S);
-            }
-            match kind {
-                "Query" => {
-                    body += &simple("query", string(values, "query"), S);
-                }
-                "Object" => {
-                    body += &simple("objectName", string(values, "objectName"), S);
-                }
-                "Union" => {}
-                _ => return Err("unsupported dataset kind".to_string()),
-            }
-            let fragment = typed(tag, &format!("DataSet{kind}"), &body, S);
-            insert(
-                xml_text,
-                parent.range(),
-                &fragment,
-                S,
-                tag,
-                if tag == "dataSet" {
-                    ROOT_ORDER
-                } else {
-                    DATASET_ORDER
-                },
-            )
-        }
-        "dataSet.set" => {
-            dataset(root, target)?;
-            for key in ["dataSource", "objectName", "autoFillFields"] {
-                if let Some(value) = values.get(key) {
-                    let document = Document::parse(xml_text).map_err(|e| e.to_string())?;
-                    let root = document.root_element();
-                    let ds = dataset(root, target)?;
-                    let query = qtype(ds, S, "DataSetQuery");
-                    let object = qtype(ds, S, "DataSetObject");
-                    if key == "dataSource" {
-                        named(root, S, "dataSource", "name", &value_text(value))?;
-                    }
-                    if (key == "objectName" && !object)
-                        || (key == "autoFillFields" && !query)
-                        || (!object && !query)
-                    {
-                        return Err(format!("{key} does not apply to this dataset kind"));
-                    }
-                    upsert(
-                        xml_text,
-                        ds.range(),
-                        S,
-                        key,
-                        &simple(key, &value_text(value), S),
-                        DATASET_ORDER,
-                    )?;
-                }
-            }
-            Ok(())
-        }
-        "dataSet.remove" => {
-            let range = dataset(root, target)?.range();
+        DcsIntent::DataSourceSet(kind) => set_data_source(xml_text, target, *kind),
+        DcsIntent::DataSourceRemove(()) => remove_named_schema(
+            xml_text,
+            target,
+            "dataSource",
+            "name",
+            "address a named DataSource",
+        ),
+        DcsIntent::DataSetAdd(items) => apply_many(xml_text, items, |xml, item, _| {
+            add_data_set(xml, item, target)
+        }),
+        DcsIntent::DataSetSet(patch) => set_data_set(xml_text, target, patch),
+        DcsIntent::DataSetRemove(()) => {
+            let document = parse_document(xml_text)?;
+            let range = dataset(document.root_element(), target)?.range();
             xml_text.replace_range(range, "");
             Ok(())
         }
-        "field.add" => {
-            let ds = dataset(root, target)?;
-            let name = string(values, "dataPath");
-            if ds
-                .children()
-                .any(|node| is(node, S, "field") && text(node, S, "dataPath") == name)
-            {
-                return Ok(());
-            }
-            let fragment = field_fragment(values, qtype(ds, S, "DataSetQuery"), lang)?;
-            insert(xml_text, ds.range(), &fragment, S, "field", DATASET_ORDER)
-        }
-        "field.set" => {
-            if !string(values, "type").is_empty() {
-                super::dcs_xml::parse_value_type(string(values, "type"))?;
-            }
-            let name = target.terminal.as_deref().ok_or("address a named Field")?;
-            named(dataset(root, target)?, S, "field", "dataPath", name)?;
-            for key in [
-                "sourceField",
-                "title",
-                "useRestriction",
-                "attributeUseRestriction",
-                "presentationExpression",
-                "type",
-            ] {
-                let Some(value) = values.get(key) else {
-                    continue;
-                };
-                let document = Document::parse(xml_text).map_err(|e| e.to_string())?;
-                let ds = dataset(document.root_element(), target)?;
-                let field = named(ds, S, "field", "dataPath", name)?;
-                let tag = match key {
-                    "type" => "valueType",
-                    "sourceField" => "field",
-                    other => other,
-                };
-                if key == "type" && qtype(ds, S, "DataSetQuery") {
-                    let ranges = field
-                        .children()
-                        .filter(|node| is(*node, S, "valueType"))
-                        .map(|node| node.range())
-                        .collect();
-                    remove_ranges(xml_text, ranges);
-                } else {
-                    let fragment = match key {
-                        "type" => value_type(&value_text(value))?,
-                        "title" => {
-                            mltext_update(xml_text, child(field, S, tag), tag, value, S, lang)?
-                        }
-                        "useRestriction" | "attributeUseRestriction" => restriction(tag, value)?,
-                        _ => simple(tag, &value_text(value), S),
-                    };
-                    upsert(xml_text, field.range(), S, tag, &fragment, FIELD_ORDER)?;
-                }
-            }
-            let document = Document::parse(xml_text).map_err(|e| e.to_string())?;
+        DcsIntent::FieldAdd(items) => apply_many(xml_text, items, |xml, item, location| {
+            add_field(xml, target, item, location, lang)
+        }),
+        DcsIntent::FieldSet(patch) => set_field(xml_text, target, patch, lang),
+        DcsIntent::FieldRemove(()) => {
+            let document = parse_document(xml_text)?;
             let ds = dataset(document.root_element(), target)?;
-            if qtype(ds, S, "DataSetQuery") {
-                let field = named(ds, S, "field", "dataPath", name)?;
-                let ranges = field
-                    .children()
-                    .filter(|node| is(*node, S, "valueType"))
-                    .map(|node| node.range())
-                    .collect();
-                remove_ranges(xml_text, ranges);
-            }
-            Ok(())
-        }
-        "field.remove" => {
-            let ds = dataset(root, target)?;
             let name = target.terminal.as_deref().ok_or("address a named Field")?;
             let range = named(ds, S, "field", "dataPath", name)?.range();
             xml_text.replace_range(range, "");
             Ok(())
         }
-        "fieldRole.set" => {
-            let ds = dataset(root, target)?;
-            let name = target.terminal.as_deref().ok_or("address a named Field")?;
-            let field = named(ds, S, "field", "dataPath", name)?;
-            let role = values
-                .get("role")
-                .and_then(Value::as_object)
-                .ok_or("role must be an object")?;
-            let mut body = String::new();
-            for key in [
-                "periodNumber",
-                "periodType",
-                "dimension",
-                "parentDimension",
-                "account",
-                "accountTypeExpression",
-                "balance",
-                "balanceGroupName",
-                "balanceType",
-                "accountingBalanceType",
-                "accountField",
-                "ignoreNullValues",
-                "required",
-                "dimensionAttribute",
-            ] {
-                if let Some(value) = role.get(key) {
-                    super::dcs_xml::validate_field_role_value(key, &value_text(value))?;
-                    body += &simple(key, &value_text(value), super::dcs::DCS_COMMON_NS);
-                }
-            }
-            upsert(
-                xml_text,
-                field.range(),
-                S,
-                "role",
-                &xml("role", &body, S),
-                FIELD_ORDER,
-            )
+        DcsIntent::FieldRoleSet(role) => set_field_role(xml_text, target, role),
+        DcsIntent::ParameterAdd(items) => apply_many(xml_text, items, |xml, item, _| {
+            add_parameter(xml, item, lang)
+        }),
+        DcsIntent::ParameterSet(patch) => set_parameter(xml_text, target, patch, lang),
+        DcsIntent::ParameterRemove(()) => remove_named_schema(
+            xml_text,
+            target,
+            "parameter",
+            "name",
+            "address a named Parameter, CalculatedField or Total",
+        ),
+        DcsIntent::ParameterRename(name) => rename_parameter(xml_text, target, name),
+        DcsIntent::ParameterReorder(names) => reorder_parameters(xml_text, names),
+        DcsIntent::CalculatedFieldAdd(items) => apply_many(xml_text, items, |xml, item, _| {
+            add_calculated_field(xml, item, lang)
+        }),
+        DcsIntent::CalculatedFieldRemove(()) => remove_named_schema(
+            xml_text,
+            target,
+            "calculatedField",
+            "dataPath",
+            "address a named Parameter, CalculatedField or Total",
+        ),
+        DcsIntent::TotalAdd(items) => {
+            apply_many(xml_text, items, |xml, item, _| add_total(xml, item))
         }
-        "query.set" | "query.patch" => {
-            let ds = dataset(root, target)?;
-            if !qtype(ds, S, "DataSetQuery") {
-                return Err("only a Query dataset has query text".to_string());
-            }
-            let query = child(ds, S, "query").ok_or("dataset has no query")?;
-            let (range, replacement) =
-                change_query(xml_text, query, values, operation == "query.patch")?;
-            xml_text.replace_range(range, &replacement);
+        DcsIntent::TotalRemove(()) => remove_named_schema(
+            xml_text,
+            target,
+            "totalField",
+            "dataPath",
+            "address a named Parameter, CalculatedField or Total",
+        ),
+        DcsIntent::VariantAdd(items) => {
+            apply_many(xml_text, items, |xml, item, _| add_variant(xml, item, lang))
+        }
+        DcsIntent::VariantSet(title) => set_variant(xml_text, target, title, lang),
+        DcsIntent::VariantRemove(()) => remove_variant(xml_text, target),
+        DcsIntent::QuerySet(query) => set_query(xml_text, target, query),
+        DcsIntent::QueryPatch(patch) => patch_query(xml_text, target, patch),
+        DcsIntent::FilterAdd(items) => apply_many(xml_text, items, |xml, item, _| {
+            add_filter(xml, target, item, lang)?;
             Ok(())
+        }),
+        DcsIntent::FilterSet(patch) => set_filter(xml_text, target, patch, lang),
+        DcsIntent::FilterRemove(field) => remove_filter(xml_text, target, field),
+        DcsIntent::FilterClear(()) => clear_collection(xml_text, target, "filter"),
+        DcsIntent::SelectionAdd(items) => apply_many(xml_text, items, |xml, item, _| {
+            add_selection(xml, target, item, lang)
+        }),
+        DcsIntent::SelectionClear(()) => clear_collection(xml_text, target, "selection"),
+        DcsIntent::OrderAdd(items) => {
+            apply_many(xml_text, items, |xml, item, _| add_order(xml, target, item))
         }
-        "parameter.add" | "calculatedField.add" | "total.add" => {
-            let (tag, key, name) = match operation {
-                "parameter.add" => ("parameter", "name", string(values, "name")),
-                "calculatedField.add" => ("calculatedField", "dataPath", string(values, "name")),
-                _ => ("totalField", "dataPath", string(values, "field")),
-            };
-            if root
-                .children()
-                .any(|node| is(node, S, tag) && text(node, S, key) == name)
-            {
-                return Ok(());
-            }
-            let mut body = simple(key, name, S);
-            if tag == "calculatedField" {
-                body += &simple("expression", string(values, "expression"), S);
-            }
-            if let Some(title) = values.get("title") {
-                body += &mltext("title", title, S, lang)?;
-            }
-            if tag == "calculatedField" {
-                if let Some(value) = values.get("useRestriction") {
-                    body += &restriction("useRestriction", value)?;
-                }
-            }
-            if !string(values, "type").is_empty() {
-                body += &value_type(string(values, "type"))?;
-            }
-            if let Some(value) = values.get("value") {
-                let kind = parameter_value_type(None, values)?;
-                body += &scalar_value("value", value, kind.as_deref(), S, lang)?;
-            }
-            if let Some(list) = values.get("values") {
-                if values.contains_key("value") {
-                    return Err("value and values are mutually exclusive".to_string());
-                }
-                let kind = parameter_value_type(None, values)?;
-                for value in list.as_array().ok_or("values must be an array")? {
-                    body += &scalar_value("value", value, kind.as_deref(), S, lang)?;
-                }
-            }
-            let expression = string(values, "expression");
-            if tag == "totalField" {
-                let expression = if expression.is_empty() {
-                    format!("Сумма({name})")
-                } else {
-                    expression.to_string()
-                };
-                body += &simple("expression", &expression, S);
-            }
-
-            if tag == "parameter" && values.contains_key("useRestriction") {
-                body += &simple("useRestriction", &value_text(&values["useRestriction"]), S);
-            }
-            if tag == "parameter" && !expression.is_empty() {
-                body += &simple("expression", expression, S);
-            }
-            if let Some(list) = values.get("availableValues") {
-                let kind = parameter_value_type(None, values)?;
-                body += &available_values(list, kind.as_deref(), lang)?;
-            }
-            for key in [
-                "valueListAllowed",
-                "availableAsField",
-                "denyIncompleteValues",
-                "use",
-                "group",
-            ] {
-                if let Some(value) = values.get(key) {
-                    body += &if key == "group" {
-                        total_groups(value)?
-                    } else {
-                        simple(key, &value_text(value), S)
-                    };
-                }
-            }
-            insert(
-                xml_text,
-                root.range(),
-                &xml(tag, &body, S),
-                S,
-                tag,
-                ROOT_ORDER,
-            )
+        DcsIntent::OrderClear(()) => clear_collection(xml_text, target, "order"),
+        DcsIntent::DataParameterAdd(items) => apply_many(xml_text, items, |xml, item, _| {
+            write_settings_parameter(xml, target, item, false, false, lang)
+        }),
+        DcsIntent::DataParameterSet(item) => {
+            write_settings_parameter(xml_text, target, item, true, false, lang)
         }
-        "parameter.set" => {
-            let name = target
-                .terminal
-                .as_deref()
-                .ok_or("address a named Parameter")?;
-            named(root, S, "parameter", "name", name)?;
-            for key in [
-                "title",
-                "type",
-                "value",
-                "values",
-                "expression",
-                "useRestriction",
-                "availableValues",
-                "valueListAllowed",
-                "availableAsField",
-                "denyIncompleteValues",
-                "use",
-            ] {
-                let Some(value) = values.get(key) else {
-                    continue;
-                };
-                let document = Document::parse(xml_text).map_err(|e| e.to_string())?;
-                let parameter = named(document.root_element(), S, "parameter", "name", name)?;
-                let tag = match key {
-                    "type" => "valueType",
-                    "values" => "value",
-                    "availableValues" => "availableValue",
-                    other => other,
-                };
-                if matches!(key, "value" | "values" | "availableValues") {
-                    if values.contains_key("value") && values.contains_key("values") {
-                        return Err("value and values are mutually exclusive".to_string());
-                    }
-                    let kind = parameter_value_type(Some(parameter), values)?;
-                    let fragment = if key == "availableValues" {
-                        available_values(value, kind.as_deref(), lang)?
-                    } else if key == "values" {
-                        value
-                            .as_array()
-                            .ok_or("values must be an array")?
-                            .iter()
-                            .map(|value| scalar_value("value", value, kind.as_deref(), S, lang))
-                            .collect::<Result<Vec<_>, _>>()?
-                            .join("")
-                    } else {
-                        scalar_value("value", value, kind.as_deref(), S, lang)?
-                    };
-                    let old = parameter
-                        .children()
-                        .filter(|node| is(*node, S, tag))
-                        .collect::<Vec<_>>();
-                    // A plain-string text value keeps the translations of its
-                    // other languages, as a settings parameter value does. The
-                    // replacement is spelled in the source's own namespace
-                    // prefixes, so it replaces the element in place.
-                    if let [existing] = old.as_slice() {
-                        if key == "value"
-                            && value.is_string()
-                            && fragment.starts_with("<value xsi:type=\"v8:LocalStringType\"")
-                        {
-                            let range = existing.range();
-                            let updated =
-                                mltext_update(xml_text, Some(*existing), "value", value, S, lang)?;
-                            if xml_text[range.clone()] != updated {
-                                xml_text.replace_range(range, &updated);
-                            }
-                            continue;
-                        }
-                    }
-                    let wrapped = format!("<root>{fragment}</root>");
-                    let parsed = Document::parse(&wrapped).map_err(|error| error.to_string())?;
-                    let new = parsed
-                        .root_element()
-                        .children()
-                        .filter(|node| node.is_element())
-                        .collect::<Vec<_>>();
-                    if old.len() == new.len()
-                        && old
-                            .iter()
-                            .zip(new.iter())
-                            .all(|(left, right)| equal_element(*left, *right))
-                    {
-                        continue;
-                    }
-                    let ranges = parameter
-                        .children()
-                        .filter(|node| is(*node, S, tag))
-                        .map(|node| node.range())
-                        .collect();
-                    remove_ranges(xml_text, ranges);
-                    if !fragment.is_empty() {
-                        let document =
-                            Document::parse(xml_text).map_err(|error| error.to_string())?;
-                        let parameter =
-                            named(document.root_element(), S, "parameter", "name", name)?;
-                        insert(
-                            xml_text,
-                            parameter.range(),
-                            &fragment,
-                            S,
-                            tag,
-                            PARAMETER_ORDER,
-                        )?;
-                    }
-                    continue;
-                }
-                let fragment = match key {
-                    "title" => {
-                        mltext_update(xml_text, child(parameter, S, tag), tag, value, S, lang)?
-                    }
-                    "type" => value_type(&value_text(value))?,
-                    "value" => {
-                        let kind = parameter_value_type(Some(parameter), values)?;
-                        scalar_value(tag, value, kind.as_deref(), S, lang)?
-                    }
-                    _ => simple(tag, &value_text(value), S),
-                };
-                upsert(
-                    xml_text,
-                    parameter.range(),
-                    S,
-                    tag,
-                    &fragment,
-                    PARAMETER_ORDER,
-                )?;
-            }
-            Ok(())
+        DcsIntent::OutputParameterSet(item) => {
+            write_settings_parameter(xml_text, target, item, true, true, lang)
         }
-        "parameter.rename" => {
-            let name = target
-                .terminal
-                .as_deref()
-                .ok_or("address a named Parameter")?;
-            let new = string(values, "newName");
-            if root
-                .children()
-                .any(|node| is(node, S, "parameter") && text(node, S, "name") == new)
-            {
-                return Err("parameter name already exists".to_string());
-            }
-            let parameter = named(root, S, "parameter", "name", name)?;
-            upsert(
-                xml_text,
-                parameter.range(),
-                S,
-                "name",
-                &simple("name", new, S),
-                PARAMETER_ORDER,
-            )
+        DcsIntent::ConditionalAppearanceAdd(items) => {
+            apply_many(xml_text, items, |xml, item, _| {
+                add_conditional_appearance(xml, target, item, lang)
+            })
         }
-        "parameter.remove" | "calculatedField.remove" | "total.remove" => {
-            let (tag, key) = match operation {
-                "parameter.remove" => ("parameter", "name"),
-                "total.remove" => ("totalField", "dataPath"),
-                _ => ("calculatedField", "dataPath"),
-            };
-            let name = target
-                .terminal
-                .as_deref()
-                .ok_or("address a named Parameter, CalculatedField or Total")?;
-            let range = named(root, S, tag, key, name)?.range();
+        DcsIntent::ConditionalAppearanceClear(()) => {
+            clear_collection(xml_text, target, "conditionalAppearance")
+        }
+        DcsIntent::StructureAdd(items) => apply_many(xml_text, items, |xml, item, _| {
+            add_structure(xml, target, item, lang)
+        }),
+        DcsIntent::StructureSet(item) => set_structure(xml_text, target, item, lang),
+        DcsIntent::StructurePatch(patch) => patch_structure(xml_text, target, patch, lang),
+        DcsIntent::StructureRemove(()) => {
+            let document = parse_document(xml_text)?;
+            let setting = settings(document.root_element(), target)?;
+            if target.structure.is_empty() {
+                return Err("address a named structure item: Setting.V.Item.I".into());
+            }
+            let range = setting.range();
             xml_text.replace_range(range, "");
             Ok(())
         }
-        "variant.add" => {
-            let name = string(values, "name");
-            if root
+        DcsIntent::DataSetLinkAdd(items) => {
+            apply_many(xml_text, items, |xml, item, _| add_link(xml, item))
+        }
+        DcsIntent::CalculatedFieldSet(patch) => set_calculated_field(xml_text, target, patch, lang),
+        DcsIntent::TotalSet(patch) => set_total(xml_text, target, patch),
+        DcsIntent::SelectionSet(patch) => patch_selected_item(
+            xml_text,
+            target,
+            "selection",
+            &patch.selector,
+            &patch.parent_indexes,
+            None,
+            &patch.meta,
+        ),
+        DcsIntent::SelectionRemove(item) => remove_selected_item(
+            xml_text,
+            target,
+            "selection",
+            &item.selector,
+            &item.parent_indexes,
+        ),
+        DcsIntent::OrderSet(patch) => patch_selected_item(
+            xml_text,
+            target,
+            "order",
+            &patch.selector,
+            &[],
+            patch.direction,
+            &patch.meta,
+        ),
+        DcsIntent::OrderRemove(selector) => {
+            remove_selected_item(xml_text, target, "order", selector, &[])
+        }
+        DcsIntent::DataParameterRemove(name) => {
+            remove_settings_parameter(xml_text, target, "dataParameters", name)
+        }
+        DcsIntent::OutputParameterRemove(name) => {
+            remove_settings_parameter(xml_text, target, "outputParameters", name)
+        }
+        DcsIntent::ConditionalAppearanceRemove(index) => {
+            let document = parse_document(xml_text)?;
+            let setting = settings(document.root_element(), target)?;
+            let container =
+                child(setting, T, "conditionalAppearance").ok_or("settings collection missing")?;
+            let item = container
                 .children()
-                .any(|node| is(node, S, "settingsVariant") && text(node, T, "name") == name)
-            {
-                return Ok(());
-            }
-            let title = values
-                .get("title")
-                .cloned()
-                .unwrap_or_else(|| Value::String(name.to_string()));
-            let body = simple("name", name, T)
-                + &mltext("presentation", &title, T, lang)?
-                + &xml("settings", "", T);
-            insert(
-                xml_text,
-                root.range(),
-                &xml("settingsVariant", &body, S),
-                S,
-                "settingsVariant",
-                ROOT_ORDER,
-            )
-        }
-        "variant.set" | "variant.remove" => {
-            let name = target.variant.as_str();
-            if name.is_empty() {
-                return Err("address an existing Setting".to_string());
-            }
-            let variant = unique(
-                root.children().filter(|node| {
-                    is(*node, S, "settingsVariant") && text(*node, T, "name") == name
-                }),
-                name,
-            )?;
-            if operation.ends_with("remove") {
-                let range = variant.range();
-                xml_text.replace_range(range, "");
-                Ok(())
-            } else {
-                upsert(
-                    xml_text,
-                    variant.range(),
-                    T,
-                    "presentation",
-                    &mltext_update(
-                        xml_text,
-                        child(variant, T, "presentation"),
-                        "presentation",
-                        values.get("title").ok_or("title required")?,
-                        T,
-                        lang,
-                    )?,
-                    &["name", "presentation", "settings"],
-                )
-            }
-        }
-        "structure.add" | "structure.set" | "structure.patch" | "structure.remove" => {
-            let setting = settings(root, target)?;
-            if operation == "structure.remove" {
-                if target.structure.is_empty() {
-                    return Err("address a named structure item: Setting.V.Item.I".to_string());
-                }
-                let range = setting.range();
-                xml_text.replace_range(range, "");
-                return Ok(());
-            }
-            if operation == "structure.patch" {
-                if target.structure.is_empty() {
-                    return Err("address a named structure item: Setting.V.Item.I".to_string());
-                }
-                let group = setting;
-                let kind = if qtype(group, T, "StructureItemTable") {
-                    "table"
-                } else if qtype(group, T, "StructureItemChart") {
-                    "chart"
-                } else if qtype(group, T, "StructureItemGroup")
-                    || ["row", "column", "point", "series"]
-                        .iter()
-                        .any(|tag| is(group, T, tag))
-                {
-                    "group"
-                } else {
-                    return Err("structure type is unsupported for patch".to_string());
-                };
-                if let Some(fields) = values.get("groupBy").and_then(Value::as_array) {
-                    if kind != "group" {
-                        return Err(
-                            "groupBy applies to a group or named table/chart axis".to_string()
-                        );
-                    }
-                    if fields.is_empty() {
-                        let ranges = group
-                            .children()
-                            .filter(|node| is(*node, T, "groupItems"))
-                            .map(|node| node.range())
-                            .collect();
-                        remove_ranges(xml_text, ranges);
-                    } else {
-                        upsert(
-                            xml_text,
-                            group.range(),
-                            T,
-                            "groupItems",
-                            &group_items(fields)?,
-                            GROUP_ORDER,
-                        )?;
-                    }
-                }
-                for key in STRUCTURE_PROPERTIES {
-                    if let Some(value) = values.get(*key) {
-                        let document =
-                            Document::parse(xml_text).map_err(|error| error.to_string())?;
-                        let group = settings(document.root_element(), target)?;
-                        let fragment = if *key == "userSettingPresentation" {
-                            mltext_update(xml_text, child(group, T, key), key, value, T, lang)?
-                        } else {
-                            structure_property(key, value, kind, lang)?
-                        };
-                        upsert(
-                            xml_text,
-                            group.range(),
-                            T,
-                            key,
-                            &fragment,
-                            structure_order(group),
-                        )?;
-                    }
-                }
-                return Ok(());
-            }
-            if operation == "structure.set" {
-                let ranges = setting
-                    .children()
-                    .filter(|node| is(*node, T, "item"))
-                    .map(|node| node.range())
-                    .collect();
-                remove_ranges(xml_text, ranges);
-                let document = Document::parse(xml_text).map_err(|e| e.to_string())?;
-                let setting = settings(document.root_element(), target)?;
-                let fields = values
-                    .get("groupBy")
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default();
-                let mut fragment = structure_fragment(values, lang)?;
-                if !fields.is_empty()
-                    && values
-                        .get("details")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(true)
-                {
-                    let details = structure_fragment(&Map::new(), lang)?;
-                    let close = fragment.rfind("</item>").ok_or("structure close missing")?;
-                    fragment.insert_str(close, &details);
-                }
-                return insert(
-                    xml_text,
-                    setting.range(),
-                    &fragment,
-                    T,
-                    "item",
-                    structure_order(setting),
-                );
-            }
-            // Контейнер нового элемента — адрес: вариант или элемент его
-            // структуры. Имя проверяется по всему варианту, чтобы новый
-            // элемент получил однозначный адрес.
-            let parent = setting;
-            let variant_settings = {
-                let mut node = setting;
-                while !is(node, T, "settings") {
-                    node = node.parent_element().ok_or("variant has no settings")?;
-                }
-                node
-            };
-            if variant_settings.descendants().any(|node| {
-                (is(node, T, "item")
-                    || ["row", "column", "point", "series"]
-                        .iter()
-                        .any(|tag| is(node, T, tag)))
-                    && !string(values, "name").is_empty()
-                    && text(node, T, "name") == string(values, "name")
-            }) {
-                return Err("structure name already exists".to_string());
-            }
-            let fragment = structure_fragment(values, lang)?;
-            let axis = string(values, "axis");
-            if !axis.is_empty() {
-                if !((qtype(parent, T, "StructureItemTable") && matches!(axis, "row" | "column"))
-                    || (qtype(parent, T, "StructureItemChart")
-                        && matches!(axis, "point" | "series")))
-                {
-                    return Err("axis is incompatible with the parent structure kind".to_string());
-                }
-                if values
-                    .get("kind")
-                    .and_then(Value::as_str)
-                    .is_some_and(|kind| kind != "group")
-                {
-                    return Err("a table/chart axis must be a group".to_string());
-                }
-                let parsed = Document::parse(&fragment).map_err(|error| error.to_string())?;
-                let inner = content(&fragment, parsed.root_element())?;
-                let fragment = xml(axis, &fragment[inner], T);
-                insert(
-                    xml_text,
-                    parent.range(),
-                    &fragment,
-                    T,
-                    axis,
-                    structure_order(parent),
-                )
-            } else {
-                insert(
-                    xml_text,
-                    parent.range(),
-                    &fragment,
-                    T,
-                    "item",
-                    structure_order(parent),
-                )
-            }
-        }
-        "selection.add"
-        | "filter.add"
-        | "order.add"
-        | "dataParameter.add"
-        | "dataParameter.set"
-        | "conditionalAppearance.add"
-        | "outputParameter.set" => {
-            let setting = settings(root, target)?;
-            if matches!(operation, "dataParameter.set" | "outputParameter.set") {
-                let container = if operation == "dataParameter.set" {
-                    "dataParameters"
-                } else {
-                    "outputParameters"
-                };
-                if child(setting, T, container).is_some_and(|collection| {
-                    collection.children().any(|node| {
-                        is(node, C, "item") && text(node, C, "parameter") == string(values, "name")
-                    })
-                }) {
-                    return patch_settings_parameter(xml_text, target, values, container, lang);
-                }
-            }
-            let (container, mut fragment) = match operation {
-                "selection.add" => {
-                    let kind = values
-                        .get("kind")
-                        .and_then(Value::as_str)
-                        .unwrap_or("Field");
-                    let body = match kind {
-                        "Field" => {
-                            if values.contains_key("title") {
-                                return Err("title belongs to Folder selection".to_string());
-                            }
-                            if string(values, "field").is_empty() {
-                                return Err("Field selection requires field".to_string());
-                            }
-                            simple("field", string(values, "field"), T)
-                        }
-                        "Auto" => {
-                            if values.contains_key("field") || values.contains_key("title") {
-                                return Err("Auto selection has no field/title".to_string());
-                            }
-                            String::new()
-                        }
-                        "Folder" => {
-                            if values.contains_key("field") {
-                                return Err(
-                                    "Folder has no field; add its children separately".to_string()
-                                );
-                            }
-                            mltext(
-                                "lwsTitle",
-                                values.get("title").ok_or("Folder requires title")?,
-                                T,
-                                lang,
-                            )? + &simple("placement", "Auto", T)
-                        }
-                        _ => return Err("unknown selection kind".to_string()),
-                    };
-                    (
-                        "selection",
-                        typed("item", &format!("dcsset:SelectedItem{kind}"), &body, T),
-                    )
-                }
-                "filter.add" => ("filter", filter_fragment(values, lang)?),
-                "order.add" => {
-                    let auto = string(values, "kind") == "Auto";
-                    if auto && values.contains_key("field") {
-                        return Err("Auto order has no field".to_string());
-                    }
-                    if !auto && string(values, "field").is_empty() {
-                        return Err("Field order requires field".to_string());
-                    }
-                    (
-                        "order",
-                        typed(
-                            "item",
-                            if auto {
-                                "dcsset:OrderItemAuto"
-                            } else {
-                                "dcsset:OrderItemField"
-                            },
-                            &if auto {
-                                String::new()
-                            } else {
-                                simple("field", string(values, "field"), T)
-                                    + &simple(
-                                        "orderType",
-                                        if string(values, "direction") == "Desc" {
-                                            "Desc"
-                                        } else {
-                                            "Asc"
-                                        },
-                                        T,
-                                    )
-                            },
-                            T,
-                        ),
-                    )
-                }
-                "dataParameter.add" | "dataParameter.set" => {
-                    let value = values.get("value").ok_or("data parameter value required")?;
-                    (
-                        "dataParameters",
-                        typed(
-                            "item",
-                            "dcsset:SettingsParameterValue",
-                            &(values
-                                .get("use")
-                                .map(|flag| simple("use", &value_text(flag), C))
-                                .unwrap_or_default()
-                                + &simple("parameter", string(values, "name"), C)
-                                + &scalar_value(
-                                    "value",
-                                    value,
-                                    values.get("valueType").and_then(Value::as_str),
-                                    C,
-                                    lang,
-                                )?),
-                            C,
-                        ),
-                    )
-                }
-                "outputParameter.set" => {
-                    let value = values
-                        .get("value")
-                        .ok_or("output parameter value required")?;
-                    (
-                        "outputParameters",
-                        typed(
-                            "item",
-                            "dcsset:SettingsParameterValue",
-                            &(values
-                                .get("use")
-                                .map(|flag| simple("use", &value_text(flag), C))
-                                .unwrap_or_default()
-                                + &simple("parameter", string(values, "name"), C)
-                                + &output_value(
-                                    string(values, "name"),
-                                    value,
-                                    values.get("valueType").and_then(Value::as_str),
-                                    lang,
-                                )?),
-                            C,
-                        ),
-                    )
-                }
-                _ => {
-                    let fields = values
-                        .get("fields")
-                        .and_then(Value::as_array)
-                        .ok_or("appearance fields required")?;
-                    let mut body = String::new();
-                    for field in fields {
-                        body += &xml(
-                            "item",
-                            &simple(
-                                "field",
-                                field.as_str().ok_or("appearance field must be text")?,
-                                T,
-                            ),
-                            T,
-                        );
-                    }
-                    let fields = xml("selection", &body, T);
-                    body.clear();
-                    let appearance = values
-                        .get("appearance")
-                        .and_then(Value::as_object)
-                        .ok_or("appearance required")?;
-                    for (key, value) in appearance {
-                        body += &typed(
-                            "item",
-                            "dcsset:SettingsParameterValue",
-                            &(simple("parameter", key, C) + &appearance_value(key, value, lang)?),
-                            C,
-                        );
-                    }
-                    let mut entry = values
-                        .get("use")
-                        .map(|flag| simple("use", &value_text(flag), T))
-                        .unwrap_or_default()
-                        + &fields;
-                    if let Some(filters) = values.get("filter").and_then(Value::as_array) {
-                        let mut body = String::new();
-                        for filter in filters {
-                            body += &filter_fragment(
-                                filter
-                                    .as_object()
-                                    .ok_or("appearance filter must be object")?,
-                                lang,
-                            )?;
-                        }
-                        entry += &xml("filter", &body, T);
-                    }
-                    entry += &xml("appearance", &body, T);
-                    ("conditionalAppearance", xml("item", &entry, T))
-                }
-            };
-            if matches!(
-                operation,
-                "dataParameter.add" | "dataParameter.set" | "outputParameter.set"
-            ) {
-                let mut extras = String::new();
-                for key in ["viewMode", "userSettingID", "userSettingPresentation"] {
-                    if let Some(value) = values.get(key) {
-                        extras += &simple(key, &value_text(value), T);
-                    }
-                }
-                let close = fragment
-                    .rfind("</item>")
-                    .ok_or("parameter item end missing")?;
-                fragment.insert_str(close, &extras);
-            }
-            if operation == "selection.add"
-                && values
-                    .get("parentIndexes")
-                    .and_then(Value::as_array)
-                    .is_some_and(|items| !items.is_empty())
-            {
-                let folder = selection_container(setting, values)?;
-                return insert(
-                    xml_text,
-                    folder.range(),
-                    &fragment,
-                    T,
-                    "item",
-                    &[
-                        "use",
-                        "lwsTitle",
-                        "item",
-                        "placement",
-                        "viewMode",
-                        "userSettingID",
-                        "userSettingPresentation",
-                    ],
-                );
-            }
-            if let Some(container_node) = child(setting, T, container) {
-                if operation == "outputParameter.set" || operation.starts_with("dataParameter.") {
-                    let existing = container_node.children().find(|node| {
-                        is(*node, C, "item")
-                            && text(*node, C, "parameter") == string(values, "name")
-                    });
-                    if let Some(existing) = existing {
-                        let _ = existing;
-                        patch_settings_parameter(xml_text, target, values, container, lang)?;
-                        return Ok(());
-                    }
-                }
-                insert(xml_text, container_node.range(), &fragment, T, "item", &[])
-            } else {
-                insert(
-                    xml_text,
-                    setting.range(),
-                    &xml(container, &fragment, T),
-                    T,
-                    container,
-                    structure_order(setting),
-                )
-            }
-        }
-        "filter.set" | "filter.remove" => {
-            let field = string(values, "field");
-            let setting = settings(root, target)?;
-            let filter = child(setting, T, "filter").ok_or("filter section missing")?;
-            let item = unique(
-                filter
-                    .children()
-                    .filter(|node| is(*node, T, "item") && text(*node, T, "left") == field),
-                field,
-            )?;
-            if operation == "filter.remove" {
-                let range = item.range();
-                xml_text.replace_range(range, "");
-                return Ok(());
-            }
-            for key in [
-                "use",
-                "comparison",
-                "value",
-                "presentation",
-                "application",
-                "viewMode",
-                "userSettingID",
-                "userSettingPresentation",
-            ] {
-                let Some(value) = values.get(key) else {
-                    continue;
-                };
-                let document = Document::parse(xml_text).map_err(|e| e.to_string())?;
-                let setting = settings(document.root_element(), target)?;
-                let filter = child(setting, T, "filter").ok_or("filter section missing")?;
-                let item = unique(
-                    filter
-                        .children()
-                        .filter(|node| is(*node, T, "item") && text(*node, T, "left") == field),
-                    field,
-                )?;
-                let tag = match key {
-                    "comparison" => "comparisonType",
-                    "value" => "right",
-                    other => other,
-                };
-                let fragment = if key == "value" {
-                    scalar_value(
-                        tag,
-                        value,
-                        values.get("valueType").and_then(Value::as_str),
-                        T,
-                        lang,
-                    )?
-                } else {
-                    simple(tag, &value_text(value), T)
-                };
-                upsert(
-                    xml_text,
-                    item.range(),
-                    T,
-                    tag,
-                    &fragment,
-                    &[
-                        "use",
-                        "left",
-                        "comparisonType",
-                        "right",
-                        "presentation",
-                        "application",
-                        "viewMode",
-                        "userSettingID",
-                        "userSettingPresentation",
-                    ],
-                )?;
-            }
+                .filter(|node| is(*node, T, "item"))
+                .nth(index.get())
+                .ok_or("appearance index was not found")?;
+            let range = item.range();
+            xml_text.replace_range(range, "");
             Ok(())
         }
-        "selection.clear" | "filter.clear" | "order.clear" | "conditionalAppearance.clear" => {
-            let setting = settings(root, target)?;
-            let tag = operation.split('.').next().ok_or("operation missing")?;
-            if let Some(container) = child(setting, T, tag) {
-                let ranges = container
-                    .children()
-                    .filter(|node| node.is_element())
-                    .map(|node| node.range())
-                    .collect();
-                remove_ranges(xml_text, ranges);
-            }
+        DcsIntent::DataSetLinkSet(item) => set_link(xml_text, item),
+        DcsIntent::DataSetLinkRemove(selector) => {
+            let document = parse_document(xml_text)?;
+            let range = find_link(document.root_element(), selector)?.range();
+            xml_text.replace_range(range, "");
             Ok(())
         }
-        "calculatedField.set" | "total.set" => {
-            let tag = if operation == "total.set" {
-                "totalField"
-            } else {
-                "calculatedField"
-            };
-            let path = target
-                .terminal
-                .as_deref()
-                .ok_or("address a named CalculatedField or Total")?;
-            named(root, S, tag, "dataPath", path)?;
-            for property in ["expression", "title", "type", "useRestriction", "group"] {
-                let Some(value) = values.get(property) else {
-                    continue;
-                };
-                let document = Document::parse(xml_text).map_err(|error| error.to_string())?;
-                let node = named(document.root_element(), S, tag, "dataPath", path)?;
-                let tag = match property {
-                    "type" => "valueType",
-                    "group" => "group",
-                    other => other,
-                };
-                let fragment = match property {
-                    "title" => mltext_update(xml_text, child(node, S, tag), tag, value, S, lang)?,
-                    "type" => value_type(&value_text(value))?,
-                    "useRestriction" => restriction(tag, value)?,
-                    "group" => total_groups(value)?,
-                    _ => simple(tag, &value_text(value), S),
-                };
-                if property == "group" {
-                    let old = node
-                        .children()
-                        .filter(|node| is(*node, S, "group"))
-                        .collect::<Vec<_>>();
-                    let wrapped = format!("<root>{fragment}</root>");
-                    let parsed = Document::parse(&wrapped).map_err(|error| error.to_string())?;
-                    let new = parsed
-                        .root_element()
-                        .children()
-                        .filter(Node::is_element)
-                        .collect::<Vec<_>>();
-                    if old.len() == new.len()
-                        && old
-                            .iter()
-                            .zip(new.iter())
-                            .all(|(left, right)| equal_element(*left, *right))
-                    {
-                        continue;
-                    }
-                    let ranges = node
-                        .children()
-                        .filter(|node| is(*node, S, "group"))
-                        .map(|node| node.range())
-                        .collect();
-                    remove_ranges(xml_text, ranges);
-                    let document = Document::parse(xml_text).map_err(|error| error.to_string())?;
-                    let node = named(document.root_element(), S, "totalField", "dataPath", path)?;
-                    insert(
-                        xml_text,
-                        node.range(),
-                        &fragment,
-                        S,
-                        tag,
-                        &["dataPath", "expression", "group"],
-                    )?;
-                } else {
-                    upsert(
-                        xml_text,
-                        node.range(),
-                        S,
-                        tag,
-                        &fragment,
-                        &[
-                            "dataPath",
-                            "expression",
-                            "title",
-                            "useRestriction",
-                            "valueType",
-                        ],
-                    )?;
-                }
-            }
-            Ok(())
-        }
-        "selection.set"
-        | "selection.remove"
-        | "order.set"
-        | "order.remove"
-        | "dataParameter.remove"
-        | "outputParameter.remove"
-        | "conditionalAppearance.remove" => {
-            let setting = settings(root, target)?;
-            let family = operation.split('.').next().ok_or("operation missing")?;
-            if matches!(family, "selection" | "order")
-                && values.contains_key("field") == values.contains_key("index")
-            {
-                return Err("supply exactly one field or index selector".to_string());
-            }
-            let container = match family {
-                "dataParameter" => "dataParameters",
-                "outputParameter" => "outputParameters",
-                other => other,
-            };
-            let container_name = container.to_string();
-            let container = if family == "selection" {
-                selection_container(setting, values)?
-            } else {
-                child(setting, T, &container_name).ok_or("settings collection missing")?
-            };
-            let item = if values.contains_key("index") {
-                let index = values
-                    .get("index")
-                    .and_then(Value::as_u64)
-                    .ok_or("index must be a nonnegative integer")?;
-                container
-                    .children()
-                    .filter(|node| is(*node, T, "item"))
-                    .nth(usize::try_from(index).map_err(|_| "index too large")?)
-                    .ok_or("appearance index was not found")?
-            } else {
-                let (ns, key, selector) = if matches!(family, "dataParameter" | "outputParameter") {
-                    (C, "parameter", "name")
-                } else {
-                    (T, "field", "field")
-                };
-                unique(
-                    container.children().filter(|node| {
-                        is(*node, ns, "item") && text(*node, ns, key) == string(values, selector)
-                    }),
-                    string(values, selector),
-                )?
-            };
-            if operation.ends_with("remove") {
-                let range = item.range();
-                xml_text.replace_range(range, "");
-                return Ok(());
-            }
-            for key in [
-                "use",
-                "direction",
-                "viewMode",
-                "userSettingID",
-                "userSettingPresentation",
-            ] {
-                if let Some(value) = values.get(key) {
-                    let tag = if key == "direction" { "orderType" } else { key };
-                    let document = Document::parse(xml_text).map_err(|error| error.to_string())?;
-                    let setting = settings(document.root_element(), target)?;
-                    let container = if family == "selection" {
-                        selection_container(setting, values)?
-                    } else {
-                        child(setting, T, &container_name).ok_or("settings collection missing")?
-                    };
-                    let node = if let Some(index) = values.get("index").and_then(Value::as_u64) {
-                        container
-                            .children()
-                            .filter(|node| is(*node, T, "item"))
-                            .nth(usize::try_from(index).map_err(|_| "index too large")?)
-                            .ok_or("settings index missing")?
-                    } else {
-                        unique(
-                            container.children().filter(|node| {
-                                is(*node, T, "item")
-                                    && text(*node, T, "field") == string(values, "field")
-                            }),
-                            string(values, "field"),
-                        )?
-                    };
-                    if key == "direction" && !qtype(node, T, "OrderItemField") {
-                        return Err("only Field order accepts direction".to_string());
-                    }
-                    upsert(
-                        xml_text,
-                        node.range(),
-                        T,
-                        tag,
-                        &simple(tag, &value_text(value), T),
-                        if qtype(node, T, "SelectedItemFolder") {
-                            &[
-                                "use",
-                                "lwsTitle",
-                                "item",
-                                "placement",
-                                "viewMode",
-                                "userSettingID",
-                                "userSettingPresentation",
-                            ]
-                        } else {
-                            &[
-                                "use",
-                                "field",
-                                "orderType",
-                                "presentation",
-                                "viewMode",
-                                "userSettingID",
-                                "userSettingPresentation",
-                            ]
-                        },
-                    )?;
-                }
-            }
-            Ok(())
-        }
-        "dataSetLink.set" | "dataSetLink.remove" => {
-            let select = values
-                .get("selector")
-                .and_then(Value::as_object)
-                .ok_or("selector required")?;
-            let link = unique(
-                root.children().filter(|node| {
-                    is(*node, S, "dataSetLink")
-                        && [
-                            ("source", "sourceDataSet"),
-                            ("destination", "destinationDataSet"),
-                            ("sourceExpression", "sourceExpression"),
-                            ("destinationExpression", "destinationExpression"),
-                        ]
-                        .iter()
-                        .all(|(key, tag)| text(*node, S, tag) == string(select, key))
-                }),
-                "dataset link",
-            )?;
-            if operation.ends_with("remove") {
-                let range = link.range();
-                xml_text.replace_range(range, "");
-                return Ok(());
-            }
-            for (key, tag) in [
-                ("parameter", "parameter"),
-                ("parameterListAllowed", "parameterListAllowed"),
-                ("condition", "linkConditionExpression"),
-                ("startExpression", "startExpression"),
-                ("required", "required"),
-            ] {
-                if let Some(value) = values.get(key) {
-                    let document = Document::parse(xml_text).map_err(|error| error.to_string())?;
-                    let link = unique(
-                        document.root_element().children().filter(|node| {
-                            is(*node, S, "dataSetLink")
-                                && [
-                                    ("source", "sourceDataSet"),
-                                    ("destination", "destinationDataSet"),
-                                    ("sourceExpression", "sourceExpression"),
-                                    ("destinationExpression", "destinationExpression"),
-                                ]
-                                .iter()
-                                .all(|(key, tag)| text(*node, S, tag) == string(select, key))
-                        }),
-                        "dataset link",
-                    )?;
-                    if let Some(default) = match key {
-                        "required" => Some(true),
-                        "parameterListAllowed" => Some(false),
-                        _ => None,
-                    } {
-                        let wanted = value.as_bool().ok_or("link flag must be boolean")?;
-                        let existing = child(link, S, tag);
-                        let old = if existing.is_some() {
-                            match text(link, S, tag).trim() {
-                                "true" | "1" => true,
-                                "false" | "0" => false,
-                                _ => return Err(format!("link {tag} has an invalid boolean")),
-                            }
-                        } else {
-                            default
-                        };
-                        if old == wanted {
-                            continue;
-                        }
-                        if wanted == default {
-                            if let Some(existing) = existing {
-                                let range = existing.range();
-                                xml_text.replace_range(range, "");
-                            }
-                            continue;
-                        }
-                    }
-                    upsert(
-                        xml_text,
-                        link.range(),
-                        S,
-                        tag,
-                        &simple(tag, &value_text(value), S),
-                        LINK_ORDER,
-                    )?;
-                }
-            }
-            Ok(())
-        }
-        "dataSetLink.add" => {
-            named(root, S, "dataSet", "name", string(values, "source"))?;
-            named(root, S, "dataSet", "name", string(values, "destination"))?;
-            let mut body = String::new();
-            for (key, tag) in [
-                ("source", "sourceDataSet"),
-                ("destination", "destinationDataSet"),
-                ("sourceExpression", "sourceExpression"),
-                ("destinationExpression", "destinationExpression"),
-                ("parameter", "parameter"),
-                ("parameterListAllowed", "parameterListAllowed"),
-                ("condition", "linkConditionExpression"),
-                ("startExpression", "startExpression"),
-                ("required", "required"),
-            ] {
-                if let Some(value) = values.get(key) {
-                    if (key == "required" && value.as_bool() == Some(true))
-                        || (key == "parameterListAllowed" && value.as_bool() == Some(false))
-                    {
-                        continue;
-                    }
-                    body += &simple(tag, &value_text(value), S);
-                }
-            }
-            insert(
-                xml_text,
-                root.range(),
-                &xml("dataSetLink", &body, S),
-                S,
-                "dataSetLink",
-                ROOT_ORDER,
-            )
-        }
-        _ => Err(format!("unsupported DCS primitive {operation}")),
     }
 }
 
-fn patch_settings_parameter(
+fn add_data_source(xml_text: &mut String, item: &DataSourceSpec) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    let root = document.root_element();
+    if declares_data_source(root, &item.name) {
+        return Err(format!("dataSource {} already exists", item.name).into());
+    }
+    let fragment = xml(
+        "dataSource",
+        &(simple("name", &item.name, S) + &simple("dataSourceType", item.kind.as_str(), S)),
+        S,
+    );
+    Ok(insert(
+        xml_text,
+        root.range(),
+        &fragment,
+        S,
+        "dataSource",
+        ROOT_ORDER,
+    )?)
+}
+fn set_data_source(
     xml_text: &mut String,
     target: &Target,
-    values: &Map<String, Value>,
-    container: &str,
-    lang: Option<&str>,
-) -> Result<(), String> {
-    {
-        let document = Document::parse(xml_text).map_err(|error| error.to_string())?;
-        let setting = settings(document.root_element(), target)?;
-        let collection = child(setting, T, container).ok_or("parameter collection missing")?;
-        unique(
-            collection.children().filter(|node| {
-                is(*node, C, "item") && text(*node, C, "parameter") == string(values, "name")
-            }),
-            string(values, "name"),
-        )?;
+    kind: DataSourceKind,
+) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    let name = target
+        .terminal
+        .as_deref()
+        .ok_or("address a named DataSource")?;
+    let source = named(document.root_element(), S, "dataSource", "name", name)?;
+    Ok(upsert(
+        xml_text,
+        source.range(),
+        S,
+        "dataSourceType",
+        &simple("dataSourceType", kind.as_str(), S),
+        &["name", "dataSourceType"],
+    )?)
+}
+fn remove_named_schema(
+    xml_text: &mut String,
+    target: &Target,
+    tag: &str,
+    key: &str,
+    missing: &str,
+) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    let name = target.terminal.as_deref().ok_or(missing)?;
+    let range = named(document.root_element(), S, tag, key, name)?.range();
+    xml_text.replace_range(range, "");
+    Ok(())
+}
+fn add_data_set(
+    xml_text: &mut String,
+    item: &DataSetSpec,
+    target: &Target,
+) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    let root = document.root_element();
+    let parent = if target.datasets.is_empty() {
+        root
+    } else {
+        dataset(root, target)?
+    };
+    let tag = if target.datasets.is_empty() {
+        "dataSet"
+    } else {
+        "item"
+    };
+    if tag == "item" && !qtype(parent, S, "DataSetUnion") {
+        return Err("only a Union dataset accepts child datasets".into());
     }
-    for key in [
-        "use",
-        "value",
-        "viewMode",
-        "userSettingID",
-        "userSettingPresentation",
+    if parent
+        .children()
+        .any(|node| is(node, S, tag) && text(node, S, "name") == item.name)
+    {
+        return Err(format!("dataset {} already exists", item.name).into());
+    }
+    match item.kind {
+        DataSetKind::Query
+            if item.query.as_deref().unwrap_or("").is_empty() || item.object_name.is_some() =>
+        {
+            return Err("Query requires query and accepts no objectName".into())
+        }
+        DataSetKind::Object
+            if item.object_name.as_deref().unwrap_or("").is_empty() || item.query.is_some() =>
+        {
+            return Err("Object requires objectName and accepts no query".into())
+        }
+        DataSetKind::Union
+            if item.data_source.is_some() || item.query.is_some() || item.object_name.is_some() =>
+        {
+            return Err("Union members are composed separately".into())
+        }
+        DataSetKind::Query | DataSetKind::Object | DataSetKind::Union => {}
+    }
+    if item
+        .query
+        .as_deref()
+        .unwrap_or("")
+        .trim_start()
+        .starts_with('@')
+    {
+        return Err("query takes text, not @file".into());
+    }
+    let mut body = simple("name", &item.name, S);
+    if item.kind != DataSetKind::Union {
+        let source = item.data_source.as_deref().unwrap_or("");
+        named(root, S, "dataSource", "name", source)?;
+        body += &simple("dataSource", source, S);
+    }
+    match item.kind {
+        DataSetKind::Query => body += &simple("query", item.query.as_deref().unwrap_or(""), S),
+        DataSetKind::Object => {
+            body += &simple("objectName", item.object_name.as_deref().unwrap_or(""), S)
+        }
+        DataSetKind::Union => {}
+    }
+    let fragment = typed(tag, &format!("DataSet{}", item.kind.as_str()), &body, S);
+    Ok(insert(
+        xml_text,
+        parent.range(),
+        &fragment,
+        S,
+        tag,
+        if tag == "dataSet" {
+            ROOT_ORDER
+        } else {
+            DATASET_ORDER
+        },
+    )?)
+}
+fn set_data_set(
+    xml_text: &mut String,
+    target: &Target,
+    patch: &DataSetPatch,
+) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    dataset(document.root_element(), target)?;
+    for (key, value) in [
+        ("dataSource", patch.data_source.clone()),
+        ("objectName", patch.object_name.clone()),
+        (
+            "autoFillFields",
+            patch.auto_fill_fields.map(|flag| flag.to_string()),
+        ),
     ] {
-        let Some(value) = values.get(key) else {
+        let Some(value) = value else {
             continue;
         };
-        let document = Document::parse(xml_text).map_err(|e| e.to_string())?;
-        let setting = settings(document.root_element(), target)?;
-        let container = child(setting, T, container).ok_or("parameter collection missing")?;
-        let item = unique(
-            container.children().filter(|node| {
-                is(*node, C, "item") && text(*node, C, "parameter") == string(values, "name")
-            }),
-            string(values, "name"),
-        )?;
-        let ns = if key == "value" || key == "use" { C } else { T };
-        let fragment = if key == "value" {
-            let declared = values.get("valueType").and_then(Value::as_str);
-            let old_kind = if declared.is_none() {
-                child(item, C, "value")
-                    .and_then(|node| node.attribute((X, "type")).map(|kind| (node, kind)))
-                    .map(|(node, kind)| canonical_node_value_type(node, kind))
-                    .transpose()?
-            } else {
-                None
-            };
-            let kind = declared.or(old_kind.as_deref());
-            let fragment = if container.tag_name().name() == "outputParameters" {
-                output_value(string(values, "name"), value, kind, lang)?
-            } else {
-                scalar_value(key, value, kind, C, lang)?
-            };
-            // A plain-string text value, such as the report title output
-            // parameter, keeps the translations of its other languages.
-            if value.is_string()
-                && fragment.starts_with(&format!("<{key} xsi:type=\"v8:LocalStringType\""))
-            {
-                mltext_update(xml_text, child(item, C, key), key, value, C, lang)?
-            } else {
-                fragment
-            }
-        } else if key == "userSettingPresentation" {
-            mltext_update(xml_text, child(item, ns, key), key, value, ns, lang)?
-        } else {
-            simple(key, &value_text(value), ns)
-        };
-        // Mixed core/settings children still belong to one XSD sequence.
-        if let Some(existing) = child(item, ns, key) {
-            if same_fragment(existing, &fragment) {
-                continue;
-            }
-            let range = existing.range();
-            xml_text.replace_range(range, &fragment);
-        } else {
-            insert_mixed(
-                xml_text,
-                item.range(),
-                &fragment,
-                key,
-                &[
-                    "use",
-                    "parameter",
-                    "value",
-                    "viewMode",
-                    "userSettingID",
-                    "userSettingPresentation",
-                ],
-            )?;
+        let document = parse_document(xml_text)?;
+        let root = document.root_element();
+        let ds = dataset(root, target)?;
+        let query = qtype(ds, S, "DataSetQuery");
+        let object = qtype(ds, S, "DataSetObject");
+        if key == "dataSource" {
+            named(root, S, "dataSource", "name", &value)?;
         }
+        if (key == "objectName" && !object)
+            || (key == "autoFillFields" && !query)
+            || (!object && !query)
+        {
+            return Err(format!("{key} does not apply to this dataset kind").into());
+        }
+        upsert(
+            xml_text,
+            ds.range(),
+            S,
+            key,
+            &simple(key, &value, S),
+            DATASET_ORDER,
+        )?;
     }
     Ok(())
 }
-fn insert_mixed(
+fn add_field(
     xml_text: &mut String,
-    range: Range<usize>,
-    fragment: &str,
-    tag: &str,
-    order: &[&str],
-) -> Result<(), String> {
-    let document = Document::parse(xml_text).map_err(|e| e.to_string())?;
-    let parent = document
-        .descendants()
-        .find(|node| node.is_element() && node.range() == range)
-        .ok_or("parent disappeared")?;
-    let rank = order
-        .iter()
-        .position(|name| *name == tag)
-        .unwrap_or(order.len());
-    let pos = parent
-        .children()
-        .find(|node| {
-            node.is_element()
-                && matches!(node.tag_name().namespace(), Some(C) | Some(T))
-                && order
-                    .iter()
-                    .position(|name| *name == node.tag_name().name())
-                    .is_some_and(|other| other > rank)
-        })
-        .map(|node| node.range().start);
-    if let Some(pos) = pos {
-        xml_text.insert_str(pos, fragment);
-        Ok(())
-    } else {
-        insert(xml_text, range, fragment, T, tag, order)
+    target: &Target,
+    item: &FieldSpec,
+    location: &str,
+    lang: Option<&str>,
+) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    let ds = dataset(document.root_element(), target)?;
+    if qtype(ds, S, "DataSetQuery") && item.type_name.is_some() {
+        return Err(ApplyError::argument(
+            format!("{location}.type"),
+            "a Query field derives its type from the query; omit type",
+        ));
     }
+    if ds
+        .children()
+        .any(|node| is(node, S, "field") && text(node, S, "dataPath") == item.data_path)
+    {
+        return Ok(());
+    }
+    let fragment = field_fragment(item, lang)?;
+    Ok(insert(
+        xml_text,
+        ds.range(),
+        &fragment,
+        S,
+        "field",
+        DATASET_ORDER,
+    )?)
 }
-
+fn update_field(
+    xml_text: &mut String,
+    target: &Target,
+    name: &str,
+    tag: &str,
+    encode: impl FnOnce(&str, Node<'_, '_>) -> Result<String, String>,
+) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    let ds = dataset(document.root_element(), target)?;
+    let field = named(ds, S, "field", "dataPath", name)?;
+    let fragment = encode(xml_text, field)?;
+    Ok(upsert(
+        xml_text,
+        field.range(),
+        S,
+        tag,
+        &fragment,
+        FIELD_ORDER,
+    )?)
+}
+fn set_field(
+    xml_text: &mut String,
+    target: &Target,
+    patch: &FieldPatch,
+    lang: Option<&str>,
+) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    let ds = dataset(document.root_element(), target)?;
+    let name = target.terminal.as_deref().ok_or("address a named Field")?;
+    named(ds, S, "field", "dataPath", name)?;
+    if qtype(ds, S, "DataSetQuery") && patch.type_name.is_some() {
+        return Err(ApplyError::argument(
+            "values.type",
+            "a Query field derives its type from the query; omit type",
+        ));
+    }
+    if let Some(kind) = patch.type_name.as_deref().filter(|kind| !kind.is_empty()) {
+        super::dcs_xml::parse_value_type(kind)?;
+    }
+    if let Some(value) = &patch.source_field {
+        update_field(xml_text, target, name, "field", |_, _| {
+            Ok(simple("field", value, S))
+        })?;
+    }
+    if let Some(value) = &patch.title {
+        update_field(xml_text, target, name, "title", |xml, field| {
+            mltext_update(
+                xml,
+                child(field, S, "title"),
+                "title",
+                value.value(),
+                S,
+                lang,
+            )
+        })?;
+    }
+    if let Some(value) = &patch.use_restriction {
+        update_field(xml_text, target, name, "useRestriction", |_, _| {
+            Ok(restriction("useRestriction", value))
+        })?;
+    }
+    if let Some(value) = &patch.attribute_use_restriction {
+        update_field(xml_text, target, name, "attributeUseRestriction", |_, _| {
+            Ok(restriction("attributeUseRestriction", value))
+        })?;
+    }
+    if let Some(value) = &patch.presentation_expression {
+        update_field(xml_text, target, name, "presentationExpression", |_, _| {
+            Ok(simple("presentationExpression", value, S))
+        })?;
+    }
+    if let Some(value) = &patch.type_name {
+        update_field(xml_text, target, name, "valueType", |_, _| {
+            value_type(value)
+        })?;
+    }
+    let document = parse_document(xml_text)?;
+    let ds = dataset(document.root_element(), target)?;
+    if qtype(ds, S, "DataSetQuery") {
+        let field = named(ds, S, "field", "dataPath", name)?;
+        let ranges = field
+            .children()
+            .filter(|node| is(*node, S, "valueType"))
+            .map(|node| node.range())
+            .collect();
+        remove_ranges(xml_text, ranges);
+    }
+    Ok(())
+}
+fn set_field_role(
+    xml_text: &mut String,
+    target: &Target,
+    role: &FieldRole,
+) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    let ds = dataset(document.root_element(), target)?;
+    let name = target.terminal.as_deref().ok_or("address a named Field")?;
+    let field = named(ds, S, "field", "dataPath", name)?;
+    let properties = [
+        ("periodNumber", role.period_number.clone()),
+        ("periodType", role.period_type.clone()),
+        ("dimension", role.dimension.map(|value| value.to_string())),
+        ("parentDimension", role.parent_dimension.clone()),
+        ("account", role.account.map(|value| value.to_string())),
+        (
+            "accountTypeExpression",
+            role.account_type_expression.clone(),
+        ),
+        ("balance", role.balance.map(|value| value.to_string())),
+        ("balanceGroupName", role.balance_group_name.clone()),
+        ("balanceType", role.balance_type.clone()),
+        (
+            "accountingBalanceType",
+            role.accounting_balance_type.clone(),
+        ),
+        ("accountField", role.account_field.clone()),
+        (
+            "ignoreNullValues",
+            role.ignore_null_values.map(|value| value.to_string()),
+        ),
+        ("required", role.required.map(|value| value.to_string())),
+        (
+            "dimensionAttribute",
+            role.dimension_attribute.map(|value| value.to_string()),
+        ),
+    ];
+    let mut body = String::new();
+    for (key, value) in properties {
+        if let Some(value) = value {
+            super::dcs_xml::validate_field_role_value(key, &value)?;
+            body += &simple(key, &value, super::dcs::DCS_COMMON_NS);
+        }
+    }
+    Ok(upsert(
+        xml_text,
+        field.range(),
+        S,
+        "role",
+        &xml("role", &body, S),
+        FIELD_ORDER,
+    )?)
+}
+fn set_query(xml_text: &mut String, target: &Target, value: &str) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    let ds = dataset(document.root_element(), target)?;
+    if !qtype(ds, S, "DataSetQuery") {
+        return Err("only a Query dataset has query text".into());
+    }
+    let query = child(ds, S, "query").ok_or("dataset has no query")?;
+    let range = content(xml_text, query)?;
+    let current = query
+        .children()
+        .filter(Node::is_text)
+        .filter_map(|node| node.text())
+        .collect::<String>();
+    if current == value {
+        return Ok(());
+    }
+    if value.trim_start().starts_with('@') {
+        return Err("query takes text, not @file".into());
+    }
+    xml_text.replace_range(range, &escape_xml(value));
+    Ok(())
+}
+fn patch_query(
+    xml_text: &mut String,
+    target: &Target,
+    patch: &QueryPatch,
+) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    let ds = dataset(document.root_element(), target)?;
+    if !qtype(ds, S, "DataSetQuery") {
+        return Err("only a Query dataset has query text".into());
+    }
+    let query = child(ds, S, "query").ok_or("dataset has no query")?;
+    let (range, replacement) = change_query(xml_text, query, patch)?;
+    xml_text.replace_range(range, &replacement);
+    Ok(())
+}
 fn change_query(
     xml_text: &str,
     query: Node<'_, '_>,
-    values: &Map<String, Value>,
-    patch: bool,
+    patch: &QueryPatch,
 ) -> Result<(Range<usize>, String), String> {
     let range = content(xml_text, query)?;
-    if !patch {
-        let value = string(values, "query");
-        let current = query
-            .children()
-            .filter(Node::is_text)
-            .filter_map(|node| node.text())
-            .collect::<String>();
-        if current == value {
-            return Ok((range.clone(), xml_text[range].to_string()));
-        }
-        if value.trim_start().starts_with('@') {
-            return Err("query takes text, not @file".to_string());
-        }
-        return Ok((range, escape_xml(value)));
-    }
-    let old = string(values, "find");
-    let new = string(values, "replace");
+    let old = patch.find.as_str();
+    let new = patch.replace.as_str();
     let mut current = String::new();
     let mut markup = Vec::new();
     for node in query.children() {
@@ -2995,7 +1773,7 @@ fn change_query(
     if count == 0 {
         return Err("query patch found no matches".to_string());
     }
-    if values.get("once").and_then(Value::as_bool) == Some(true) && count != 1 {
+    if patch.once && count != 1 {
         return Err(format!("once requires one match, found {count}"));
     }
     let patched = current.replace(old, new);
@@ -3026,6 +1804,1463 @@ fn change_query(
     }
     inner.push_str(&escape_xml(&patched[copied..]));
     Ok((range, inner))
+}
+
+fn add_parameter(
+    xml_text: &mut String,
+    item: &ParameterSpec,
+    lang: Option<&str>,
+) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    let root = document.root_element();
+    if root
+        .children()
+        .any(|node| is(node, S, "parameter") && text(node, S, "name") == item.name)
+    {
+        return Ok(());
+    }
+    let values = &item.properties;
+    let mut body = simple("name", &item.name, S);
+    if let Some(title) = &values.title {
+        body += &mltext("title", title.value(), S, lang)?;
+    }
+    if let Some(kind) = values.type_name.as_deref().filter(|kind| !kind.is_empty()) {
+        body += &value_type(kind)?;
+    }
+    if let Some(value) = &values.value {
+        let kind = parameter_value_type(None, values)?;
+        body += &scalar_value("value", value.value(), kind.as_deref(), S, lang)?;
+    }
+    if let Some(list) = &values.values {
+        if values.value.is_some() {
+            return Err("value and values are mutually exclusive".into());
+        }
+        let kind = parameter_value_type(None, values)?;
+        for value in list {
+            body += &scalar_value("value", value.value(), kind.as_deref(), S, lang)?;
+        }
+    }
+    if let Some(flag) = values.use_restriction {
+        body += &simple("useRestriction", &flag.to_string(), S);
+    }
+    if let Some(expression) = values
+        .expression
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        body += &simple("expression", expression, S);
+    }
+    if let Some(list) = &values.available_values {
+        let kind = parameter_value_type(None, values)?;
+        body += &available_values(list, kind.as_deref(), lang)?;
+    }
+    for (key, value) in parameter_flags(values) {
+        if let Some(value) = value {
+            body += &simple(key, &value, S);
+        }
+    }
+    Ok(insert(
+        xml_text,
+        root.range(),
+        &xml("parameter", &body, S),
+        S,
+        "parameter",
+        ROOT_ORDER,
+    )?)
+}
+fn parameter_flags(patch: &ParameterPatch) -> [(&'static str, Option<String>); 4] {
+    [
+        (
+            "valueListAllowed",
+            patch.value_list_allowed.map(|value| value.to_string()),
+        ),
+        (
+            "availableAsField",
+            patch.available_as_field.map(|value| value.to_string()),
+        ),
+        (
+            "denyIncompleteValues",
+            patch.deny_incomplete_values.map(|value| value.to_string()),
+        ),
+        (
+            "use",
+            patch.use_mode.map(|value| value.as_str().to_string()),
+        ),
+    ]
+}
+fn update_parameter(
+    xml_text: &mut String,
+    name: &str,
+    tag: &str,
+    encode: impl FnOnce(&str, Node<'_, '_>) -> Result<String, String>,
+) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    let parameter = named(document.root_element(), S, "parameter", "name", name)?;
+    let fragment = encode(xml_text, parameter)?;
+    Ok(upsert(
+        xml_text,
+        parameter.range(),
+        S,
+        tag,
+        &fragment,
+        PARAMETER_ORDER,
+    )?)
+}
+enum ParameterValues<'a> {
+    One(&'a ValueAtom),
+    Many(&'a [ValueAtom]),
+    Available(&'a [AvailableValue]),
+}
+fn replace_parameter_values(
+    xml_text: &mut String,
+    name: &str,
+    values: &ParameterPatch,
+    payload: ParameterValues<'_>,
+    lang: Option<&str>,
+) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    let parameter = named(document.root_element(), S, "parameter", "name", name)?;
+    if values.value.is_some() && values.values.is_some() {
+        return Err("value and values are mutually exclusive".into());
+    }
+    let kind = parameter_value_type(Some(parameter), values)?;
+    let (tag, fragment) = match &payload {
+        ParameterValues::One(value) => (
+            "value",
+            scalar_value("value", value.value(), kind.as_deref(), S, lang)?,
+        ),
+        ParameterValues::Many(values) => (
+            "value",
+            values
+                .iter()
+                .map(|value| scalar_value("value", value.value(), kind.as_deref(), S, lang))
+                .collect::<Result<Vec<_>, _>>()?
+                .join(""),
+        ),
+        ParameterValues::Available(values) => (
+            "availableValue",
+            available_values(values, kind.as_deref(), lang)?,
+        ),
+    };
+    let old = parameter
+        .children()
+        .filter(|node| is(*node, S, tag))
+        .collect::<Vec<_>>();
+    if let ([existing], ParameterValues::One(value)) = (old.as_slice(), &payload) {
+        if value.value().is_string()
+            && fragment.starts_with("<value xsi:type=\"v8:LocalStringType\"")
+        {
+            let range = existing.range();
+            let updated =
+                mltext_update(xml_text, Some(*existing), "value", value.value(), S, lang)?;
+            if xml_text[range.clone()] != updated {
+                xml_text.replace_range(range, &updated);
+            }
+            return Ok(());
+        }
+    }
+    let wrapped = format!("<root>{fragment}</root>");
+    let parsed = Document::parse(&wrapped).map_err(|error| error.to_string())?;
+    let new = parsed
+        .root_element()
+        .children()
+        .filter(Node::is_element)
+        .collect::<Vec<_>>();
+    if old.len() == new.len()
+        && old
+            .iter()
+            .zip(new.iter())
+            .all(|(left, right)| equal_element(*left, *right))
+    {
+        return Ok(());
+    }
+    let ranges = old.iter().map(|node| node.range()).collect();
+    remove_ranges(xml_text, ranges);
+    if !fragment.is_empty() {
+        let document = parse_document(xml_text)?;
+        let parameter = named(document.root_element(), S, "parameter", "name", name)?;
+        insert(
+            xml_text,
+            parameter.range(),
+            &fragment,
+            S,
+            tag,
+            PARAMETER_ORDER,
+        )?;
+    }
+    Ok(())
+}
+fn set_parameter(
+    xml_text: &mut String,
+    target: &Target,
+    patch: &ParameterPatch,
+    lang: Option<&str>,
+) -> Result<(), ApplyError> {
+    let name = target
+        .terminal
+        .as_deref()
+        .ok_or("address a named Parameter")?;
+    let document = parse_document(xml_text)?;
+    named(document.root_element(), S, "parameter", "name", name)?;
+    if let Some(value) = &patch.title {
+        update_parameter(xml_text, name, "title", |xml, node| {
+            mltext_update(
+                xml,
+                child(node, S, "title"),
+                "title",
+                value.value(),
+                S,
+                lang,
+            )
+        })?;
+    }
+    if let Some(value) = &patch.type_name {
+        update_parameter(xml_text, name, "valueType", |_, _| value_type(value))?;
+    }
+    if let Some(value) = &patch.value {
+        replace_parameter_values(xml_text, name, patch, ParameterValues::One(value), lang)?;
+    }
+    if let Some(values) = &patch.values {
+        replace_parameter_values(xml_text, name, patch, ParameterValues::Many(values), lang)?;
+    }
+    if let Some(value) = &patch.expression {
+        update_parameter(xml_text, name, "expression", |_, _| {
+            Ok(simple("expression", value, S))
+        })?;
+    }
+    if let Some(value) = patch.use_restriction {
+        update_parameter(xml_text, name, "useRestriction", |_, _| {
+            Ok(simple("useRestriction", &value.to_string(), S))
+        })?;
+    }
+    if let Some(values) = &patch.available_values {
+        replace_parameter_values(
+            xml_text,
+            name,
+            patch,
+            ParameterValues::Available(values),
+            lang,
+        )?;
+    }
+    for (key, value) in parameter_flags(patch) {
+        if let Some(value) = value {
+            update_parameter(xml_text, name, key, |_, _| Ok(simple(key, &value, S)))?;
+        }
+    }
+    Ok(())
+}
+fn rename_parameter(xml_text: &mut String, target: &Target, new: &str) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    let root = document.root_element();
+    let name = target
+        .terminal
+        .as_deref()
+        .ok_or("address a named Parameter")?;
+    if root
+        .children()
+        .any(|node| is(node, S, "parameter") && text(node, S, "name") == new)
+    {
+        return Err("parameter name already exists".into());
+    }
+    let parameter = named(root, S, "parameter", "name", name)?;
+    Ok(upsert(
+        xml_text,
+        parameter.range(),
+        S,
+        "name",
+        &simple("name", new, S),
+        PARAMETER_ORDER,
+    )?)
+}
+fn reorder_parameters(xml_text: &mut String, names: &[String]) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    let parameters = document
+        .root_element()
+        .children()
+        .filter(|node| is(*node, S, "parameter"))
+        .collect::<Vec<_>>();
+    if names.len() != parameters.len() {
+        return Err("reorder needs every parameter exactly once".into());
+    }
+    let mut used = std::collections::HashSet::new();
+    let mut replacements = Vec::new();
+    for (slot, name) in parameters.iter().zip(names) {
+        if !used.insert(name) {
+            return Err("duplicate parameter in reorder".into());
+        }
+        let parameter = unique(
+            parameters
+                .iter()
+                .copied()
+                .filter(|node| text(*node, S, "name") == *name),
+            name,
+        )?;
+        replacements.push((slot.range(), xml_text[parameter.range()].to_string()));
+    }
+    for (range, replacement) in replacements.into_iter().rev() {
+        xml_text.replace_range(range, &replacement);
+    }
+    Ok(())
+}
+fn add_calculated_field(
+    xml_text: &mut String,
+    item: &CalculatedFieldSpec,
+    lang: Option<&str>,
+) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    let root = document.root_element();
+    if root
+        .children()
+        .any(|node| is(node, S, "calculatedField") && text(node, S, "dataPath") == item.name)
+    {
+        return Ok(());
+    }
+    let mut body = simple("dataPath", &item.name, S) + &simple("expression", &item.expression, S);
+    if let Some(title) = &item.title {
+        body += &mltext("title", title.value(), S, lang)?;
+    }
+    if let Some(value) = &item.use_restriction {
+        body += &restriction("useRestriction", value);
+    }
+    if let Some(kind) = item.type_name.as_deref().filter(|kind| !kind.is_empty()) {
+        body += &value_type(kind)?;
+    }
+    Ok(insert(
+        xml_text,
+        root.range(),
+        &xml("calculatedField", &body, S),
+        S,
+        "calculatedField",
+        ROOT_ORDER,
+    )?)
+}
+fn add_total(xml_text: &mut String, item: &TotalSpec) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    let root = document.root_element();
+    if root
+        .children()
+        .any(|node| is(node, S, "totalField") && text(node, S, "dataPath") == item.field)
+    {
+        return Ok(());
+    }
+    let expression = item
+        .expression
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("Сумма({})", item.field));
+    let mut body = simple("dataPath", &item.field, S) + &simple("expression", &expression, S);
+    if let Some(groups) = &item.groups {
+        body += &total_groups(groups);
+    }
+    Ok(insert(
+        xml_text,
+        root.range(),
+        &xml("totalField", &body, S),
+        S,
+        "totalField",
+        ROOT_ORDER,
+    )?)
+}
+fn update_calculated(
+    xml_text: &mut String,
+    target: &Target,
+    tag: &str,
+    property: &str,
+    encode: impl FnOnce(&str, Node<'_, '_>) -> Result<String, String>,
+) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    let path = target
+        .terminal
+        .as_deref()
+        .ok_or("address a named CalculatedField or Total")?;
+    let node = named(document.root_element(), S, tag, "dataPath", path)?;
+    let fragment = encode(xml_text, node)?;
+    Ok(upsert(
+        xml_text,
+        node.range(),
+        S,
+        property,
+        &fragment,
+        &[
+            "dataPath",
+            "expression",
+            "title",
+            "useRestriction",
+            "valueType",
+        ],
+    )?)
+}
+fn set_calculated_field(
+    xml_text: &mut String,
+    target: &Target,
+    patch: &CalculatedFieldPatch,
+    lang: Option<&str>,
+) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    let path = target
+        .terminal
+        .as_deref()
+        .ok_or("address a named CalculatedField or Total")?;
+    named(
+        document.root_element(),
+        S,
+        "calculatedField",
+        "dataPath",
+        path,
+    )?;
+    if let Some(value) = &patch.expression {
+        update_calculated(xml_text, target, "calculatedField", "expression", |_, _| {
+            Ok(simple("expression", value, S))
+        })?;
+    }
+    if let Some(value) = &patch.title {
+        update_calculated(xml_text, target, "calculatedField", "title", |xml, node| {
+            mltext_update(
+                xml,
+                child(node, S, "title"),
+                "title",
+                value.value(),
+                S,
+                lang,
+            )
+        })?;
+    }
+    if let Some(value) = &patch.type_name {
+        update_calculated(xml_text, target, "calculatedField", "valueType", |_, _| {
+            value_type(value)
+        })?;
+    }
+    if let Some(value) = &patch.use_restriction {
+        update_calculated(
+            xml_text,
+            target,
+            "calculatedField",
+            "useRestriction",
+            |_, _| Ok(restriction("useRestriction", value)),
+        )?;
+    }
+    Ok(())
+}
+fn set_total(xml_text: &mut String, target: &Target, patch: &TotalPatch) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    let path = target
+        .terminal
+        .as_deref()
+        .ok_or("address a named CalculatedField or Total")?;
+    named(document.root_element(), S, "totalField", "dataPath", path)?;
+    if let Some(value) = &patch.expression {
+        update_calculated(xml_text, target, "totalField", "expression", |_, _| {
+            Ok(simple("expression", value, S))
+        })?;
+    }
+    if let Some(groups) = &patch.groups {
+        let document = parse_document(xml_text)?;
+        let node = named(document.root_element(), S, "totalField", "dataPath", path)?;
+        let fragment = total_groups(groups);
+        let old = node
+            .children()
+            .filter(|node| is(*node, S, "group"))
+            .collect::<Vec<_>>();
+        let wrapped = format!("<root>{fragment}</root>");
+        let parsed = Document::parse(&wrapped).map_err(|error| error.to_string())?;
+        let new = parsed
+            .root_element()
+            .children()
+            .filter(Node::is_element)
+            .collect::<Vec<_>>();
+        if old.len() == new.len()
+            && old
+                .iter()
+                .zip(new.iter())
+                .all(|(left, right)| equal_element(*left, *right))
+        {
+            return Ok(());
+        }
+        remove_ranges(xml_text, old.iter().map(|node| node.range()).collect());
+        let document = parse_document(xml_text)?;
+        let node = named(document.root_element(), S, "totalField", "dataPath", path)?;
+        insert(
+            xml_text,
+            node.range(),
+            &fragment,
+            S,
+            "group",
+            &["dataPath", "expression", "group"],
+        )?;
+    }
+    Ok(())
+}
+
+fn add_variant(
+    xml_text: &mut String,
+    item: &VariantSpec,
+    lang: Option<&str>,
+) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    let root = document.root_element();
+    if root
+        .children()
+        .any(|node| is(node, S, "settingsVariant") && text(node, T, "name") == item.name)
+    {
+        return Ok(());
+    }
+    let body = simple("name", &item.name, T)
+        + &mltext("presentation", item.title.value(), T, lang)?
+        + &xml("settings", "", T);
+    Ok(insert(
+        xml_text,
+        root.range(),
+        &xml("settingsVariant", &body, S),
+        S,
+        "settingsVariant",
+        ROOT_ORDER,
+    )?)
+}
+fn variant<'a, 'i>(root: Node<'a, 'i>, target: &Target) -> Result<Node<'a, 'i>, String> {
+    if target.variant.is_empty() {
+        return Err("address an existing Setting".to_string());
+    }
+    unique(
+        root.children().filter(|node| {
+            is(*node, S, "settingsVariant") && text(*node, T, "name") == target.variant
+        }),
+        &target.variant,
+    )
+}
+fn set_variant(
+    xml_text: &mut String,
+    target: &Target,
+    title: &LocalizedText,
+    lang: Option<&str>,
+) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    let node = variant(document.root_element(), target)?;
+    let fragment = mltext_update(
+        xml_text,
+        child(node, T, "presentation"),
+        "presentation",
+        title.value(),
+        T,
+        lang,
+    )?;
+    Ok(upsert(
+        xml_text,
+        node.range(),
+        T,
+        "presentation",
+        &fragment,
+        &["name", "presentation", "settings"],
+    )?)
+}
+fn remove_variant(xml_text: &mut String, target: &Target) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    let range = variant(document.root_element(), target)?.range();
+    xml_text.replace_range(range, "");
+    Ok(())
+}
+fn insert_settings_item(
+    xml_text: &mut String,
+    target: &Target,
+    container: &str,
+    fragment: &str,
+) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    let setting = settings(document.root_element(), target)?;
+    if let Some(node) = child(setting, T, container) {
+        Ok(insert(xml_text, node.range(), fragment, T, "item", &[])?)
+    } else {
+        Ok(insert(
+            xml_text,
+            setting.range(),
+            &xml(container, fragment, T),
+            T,
+            container,
+            structure_order(setting),
+        )?)
+    }
+}
+fn add_filter(
+    xml_text: &mut String,
+    target: &Target,
+    item: &FilterSpec,
+    lang: Option<&str>,
+) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    settings(document.root_element(), target)?;
+    let fragment = filter_fragment(item, lang)?;
+    insert_settings_item(xml_text, target, "filter", &fragment)
+}
+fn add_selection(
+    xml_text: &mut String,
+    target: &Target,
+    item: &SelectionSpec,
+    lang: Option<&str>,
+) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    let setting = settings(document.root_element(), target)?;
+    let body = match item.kind {
+        SelectionKind::Field => {
+            if item.title.is_some() {
+                return Err("title belongs to Folder selection".into());
+            }
+            let field = item
+                .field
+                .as_deref()
+                .filter(|field| !field.is_empty())
+                .ok_or("Field selection requires field")?;
+            simple("field", field, T)
+        }
+        SelectionKind::Auto => {
+            if item.field.is_some() || item.title.is_some() {
+                return Err("Auto selection has no field/title".into());
+            }
+            String::new()
+        }
+        SelectionKind::Folder => {
+            if item.field.is_some() {
+                return Err("Folder has no field; add its children separately".into());
+            }
+            mltext(
+                "lwsTitle",
+                item.title.as_ref().ok_or("Folder requires title")?.value(),
+                T,
+                lang,
+            )? + &simple("placement", "Auto", T)
+        }
+    };
+    let fragment = typed(
+        "item",
+        &format!("dcsset:SelectedItem{}", item.kind.as_str()),
+        &body,
+        T,
+    );
+    if !item.parent_indexes.is_empty() {
+        let folder = selection_container(setting, &item.parent_indexes)?;
+        return Ok(insert(
+            xml_text,
+            folder.range(),
+            &fragment,
+            T,
+            "item",
+            &[
+                "use",
+                "lwsTitle",
+                "item",
+                "placement",
+                "viewMode",
+                "userSettingID",
+                "userSettingPresentation",
+            ],
+        )?);
+    }
+    insert_settings_item(xml_text, target, "selection", &fragment)
+}
+fn add_order(xml_text: &mut String, target: &Target, item: &OrderSpec) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    settings(document.root_element(), target)?;
+    let body = match item.kind {
+        OrderKind::Auto => {
+            if item.field.is_some() {
+                return Err("Auto order has no field".into());
+            }
+            String::new()
+        }
+        OrderKind::Field => {
+            let field = item
+                .field
+                .as_deref()
+                .filter(|field| !field.is_empty())
+                .ok_or("Field order requires field")?;
+            simple("field", field, T)
+                + &simple(
+                    "orderType",
+                    item.direction
+                        .expect("Field direction normalized by the DCS contract")
+                        .as_str(),
+                    T,
+                )
+        }
+    };
+    let fragment = typed(
+        "item",
+        match item.kind {
+            OrderKind::Auto => "dcsset:OrderItemAuto",
+            OrderKind::Field => "dcsset:OrderItemField",
+        },
+        &body,
+        T,
+    );
+    insert_settings_item(xml_text, target, "order", &fragment)
+}
+fn add_conditional_appearance(
+    xml_text: &mut String,
+    target: &Target,
+    item: &ConditionalAppearanceSpec,
+    lang: Option<&str>,
+) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    settings(document.root_element(), target)?;
+    let fields = item
+        .fields
+        .iter()
+        .map(|field| xml("item", &simple("field", field, T), T))
+        .collect::<String>();
+    let mut appearance = String::new();
+    for (key, value) in &item.appearance {
+        appearance += &typed(
+            "item",
+            "dcsset:SettingsParameterValue",
+            &(simple("parameter", key, C) + &appearance_value(key, value.value(), lang)?),
+            C,
+        );
+    }
+    let mut entry = item
+        .use_flag
+        .map(|flag| simple("use", &flag.to_string(), T))
+        .unwrap_or_default()
+        + &xml("selection", &fields, T);
+    if let Some(filters) = &item.filters {
+        let filters = filters
+            .iter()
+            .map(|filter| filter_fragment(filter, lang))
+            .collect::<Result<Vec<_>, _>>()?
+            .join("");
+        entry += &xml("filter", &filters, T);
+    }
+    entry += &xml("appearance", &appearance, T);
+    insert_settings_item(
+        xml_text,
+        target,
+        "conditionalAppearance",
+        &xml("item", &entry, T),
+    )
+}
+fn find_filter<'a, 'i>(setting: Node<'a, 'i>, field: &str) -> Result<Node<'a, 'i>, String> {
+    let filter = child(setting, T, "filter").ok_or("filter section missing")?;
+    unique(
+        filter
+            .children()
+            .filter(|node| is(*node, T, "item") && text(*node, T, "left") == field),
+        field,
+    )
+}
+fn remove_filter(xml_text: &mut String, target: &Target, field: &str) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    let setting = settings(document.root_element(), target)?;
+    let range = find_filter(setting, field)?.range();
+    xml_text.replace_range(range, "");
+    Ok(())
+}
+fn set_filter(
+    xml_text: &mut String,
+    target: &Target,
+    patch: &FilterPatch,
+    lang: Option<&str>,
+) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    let setting = settings(document.root_element(), target)?;
+    find_filter(setting, &patch.field)?;
+    let mut properties = settings_text_fields(&patch.meta)
+        .into_iter()
+        .collect::<Vec<_>>();
+    properties.insert(
+        1,
+        (
+            "comparisonType",
+            patch.comparison.map(|value| value.as_str().to_string()),
+        ),
+    );
+    properties.insert(2, ("right", None));
+    for (tag, value) in properties {
+        if value.is_none() && !(tag == "right" && patch.value.is_some()) {
+            continue;
+        }
+        let document = parse_document(xml_text)?;
+        let setting = settings(document.root_element(), target)?;
+        let item = find_filter(setting, &patch.field)?;
+        let fragment = if tag == "right" {
+            scalar_value(
+                tag,
+                patch.value.as_ref().expect("present value").value(),
+                patch.value_type.as_deref(),
+                T,
+                lang,
+            )?
+        } else {
+            simple(tag, value.as_deref().expect("present text"), T)
+        };
+        upsert(
+            xml_text,
+            item.range(),
+            T,
+            tag,
+            &fragment,
+            &[
+                "use",
+                "left",
+                "comparisonType",
+                "right",
+                "presentation",
+                "application",
+                "viewMode",
+                "userSettingID",
+                "userSettingPresentation",
+            ],
+        )?;
+    }
+    Ok(())
+}
+fn clear_collection(xml_text: &mut String, target: &Target, tag: &str) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    let setting = settings(document.root_element(), target)?;
+    if let Some(container) = child(setting, T, tag) {
+        let ranges = container
+            .children()
+            .filter(Node::is_element)
+            .map(|node| node.range())
+            .collect();
+        remove_ranges(xml_text, ranges);
+    }
+    Ok(())
+}
+fn validate_selection_key(selector: &SelectionKey) -> Result<(), String> {
+    if selector.field.is_some() == selector.index.is_some() {
+        return Err("supply exactly one field or index selector".to_string());
+    }
+    Ok(())
+}
+fn selected_container<'a, 'i>(
+    setting: Node<'a, 'i>,
+    tag: &str,
+    parents: &[DcsIndex],
+) -> Result<Node<'a, 'i>, String> {
+    if tag == "selection" {
+        selection_container(setting, parents)
+    } else {
+        child(setting, T, tag).ok_or_else(|| "settings collection missing".to_string())
+    }
+}
+fn selected_item<'a, 'i>(
+    container: Node<'a, 'i>,
+    selector: &SelectionKey,
+    missing: &str,
+) -> Result<Node<'a, 'i>, String> {
+    if let Some(index) = selector.index {
+        container
+            .children()
+            .filter(|node| is(*node, T, "item"))
+            .nth(index.get())
+            .ok_or_else(|| missing.to_string())
+    } else {
+        let field = selector.field.as_deref().unwrap_or("");
+        unique(
+            container
+                .children()
+                .filter(|node| is(*node, T, "item") && text(*node, T, "field") == field),
+            field,
+        )
+    }
+}
+fn remove_selected_item(
+    xml_text: &mut String,
+    target: &Target,
+    tag: &str,
+    selector: &SelectionKey,
+    parents: &[DcsIndex],
+) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    let setting = settings(document.root_element(), target)?;
+    validate_selection_key(selector)?;
+    let container = selected_container(setting, tag, parents)?;
+    let range = selected_item(container, selector, "appearance index was not found")?.range();
+    xml_text.replace_range(range, "");
+    Ok(())
+}
+fn patch_selected_item(
+    xml_text: &mut String,
+    target: &Target,
+    tag: &str,
+    selector: &SelectionKey,
+    parents: &[DcsIndex],
+    direction: Option<OrderDirection>,
+    meta: &SettingsMeta<String>,
+) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    let setting = settings(document.root_element(), target)?;
+    validate_selection_key(selector)?;
+    selected_item(
+        selected_container(setting, tag, parents)?,
+        selector,
+        "appearance index was not found",
+    )?;
+    let mut properties = settings_text_fields(meta).into_iter().collect::<Vec<_>>();
+    properties.insert(
+        1,
+        (
+            "orderType",
+            direction.map(|value| value.as_str().to_string()),
+        ),
+    );
+    for (property, value) in properties {
+        let Some(value) = value else {
+            continue;
+        };
+        let document = parse_document(xml_text)?;
+        let setting = settings(document.root_element(), target)?;
+        let node = selected_item(
+            selected_container(setting, tag, parents)?,
+            selector,
+            "settings index missing",
+        )?;
+        if property == "orderType" && !qtype(node, T, "OrderItemField") {
+            return Err("only Field order accepts direction".into());
+        }
+        let order: &[&str] = if qtype(node, T, "SelectedItemFolder") {
+            &[
+                "use",
+                "lwsTitle",
+                "item",
+                "placement",
+                "viewMode",
+                "userSettingID",
+                "userSettingPresentation",
+            ]
+        } else {
+            &[
+                "use",
+                "field",
+                "orderType",
+                "presentation",
+                "viewMode",
+                "userSettingID",
+                "userSettingPresentation",
+            ]
+        };
+        upsert(
+            xml_text,
+            node.range(),
+            T,
+            property,
+            &simple(property, &value, T),
+            order,
+        )?;
+    }
+    Ok(())
+}
+fn remove_settings_parameter(
+    xml_text: &mut String,
+    target: &Target,
+    tag: &str,
+    name: &str,
+) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    let setting = settings(document.root_element(), target)?;
+    let container = child(setting, T, tag).ok_or("settings collection missing")?;
+    let item = unique(
+        container
+            .children()
+            .filter(|node| is(*node, C, "item") && text(*node, C, "parameter") == name),
+        name,
+    )?;
+    let range = item.range();
+    xml_text.replace_range(range, "");
+    Ok(())
+}
+fn write_settings_parameter(
+    xml_text: &mut String,
+    target: &Target,
+    item: &SettingsParameterSpec,
+    is_set: bool,
+    output: bool,
+    lang: Option<&str>,
+) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    let setting = settings(document.root_element(), target)?;
+    let container = if output {
+        "outputParameters"
+    } else {
+        "dataParameters"
+    };
+    let exists = child(setting, T, container).is_some_and(|collection| {
+        collection
+            .children()
+            .any(|node| is(node, C, "item") && text(node, C, "parameter") == item.name)
+    });
+    if is_set && exists {
+        return patch_settings_parameter(xml_text, target, item, container, lang);
+    }
+    let value = item.value.as_ref().ok_or(if output {
+        "output parameter value required"
+    } else {
+        "data parameter value required"
+    })?;
+    let mut body = item
+        .meta
+        .use_flag
+        .map(|flag| simple("use", &flag.to_string(), C))
+        .unwrap_or_default()
+        + &simple("parameter", &item.name, C);
+    body += &if output {
+        output_value(&item.name, value.value(), item.value_type.as_deref(), lang)?
+    } else {
+        scalar_value("value", value.value(), item.value_type.as_deref(), C, lang)?
+    };
+    if let Some(value) = item.meta.view_mode {
+        body += &simple("viewMode", value.as_str(), T);
+    }
+    if let Some(value) = &item.meta.user_setting_id {
+        body += &simple("userSettingID", value, T);
+    }
+    if let Some(value) = &item.meta.user_setting_presentation {
+        body += &simple("userSettingPresentation", &value_text(value.value()), T);
+    }
+    let fragment = typed("item", "dcsset:SettingsParameterValue", &body, C);
+    if exists {
+        return patch_settings_parameter(xml_text, target, item, container, lang);
+    }
+    insert_settings_item(xml_text, target, container, &fragment)
+}
+fn patch_settings_parameter(
+    xml_text: &mut String,
+    target: &Target,
+    values: &SettingsParameterSpec,
+    container: &str,
+    lang: Option<&str>,
+) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    let setting = settings(document.root_element(), target)?;
+    let collection = child(setting, T, container).ok_or("parameter collection missing")?;
+    unique(
+        collection
+            .children()
+            .filter(|node| is(*node, C, "item") && text(*node, C, "parameter") == values.name),
+        &values.name,
+    )?;
+    let properties = [
+        ("use", values.meta.use_flag.map(|flag| flag.to_string())),
+        ("value", None),
+        (
+            "viewMode",
+            values
+                .meta
+                .view_mode
+                .map(|value| value.as_str().to_string()),
+        ),
+        ("userSettingID", values.meta.user_setting_id.clone()),
+        ("userSettingPresentation", None),
+    ];
+    for (key, value) in properties {
+        if value.is_none()
+            && !(key == "value" && values.value.is_some())
+            && !(key == "userSettingPresentation"
+                && values.meta.user_setting_presentation.is_some())
+        {
+            continue;
+        }
+        let document = parse_document(xml_text)?;
+        let setting = settings(document.root_element(), target)?;
+        let collection = child(setting, T, container).ok_or("parameter collection missing")?;
+        let item = unique(
+            collection
+                .children()
+                .filter(|node| is(*node, C, "item") && text(*node, C, "parameter") == values.name),
+            &values.name,
+        )?;
+        let ns = if key == "value" || key == "use" { C } else { T };
+        let fragment = if key == "value" {
+            let value = values.value.as_ref().expect("present value").value();
+            let declared = values.value_type.as_deref();
+            let old_kind = if declared.is_none() {
+                child(item, C, "value")
+                    .and_then(|node| node.attribute((X, "type")).map(|kind| (node, kind)))
+                    .map(|(node, kind)| canonical_node_value_type(node, kind))
+                    .transpose()?
+            } else {
+                None
+            };
+            let kind = declared.or(old_kind.as_deref());
+            let fragment = if container == "outputParameters" {
+                output_value(&values.name, value, kind, lang)?
+            } else {
+                scalar_value(key, value, kind, C, lang)?
+            };
+            if value.is_string()
+                && fragment.starts_with(&format!("<{key} xsi:type=\"v8:LocalStringType\""))
+            {
+                mltext_update(xml_text, child(item, C, key), key, value, C, lang)?
+            } else {
+                fragment
+            }
+        } else if key == "userSettingPresentation" {
+            mltext_update(
+                xml_text,
+                child(item, ns, key),
+                key,
+                values
+                    .meta
+                    .user_setting_presentation
+                    .as_ref()
+                    .expect("present presentation")
+                    .value(),
+                ns,
+                lang,
+            )?
+        } else {
+            simple(key, value.as_deref().expect("present text"), ns)
+        };
+        if let Some(existing) = child(item, ns, key) {
+            if same_fragment(existing, &fragment) {
+                continue;
+            }
+            xml_text.replace_range(existing.range(), &fragment);
+        } else {
+            insert_mixed(
+                xml_text,
+                item.range(),
+                &fragment,
+                key,
+                &[
+                    "use",
+                    "parameter",
+                    "value",
+                    "viewMode",
+                    "userSettingID",
+                    "userSettingPresentation",
+                ],
+            )?;
+        }
+    }
+    Ok(())
+}
+fn insert_mixed(
+    xml_text: &mut String,
+    range: Range<usize>,
+    fragment: &str,
+    tag: &str,
+    order: &[&str],
+) -> Result<(), String> {
+    let document = Document::parse(xml_text).map_err(|error| error.to_string())?;
+    let parent = document
+        .descendants()
+        .find(|node| node.is_element() && node.range() == range)
+        .ok_or("parent disappeared")?;
+    let rank = order
+        .iter()
+        .position(|name| *name == tag)
+        .unwrap_or(order.len());
+    let pos = parent
+        .children()
+        .find(|node| {
+            node.is_element()
+                && matches!(node.tag_name().namespace(), Some(C) | Some(T))
+                && order
+                    .iter()
+                    .position(|name| *name == node.tag_name().name())
+                    .is_some_and(|other| other > rank)
+        })
+        .map(|node| node.range().start);
+    if let Some(pos) = pos {
+        xml_text.insert_str(pos, fragment);
+        Ok(())
+    } else {
+        insert(xml_text, range, fragment, T, tag, order)
+    }
+}
+
+fn add_structure(
+    xml_text: &mut String,
+    target: &Target,
+    item: &StructureSpec,
+    lang: Option<&str>,
+) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    let parent = settings(document.root_element(), target)?;
+    let mut variant_settings = parent;
+    while !is(variant_settings, T, "settings") {
+        variant_settings = variant_settings
+            .parent_element()
+            .ok_or("variant has no settings")?;
+    }
+    if let Some(name) = item.name.as_deref().filter(|name| !name.is_empty()) {
+        if variant_settings.descendants().any(|node| {
+            (is(node, T, "item")
+                || ["row", "column", "point", "series"]
+                    .iter()
+                    .any(|tag| is(node, T, tag)))
+                && text(node, T, "name") == name
+        }) {
+            return Err("structure name already exists".into());
+        }
+    }
+    let fragment = structure_fragment(item, lang)?;
+    if let Some(axis) = item.axis {
+        let axis = axis.as_str();
+        if !((qtype(parent, T, "StructureItemTable") && matches!(axis, "row" | "column"))
+            || (qtype(parent, T, "StructureItemChart") && matches!(axis, "point" | "series")))
+        {
+            return Err("axis is incompatible with the parent structure kind".into());
+        }
+        if item.kind != StructureKind::Group {
+            return Err("a table/chart axis must be a group".into());
+        }
+        let parsed = Document::parse(&fragment).map_err(|error| error.to_string())?;
+        let inner = content(&fragment, parsed.root_element())?;
+        let fragment = xml(axis, &fragment[inner], T);
+        Ok(insert(
+            xml_text,
+            parent.range(),
+            &fragment,
+            T,
+            axis,
+            structure_order(parent),
+        )?)
+    } else {
+        Ok(insert(
+            xml_text,
+            parent.range(),
+            &fragment,
+            T,
+            "item",
+            structure_order(parent),
+        )?)
+    }
+}
+fn set_structure(
+    xml_text: &mut String,
+    target: &Target,
+    item: &StructureSet,
+    lang: Option<&str>,
+) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    let setting = settings(document.root_element(), target)?;
+    let ranges = setting
+        .children()
+        .filter(|node| is(*node, T, "item"))
+        .map(|node| node.range())
+        .collect();
+    remove_ranges(xml_text, ranges);
+    let document = parse_document(xml_text)?;
+    let setting = settings(document.root_element(), target)?;
+    let mut fragment = structure_fragment(&item.item, lang)?;
+    if item
+        .item
+        .group_by
+        .as_ref()
+        .is_some_and(|fields| !fields.is_empty())
+        && item.details
+    {
+        let details = typed("item", "dcsset:StructureItemGroup", "", T);
+        let close = fragment.rfind("</item>").ok_or("structure close missing")?;
+        fragment.insert_str(close, &details);
+    }
+    Ok(insert(
+        xml_text,
+        setting.range(),
+        &fragment,
+        T,
+        "item",
+        structure_order(setting),
+    )?)
+}
+fn patch_structure(
+    xml_text: &mut String,
+    target: &Target,
+    patch: &StructurePatch,
+    lang: Option<&str>,
+) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    let group = settings(document.root_element(), target)?;
+    if target.structure.is_empty() {
+        return Err("address a named structure item: Setting.V.Item.I".into());
+    }
+    let kind = if qtype(group, T, "StructureItemTable") {
+        StructureKind::Table
+    } else if qtype(group, T, "StructureItemChart") {
+        StructureKind::Chart
+    } else if qtype(group, T, "StructureItemGroup")
+        || ["row", "column", "point", "series"]
+            .iter()
+            .any(|tag| is(group, T, tag))
+    {
+        StructureKind::Group
+    } else {
+        return Err("structure type is unsupported for patch".into());
+    };
+    if let Some(fields) = &patch.group_by {
+        if kind != StructureKind::Group {
+            return Err("groupBy applies to a group or named table/chart axis".into());
+        }
+        if fields.is_empty() {
+            let ranges = group
+                .children()
+                .filter(|node| is(*node, T, "groupItems"))
+                .map(|node| node.range())
+                .collect();
+            remove_ranges(xml_text, ranges);
+        } else {
+            upsert(
+                xml_text,
+                group.range(),
+                T,
+                "groupItems",
+                &group_items(fields),
+                GROUP_ORDER,
+            )?;
+        }
+    }
+    for (key, value) in structure_text_fields(&patch.meta) {
+        let Some(value) = value else {
+            continue;
+        };
+        let document = parse_document(xml_text)?;
+        let group = settings(document.root_element(), target)?;
+        let fragment = structure_property(key, &value, kind)?;
+        upsert(
+            xml_text,
+            group.range(),
+            T,
+            key,
+            &fragment,
+            structure_order(group),
+        )?;
+    }
+    if let Some(value) = &patch.meta.settings.user_setting_presentation {
+        let document = parse_document(xml_text)?;
+        let group = settings(document.root_element(), target)?;
+        let fragment = mltext_update(
+            xml_text,
+            child(group, T, "userSettingPresentation"),
+            "userSettingPresentation",
+            value.value(),
+            T,
+            lang,
+        )?;
+        upsert(
+            xml_text,
+            group.range(),
+            T,
+            "userSettingPresentation",
+            &fragment,
+            structure_order(group),
+        )?;
+    }
+    Ok(())
+}
+fn find_link<'a, 'i>(
+    root: Node<'a, 'i>,
+    selector: &DataSetLinkSelector,
+) -> Result<Node<'a, 'i>, String> {
+    unique(
+        root.children().filter(|node| {
+            is(*node, S, "dataSetLink")
+                && link_selector_fields(selector)
+                    .iter()
+                    .all(|(tag, value)| text(*node, S, tag) == *value)
+        }),
+        "dataset link",
+    )
+}
+fn link_selector_fields(selector: &DataSetLinkSelector) -> [(&'static str, &str); 4] {
+    [
+        ("sourceDataSet", &selector.source),
+        ("destinationDataSet", &selector.destination),
+        ("sourceExpression", &selector.source_expression),
+        ("destinationExpression", &selector.destination_expression),
+    ]
+}
+fn link_property_fields(patch: &DataSetLinkPatch) -> [(&'static str, Option<String>); 5] {
+    [
+        ("parameter", patch.parameter.clone()),
+        (
+            "parameterListAllowed",
+            patch.parameter_list_allowed.map(|flag| flag.to_string()),
+        ),
+        ("linkConditionExpression", patch.condition.clone()),
+        ("startExpression", patch.start_expression.clone()),
+        ("required", patch.required.map(|flag| flag.to_string())),
+    ]
+}
+fn add_link(xml_text: &mut String, item: &DataSetLinkSpec) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    let root = document.root_element();
+    named(root, S, "dataSet", "name", &item.selector.source)?;
+    named(root, S, "dataSet", "name", &item.selector.destination)?;
+    let mut body = String::new();
+    for (tag, value) in link_selector_fields(&item.selector) {
+        body += &simple(tag, value, S);
+    }
+    for (tag, value) in link_property_fields(&item.properties) {
+        if let Some(value) = value {
+            if (tag == "required" && item.properties.required == Some(true))
+                || (tag == "parameterListAllowed"
+                    && item.properties.parameter_list_allowed == Some(false))
+            {
+                continue;
+            }
+            body += &simple(tag, &value, S);
+        }
+    }
+    Ok(insert(
+        xml_text,
+        root.range(),
+        &xml("dataSetLink", &body, S),
+        S,
+        "dataSetLink",
+        ROOT_ORDER,
+    )?)
+}
+fn set_link(xml_text: &mut String, item: &DataSetLinkSpec) -> Result<(), ApplyError> {
+    let document = parse_document(xml_text)?;
+    find_link(document.root_element(), &item.selector)?;
+    for (tag, value) in link_property_fields(&item.properties) {
+        let Some(value) = value else {
+            continue;
+        };
+        let document = parse_document(xml_text)?;
+        let link = find_link(document.root_element(), &item.selector)?;
+        if let Some(default) = match tag {
+            "required" => Some(true),
+            "parameterListAllowed" => Some(false),
+            _ => None,
+        } {
+            let wanted = if tag == "required" {
+                item.properties.required.expect("present required flag")
+            } else {
+                item.properties
+                    .parameter_list_allowed
+                    .expect("present parameter-list flag")
+            };
+            let existing = child(link, S, tag);
+            let old = if existing.is_some() {
+                match text(link, S, tag).trim() {
+                    "true" | "1" => true,
+                    "false" | "0" => false,
+                    _ => return Err(format!("link {tag} has an invalid boolean").into()),
+                }
+            } else {
+                default
+            };
+            if old == wanted {
+                continue;
+            }
+            if wanted == default {
+                if let Some(existing) = existing {
+                    xml_text.replace_range(existing.range(), "");
+                }
+                continue;
+            }
+        }
+        upsert(
+            xml_text,
+            link.range(),
+            S,
+            tag,
+            &simple(tag, &value, S),
+            LINK_ORDER,
+        )?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

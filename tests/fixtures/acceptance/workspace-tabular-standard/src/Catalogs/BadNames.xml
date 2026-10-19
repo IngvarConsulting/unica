@@ -1,0 +1,19 @@
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema" version="2.20">
+  <Catalog uuid="a1543000-0000-4000-8000-000000000000">
+    <Properties><Name>BadNames</Name><Comment/><CodeType>String</CodeType><CodeLength>9</CodeLength></Properties>
+    <ChildObjects>
+    <TabularSection uuid="a1543000-0000-4000-8000-000000000001">
+      <Properties><Name>Duplicate</Name><Comment/><StandardAttributes><xr:StandardAttribute name="LineNumber"><xr:Comment>first</xr:Comment></xr:StandardAttribute><xr:StandardAttribute name="LineNumber"><xr:Comment>second</xr:Comment></xr:StandardAttribute></StandardAttributes></Properties>
+      <ChildObjects><Attribute uuid="a1543000-0000-4000-8001-000000000001"><Properties><Name>Independent</Name><Comment/><Type><v8:Type>xs:boolean</v8:Type></Type><FillChecking>DontCheck</FillChecking></Properties></Attribute></ChildObjects>
+    </TabularSection>
+    <TabularSection uuid="a1543000-0000-4000-8000-000000000002">
+      <Properties><Name>Invalid</Name><Comment/><StandardAttributes><xr:StandardAttribute name="bad name"/></StandardAttributes></Properties>
+      <ChildObjects><Attribute uuid="a1543000-0000-4000-8001-000000000002"><Properties><Name>Independent</Name><Comment/><Type><v8:Type>xs:boolean</v8:Type></Type><FillChecking>DontCheck</FillChecking></Properties></Attribute></ChildObjects>
+    </TabularSection>
+    <TabularSection uuid="a1543000-0000-4000-8000-000000000003">
+      <Properties><Name>Whitespace</Name><Comment/><StandardAttributes><xr:StandardAttribute name="   "/></StandardAttributes></Properties>
+      <ChildObjects><Attribute uuid="a1543000-0000-4000-8001-000000000003"><Properties><Name>Independent</Name><Comment/><Type><v8:Type>xs:boolean</v8:Type></Type><FillChecking>DontCheck</FillChecking></Properties></Attribute></ChildObjects>
+    </TabularSection>
+    </ChildObjects>
+  </Catalog>
+</MetaDataObject>

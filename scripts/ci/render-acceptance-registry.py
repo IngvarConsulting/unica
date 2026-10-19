@@ -132,9 +132,14 @@ def _registration_metadata(family: str) -> dict[str, tuple[str, str, str, str]]:
         raise RuntimeError(f"typed {family} metadata is unavailable: {path}") from error
     table_name = f"{stem}_operations"
     table = _literal_table(source, table_name)
+    payload = (
+        r'\s*,\s*(?:\(\s*\)|[A-Za-z_]\w*(?:\s*<\s*[A-Za-z_]\w*\s*>)?)'
+        if family == "Dcs" else ""
+    )
     row = re.compile(
         r'\s*([A-Za-z_]\w*)\s*=>\s*\(\s*"([A-Za-z]+\.[A-Za-z]+)"\s*,'
-        r'\s*([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*)\s*\)\s*(?:,|$)'
+        r'\s*([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*)'
+        + payload + r'\s*\)\s*(?:,|$)'
     )
     entries = {}
     names = set()
@@ -163,9 +168,12 @@ def load_apply_registry() -> tuple[list[tuple[str, str, str, str]], set[str]]:
         r'|([A-Za-z_]\w*)::([A-Za-z_]\w*))\s*\)'
     )
     entries = []
-    fully_typed_families = ("Role", "Support", "Metadata", "Form", "Mxl", "Event")
-    typed_families = fully_typed_families
-    typed = {f"{family}Operation": _registration_metadata(family) for family in typed_families}
+    typed_families = {
+        "Role": "RoleOperation", "Support": "SupportOperation",
+        "Metadata": "MetadataOperation", "Form": "FormOperation",
+        "Mxl": "MxlOperation", "Event": "EventOperation", "Dcs": "Primitive",
+    }
+    typed = {operation_type: _registration_metadata(family) for family, operation_type in typed_families.items()}
     typed_names = {(entry[1], entry[0]) for metadata in typed.values() for entry in metadata.values()}
     registered = {operation_type: [] for operation_type in typed}
     position = 0
@@ -180,7 +188,7 @@ def load_apply_registry() -> tuple[list[tuple[str, str, str, str]], set[str]]:
             entries.append(typed[operation_type][variant])
         else:
             entry = match.group(1, 2, 3, 4)
-            if entry[1] in fully_typed_families or (entry[1], entry[0]) in typed_names:
+            if entry[1] in typed_families or (entry[1], entry[0]) in typed_names:
                 raise RuntimeError(f"{entry[1]} registrations must use their typed operation")
             entries.append(entry)
         position = match.end()
@@ -188,8 +196,7 @@ def load_apply_registry() -> tuple[list[tuple[str, str, str, str]], set[str]]:
         raise RuntimeError("unsupported apply registration; no entry may be skipped")
     if not entries:
         raise RuntimeError("the apply registry table was not found in domain/apply.rs")
-    for family in typed_families:
-        operation_type = f"{family}Operation"
+    for family, operation_type in typed_families.items():
         if (
             len(registered[operation_type]) != len(typed[operation_type])
             or set(registered[operation_type]) != set(typed[operation_type])

@@ -8,11 +8,16 @@ pub mod cache;
 pub(crate) mod call_graph_identity;
 pub mod cancellation;
 pub mod code_intelligence;
+pub(crate) mod dcs_arguments;
+pub(crate) mod dcs_operation;
 pub mod diagnostics;
 pub mod documentation;
 pub mod engine;
 pub(crate) mod event_operation;
 pub mod events;
+// P1 model is default-compiled; P3 connects the production execution route.
+#[allow(dead_code)]
+pub(crate) mod execution;
 pub mod form_edit;
 pub(crate) mod form_operation;
 pub mod format_profile;

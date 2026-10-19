@@ -1,0 +1,479 @@
+{
+  "id": "S-1543-tabular-standard-attributes",
+  "issue": 1543,
+  "area": "Метаданные",
+  "task": "Обнаружить стандартный реквизит LineNumber обычной табличной части, прочитать по выданному адресу, проверить читаемость и исходный файл, сохранив десять прикладных реквизитов и XML.",
+  "workspace": "tests/fixtures/acceptance/workspace-tabular-standard",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "rows": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.rows"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 10
+        },
+        {
+          "pointer": "/data/branches/1/count",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "attributes": {
+          "pointer": "/data/branches/0/at"
+        },
+        "standard": {
+          "pointer": "/data/branches/1/at"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "8903fc521674363ed1cf6b4a9560c501a875f0a42b9044c5f383cde029c8c157"
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "03474779f0bb9cedd76cc9e583734fdb1cdcd2432c3ad60b83e2e82e7ccc89b8"
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}TabularSection[1]/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "Value01",
+            "Value02",
+            "Value03",
+            "Value04",
+            "Value05",
+            "Value06",
+            "Value07",
+            "Value08",
+            "Value09",
+            "Value10"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xmlTags",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}TabularSection[1]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}StandardAttributes/{http://v8.1c.ru/8.3/xcf/readable}StandardAttribute[@name=\"LineNumber\"]",
+          "eq": [
+            "StandardAttribute"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.attributes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/title",
+          "eq": "Value01"
+        },
+        {
+          "pointer": "/data/items/1/title",
+          "eq": "Value02"
+        },
+        {
+          "pointer": "/data/items/2/title",
+          "eq": "Value03"
+        },
+        {
+          "pointer": "/data/items/3/title",
+          "eq": "Value04"
+        },
+        {
+          "pointer": "/data/items/4/title",
+          "eq": "Value05"
+        },
+        {
+          "pointer": "/data/items/5/title",
+          "eq": "Value06"
+        },
+        {
+          "pointer": "/data/items/6/title",
+          "eq": "Value07"
+        },
+        {
+          "pointer": "/data/items/7/title",
+          "eq": "Value08"
+        },
+        {
+          "pointer": "/data/items/8/title",
+          "eq": "Value09"
+        },
+        {
+          "pointer": "/data/items/9/title",
+          "eq": "Value10"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.standard"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/kind",
+          "eq": "StandardAttribute"
+        }
+      ],
+      "captures": {
+        "line": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.line"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "StandardAttribute"
+        },
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "{\"kind\":\"localizedString\",\"values\":[{\"language\":\"ru\",\"content\":\"Номер строки\"}]}"
+        },
+        {
+          "pointer": "/data/props/FillChecking",
+          "eq": "{\"kind\":\"text\",\"value\":\"DontCheck\"}"
+        },
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "{\"kind\":\"text\",\"value\":\"Line-number note\"}"
+        },
+        {
+          "pointer": "/data/props/MultiLine",
+          "eq": "{\"kind\":\"boolean\",\"value\":false}"
+        },
+        {
+          "pointer": "/data/props/MaxValue",
+          "eq": "{\"kind\":\"nil\"}"
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "$capture.line"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "readable",
+      "validators": [],
+      "assertions": [
+        {
+          "pointer": "/data/status",
+          "eq": "readable"
+        },
+        {
+          "pointer": "/data/validators",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "at": "$capture.line"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Catalog.Items.TabularSection.Rows.StandardAttribute.LineNumber"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "StandardAttribute"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "Catalogs/Items.xml"
+        },
+        {
+          "pointer": "/data/lines",
+          "eq": {
+            "state": "notLineBased"
+          }
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "8903fc521674363ed1cf6b4a9560c501a875f0a42b9044c5f383cde029c8c157"
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "03474779f0bb9cedd76cc9e583734fdb1cdcd2432c3ad60b83e2e82e7ccc89b8"
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}TabularSection[1]/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "Value01",
+            "Value02",
+            "Value03",
+            "Value04",
+            "Value05",
+            "Value06",
+            "Value07",
+            "Value08",
+            "Value09",
+            "Value10"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xmlTags",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}TabularSection[1]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}StandardAttributes/{http://v8.1c.ru/8.3/xcf/readable}StandardAttribute[@name=\"LineNumber\"]",
+          "eq": [
+            "StandardAttribute"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.BadNames.TabularSection.Duplicate"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/limits/0",
+          "contains": "duplicated"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.BadNames.TabularSection.Duplicate.StandardAttribute"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "provider_unavailable"
+        },
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "eq": "source_unreadable"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "standardAttributes"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.BadNames.TabularSection.Duplicate.StandardAttribute.LineNumber"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "provider_unavailable"
+        },
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "eq": "source_unreadable"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "standardAttributes"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.BadNames.TabularSection.Duplicate.Attribute.Independent"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/title",
+          "eq": "Independent"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.BadNames.TabularSection.Invalid"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/limits/0",
+          "contains": "valid metadata identifier"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.BadNames.TabularSection.Invalid.StandardAttribute"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "provider_unavailable"
+        },
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "eq": "source_unreadable"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "standardAttributes"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.BadNames.TabularSection.Invalid.Attribute.Independent"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/title",
+          "eq": "Independent"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.BadNames.TabularSection.Whitespace"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/limits/0",
+          "contains": "valid metadata identifier"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.BadNames.TabularSection.Whitespace.StandardAttribute"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "provider_unavailable"
+        },
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "eq": "source_unreadable"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "standardAttributes"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.BadNames.TabularSection.Whitespace.Attribute.Independent"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/title",
+          "eq": "Independent"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "8903fc521674363ed1cf6b4a9560c501a875f0a42b9044c5f383cde029c8c157"
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "03474779f0bb9cedd76cc9e583734fdb1cdcd2432c3ad60b83e2e82e7ccc89b8"
+        },
+        {
+          "path": "src/Catalogs/BadNames.xml",
+          "kind": "sha256",
+          "eq": "b60e503e5e9b37ad0cb2c413c9172f3f9a3c037b27b639b10cb2265c91efaebe"
+        }
+      ]
+    }
+  ]
+}

@@ -51,6 +51,8 @@ fn catalog_tabular_profile_reaches_public_collection_and_detail_without_writes()
             section["branches"],
             json!([{
                 "at": "main:Catalog.Items.TabularSection.Lines.Attribute", "count": 1
+            }, {
+                "at": "main:Catalog.Items.TabularSection.Lines.StandardAttribute", "count": 1
             }])
         );
     }
@@ -305,6 +307,8 @@ fn catalog_tabular_profile_requires_the_exact_declared_xml_version() {
                 section["branches"],
                 json!([{
                     "at": "main:Catalog.Items.TabularSection.Lines.Attribute", "count": 1
+                }, {
+                    "at": "main:Catalog.Items.TabularSection.Lines.StandardAttribute", "count": 1
                 }])
             );
         }

@@ -4,6 +4,8 @@ use serde_json::{json, Value};
 mod cfe_structure;
 #[path = "support/code_module_state.rs"]
 mod code_module_state;
+#[path = "support/creation_name_scope.rs"]
+mod creation_name_scope;
 #[path = "platform/daemon_teardown.rs"]
 mod daemon_teardown;
 use std::io::{BufRead, BufReader, Write};

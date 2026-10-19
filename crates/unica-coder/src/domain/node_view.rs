@@ -53,6 +53,12 @@ impl NodeView {
     }
 
     #[must_use]
+    pub(crate) fn with_additional_limits(mut self, limits: Vec<String>) -> Self {
+        self.limits.extend(limits);
+        self
+    }
+
+    #[must_use]
     pub(crate) fn with_can(mut self, can: Vec<OperationRef>) -> Self {
         self.can = can;
         self

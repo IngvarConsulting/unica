@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+<ChartOfAccounts uuid="93100000-0000-4000-8000-000000000005"><Properties><Name>Accounts</Name><StandardAttributes><xr:StandardAttribute name="Ref"/></StandardAttributes><StandardTabularSections><xr:StandardTabularSection name="ExtDimensionTypes"><xr:Synonym/><xr:Comment/><xr:ToolTip/><xr:FillChecking>DontCheck</xr:FillChecking><xr:StandardAttributes><xr:StandardAttribute name="ExtDimensionType"/></xr:StandardAttributes></xr:StandardTabularSection></StandardTabularSections></Properties><ChildObjects/></ChartOfAccounts>
+</MetaDataObject>

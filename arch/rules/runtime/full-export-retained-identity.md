@@ -23,6 +23,23 @@ check:
   - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::platform_executable_or_install_swap_after_runner_prevents_publication
   - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::staged_replacement_after_completion_capture_remains_unowned
   - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::output_appearing_after_absent_completion_capture_remains_unowned
+  - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::canonical_preparation_failure_reports_retained_projection_and_private_data
+  - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::canonical_selected_parent_abort_preserves_a_replaced_parent_identity
+  - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::runner_project_projection_foreign_local_in_the_gap_is_preserved_with_the_null_guard
+  - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::stage_name_replacement_before_publish_never_becomes_visible
+  - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::symlink_in_private_stage_is_rejected_before_publication
+  - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::an_unconfirmed_run_retains_the_named_stage_of_a_live_writer
+  - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::an_unwind_retains_the_named_stage_of_a_live_writer
+  - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::canonical_ready_invalid_owned_xml_cleans_after_test_owned_writer_finishes
+  - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::canonical_ready_platform_recheck_refusal_cleans_after_test_owned_writer_finishes
+  - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::canonical_published_repeat_never_adopts_a_new_stage_name
+  - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::invalid_owned_xml_ready_rejects_and_retains_the_unknown_writer_stage
+  - crates/unica-coder/src/infrastructure/platform/process.rs::controlled_stream_held_stderr_keeps_timeout_after_leader_exit
+  - crates/unica-coder/src/infrastructure/platform/process.rs::controlled_stream_late_stderr_eof_preserves_tail_after_leader_exit
+  - crates/unica-coder/src/infrastructure/platform/process.rs::controlled_stdout_read_error_stays_an_error_after_disconnect
+  - crates/unica-coder/src/infrastructure/platform/process.rs::controlled_stdout_reader_panic_is_not_eof
+  - crates/unica-coder/src/infrastructure/platform/process.rs::controlled_stderr_reader_faults_do_not_satisfy_eof
+  - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::a_verified_publication_with_no_terminal_retains_its_recovery
 gap: https://github.com/IngvarConsulting/unica/issues/981
 ---
 
@@ -33,10 +50,17 @@ gap: https://github.com/IngvarConsulting/unica/issues/981
 Символические ссылки и reparse points не обходятся; многоссылочные файлы
 и неподдерживаемые виды записей не принимаются как проверенные исходные данные.
 
-Служебным каталогом владеет одна попытка до завершения всех её процессов.
-Автоматическая очистка удаляет собственные деревья после завершения писателей.
-На macOS и Linux она выполняется при условии, что сторонние процессы того же
-пользователя не изменяют служебные каталоги во время очистки.
+Выгрузку выполняют конечные команды
+[проверенной платформы](full-export-platform-trust.md). Публикация требует
+завершения команд, записывающих подготовленное дерево. Раннер, ожидающий
+подтверждения публикации, может оставаться запущенным.
+
+Служебным каталогом владеет одна попытка до подтверждённого завершения
+выполнения. После начавшегося исполнения автоматическая очистка собственных
+деревьев требует завершения раннера и записывающих команд, полного конечного
+результата и EOF обоих потоков вывода раннера. На macOS и Linux она выполняется
+при условии, что сторонние процессы того же пользователя не изменяют
+служебные каталоги во время очистки.
 
 При обнаруженной подмене или недоказанном завершении писателя данные
 сохраняются для восстановления. Ошибка сверки сообщается как нарушение
@@ -48,5 +72,5 @@ gap: https://github.com/IngvarConsulting/unica/issues/981
 Удаление ссылки при очистке не затрагивает её цель. Delete-pending имя
 в Windows не считается подтверждённым отсутствием.
 
-Проверка завершения писателей и подключение защиты к публичному `pull`
-остаются разрывами из `gap`.
+Сквозное подтверждение гарантий публикации и очистки в публичном `pull`
+на поддерживаемых ОС остаётся разрывом из `gap`.

@@ -1,0 +1,401 @@
+{
+  "id": "S-1541-creation-name-scope",
+  "issue": 1541,
+  "area": "Метаданные",
+  "task": "Создать и настроить роль и подсистему с допустимыми внешними пробелами единым пакетом через preview/token/execute, сохранив границы соседнего и внешнего source set.",
+  "workspace": "tests/fixtures/acceptance/workspace-creation-scope",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "role.create",
+            "args": {
+              "values": {
+                "name": " Читатель "
+              }
+            }
+          },
+          {
+            "op": "right.add",
+            "args": {
+              "at": "main:Role.Читатель",
+              "items": [
+                {
+                  "object": "Catalog.Items",
+                  "rights": {
+                    "Read": true,
+                    "View": true
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        }
+      ],
+      "captures": {
+        "role_token": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "5e3fc1bcea82b0f0d16316821ab913b804ca8770b859c4077ada6f4e32251960"
+        },
+        {
+          "path": "src/Roles/Читатель.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Roles/Читатель/Ext/Rights.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.role_token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Role",
+          "eq": [
+            "Читатель"
+          ]
+        },
+        {
+          "path": "src/Roles/Читатель.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "Читатель"
+          ]
+        },
+        {
+          "path": "src/Roles/Читатель/Ext/Rights.xml",
+          "kind": "xml",
+          "select": "./{*}object/{*}name",
+          "eq": [
+            "Catalog.Items"
+          ]
+        },
+        {
+          "path": "src/Roles/Читатель/Ext/Rights.xml",
+          "kind": "xml",
+          "select": "./{*}object/{*}right/{*}name",
+          "eq": [
+            "Read",
+            "View"
+          ]
+        },
+        {
+          "path": "src/Roles/Читатель/Ext/Rights.xml",
+          "kind": "xml",
+          "select": "./{*}object/{*}right/{*}value",
+          "eq": [
+            "true",
+            "true"
+          ]
+        },
+        {
+          "path": "other/Configuration.xml",
+          "kind": "sha256",
+          "eq": "5e3fc1bcea82b0f0d16316821ab913b804ca8770b859c4077ada6f4e32251960"
+        },
+        {
+          "path": "epf/Import.xml",
+          "kind": "sha256",
+          "eq": "704ffe52cb1657de9e597103eef8659a60af0e65d4ccdea5812a59a3af1d0357"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "other:Configuration",
+        "ops": [
+          {
+            "op": "subsystem.create",
+            "args": {
+              "values": {
+                "name": " Показатели "
+              }
+            }
+          },
+          {
+            "op": "content.add",
+            "args": {
+              "at": "other:Subsystem.Показатели",
+              "items": [
+                {
+                  "object": "Catalog.Items"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        }
+      ],
+      "captures": {
+        "subsystem_token": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "other/Configuration.xml",
+          "kind": "sha256",
+          "eq": "5e3fc1bcea82b0f0d16316821ab913b804ca8770b859c4077ada6f4e32251960"
+        },
+        {
+          "path": "other/Subsystems/Показатели.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.subsystem_token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "other/Configuration.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Subsystem",
+          "eq": [
+            "Показатели"
+          ]
+        },
+        {
+          "path": "other/Subsystems/Показатели.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "Показатели"
+          ]
+        },
+        {
+          "path": "other/Subsystems/Показатели.xml",
+          "kind": "xml",
+          "select": "./{*}Subsystem/{*}Properties/{*}Content/{*}Item",
+          "eq": [
+            "Catalog.Items"
+          ]
+        },
+        {
+          "path": "epf/Import.xml",
+          "kind": "sha256",
+          "eq": "704ffe52cb1657de9e597103eef8659a60af0e65d4ccdea5812a59a3af1d0357"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "role.create",
+            "args": {
+              "values": {
+                "name": " New "
+              }
+            }
+          },
+          {
+            "op": "props.set",
+            "args": {
+              "at": "other:Role.New",
+              "values": {
+                "Comment": "forbidden"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: ops[1].args.at: operation target must be the same logical node or its descendant in the top-level source set",
+      "fileAssertions": [
+        {
+          "path": "src/Roles/New.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "epf/Import.xml",
+          "kind": "sha256",
+          "eq": "704ffe52cb1657de9e597103eef8659a60af0e65d4ccdea5812a59a3af1d0357"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "role.create",
+            "args": {
+              "values": {
+                "name": " New "
+              }
+            }
+          },
+          {
+            "op": "props.set",
+            "args": {
+              "at": "epf:ExternalDataProcessor.Import",
+              "values": {
+                "Comment": "forbidden"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: ops[1].args.at: operation target must be the same logical node or its descendant in the top-level source set",
+      "fileAssertions": [
+        {
+          "path": "src/Roles/New.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "epf/Import.xml",
+          "kind": "sha256",
+          "eq": "704ffe52cb1657de9e597103eef8659a60af0e65d4ccdea5812a59a3af1d0357"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "subsystem.create",
+            "args": {
+              "values": {
+                "name": " NewSub "
+              }
+            }
+          },
+          {
+            "op": "props.set",
+            "args": {
+              "at": "other:Subsystem.NewSub",
+              "values": {
+                "Comment": "forbidden"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: ops[1].args.at: operation target must be the same logical node or its descendant in the top-level source set",
+      "fileAssertions": [
+        {
+          "path": "src/Subsystems/NewSub.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "subsystem.create",
+            "args": {
+              "values": {
+                "name": " NewSub "
+              }
+            }
+          },
+          {
+            "op": "props.set",
+            "args": {
+              "at": "epf:ExternalDataProcessor.Import",
+              "values": {
+                "Comment": "forbidden"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: ops[1].args.at: operation target must be the same logical node or its descendant in the top-level source set",
+      "fileAssertions": [
+        {
+          "path": "src/Subsystems/NewSub.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    }
+  ]
+}
