@@ -18,8 +18,8 @@ use crate::infrastructure::native_operations::apply::{
 use crate::infrastructure::native_operations::compile_transaction::CompileTransaction;
 use crate::infrastructure::native_operations::event::PlannedApplyEffects;
 use crate::infrastructure::platform::filesystem::{
-    path_starts_with_host_root, stable_path_identity_bytes, RetainedChildCapability,
-    RetainedDirectoryCapability,
+    path_starts_with_host_root, stable_path_identity_bytes, strip_windows_extended_length_prefix,
+    RetainedChildCapability, RetainedDirectoryCapability,
 };
 use crate::infrastructure::source_roots::{normalize_path_identity, GENERATED_DIR_NAME};
 use crate::infrastructure::source_selection_evidence::{
@@ -1566,6 +1566,7 @@ impl<R> WorkspaceActor<R> {
             }
             source_roots.insert(source_set.clone(), Arc::new(capability));
         }
+        context.cache_root = project_workspace_cache_route(&context, &context_root);
         context.workspace_root = context_root.clone();
         context.cwd = context_root;
         Ok(Self {
@@ -1773,6 +1774,8 @@ impl<R> WorkspaceActor<R> {
             &binding.source_root,
             &writer_authority,
         )?;
+        let mut context = self.context.clone();
+        context.cache_root = workspace_cache.logical_root.clone();
         let support_policy = RetainedSupportPolicyEvidence::capture(
             &self.context.workspace_root,
             binding.source_root.path(),
@@ -1795,7 +1798,7 @@ impl<R> WorkspaceActor<R> {
             workspace_cache,
             support_policy,
             source_selection,
-            context: self.context.clone(),
+            context,
         })
     }
 
@@ -2434,19 +2437,148 @@ fn closed_source_selection_relative_path(path: &str) -> Result<PathBuf, String> 
     Ok(relative)
 }
 
+/// A workspace alias is already accepted by actor identity admission. Reuse only
+/// the common part of that route, and leave the cache-only suffix untouched so
+/// a link there cannot disappear through canonicalization.
+fn project_workspace_cache_route(context: &WorkspaceContext, workspace_root: &Path) -> PathBuf {
+    let Ok(requested) = absolute_cache_route(&context.cache_root) else {
+        // An unavailable relative base is an apply refusal, not an actor/read
+        // construction failure.
+        return context.cache_root.clone();
+    };
+    let original_workspace = strip_windows_extended_length_prefix(&context.workspace_root);
+    let Some(common) = original_workspace
+        .ancestors()
+        .find(|ancestor| requested.starts_with(ancestor))
+    else {
+        return requested;
+    };
+    let Ok(canonical_common) = normalize_path_identity(common) else {
+        return requested;
+    };
+    let workspace_suffix = original_workspace.strip_prefix(common).expect("ancestor");
+    let Ok((projected_workspace, missing)) =
+        retain_cache_route(&canonical_common.join(workspace_suffix))
+    else {
+        return requested;
+    };
+    let Ok(expected_workspace) = RetainedDirectoryCapability::open(workspace_root) else {
+        return requested;
+    };
+    // Do not canonicalize the workspace suffix: a second alias could otherwise
+    // disguise a changed common ancestor as the original workspace identity.
+    if !missing.as_os_str().is_empty()
+        || projected_workspace.identity() != expected_workspace.identity()
+    {
+        return requested;
+    }
+    canonical_common.join(requested.strip_prefix(common).expect("common prefix"))
+}
+
+/// Resolve only the base of a relative override. In particular Windows
+/// `D:cache` uses that drive's current directory, but `link/../cache` must not
+/// pass through `absolute` (which would erase the link before admission).
+fn absolute_cache_route(path: &Path) -> Result<PathBuf, String> {
+    use std::path::{Component, Prefix};
+
+    let path = strip_windows_extended_length_prefix(path);
+    if path.is_absolute() {
+        return Ok(path);
+    }
+    let mut components = path.components();
+    if let Some(Component::Prefix(prefix)) = components.next() {
+        if matches!(prefix.kind(), Prefix::Disk(_)) {
+            let mut drive_base = PathBuf::from(prefix.as_os_str());
+            drive_base.push(".");
+            let drive_base = std::path::absolute(drive_base)
+                .map_err(|error| format!("workspace cache drive base is unavailable: {error}"))?;
+            return Ok(strip_windows_extended_length_prefix(&drive_base).join(components.as_path()));
+        }
+    }
+    let base = std::env::current_dir()
+        .map_err(|error| format!("workspace cache current directory is unavailable: {error}"))?;
+    Ok(strip_windows_extended_length_prefix(&base).join(path))
+}
+
+/// Retain existing route components without following links or creating the
+/// missing tail. Parent components are resolved only after inspecting the
+/// component they cancel, so `link/../cache` cannot erase a link check.
+fn retain_cache_route(path: &Path) -> Result<(RetainedDirectoryCapability, PathBuf), String> {
+    use std::path::Component;
+
+    let absolute = absolute_cache_route(path)?;
+    let mut components = absolute.components().peekable();
+    let mut namespace_root = PathBuf::new();
+    while let Some(Component::Prefix(_) | Component::RootDir) = components.peek() {
+        namespace_root.push(components.next().expect("peeked component").as_os_str());
+    }
+    if !namespace_root.is_absolute() {
+        return Err("workspace cache route must have an absolute namespace root".to_string());
+    }
+    let root = RetainedDirectoryCapability::open(&namespace_root)
+        .map_err(|error| format!("workspace cache ancestor cannot be retained: {error}"))?;
+    let mut retained = vec![root];
+    let mut missing = PathBuf::new();
+    for component in components {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !missing.pop() && retained.len() > 1 {
+                    retained.pop();
+                }
+            }
+            Component::Normal(name) if !missing.as_os_str().is_empty() => missing.push(name),
+            Component::Normal(name) => {
+                let anchor = retained.last().expect("namespace root remains retained");
+                match anchor.retain_immediate_child_nofollow(name) {
+                    Ok(RetainedChildCapability::Directory(directory)) => retained.push(directory),
+                    Err(error) if error.kind() == ErrorKind::NotFound => missing.push(name),
+                    Ok(RetainedChildCapability::ReparsePoint) => {
+                        return Err("workspace cache authority encountered a link/reparse point"
+                            .to_string())
+                    }
+                    Ok(_) => {
+                        return Err(
+                            "workspace cache authority encountered a non-directory component"
+                                .to_string(),
+                        )
+                    }
+                    Err(error) => {
+                        return Err(format!(
+                            "workspace cache authority cannot retain its path: {error}"
+                        ))
+                    }
+                }
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                return Err("workspace cache route contains a misplaced namespace root".to_string());
+            }
+        }
+    }
+    let anchor = retained.pop().expect("namespace root remains retained");
+    anchor
+        .validate_named_identity()
+        .map_err(|error| format!("workspace cache ancestor changed during admission: {error}"))?;
+    Ok((anchor, missing))
+}
+
 fn retain_workspace_cache_publication_authority(
     context: &WorkspaceContext,
     source_root: &RetainedDirectoryCapability,
     writer_authority: &ApplyWriterAuthority,
 ) -> Result<WorkspaceCachePublicationAuthority, String> {
-    let cache_root = normalize_path_identity(&context.cache_root)?;
+    let (anchor, relative_root) = retain_cache_route(&context.cache_root)?;
+    let cache_root = anchor.path().join(&relative_root);
+    // Physical spelling is additional overlap evidence, never the route used
+    // to obtain authority. The requested route has already passed no-follow.
+    let cache_identity = normalize_path_identity(&cache_root)?;
     let source_root_path = normalize_path_identity(source_root.path())?;
-    if source_root_path.starts_with(&cache_root) {
+    if source_root_path.starts_with(&cache_identity) {
         return Err(
             "workspace cache/source overlap: roots must not contain one another".to_string(),
         );
     }
-    if let Ok(relative_cache) = cache_root.strip_prefix(&source_root_path) {
+    if let Ok(relative_cache) = cache_identity.strip_prefix(&source_root_path) {
         let expected = Path::new(GENERATED_DIR_NAME).join("unica");
         if relative_cache != expected {
             return Err(
@@ -2454,50 +2586,14 @@ fn retain_workspace_cache_publication_authority(
             );
         }
     }
-    let relative = cache_root
-        .strip_prefix(&context.workspace_root)
-        .map_err(|_| "workspace cache root escaped the actor workspace".to_string())?;
-    if relative.as_os_str().is_empty()
-        || relative
-            .components()
-            .any(|component| !matches!(component, std::path::Component::Normal(_)))
-    {
-        return Err("workspace cache root is not a closed workspace-relative path".to_string());
-    }
-    let mut anchor = RetainedDirectoryCapability::open(&context.workspace_root)
-        .map_err(|error| format!("workspace cache ancestor cannot be retained: {error}"))?;
-    let components = relative
-        .components()
-        .map(|component| component.as_os_str().to_os_string())
-        .collect::<Vec<_>>();
-    let mut relative_root = PathBuf::new();
-    for (index, name) in components.iter().enumerate() {
-        match anchor.retain_immediate_child_nofollow(name) {
-            Ok(RetainedChildCapability::Directory(directory)) => anchor = directory,
-            Err(error) if error.kind() == ErrorKind::NotFound => {
-                relative_root.extend(components[index..].iter());
-                break;
-            }
-            Ok(RetainedChildCapability::ReparsePoint) => {
-                return Err("workspace cache authority encountered a link/reparse point".to_string())
-            }
-            Ok(_) => {
-                return Err(
-                    "workspace cache authority encountered a non-directory component".to_string(),
-                )
-            }
-            Err(error) => {
-                return Err(format!(
-                    "workspace cache authority cannot retain its path: {error}"
-                ))
-            }
-        }
-    }
-    if cache_root == source_root_path && anchor.identity() == source_root.identity() {
+    if relative_root.as_os_str().is_empty() && anchor.identity() == source_root.identity() {
         return Err(
             "workspace cache and source roots resolve to one physical directory".to_string(),
         );
     }
+    anchor
+        .validate_named_identity()
+        .map_err(|error| format!("workspace cache ancestor changed during admission: {error}"))?;
     let participant = WorkspaceCacheParticipantAuthority {
         writer_authority: writer_authority.clone(),
         logical_root: cache_root.clone(),
@@ -2913,6 +3009,10 @@ impl WorkspaceActorRegistry {
             .map_err(|_| "workspace actor registry is poisoned".to_string())
     }
 }
+
+#[cfg(test)]
+#[path = "workspace_actor_cache_tests.rs"]
+mod cache_authority_tests;
 
 #[cfg(test)]
 pub(crate) mod tests {
