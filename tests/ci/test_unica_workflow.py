@@ -35,7 +35,31 @@ def load(path: Path) -> dict:
 
 def triggers(workflow: dict) -> dict:
     """`on:` — PyYAML читает ключ по YAML 1.1 как булево `True`."""
-    return workflow.get("on") or workflow.get(True) or {}
+    value = workflow.get("on") or workflow.get(True) or {}
+    if isinstance(value, str):
+        return {value: None}
+    if isinstance(value, list):
+        return dict.fromkeys(value)
+    return value
+
+
+def metadata_build_triggers(workflow: dict) -> dict[str, list[str]]:
+    """Прямые события назначения меток и вех; условия джоб не отменяют suite."""
+    metadata = {"labeled", "unlabeled", "milestoned", "demilestoned"}
+    found = {}
+    for event, config in triggers(workflow).items():
+        if event not in {"pull_request", "pull_request_target", "issues"}:
+            continue
+        # Без types оба PR-события принимают только opened/synchronize/reopened,
+        # а issues принимает все действия, включая назначение меток и вех.
+        defaults = metadata if event == "issues" else set()
+        activities = (config or {}).get("types", defaults)
+        if isinstance(activities, str):
+            activities = [activities]
+        matched = sorted(metadata.intersection(activities))
+        if matched:
+            found[event] = matched
+    return found
 
 
 def jobs(workflow: dict) -> dict:
@@ -169,6 +193,47 @@ def assert_pinned(test: unittest.TestCase, path: Path, step: dict, major: str) -
     )
 
 
+class MetadataBuildTriggerTests(unittest.TestCase):
+    def test_code_and_manual_events_do_not_match_metadata_changes(self) -> None:
+        for source in (
+            "on: pull_request",
+            "on: [pull_request_target, push, workflow_dispatch]",
+            "'on': {pull_request: null, pull_request_target: {branches: [main]}}",
+            """on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  merge_group:
+    types: [checks_requested]
+  push:
+    branches: [main, release-v*]
+    tags: [v*]
+  workflow_dispatch:
+""",
+            "on: {issues: {types: [opened, closed]}, issue_comment: null}",
+        ):
+            with self.subTest(source=source):
+                self.assertEqual(metadata_build_triggers(yaml.safe_load(source)), {})
+
+    def test_metadata_changes_are_found_through_each_direct_event(self) -> None:
+        for event in ("pull_request", "pull_request_target", "issues"):
+            for activity in ("labeled", "unlabeled", "milestoned", "demilestoned"):
+                for types in (activity, f"[opened, {activity}]"):
+                    with self.subTest(event=event, types=types):
+                        source = f"on: {{{event}: {{types: {types}}}}}"
+                        self.assertEqual(
+                            metadata_build_triggers(yaml.safe_load(source)),
+                            {event: [activity]},
+                        )
+
+    def test_issues_shorthand_includes_label_and_milestone_changes(self) -> None:
+        for source in ("on: issues", "on: [push, issues]", "on: {issues: null}", "on: {issues: {}}"):
+            with self.subTest(source=source):
+                self.assertEqual(
+                    metadata_build_triggers(yaml.safe_load(source)),
+                    {"issues": ["demilestoned", "labeled", "milestoned", "unlabeled"]},
+                )
+
+
 class UnicaWorkflowGuardrailTests(unittest.TestCase):
     def setUp(self) -> None:
         self.release = load(RELEASE_WORKFLOW)
@@ -224,6 +289,11 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         ):
             with self.subTest(upstream=upstream):
                 self.assertIn(upstream, needs(gate))
+
+    def test_build_workflow_does_not_subscribe_to_label_or_milestone_changes(self) -> None:
+        # Проверяем все входы сборочного workflow: безопасный pull_request
+        # не исключает параллельный pull_request_target с metadata types.
+        self.assertEqual(metadata_build_triggers(self.release), {})
 
     def test_p0_dry_release_proof_is_read_only_and_aggregated(self) -> None:
         proof = job(self.release, "p0-release-proof")
