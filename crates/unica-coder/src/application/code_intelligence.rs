@@ -1091,6 +1091,11 @@ mod tests {
 
         assert!(partial.ok);
         assert_eq!(partial.warnings.len(), 2);
+        assert_eq!(
+            partial.result.sections[1].status,
+            ProviderSectionStatus::Empty
+        );
+        assert!(partial.result.sections[1].hits.is_empty());
 
         let failed = CodeSearchCoordinator::new(
             CodeIntelligenceRegistry::new(vec![
@@ -1518,11 +1523,7 @@ mod tests {
         for query in ["Post", "Again"] {
             executions.push(
                 CodeSearchCoordinator::with_policy(
-                    CodeIntelligenceRegistry::new(vec![
-                        Arc::clone(&provider),
-                        static_provider(ProviderId::GitGrep, ProviderSectionStatus::Empty, ""),
-                    ])
-                    .unwrap(),
+                    CodeIntelligenceRegistry::new(vec![Arc::clone(&provider)]).unwrap(),
                     Duration::from_millis(30),
                     Arc::clone(&lifecycle),
                 )
@@ -1549,16 +1550,65 @@ mod tests {
         assert!(entered.iter().all(Result::is_ok));
         for execution in executions {
             let execution = execution.unwrap();
-            assert!(execution.ok);
+            assert!(!execution.ok);
+            assert_eq!(execution.result.sections.len(), 1);
             assert_eq!(
                 execution.result.sections[0].status,
                 ProviderSectionStatus::TimedOut
             );
             assert!(execution.result.sections[0].diagnostics[0].contains("30 ms search budget"));
-            assert_eq!(
-                execution.result.sections[1].status,
-                ProviderSectionStatus::Empty
-            );
+        }
+        assert_eq!(lifecycle.pending_count(), 0);
+    }
+
+    #[test]
+    fn coordinator_does_not_report_success_when_empty_providers_miss_the_budget() {
+        let lifecycle = Arc::new(ProviderWorkerLifecycle::new());
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        // Even an Empty fallback can finish after the caller's budget. Hold both
+        // providers until search returns so this does not depend on scheduling.
+        let providers = [ProviderId::BslAnalyzer, ProviderId::GitGrep]
+            .into_iter()
+            .map(|id| {
+                Arc::new(CountQuotaProvider {
+                    id,
+                    entered: entered_tx.clone(),
+                    release: Arc::clone(&release),
+                }) as Arc<dyn CodeIntelligenceProvider>
+            })
+            .collect();
+        let execution = CodeSearchCoordinator::with_policy(
+            CodeIntelligenceRegistry::new(providers).unwrap(),
+            Duration::from_millis(30),
+            Arc::clone(&lifecycle),
+        )
+        .search(
+            &SearchRequest {
+                query: "Post".to_string(),
+                limit: 20,
+            },
+            &context(),
+            &CancellationToken::new(),
+        );
+        let pending = lifecycle.pending_count();
+        let idle_while_workers_held = lifecycle.drain(Duration::ZERO);
+        let entered: Vec<_> = (0..2)
+            .map(|_| entered_rx.recv_timeout(Duration::from_secs(5)))
+            .collect();
+        *release.0.lock().unwrap() = true;
+        release.1.notify_all();
+        assert!(lifecycle.drain(Duration::from_secs(5)));
+        assert_eq!(pending, 2, "both late results still have worker owners");
+        assert!(!idle_while_workers_held, "waiting must not detach workers");
+        assert!(entered.iter().all(Result::is_ok));
+        let execution = execution.unwrap();
+        assert!(!execution.ok);
+        assert_eq!(execution.result.coverage, SearchCoverage::None);
+        assert_eq!(execution.result.sections.len(), 2);
+        for section in execution.result.sections {
+            assert_eq!(section.status, ProviderSectionStatus::TimedOut);
+            assert!(section.hits.is_empty());
         }
         assert_eq!(lifecycle.pending_count(), 0);
     }
