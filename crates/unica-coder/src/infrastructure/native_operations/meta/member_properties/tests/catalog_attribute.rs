@@ -67,13 +67,142 @@ fn read_catalog(xml: &str) -> MetaLocalInfo {
 }
 
 #[test]
+fn catalog_attribute_native_tooltip_preserves_localized_values_and_empty() {
+    for (replacement, values) in [
+        ("<ToolTip/>", json!([])),
+        ("<ToolTip> \n\t </ToolTip>", json!([])),
+        (
+            "<ToolTip><v8:item><v8:lang>ru</v8:lang><v8:content> Подсказка &amp; текст </v8:content></v8:item><v8:item><v8:lang>en</v8:lang><v8:content/></v8:item></ToolTip>",
+            json!([
+                {"language": "ru", "content": " Подсказка & текст "},
+                {"language": "en", "content": ""}
+            ]),
+        ),
+        (
+            "<ToolTip><v8:item><v8:lang> custom language </v8:lang><v8:content>line 1\nline 2</v8:content></v8:item><v8:item><v8:lang/><v8:content>empty language</v8:content></v8:item></ToolTip>",
+            json!([
+                {"language": " custom language ", "content": "line 1\nline 2"},
+                {"language": "", "content": "empty language"}
+            ]),
+        ),
+    ] {
+        let info = read_catalog(&replace_column_property("ToolTip", replacement));
+        let attribute = column(&info);
+        assert_eq!(
+            observed(attribute, "ToolTip"),
+            Some(json!({"kind": "localizedString", "values": values})),
+            "{replacement}"
+        );
+        assert!(attribute.property_limits.is_empty(), "{replacement}");
+        assert_eq!(attribute.required, Some(false));
+        assert!(attribute.r#type.is_some());
+    }
+}
+
+#[test]
+fn catalog_attribute_native_tooltip_absence_keeps_independent_facts() {
+    let info = read_catalog(&replace_column_property("ToolTip", ""));
+    let attribute = column(&info);
+    assert!(observed(attribute, "ToolTip").is_none());
+    assert!(attribute.property_limits.is_empty());
+    for (name, expected, _) in ENUMS {
+        assert_eq!(
+            observed(attribute, name),
+            Some(json!({"kind": "text", "value": expected}))
+        );
+    }
+    assert_eq!(attribute.required, Some(false));
+    assert!(attribute.r#type.is_some());
+}
+
+#[test]
+fn catalog_attribute_native_tooltip_damage_is_local_and_names_its_exact_field() {
+    let item = "<v8:item><v8:lang>ru</v8:lang><v8:content>Подсказка</v8:content></v8:item>";
+    for replacement in [
+        "<ToolTip>broken</ToolTip>".into(),
+        "<ToolTip><![CDATA[broken]]></ToolTip>".into(),
+        "<ToolTip xsi:nil=\"true\"/>".into(),
+        "<ToolTip unexpected=\"true\"/>".into(),
+        "<ToolTip/><ToolTip/>".into(),
+        "<ToolTip xmlns=\"urn:foreign\"/>".into(),
+        "<ToolTip/><ToolTip xmlns=\"urn:foreign\"/>".into(),
+        format!("<ToolTip>broken{item}</ToolTip>"),
+        format!("<ToolTip>{item}{item}</ToolTip>"),
+        format!("<ToolTip>{}</ToolTip>", item.replace("v8:item", "item")),
+        format!("<ToolTip>{}</ToolTip>", item.replace("v8:lang", "lang")),
+        format!(
+            "<ToolTip>{}</ToolTip>",
+            item.replace("v8:content", "content")
+        ),
+        format!(
+            "<ToolTip>{}</ToolTip>",
+            item.replace("<v8:item>", "<v8:item extra=\"x\">")
+        ),
+        format!(
+            "<ToolTip>{}</ToolTip>",
+            item.replace("<v8:lang>", "<v8:lang extra=\"x\">")
+        ),
+        format!(
+            "<ToolTip>{}</ToolTip>",
+            item.replace("<v8:content>", "<v8:content extra=\"x\">")
+        ),
+        format!(
+            "<ToolTip>{}</ToolTip>",
+            item.replace("<v8:lang>ru</v8:lang>", "")
+        ),
+        format!(
+            "<ToolTip>{}</ToolTip>",
+            item.replace("<v8:content>Подсказка</v8:content>", "")
+        ),
+        format!(
+            "<ToolTip>{}</ToolTip>",
+            item.replace(
+                "<v8:lang>ru</v8:lang>",
+                "<v8:lang>ru</v8:lang><v8:lang>en</v8:lang>"
+            )
+        ),
+        format!(
+            "<ToolTip>{}</ToolTip>",
+            item.replace("Подсказка", "<v8:Type>xs:string</v8:Type>")
+        ),
+        format!(
+            "<ToolTip>{}</ToolTip>",
+            item.replace("<v8:item>", "<v8:item>broken")
+        ),
+    ] {
+        let info = read_catalog(&replace_column_property("ToolTip", &replacement));
+        let attribute = column(&info);
+        assert!(observed(attribute, "ToolTip").is_none(), "{replacement}");
+        assert!(attribute.incomplete, "{replacement}");
+        for (name, expected, _) in ENUMS {
+            assert_eq!(
+                observed(attribute, name),
+                Some(json!({"kind": "text", "value": expected})),
+                "{replacement}"
+            );
+        }
+        assert_eq!(attribute.required, Some(false));
+        assert!(attribute.r#type.is_some());
+        let expected_field = "collections.tabularSections[0].attributes[0].properties.ToolTip";
+        assert!(
+            info.diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.field.as_deref() == Some(expected_field)),
+            "{replacement}"
+        );
+        assert_eq!(attribute.property_limits.len(), 1, "{replacement}");
+        assert!(attribute.property_limits[0].contains(expected_field));
+    }
+}
+
+#[test]
 fn catalog_attribute_native_profile_reads_each_closed_enum_value() {
     for (name, _, values) in ENUMS {
         for value in values {
             let xml = replace_column_property(name, &format!("<{name}>{value}</{name}>"));
             let info = read_catalog(&xml);
             let attribute = column(&info);
-            assert_eq!(attribute.properties.len(), ENUMS.len());
+            assert_eq!(attribute.properties.len(), ENUMS.len() + 1);
             assert_eq!(
                 observed(attribute, name),
                 Some(json!({"kind": "text", "value": value}))
@@ -159,13 +288,15 @@ fn catalog_attribute_native_properties_stay_out_of_section_and_header_contexts()
         for (name, _, _) in ENUMS {
             assert!(observed(section, name).is_none());
         }
+        assert!(observed(section, "ToolTip").is_none());
     }
     for attribute in &info.collections.attributes {
         for (name, _, _) in ENUMS {
             assert!(observed(attribute, name).is_none());
         }
+        assert!(observed(attribute, "ToolTip").is_none());
     }
-    for name in ["LineNumberLength", "Use", "ToolTip"] {
+    for name in ["LineNumberLength", "Use"] {
         assert!(observed(column(&info), name).is_none());
     }
 }

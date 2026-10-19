@@ -40,6 +40,9 @@ pub(super) fn project(
         let value = match value {
             Some(MetaObservedPropertyValue::UnsignedInteger { value }) => Some(Value::from(value)),
             Some(MetaObservedPropertyValue::Text { value }) => Some(Value::String(value)),
+            Some(value @ MetaObservedPropertyValue::LocalizedString { .. }) => {
+                serde_json::to_value(value).ok()
+            }
             _ => None,
         };
         if let Some(value) = value.and_then(|value| bounded_prop(spec.name, &value)) {

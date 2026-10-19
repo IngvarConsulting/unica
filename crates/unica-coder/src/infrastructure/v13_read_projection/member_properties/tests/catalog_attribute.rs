@@ -223,3 +223,126 @@ fn catalog_attribute_provider_keeps_contexts_closed_and_ignores_raw_item_keys() 
         assert_absent(&node);
     }
 }
+
+fn tooltip_observations(value: Value) -> Value {
+    let mut properties = observations();
+    properties
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"name": "ToolTip", "value": value}));
+    properties
+}
+
+#[test]
+fn catalog_attribute_provider_tooltip_keeps_the_tagged_localized_value_in_row_and_detail() {
+    for value in [
+        json!({"kind": "localizedString", "values": []}),
+        json!({"kind": "localizedString", "values": [
+            {"language": "ru", "content": " Подсказка & текст "},
+            {"language": "en", "content": ""},
+            {"language": " custom language ", "content": "Line 1\nLine 2"},
+            {"language": "", "content": "Empty language is not inferred"}
+        ]}),
+    ] {
+        for node in attribute_views(payload(tooltip_observations(value.clone()))) {
+            let compact = node["props"]["ToolTip"].as_str().unwrap();
+            assert_eq!(serde_json::from_str::<Value>(compact).unwrap(), value);
+            assert!(compact.len() <= 2048);
+            assert!(node["limits"].as_array().is_none_or(Vec::is_empty));
+            for (name, expected, _) in ENUMS {
+                assert_eq!(node["props"][name], expected);
+            }
+        }
+    }
+}
+
+#[test]
+fn catalog_attribute_provider_tooltip_rejects_wrong_shapes_and_duplicate_languages_locally() {
+    for value in [
+        json!({"kind": "text", "value": "flattened"}),
+        json!({"kind": "empty"}),
+        json!({"kind": "nil"}),
+        json!({"kind": "localizedString", "values": null}),
+        json!({"kind": "localizedString", "values": {"ru": "text"}}),
+        json!({"kind": "localizedString", "values": [{"content": "text"}]}),
+        json!({"kind": "localizedString", "values": [{"language": "ru", "content": false}]}),
+        json!({"kind": "localizedString", "values": [
+            {"language": "ru", "content": "first"},
+            {"language": "ru", "content": "second"}
+        ]}),
+        json!("flattened"),
+        Value::Null,
+    ] {
+        assert_bad_fact_is_local(payload(tooltip_observations(value)), "ToolTip");
+    }
+    let value = json!({"kind": "localizedString", "values": []});
+    let mut properties = tooltip_observations(value.clone());
+    properties
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"name": "ToolTip", "value": value}));
+    assert_bad_fact_is_local(payload(properties), "ToolTip");
+}
+
+#[test]
+fn catalog_attribute_provider_tooltip_obeys_the_utf8_compact_property_boundary() {
+    let empty = json!({"kind": "localizedString", "values": [{"language": "ru", "content": ""}]});
+    let available = 2048 - serde_json::to_string(&empty).unwrap().len();
+    let content = format!("{}{}", "я".repeat(available / 2), "x".repeat(available % 2));
+    let value =
+        json!({"kind": "localizedString", "values": [{"language": "ru", "content": content}]});
+    for node in attribute_views(payload(tooltip_observations(value.clone()))) {
+        let compact = node["props"]["ToolTip"].as_str().unwrap();
+        assert_eq!(compact.len(), 2048);
+        assert_eq!(serde_json::from_str::<Value>(compact).unwrap(), value);
+    }
+    let value = json!({"kind": "localizedString", "values": [{"language": "ru", "content": format!("{content}x")}]});
+    assert_bad_fact_is_local(payload(tooltip_observations(value)), "ToolTip");
+}
+
+#[test]
+fn catalog_attribute_provider_tooltip_stays_inside_its_profile_and_exact_context() {
+    let value = json!({"kind": "localizedString", "values": []});
+    let properties = tooltip_observations(value.clone());
+    for source_kind in [
+        None,
+        Some(SourceSetKind::Extension),
+        Some(SourceSetKind::ExternalProcessor),
+        Some(SourceSetKind::ExternalReport),
+    ] {
+        let node = project(ATTRIBUTE, payload(properties.clone()), source_kind);
+        assert!(node["props"].get("ToolTip").is_none(), "{node}");
+    }
+    for marker in [Value::Null, json!("futureProfile")] {
+        let mut payload = payload(properties.clone());
+        payload["memberReadProfile"] = marker;
+        let node = project(ATTRIBUTE, payload, Some(SourceSetKind::Configuration));
+        assert!(node["props"].get("ToolTip").is_none(), "{node}");
+    }
+    for at in [
+        "main:Catalog.Items",
+        "main:Catalog.Items.Attribute.Header",
+        "main:Catalog.Items.TabularSection.Lines",
+    ] {
+        let node = project(
+            at,
+            payload(properties.clone()),
+            Some(SourceSetKind::Configuration),
+        );
+        assert!(node["props"].get("ToolTip").is_none(), "{node}");
+    }
+    let mut document = payload(properties);
+    document["kind"] = json!("Document");
+    let node = project(
+        "main:Document.Items.TabularSection.Lines.Attribute.Column",
+        document,
+        Some(SourceSetKind::Configuration),
+    );
+    assert!(node["props"].get("ToolTip").is_none(), "{node}");
+    let mut payload = payload(json!([]));
+    payload["collections"]["tabularSections"][0]["attributes"][0]["ToolTip"] = value;
+    for node in attribute_views(payload) {
+        assert!(node["props"].get("ToolTip").is_none(), "{node}");
+        assert!(node["limits"].as_array().is_none_or(Vec::is_empty));
+    }
+}

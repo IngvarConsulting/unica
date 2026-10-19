@@ -1,6 +1,8 @@
 ---
 id: INV.SOURCE.INCOMPLETE-METADATA-READ
 check:
+  - crates/unica-coder/src/infrastructure/v13_read/tests/catalog_attribute_tooltip.rs::catalog_attribute_tooltip_damage_is_local_in_owner_row_and_detail
+  - crates/unica-coder/src/infrastructure/v13_read/tests/catalog_attribute_tooltip.rs::catalog_attribute_tooltip_absence_and_explicit_empty_values_remain_distinct
   - crates/unica-coder/src/infrastructure/v13_read/tests/catalog_attribute_properties.rs::catalog_attribute_profile_damage_limits_only_the_named_fact_in_owner_row_and_detail
   - crates/unica-coder/src/infrastructure/v13_read/tests/catalog_attribute_properties.rs::catalog_attribute_profile_absence_is_not_filled_from_parent_sibling_or_template
   - crates/unica-coder/src/domain/metadata/member_read_profile/tests.rs::member_profile_owns_only_exact_context_property_diagnostics
@@ -51,6 +53,12 @@ check:
 сохраняет реквизит, исправные свойства и тип. Ограничение видно у владельца,
 в строке коллекции и в детали реквизита. Допустимое отсутствие не создаёт
 значение по умолчанию; пустой тег этих enum-свойств считается повреждением.
+
+Локализованный `ToolTip` прямого прикладного реквизита того же профиля
+различает отсутствие, пустой контейнер и повреждение. Голый текст вместо
+локализованной структуры, повтор языка и некорректные узлы не превращаются
+в пустую подсказку. Повреждение ограничивает этот факт у владельца, в строке
+коллекции и в детали, сохраняя остальные сведения реквизита.
 
 Проверки идентичности и структуры объекта остаются обязательными. Чтение
 не изменяет исходники.

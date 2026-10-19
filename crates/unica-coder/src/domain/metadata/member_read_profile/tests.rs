@@ -68,6 +68,7 @@ fn member_profile_owns_only_exact_context_property_diagnostics() {
         "collections.tabularSections[12].properties.Use",
         "collections.tabularSections[0].attributes[1].properties.Indexing",
         "collections.tabularSections[12].attributes[34].properties.FullTextSearch",
+        "collections.tabularSections[0].attributes[1].properties.ToolTip",
     ] {
         assert!(profile.owns_diagnostic(field), "lost owned field {field}");
     }
@@ -75,9 +76,11 @@ fn member_profile_owns_only_exact_context_property_diagnostics() {
         "properties.Indexing",
         "collections.attributes[0].properties.Indexing",
         "collections.tabularSections[0].properties.Indexing",
+        "collections.tabularSections[0].properties.ToolTip",
         "collections.tabularSections[0].attributes[1].properties.Use",
         "collections.tabularSections[0].attributes[1].properties.LineNumberLength",
         "collections.tabularSections[0].standardAttributes[1].properties.Indexing",
+        "collections.tabularSections[0].standardAttributes[1].properties.ToolTip",
         "collections.tabularSections[0].attributes[1].attributes[2].properties.Indexing",
         "collections.tabularSections[0].attributes[1].other.properties.Indexing",
         "collections.tabularSections[0].other.attributes[1].properties.Indexing",
@@ -87,7 +90,8 @@ fn member_profile_owns_only_exact_context_property_diagnostics() {
         "collections.tabularSections[0].attributes[1x].properties.Indexing",
         "collections.tabularSections[0].attributes[1].properties.Indexings",
         "collections.tabularSections[0].attributes[1].properties.Indexing.extra",
-        "collections.tabularSections[0].attributes[1].properties.ToolTip",
+        "collections.tabularSections[0].attributes[1].properties.ToolTips",
+        "collections.tabularSections[0].attributes[1].properties.ToolTip.extra",
         "prefix.collections.tabularSections[0].attributes[1].properties.Indexing",
     ] {
         assert!(

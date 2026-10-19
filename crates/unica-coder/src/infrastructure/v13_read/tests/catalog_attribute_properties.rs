@@ -90,9 +90,11 @@ fn catalog_attribute_profile_reaches_public_collection_and_detail_without_writes
     assert_eq!(sibling["props"]["Indexing"], "DontIndex");
     assert_eq!(sibling["props"]["FullTextSearch"], "Use");
     assert_eq!(sibling["props"]["DataHistory"], "Use");
-    assert!(
-        sibling["props"].get("ToolTip").is_none(),
-        "ToolTip remains outside this enum increment"
+    assert_eq!(
+        serde_json::from_str::<Value>(sibling["props"]["ToolTip"].as_str().unwrap()).unwrap(),
+        json!({"kind": "localizedString", "values": [{
+            "language": "ru", "content": "Настройки представления суммы прописью"
+        }]})
     );
     assert_eq!(tree_snapshot(&fixture.source), before);
 }

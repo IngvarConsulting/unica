@@ -1,6 +1,9 @@
-use super::info_projection::{direct_text_content, MD_CLASSES_NAMESPACE};
+use super::info_projection::{
+    direct_text_content, strict_localized_meta_info_property_value, MD_CLASSES_NAMESPACE,
+};
 use crate::domain::metadata::{
-    MetaDiagnostic, MetaDiagnosticCode, MetaMemberReadProfile, MetaObservedProperty,
+    MetaDiagnostic, MetaDiagnosticCode, MetaMemberReadProfile, MetaMemberValueKind,
+    MetaObservedProperty,
 };
 use crate::domain::source_target::MetadataAddress;
 
@@ -45,10 +48,17 @@ pub(super) fn observe(
         let value = match nodes.as_slice() {
             [value]
                 if value.tag_name().namespace() == Some(MD_CLASSES_NAMESPACE)
-                    && value.attributes().len() == 0
-                    && !value.children().any(|child| child.is_element()) =>
+                    && value.attributes().len() == 0 =>
             {
-                spec.parse_text(&direct_text_content(*value))
+                match spec.value_kind() {
+                    MetaMemberValueKind::LocalizedString => {
+                        strict_localized_meta_info_property_value(*value)
+                    }
+                    _ if !value.children().any(|child| child.is_element()) => {
+                        spec.parse_text(&direct_text_content(*value))
+                    }
+                    _ => None,
+                }
             }
             _ => None,
         };

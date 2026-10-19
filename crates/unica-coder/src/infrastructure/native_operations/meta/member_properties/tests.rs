@@ -31,7 +31,7 @@ fn read(xml: &str, owner: &str, source_kind: Option<SourceSetKind>) -> MetaLocal
     .unwrap_or_else(|failure| panic!("{owner}: {failure:?}"))
 }
 
-fn assert_no_pilot_properties(element: &MetaElementData) {
+fn assert_no_section_properties(element: &MetaElementData) {
     for name in ["LineNumberLength", "Use"] {
         assert!(
             !element
@@ -43,6 +43,19 @@ fn assert_no_pilot_properties(element: &MetaElementData) {
             element.properties
         );
     }
+}
+
+fn assert_no_pilot_properties(element: &MetaElementData) {
+    assert_no_section_properties(element);
+    assert!(
+        !element
+            .properties
+            .iter()
+            .any(|property| property.name == "ToolTip"),
+        "unproved ToolTip on {}: {:?}",
+        element.name,
+        element.properties
+    );
 }
 
 fn assert_profile_absent(info: &MetaLocalInfo) {
@@ -157,6 +170,6 @@ fn catalog_tabular_native_context_does_not_propagate_to_header_or_column_attribu
         .collect::<Vec<_>>();
     assert!(!columns.is_empty());
     for column in columns {
-        assert_no_pilot_properties(column);
+        assert_no_section_properties(column);
     }
 }

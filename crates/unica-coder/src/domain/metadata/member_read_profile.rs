@@ -20,6 +20,7 @@ pub(crate) enum MetaMemberReadContext {
 pub(crate) enum MetaMemberValueKind {
     UnsignedInteger,
     Text(&'static [&'static str]),
+    LocalizedString,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -54,6 +55,11 @@ const CATALOG_MEMBER_PROPERTIES: &[MetaMemberPropertySpec] = &[
         name: "DataHistory",
         context: MetaMemberReadContext::TabularAttribute,
         kind: MetaMemberValueKind::Text(&["Use", "DontUse"]),
+    },
+    MetaMemberPropertySpec {
+        name: "ToolTip",
+        context: MetaMemberReadContext::TabularAttribute,
+        kind: MetaMemberValueKind::LocalizedString,
     },
 ];
 
@@ -145,6 +151,10 @@ impl MetaMemberReadContext {
 }
 
 impl MetaMemberPropertySpec {
+    pub(crate) fn value_kind(self) -> MetaMemberValueKind {
+        self.kind
+    }
+
     pub(crate) fn parse_text(self, value: &str) -> Option<MetaObservedPropertyValue> {
         match self.kind {
             MetaMemberValueKind::UnsignedInteger => value
@@ -158,6 +168,7 @@ impl MetaMemberPropertySpec {
                         value: value.into(),
                     })
             }
+            MetaMemberValueKind::LocalizedString => None,
         }
     }
 
@@ -169,6 +180,13 @@ impl MetaMemberPropertySpec {
             ) => true,
             (MetaMemberValueKind::Text(values), MetaObservedPropertyValue::Text { value }) => {
                 values.contains(&value.as_str())
+            }
+            (
+                MetaMemberValueKind::LocalizedString,
+                MetaObservedPropertyValue::LocalizedString { values },
+            ) => {
+                let mut languages = std::collections::HashSet::new();
+                values.iter().all(|value| languages.insert(&value.language))
             }
             _ => false,
         }
