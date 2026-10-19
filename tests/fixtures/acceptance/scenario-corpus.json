@@ -3182,6 +3182,27 @@
           "name": "ЦеныНоменклатуры"
          }
         }
+       },
+       {
+        "op": "resource.add",
+        "args": {
+         "at": "main:InformationRegister.ЦеныНоменклатуры",
+         "items": [
+          {
+           "name": "Количество",
+           "type": {
+            "variants": [
+             {
+              "kind": "number",
+              "digits": 10,
+              "fraction": 0,
+              "sign": "any"
+             }
+            ]
+           }
+          }
+         ]
+        }
        }
       ]
      },
@@ -3367,6 +3388,34 @@
       "at": "main:Enum.LanguageAware",
       "ops": [
        {
+        "op": "supportRule.set",
+        "args": {
+         "values": {
+          "rule": "off-support"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.LanguageAware",
+      "ops": [
+       {
         "op": "object.remove"
        }
       ]
@@ -3388,6 +3437,34 @@
       "at": "main:Catalog.Валюты",
       "ops": [
        {
+        "op": "supportRule.set",
+        "args": {
+         "values": {
+          "rule": "off-support"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
         "op": "object.remove"
        }
       ]
@@ -3396,6 +3473,25 @@
       "refused"
      ],
      "refusal": "invalid_state: `Catalog.Валюты` is still referenced by 1 source file(s): Roles/SalesReader/Ext/Rights.xml; remove the references first"
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Catalog.Валюты"
+      },
+      {
+       "pointer": "/data/props/support",
+       "eq": "unsupported"
+      }
+     ]
     }
    ],
    "id": "S112"
@@ -3691,6 +3787,27 @@
           "kind": "AccumulationRegister",
           "name": "ОстаткиТоваров"
          }
+        }
+       },
+       {
+        "op": "resource.add",
+        "args": {
+         "at": "main:AccumulationRegister.ОстаткиТоваров",
+         "items": [
+          {
+           "name": "Количество",
+           "type": {
+            "variants": [
+             {
+              "kind": "number",
+              "digits": 10,
+              "fraction": 0,
+              "sign": "any"
+             }
+            ]
+           }
+          }
+         ]
         }
        }
       ]
@@ -7541,7 +7658,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` first"
+     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
     }
    ]
   },
@@ -7570,7 +7687,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` first"
+     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
     }
    ]
   },
@@ -7600,7 +7717,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` first"
+     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
     }
    ]
   },
@@ -7630,7 +7747,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` first"
+     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
     }
    ]
   },
@@ -7653,7 +7770,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` first"
+     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; set `off-support` with `supportRule.set` in a separate apply before removal"
     }
    ]
   },
@@ -7788,7 +7905,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "invalid_state: the configuration is on vendor support with changes disabled; enable editing with `supportCapability.set` first"
+     "refusal": "invalid_state: the configuration is on vendor support with changes disabled; enable editing with `supportCapability.set` in a separate apply before ordinary edits"
     }
    ]
   },
@@ -7881,6 +7998,34 @@
       "at": "main:Catalog.Валюты",
       "ops": [
        {
+        "op": "supportRule.set",
+        "args": {
+         "values": {
+          "rule": "off-support"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
         "op": "object.remove",
         "args": {
          "force": true
@@ -7935,7 +8080,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` first"
+     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
     }
    ]
   },
@@ -7944,6 +8089,34 @@
    "area": "Объекты метаданных",
    "task": "Опубликовать удаление объекта без ссылок — результат несёт событие и влияние на кеш",
    "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.LanguageAware",
+      "ops": [
+       {
+        "op": "supportRule.set",
+        "args": {
+         "values": {
+          "rule": "off-support"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
     {
      "tool": "unica.apply",
      "args": {
@@ -10558,14 +10731,15 @@
        "pointer": "/data/items",
        "eq": [
         {
-         "index": 0,
-         "parentIndex": null,
-         "axis": null,
-         "kind": "Group",
-         "name": "F05Group",
-         "groupBy": [
-          "Amount"
-         ]
+         "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Item.F05Group",
+         "kind": "Item",
+         "title": "F05Group",
+         "props": {
+          "kind": "Group",
+          "groupBy": [
+           "Amount"
+          ]
+         }
         }
        ]
       }
@@ -20078,6 +20252,27 @@
           "kind": "AccumulationRegister",
           "name": "CorpusTurnovers"
          }
+        }
+       },
+       {
+        "op": "resource.add",
+        "args": {
+         "at": "main:AccumulationRegister.CorpusTurnovers",
+         "items": [
+          {
+           "name": "Количество",
+           "type": {
+            "variants": [
+             {
+              "kind": "number",
+              "digits": 10,
+              "fraction": 0,
+              "sign": "any"
+             }
+            ]
+           }
+          }
+         ]
         }
        }
       ]
@@ -33036,6 +33231,27 @@
         }
        },
        {
+        "op": "resource.add",
+        "args": {
+         "at": "main:AccumulationRegister.Продажи",
+         "items": [
+          {
+           "name": "Количество",
+           "type": {
+            "variants": [
+             {
+              "kind": "number",
+              "digits": 10,
+              "fraction": 0,
+              "sign": "any"
+             }
+            ]
+           }
+          }
+         ]
+        }
+       },
+       {
         "op": "object.create",
         "args": {
          "values": {
@@ -33045,12 +33261,54 @@
         }
        },
        {
+        "op": "resource.add",
+        "args": {
+         "at": "main:AccumulationRegister.Остатки",
+         "items": [
+          {
+           "name": "Количество",
+           "type": {
+            "variants": [
+             {
+              "kind": "number",
+              "digits": 10,
+              "fraction": 0,
+              "sign": "any"
+             }
+            ]
+           }
+          }
+         ]
+        }
+       },
+       {
         "op": "object.create",
         "args": {
          "values": {
           "kind": "AccumulationRegister",
           "name": "Обороты"
          }
+        }
+       },
+       {
+        "op": "resource.add",
+        "args": {
+         "at": "main:AccumulationRegister.Обороты",
+         "items": [
+          {
+           "name": "Количество",
+           "type": {
+            "variants": [
+             {
+              "kind": "number",
+              "digits": 10,
+              "fraction": 0,
+              "sign": "any"
+             }
+            ]
+           }
+          }
+         ]
         }
        }
       ]
@@ -33249,6 +33507,27 @@
           "kind": "AccumulationRegister",
           "name": "Резервы"
          }
+        }
+       },
+       {
+        "op": "resource.add",
+        "args": {
+         "at": "main:AccumulationRegister.Резервы",
+         "items": [
+          {
+           "name": "Количество",
+           "type": {
+            "variants": [
+             {
+              "kind": "number",
+              "digits": 10,
+              "fraction": 0,
+              "sign": "any"
+             }
+            ]
+           }
+          }
+         ]
         }
        },
        {

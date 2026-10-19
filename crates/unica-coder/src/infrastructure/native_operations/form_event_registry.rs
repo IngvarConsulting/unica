@@ -13,6 +13,7 @@ use std::sync::OnceLock;
 
 use crate::domain::address::NodeKind;
 use crate::domain::module_projection::BindingFact;
+pub(crate) use crate::domain::module_projection::FormCallType;
 use crate::domain::platform_profile::ModuleCapability;
 
 use super::common::is_1c_identifier;
@@ -974,32 +975,6 @@ fn form_command_execute_event_8_3_27() -> &'static PlatformEventSpec {
         source_page_id: "platform-format:managed-form-command-action:8.3.27".to_string(),
         binding: BindingFact::Property,
     })
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FormCallType {
-    Before,
-    After,
-    Override,
-}
-
-impl FormCallType {
-    pub(crate) fn from_xml(value: &str) -> Option<Self> {
-        match value {
-            "Before" => Some(Self::Before),
-            "After" => Some(Self::After),
-            "Override" => Some(Self::Override),
-            _ => None,
-        }
-    }
-
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Before => "Before",
-            Self::After => "After",
-            Self::Override => "Override",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

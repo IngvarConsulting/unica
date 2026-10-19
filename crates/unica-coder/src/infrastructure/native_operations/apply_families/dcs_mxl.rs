@@ -1,7 +1,9 @@
 use super::metadata::qualified_target;
 use super::validate_platform_xml_binding;
 use crate::domain::address::{member_address, NodeKind, QualifiedAddress};
+use crate::domain::apply::{OperationDescriptor, OperationFamily};
 use crate::domain::events::{DomainEvent, DomainEventKind};
+use crate::domain::mxl_operation::MxlOperation;
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use crate::infrastructure::logical_event_source::attached_resource_relative;
 use crate::infrastructure::native_operations::apply::{
@@ -31,8 +33,7 @@ struct MxlEdit {
     /// Квалифицированный адрес макета для текста отказа.
     template_at: String,
     area: String,
-    /// `area.add` создаёт область, `mxl.set` пишет только в существующую.
-    creates: bool,
+    operation: MxlOperation,
     /// Путь аргументов области: `values` или `items[i]`.
     location: String,
     columns: Option<i64>,
@@ -219,7 +220,23 @@ fn item_object<'a>(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn parse_dcs_mxl_plan_operation(
+    operation: &str,
+    args: &Value,
+    op_index: usize,
+    binding: &ProviderRootBinding,
+) -> Result<DcsMxlPlanOperation, ApplyPlanError> {
+    let at = args
+        .get("at")
+        .and_then(Value::as_str)
+        .and_then(|raw| QualifiedAddress::resolve_input(raw, &[binding.source_set_name()]).ok());
+    let descriptor = super::resolved_descriptor(operation, at.as_ref(), binding);
+    parse_dcs_mxl_plan_operation_in(descriptor, operation, args, op_index, binding)
+}
+
+pub(crate) fn parse_dcs_mxl_plan_operation_in(
+    descriptor: Option<OperationDescriptor>,
     operation: &str,
     args: &Value,
     op_index: usize,
@@ -233,16 +250,14 @@ pub(crate) fn parse_dcs_mxl_plan_operation(
         )
         .at_path(format!("ops[{op_index}].args"))
     })?;
-    let kind = match crate::application::v13::apply::dispatch_family(operation) {
-        Some(crate::domain::apply::OperationFamily::Dcs) => {
-            parse_dcs_operation(operation, object, op_index, binding)?
-        }
-        Some(crate::domain::apply::OperationFamily::Mxl)
-            if matches!(operation, "mxl.set" | "area.add") =>
-        {
-            parse_mxl_operation(operation, object, op_index, binding)?
-        }
-        _ => DcsMxlPlanKind::Unsupported,
+    let kind = match descriptor.and_then(OperationDescriptor::mxl_operation) {
+        Some(operation) => parse_mxl_operation(operation, object, op_index, binding)?,
+        None => match crate::application::v13::apply::dispatch_family(operation) {
+            Some(OperationFamily::Dcs) => {
+                parse_dcs_operation(operation, object, op_index, binding)?
+            }
+            _ => DcsMxlPlanKind::Unsupported,
+        },
     };
     Ok(DcsMxlPlanOperation {
         operation: operation.to_string(),
@@ -381,13 +396,13 @@ fn mxl_cells(area: &Map<String, Value>) -> Vec<CellText> {
 /// Узел создаёт операция родителя: опечатка в имени области не заводит
 /// новую (#1354).
 fn parse_mxl_operation(
-    operation: &str,
+    operation: MxlOperation,
     args: &Map<String, Value>,
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<DcsMxlPlanKind, ApplyPlanError> {
-    let normalized = crate::domain::operation_contract::OperationContract::mxl(operation)
-        .expect("MXL contract")
+    let normalized = operation
+        .contract()
         .normalize(
             &Value::Object(args.clone()),
             &format!("ops[{op_index}].args"),
@@ -399,18 +414,17 @@ fn parse_mxl_operation(
     let address = qualified_target(args, op_index, binding)?;
     let at_path = format!("ops[{op_index}].args.at");
     let segments = address.segments();
-    let shape = if operation == "mxl.set" {
-        "mxl.set addresses an existing area of a spreadsheet template: `Owner.Name.Template.T.Area.A`"
-    } else {
-        "area.add addresses the spreadsheet template itself: `Owner.Name.Template.T`"
+    let shape = match operation {
+        MxlOperation::Set => "mxl.set addresses an existing area of a spreadsheet template: `Owner.Name.Template.T.Area.A`",
+        MxlOperation::AreaAdd => "area.add addresses the spreadsheet template itself: `Owner.Name.Template.T`",
     };
     let (template_segments, area) = match (operation, segments) {
-        ("mxl.set", [owner, template, area])
+        (MxlOperation::Set, [owner, template, area])
             if area.kind() == NodeKind::Area && area.name().is_some() =>
         {
             (vec![owner.clone(), template.clone()], area.name())
         }
-        ("area.add", [owner, template]) => (vec![owner.clone(), template.clone()], None),
+        (MxlOperation::AreaAdd, [owner, template]) => (vec![owner.clone(), template.clone()], None),
         _ => return Err(ApplyPlanError::new(ApplyPlanErrorKind::BadValue, shape).at_path(at_path)),
     };
     let template_address = QualifiedAddress {
@@ -419,20 +433,21 @@ fn parse_mxl_operation(
         segments: template_segments,
     };
     let target = dcs_target(&template_address, op_index)?;
-    let edits = match area {
-        Some(area) => {
+    let edits = match operation {
+        MxlOperation::Set => {
+            let area = area.expect("mxl.set retained the addressed area");
             let values = required_values(args, op_index)?;
             vec![MxlEdit {
                 template: target.template,
                 template_at: template_address.to_string(),
                 area: area.to_string(),
-                creates: false,
+                operation,
                 location: format!("ops[{op_index}].args.values"),
                 columns: values.get("columns").and_then(Value::as_i64),
                 cells: mxl_cells(values),
             }]
         }
-        None => {
+        MxlOperation::AreaAdd => {
             let items = required_items(args, op_index)?;
             let mut edits: Vec<MxlEdit> = Vec::with_capacity(items.len());
             for (index, item) in items.iter().enumerate() {
@@ -473,7 +488,7 @@ fn parse_mxl_operation(
                     template: target.template.clone(),
                     template_at: template_address.to_string(),
                     area: name,
-                    creates: true,
+                    operation,
                     columns: item.get("columns").and_then(Value::as_i64),
                     cells: mxl_cells(item),
                     location,
@@ -842,10 +857,13 @@ fn stage_mxl_edit(
         .at_path(at_path.clone())
     })?;
     let original = text.clone();
-    let written = if edit.creates {
-        mxl_cells::add_area(&mut text, &edit.area, edit.columns, &edit.cells)
-    } else {
-        mxl_cells::set_area_cells(&mut text, &edit.area, edit.columns, &edit.cells)
+    let written = match edit.operation {
+        MxlOperation::Set => {
+            mxl_cells::set_area_cells(&mut text, &edit.area, edit.columns, &edit.cells)
+        }
+        MxlOperation::AreaAdd => {
+            mxl_cells::add_area(&mut text, &edit.area, edit.columns, &edit.cells)
+        }
     };
     written.map_err(|error| match error {
         MxlEditError::AreaMissing => ApplyPlanError::new(
@@ -922,6 +940,41 @@ mod tests {
     const SCHEMA: &str = include_str!(
         "../../../../../../tests/fixtures/acceptance/workspace/src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml"
     );
+
+    #[test]
+    fn typed_mxl_decoder_normalizes_before_target_and_keeps_exact_integer_grammar() {
+        let fixture = ApplySeamFixture::new();
+        for number in ["1.0", "1e0", "0", "-1", "18446744073709551615"] {
+            let args = serde_json::from_str(&format!(
+                r#"{{"at":"main:Report.Versions.Template.Schema","values":{{"cells":{{"R1C1":"A"}},"columns":{number}}}}}"#
+            ))
+            .unwrap();
+            let error = parse_dcs_mxl_plan_operation("mxl.set", &args, 3, &fixture.binding)
+                .expect_err("full normalization must precede the wrong target shape");
+            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{number}");
+            assert_eq!(error.path(), Some("ops[3].args.values.columns"), "{number}");
+        }
+        for number in [1_i64, i64::MAX] {
+            let parsed = parse_dcs_mxl_plan_operation(
+                "mxl.set",
+                &json!({
+                    "at":"main:Report.Versions.Template.Schema.Area.A",
+                    "values":{"cells":{"R+1C+1":null},"columns":number},
+                }),
+                3,
+                &fixture.binding,
+            )
+            .unwrap();
+            let super::DcsMxlPlanKind::Mxl(edits) = parsed.kind else {
+                panic!("typed MXL must select the MXL planner");
+            };
+            assert_eq!(edits.len(), 1);
+            assert_eq!(edits[0].operation, super::MxlOperation::Set);
+            assert_eq!(edits[0].columns, Some(number));
+            assert_eq!(edits[0].cells[0].text, "");
+            assert_eq!((edits[0].cells[0].row, edits[0].cells[0].col), (1, 1));
+        }
+    }
 
     #[test]
     fn dcs_contract_refuses_ignored_arguments_instead_of_planning_another_edit() {

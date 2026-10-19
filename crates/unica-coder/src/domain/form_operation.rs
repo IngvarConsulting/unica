@@ -1,4 +1,4 @@
-use super::apply::{OperationApplicability, OperationSkeleton};
+use super::apply::{FormItemRole, OperationApplicability, OperationSkeleton};
 use super::operation_contract::OperationContract;
 
 macro_rules! form_operations {
@@ -27,6 +27,7 @@ macro_rules! form_operations {
                 }
             }
 
+            #[cfg(test)]
             pub(super) const fn is_named(name: &str) -> bool {
                 $(if super::apply::operation_names_equal(name, $name) {
                     return true;
@@ -38,15 +39,44 @@ macro_rules! form_operations {
 }
 
 form_operations!(
+    Add => ("form.add", MetadataForms, Items),
+    Set => ("form.set", MetadataForms, Values),
+    Remove => ("form.remove", Form, Target),
+    ItemAdd => ("item.add", FormItemContainer, Items),
+    ItemRemove => ("item.remove", FormItem, Target),
+    ItemMove => ("item.move", FormItem, Values),
     AttributeAdd => ("attribute.add", Form, Items),
     CommandAdd => ("command.add", Form, Items),
+    EventBind => ("event.bind", FormEvent, Values),
 );
 
 impl FormOperation {
     pub(crate) fn contract(self) -> OperationContract {
+        OperationContract::form(self)
+    }
+
+    pub(crate) const fn content_resource(self) -> Option<&'static str> {
         match self {
-            Self::AttributeAdd => OperationContract::form_attribute_add(),
-            Self::CommandAdd => OperationContract::form_command_add(),
+            Self::Add | Self::Set | Self::Remove => None,
+            Self::ItemAdd
+            | Self::ItemRemove
+            | Self::ItemMove
+            | Self::AttributeAdd
+            | Self::CommandAdd
+            | Self::EventBind => Some("Form.xml"),
+        }
+    }
+
+    pub(crate) fn admits_form_item(self, role: Option<FormItemRole>) -> bool {
+        match self {
+            Self::ItemAdd => role != Some(FormItemRole::Leaf),
+            Self::ItemRemove | Self::ItemMove => role != Some(FormItemRole::AutoCommandBar),
+            Self::Add
+            | Self::Set
+            | Self::Remove
+            | Self::AttributeAdd
+            | Self::CommandAdd
+            | Self::EventBind => true,
         }
     }
 }
@@ -57,19 +87,71 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn registration_metadata_preserves_the_two_form_root_additions() {
-        for (operation, name) in [
-            (FormOperation::AttributeAdd, "attribute.add"),
-            (FormOperation::CommandAdd, "command.add"),
+    fn registration_metadata_preserves_every_form_operation() {
+        for (operation, name, applicability, skeleton) in [
+            (
+                FormOperation::Add,
+                "form.add",
+                OperationApplicability::MetadataForms,
+                OperationSkeleton::Items,
+            ),
+            (
+                FormOperation::Set,
+                "form.set",
+                OperationApplicability::MetadataForms,
+                OperationSkeleton::Values,
+            ),
+            (
+                FormOperation::Remove,
+                "form.remove",
+                OperationApplicability::Form,
+                OperationSkeleton::Target,
+            ),
+            (
+                FormOperation::ItemAdd,
+                "item.add",
+                OperationApplicability::FormItemContainer,
+                OperationSkeleton::Items,
+            ),
+            (
+                FormOperation::ItemRemove,
+                "item.remove",
+                OperationApplicability::FormItem,
+                OperationSkeleton::Target,
+            ),
+            (
+                FormOperation::ItemMove,
+                "item.move",
+                OperationApplicability::FormItem,
+                OperationSkeleton::Values,
+            ),
+            (
+                FormOperation::AttributeAdd,
+                "attribute.add",
+                OperationApplicability::Form,
+                OperationSkeleton::Items,
+            ),
+            (
+                FormOperation::CommandAdd,
+                "command.add",
+                OperationApplicability::Form,
+                OperationSkeleton::Items,
+            ),
+            (
+                FormOperation::EventBind,
+                "event.bind",
+                OperationApplicability::FormEvent,
+                OperationSkeleton::Values,
+            ),
         ] {
             assert_eq!(operation.name(), name);
-            assert_eq!(operation.applicability(), OperationApplicability::Form);
-            assert_eq!(operation.skeleton(), OperationSkeleton::Items);
+            assert_eq!(operation.applicability(), applicability);
+            assert_eq!(operation.skeleton(), skeleton);
             assert!(FormOperation::is_named(name));
         }
         for name in [
-            "form.add",
-            "item.add",
+            "form.extra",
+            "item.extra",
             "command.add.extra",
             "COMMAND.ADD",
             "",

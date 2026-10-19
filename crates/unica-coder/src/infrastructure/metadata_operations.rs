@@ -317,6 +317,15 @@ pub(crate) mod tests {
         ) -> Result<CacheReport, String> {
             self.inner.cache_report(context, events, mode, cache_access)
         }
+        fn notify_committed_changes(
+            &self,
+            context: &WorkspaceContext,
+            events: &[crate::domain::events::DomainEvent],
+            _cancellation: &CancellationToken,
+            _deadline: crate::domain::operation_deadline::OperationDeadline,
+        ) {
+            self.notify_invalidation(context, events);
+        }
 
         fn notify_invalidation(&self, context: &WorkspaceContext, events: &[DomainEvent]) {
             self.inner.notify_invalidation(context, events);
@@ -637,6 +646,7 @@ pub(crate) mod tests {
         let related = MetadataOperations::read_related(
             &request,
             &crate::application::ports::MetaLocalInfo {
+                member_read_profile: None,
                 metadata_path: request.metadata_path.clone(),
                 kind: MetadataKind::Catalog,
                 details: crate::domain::metadata::MetaInfoDetails::empty(MetadataKind::Catalog),

@@ -2344,6 +2344,7 @@ name = "unica-coder"
 version = "0.13.0"
 dependencies = [
  "aes-siv",
+ "base64 0.22.1",
  "cap-fs-ext",
  "cap-primitives",
  "chrono",

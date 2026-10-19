@@ -16,7 +16,7 @@ use crate::domain::project_sources::{SourceFormat, SourceSetKind};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
 use crate::infrastructure::internal_adapters::{
-    system_process_runner, ProcessCommand, ProcessOutput, ProcessRunner,
+    system_process_runner, ProcessCommand, ProcessOutput, ProcessRunner, ProcessStreamFailure,
 };
 use crate::infrastructure::native_operations::single_file_publisher::{
     with_publication_locks_mode, PublicationTreeLockMode,
@@ -47,6 +47,7 @@ use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 use sha2::{Digest, Sha256};
 #[cfg(test)]
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::env;
 #[cfg(unix)]
 use std::ffi::CString;
@@ -887,6 +888,141 @@ mod windows_anchor_tests {
     }
 
     #[test]
+    fn windows_private_stage_cleanup_retries_after_compartment_anchor_release() {
+        let root = unique_temp_root("private-stage-released-compartment-retry");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let parent = DirectoryAnchor::capture_exact(&workspace).unwrap();
+        let mut stage = PrivateDumpStage::create(&parent).unwrap();
+        fs::create_dir(&stage.staged_tree).unwrap();
+        let snapshot = super::capture_tree_target_nofollow(&stage.staged_tree).unwrap();
+        stage.remember_staged_tree(&snapshot);
+        let first = with_private_cleanup_failpoint(
+            PrivateCleanupCheckpoint::BeforeCompartmentRemove,
+            || stage.cleanup_now(),
+        );
+        assert!(first.unwrap_err().contains("injected"));
+        let retry = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| stage.cleanup_now()));
+        let dropped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(stage)));
+        assert!(
+            retry.is_ok(),
+            "retry must return a Result after an I/O failure"
+        );
+        assert!(
+            retry.unwrap().is_ok(),
+            "retry must finish cleanup after the fault is removed"
+        );
+        assert!(dropped.is_ok(), "Drop must not panic after an I/O failure");
+        assert!(workspace.read_dir().unwrap().next().is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_pending_writer_scrub_failure_preserves_data_and_retries_without_unlink() {
+        for cleanup_via_drop in [false, true] {
+            let root = unique_temp_root("pending-writer-scrub-retry");
+            let workspace = root.join("workspace");
+            fs::create_dir_all(&workspace).unwrap();
+            let parent = DirectoryAnchor::capture_exact(&workspace).unwrap();
+            let mut stage = PrivateDumpStage::create(&parent).unwrap();
+            stage
+                .write_effective_config(&serde_yaml::Value::String("secret".to_string()))
+                .unwrap();
+            fs::create_dir(&stage.staged_tree).unwrap();
+            fs::write(
+                stage.staged_tree.join("writer-data.txt"),
+                b"unfinished writer data",
+            )
+            .unwrap();
+            let staged_before = super::capture_tree_target_nofollow(&stage.staged_tree).unwrap();
+            stage.remember_staged_tree(&staged_before);
+            stage.begin_execution();
+            let private_root = stage.root.clone();
+            let config_path = stage.effective_config.clone();
+            let stage_path = stage.staged_tree.clone();
+            let root_identity = stage.root_identity;
+            let execution_identity = stage.execution_identity;
+            let recovery_identity = stage.recovery_identity;
+            let config_identity =
+                file_identity(stage.effective_config_handle.as_ref().unwrap()).unwrap();
+            let before = super::capture_tree_target_nofollow(&private_root).unwrap();
+
+            let outcome = with_private_cleanup_failpoint(
+                PrivateCleanupCheckpoint::BeforeEffectiveConfigScrub,
+                || {
+                    super::finalize_private_outcome(
+                        &mut stage,
+                        super::dump_failure(
+                            "unica.build.dump",
+                            "runner completion was not confirmed".into(),
+                            None,
+                            None,
+                            None,
+                        ),
+                    )
+                },
+            );
+            assert!(!outcome.ok);
+            assert!(outcome
+                .errors
+                .iter()
+                .any(|error| error.contains("injected")));
+            assert!(outcome
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("Secret-bearing")));
+            assert_eq!(stage.retention, super::PrivateRetention::EntireStage);
+            assert!(stage.cleanup_on_drop, "failed scrub must remain retryable");
+            assert!(stage.effective_config_secret_present);
+            assert!(stage.effective_config_handle.is_some());
+            assert_eq!(
+                super::capture_tree_target_nofollow(&private_root).unwrap(),
+                before
+            );
+            assert!(fs::read(&config_path)
+                .unwrap()
+                .windows(6)
+                .any(|part| part == b"secret"));
+
+            if !cleanup_via_drop {
+                let retry =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| stage.cleanup_now()));
+                retry
+                    .expect("pending cleanup retry must not panic")
+                    .unwrap();
+                assert!(!stage.effective_config_secret_present);
+                assert!(!stage.cleanup_on_drop);
+            }
+            let dropped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(stage)));
+            assert!(
+                dropped.is_ok(),
+                "Drop must retry the held scrub without panicking"
+            );
+            assert!(
+                fs::read(&config_path).unwrap().is_empty(),
+                "held configuration must be empty"
+            );
+            let config = fs::File::open(&config_path).unwrap();
+            assert_eq!(file_identity(&config).unwrap(), config_identity);
+            drop(config);
+            for (path, expected) in [
+                (&private_root, root_identity),
+                (&private_root.join("execution"), execution_identity),
+                (&private_root.join("recovery"), recovery_identity),
+            ] {
+                let retained = open_directory_nofollow(path).unwrap();
+                assert_eq!(file_identity(&retained).unwrap(), expected);
+            }
+            assert_eq!(
+                super::capture_tree_target_nofollow(&stage_path).unwrap(),
+                staged_before
+            );
+            drop(parent);
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
     fn windows_effective_config_scrub_failure_keeps_cleanup_retry_and_drop_safe() {
         let root = unique_temp_root("private-stage-scrub-cleanup-retry");
         let workspace = root.join("workspace");
@@ -1314,7 +1450,18 @@ impl<'a> VerifiedFullDumpAdapter<'a> {
             cancellation,
         ) {
             Ok(prepared) => prepared,
-            Err(error) => return Ok(dump_failure(tool_name, error, None, None, None)),
+            Err(DumpPreparationFailure::BeforeStage(error)) => {
+                return Ok(dump_failure(tool_name, error, None, None, None));
+            }
+            Err(DumpPreparationFailure::PrivateSetup {
+                detail,
+                mut private,
+            }) => {
+                return Ok(finalize_private_outcome(
+                    &mut private,
+                    dump_failure(tool_name, detail, None, None, None),
+                ));
+            }
         };
         macro_rules! finish_prepared {
             ($outcome:expr) => {
@@ -1364,7 +1511,8 @@ impl<'a> VerifiedFullDumpAdapter<'a> {
                 Some(reported_command),
             ));
         }
-        let output_result = self.runner.run(&ProcessCommand {
+        prepared.private.begin_execution();
+        let output_result = self.runner.run_staged(&ProcessCommand {
             program: bundled.0,
             args: execution_args,
             cwd: context.cwd.clone(),
@@ -1377,42 +1525,37 @@ impl<'a> VerifiedFullDumpAdapter<'a> {
             },
             cancellation: cancellation.clone(),
         });
+        if matches!(&output_result, Err(ProcessStreamFailure::Spawn(_)))
+            || output_result
+                .as_ref()
+                .is_ok_and(|output| output.status_success && !output.timed_out && !output.cancelled)
+        {
+            prepared.private.confirm_execution_finished();
+        }
+        let staged_capture = if output_result
+            .as_ref()
+            .is_ok_and(|output| output.status_success && !output.timed_out && !output.cancelled)
+        {
+            prepared.private.capture_finished_staged_tree().map(Some)
+        } else {
+            Ok(None)
+        };
+        let output_result = output_result.map_err(|failure| failure.message().to_string());
         let platform_recheck = prepared.platform_attestation.recheck();
         let config_cleanup = prepared.private.remove_effective_config();
-        let output = match (output_result, platform_recheck, config_cleanup) {
-            (Ok(output), Ok(()), Ok(())) => output,
-            (Err(error), Ok(()), Ok(())) => {
-                finish_prepared!(dump_failure(
-                    tool_name,
-                    redactor(&error),
-                    None,
-                    None,
-                    Some(reported_command),
-                ));
-            }
-            (Ok(_), Err(platform_error), Ok(())) => {
-                finish_prepared!(dump_failure(
-                    tool_name,
-                    format!(
-                        "platform trust check immediately after v8-runner failed: {platform_error}"
-                    ),
-                    None,
-                    None,
-                    Some(reported_command),
-                ));
-            }
-            (Ok(_), Ok(()), Err(cleanup_error)) => {
-                finish_prepared!(dump_failure(
-                    tool_name,
-                    cleanup_error,
-                    None,
-                    None,
-                    Some(reported_command),
-                ));
-            }
-            (output_result, platform_recheck, config_cleanup) => {
+        let (output, staged_snapshot) = match (
+            output_result,
+            staged_capture,
+            platform_recheck,
+            config_cleanup,
+        ) {
+            (Ok(output), Ok(snapshot), Ok(()), Ok(())) => (output, snapshot),
+            (output_result, staged_capture, platform_recheck, config_cleanup) => {
                 let mut errors = Vec::new();
                 if let Err(error) = output_result {
+                    errors.push(redactor(&error));
+                }
+                if let Err(error) = staged_capture {
                     errors.push(redactor(&error));
                 }
                 if let Err(error) = platform_recheck {
@@ -1453,19 +1596,29 @@ impl<'a> VerifiedFullDumpAdapter<'a> {
             ));
         }
 
-        let staged_snapshot =
-            match validate_staged_dump(&prepared.private.staged_tree, prepared.source_kind) {
-                Ok(snapshot) => snapshot,
-                Err(error) => {
-                    finish_prepared!(dump_failure(
-                        tool_name,
-                        error,
-                        Some(redactor(&output.stdout)),
-                        Some(redactor(&output.stderr)),
-                        Some(reported_command),
-                    ));
-                }
-            };
+        let Some(staged_snapshot) = staged_snapshot else {
+            finish_prepared!(dump_failure(
+                tool_name,
+                "v8-runner did not confirm successful completion of the staged dump".to_string(),
+                Some(redactor(&output.stdout)),
+                Some(redactor(&output.stderr)),
+                Some(reported_command),
+            ));
+        };
+        run_publication_hook(PublicationCheckpoint::AfterStagedCapture);
+        if let Err(error) = validate_staged_dump_snapshot(
+            &prepared.private.staged_tree,
+            prepared.source_kind,
+            &staged_snapshot,
+        ) {
+            finish_prepared!(dump_failure(
+                tool_name,
+                error,
+                Some(redactor(&output.stdout)),
+                Some(redactor(&output.stderr)),
+                Some(reported_command),
+            ));
+        }
         if cancellation.is_cancelled() {
             finish_prepared!(cancelled_dump_outcome(tool_name, &output, reported_command));
         }
@@ -1568,6 +1721,20 @@ impl<'a> VerifiedFullDumpAdapter<'a> {
     }
 }
 
+enum DumpPreparationFailure {
+    BeforeStage(String),
+    PrivateSetup {
+        detail: String,
+        private: Box<PrivateDumpStage>,
+    },
+}
+
+impl From<String> for DumpPreparationFailure {
+    fn from(detail: String) -> Self {
+        Self::BeforeStage(detail)
+    }
+}
+
 struct PreparedDump {
     private: PrivateDumpStage,
     target: PathBuf,
@@ -1589,7 +1756,7 @@ impl PreparedDump {
         platform_resolver: &dyn PlatformResolver,
         runner: &dyn ProcessRunner,
         cancellation: &CancellationToken,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, DumpPreparationFailure> {
         validate_applied_full_dump_args(args)?;
         let config_path = resolve_config_path(args, context)?;
         let config_dir = config_path.parent().unwrap_or(&context.cwd);
@@ -1607,14 +1774,16 @@ impl PreparedDump {
             merge_yaml_values(&mut effective, overlay);
         }
         if cancellation.is_cancelled() {
-            return Err("verified dump cancelled while preparing effective config".to_string());
+            return Err("verified dump cancelled while preparing effective config"
+                .to_string()
+                .into());
         }
 
         let format = yaml_string(&effective, "format")?.unwrap_or("DESIGNER");
         if format != "DESIGNER" {
             return Err(format!(
                 "applied full dump supports only format=DESIGNER source sets; configured format is {format}"
-            ));
+            ).into());
         }
         let builder = yaml_string(&effective, "builder")?.unwrap_or("DESIGNER");
         let utility = match builder {
@@ -1623,14 +1792,14 @@ impl PreparedDump {
             other => {
                 return Err(format!(
                     "applied full dump supports only builder=DESIGNER or IBCMD; configured builder is {other}"
-                ));
+                ).into());
             }
         };
 
         if yaml_mapping(&effective)?.contains_key(yaml_key("basePath")) {
             return Err(
                 "pinned v8-runner 0.5.1 rejects the removed top-level `basePath` key; paths are resolved relative to the primary config directory"
-                    .to_string(),
+                    .to_string().into(),
             );
         }
         let base_path = normalize_path_identity(config_dir)?;
@@ -1697,7 +1866,8 @@ impl PreparedDump {
             return Err(format!(
                 "resolved platform {} is not supported; required {TARGET_PLATFORM_LINE}.x",
                 platform.exact_version
-            ));
+            )
+            .into());
         }
         let mut private = PrivateDumpStage::create(&target_parent)?;
         let private_setup = (|| {
@@ -1715,10 +1885,10 @@ impl PreparedDump {
             private.write_effective_config(&effective)
         })();
         if let Err(error) = private_setup {
-            return match private.cleanup_now() {
-                Ok(()) => Err(error),
-                Err(cleanup_error) => Err(format!("{error}; {cleanup_error}")),
-            };
+            return Err(DumpPreparationFailure::PrivateSetup {
+                detail: error,
+                private: Box::new(private),
+            });
         }
 
         Ok(Self {
@@ -3664,6 +3834,13 @@ impl DirectoryAnchor {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum PrivateRetention {
+    None,
+    Recovery,
+    EntireStage,
+}
+
 struct PrivateDumpStage {
     parent_anchor: DirectoryAnchor,
     root_anchor: Option<DirectoryAnchor>,
@@ -3675,7 +3852,6 @@ struct PrivateDumpStage {
     recovery_anchor: Option<DirectoryAnchor>,
     root_identity: FileIdentity,
     execution_identity: FileIdentity,
-    #[cfg(windows)]
     recovery_identity: FileIdentity,
     #[cfg(windows)]
     root_removed: bool,
@@ -3689,6 +3865,11 @@ struct PrivateDumpStage {
     effective_config: PathBuf,
     effective_config_handle: Option<File>,
     effective_config_secret_present: bool,
+    retention: PrivateRetention,
+    staged_snapshot: Option<TreeSnapshot>,
+    recovery_children: BTreeMap<OsString, TreeSnapshot>,
+    publication_uncertain: bool,
+    writer_completion_pending: bool,
     cleanup_on_drop: bool,
 }
 
@@ -3817,7 +3998,6 @@ impl PrivateDumpStage {
         };
         let root_identity = root_anchor.identity;
         let execution_identity = execution_anchor.identity;
-        #[cfg(windows)]
         let recovery_identity = recovery_anchor.identity;
         Ok(Self {
             staged_tree: execution.join("staged-source"),
@@ -3832,7 +4012,6 @@ impl PrivateDumpStage {
             recovery_anchor: Some(recovery_anchor),
             root_identity,
             execution_identity,
-            #[cfg(windows)]
             recovery_identity,
             #[cfg(windows)]
             root_removed: false,
@@ -3844,6 +4023,11 @@ impl PrivateDumpStage {
             recovery_removed: false,
             effective_config_handle: None,
             effective_config_secret_present: false,
+            retention: PrivateRetention::None,
+            staged_snapshot: None,
+            recovery_children: BTreeMap::new(),
+            publication_uncertain: false,
+            writer_completion_pending: false,
             cleanup_on_drop: true,
         })
     }
@@ -3866,10 +4050,224 @@ impl PrivateDumpStage {
             .expect("private recovery anchor remains open before cleanup")
     }
 
+    fn bound_root_for_reporting(&self) -> Result<DirectoryAnchor, String> {
+        let root = self
+            .parent_anchor
+            .capture_descendant(Path::new(&self.root_name), &self.root)?;
+        if root.identity != self.root_identity {
+            return Err(format!(
+                "private dump root identity changed at its original name: {}",
+                self.root.display()
+            ));
+        }
+        Ok(root)
+    }
+
+    fn verify_recovery_location(&self) -> Result<(), String> {
+        let root = self.bound_root_for_reporting()?;
+        let identity = root.capture_child_root_identity(OsStr::new("recovery"), &self.recovery)?;
+        if identity != Some(self.recovery_identity) {
+            return Err(format!(
+                "private recovery directory identity changed at its original name: {}",
+                self.recovery.display()
+            ));
+        }
+        Ok(())
+    }
+
+    fn begin_execution(&mut self) {
+        self.writer_completion_pending = true;
+    }
+
+    fn confirm_execution_finished(&mut self) {
+        self.writer_completion_pending = false;
+    }
+
+    fn retain_unconfirmed_execution(&mut self) -> Result<(), String> {
+        self.retention = PrivateRetention::EntireStage;
+        let _ = self.scrub_effective_config()?;
+        self.effective_config_handle.take();
+        self.cleanup_on_drop = false;
+        Ok(())
+    }
+
+    fn capture_finished_staged_tree(&mut self) -> Result<TreeSnapshot, String> {
+        self.verify_execution_location()?;
+        let snapshot = self
+            .execution_anchor()
+            .capture_child(OsStr::new("staged-source"), &self.staged_tree)?;
+        self.verify_execution_location()?;
+        self.remember_staged_tree(&snapshot);
+        Ok(snapshot)
+    }
+
+    fn verify_execution_location(&self) -> Result<(), String> {
+        let root = self.bound_root_for_reporting()?;
+        let identity =
+            root.capture_child_root_identity(OsStr::new("execution"), &self.execution)?;
+        if identity != Some(self.execution_identity) {
+            return Err(format!(
+                "private execution directory identity changed at its original name: {}",
+                self.execution.display()
+            ));
+        }
+        Ok(())
+    }
+
+    fn remember_staged_tree(&mut self, snapshot: &TreeSnapshot) {
+        self.staged_snapshot = Some(snapshot.clone());
+    }
+
+    fn execution_children(&self) -> BTreeMap<OsString, TreeSnapshot> {
+        self.staged_snapshot
+            .as_ref()
+            .map(|snapshot| (OsString::from("staged-source"), snapshot.clone()))
+            .into_iter()
+            .collect()
+    }
+
+    fn check_cleanup_bindings(&mut self) -> Result<(), String> {
+        let Some(root) = self.root_anchor.as_ref() else {
+            #[cfg(windows)]
+            if self.execution_removed && self.recovery_removed {
+                return Ok(());
+            }
+            self.retention = PrivateRetention::EntireStage;
+            return Err("private root closed before cleanup ownership was confirmed".into());
+        };
+        let roots = BTreeMap::from([
+            (OsString::from("execution"), self.execution_identity),
+            (OsString::from("recovery"), self.recovery_identity),
+        ]);
+        if let Err(error) = Self::check_compartment(root, &roots) {
+            self.retention = PrivateRetention::EntireStage;
+            return Err(error);
+        }
+        let mut errors = Vec::new();
+        if let Err(error) = self.check_known_compartment(
+            OsStr::new("execution"),
+            self.execution_identity,
+            &self.execution_children(),
+        ) {
+            self.retention = PrivateRetention::EntireStage;
+            errors.push(error);
+        }
+        if let Err(error) = self.check_known_compartment(
+            OsStr::new("recovery"),
+            self.recovery_identity,
+            &self.recovery_children,
+        ) {
+            self.retention = self.retention.max(PrivateRetention::Recovery);
+            errors.push(error);
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
+    }
+
+    fn check_known_compartment(
+        &self,
+        name: &OsStr,
+        expected_identity: FileIdentity,
+        children: &BTreeMap<OsString, TreeSnapshot>,
+    ) -> Result<(), String> {
+        let path = self.root.join(name);
+        let Some(anchor) = open_bound_cleanup_directory(
+            &self.root_anchor().directory,
+            name,
+            expected_identity,
+            &path,
+        )?
+        else {
+            return Ok(());
+        };
+        let expected = children
+            .iter()
+            .filter_map(|(name, snapshot)| snapshot.root_identity().map(|id| (name.clone(), id)))
+            .collect();
+        Self::check_compartment(&anchor, &expected)
+    }
+
+    fn cleanup_execution(&mut self) -> Result<(), String> {
+        #[cfg(windows)]
+        if self.execution_removed {
+            return Ok(());
+        }
+        let children = self.execution_children();
+        remove_known_compartment(
+            self.root_anchor.as_ref(),
+            &mut self.execution_anchor,
+            OsStr::new("execution"),
+            self.execution_identity,
+            &self.execution,
+            &children,
+        )?;
+        #[cfg(windows)]
+        {
+            self.execution_removed = true;
+        }
+        Ok(())
+    }
+
+    fn cleanup_recovery(&mut self) -> Result<(), String> {
+        #[cfg(windows)]
+        if self.recovery_removed {
+            return Ok(());
+        }
+        remove_known_compartment(
+            self.root_anchor.as_ref(),
+            &mut self.recovery_anchor,
+            OsStr::new("recovery"),
+            self.recovery_identity,
+            &self.recovery,
+            &self.recovery_children,
+        )?;
+        #[cfg(windows)]
+        {
+            self.recovery_removed = true;
+        }
+        Ok(())
+    }
+
+    #[cfg(any(unix, windows))]
+    fn check_compartment(
+        anchor: &DirectoryAnchor,
+        expected: &BTreeMap<OsString, FileIdentity>,
+    ) -> Result<(), String> {
+        anchor.verify_path_binding()?;
+        let names = crate::infrastructure::platform::filesystem::read_directory_names_with_limit(
+            &anchor.directory,
+            None,
+            || Ok(()),
+        )
+        .map_err(|error| format!("could not inspect private cleanup bindings: {error}"))?;
+        for name in names {
+            let identity = anchor.capture_child_root_identity(&name, &anchor.path.join(&name))?;
+            if identity.is_some() && identity != expected.get(&name).copied() {
+                return Err(format!(
+                    "private cleanup retained an unrecognized object at {}",
+                    anchor.path.join(name).display(),
+                ));
+            }
+        }
+        anchor.verify_path_binding()
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn check_compartment(
+        _anchor: &DirectoryAnchor,
+        _expected: &BTreeMap<OsString, FileIdentity>,
+    ) -> Result<(), String> {
+        Err("retained private cleanup bindings are unavailable on this host".into())
+    }
+
     fn write_effective_config(&mut self, value: &YamlValue) -> Result<(), String> {
         let bytes = serde_yaml::to_string(value)
             .map_err(|error| format!("failed to serialize effective dump config: {error}"))?;
         self.execution_anchor().verify_path_binding()?;
+        run_effective_config_prepare_hook(&self.effective_config);
         let file = create_regular_child_owner_only(
             &self.execution_anchor().directory,
             OsStr::new(EFFECTIVE_CONFIG_NAME),
@@ -3920,9 +4318,9 @@ impl PrivateDumpStage {
         Ok(())
     }
 
-    fn remove_effective_config(&mut self) -> Result<(), String> {
+    fn scrub_effective_config(&mut self) -> Result<Option<FileIdentity>, String> {
         let Some(file) = self.effective_config_handle.as_ref() else {
-            return Ok(());
+            return Ok(None);
         };
         #[cfg(windows)]
         run_private_cleanup_failpoint(PrivateCleanupCheckpoint::BeforeEffectiveConfigScrub)?;
@@ -3945,6 +4343,16 @@ impl PrivateDumpStage {
             )
         })?;
         self.effective_config_secret_present = false;
+        Ok(Some(identity))
+    }
+
+    fn remove_effective_config(&mut self) -> Result<(), String> {
+        if self.writer_completion_pending {
+            return self.retain_unconfirmed_execution();
+        }
+        let Some(identity) = self.scrub_effective_config()? else {
+            return Ok(());
+        };
         let execution_anchor = self.execution_anchor.as_ref().ok_or_else(|| {
             format!(
                 "private effective config cleanup cannot unlink {} because the execution anchor is closed; the scrubbed private file may remain",
@@ -3966,206 +4374,111 @@ impl PrivateDumpStage {
         unlink
     }
 
-    #[cfg(not(windows))]
     fn preserve_for_recovery(&mut self) -> Result<(), String> {
-        let mut errors = Vec::new();
-        if let Err(error) = self.remove_effective_config() {
-            errors.push(error);
+        if self.writer_completion_pending {
+            return self.retain_unconfirmed_execution();
         }
-        if let Err(error) = remove_bound_directory_child(
-            &self.root_anchor().directory,
-            OsStr::new("execution"),
-            self.execution_identity,
-            &self.execution,
-        ) {
-            errors.push(format!(
-                "private execution cleanup failed before retaining recovery {}: {error}",
-                self.execution.display()
-            ));
-        }
-        if let Err(error) = self.root_anchor().verify_path_binding() {
-            errors.push(format!(
-                "private recovery root is no longer bound to its visible path: {error}"
-            ));
-        }
-        if let Err(error) = self.recovery_anchor().verify_path_binding() {
-            errors.push(format!(
-                "private recovery directory is no longer bound to its visible path: {error}"
-            ));
-        }
-        if !errors.is_empty() {
-            return Err(errors.join("; "));
-        }
-        self.cleanup_on_drop = false;
-        Ok(())
-    }
-
-    #[cfg(windows)]
-    fn preserve_for_recovery(&mut self) -> Result<(), String> {
+        self.retention = self.retention.max(PrivateRetention::Recovery);
         self.remove_effective_config()?;
         let mut errors = Vec::new();
-        let root_directory =
-            self.root_anchor().directory.try_clone().map_err(|error| {
-                format!("failed to clone private root anchor for cleanup: {error}")
-            })?;
-        if let Err(error) = release_anchor_and_remove_private_child(
-            &root_directory,
-            &mut self.execution_anchor,
-            &mut self.execution_removed,
-            OsStr::new("execution"),
-            self.execution_identity,
-            &self.execution,
-        ) {
-            errors.push(format!(
-                "private execution cleanup failed before retaining recovery {}: {error}",
-                self.execution.display()
-            ));
+        if let Err(error) = self.check_cleanup_bindings() {
+            errors.push(error);
         }
-        if let Some(root_anchor) = self.root_anchor.as_ref() {
-            if let Err(error) = root_anchor.verify_path_binding() {
+        if self.retention != PrivateRetention::EntireStage {
+            if let Err(error) = self.cleanup_execution() {
+                self.retention = PrivateRetention::EntireStage;
                 errors.push(format!(
-                    "private recovery root is no longer bound to its visible path: {error}"
+                    "private execution cleanup failed before retaining recovery: {error}"
                 ));
             }
         }
-        if let Some(recovery_anchor) = self.recovery_anchor.as_ref() {
-            if let Err(error) = recovery_anchor.verify_path_binding() {
-                errors.push(format!(
-                    "private recovery directory is no longer bound to its visible path: {error}"
-                ));
-            }
+        if !self.effective_config_secret_present {
+            self.cleanup_on_drop = false;
         }
-        if !errors.is_empty() {
-            return Err(errors.join("; "));
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
         }
-        self.cleanup_on_drop = false;
-        Ok(())
     }
 
-    #[cfg(not(windows))]
     fn cleanup_now(&mut self) -> Result<(), String> {
         if !self.cleanup_on_drop {
             return Ok(());
         }
-        let mut errors = Vec::new();
-        if let Err(error) = self.remove_effective_config() {
-            errors.push(error);
+        if self.writer_completion_pending {
+            return self.retain_unconfirmed_execution();
         }
-        if let Err(error) =
-            remove_directory_contents_nofollow(&self.root_anchor().directory, &self.root)
-        {
-            errors.push(format!(
-                "private dump contents cleanup failed for {}: {error}",
-                self.root.display()
-            ));
+        if self.publication_uncertain {
+            self.retention = self.retention.max(PrivateRetention::Recovery);
         }
-        if let Err(error) = remove_bound_directory_child(
+        if self.retention != PrivateRetention::None {
+            return self.preserve_for_recovery();
+        }
+        self.remove_effective_config()?;
+        if let Err(error) = self.check_cleanup_bindings() {
+            let preservation = self.preserve_for_recovery();
+            return Err(match preservation {
+                Ok(()) => error,
+                Err(cleanup) => format!("{error}; {cleanup}"),
+            });
+        }
+        if let Err(error) = self.cleanup_execution() {
+            if self.execution_anchor.is_none() {
+                // An empty compartment may fail to unlink after its anchor was
+                // released. The next attempt reopens and checks its identity.
+                return Err(format!("private execution cleanup failed: {error}"));
+            }
+            // Retain both compartments when execution ownership is uncertain.
+            self.retention = PrivateRetention::EntireStage;
+            self.cleanup_on_drop = false;
+            return Err(format!("private execution cleanup failed: {error}"));
+        }
+        if let Err(error) = self.cleanup_recovery() {
+            if self.recovery_anchor.is_none() {
+                return Err(format!("private recovery cleanup failed: {error}"));
+            }
+            self.retention = PrivateRetention::Recovery;
+            self.cleanup_on_drop = false;
+            return Err(format!("private recovery cleanup failed: {error}"));
+        }
+        self.cleanup_empty_root()?;
+        self.cleanup_on_drop = false;
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
+    fn cleanup_empty_root(&mut self) -> Result<(), String> {
+        remove_empty_bound_directory_child(
             &self.parent_anchor.directory,
             &self.root_name,
             self.root_identity,
             &self.root,
-        ) {
-            errors.push(format!(
-                "private dump root cleanup failed for {}: {error}",
-                self.root.display()
-            ));
-        }
-        if errors.is_empty() {
-            self.cleanup_on_drop = false;
-            Ok(())
-        } else {
-            Err(errors.join("; "))
-        }
+        )
+        .map_err(|error| {
+            self.retention = PrivateRetention::EntireStage;
+            format!("private dump root cleanup failed: {error}")
+        })
     }
 
     #[cfg(windows)]
-    fn cleanup_now(&mut self) -> Result<(), String> {
-        if !self.cleanup_on_drop {
-            return Ok(());
-        }
-        self.remove_effective_config()?;
-        let mut errors = Vec::new();
-
-        if self.root_anchor.is_none() && (!self.execution_removed || !self.recovery_removed) {
-            errors.push(
-                "private root anchor closed before its child directories were removed".to_string(),
-            );
-        } else if let Some(root_anchor) = self.root_anchor.as_ref() {
-            let root_directory = root_anchor.directory.try_clone().map_err(|error| {
-                format!("failed to clone private root anchor for cleanup: {error}")
-            })?;
-            if let Err(error) = release_anchor_and_remove_private_child(
-                &root_directory,
-                &mut self.execution_anchor,
-                &mut self.execution_removed,
-                OsStr::new("execution"),
-                self.execution_identity,
-                &self.execution,
-            ) {
-                errors.push(format!(
-                    "private execution cleanup failed for {}: {error}",
-                    self.execution.display()
-                ));
-            }
-            if let Err(error) = release_anchor_and_remove_private_child(
-                &root_directory,
-                &mut self.recovery_anchor,
-                &mut self.recovery_removed,
-                OsStr::new("recovery"),
-                self.recovery_identity,
-                &self.recovery,
-            ) {
-                errors.push(format!(
-                    "private recovery cleanup failed for {}: {error}",
-                    self.recovery.display()
-                ));
-            }
-        }
-
-        if errors.is_empty() && !self.root_removed {
-            if let Some(root_anchor) = self.root_anchor.as_ref() {
-                if let Err(error) =
-                    remove_directory_contents_nofollow(&root_anchor.directory, &self.root)
-                {
-                    errors.push(format!(
-                        "private dump contents cleanup failed for {}: {error}",
-                        self.root.display()
-                    ));
-                }
-            }
-            if errors.is_empty() && !self.root_disposition_requested {
+    fn cleanup_empty_root(&mut self) -> Result<(), String> {
+        if !self.root_removed {
+            if !self.root_disposition_requested {
                 self.root_anchor.take();
-                match remove_bound_directory_child(
+                remove_empty_bound_directory_child(
                     &self.parent_anchor.directory,
                     &self.root_name,
                     self.root_identity,
                     &self.root,
-                ) {
-                    Ok(()) => self.root_disposition_requested = true,
-                    Err(error) => errors.push(format!(
-                        "private dump root cleanup failed for {}: {error}",
-                        self.root.display()
-                    )),
-                }
+                )
+                .map_err(|error| format!("private dump root cleanup failed: {error}"))?;
+                self.root_disposition_requested = true;
             }
-            if errors.is_empty() && self.root_disposition_requested {
-                match prove_windows_child_absent(
-                    &self.parent_anchor.directory,
-                    &self.root_name,
-                    &self.root,
-                ) {
-                    Ok(()) => self.root_removed = true,
-                    Err(error) => errors.push(error),
-                }
-            }
+            prove_windows_child_absent(&self.parent_anchor.directory, &self.root_name, &self.root)?;
+            self.root_removed = true;
         }
-
-        if errors.is_empty() && self.root_removed {
-            self.cleanup_on_drop = false;
-            Ok(())
-        } else {
-            Err(errors.join("; "))
-        }
+        Ok(())
     }
 }
 
@@ -4207,6 +4520,7 @@ fn release_anchor_and_remove_private_child(
         remove_directory_contents_nofollow(&retained.directory, display_path)?;
     }
     anchor.take();
+    run_private_cleanup_failpoint(PrivateCleanupCheckpoint::BeforeCompartmentRemove)?;
     remove_bound_directory_child(parent, name, expected_identity, display_path)?;
     *removed = true;
     Ok(())
@@ -4353,6 +4667,256 @@ impl Drop for PrivateDumpStage {
     }
 }
 
+#[cfg(any(unix, windows))]
+fn open_bound_cleanup_directory(
+    parent: &File,
+    name: &OsStr,
+    expected_identity: FileIdentity,
+    path: &Path,
+) -> Result<Option<DirectoryAnchor>, String> {
+    let directory = match open_directory_child_nofollow(parent, name) {
+        Ok(directory) => directory,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "could not bind private cleanup directory {}: {error}",
+                path.display()
+            ))
+        }
+    };
+    if file_identity(&directory).map_err(|error| error.to_string())? != expected_identity {
+        return Err(format!(
+            "private cleanup directory identity changed; replacement retained: {}",
+            path.display()
+        ));
+    }
+    Ok(Some(DirectoryAnchor {
+        path: path.to_path_buf(),
+        identity: expected_identity,
+        directory,
+    }))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn open_bound_cleanup_directory(
+    _parent: &File,
+    _name: &OsStr,
+    _expected_identity: FileIdentity,
+    _path: &Path,
+) -> Result<Option<DirectoryAnchor>, String> {
+    Err("retained cleanup is unavailable on this host".into())
+}
+
+#[cfg(any(unix, windows))]
+fn remove_known_compartment(
+    parent: Option<&DirectoryAnchor>,
+    retained: &mut Option<DirectoryAnchor>,
+    name: &OsStr,
+    identity: FileIdentity,
+    path: &Path,
+    children: &BTreeMap<OsString, TreeSnapshot>,
+) -> Result<(), String> {
+    let parent = parent.ok_or_else(|| "private cleanup parent anchor is closed".to_string())?;
+    parent.verify_path_binding()?;
+    let Some(anchor) = open_bound_cleanup_directory(&parent.directory, name, identity, path)?
+    else {
+        retained.take();
+        return Ok(());
+    };
+    let names = crate::infrastructure::platform::filesystem::read_directory_names_with_limit(
+        &anchor.directory,
+        None,
+        || Ok(()),
+    )
+    .map_err(|error| {
+        format!(
+            "could not enumerate private cleanup directory {}: {error}",
+            path.display()
+        )
+    })?;
+    if let Some(unknown) = names.iter().find(|name| !children.contains_key(*name)) {
+        return Err(format!(
+            "private cleanup retained an unrecognized object at {}",
+            path.join(unknown).display()
+        ));
+    }
+    for name in names {
+        remove_owned_tree_child(
+            &anchor.directory,
+            &name,
+            &path.join(&name),
+            &children[&name],
+        )?;
+    }
+    drop(anchor);
+    retained.take();
+    #[cfg(windows)]
+    run_private_cleanup_failpoint(PrivateCleanupCheckpoint::BeforeCompartmentRemove)?;
+    remove_empty_bound_directory_child(&parent.directory, name, identity, path)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn remove_known_compartment(
+    _parent: Option<&DirectoryAnchor>,
+    _retained: &mut Option<DirectoryAnchor>,
+    _name: &OsStr,
+    _identity: FileIdentity,
+    _path: &Path,
+    _children: &BTreeMap<OsString, TreeSnapshot>,
+) -> Result<(), String> {
+    Err("retained cleanup is unavailable on this host".into())
+}
+
+#[cfg(any(unix, windows))]
+fn remove_owned_tree_child(
+    parent: &File,
+    name: &OsStr,
+    path: &Path,
+    expected: &TreeSnapshot,
+) -> Result<(), String> {
+    let TreeSnapshot::Directory { identity, entries } = expected else {
+        return Err(format!(
+            "cleanup has no owned directory snapshot for {}",
+            path.display()
+        ));
+    };
+    run_directory_cleanup_open_hook(path);
+    let Some(anchor) = open_bound_cleanup_directory(parent, name, *identity, path)? else {
+        return Ok(());
+    };
+    remove_owned_directory_contents(&anchor.directory, path, entries, Path::new(""))?;
+    drop(anchor);
+    remove_empty_bound_directory_child(parent, name, *identity, path)
+}
+
+#[cfg(any(unix, windows))]
+fn remove_owned_directory_contents(
+    directory: &File,
+    path: &Path,
+    entries: &[TreeEntrySnapshot],
+    relative: &Path,
+) -> Result<(), String> {
+    let expected: BTreeMap<_, _> = entries
+        .iter()
+        .filter(|entry| entry.relative_path.parent() == Some(relative))
+        .map(|entry| {
+            (
+                entry
+                    .relative_path
+                    .file_name()
+                    .expect("snapshot entries have names"),
+                &entry.kind,
+            )
+        })
+        .collect();
+    let names = crate::infrastructure::platform::filesystem::read_directory_names_with_limit(
+        directory,
+        None,
+        || Ok(()),
+    )
+    .map_err(|error| {
+        format!(
+            "could not enumerate owned cleanup tree {}: {error}",
+            path.display()
+        )
+    })?;
+    if let Some(unknown) = names
+        .iter()
+        .find(|name| !expected.contains_key(name.as_os_str()))
+    {
+        return Err(format!(
+            "private cleanup retained an unrecognized descendant at {}",
+            path.join(unknown).display()
+        ));
+    }
+    for name in names {
+        let child_path = path.join(&name);
+        run_directory_cleanup_open_hook(&child_path);
+        match expected[name.as_os_str()] {
+            TreeEntryKind::Directory { identity } => {
+                let Some(child) =
+                    open_bound_cleanup_directory(directory, &name, *identity, &child_path)?
+                else {
+                    continue;
+                };
+                remove_owned_directory_contents(
+                    &child.directory,
+                    &child_path,
+                    entries,
+                    &relative.join(&name),
+                )?;
+                drop(child);
+                remove_empty_bound_directory_child(directory, &name, *identity, &child_path)?;
+            }
+            TreeEntryKind::File { identity, .. } => {
+                unlink_bound_regular_child(directory, &name, *identity)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn remove_empty_bound_directory_child(
+    parent: &File,
+    name: &OsStr,
+    expected_identity: FileIdentity,
+    path: &Path,
+) -> Result<(), String> {
+    let Some(_anchor) = open_bound_cleanup_directory(parent, name, expected_identity, path)? else {
+        return Ok(());
+    };
+    unlink_directory_child_at(parent, name).map_err(|error| {
+        format!(
+            "could not remove empty owned private directory {}: {error}",
+            path.display()
+        )
+    })
+}
+
+#[cfg(windows)]
+fn remove_empty_bound_directory_child(
+    parent: &File,
+    name: &OsStr,
+    expected_identity: FileIdentity,
+    path: &Path,
+) -> Result<(), String> {
+    let child = match open_any_child_for_delete(parent, name) {
+        Ok(child) => child,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "could not bind empty private directory {}: {error}",
+                path.display()
+            ))
+        }
+    };
+    if opened_child_kind(&child).map_err(|error| error.to_string())? != OpenedChildKind::Directory
+        || file_identity(&child).map_err(|error| error.to_string())? != expected_identity
+    {
+        return Err(format!(
+            "empty private directory identity changed; replacement retained: {}",
+            path.display()
+        ));
+    }
+    delete_open_child(&child).map_err(|error| {
+        format!(
+            "could not remove empty owned private directory {}: {error}",
+            path.display()
+        )
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn remove_empty_bound_directory_child(
+    _parent: &File,
+    _name: &OsStr,
+    _expected_identity: FileIdentity,
+    _path: &Path,
+) -> Result<(), String> {
+    Err("retained cleanup is unavailable on this host".into())
+}
+
 #[cfg(unix)]
 fn unlink_bound_regular_child(
     parent: &File,
@@ -4420,6 +4984,7 @@ fn remove_directory_contents_nofollow(directory: &File, display_path: &Path) -> 
         )
     })? {
         let child_path = display_path.join(&name);
+        run_directory_cleanup_open_hook(&child_path);
         match open_directory_child_nofollow(directory, &name) {
             Ok(child) => {
                 let expected_identity = file_identity(&child).map_err(|error| {
@@ -4490,6 +5055,7 @@ fn remove_directory_contents_nofollow(directory: &File, display_path: &Path) -> 
         })?
     {
         let child_path = display_path.join(&name);
+        run_directory_cleanup_open_hook(&child_path);
         let child = match open_any_child_for_delete(directory, &name) {
             Ok(child) => child,
             Err(error) if error.kind() == ErrorKind::NotFound => continue,
@@ -5373,7 +5939,16 @@ fn capture_directory_snapshot_recursive(
 
 fn validate_staged_dump(root: &Path, kind: SourceSetKind) -> Result<TreeSnapshot, String> {
     let snapshot = TreeSnapshot::capture_target(root)?;
-    let TreeSnapshot::Directory { entries, .. } = &snapshot else {
+    validate_staged_dump_snapshot(root, kind, &snapshot)?;
+    Ok(snapshot)
+}
+
+fn validate_staged_dump_snapshot(
+    root: &Path,
+    kind: SourceSetKind,
+    snapshot: &TreeSnapshot,
+) -> Result<(), String> {
+    let TreeSnapshot::Directory { entries, .. } = snapshot else {
         return Err(format!(
             "v8-runner did not create the private staged dump directory: {}",
             root.display()
@@ -5408,7 +5983,7 @@ fn validate_staged_dump(root: &Path, kind: SourceSetKind) -> Result<TreeSnapshot
         }
         validate_staged_xml(&root.join(&entry.relative_path), &entry.kind)?;
     }
-    Ok(snapshot)
+    Ok(())
 }
 
 fn validate_required_owner(path: &Path, kind: SourceSetKind) -> Result<(), String> {
@@ -5596,8 +6171,14 @@ fn publish_staged_tree(
             private.staged_tree.display()
         )
     })?;
+    private.remember_staged_tree(staged);
+    private
+        .recovery_children
+        .insert(sealed_name.clone(), staged.clone());
 
     run_publication_failpoint(PublicationCheckpoint::BeforeStageInstall)?;
+    let previous_retention = private.retention;
+    private.retention = PrivateRetention::EntireStage;
     rename_prechecked_directory_child_no_replace(
         private.execution_anchor(),
         OsStr::new("staged-source"),
@@ -5621,8 +6202,13 @@ fn publish_staged_tree(
             private.staged_tree.display()
         ));
     }
+    private.retention = previous_retention;
 
     if had_target {
+        private
+            .recovery_children
+            .insert(backup_name.clone(), original.clone());
+        private.publication_uncertain = true;
         rename_child_no_replace(
             target_parent,
             target_name,
@@ -5666,6 +6252,7 @@ fn publish_staged_tree(
                 target_name,
                 &backup_name,
                 &moved,
+                false,
                 primary,
             );
         }
@@ -5677,6 +6264,7 @@ fn publish_staged_tree(
                 target_name,
                 &backup_name,
                 original,
+                true,
                 error,
             );
         }
@@ -5691,18 +6279,19 @@ fn publish_staged_tree(
                 target_name,
                 &backup_name,
                 original,
+                true,
                 error,
             );
         }
         return Err(error);
     }
-    // No supported host offers an identity-conditioned source rename. Treat the
-    // move plus the immediate snapshot below as one publication boundary: a
-    // name-swapped source is atomically removed from the Git-visible target into
-    // private quarantine before rollback or lock release.
-    if let Err(error) = rename_child_no_replace(
+    // Refuse a source-name replacement before installation. After the move,
+    // recovery is permitted only for the root identity of this validated stage.
+    private.publication_uncertain = true;
+    if let Err(error) = rename_prechecked_directory_child_no_replace(
         private.recovery_anchor(),
         &sealed_name,
+        staged_identity,
         target_parent,
         target_name,
     ) {
@@ -5719,77 +6308,87 @@ fn publish_staged_tree(
                 target_name,
                 &backup_name,
                 original,
+                true,
                 primary,
             );
         }
         return Err(primary);
     }
 
-    let installed = match target_parent.capture_child(target_name, target) {
-        Ok(installed) => installed,
-        Err(error) => {
-            let primary = format!(
-                "could not validate the just-installed staged target before commit: {error}"
-            );
-            if let Err(quarantine_error) = quarantine_unverified_install(
-                private,
-                target,
-                target_parent,
-                target_name,
-                &failed_name,
-                &failed,
-                None,
-            ) {
-                return Err(retain_recovery_error(
-                    private,
-                    format!("{primary}; {quarantine_error}"),
-                ));
-            }
-            if had_target {
-                return rollback_before_stage_install(
+    let reject_publication = |private: &mut PrivateDumpStage,
+                              installed: Option<&TreeSnapshot>,
+                              error: String| {
+        let identity = match installed {
+            Some(snapshot) => Ok(snapshot.root_identity()),
+            None => target_parent.capture_child_root_identity(target_name, target),
+        };
+        match identity {
+            Ok(Some(identity)) if identity == staged_identity => {
+                quarantine_unverified_and_rollback(
                     private,
                     target,
                     target_parent,
                     target_name,
+                    &failed_name,
+                    &failed,
+                    staged,
+                    installed,
+                    had_target,
                     &backup_name,
                     original,
-                    primary,
-                );
+                    error,
+                )
             }
-            return Err(primary);
-        }
-    };
-    if &installed != staged {
-        let primary = format!(
-            "sealed staged source identity changed at the atomic publication boundary; unverified tree was not committed: {}",
-            target.display()
-        );
-        if let Err(error) = quarantine_unverified_install(
-            private,
-            target,
-            target_parent,
-            target_name,
-            &failed_name,
-            &failed,
-            Some(&installed),
-        ) {
-            return Err(retain_recovery_error(
-                private,
-                format!("{primary}; {error}"),
-            ));
-        }
-        if had_target {
-            return rollback_before_stage_install(
+            Ok(None) if had_target => rollback_before_stage_install(
                 private,
                 target,
                 target_parent,
                 target_name,
                 &backup_name,
                 original,
-                primary,
+                true,
+                error,
+            ),
+            Ok(None) => {
+                private.publication_uncertain = false;
+                Err(error)
+            }
+            Ok(Some(_)) => {
+                let error = format!(
+                    "{error}; a concurrent target with a different root identity now occupies {} and was left untouched",
+                    target.display()
+                );
+                Err(retain_recovery_error(private, error))
+            }
+            Err(identity_error) => {
+                let error = format!(
+                    "{error}; published target ownership could not be classified: {identity_error}"
+                );
+                Err(retain_recovery_error(private, error))
+            }
+        }
+    };
+
+    run_publication_hook(PublicationCheckpoint::BeforeInstalledSnapshot);
+    let installed = match target_parent.capture_child(target_name, target) {
+        Ok(installed) => installed,
+        Err(error) => {
+            return reject_publication(
+                private,
+                None,
+                format!("could not verify the published target before commit: {error}"),
             );
         }
-        return Err(primary);
+    };
+    if &installed != staged {
+        return reject_publication(
+            private,
+            Some(&installed),
+            format!(
+                "published dump differs from the validated staged snapshot before commit: {}",
+                target.display()
+            ),
+        );
     }
 
     let checkpoint_error =
@@ -5803,63 +6402,7 @@ fn publish_staged_tree(
                 ),
                 None => format!("could not verify the published target: {capture_error}"),
             };
-            match target_parent.capture_child_root_identity(target_name, target) {
-                Ok(Some(identity)) if identity == staged_identity => {
-                    return quarantine_unverified_and_rollback(
-                        private,
-                        target,
-                        target_parent,
-                        target_name,
-                        &failed_name,
-                        &failed,
-                        None,
-                        had_target,
-                        &backup_name,
-                        original,
-                        error,
-                    );
-                }
-                Ok(None) if had_target => {
-                    return rollback_before_stage_install(
-                        private,
-                        target,
-                        target_parent,
-                        target_name,
-                        &backup_name,
-                        original,
-                        error,
-                    );
-                }
-                Ok(None) => return Err(error),
-                Ok(Some(_)) if had_target => {
-                    return Err(retain_recovery_error(
-                        private,
-                        format!(
-                            "{error}; a concurrent target with a different root identity now occupies {} and was left untouched",
-                            target.display()
-                        ),
-                    ));
-                }
-                Ok(Some(_)) => {
-                    return Err(format!(
-                        "{error}; a concurrent target with a different root identity now occupies {} and was left untouched",
-                        target.display()
-                    ));
-                }
-                Err(identity_error) if had_target => {
-                    return Err(retain_recovery_error(
-                        private,
-                        format!(
-                            "{error}; published target ownership could not be classified: {identity_error}"
-                        ),
-                    ));
-                }
-                Err(identity_error) => {
-                    return Err(format!(
-                        "{error}; published target ownership could not be classified: {identity_error}"
-                    ));
-                }
-            }
+            return reject_publication(private, None, error);
         }
     };
     let validation_error = (&published != staged).then(|| {
@@ -5869,130 +6412,45 @@ fn publish_staged_tree(
         )
     });
     if let Some(error) = checkpoint_error.or(validation_error) {
-        if &published == staged {
-            if let Err(move_error) = rename_child_no_replace(
-                target_parent,
-                target_name,
-                private.recovery_anchor(),
-                &failed_name,
-            ) {
-                return Err(retain_recovery_error(
-                    private,
-                    format!(
-                        "{error}; rollback could not atomically move failed publication {} to {} without clobbering: {move_error}",
-                        target.display(),
-                        failed.display()
-                    ),
-                ));
-            }
-            let failed_snapshot = match private
-                .recovery_anchor()
-                .capture_child(&failed_name, &failed)
-            {
-                Ok(snapshot) => snapshot,
-                Err(snapshot_error) => {
-                    return Err(retain_recovery_error(
-                        private,
-                        format!(
-                            "{error}; could not verify failed-publication recovery {}: {snapshot_error}",
-                            failed.display()
-                        ),
-                    ));
-                }
-            };
-            if &failed_snapshot != staged {
-                return Err(retain_recovery_error(
-                    private,
-                    format!(
-                        "{error}; failed-publication recovery differs from the validated staged snapshot: {}",
-                        failed.display()
-                    ),
-                ));
-            }
-            if had_target {
-                return rollback_before_stage_install(
-                    private,
-                    target,
-                    target_parent,
-                    target_name,
-                    &backup_name,
-                    original,
-                    error,
-                );
-            }
-            return Err(error);
-        }
-
-        if published.root_identity() == Some(staged_identity) {
-            return quarantine_unverified_and_rollback(
-                private,
-                target,
-                target_parent,
-                target_name,
-                &failed_name,
-                &failed,
-                Some(&published),
-                had_target,
-                &backup_name,
-                original,
-                error,
-            );
-        }
-
-        if matches!(published, TreeSnapshot::Absent) && had_target {
-            return rollback_before_stage_install(
-                private,
-                target,
-                target_parent,
-                target_name,
-                &backup_name,
-                original,
-                error,
-            );
-        }
-        if matches!(published, TreeSnapshot::Absent) {
-            return Err(error);
-        }
-
-        if had_target {
-            return Err(retain_recovery_error(
-                private,
-                format!(
-                    "{error}; a concurrent target now occupies {} and was left untouched",
-                    target.display()
-                ),
-            ));
-        }
-        return Err(format!(
-            "{error}; a concurrent target now occupies {} and was left untouched",
-            target.display()
-        ));
+        return reject_publication(private, Some(&published), error);
     }
 
     if let Err(error) = target_parent.verify_path_binding() {
-        if had_target {
-            return Err(retain_recovery_error(
-                private,
-                format!("dump target parent changed after publication verification: {error}"),
-            ));
-        }
-        return Err(error);
+        return Err(retain_recovery_error(
+            private,
+            format!("dump target parent changed after publication verification: {error}"),
+        ));
     }
+    private.publication_uncertain = false;
     Ok(Vec::new())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn quarantine_unverified_install(
-    private: &PrivateDumpStage,
+    private: &mut PrivateDumpStage,
     target: &Path,
     target_parent: &DirectoryAnchor,
     target_name: &OsStr,
     quarantine_name: &OsStr,
     quarantine_path: &Path,
+    owned_tree: &TreeSnapshot,
     installed: Option<&TreeSnapshot>,
 ) -> Result<(), String> {
-    rename_child_no_replace(
+    let expected_identity = owned_tree
+        .root_identity()
+        .ok_or_else(|| "unverified publication has no owned root identity".to_string())?;
+    // Protect recovery before a rename whose outcome may be uncertain. Cleanup
+    // may delete it again only after the moved root is proved to be our tree.
+    let previous_retention = private.retention;
+    private.retention = private.retention.max(PrivateRetention::Recovery);
+    private
+        .recovery_children
+        .entry(quarantine_name.to_os_string())
+        .or_insert_with(|| owned_tree.clone());
+    rename_prechecked_directory_child_no_replace(
         target_parent,
         target_name,
+        expected_identity,
         private.recovery_anchor(),
         quarantine_name,
     )
@@ -6003,6 +6461,51 @@ fn quarantine_unverified_install(
             quarantine_path.display()
         )
     })?;
+    match private
+        .recovery_anchor()
+        .capture_child_root_identity(quarantine_name, quarantine_path)
+    {
+        Ok(Some(identity)) if identity == expected_identity => {}
+        Ok(Some(identity)) => {
+            let return_result = rename_prechecked_directory_child_no_replace(
+                private.recovery_anchor(),
+                quarantine_name,
+                identity,
+                target_parent,
+                target_name,
+            )
+            .and_then(|()| {
+                if target_parent.capture_child_root_identity(target_name, target)? == Some(identity)
+                {
+                    Ok(())
+                } else {
+                    Err("returned target identity could not be confirmed".to_string())
+                }
+            });
+            return Err(match return_result {
+                Ok(()) => format!(
+                    "quarantine captured a different root identity; the concurrent target was returned without clobbering: {}",
+                    target.display()
+                ),
+                Err(error) => format!(
+                    "quarantine captured a different root identity; recovery remains protected at {}: {error}",
+                    quarantine_path.display()
+                ),
+            });
+        }
+        Ok(None) => {
+            return Err(format!(
+                "quarantined root is absent; recovery remains protected at {}",
+                quarantine_path.display()
+            ));
+        }
+        Err(error) => {
+            return Err(format!(
+                "could not verify quarantined root identity; recovery remains protected at {}: {error}",
+                quarantine_path.display()
+            ));
+        }
+    }
     if let Some(installed) = installed {
         let quarantined = private
             .recovery_anchor()
@@ -6027,6 +6530,7 @@ fn quarantine_unverified_install(
             ));
         }
     }
+    private.retention = previous_retention;
     Ok(())
 }
 
@@ -6038,6 +6542,7 @@ fn quarantine_unverified_and_rollback(
     target_name: &OsStr,
     quarantine_name: &OsStr,
     quarantine_path: &Path,
+    owned_tree: &TreeSnapshot,
     installed: Option<&TreeSnapshot>,
     had_target: bool,
     backup_name: &OsStr,
@@ -6051,6 +6556,7 @@ fn quarantine_unverified_and_rollback(
         target_name,
         quarantine_name,
         quarantine_path,
+        owned_tree,
         installed,
     ) {
         return Err(retain_recovery_error(
@@ -6066,13 +6572,25 @@ fn quarantine_unverified_and_rollback(
             target_name,
             backup_name,
             expected_backup,
+            true,
             primary,
         )
     } else {
-        Err(primary)
+        match target_parent.capture_child_root_identity(target_name, target) {
+            Ok(None) => {
+                private.publication_uncertain = false;
+                Err(primary)
+            }
+            Ok(Some(_)) => Err(retain_recovery_error(private, primary)),
+            Err(error) => Err(retain_recovery_error(
+                private,
+                format!("{primary}; {error}"),
+            )),
+        }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn rollback_before_stage_install(
     private: &mut PrivateDumpStage,
     target: &Path,
@@ -6080,12 +6598,26 @@ fn rollback_before_stage_install(
     target_name: &OsStr,
     backup_name: &OsStr,
     expected_backup: &TreeSnapshot,
+    restores_original: bool,
     primary: String,
 ) -> Result<Vec<String>, String> {
     let backup = private.recovery.join(backup_name);
-    if let Err(error) = rename_child_no_replace(
+    let expected_identity = match expected_backup.root_identity() {
+        Some(identity) => identity,
+        None => {
+            return Err(retain_recovery_error(
+                private,
+                format!(
+                    "{primary}; rollback backup has no expected directory identity: {}",
+                    backup.display()
+                ),
+            ))
+        }
+    };
+    if let Err(error) = rename_prechecked_directory_child_no_replace(
         private.recovery_anchor(),
         backup_name,
+        expected_identity,
         target_parent,
         target_name,
     ) {
@@ -6112,6 +6644,7 @@ fn rollback_before_stage_install(
                 target_name,
                 backup_name,
                 &backup,
+                expected_backup,
                 None,
             ) {
                 return Err(retain_recovery_error(
@@ -6137,6 +6670,7 @@ fn rollback_before_stage_install(
             target_name,
             backup_name,
             &backup,
+            expected_backup,
             Some(&restored),
         ) {
             return Err(retain_recovery_error(
@@ -6148,13 +6682,22 @@ fn rollback_before_stage_install(
     }
 
     match target_parent.verify_path_binding() {
-        Ok(()) => Err(primary),
+        Ok(()) => {
+            if restores_original {
+                private.publication_uncertain = false;
+            }
+            Err(primary)
+        }
         Err(binding_error) => {
-            let quarantine = rename_child_no_replace(
+            let quarantine = quarantine_unverified_install(
+                private,
+                target,
                 target_parent,
                 target_name,
-                private.recovery_anchor(),
                 backup_name,
+                &backup,
+                expected_backup,
+                Some(expected_backup),
             );
             let detail = match quarantine {
                 Ok(()) => format!(
@@ -6172,11 +6715,11 @@ fn rollback_before_stage_install(
 fn retain_recovery_error(private: &mut PrivateDumpStage, primary: String) -> String {
     match private.preserve_for_recovery() {
         Ok(()) => format!(
-            "{primary}; secret-free recovery retained at {}",
-            private.recovery.display()
+            "{primary}; data retained for recovery at {}",
+            if private.retention == PrivateRetention::EntireStage { &private.root } else { &private.recovery }.display()
         ),
         Err(cleanup_error) => format!(
-            "{primary}; recovery could not be retained safely because {cleanup_error}; private root cleanup will be retried: {}",
+            "{primary}; recovery remains protected; private execution cleanup will be retried after {cleanup_error}: {}",
             private.root.display()
         ),
     }
@@ -6260,6 +6803,7 @@ fn rename_child_no_replace(
 ) -> Result<(), String> {
     source_parent.verify_path_binding()?;
     destination_parent.verify_path_binding()?;
+    run_directory_rename_hook(&source_parent.path.join(source_name));
     let source_name = CString::new(source_name.as_bytes()).map_err(|error| {
         format!(
             "source name contains an embedded NUL byte in {}: {error}",
@@ -6386,9 +6930,11 @@ fn rename_child_no_replace(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PublicationCheckpoint {
+    AfterStagedCapture,
     AfterBackup,
     BeforeStageInstall,
     BeforeSealedPublishRename,
+    BeforeInstalledSnapshot,
     AfterStageInstall,
 }
 
@@ -6396,6 +6942,7 @@ enum PublicationCheckpoint {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PrivateCleanupCheckpoint {
     BeforeEffectiveConfigScrub,
+    BeforeCompartmentRemove,
 }
 
 #[cfg(windows)]
@@ -6410,6 +6957,10 @@ type PublicationHook = (PublicationCheckpoint, Box<dyn FnOnce()>);
 #[cfg(test)]
 type PathHook = Box<dyn FnOnce(&Path)>;
 #[cfg(test)]
+type CleanupOpenHook = Box<dyn FnMut(&Path)>;
+#[cfg(all(test, unix))]
+type DirectoryRenameHook = Box<dyn FnMut(&Path)>;
+#[cfg(test)]
 type TargetedReadHooks = (
     PathBuf,
     Option<Box<dyn FnOnce()>>,
@@ -6420,10 +6971,14 @@ type TargetedReadHooks = (
 thread_local! {
     static TEST_PUBLICATION_FAILPOINT: RefCell<Option<PublicationCheckpoint>> = const { RefCell::new(None) };
     static TEST_PUBLICATION_HOOK: RefCell<Option<PublicationHook>> = const { RefCell::new(None) };
+    #[cfg(unix)]
+    static TEST_DIRECTORY_RENAME_HOOK: RefCell<Option<DirectoryRenameHook>> = const { RefCell::new(None) };
     static TEST_SECURE_READ_HOOK: RefCell<Option<PathHook>> = const { RefCell::new(None) };
     static TEST_TARGETED_READ_HOOKS: RefCell<Option<TargetedReadHooks>> = const { RefCell::new(None) };
     static TEST_TREE_OPEN_HOOK: RefCell<Option<PathHook>> = const { RefCell::new(None) };
+    static TEST_CLEANUP_OPEN_HOOK: RefCell<Option<CleanupOpenHook>> = const { RefCell::new(None) };
     static TEST_PRIVATE_CREATE_HOOK: RefCell<Option<PathHook>> = const { RefCell::new(None) };
+    static TEST_EFFECTIVE_CONFIG_PREPARE_HOOK: RefCell<Option<PathHook>> = const { RefCell::new(None) };
     #[cfg(windows)]
     static TEST_EFFECTIVE_CONFIG_CREATE_HOOK: RefCell<Option<PathHook>> = const { RefCell::new(None) };
     static TEST_TARGET_PARENT_CAPTURE_HOOK: RefCell<Option<PathHook>> = const { RefCell::new(None) };
@@ -6486,6 +7041,24 @@ fn with_secure_read_hook<T>(hook: impl FnOnce(&Path) + 'static, action: impl FnO
     action()
 }
 
+#[cfg(all(test, unix))]
+fn with_directory_rename_hook<T>(
+    hook: impl FnMut(&Path) + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<DirectoryRenameHook>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_DIRECTORY_RENAME_HOOK.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+    let previous = TEST_DIRECTORY_RENAME_HOOK.with(|slot| slot.replace(Some(Box::new(hook))));
+    let _reset = Reset(previous);
+    action()
+}
+
 #[cfg(test)]
 fn with_targeted_read_hooks<T>(
     target: PathBuf,
@@ -6527,6 +7100,24 @@ fn with_tree_open_hook<T>(hook: impl FnOnce(&Path) + 'static, action: impl FnOnc
 }
 
 #[cfg(test)]
+fn with_directory_cleanup_open_hook<T>(
+    hook: impl FnMut(&Path) + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<CleanupOpenHook>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_CLEANUP_OPEN_HOOK.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+    let previous = TEST_CLEANUP_OPEN_HOOK.with(|slot| slot.replace(Some(Box::new(hook))));
+    let _reset = Reset(previous);
+    action()
+}
+
+#[cfg(test)]
 fn with_private_create_hook<T>(
     hook: impl FnOnce(&Path) + 'static,
     action: impl FnOnce() -> T,
@@ -6559,6 +7150,25 @@ fn with_effective_config_create_hook<T>(
     }
     let previous =
         TEST_EFFECTIVE_CONFIG_CREATE_HOOK.with(|slot| slot.replace(Some(Box::new(hook))));
+    let _reset = Reset(previous);
+    action()
+}
+
+#[cfg(test)]
+fn with_effective_config_prepare_hook<T>(
+    hook: impl FnOnce(&Path) + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<PathHook>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_EFFECTIVE_CONFIG_PREPARE_HOOK.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+    let previous =
+        TEST_EFFECTIVE_CONFIG_PREPARE_HOOK.with(|slot| slot.replace(Some(Box::new(hook))));
     let _reset = Reset(previous);
     action()
 }
@@ -6648,6 +7258,13 @@ fn run_private_create_hook(_path: &Path) {
     }
 }
 
+fn run_effective_config_prepare_hook(_path: &Path) {
+    #[cfg(test)]
+    if let Some(hook) = TEST_EFFECTIVE_CONFIG_PREPARE_HOOK.with(|slot| slot.borrow_mut().take()) {
+        hook(_path);
+    }
+}
+
 #[cfg(windows)]
 fn run_effective_config_create_hook(_path: &Path) {
     #[cfg(test)]
@@ -6708,7 +7325,16 @@ fn run_tree_open_hook(_path: &Path) {
     }
 }
 
-fn run_publication_failpoint(checkpoint: PublicationCheckpoint) -> Result<(), String> {
+fn run_directory_cleanup_open_hook(_path: &Path) {
+    #[cfg(test)]
+    TEST_CLEANUP_OPEN_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().as_mut() {
+            hook(_path);
+        }
+    });
+}
+
+fn run_publication_hook(checkpoint: PublicationCheckpoint) {
     #[cfg(test)]
     {
         let hook = TEST_PUBLICATION_HOOK.with(|slot| {
@@ -6725,13 +7351,28 @@ fn run_publication_failpoint(checkpoint: PublicationCheckpoint) -> Result<(), St
         if let Some(hook) = hook {
             hook();
         }
-        if TEST_PUBLICATION_FAILPOINT.with(|slot| slot.borrow().as_ref() == Some(&checkpoint)) {
-            return Err(format!(
-                "injected verified dump publication failure at {checkpoint:?}"
-            ));
-        }
     }
     let _ = checkpoint;
+}
+
+#[cfg(unix)]
+fn run_directory_rename_hook(_source: &Path) {
+    #[cfg(test)]
+    TEST_DIRECTORY_RENAME_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().as_mut() {
+            hook(_source);
+        }
+    });
+}
+
+fn run_publication_failpoint(checkpoint: PublicationCheckpoint) -> Result<(), String> {
+    run_publication_hook(checkpoint);
+    #[cfg(test)]
+    if TEST_PUBLICATION_FAILPOINT.with(|slot| slot.borrow().as_ref() == Some(&checkpoint)) {
+        return Err(format!(
+            "injected verified dump publication failure at {checkpoint:?}"
+        ));
+    }
     Ok(())
 }
 
@@ -6776,20 +7417,6 @@ fn finalize_private_outcome(
     private: &mut PrivateDumpStage,
     mut outcome: AdapterOutcome,
 ) -> AdapterOutcome {
-    if !private.cleanup_on_drop {
-        outcome.warnings.retain(|warning| {
-            warning
-                != "Git-visible sources were not published; the private staged dump was discarded"
-        });
-        outcome.warnings.push(format!(
-            "Secret-free recovery was retained at {}",
-            private.recovery.display()
-        ));
-        outcome
-            .artifacts
-            .push(private.recovery.display().to_string());
-        return outcome;
-    }
     if let Err(error) = private.cleanup_now() {
         if outcome.ok {
             outcome.ok = false;
@@ -6799,24 +7426,66 @@ fn finalize_private_outcome(
             );
         }
         outcome.errors.push(error.clone());
-        outcome
-            .warnings
-            .push(if private.effective_config_secret_present {
-                format!(
-                    "Secret-bearing private dump debris may remain at {}",
-                    private.root.display()
-                )
-            } else {
-                format!(
-                    "Private dump debris may remain at {}",
-                    private.root.display()
-                )
-            });
-        outcome.artifacts.push(private.root.display().to_string());
+        let status = if private.effective_config_secret_present {
+            "Secret-bearing private dump debris may remain"
+        } else {
+            "Private dump debris may remain"
+        };
+        match private.bound_root_for_reporting() {
+            Ok(_) => {
+                outcome
+                    .warnings
+                    .push(format!("{status} at {}", private.root.display()));
+                outcome.artifacts.push(private.root.display().to_string());
+            }
+            Err(error) => outcome.warnings.push(format!(
+                "{status}, but its current location is unconfirmed; original name: {} ({error})",
+                private.root.display()
+            )),
+        }
         outcome.stderr = Some(match outcome.stderr.take() {
             Some(stderr) if !stderr.is_empty() => format!("{stderr}\n{error}\n"),
             _ => format!("{error}\n"),
         });
+    }
+    if private.publication_uncertain {
+        outcome.ok = false;
+        outcome.summary =
+            "Full dump publication state is unknown; inspect the retained data before retrying"
+                .into();
+    }
+    if private.retention != PrivateRetention::None || private.publication_uncertain {
+        outcome.warnings.retain(|warning| {
+            warning
+                != "Git-visible sources were not published; the private staged dump was discarded"
+        });
+        let status = if private.effective_config_secret_present {
+            "Private data retained; effective configuration cleanup is incomplete"
+        } else {
+            "Data retained for recovery"
+        };
+        let location = if private.retention == PrivateRetention::EntireStage {
+            &private.root
+        } else {
+            &private.recovery
+        };
+        let proof = if private.retention == PrivateRetention::EntireStage {
+            private.bound_root_for_reporting().map(drop)
+        } else {
+            private.verify_recovery_location()
+        };
+        match proof {
+            Ok(()) => {
+                outcome
+                    .warnings
+                    .push(format!("{status} at {}", location.display()));
+                outcome.artifacts.push(location.display().to_string());
+            }
+            Err(error) => outcome.warnings.push(format!(
+                "{status}, but its current location is unconfirmed; original name: {} ({error})",
+                location.display()
+            )),
+        }
     }
     outcome
 }
@@ -7681,7 +8350,7 @@ mod tests {
         #[cfg(unix)]
         Symlink,
         #[cfg(unix)]
-        SwapPrivateRoot,
+        SwapPrivateRoot(std::rc::Rc<std::cell::Cell<Option<super::FileIdentity>>>),
     }
 
     struct DumpRunner {
@@ -7819,13 +8488,19 @@ mod tests {
                     .unwrap();
                 }
                 #[cfg(unix)]
-                RunnerMutation::SwapPrivateRoot => {
+                RunnerMutation::SwapPrivateRoot(original_identity) => {
                     use std::os::unix::fs::PermissionsExt;
 
                     let private_root = config_path
                         .parent()
                         .and_then(Path::parent)
                         .expect("effective config is under the private root");
+                    original_identity.set(Some(
+                        super::file_identity(
+                            &super::open_directory_nofollow(private_root).unwrap(),
+                        )
+                        .unwrap(),
+                    ));
                     let displaced_name = format!(
                         "{}-displaced",
                         private_root.file_name().unwrap().to_string_lossy()
@@ -7841,6 +8516,11 @@ mod tests {
                         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
                             .unwrap();
                     }
+                    std::fs::write(
+                        private_root.join("execution/foreign.txt"),
+                        b"foreign root sentinel",
+                    )
+                    .unwrap();
                 }
             }
             Ok(ProcessOutput {
@@ -7958,6 +8638,97 @@ mod tests {
         invoke_with_args(runner, platform, invocation, context, &args())
     }
 
+    fn assert_retained_directory_artifact(
+        result: &crate::application::AdapterOutcome,
+        retained: &Path,
+    ) {
+        let expected = std::fs::canonicalize(retained).unwrap();
+        let expected_identity =
+            super::file_identity(&super::open_directory_nofollow(&expected).unwrap()).unwrap();
+        assert!(
+            result.artifacts.iter().any(|artifact| {
+                std::fs::canonicalize(artifact).is_ok_and(|actual| {
+                    actual == expected
+                        && super::open_directory_nofollow(&actual).is_ok_and(|directory| {
+                            super::file_identity(&directory)
+                                .is_ok_and(|identity| identity == expected_identity)
+                        })
+                })
+            }),
+            "a recovery artifact must name the retained directory identity"
+        );
+    }
+
+    #[test]
+    fn effective_config_preparation_failure_reports_retained_foreign_data() {
+        let (root, context, _) = workspace("effective-config-prepare-retention");
+        let target = context.cwd.join("src");
+        seed_valid_target(&target);
+        let before = super::capture_tree_target_nofollow(&target).unwrap();
+        let platform = fixed_platform(&root);
+        let runner = DumpRunner::valid();
+        let retained = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let hook_retained = std::rc::Rc::clone(&retained);
+
+        let result = super::with_effective_config_prepare_hook(
+            move |path| {
+                std::fs::create_dir(path).unwrap();
+                std::fs::write(path.join("foreign.txt"), b"foreign sentinel").unwrap();
+                let private = path.parent().unwrap().parent().unwrap().to_path_buf();
+                let snapshot = super::capture_tree_target_nofollow(&private).unwrap();
+                *hook_retained.borrow_mut() = Some((private, snapshot));
+            },
+            || invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context),
+        );
+
+        assert!(!result.ok);
+        assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
+        assert!(result.changes.is_empty());
+        assert_eq!(
+            super::capture_tree_target_nofollow(&target).unwrap(),
+            before
+        );
+        let retained = retained.borrow();
+        let (private, snapshot) = retained.as_ref().expect("preparation hook must run");
+        assert_eq!(
+            super::capture_tree_target_nofollow(private).unwrap(),
+            *snapshot,
+            "preparation cleanup must preserve all retained identities and bytes"
+        );
+        assert_eq!(
+            std::fs::read(
+                private
+                    .join("execution")
+                    .join(super::EFFECTIVE_CONFIG_NAME)
+                    .join("foreign.txt")
+            )
+            .unwrap(),
+            b"foreign sentinel"
+        );
+        assert!(result
+            .errors
+            .iter()
+            .any(|error| error.contains("failed to securely create private effective config")));
+        assert!(result
+            .summary
+            .contains("failed before verified dump publication"));
+        let expected = std::fs::canonicalize(private).unwrap();
+        let has_recovery_artifact = result
+            .artifacts
+            .iter()
+            .any(|artifact| std::fs::canonicalize(artifact).is_ok_and(|path| path == expected));
+        let reports_discarded = result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("the private staged dump was discarded"));
+        assert!(
+            has_recovery_artifact && !reports_discarded,
+            "retained preparation data needs recovery metadata: artifact={has_recovery_artifact}, discarded={reports_discarded}"
+        );
+        assert_retained_directory_artifact(&result, private);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[cfg(windows)]
     #[test]
     fn windows_applied_full_dump_reaches_runner_and_commits_validated_tree() {
@@ -8045,6 +8816,8 @@ mod tests {
         let runner = DumpRunner::valid();
         let displaced = context.cwd.join("created-effective-config.yaml");
         let replacement = context.cwd.join("replacement-effective-config.yaml");
+        let target = context.cwd.join("src");
+        let before = super::capture_tree_target_nofollow(&target).unwrap();
         std::fs::write(&replacement, b"replacement sentinel").unwrap();
         let expected_replacement_identity =
             crate::infrastructure::platform::filesystem::file_identity(
@@ -8052,6 +8825,8 @@ mod tests {
             )
             .unwrap();
         let created_identity = std::rc::Rc::new(Cell::new(None));
+        let retained = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let hook_retained = std::rc::Rc::clone(&retained);
         let hook_created_identity = std::rc::Rc::clone(&created_identity);
         let hook_displaced = displaced.clone();
         let hook_replacement = replacement.clone();
@@ -8066,11 +8841,31 @@ mod tests {
                 ));
                 std::fs::rename(path, &hook_displaced).unwrap();
                 std::fs::hard_link(&hook_replacement, path).unwrap();
+                let execution = path.parent().unwrap();
+                let private = execution.parent().unwrap();
+                let directories = [
+                    private.to_path_buf(),
+                    execution.to_path_buf(),
+                    private.join("recovery"),
+                ]
+                .into_iter()
+                .map(|directory| {
+                    let identity = super::file_identity(
+                        &super::open_directory_nofollow(
+                            &std::fs::canonicalize(&directory).unwrap(),
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap();
+                    (directory, identity)
+                })
+                .collect::<Vec<_>>();
+                *hook_retained.borrow_mut() = Some((path.to_path_buf(), directories));
             },
             || invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context),
         );
 
-        assert!(!result.ok, "{result:?}");
+        assert!(!result.ok);
         assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
         assert!(
             created_identity.get().is_some(),
@@ -8093,11 +8888,59 @@ mod tests {
             std::fs::read(&replacement).unwrap(),
             b"replacement sentinel"
         );
-        assert!(std::fs::read_dir(&context.cwd).unwrap().all(|entry| !entry
+        assert!(result.changes.is_empty());
+        assert_eq!(
+            super::capture_tree_target_nofollow(&target).unwrap(),
+            before
+        );
+        let retained = retained.borrow();
+        let (inside, directories) = retained.as_ref().expect("post-create hook must run");
+        assert_eq!(
+            super::file_identity(&std::fs::File::open(inside).unwrap()).unwrap(),
+            expected_replacement_identity,
+            "the substituted private name must still refer to the foreign file"
+        );
+        assert_ne!(Some(expected_replacement_identity), created_identity.get());
+        assert_eq!(std::fs::read(inside).unwrap(), b"replacement sentinel");
+        for (directory, expected_identity) in directories {
+            assert_eq!(
+                super::file_identity(
+                    &super::open_directory_nofollow(&std::fs::canonicalize(directory).unwrap())
+                        .unwrap(),
+                )
+                .unwrap(),
+                *expected_identity,
+                "cleanup must retain every original private directory identity"
+            );
+        }
+        let private = &directories[0].0;
+        let retained_roots = std::fs::read_dir(&context.cwd)
             .unwrap()
-            .file_name()
-            .to_string_lossy()
-            .starts_with(".unica-dump-guard-")));
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with(".unica-dump-guard-"))
+            })
+            .map(|path| std::fs::canonicalize(path).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            retained_roots,
+            vec![std::fs::canonicalize(private).unwrap()]
+        );
+        assert_retained_directory_artifact(&result, private);
+        assert!(result.errors.iter().any(|error| error
+            .contains("private effective config identity changed before verified reopen")));
+        assert!(result
+            .summary
+            .contains("failed before verified dump publication"));
+        assert!(result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("Data retained for recovery")));
+        assert!(!result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("the private staged dump was discarded")));
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -8312,6 +9155,503 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Copy)]
+    enum IncompleteRunnerFinish {
+        RunError,
+        TimedOut,
+        Cancelled,
+        FailedExit,
+        Panic,
+        SpawnFailure,
+    }
+
+    struct WaitingDumpWriter {
+        release: Option<std::sync::mpsc::Sender<()>>,
+        writer: Option<std::thread::JoinHandle<std::io::Result<()>>>,
+    }
+
+    impl WaitingDumpWriter {
+        fn finish(&mut self) -> std::io::Result<()> {
+            if let Some(release) = self.release.take() {
+                let _ = release.send(());
+            }
+            self.writer
+                .take()
+                .expect("writer is retained")
+                .join()
+                .unwrap()
+        }
+    }
+
+    impl Drop for WaitingDumpWriter {
+        fn drop(&mut self) {
+            if let Some(release) = self.release.take() {
+                let _ = release.send(());
+            }
+            if let Some(writer) = self.writer.take() {
+                let _ = writer.join();
+            }
+        }
+    }
+
+    struct IncompleteDumpRunner {
+        finish: IncompleteRunnerFinish,
+        create_stage: bool,
+        private_paths: std::cell::RefCell<Option<(PathBuf, PathBuf, PathBuf)>>,
+        pending_writer: std::cell::RefCell<Option<WaitingDumpWriter>>,
+        spawn_output_snapshot: std::cell::RefCell<Option<TreeSnapshot>>,
+    }
+
+    impl IncompleteDumpRunner {
+        fn new(finish: IncompleteRunnerFinish, create_stage: bool) -> Self {
+            Self {
+                finish,
+                create_stage,
+                private_paths: std::cell::RefCell::new(None),
+                pending_writer: std::cell::RefCell::new(None),
+                spawn_output_snapshot: std::cell::RefCell::new(None),
+            }
+        }
+
+        fn remember_paths(&self, command: &ProcessCommand) -> PathBuf {
+            let config_index = command
+                .args
+                .iter()
+                .position(|arg| arg == "--config")
+                .unwrap();
+            let config_path = PathBuf::from(&command.args[config_index + 1]);
+            let config: serde_yaml::Value =
+                serde_yaml::from_slice(&std::fs::read(&config_path).unwrap()).unwrap();
+            let stage = PathBuf::from(config["source-set"][0]["path"].as_str().unwrap());
+            let private_root = config_path
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .to_path_buf();
+            self.private_paths
+                .replace(Some((private_root, config_path, stage.clone())));
+            stage
+        }
+    }
+
+    impl ProcessRunner for IncompleteDumpRunner {
+        fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+            let stage = self.remember_paths(command);
+            if matches!(self.finish, IncompleteRunnerFinish::SpawnFailure) {
+                return Err("the operating system refused to launch the runner".into());
+            }
+            if self.create_stage {
+                std::fs::create_dir(&stage).unwrap();
+            }
+            let (release, wait) = std::sync::mpsc::channel();
+            let writer = std::thread::spawn(move || {
+                wait.recv().unwrap();
+                if !stage.exists() {
+                    // A writer may create its own output, but cannot recreate
+                    // the enclosing attempt after premature cleanup.
+                    std::fs::create_dir(&stage)?;
+                }
+                std::fs::write(stage.join("late-writer.txt"), b"data after runner returned")
+            });
+            self.pending_writer.replace(Some(WaitingDumpWriter {
+                release: Some(release),
+                writer: Some(writer),
+            }));
+            match self.finish {
+                IncompleteRunnerFinish::RunError => {
+                    Err("runner wait failed before writer completion was confirmed".into())
+                }
+                IncompleteRunnerFinish::Panic => panic!("injected runner unwind"),
+                _ => Ok(ProcessOutput {
+                    status_success: false,
+                    status: "1".into(),
+                    stdout: String::new(),
+                    stderr: "runner completion was not confirmed".into(),
+                    timed_out: matches!(self.finish, IncompleteRunnerFinish::TimedOut),
+                    cancelled: matches!(self.finish, IncompleteRunnerFinish::Cancelled),
+                    stdout_truncated: false,
+                    stderr_truncated: false,
+                    stdout_had_invalid_utf8: false,
+                    stderr_had_invalid_utf8: false,
+                }),
+            }
+        }
+
+        fn run_staged(
+            &self,
+            command: &ProcessCommand,
+        ) -> Result<ProcessOutput, crate::infrastructure::internal_adapters::ProcessStreamFailure>
+        {
+            if matches!(self.finish, IncompleteRunnerFinish::SpawnFailure) {
+                let stage = self.remember_paths(command);
+                if self.create_stage {
+                    std::fs::create_dir(&stage).unwrap();
+                    std::fs::write(stage.join("foreign.txt"), b"unowned spawn-failure sentinel")
+                        .unwrap();
+                    self.spawn_output_snapshot
+                        .replace(Some(super::capture_tree_target_nofollow(&stage).unwrap()));
+                }
+                return Err(
+                    crate::infrastructure::internal_adapters::ProcessStreamFailure::Spawn(
+                        "the operating system refused to launch the runner".into(),
+                    ),
+                );
+            }
+            self.run(command)
+                .map_err(crate::infrastructure::internal_adapters::ProcessStreamFailure::Run)
+        }
+    }
+
+    #[test]
+    fn unconfirmed_runner_retains_private_stage_for_late_writer() {
+        for finish in [
+            IncompleteRunnerFinish::RunError,
+            IncompleteRunnerFinish::TimedOut,
+            IncompleteRunnerFinish::Cancelled,
+            IncompleteRunnerFinish::FailedExit,
+        ] {
+            for create_stage in [false, true] {
+                let (root, context, _) = workspace("unconfirmed-runner-late-writer");
+                let target = context.cwd.join("src");
+                seed_valid_target(&target);
+                let before = super::capture_tree_target_nofollow(&target).unwrap();
+                let platform = fixed_platform(&root);
+                let runner = IncompleteDumpRunner::new(finish, create_stage);
+                let result = VerifiedFullDumpAdapter::with_dependencies(
+                    &runner,
+                    &platform,
+                    PathBuf::from("fake-v8-runner"),
+                )
+                .invoke(
+                    "unica.build.dump",
+                    FullDumpInvocation::BuildDump,
+                    &args(),
+                    &context,
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+                assert!(!result.ok);
+                let (private_root, config_path, stage) =
+                    runner.private_paths.borrow().clone().unwrap();
+                assert!(
+                    private_root.is_dir(),
+                    "a live writer lost its attempt directory"
+                );
+                assert!(
+                    std::fs::read(&config_path).unwrap().is_empty(),
+                    "held configuration must be empty"
+                );
+                assert!(result
+                    .artifacts
+                    .contains(&private_root.display().to_string()));
+                runner
+                    .pending_writer
+                    .borrow_mut()
+                    .as_mut()
+                    .unwrap()
+                    .finish()
+                    .unwrap();
+                assert_eq!(
+                    std::fs::read(stage.join("late-writer.txt")).unwrap(),
+                    b"data after runner returned"
+                );
+                assert_eq!(
+                    super::capture_tree_target_nofollow(&target).unwrap(),
+                    before
+                );
+                std::fs::remove_dir_all(root).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn runner_unwind_retains_private_stage_for_late_writer() {
+        let (root, context, _) = workspace("runner-unwind-late-writer");
+        let target = context.cwd.join("src");
+        seed_valid_target(&target);
+        let before = super::capture_tree_target_nofollow(&target).unwrap();
+        let platform = fixed_platform(&root);
+        let runner = IncompleteDumpRunner::new(IncompleteRunnerFinish::Panic, false);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            VerifiedFullDumpAdapter::with_dependencies(
+                &runner,
+                &platform,
+                PathBuf::from("fake-v8-runner"),
+            )
+            .invoke(
+                "unica.build.dump",
+                FullDumpInvocation::BuildDump,
+                &args(),
+                &context,
+                &CancellationToken::new(),
+            )
+        }));
+        assert!(result.is_err());
+        let (private_root, config_path, stage) = runner.private_paths.borrow().clone().unwrap();
+        assert!(
+            private_root.is_dir(),
+            "unwinding deleted a live writer's attempt directory"
+        );
+        assert!(
+            std::fs::read(&config_path).unwrap().is_empty(),
+            "held configuration must be empty"
+        );
+        runner
+            .pending_writer
+            .borrow_mut()
+            .as_mut()
+            .unwrap()
+            .finish()
+            .unwrap();
+        assert_eq!(
+            std::fs::read(stage.join("late-writer.txt")).unwrap(),
+            b"data after runner returned"
+        );
+        assert_eq!(
+            super::capture_tree_target_nofollow(&target).unwrap(),
+            before
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn confirmed_spawn_failure_preserves_unexpected_staged_output() {
+        let (root, context, _) = workspace("spawn-failure-foreign-output");
+        let target = context.cwd.join("src");
+        seed_valid_target(&target);
+        let before = super::capture_tree_target_nofollow(&target).unwrap();
+        let platform = fixed_platform(&root);
+        let runner = IncompleteDumpRunner::new(IncompleteRunnerFinish::SpawnFailure, true);
+
+        let result = VerifiedFullDumpAdapter::with_dependencies(
+            &runner,
+            &platform,
+            PathBuf::from("fake-v8-runner"),
+        )
+        .invoke(
+            "unica.build.dump",
+            FullDumpInvocation::BuildDump,
+            &args(),
+            &context,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+
+        assert!(!result.ok, "{result:?}");
+        assert!(result.changes.is_empty());
+        assert!(result.errors.join("\n").contains("refused to launch"));
+        let (private, config, stage) = runner.private_paths.borrow().clone().unwrap();
+        assert!(!config.exists());
+        assert_eq!(
+            super::capture_tree_target_nofollow(&stage).unwrap(),
+            *runner.spawn_output_snapshot.borrow().as_ref().unwrap(),
+            "a failure to spawn cannot grant ownership of unexpected output"
+        );
+        assert_eq!(
+            std::fs::read(stage.join("foreign.txt")).unwrap(),
+            b"unowned spawn-failure sentinel"
+        );
+        assert_eq!(
+            super::capture_tree_target_nofollow(&target).unwrap(),
+            before
+        );
+        assert_retained_directory_artifact(&result, &private);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn staged_replacement_after_completion_capture_remains_unowned() {
+        let (root, context, _) = workspace("staged-replacement-after-completion");
+        let target = context.cwd.join("src");
+        seed_valid_target(&target);
+        let before = super::capture_tree_target_nofollow(&target).unwrap();
+        let platform = fixed_platform(&root);
+        let runner = DumpRunner::valid();
+        let replacement = root.join("foreign-staged-source");
+        std::fs::create_dir(&replacement).unwrap();
+        std::fs::write(
+            replacement.join("Configuration.xml"),
+            valid_configuration_owner(),
+        )
+        .unwrap();
+        std::fs::write(
+            replacement.join("Catalogs.xml"),
+            format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="{TARGET_EXPORT_FORMAT}"><Catalog/></MetaDataObject>"#
+            ),
+        )
+        .unwrap();
+        let expected_replacement = super::capture_tree_target_nofollow(&replacement).unwrap();
+        let displaced = root.join("original-staged-source");
+        let retained = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let hook_retained = std::rc::Rc::clone(&retained);
+        let hook_workspace = context.cwd.clone();
+        let hook_displaced = displaced.clone();
+
+        let result = with_publication_hook(
+            PublicationCheckpoint::AfterStagedCapture,
+            move || {
+                let private = std::fs::read_dir(&hook_workspace)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path())
+                    .find(|path| {
+                        path.file_name()
+                            .unwrap()
+                            .to_string_lossy()
+                            .starts_with(".unica-dump-guard-")
+                    })
+                    .unwrap();
+                let stage = private.join("execution/staged-source");
+                let original = super::capture_tree_target_nofollow(&stage).unwrap();
+                std::fs::rename(&stage, &hook_displaced).unwrap();
+                std::fs::rename(&replacement, &stage).unwrap();
+                *hook_retained.borrow_mut() = Some((private, stage, original));
+            },
+            || invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context),
+        );
+
+        assert!(!result.ok, "{result:?}");
+        assert!(result.changes.is_empty());
+        assert!(
+            result
+                .errors
+                .join("\n")
+                .contains("bytes or identity changed"),
+            "validation must use the first captured owner identity: {result:?}"
+        );
+        assert_eq!(
+            super::capture_tree_target_nofollow(&target).unwrap(),
+            before
+        );
+        let retained = retained.borrow();
+        let (private, stage, original) = retained.as_ref().expect("capture hook must run");
+        assert_eq!(
+            super::capture_tree_target_nofollow(stage).unwrap(),
+            expected_replacement,
+            "cleanup must preserve every identity and byte of the replacement"
+        );
+        assert_eq!(
+            super::capture_tree_target_nofollow(&displaced).unwrap(),
+            *original,
+            "the first observed tree must not be reclassified as the replacement"
+        );
+        assert_retained_directory_artifact(&result, private);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    struct EmptySuccessfulDumpRunner;
+
+    impl ProcessRunner for EmptySuccessfulDumpRunner {
+        fn run(&self, _command: &ProcessCommand) -> Result<ProcessOutput, String> {
+            Ok(ProcessOutput {
+                status_success: true,
+                status: "0".into(),
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: false,
+                cancelled: false,
+                stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_had_invalid_utf8: false,
+                stderr_had_invalid_utf8: false,
+            })
+        }
+    }
+
+    #[test]
+    fn output_appearing_after_absent_completion_capture_remains_unowned() {
+        let (root, context, _) = workspace("staged-appearance-after-completion");
+        let target = context.cwd.join("src");
+        seed_valid_target(&target);
+        let before = super::capture_tree_target_nofollow(&target).unwrap();
+        let platform = fixed_platform(&root);
+        let retained = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let hook_retained = std::rc::Rc::clone(&retained);
+        let hook_workspace = context.cwd.clone();
+
+        let result = with_publication_hook(
+            PublicationCheckpoint::AfterStagedCapture,
+            move || {
+                let private = std::fs::read_dir(&hook_workspace)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path())
+                    .find(|path| {
+                        path.file_name()
+                            .unwrap()
+                            .to_string_lossy()
+                            .starts_with(".unica-dump-guard-")
+                    })
+                    .unwrap();
+                let stage = private.join("execution/staged-source");
+                assert!(!stage.exists());
+                std::fs::create_dir(&stage).unwrap();
+                std::fs::write(stage.join("Configuration.xml"), valid_configuration_owner())
+                    .unwrap();
+                std::fs::write(stage.join("foreign.txt"), b"appeared after observation").unwrap();
+                let snapshot = super::capture_tree_target_nofollow(&stage).unwrap();
+                *hook_retained.borrow_mut() = Some((private, stage, snapshot));
+            },
+            || {
+                VerifiedFullDumpAdapter::with_dependencies(
+                    &EmptySuccessfulDumpRunner,
+                    &platform,
+                    PathBuf::from("fake-v8-runner"),
+                )
+                .invoke(
+                    "unica.build.dump",
+                    FullDumpInvocation::BuildDump,
+                    &args(),
+                    &context,
+                    &CancellationToken::new(),
+                )
+                .unwrap()
+            },
+        );
+
+        assert!(!result.ok, "{result:?}");
+        assert!(result.changes.is_empty());
+        assert!(result.errors.join("\n").contains("did not create"));
+        assert_eq!(
+            super::capture_tree_target_nofollow(&target).unwrap(),
+            before
+        );
+        let retained = retained.borrow();
+        let (private, stage, snapshot) = retained.as_ref().expect("capture hook must run");
+        assert_eq!(
+            super::capture_tree_target_nofollow(stage).unwrap(),
+            *snapshot
+        );
+        assert_retained_directory_artifact(&result, private);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn confirmed_spawn_failure_cleans_unused_private_stage() {
+        let (root, context, _) = workspace("spawn-failure-cleans-stage");
+        let platform = fixed_platform(&root);
+        let runner = IncompleteDumpRunner::new(IncompleteRunnerFinish::SpawnFailure, false);
+        let result = VerifiedFullDumpAdapter::with_dependencies(
+            &runner,
+            &platform,
+            PathBuf::from("fake-v8-runner"),
+        )
+        .invoke(
+            "unica.build.dump",
+            FullDumpInvocation::BuildDump,
+            &args(),
+            &context,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert!(!result.ok);
+        let (private_root, config_path, _) = runner.private_paths.borrow().clone().unwrap();
+        assert!(!private_root.exists());
+        assert!(!config_path.exists());
+        assert!(result.artifacts.is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn private_root_creation_is_bound_to_the_captured_target_parent() {
@@ -8444,6 +9784,38 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    fn assert_failed_dump_has_no_owned_private_debris(
+        context: &WorkspaceContext,
+        result: &crate::application::AdapterOutcome,
+    ) {
+        assert!(
+            std::fs::read_dir(&context.cwd).unwrap().all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".unica-dump-guard-")),
+            "a finished attempt must discard its own rejected output: {result:?}"
+        );
+        assert!(
+            !result
+                .errors
+                .iter()
+                .any(|error| error.contains("private cleanup")),
+            "source rejection must not fabricate an ownership/cleanup error: {result:?}"
+        );
+        assert!(
+            !result
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("debris may remain")),
+            "source rejection must not claim retained debris after successful cleanup: {result:?}"
+        );
+        assert!(
+            result.artifacts.is_empty(),
+            "a completely discarded private attempt has no retained recovery artifact: {result:?}"
+        );
+    }
+
     #[test]
     fn invalid_staged_xml_never_changes_visible_target() {
         for (case, owner_xml, expected) in [
@@ -8490,6 +9862,7 @@ mod tests {
                 std::fs::read_to_string(target.join("Configuration.xml")).unwrap(),
                 valid_configuration_owner()
             );
+            assert_failed_dump_has_no_owned_private_debris(&context, &result);
             std::fs::remove_dir_all(root).unwrap();
         }
     }
@@ -8684,6 +10057,7 @@ mod tests {
                         || result.errors.join("\n").contains("attestation")),
                 "{case}: {result:?}"
             );
+            assert_failed_dump_has_no_owned_private_debris(&context, &result);
             std::fs::remove_dir_all(root).unwrap();
         }
     }
@@ -8880,6 +10254,331 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn concurrent_target_during_capture_error_quarantine_is_preserved() {
+        assert_concurrent_target_survives_quarantine(QuarantineRace::Directory);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn concurrent_file_during_capture_error_quarantine_is_preserved() {
+        assert_concurrent_target_survives_quarantine(QuarantineRace::File);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn concurrent_target_during_capture_error_quarantine_survives_recovery_failure() {
+        assert_concurrent_target_survives_quarantine(QuarantineRace::DetachedDirectory);
+    }
+
+    #[cfg(unix)]
+    enum QuarantineRace {
+        Directory,
+        File,
+        DetachedDirectory,
+    }
+
+    #[cfg(unix)]
+    fn assert_concurrent_target_survives_quarantine(case: QuarantineRace) {
+        let detach_private = matches!(case, QuarantineRace::DetachedDirectory);
+        let foreign_file = matches!(case, QuarantineRace::File);
+        let (root, context, config) = workspace("quarantine-concurrent-target");
+        std::fs::write(&config,
+            "workPath: .work\nformat: DESIGNER\nbuilder: DESIGNER\ninfobase:\n  connection: 'File=base;Usr=Admin;Pwd=quarantine-secret'\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        ).unwrap();
+        let target = context.cwd.join("src");
+        seed_valid_target(&target);
+        let platform = fixed_platform(&root);
+        let runner = DumpRunner::valid();
+        let displaced_stage = context.cwd.join("externally-displaced-stage");
+        let detached_private = context.cwd.join("externally-displaced-private");
+        let hook_target = std::fs::canonicalize(&target).unwrap();
+        let probe_target = target.clone();
+        let hook_displaced = displaced_stage.clone();
+        let hook_private = detached_private.clone();
+        let hook_cwd = context.cwd.clone();
+        let armed = std::rc::Rc::new(std::cell::Cell::new(false));
+        let probe_armed = armed.clone();
+        let identity = std::rc::Rc::new(std::cell::Cell::new(None));
+        let hook_identity = identity.clone();
+        let result = super::with_directory_rename_hook(
+            move |source| {
+                if source != hook_target || !armed.replace(false) {
+                    return;
+                }
+                std::fs::rename(&hook_target, &hook_displaced).unwrap();
+                let foreign = if foreign_file {
+                    std::fs::write(&hook_target, b"concurrent").unwrap();
+                    std::fs::File::open(&hook_target).unwrap()
+                } else {
+                    std::fs::create_dir(&hook_target).unwrap();
+                    std::fs::write(hook_target.join("concurrent.txt"), b"concurrent").unwrap();
+                    super::open_directory_nofollow(&hook_target).unwrap()
+                };
+                hook_identity.set(Some(super::file_identity(&foreign).unwrap()));
+                if detach_private {
+                    let private = std::fs::read_dir(&hook_cwd)
+                        .unwrap()
+                        .filter_map(Result::ok)
+                        .map(|entry| entry.path())
+                        .find(|path| {
+                            path.file_name().is_some_and(|name| {
+                                name.to_string_lossy().starts_with(".unica-dump-guard-")
+                            })
+                        })
+                        .unwrap();
+                    std::fs::rename(private, &hook_private).unwrap();
+                }
+            },
+            || {
+                with_publication_hook(
+                    PublicationCheckpoint::BeforeInstalledSnapshot,
+                    move || {
+                        std::os::unix::fs::symlink(
+                            probe_target.join("Configuration.xml"),
+                            probe_target.join("unvalidated-link.xml"),
+                        )
+                        .unwrap();
+                        probe_armed.set(true);
+                    },
+                    || invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context),
+                )
+            },
+        );
+        assert!(!result.ok, "{detach_private}: {result:?}");
+        let contents = |path: &Path| {
+            std::fs::read(if foreign_file {
+                path.to_path_buf()
+            } else {
+                path.join("concurrent.txt")
+            })
+        };
+        let foreign = if contents(&target).is_ok_and(|bytes| bytes == b"concurrent") {
+            target.clone()
+        } else {
+            let private = if detach_private {
+                detached_private.clone()
+            } else {
+                std::fs::read_dir(&context.cwd)
+                    .unwrap()
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.path())
+                    .find(|path| {
+                        path.file_name().is_some_and(|name| {
+                            name.to_string_lossy().starts_with(".unica-dump-guard-")
+                        })
+                    })
+                    .expect("foreign target must survive in retained recovery")
+            };
+            std::fs::read_dir(private.join("recovery"))
+                .unwrap()
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .find(|path| contents(path).is_ok_and(|bytes| bytes == b"concurrent"))
+                .expect("foreign target must not be deleted during cleanup")
+        };
+        assert_eq!(contents(&foreign).unwrap(), b"concurrent");
+        let foreign_handle = if foreign_file {
+            std::fs::File::open(&foreign).unwrap()
+        } else {
+            super::open_directory_nofollow(&std::fs::canonicalize(&foreign).unwrap()).unwrap()
+        };
+        assert_eq!(
+            Some(super::file_identity(&foreign_handle).unwrap()),
+            identity.get()
+        );
+        assert!(displaced_stage.join("Configuration.xml").is_file());
+        let private = if detach_private {
+            detached_private
+        } else {
+            std::fs::read_dir(&context.cwd)
+                .unwrap()
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .find(|path| {
+                    path.file_name().is_some_and(|name| {
+                        name.to_string_lossy().starts_with(".unica-dump-guard-")
+                    })
+                })
+                .expect("owned original backup remains recoverable")
+        };
+        if detach_private {
+            let config = private.join("execution").join(super::EFFECTIVE_CONFIG_NAME);
+            assert!(
+                !config.exists() || std::fs::read(config).unwrap().is_empty(),
+                "{result:?}"
+            );
+        } else {
+            assert!(!private.join("execution").exists(), "{result:?}");
+        }
+        assert!(std::fs::read_dir(private.join("recovery"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| entry.path().join("before.txt").is_file()));
+        let retained_root_identity = super::file_identity(
+            &super::open_directory_nofollow(&std::fs::canonicalize(&private).unwrap()).unwrap(),
+        )
+        .unwrap();
+        let retained_recovery_identity = super::file_identity(
+            &super::open_directory_nofollow(
+                &std::fs::canonicalize(private.join("recovery")).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let owned_artifacts = result.artifacts.iter().all(|artifact| {
+            std::fs::canonicalize(artifact)
+                .ok()
+                .and_then(|path| super::open_directory_nofollow(&path).ok())
+                .and_then(|directory| super::file_identity(&directory).ok())
+                .is_some_and(|identity| {
+                    identity == retained_root_identity || identity == retained_recovery_identity
+                })
+        });
+        let location_unconfirmed = result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("current location is unconfirmed"));
+        assert!(
+            owned_artifacts && (!result.artifacts.is_empty() || location_unconfirmed),
+            "quarantine recovery must report an owned identity or explicit uncertainty"
+        );
+        if detach_private {
+            assert!(
+                result.artifacts.is_empty() && location_unconfirmed,
+                "a displaced private root must not advertise its missing original name"
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn concurrent_target_directory_before_first_installed_probe_survives_rollback() {
+        for had_target in [true, false] {
+            assert_foreign_target_survives_first_installed_probe(had_target, "directory");
+        }
+    }
+
+    #[test]
+    fn concurrent_target_file_before_first_installed_probe_survives_rollback() {
+        for had_target in [true, false] {
+            assert_foreign_target_survives_first_installed_probe(had_target, "file");
+        }
+    }
+
+    #[test]
+    fn absent_target_before_first_installed_probe_restores_the_owned_backup() {
+        let (root, context, _) = workspace("first-probe-absent-target");
+        let target = context.cwd.join("src");
+        let displaced_stage = context.cwd.join("externally-displaced-stage");
+        seed_valid_target(&target);
+        let platform = fixed_platform(&root);
+        let runner = DumpRunner::valid();
+        let hook_target = target.clone();
+        let hook_displaced_stage = displaced_stage.clone();
+
+        let result = with_publication_hook(
+            PublicationCheckpoint::BeforeInstalledSnapshot,
+            move || std::fs::rename(&hook_target, &hook_displaced_stage).unwrap(),
+            || invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context),
+        );
+
+        assert!(!result.ok, "{result:?}");
+        assert_eq!(std::fs::read(target.join("before.txt")).unwrap(), b"before");
+        assert!(displaced_stage.join("Configuration.xml").is_file());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn assert_foreign_target_survives_first_installed_probe(had_target: bool, kind: &str) {
+        let (root, context, _) = workspace(&format!("first-probe-{kind}-{had_target}"));
+        let target = context.cwd.join("src");
+        let displaced_stage = context.cwd.join("externally-displaced-stage");
+        if had_target {
+            seed_valid_target(&target);
+        }
+        let platform = fixed_platform(&root);
+        let runner = DumpRunner::valid();
+        let hook_target = target.clone();
+        let hook_displaced_stage = displaced_stage.clone();
+        let foreign_identity = std::rc::Rc::new(std::cell::Cell::new(None));
+        let hook_identity = foreign_identity.clone();
+        let is_directory = kind == "directory";
+
+        let result = with_publication_hook(
+            PublicationCheckpoint::BeforeInstalledSnapshot,
+            move || {
+                std::fs::rename(&hook_target, &hook_displaced_stage).unwrap();
+                let foreign = if is_directory {
+                    std::fs::create_dir(&hook_target).unwrap();
+                    std::fs::write(hook_target.join("concurrent.txt"), b"concurrent").unwrap();
+                    super::open_directory_nofollow(&std::fs::canonicalize(&hook_target).unwrap())
+                        .unwrap()
+                } else {
+                    std::fs::write(&hook_target, b"concurrent").unwrap();
+                    std::fs::File::open(&hook_target).unwrap()
+                };
+                hook_identity.set(Some(super::file_identity(&foreign).unwrap()));
+            },
+            || invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context),
+        );
+
+        assert!(!result.ok, "{kind}/{had_target}: {result:?}");
+        let contents = if is_directory {
+            std::fs::read(target.join("concurrent.txt"))
+        } else {
+            std::fs::read(&target)
+        };
+        assert_eq!(
+            contents.unwrap_or_else(|error| panic!(
+                "{kind}/{had_target}: publication removed the concurrent target: {error}; {result:?}"
+            )),
+            b"concurrent"
+        );
+        let foreign = if is_directory {
+            super::open_directory_nofollow(&std::fs::canonicalize(&target).unwrap()).unwrap()
+        } else {
+            std::fs::File::open(&target).unwrap()
+        };
+        assert_eq!(
+            Some(super::file_identity(&foreign).unwrap()),
+            foreign_identity.get(),
+            "{kind}/{had_target}: publication moved or replaced the concurrent target"
+        );
+        assert!(displaced_stage.join("Configuration.xml").is_file());
+        let recoveries = std::fs::read_dir(&context.cwd)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with(".unica-dump-guard-"))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(recoveries.len(), 1, "{result:?}");
+        assert!(!recoveries[0].join("execution").exists());
+        let recovery = std::fs::canonicalize(recoveries[0].join("recovery")).unwrap();
+        assert_retained_directory_artifact(&result, &recovery);
+        assert!(
+            result.summary.contains("publication state is unknown"),
+            "{result:?}"
+        );
+        if had_target {
+            let backup = std::fs::read_dir(&recovery)
+                .unwrap()
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .find(|path| {
+                    path.file_name()
+                        .is_some_and(|name| name.to_string_lossy().starts_with("target-backup-"))
+                })
+                .expect("the owned original remains available for recovery");
+            assert_eq!(std::fs::read(backup.join("before.txt")).unwrap(), b"before");
+        }
+        drop(foreign);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn concurrent_target_replacement_after_stage_install_survives_rollback() {
         let (root, context, _) = workspace("rollback-concurrent-after-install");
@@ -8916,81 +10615,91 @@ mod tests {
     }
 
     #[test]
-    fn installed_tree_interior_mutation_after_first_probe_is_quarantined_and_rolled_back() {
-        let (root, context, _) = workspace("installed-tree-interior-mutation");
-        let target = context.cwd.join("src");
-        seed_valid_target(&target);
-        let platform = fixed_platform(&root);
-        let runner = DumpRunner::valid();
-        let hook_target = target.clone();
-
-        let result = with_publication_hook(
+    fn installed_tree_interior_mutation_is_quarantined_and_rolled_back() {
+        for checkpoint in [
+            PublicationCheckpoint::BeforeInstalledSnapshot,
             PublicationCheckpoint::AfterStageInstall,
-            move || {
-                std::fs::write(hook_target.join("unvalidated.txt"), b"unvalidated").unwrap();
-            },
-            || invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context),
-        );
+        ] {
+            let (root, context, _) = workspace("installed-tree-interior-mutation");
+            let target = context.cwd.join("src");
+            seed_valid_target(&target);
+            let platform = fixed_platform(&root);
+            let runner = DumpRunner::valid();
+            let hook_target = target.clone();
 
-        assert!(!result.ok, "{result:?}");
-        assert_eq!(
-            std::fs::read(target.join("before.txt")).unwrap(),
-            b"before",
-            "the original target must be restored after mutation of our installed directory"
-        );
-        assert!(
-            !target.join("unvalidated.txt").exists(),
-            "our installed but mutated directory must be quarantined before lock release"
-        );
-        assert!(
-            result.errors.join("\n").contains("published dump differs")
-                || result.errors.join("\n").contains("quarantine"),
-            "{result:?}"
-        );
-        std::fs::remove_dir_all(root).unwrap();
+            let result = with_publication_hook(
+                checkpoint,
+                move || {
+                    std::fs::write(hook_target.join("unvalidated.txt"), b"unvalidated").unwrap();
+                },
+                || invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context),
+            );
+
+            assert!(!result.ok, "{result:?}");
+            assert_eq!(
+                std::fs::read(target.join("before.txt")).unwrap(),
+                b"before",
+                "the original target must be restored after mutation of our installed directory"
+            );
+            assert!(
+                !target.join("unvalidated.txt").exists(),
+                "our installed but mutated directory must be quarantined before lock release"
+            );
+            assert!(
+                result.errors.join("\n").contains("published dump differs")
+                    || result.errors.join("\n").contains("quarantine"),
+                "{result:?}"
+            );
+            std::fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[cfg(unix)]
     #[test]
     fn installed_tree_capture_error_with_same_root_identity_is_quarantined_and_rolled_back() {
-        let (root, context, _) = workspace("installed-tree-interior-symlink");
-        let target = context.cwd.join("src");
-        seed_valid_target(&target);
-        let platform = fixed_platform(&root);
-        let runner = DumpRunner::valid();
-        let hook_target = target.clone();
-
-        let result = with_publication_hook(
+        for checkpoint in [
+            PublicationCheckpoint::BeforeInstalledSnapshot,
             PublicationCheckpoint::AfterStageInstall,
-            move || {
-                std::os::unix::fs::symlink(
-                    hook_target.join("Configuration.xml"),
-                    hook_target.join("unvalidated-link.xml"),
-                )
-                .unwrap();
-            },
-            || invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context),
-        );
+        ] {
+            let (root, context, _) = workspace("installed-tree-interior-symlink");
+            let target = context.cwd.join("src");
+            seed_valid_target(&target);
+            let platform = fixed_platform(&root);
+            let runner = DumpRunner::valid();
+            let hook_target = target.clone();
 
-        assert!(!result.ok, "{result:?}");
-        assert_eq!(
-            std::fs::read(target.join("before.txt")).unwrap(),
-            b"before",
-            "the original target must be restored after capture failure in our installed directory"
-        );
-        assert!(
-            std::fs::symlink_metadata(target.join("unvalidated-link.xml")).is_err(),
-            "our installed but invalid directory must be quarantined before lock release"
-        );
-        assert!(
-            result
-                .errors
-                .join("\n")
-                .contains("could not verify the published target")
-                || result.errors.join("\n").contains("quarantine"),
-            "{result:?}"
-        );
-        std::fs::remove_dir_all(root).unwrap();
+            let result = with_publication_hook(
+                checkpoint,
+                move || {
+                    std::os::unix::fs::symlink(
+                        hook_target.join("Configuration.xml"),
+                        hook_target.join("unvalidated-link.xml"),
+                    )
+                    .unwrap();
+                },
+                || invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context),
+            );
+
+            assert!(!result.ok, "{result:?}");
+            assert_eq!(
+                std::fs::read(target.join("before.txt")).unwrap(),
+                b"before",
+                "the original target must be restored after capture failure in our installed directory"
+            );
+            assert!(
+                std::fs::symlink_metadata(target.join("unvalidated-link.xml")).is_err(),
+                "our installed but invalid directory must be quarantined before lock release"
+            );
+            assert!(
+                result
+                    .errors
+                    .join("\n")
+                    .contains("could not verify the published target")
+                    || result.errors.join("\n").contains("quarantine"),
+                "{result:?}"
+            );
+            std::fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[cfg(unix)]
@@ -9043,6 +10752,523 @@ mod tests {
             "the replacement stage must never remain Git-visible"
         );
         assert!(displaced_stage.join("Configuration.xml").is_file());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reappeared_execution_stage_survives_success_and_rollback() {
+        assert_reappeared_private_stage_is_preserved(true);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_open_replacement_preserves_owned_and_foreign_trees() {
+        assert_cleanup_open_preserves_foreign_data(false);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_open_preserves_unknown_descendants_of_owned_tree() {
+        assert_cleanup_open_preserves_foreign_data(true);
+    }
+
+    #[cfg(unix)]
+    fn assert_cleanup_open_preserves_foreign_data(nested: bool) {
+        let (root, context, _) = workspace("cleanup-open-replacement");
+        let target = context.cwd.join("src");
+        seed_valid_target(&target);
+        let original = super::capture_tree_target_nofollow(&target).unwrap();
+        let displaced = context.cwd.join("displaced-owned-backup");
+        let hook_displaced = displaced.clone();
+        let foreign = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let hook_foreign = foreign.clone();
+        let platform = fixed_platform(&root);
+        let runner = DumpRunner::valid();
+        let result = super::with_directory_cleanup_open_hook(
+            move |path| {
+                if hook_foreign.borrow().is_some()
+                    || !path
+                        .file_name()
+                        .is_some_and(|name| name.to_string_lossy().starts_with("target-backup-"))
+                {
+                    return;
+                }
+                let foreign_path = if nested {
+                    let nested_path = path.join("unknown-child");
+                    std::fs::create_dir(&nested_path).unwrap();
+                    nested_path
+                } else {
+                    std::fs::rename(path, &hook_displaced).unwrap();
+                    std::fs::create_dir(path).unwrap();
+                    path.to_path_buf()
+                };
+                std::fs::write(foreign_path.join("sentinel.txt"), b"foreign cleanup data").unwrap();
+                let snapshot = super::capture_tree_target_nofollow(&foreign_path).unwrap();
+                hook_foreign.replace(Some((foreign_path, snapshot)));
+            },
+            || invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context),
+        );
+        let (foreign_path, foreign_snapshot) = foreign.borrow().clone().expect("cleanup hook ran");
+        assert_eq!(
+            super::capture_tree_target_nofollow(&foreign_path).unwrap(),
+            foreign_snapshot,
+            "cleanup must preserve a foreign root and all its data"
+        );
+        if !nested {
+            assert_eq!(
+                super::capture_tree_target_nofollow(&displaced).unwrap(),
+                original
+            );
+        }
+        assert!(std::fs::read_to_string(target.join("Configuration.xml"))
+            .unwrap()
+            .contains(TARGET_EXPORT_FORMAT));
+        assert!(!result.ok, "{result:?}");
+        assert!(
+            result.summary.contains("private cleanup failed"),
+            "{result:?}"
+        );
+        assert!(
+            !result.summary.contains("publication state is unknown"),
+            "{result:?}"
+        );
+        assert!(!result.artifacts.is_empty(), "{result:?}");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reappeared_sealed_stage_survives_success_and_rollback() {
+        assert_reappeared_private_stage_is_preserved(false);
+    }
+
+    #[cfg(unix)]
+    fn assert_reappeared_private_stage_is_preserved(execution_slot: bool) {
+        for rollback in [false, true] {
+            let (root, context, _) = workspace("reappeared-private-stage");
+            let target = context.cwd.join("src");
+            seed_valid_target(&target);
+            let original = super::capture_tree_target_nofollow(&target).unwrap();
+            let staged = std::rc::Rc::new(std::cell::RefCell::new(None));
+            let hook_staged = staged.clone();
+            let checkpoint_staged = staged.clone();
+            let sealed_path = std::rc::Rc::new(std::cell::RefCell::new(None));
+            let rename_sealed_path = sealed_path.clone();
+            let hook_sealed_path = sealed_path.clone();
+            let foreign = std::rc::Rc::new(std::cell::RefCell::new(None));
+            let hook_foreign = foreign.clone();
+            let checkpoint = if execution_slot {
+                PublicationCheckpoint::AfterBackup
+            } else {
+                PublicationCheckpoint::AfterStageInstall
+            };
+            let platform = fixed_platform(&root);
+            let runner = DumpRunner::valid();
+            let hook_cwd = context.cwd.clone();
+            let result = super::with_directory_rename_hook(
+                move |source| {
+                    if source
+                        .file_name()
+                        .is_some_and(|name| name.to_string_lossy().starts_with("sealed-stage-"))
+                        && hook_staged.borrow().is_none()
+                    {
+                        hook_staged
+                            .replace(Some(super::capture_tree_target_nofollow(source).unwrap()));
+                        rename_sealed_path.replace(Some(source.to_path_buf()));
+                    }
+                },
+                || {
+                    with_publication_hook(
+                        checkpoint,
+                        move || {
+                            let sealed: PathBuf =
+                                hook_sealed_path.borrow().clone().unwrap_or_else(|| {
+                                    let private = std::fs::read_dir(&hook_cwd)
+                                        .unwrap()
+                                        .filter_map(Result::ok)
+                                        .map(|entry| entry.path())
+                                        .find(|path| {
+                                            path.file_name().is_some_and(|name| {
+                                                name.to_string_lossy()
+                                                    .starts_with(".unica-dump-guard-")
+                                            })
+                                        })
+                                        .unwrap();
+                                    std::fs::read_dir(private.join("recovery"))
+                                        .unwrap()
+                                        .filter_map(Result::ok)
+                                        .map(|entry| entry.path())
+                                        .find(|path| {
+                                            path.file_name().is_some_and(|name| {
+                                                name.to_string_lossy().starts_with("sealed-stage-")
+                                            })
+                                        })
+                                        .unwrap()
+                                });
+                            if checkpoint_staged.borrow().is_none() {
+                                checkpoint_staged.replace(Some(
+                                    super::capture_tree_target_nofollow(&sealed).unwrap(),
+                                ));
+                            }
+                            hook_sealed_path.replace(Some(sealed.clone()));
+                            let path = if execution_slot {
+                                sealed
+                                    .parent()
+                                    .unwrap()
+                                    .parent()
+                                    .unwrap()
+                                    .join("execution/staged-source")
+                            } else {
+                                sealed
+                            };
+                            std::fs::create_dir(&path).unwrap();
+                            std::fs::write(path.join("foreign.txt"), b"reappeared private stage")
+                                .unwrap();
+                            hook_foreign.replace(Some((
+                                path.clone(),
+                                super::capture_tree_target_nofollow(&path).unwrap(),
+                            )));
+                        },
+                        || {
+                            if rollback {
+                                with_publication_failpoint(checkpoint, || {
+                                    invoke(
+                                        &runner,
+                                        &platform,
+                                        FullDumpInvocation::BuildDump,
+                                        &context,
+                                    )
+                                })
+                            } else {
+                                invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context)
+                            }
+                        },
+                    )
+                },
+            );
+            let (foreign_path, foreign_snapshot) = foreign.borrow().as_ref().unwrap().clone();
+            assert_eq!(
+                super::capture_tree_target_nofollow(&foreign_path).unwrap(),
+                foreign_snapshot,
+                "a reused private slot must retain the foreign root identity and bytes"
+            );
+            let private = sealed_path
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .to_path_buf();
+            let mut snapshots = vec![super::capture_tree_target_nofollow(&target).unwrap()];
+            for directory in [private.join("execution"), private.join("recovery")] {
+                if directory.is_dir() {
+                    snapshots.extend(
+                        std::fs::read_dir(directory)
+                            .unwrap()
+                            .filter_map(Result::ok)
+                            .filter(|entry| entry.file_type().unwrap().is_dir())
+                            .map(|entry| {
+                                super::capture_tree_target_nofollow(&entry.path()).unwrap()
+                            }),
+                    );
+                }
+            }
+            assert!(
+                snapshots.contains(&original),
+                "original source must remain recoverable"
+            );
+            assert!(
+                snapshots.contains(staged.borrow().as_ref().unwrap()),
+                "validated stage must remain recoverable"
+            );
+            assert!(!result.ok, "{execution_slot}/{rollback}: {result:?}");
+            if execution_slot {
+                let config = private.join("execution").join(super::EFFECTIVE_CONFIG_NAME);
+                assert!(!config.exists() || std::fs::read(config).unwrap().is_empty());
+            } else {
+                assert!(!private.join("execution").exists());
+            }
+            if rollback {
+                assert_eq!(
+                    super::capture_tree_target_nofollow(&target).unwrap(),
+                    original
+                );
+                assert!(
+                    !result.summary.contains("publication state is unknown"),
+                    "{result:?}"
+                );
+            } else {
+                assert!(
+                    result
+                        .summary
+                        .contains("validated publication completed but private cleanup failed"),
+                    "{result:?}"
+                );
+                assert!(
+                    !result.summary.contains("publication state is unknown"),
+                    "{result:?}"
+                );
+            }
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_stage_swap_before_seal_precheck_preserves_data_and_scrubs_credentials() {
+        assert_private_stage_swap_during_seal_is_preserved(true);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_stage_swap_after_seal_precheck_preserves_data_and_scrubs_credentials() {
+        assert_private_stage_swap_during_seal_is_preserved(false);
+    }
+
+    #[cfg(unix)]
+    fn assert_private_stage_swap_during_seal_is_preserved(before_precheck: bool) {
+        for had_target in [true, false] {
+            let (root, context, config) = workspace("private-stage-seal-swap");
+            std::fs::write(&config,
+                "workPath: .work\nformat: DESIGNER\nbuilder: DESIGNER\ninfobase:\n  connection: 'File=base;Usr=Admin;Pwd=seal-secret'\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+            ).unwrap();
+            let target = std::fs::canonicalize(&context.cwd).unwrap().join("src");
+            if had_target {
+                seed_valid_target(&target);
+            }
+            let original = super::capture_tree_target_nofollow(&target).unwrap();
+            let displaced_stage = context.cwd.join("externally-displaced-private-stage");
+            let hook_displaced = displaced_stage.clone();
+            let stage_before = std::rc::Rc::new(std::cell::RefCell::new(None));
+            let hook_stage = stage_before.clone();
+            let foreign_before = std::rc::Rc::new(std::cell::RefCell::new(None));
+            let hook_foreign = foreign_before.clone();
+            let swap = move |source: &Path| {
+                if hook_stage.borrow().is_some() {
+                    return;
+                }
+                hook_stage.replace(Some(super::capture_tree_target_nofollow(source).unwrap()));
+                std::fs::rename(source, &hook_displaced).unwrap();
+                std::fs::create_dir(source).unwrap();
+                std::fs::write(
+                    source.join("Configuration.xml"),
+                    b"foreign private-stage XML",
+                )
+                .unwrap();
+                std::fs::write(source.join("foreign.txt"), b"foreign private-stage data").unwrap();
+                hook_foreign.replace(Some(super::capture_tree_target_nofollow(source).unwrap()));
+            };
+            let platform = fixed_platform(&root);
+            let runner = DumpRunner::valid();
+            let hook_cwd = context.cwd.clone();
+            let result = if before_precheck {
+                with_publication_hook(
+                    PublicationCheckpoint::BeforeStageInstall,
+                    move || {
+                        let private = std::fs::read_dir(&hook_cwd)
+                            .unwrap()
+                            .filter_map(Result::ok)
+                            .map(|entry| entry.path())
+                            .find(|path| {
+                                path.file_name().is_some_and(|name| {
+                                    name.to_string_lossy().starts_with(".unica-dump-guard-")
+                                })
+                            })
+                            .unwrap();
+                        swap(&private.join("execution/staged-source"));
+                    },
+                    || invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context),
+                )
+            } else {
+                super::with_directory_rename_hook(
+                    move |source| {
+                        if source
+                            .file_name()
+                            .is_some_and(|name| name == "staged-source")
+                        {
+                            swap(source);
+                        }
+                    },
+                    || invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context),
+                )
+            };
+            assert!(!result.ok, "{before_precheck}/{had_target}: {result:?}");
+            assert_eq!(
+                super::capture_tree_target_nofollow(&target).unwrap(),
+                original
+            );
+            assert_eq!(
+                Some(super::capture_tree_target_nofollow(&displaced_stage).unwrap()),
+                *stage_before.borrow()
+            );
+            let private = std::fs::read_dir(&context.cwd)
+                .unwrap()
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .find(|path| {
+                    path.file_name().is_some_and(|name| {
+                        name.to_string_lossy().starts_with(".unica-dump-guard-")
+                    })
+                })
+                .expect("uncertain stage must survive private cleanup");
+            let mut snapshots = Vec::new();
+            for directory in [private.join("execution"), private.join("recovery")] {
+                for entry in std::fs::read_dir(directory).unwrap().filter_map(Result::ok) {
+                    if entry.file_type().unwrap().is_dir() {
+                        snapshots.push(super::capture_tree_target_nofollow(&entry.path()).unwrap());
+                    }
+                }
+            }
+            assert!(
+                snapshots.contains(
+                    foreign_before
+                        .borrow()
+                        .as_ref()
+                        .expect("source swap occurred")
+                ),
+                "foreign private stage identity and bytes must be retained"
+            );
+            let config = private.join("execution").join(super::EFFECTIVE_CONFIG_NAME);
+            assert!(!config.exists() || std::fs::read(config).unwrap().is_empty(),
+                "the held effective config must be scrubbed without deleting unknown stage contents");
+            assert!(
+                result
+                    .summary
+                    .contains("failed before verified dump publication"),
+                "{result:?}"
+            );
+            assert!(
+                result.artifacts.contains(
+                    &std::fs::canonicalize(&private)
+                        .unwrap()
+                        .display()
+                        .to_string()
+                ),
+                "{result:?}"
+            );
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sealed_source_swap_after_identity_precheck_preserves_data_and_reports_unknown() {
+        assert_sealed_source_swap_after_precheck_reports_unknown(true);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sealed_source_swap_after_identity_precheck_without_original_reports_unknown() {
+        assert_sealed_source_swap_after_precheck_reports_unknown(false);
+    }
+
+    #[cfg(unix)]
+    fn assert_sealed_source_swap_after_precheck_reports_unknown(had_target: bool) {
+        let (root, context, _) = workspace("sealed-source-after-precheck");
+        let target = std::fs::canonicalize(&context.cwd).unwrap().join("src");
+        if had_target {
+            seed_valid_target(&target);
+        }
+        let original = had_target.then(|| super::capture_tree_target_nofollow(&target).unwrap());
+        let displaced_stage = context.cwd.join("externally-displaced-validated-stage");
+        let hook_displaced = displaced_stage.clone();
+        let stage_before = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let hook_stage_before = stage_before.clone();
+        let foreign_before = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let hook_foreign_before = foreign_before.clone();
+        let platform = fixed_platform(&root);
+        let runner = DumpRunner::valid();
+
+        let result = super::with_directory_rename_hook(
+            move |source| {
+                if !source
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("sealed-stage-"))
+                    || hook_stage_before.borrow().is_some()
+                {
+                    return;
+                }
+                hook_stage_before
+                    .replace(Some(super::capture_tree_target_nofollow(source).unwrap()));
+                std::fs::rename(source, &hook_displaced).unwrap();
+                std::fs::create_dir(source).unwrap();
+                std::fs::write(source.join("Configuration.xml"), b"unvalidated XML owner").unwrap();
+                std::fs::write(source.join("unvalidated.txt"), b"foreign sealed source").unwrap();
+                hook_foreign_before
+                    .replace(Some(super::capture_tree_target_nofollow(source).unwrap()));
+            },
+            || invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context),
+        );
+
+        assert!(!result.ok, "{result:?}");
+        assert_eq!(
+            Some(
+                super::capture_tree_target_nofollow(
+                    &std::fs::canonicalize(&displaced_stage).unwrap()
+                )
+                .unwrap()
+            ),
+            *stage_before.borrow(),
+            "the held validated stage must retain its identity and bytes"
+        );
+        let private = std::fs::read_dir(&context.cwd)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with(".unica-dump-guard-"))
+            })
+            .expect("owned original and unverified source must remain recoverable");
+        let mut snapshots = vec![super::capture_tree_target_nofollow(&target).unwrap()];
+        snapshots.extend(
+            std::fs::read_dir(private.join("recovery"))
+                .unwrap()
+                .filter_map(Result::ok)
+                .map(|entry| super::capture_tree_target_nofollow(&entry.path()).unwrap()),
+        );
+        if let Some(original) = original {
+            assert!(
+                snapshots.contains(&original),
+                "original target identity and bytes must be retained"
+            );
+        }
+        assert!(
+            snapshots.contains(
+                foreign_before
+                    .borrow()
+                    .as_ref()
+                    .expect("source swap occurred")
+            ),
+            "foreign sealed source identity and bytes must be retained"
+        );
+        assert!(!private.join("execution").exists());
+        let recovery = std::fs::canonicalize(private.join("recovery")).unwrap();
+        assert!(
+            result.artifacts.contains(&recovery.display().to_string()),
+            "{result:?}"
+        );
+        assert!(
+            result.summary.contains("publication state is unknown"),
+            "{result:?}"
+        );
+        assert!(
+            !result
+                .summary
+                .contains("failed before verified dump publication"),
+            "{result:?}"
+        );
+        assert!(
+            result
+                .warnings
+                .iter()
+                .all(|warning| !warning.contains("discarded")
+                    && !warning.contains("sources were not published")),
+            "{result:?}"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -9107,7 +11333,11 @@ mod tests {
         assert!(
             result.errors.join("\n").contains("just-installed")
                 || result.errors.join("\n").contains("unverified")
-                || result.errors.join("\n").contains("quarantine"),
+                || result.errors.join("\n").contains("quarantine")
+                || result
+                    .errors
+                    .join("\n")
+                    .contains("identity changed before atomic rename"),
             "{result:?}"
         );
         std::fs::remove_dir_all(root).unwrap();
@@ -9190,9 +11420,10 @@ mod tests {
         )
         .unwrap();
         let platform = fixed_platform(&root);
+        let original_identity = std::rc::Rc::new(std::cell::Cell::new(None));
         let runner = DumpRunner {
             owner_xml: valid_configuration_owner(),
-            mutation: RunnerMutation::SwapPrivateRoot,
+            mutation: RunnerMutation::SwapPrivateRoot(std::rc::Rc::clone(&original_identity)),
             calls: AtomicUsize::new(0),
         };
 
@@ -9246,7 +11477,198 @@ mod tests {
                 || result.warnings.join("\n").contains("debris"),
             "{result:?}"
         );
+        let original_identity = original_identity.get().expect("root swap must run");
+        let displaced = private_roots
+            .iter()
+            .find(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .ends_with("-displaced")
+            })
+            .unwrap();
+        assert_eq!(
+            super::file_identity(
+                &super::open_directory_nofollow(&std::fs::canonicalize(displaced).unwrap())
+                    .unwrap()
+            )
+            .unwrap(),
+            original_identity
+        );
+        let replacement = private_roots
+            .iter()
+            .find(|path| {
+                !path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .ends_with("-displaced")
+            })
+            .unwrap();
+        assert_ne!(
+            super::file_identity(
+                &super::open_directory_nofollow(&std::fs::canonicalize(replacement).unwrap())
+                    .unwrap()
+            )
+            .unwrap(),
+            original_identity
+        );
+        assert_eq!(
+            std::fs::read(replacement.join("execution/foreign.txt")).unwrap(),
+            b"foreign root sentinel"
+        );
+        let owned_artifacts = result.artifacts.iter().all(|artifact| {
+            std::fs::canonicalize(artifact)
+                .ok()
+                .and_then(|path| super::open_directory_nofollow(&path).ok())
+                .and_then(|directory| super::file_identity(&directory).ok())
+                == Some(original_identity)
+        });
+        let location_unconfirmed = result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("current location is unconfirmed"));
+        assert!(owned_artifacts && (!result.artifacts.is_empty() || location_unconfirmed),
+            "recovery must report an owned identity or explicit uncertainty: owned={owned_artifacts}, unconfirmed={location_unconfirmed}");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn private_recovery_artifacts_require_the_retained_directory_identity() {
+        let mut invalid_reports = Vec::new();
+        for case in [
+            "stable",
+            "stable-closed-anchors",
+            "root-missing",
+            "root-replaced",
+            "recovery-missing",
+            "recovery-replaced",
+        ] {
+            let (root, context, _) = workspace("retained-location");
+            let parent = super::DirectoryAnchor::capture_exact(
+                &std::fs::canonicalize(&context.cwd).unwrap(),
+            )
+            .unwrap();
+            let mut private = super::PrivateDumpStage::create(&parent).unwrap();
+            let owned_child = private.recovery.join("owned");
+            std::fs::create_dir(&owned_child).unwrap();
+            std::fs::write(owned_child.join("owned.txt"), b"owned recovery sentinel").unwrap();
+            private.recovery_children.insert(
+                std::ffi::OsString::from("owned"),
+                super::capture_tree_target_nofollow(&owned_child).unwrap(),
+            );
+            private.preserve_for_recovery().unwrap();
+            let owned_before = super::capture_tree_target_nofollow(&private.recovery).unwrap();
+            let owned_identity =
+                super::file_identity(&private.recovery_anchor().directory).unwrap();
+            let mut actual_recovery = private.recovery.clone();
+            let mut foreign = None;
+            if case.starts_with("root-") {
+                let displaced = context.cwd.join("displaced-root");
+                #[cfg(windows)]
+                {
+                    // Windows blocks an ancestor rename while a descendant directory is open.
+                    // Keep the root anchor; release only the recovery descendant after proving it.
+                    let error = std::fs::rename(&private.root, &displaced)
+                        .expect_err("an open recovery descendant must prevent the root rename");
+                    assert_eq!(
+                        error.kind(),
+                        std::io::ErrorKind::PermissionDenied,
+                        "{case}: unexpected error while the recovery descendant is open: {error}"
+                    );
+                    drop(
+                        private
+                            .recovery_anchor
+                            .take()
+                            .expect("the recovery descendant is retained before the rename"),
+                    );
+                }
+                std::fs::rename(&private.root, &displaced).unwrap();
+                actual_recovery = displaced.join("recovery");
+                if case == "root-replaced" {
+                    std::fs::create_dir(&private.root).unwrap();
+                    std::fs::create_dir(&private.recovery).unwrap();
+                    std::fs::write(
+                        private.recovery.join("foreign.txt"),
+                        b"foreign root sentinel",
+                    )
+                    .unwrap();
+                    foreign = Some((
+                        private.root.clone(),
+                        super::capture_tree_target_nofollow(&private.root).unwrap(),
+                    ));
+                }
+            } else if case.starts_with("recovery-") {
+                actual_recovery = private.root.join("displaced-recovery");
+                std::fs::rename(&private.recovery, &actual_recovery).unwrap();
+                if case == "recovery-replaced" {
+                    std::fs::create_dir(&private.recovery).unwrap();
+                    std::fs::write(
+                        private.recovery.join("foreign.txt"),
+                        b"foreign recovery sentinel",
+                    )
+                    .unwrap();
+                    foreign = Some((
+                        private.recovery.clone(),
+                        super::capture_tree_target_nofollow(&private.recovery).unwrap(),
+                    ));
+                }
+            } else if case == "stable-closed-anchors" {
+                private.root_anchor.take();
+                private.recovery_anchor.take();
+            }
+            let result = super::finalize_private_outcome(
+                &mut private,
+                super::dump_failure(
+                    "unica.build.dump",
+                    "fixture caller refused".into(),
+                    None,
+                    None,
+                    None,
+                ),
+            );
+            drop(private);
+            assert_eq!(
+                super::capture_tree_target_nofollow(&actual_recovery).unwrap(),
+                owned_before,
+                "{case}: reporting and Drop must preserve owned identities and bytes"
+            );
+            assert_eq!(
+                std::fs::read(actual_recovery.join("owned/owned.txt")).unwrap(),
+                b"owned recovery sentinel"
+            );
+            if let Some((path, before)) = foreign {
+                assert_eq!(
+                    super::capture_tree_target_nofollow(&path).unwrap(),
+                    before,
+                    "{case}: reporting and Drop must preserve foreign identities and bytes"
+                );
+            }
+            let owned_artifacts = result.artifacts.iter().all(|artifact| {
+                std::fs::canonicalize(artifact)
+                    .ok()
+                    .and_then(|path| super::open_directory_nofollow(&path).ok())
+                    .and_then(|directory| super::file_identity(&directory).ok())
+                    == Some(owned_identity)
+            });
+            let location_unconfirmed = result
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("current location is unconfirmed"));
+            let stable = case.starts_with("stable");
+            if !owned_artifacts
+                || (result.artifacts.is_empty() && !location_unconfirmed)
+                || (stable && (result.artifacts.len() != 1 || location_unconfirmed))
+            {
+                invalid_reports.push(case);
+            }
+            drop(parent);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+        assert!(
+            invalid_reports.is_empty(),
+            "invalid retained locations: {invalid_reports:?}"
+        );
     }
 
     #[cfg(unix)]

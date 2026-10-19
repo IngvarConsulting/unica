@@ -1,6 +1,7 @@
 use super::request::ProvisionalApplyEffect;
 use crate::domain::address::{NodeKind, QualifiedAddress};
 use crate::domain::events::{DomainEvent, DomainEventKind};
+use crate::domain::operation_contract::{metadata_borrow_input_schema, ArgumentShape};
 use crate::domain::project_sources::SourceSetKind;
 use crate::infrastructure::native_operations::apply::{
     ApplyPlanError, ApplyPlanErrorKind, ApplyStagedState,
@@ -35,8 +36,9 @@ pub(super) fn parse(
     let args = args
         .as_object()
         .ok_or_else(|| fail("borrow args must be an object"))?;
+    let shape = ArgumentShape::new(metadata_borrow_input_schema());
     for key in args.keys() {
-        if !["at", "from", "overrides"].contains(&key.as_str()) {
+        if shape.property(key).is_none() {
             return Err(fail("unknown object.borrow argument"));
         }
     }
@@ -62,6 +64,11 @@ pub(super) fn parse(
             "from must name a top-level object or Enum.EnumValue in a distinct parent source set",
         ));
     }
+    shape
+        .property("from")
+        .expect("borrow from field")
+        .validate_field(&args["from"], &format!("ops[{index}].args"))
+        .map_err(|error| fail(&error.message))?;
     if parent.segments().len() == 2 && args.contains_key("overrides") {
         return Err(fail(
             "overrides are not supported when borrowing an EnumValue",
@@ -73,14 +80,23 @@ pub(super) fn parse(
             let array = value
                 .as_array()
                 .ok_or_else(|| fail("overrides must be an array of property names"))?;
+            let overrides_shape = shape.property("overrides").expect("borrow overrides field");
+            overrides_shape
+                .validate_field(value, &format!("ops[{index}].args"))
+                .map_err(|error| fail(&error.message))?;
+            let item_shape = overrides_shape.items().expect("borrow override item");
             array
                 .iter()
-                .map(|value| {
-                    value
+                .map(|value| -> Result<String, ApplyPlanError> {
+                    let name = value
                         .as_str()
                         .filter(|value| !value.is_empty())
                         .map(str::to_string)
-                        .ok_or_else(|| fail("override must be a nonempty property name"))
+                        .ok_or_else(|| fail("override must be a nonempty property name"))?;
+                    item_shape
+                        .validate_field(value, &format!("ops[{index}].args"))
+                        .map_err(|error| fail(&error.message))?;
+                    Ok(name)
                 })
                 .collect::<Result<Vec<_>, _>>()
         })

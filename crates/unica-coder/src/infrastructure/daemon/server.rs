@@ -1288,8 +1288,14 @@ impl DaemonServerConfig {
 }
 
 #[cfg(test)]
+#[path = "form_lifecycle_tests.rs"]
+mod form_lifecycle_tests;
+#[cfg(test)]
 #[path = "form_move_tests.rs"]
 mod form_move_tests;
+#[cfg(test)]
+#[path = "metadata_can_tests.rs"]
+mod metadata_can_tests;
 
 #[cfg(test)]
 pub(crate) mod actor_capacity_tests {
@@ -2818,6 +2824,370 @@ pub(crate) mod actor_capacity_tests {
         direct_v5(runtime, request).expect("a pre-admission answer must finish directly")
     }
 
+    fn retained_payload_workspace(member_count: usize) -> (tempfile::TempDir, Vec<String>) {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("src");
+        std::fs::create_dir_all(source.join("CommonModules")).unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        let names = (0..member_count)
+            .map(|index| format!("Module{index:03}{}", "X".repeat(56)))
+            .collect::<Vec<_>>();
+        let registered = names
+            .iter()
+            .map(|name| format!("<CommonModule>{name}</CommonModule>"))
+            .collect::<String>();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            format!(r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>RetainedPayload</Name></Properties><ChildObjects>{registered}</ChildObjects></Configuration></MetaDataObject>"#),
+        )
+        .unwrap();
+        for (index, name) in names.iter().enumerate() {
+            std::fs::write(
+                source.join(format!("CommonModules/{name}.xml")),
+                format!(r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule uuid="10000000-0000-4000-8000-{index:012}"><Properties><Name>{name}</Name><Synonym/><Comment/><Global>false</Global><ClientManagedApplication>false</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>false</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule></MetaDataObject>"#),
+            )
+            .unwrap();
+        }
+        (workspace, names)
+    }
+
+    fn retained_payload_page(
+        runtime: &V5CanonicalInvocationRuntime,
+        workspace: &std::path::Path,
+        at: &str,
+        cursor: Option<&str>,
+    ) -> DomainResult {
+        let mut arguments = serde_json::json!({"at":at,"limit":1});
+        if let Some(cursor) = cursor {
+            arguments["cursor"] = serde_json::json!(cursor);
+        }
+        let page = submit_canonical(runtime, workspace, ToolIdentity::View, arguments);
+        assert!(page.ok, "canonical retained page failed: {page:?}");
+        assert!(
+            page.rev.is_none(),
+            "canonical view must keep its revision private"
+        );
+        page
+    }
+
+    /// Save the actual input cursor with the complete typed response and successor.
+    fn retain_payload_page_chain(
+        runtime: &V5CanonicalInvocationRuntime,
+        workspace: &std::path::Path,
+        at: &str,
+        first: &DomainResult,
+    ) -> Vec<(String, DomainResult)> {
+        let mut cursor = first.cursor.clone();
+        let mut saved = Vec::new();
+        while let Some(input) = cursor {
+            let page = retained_payload_page(runtime, workspace, at, Some(&input));
+            cursor = page.cursor.clone();
+            saved.push((input, page));
+        }
+        saved
+    }
+
+    fn replay_retained_payload_pages(
+        runtime: &V5CanonicalInvocationRuntime,
+        workspace: &std::path::Path,
+        at: &str,
+        saved: &[(String, DomainResult)],
+    ) {
+        for (cursor, expected) in saved {
+            assert_eq!(
+                retained_payload_page(runtime, workspace, at, Some(cursor)),
+                *expected,
+                "saved typed page and its exact successor must survive later admissions"
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_130_fresh_leases_share_one_payload_without_skipping_full_reads() {
+        use crate::application::result_store::ViewCollectionSnapshot;
+        use crate::infrastructure::daemon::v13_service::{
+            CanonicalV13ReadService, ViewCapabilityProbeForTest,
+        };
+        use crate::infrastructure::v13_read::CompletedViewProjectionProbeForTest;
+        use std::collections::BTreeSet;
+
+        const ADMISSIONS: usize = 130;
+        const AT: &str = "main:CommonModule";
+        let (workspace, _) = retained_payload_workspace(192);
+
+        // This separate calibration read measures the actual source projection.
+        // The pressure loop below keeps one new service and runtime for all calls.
+        let calibration_service = Arc::new(CanonicalV13ReadService::default());
+        let calibration_runtime =
+            V5CanonicalInvocationRuntime::new(calibration_service.clone(), Arc::new(TokioClock));
+        let calibration_page =
+            retained_payload_page(&calibration_runtime, workspace.path(), AT, None);
+        assert!(calibration_page.cursor.is_some());
+        let one = calibration_service.retained_view_usage_for_test();
+        assert_eq!(one.records, 1);
+        assert_eq!(one.unique_payloads, 1);
+        assert!(
+            one.payload_bytes > 64 * 1024,
+            "the payload must dominate admission metadata"
+        );
+        let index_slot = std::mem::size_of::<Arc<ViewCollectionSnapshot>>();
+        let fixed_bytes = one.retained_bytes
+            - one.record_bytes
+            - one.payload_bytes
+            - one.index_capacity * index_slot;
+        let mut reserved_index: Vec<Arc<ViewCollectionSnapshot>> = Vec::new();
+        reserved_index.try_reserve_exact(ADMISSIONS).unwrap();
+        let index_capacity = reserved_index.capacity();
+        let budget = fixed_bytes
+            + one.payload_bytes
+            + ADMISSIONS * one.record_bytes
+            + index_capacity * index_slot;
+        assert!(budget < ADMISSIONS * one.payload_bytes);
+        drop(reserved_index);
+        drop(calibration_runtime);
+        drop(calibration_service);
+
+        let service = Arc::new(CanonicalV13ReadService::with_view_cursor_budget_for_test(
+            budget,
+        ));
+        let runtime = V5CanonicalInvocationRuntime::new(service.clone(), Arc::new(TokioClock));
+        let capabilities = ViewCapabilityProbeForTest::start(AT);
+        let projections = CompletedViewProjectionProbeForTest::start(AT);
+        let mut tokens = BTreeSet::new();
+        let mut saved = Vec::new();
+        for admission in 0..ADMISSIONS {
+            let first = retained_payload_page(&runtime, workspace.path(), AT, None);
+            assert_eq!(
+                first.data, calibration_page.data,
+                "fresh admission {admission}"
+            );
+            let input = first
+                .cursor
+                .as_ref()
+                .expect("the collection has multiple pages");
+            assert!(
+                tokens.insert(input.clone()),
+                "each real lease keeps a distinct record/token"
+            );
+            let second = retained_payload_page(&runtime, workspace.path(), AT, Some(input));
+            let successor = second
+                .cursor
+                .as_ref()
+                .expect("the second page has a successor");
+            let third = retained_payload_page(&runtime, workspace.path(), AT, Some(successor));
+            saved.push((input.clone(), second.clone()));
+            saved.push((successor.clone(), third));
+            assert_eq!(projections.revisions().len(), admission + 1);
+        }
+        let issued = capabilities.revisions();
+        assert_eq!(issued.len(), ADMISSIONS);
+        assert_eq!(issued.iter().collect::<BTreeSet<_>>().len(), ADMISSIONS);
+        for revision in &issued {
+            assert_eq!(
+                uuid::Uuid::parse_str(revision).unwrap().get_version_num(),
+                4
+            );
+        }
+        assert_eq!(
+            projections.revisions(),
+            issued,
+            "every admission finished its own full projection"
+        );
+        assert_eq!(service.retained_view_binding_ids_for_test(), issued);
+        let usage = service.retained_view_usage_for_test();
+        assert_eq!(usage.records, ADMISSIONS);
+        assert_eq!(
+            usage.unique_payloads, 1,
+            "all distinct records own the same full payload"
+        );
+        let payloads = service.retained_view_payload_identities_for_test();
+        assert_eq!(payloads.len(), ADMISSIONS);
+        assert_eq!(
+            payloads.iter().collect::<BTreeSet<_>>().len(),
+            1,
+            "all real canonical records must point at the same payload allocation"
+        );
+        assert_eq!(usage.payload_bytes, one.payload_bytes);
+        assert_eq!(usage.record_bytes, ADMISSIONS * one.record_bytes);
+        assert!(usage.index_capacity <= index_capacity);
+        assert_eq!(
+            usage.retained_bytes,
+            fixed_bytes
+                + usage.payload_bytes
+                + usage.record_bytes
+                + usage.index_capacity * index_slot
+        );
+        assert!(usage.retained_bytes <= budget);
+
+        replay_retained_payload_pages(&runtime, workspace.path(), AT, &saved);
+        assert_eq!(
+            projections.revisions(),
+            issued,
+            "cursor replay cannot read the source again"
+        );
+        assert_eq!(
+            service.retained_view_usage_for_test(),
+            usage,
+            "replay retains no new state"
+        );
+        std::fs::remove_file(workspace.path().join("src/Configuration.xml")).unwrap();
+        replay_retained_payload_pages(&runtime, workspace.path(), AT, &saved);
+        assert_eq!(
+            projections.revisions(),
+            issued,
+            "saved pages survive deletion without source reads"
+        );
+        assert_eq!(service.retained_view_usage_for_test(), usage);
+    }
+
+    #[test]
+    fn canonical_change_beyond_first_page_keeps_old_payload_and_allocates_a_new_full_payload() {
+        use crate::infrastructure::daemon::v13_service::CanonicalV13ReadService;
+        use crate::infrastructure::v13_read::CompletedViewProjectionProbeForTest;
+
+        const AT: &str = "main:CommonModule";
+        let (workspace, names) = retained_payload_workspace(4);
+        let service = Arc::new(CanonicalV13ReadService::default());
+        let runtime = V5CanonicalInvocationRuntime::new(service.clone(), Arc::new(TokioClock));
+        let projections = CompletedViewProjectionProbeForTest::start(AT);
+        let first = retained_payload_page(&runtime, workspace.path(), AT, None);
+        let saved = retain_payload_page_chain(&runtime, workspace.path(), AT, &first);
+        assert_eq!(saved.len(), 3, "save the complete original chain");
+        let last_name = names.last().unwrap();
+        let replacement = format!("{last_name}Changed");
+        let descriptor = workspace
+            .path()
+            .join(format!("src/CommonModules/{last_name}.xml"));
+        let changed_descriptor = workspace
+            .path()
+            .join(format!("src/CommonModules/{replacement}.xml"));
+        let source = std::fs::read_to_string(&descriptor)
+            .unwrap()
+            .replace(last_name, &replacement);
+        std::fs::write(&changed_descriptor, source).unwrap();
+        std::fs::remove_file(&descriptor).unwrap();
+        let configuration = workspace.path().join("src/Configuration.xml");
+        let source = std::fs::read_to_string(&configuration)
+            .unwrap()
+            .replace(last_name, &replacement);
+        std::fs::write(&configuration, source).unwrap();
+
+        let changed = retained_payload_page(&runtime, workspace.path(), AT, None);
+        assert_eq!(
+            changed.data, first.data,
+            "the real change is outside the first page"
+        );
+        assert_ne!(changed.cursor, first.cursor);
+        let changed_pages = retain_payload_page_chain(&runtime, workspace.path(), AT, &changed);
+        assert_eq!(changed_pages.len(), saved.len());
+        assert_ne!(
+            changed_pages.last().unwrap().1.data,
+            saved.last().unwrap().1.data
+        );
+        assert_eq!(
+            changed_pages.last().unwrap().1.data.as_ref().unwrap()["items"][0]["title"],
+            replacement
+        );
+        let usage = service.retained_view_usage_for_test();
+        assert_eq!(usage.records, 2);
+        assert_eq!(
+            usage.unique_payloads, 2,
+            "equality must cover all items beyond the first page"
+        );
+        let payloads = service.retained_view_payload_identities_for_test();
+        assert_eq!(payloads.len(), 2);
+        assert_ne!(payloads[0], payloads[1]);
+        let reads = projections.revisions();
+        assert_eq!(reads.len(), 2);
+        replay_retained_payload_pages(&runtime, workspace.path(), AT, &saved);
+        std::fs::remove_file(changed_descriptor).unwrap();
+        std::fs::remove_file(configuration).unwrap();
+        replay_retained_payload_pages(&runtime, workspace.path(), AT, &saved);
+        replay_retained_payload_pages(&runtime, workspace.path(), AT, &changed_pages);
+        assert_eq!(projections.revisions(), reads);
+        assert_eq!(service.retained_view_usage_for_test(), usage);
+    }
+
+    #[test]
+    fn canonical_changed_collection_node_with_equal_items_keeps_a_separate_full_payload() {
+        use crate::infrastructure::daemon::v13_service::CanonicalV13ReadService;
+        use crate::infrastructure::v13_read::CompletedViewProjectionProbeForTest;
+
+        const AT: &str = "main:Subsystem.Sales.Relation";
+        let (workspace, names) = retained_payload_workspace(3);
+        let configuration = workspace.path().join("src/Configuration.xml");
+        let source = std::fs::read_to_string(&configuration).unwrap().replace(
+            "</ChildObjects>",
+            "<Subsystem>Sales</Subsystem></ChildObjects>",
+        );
+        std::fs::write(&configuration, source).unwrap();
+        let content = names
+            .iter()
+            .map(|name| {
+                format!(r#"<xr:Item xsi:type="xr:MDObjectRef">CommonModule.{name}</xr:Item>"#)
+            })
+            .collect::<String>();
+        std::fs::create_dir_all(workspace.path().join("src/Subsystems")).unwrap();
+        let descriptor = workspace.path().join("src/Subsystems/Sales.xml");
+        let original = format!(
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20"><Subsystem uuid="55555555-5555-4555-8555-555555555555"><Properties><Name>Sales</Name><Content>{content}<xr:Item xsi:type="xr:MDObjectRef">11111111-1111-4111-8111-111111111111</xr:Item></Content></Properties><ChildObjects/></Subsystem></MetaDataObject>"#
+        );
+        std::fs::write(&descriptor, &original).unwrap();
+        let service = Arc::new(CanonicalV13ReadService::default());
+        let runtime = V5CanonicalInvocationRuntime::new(service.clone(), Arc::new(TokioClock));
+        let projections = CompletedViewProjectionProbeForTest::start(AT);
+        let first = retained_payload_page(&runtime, workspace.path(), AT, None);
+        let saved = retain_payload_page_chain(&runtime, workspace.path(), AT, &first);
+        assert_eq!(saved.len(), 2);
+        std::fs::write(
+            &descriptor,
+            original.replace(
+                "11111111-1111-4111-8111-111111111111",
+                "22222222-2222-4222-8222-222222222222",
+            ),
+        )
+        .unwrap();
+        let changed = retained_payload_page(&runtime, workspace.path(), AT, None);
+        let changed_pages = retain_payload_page_chain(&runtime, workspace.path(), AT, &changed);
+        assert_eq!(changed_pages.len(), saved.len());
+        assert_eq!(
+            first.data.as_ref().unwrap()["items"],
+            changed.data.as_ref().unwrap()["items"]
+        );
+        assert_ne!(
+            first.data.as_ref().unwrap()["limits"],
+            changed.data.as_ref().unwrap()["limits"]
+        );
+        for ((_, old), (_, new)) in saved.iter().zip(&changed_pages) {
+            assert_eq!(
+                old.data.as_ref().unwrap()["items"],
+                new.data.as_ref().unwrap()["items"],
+                "all ordered items are equal; the real source change affects the collection node"
+            );
+        }
+        let usage = service.retained_view_usage_for_test();
+        assert_eq!(usage.records, 2);
+        assert_eq!(
+            usage.unique_payloads, 2,
+            "a changed node must not share an equal-items payload"
+        );
+        let payloads = service.retained_view_payload_identities_for_test();
+        assert_eq!(payloads.len(), 2);
+        assert_ne!(payloads[0], payloads[1]);
+        let reads = projections.revisions();
+        assert_eq!(reads.len(), 2);
+        replay_retained_payload_pages(&runtime, workspace.path(), AT, &saved);
+        std::fs::remove_file(descriptor).unwrap();
+        replay_retained_payload_pages(&runtime, workspace.path(), AT, &saved);
+        replay_retained_payload_pages(&runtime, workspace.path(), AT, &changed_pages);
+        assert_eq!(projections.revisions(), reads);
+        assert_eq!(service.retained_view_usage_for_test(), usage);
+    }
+
     const LIVE_V5_IDLE_GRACE: Duration = Duration::from_millis(400);
     const LIVE_V5_OPERATION_TIMEOUT: Duration = Duration::from_secs(20);
     const LIVE_V5_WAIT_MS: u64 = 7_000;
@@ -2850,6 +3220,7 @@ pub(crate) mod actor_capacity_tests {
         state_root: std::path::PathBuf,
         canonical: Arc<V5CanonicalInvocationRuntime>,
         thread: Option<std::thread::JoinHandle<Result<(), String>>>,
+        owned_stop: Option<Arc<AtomicBool>>,
     }
 
     impl LiveV5Daemon {
@@ -2859,6 +3230,14 @@ pub(crate) mod actor_capacity_tests {
                 Arc::new(TokioClock),
             ));
             Self::over(canonical, service)
+        }
+
+        pub(crate) fn start_with_owned_stop(service: Arc<dyn CanonicalInvocationService>) -> Self {
+            let canonical = Arc::new(V5CanonicalInvocationRuntime::new(
+                Arc::clone(&service),
+                Arc::new(TokioClock),
+            ));
+            Self::over_with_owned_stop(canonical, service, Some(Arc::new(AtomicBool::new(false))))
         }
 
         pub(crate) fn start_with_delivery_downloader(
@@ -2876,6 +3255,14 @@ pub(crate) mod actor_capacity_tests {
             canonical: Arc<V5CanonicalInvocationRuntime>,
             service: Arc<dyn CanonicalInvocationService>,
         ) -> Self {
+            Self::over_with_owned_stop(canonical, service, None)
+        }
+
+        fn over_with_owned_stop(
+            canonical: Arc<V5CanonicalInvocationRuntime>,
+            service: Arc<dyn CanonicalInvocationService>,
+            owned_stop: Option<Arc<AtomicBool>>,
+        ) -> Self {
             let state = tempfile::tempdir().unwrap();
             let state_root = std::fs::canonicalize(state.path()).unwrap();
             let config = DaemonServerConfig::new(
@@ -2885,13 +3272,24 @@ pub(crate) mod actor_capacity_tests {
             )
             .with_invocation_service(service)
             .with_canonical_runtime_for_test(Arc::clone(&canonical));
-            let thread = std::thread::spawn(move || super::super::runtime_v5::run_daemon(config));
+            let thread = Self::spawn(config, owned_stop.clone());
             Self {
                 _state: state,
                 state_root,
                 canonical,
                 thread: Some(thread),
+                owned_stop,
             }
+        }
+
+        fn spawn(
+            config: DaemonServerConfig,
+            owned_stop: Option<Arc<AtomicBool>>,
+        ) -> std::thread::JoinHandle<Result<(), String>> {
+            std::thread::spawn(move || match owned_stop {
+                Some(stop) => super::super::runtime_v5::run_daemon_until_for_test(config, stop),
+                None => super::super::runtime_v5::run_daemon(config),
+            })
         }
 
         fn runtime(&self) -> &V5CanonicalInvocationRuntime {
@@ -3024,6 +3422,9 @@ pub(crate) mod actor_capacity_tests {
 
         /// Ends one life of the daemon; the state root stays for the next.
         pub(crate) fn stop(&mut self, owner: V5DaemonProcessOwner) {
+            if let Some(stop) = &self.owned_stop {
+                stop.store(true, Ordering::Release);
+            }
             drop(owner);
             self.thread
                 .take()
@@ -3052,9 +3453,10 @@ pub(crate) mod actor_capacity_tests {
             .with_invocation_service(service)
             .with_canonical_runtime_for_test(Arc::clone(&canonical));
             self.canonical = canonical;
-            self.thread = Some(std::thread::spawn(move || {
-                super::super::runtime_v5::run_daemon(config)
-            }));
+            if let Some(stop) = &self.owned_stop {
+                stop.store(false, Ordering::Release);
+            }
+            self.thread = Some(Self::spawn(config, self.owned_stop.clone()));
         }
     }
 
@@ -7833,7 +8235,7 @@ struct ActorLogicalReadLease {"#,
                     "right": "main:Catalog.Items",
                     "cursor": "opaque"
                 }),
-                // The schema publishes no diff cursor (#1218): an unknown argument.
+                // Comparison diff publishes no cursor (#1218): an unknown argument.
                 "bad_value",
             ),
             (
@@ -7982,6 +8384,16 @@ struct ActorLogicalReadLease {"#,
                 InvocationRequest::new(tool, arguments, workspace_hint.as_str(), 7_000).unwrap();
             direct_v5(&runtime, request).unwrap()
         };
+        let planned = call(
+            ToolIdentity::Apply,
+            serde_json::json!({
+                "at": "main:Catalog.Items",
+                "ops": [{"op": "props.set", "args": {"values": {"Comment": "saved empty cursor"}}}]
+            }),
+        );
+        assert!(planned.ok, "{planned:?}");
+        let token = planned.data.as_ref().unwrap()["executionToken"].clone();
+        assert!(token.as_str().is_some_and(|token| !token.is_empty()));
         let cases = [
             (ToolIdentity::View, serde_json::json!({}), false),
             (
@@ -7992,6 +8404,11 @@ struct ActorLogicalReadLease {"#,
             (
                 ToolIdentity::Search,
                 serde_json::json!({"query": "PagedNeedle", "limit": 1}),
+                true,
+            ),
+            (
+                ToolIdentity::Diff,
+                serde_json::json!({"executionToken": token, "limit": 1}),
                 true,
             ),
             (ToolIdentity::Check, serde_json::json!({}), false),
@@ -8043,7 +8460,7 @@ struct ActorLogicalReadLease {"#,
                 "{name} {arguments}: first page continuation"
             );
         }
-        // Diff publishes no cursor, so even an empty one stays unknown.
+        // Only saved-plan diff publishes a cursor; comparison keeps even an empty one unknown.
         let diff = call(
             ToolIdentity::Diff,
             serde_json::json!({
@@ -8054,6 +8471,183 @@ struct ActorLogicalReadLease {"#,
         );
         assert!(!diff.ok);
         assert_eq!(diff.diagnostics[0]["code"], "bad_value", "{diff:?}");
+    }
+
+    #[test]
+    fn saved_plan_diff_default_limit_pages_twenty_chunks_and_replays() {
+        let (_state, _workspace, runtime, workspace_hint) = empty_cursor_and_diff_fixture();
+        let source = std::path::Path::new(&workspace_hint).join("src");
+        let before = crate::test_support::tree_snapshot(&source);
+        let call = |tool, arguments| {
+            let request =
+                InvocationRequest::new(tool, arguments, workspace_hint.as_str(), 7_000).unwrap();
+            direct_v5(&runtime, request).unwrap()
+        };
+        // A real metadata edit produces more than twenty 2048-byte source chunks.
+        // Twenty ASCII chunks still fit the 64 KiB encoded-page bound.
+        let planned = call(
+            ToolIdentity::Apply,
+            serde_json::json!({
+                "at": "main:Catalog.Items",
+                "ops": [{"op": "props.set", "args": {"values": {"Comment": "x".repeat(50 * 1024)}}}]
+            }),
+        );
+        assert!(planned.ok, "{planned:?}");
+        assert_eq!(planned.data.as_ref().unwrap()["mode"], "preview");
+        let token = planned.data.as_ref().unwrap()["executionToken"].clone();
+        assert!(token.as_str().is_some_and(|token| !token.is_empty()));
+        let first_args = serde_json::json!({"executionToken": token.clone()});
+        let omitted = call(ToolIdentity::Diff, first_args.clone());
+        let explicit_twenty = call(
+            ToolIdentity::Diff,
+            serde_json::json!({"executionToken": token.clone(), "limit": 20}),
+        );
+        assert!(omitted.ok, "{omitted:?}");
+        assert!(explicit_twenty.ok, "{explicit_twenty:?}");
+        assert_eq!(
+            serde_json::to_value(&omitted).unwrap(),
+            serde_json::to_value(&explicit_twenty).unwrap(),
+            "omitting limit uses the same real twenty-chunk boundary"
+        );
+        let first = omitted.data.as_ref().unwrap();
+        assert_eq!(first["chunks"].as_array().unwrap().len(), 20);
+        assert_eq!(first["truncated"], true);
+        assert_eq!(first["planIdentity"].as_str(), planned.rev.as_deref());
+        assert_eq!(omitted.page.as_ref().unwrap()["stoppedBy"], "limit");
+        let cursor = omitted.cursor.as_deref().expect("more than twenty chunks");
+        assert_eq!(first["cursor"], cursor);
+        assert_eq!(omitted.next.len(), 1);
+        assert_eq!(omitted.next[0]["tool"], "unica.diff");
+        assert_eq!(omitted.next[0]["arguments"]["executionToken"], token);
+        assert_eq!(omitted.next[0]["arguments"]["limit"], 20);
+        assert_eq!(omitted.next[0]["arguments"]["cursor"], cursor);
+        let first_replay = call(ToolIdentity::Diff, first_args);
+        assert_eq!(
+            serde_json::to_value(&first_replay).unwrap(),
+            serde_json::to_value(&omitted).unwrap()
+        );
+        // Keep limit omitted when following the issued cursor as well.
+        let continuation_args = serde_json::json!({"executionToken": token, "cursor": cursor});
+        let last = call(ToolIdentity::Diff, continuation_args.clone());
+        assert!(last.ok, "{last:?}");
+        let tail = last.data.as_ref().unwrap();
+        let tail_len = tail["chunks"].as_array().unwrap().len();
+        assert!(tail_len > 0 && tail_len <= 20);
+        assert!(first["chunks"].as_array().unwrap().len() + tail_len > 20);
+        assert_eq!(tail["planIdentity"], first["planIdentity"]);
+        assert_eq!(tail["truncated"], false);
+        assert!(tail["cursor"].is_null());
+        assert!(last.cursor.is_none());
+        assert!(last.next.is_empty());
+        assert_eq!(last.page.as_ref().unwrap()["stoppedBy"], "complete");
+        let last_replay = call(ToolIdentity::Diff, continuation_args);
+        assert_eq!(
+            serde_json::to_value(&last_replay).unwrap(),
+            serde_json::to_value(&last).unwrap()
+        );
+        assert_eq!(
+            crate::test_support::tree_snapshot(&source),
+            before,
+            "planning and all saved-source page reads stay write-free"
+        );
+    }
+
+    #[test]
+    fn saved_plan_diff_projects_its_continuation_in_the_canonical_envelope() {
+        let workspace = subsystem_picture_workspace("", true);
+        let source = workspace.path().join("src");
+        let before = crate::test_support::tree_snapshot(&source);
+        let runtime = bootstrap_runtime();
+        let preview = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Apply,
+            serde_json::json!({"at": "main:Subsystem.Sales", "ops": [
+                {"op": "props.set", "args": {"values": {"Comment": "saved cursor projection"}}}
+            ]}),
+        );
+        assert!(preview.ok, "{preview:?}");
+        let token = preview.data.as_ref().unwrap()["executionToken"].clone();
+        let first = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Diff,
+            serde_json::json!({"executionToken": token.clone(), "limit": 1}),
+        );
+        assert!(first.ok, "{first:?}");
+        let data = first.data.as_ref().unwrap();
+        let payload_cursor = data["cursor"]
+            .as_str()
+            .expect("two saved sides need a continuation");
+        assert_eq!(
+            first.cursor.as_deref(),
+            Some(payload_cursor),
+            "the canonical envelope must publish the saved-plan continuation"
+        );
+        assert_eq!(data["planIdentity"].as_str(), preview.rev.as_deref());
+        assert_eq!(data["chunks"].as_array().unwrap().len(), 1);
+        assert_eq!(data["truncated"], true);
+        assert_eq!(first.page.as_ref().unwrap()["stoppedBy"], "limit");
+        assert_eq!(first.next.len(), 1);
+        assert_eq!(first.next[0]["arguments"]["cursor"], data["cursor"]);
+        assert_eq!(first.next[0]["arguments"]["executionToken"], token);
+        let cursor = first.cursor.clone().unwrap();
+        let continuation_args =
+            serde_json::json!({"executionToken": token.clone(), "limit": 1, "cursor": cursor});
+        let terminal = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Diff,
+            continuation_args.clone(),
+        );
+        assert!(terminal.ok, "{terminal:?}");
+        assert!(
+            terminal.cursor.is_none(),
+            "terminal envelope has no continuation"
+        );
+        assert!(terminal.data.as_ref().unwrap()["cursor"].is_null());
+        assert_eq!(terminal.data.as_ref().unwrap()["truncated"], false);
+        assert_eq!(terminal.page.as_ref().unwrap()["stoppedBy"], "complete");
+        assert!(terminal.next.is_empty());
+        let repeated = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Diff,
+            continuation_args,
+        );
+        assert_eq!(
+            serde_json::to_value(&repeated).unwrap(),
+            serde_json::to_value(&terminal).unwrap()
+        );
+        assert_eq!(
+            crate::test_support::tree_snapshot(&source),
+            before,
+            "planning and cursor reads must not publish source edits"
+        );
+        let applied = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Apply,
+            serde_json::json!({"executionToken": token.clone()}),
+        );
+        assert!(applied.ok, "{applied:?}");
+        let published = crate::test_support::tree_snapshot(&source);
+        assert_ne!(published, before);
+        let replay = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Apply,
+            serde_json::json!({"executionToken": token}),
+        );
+        assert_eq!(
+            serde_json::to_value(&replay).unwrap(),
+            serde_json::to_value(&applied).unwrap()
+        );
+        assert_eq!(
+            crate::test_support::tree_snapshot(&source),
+            published,
+            "applying the retained token again must replay without another source write"
+        );
     }
 
     /// #1218: diff has no continuation. A truncated answer names the cut and
@@ -11651,6 +12245,117 @@ struct ActorLogicalReadLease {"#,
         );
     }
 
+    /// The saved-plan adapter carries the existing cutoff into real actor
+    /// publication. A finite cutoff must not become a fresh relative budget,
+    /// and an elapsed finite cutoff must not become absence or consume the plan.
+    #[test]
+    fn saved_apply_adapter_preserves_the_existing_cutoff_and_absence() {
+        use crate::domain::operation_deadline::OperationDeadline;
+        use crate::infrastructure::workspace_actor::{
+            ApplyPublicationErrorKind, SavedApplyExecutionError,
+        };
+
+        let now = Instant::now();
+        for deadline in [
+            OperationDeadline::Finite(now + Duration::from_secs(3_600)),
+            OperationDeadline::NoDeadline,
+            OperationDeadline::Finite(now - Duration::from_secs(1)),
+        ] {
+            let workspace = subsystem_picture_workspace("", true);
+            let source = workspace.path().join("src");
+            let before = crate::test_support::tree_snapshot(&source);
+            let runtime = bootstrap_runtime();
+            let preview = submit_canonical(
+                &runtime,
+                workspace.path(),
+                ToolIdentity::Apply,
+                serde_json::json!({
+                    "at": "main:Subsystem.Sales",
+                    "ops": [{"op": "props.set", "args": {"values": {"Comment": "same saved cutoff"}}}],
+                }),
+            );
+            assert!(preview.ok, "{preview:?}");
+            assert_eq!(crate::test_support::tree_snapshot(&source), before);
+            let token = preview.data.as_ref().unwrap()["executionToken"]
+                .as_str()
+                .unwrap();
+            let request = InvocationRequest::new(
+                ToolIdentity::Apply,
+                serde_json::json!({"executionToken": token}),
+                std::fs::canonicalize(workspace.path())
+                    .unwrap()
+                    .to_string_lossy(),
+                7_000,
+            )
+            .unwrap();
+            let cancellation = CancellationToken::new();
+            let execution = bind_workspace_invocation(
+                &request,
+                &runtime.workspace_actors,
+                Arc::clone(&runtime.deliveries),
+                Arc::clone(&runtime.provider_hosts),
+                Arc::clone(&runtime.runtime_resources),
+                None,
+                runtime.capture_response_deadline_for_test(),
+            )
+            .unwrap()
+            .begin_execution(&cancellation)
+            .unwrap();
+            let expired = deadline.is_elapsed_at(Instant::now());
+            let expected = match deadline {
+                OperationDeadline::NoDeadline => ProviderDeadline::no_deadline(),
+                OperationDeadline::Finite(cutoff) => ProviderDeadline::new(cutoff),
+            };
+            super::admission_test_control::take_apply_deadlines();
+            let result = execution.execute_saved_apply(
+                token,
+                &cancellation,
+                deadline,
+                |preview, publication| {
+                    publication.expect("a live cutoff publishes the actual saved plan");
+                    preview
+                },
+            );
+            let observed = super::admission_test_control::take_apply_deadline_values();
+            assert_eq!(observed.len(), 1);
+            if expired {
+                assert_eq!(observed[0].remaining(), Some(Duration::ZERO));
+                assert!(matches!(
+                    result,
+                    Err(SavedApplyExecutionError::Publication(error))
+                        if error.kind() == ApplyPublicationErrorKind::Deadline
+                ));
+                assert_eq!(crate::test_support::tree_snapshot(&source), before);
+                let retried = execution
+                    .execute_saved_apply(
+                        token,
+                        &cancellation,
+                        OperationDeadline::NoDeadline,
+                        |preview, publication| {
+                            publication.expect("expiry must leave the saved plan pending");
+                            preview
+                        },
+                    )
+                    .unwrap();
+                assert!(retried.ok, "{retried:?}");
+                assert_eq!(
+                    super::admission_test_control::take_apply_deadline_values(),
+                    [ProviderDeadline::no_deadline()]
+                );
+            } else {
+                assert_eq!(
+                    observed,
+                    [expected],
+                    "saved execution must preserve the input endpoint or its absence"
+                );
+                assert!(result.unwrap().ok);
+            }
+            assert!(std::fs::read_to_string(source.join("Subsystems/Sales.xml"))
+                .unwrap()
+                .contains("same saved cutoff"));
+        }
+    }
+
     /// #1338: only a binding that left the workspace actor is a changed
     /// workspace the caller may repeat; an invariant failure at the
     /// execution boundary stays an internal failure, and neither carries the
@@ -12220,6 +12925,168 @@ struct ActorLogicalReadLease {"#,
             provider.0.load(Ordering::SeqCst),
             4,
             "each branch read asks both directions"
+        );
+    }
+    #[test]
+    fn saved_call_graph_pages_survive_deleted_owner_without_analyzer_reads() {
+        use crate::domain::code_intelligence::{
+            CallEdgeProvenance, CallGraphEdge, CallGraphResult, CallGraphState,
+            CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceReadData,
+            CodeIntelligenceReadRequest, ProviderCapability, ProviderDeadline, ProviderIdentity,
+            ProviderReadOutcome, ProviderRole, ProviderSearchSection, SearchRequest,
+        };
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CountingCallGraph(AtomicUsize);
+        impl CodeIntelligenceProvider for CountingCallGraph {
+            fn identity(&self) -> ProviderIdentity {
+                ProviderIdentity::new(ProviderRole::Symbol, "counting-call-graph")
+            }
+            fn capabilities(&self) -> &[ProviderCapability] {
+                &[ProviderCapability::CallGraph]
+            }
+            fn search(
+                &self,
+                _request: &SearchRequest,
+                _context: &CodeIntelligenceContext,
+                _deadline: ProviderDeadline,
+                _cancellation: &CancellationToken,
+            ) -> ProviderSearchSection {
+                unreachable!("the call graph test never searches")
+            }
+            fn read(
+                &self,
+                request: &CodeIntelligenceReadRequest,
+                _context: &CodeIntelligenceContext,
+                _deadline: ProviderDeadline,
+                _cancellation: &CancellationToken,
+            ) -> Result<ProviderReadOutcome, String> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                let CodeIntelligenceReadRequest::CallGraph { id, .. } = request else {
+                    return Err("only the call graph is read".to_string());
+                };
+                assert_eq!(id, "method/common/Handlers/Run");
+                let edges = ["Run", "Next", "Last"]
+                    .into_iter()
+                    .map(|method| CallGraphEdge {
+                        id: format!("method/common/Handlers/{method}"),
+                        provenance: CallEdgeProvenance::Resolved,
+                    })
+                    .collect::<Vec<_>>();
+                Ok(ProviderReadOutcome {
+                    provider: self.identity(),
+                    ok: true,
+                    summary: "call graph".to_string(),
+                    warnings: Vec::new(),
+                    errors: Vec::new(),
+                    artifacts: Vec::new(),
+                    stdout: None,
+                    stderr: None,
+                    data: Some(CodeIntelligenceReadData::CallGraph(CallGraphResult {
+                        state: CallGraphState::Ready,
+                        total: Some(edges.len() as u64),
+                        edges,
+                        revision: Some(7),
+                        stale: Some(false),
+                        complete: true,
+                    })),
+                })
+            }
+        }
+
+        let workspace =
+            scheduled_handler_workspace("CONFIGURATION", "Procedure Run() Export\nEndProcedure\nProcedure Next() Export\nEndProcedure\nProcedure Last() Export\nEndProcedure\n");
+        let runtime = bootstrap_runtime();
+        let service =
+            crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default();
+        let cancellation = CancellationToken::new();
+        let provider = Arc::new(CountingCallGraph(AtomicUsize::new(0)));
+        // Сбрасывает подмену на любом выходе из теста, в том числе при панике.
+        struct ResetOverride;
+        impl Drop for ResetOverride {
+            fn drop(&mut self) {
+                crate::infrastructure::application_ports::CODE_INTELLIGENCE_PROVIDER_OVERRIDE
+                    .with(|slot| *slot.borrow_mut() = None);
+            }
+        }
+        let _reset_override = ResetOverride;
+        crate::infrastructure::application_ports::CODE_INTELLIGENCE_PROVIDER_OVERRIDE
+            .with(|slot| *slot.borrow_mut() = Some(vec![provider.clone()]));
+        let view = |arguments: serde_json::Value| {
+            let request = InvocationRequest::new(
+                ToolIdentity::View,
+                arguments,
+                std::fs::canonicalize(workspace.path())
+                    .unwrap()
+                    .to_string_lossy(),
+                7_000,
+            )
+            .unwrap();
+            let execution = bind_workspace_invocation(
+                &request,
+                &runtime.workspace_actors,
+                Arc::clone(&runtime.deliveries),
+                Arc::clone(&runtime.provider_hosts),
+                Arc::clone(&runtime.runtime_resources),
+                None,
+                runtime.capture_response_deadline_for_test(),
+            )
+            .unwrap()
+            .begin_execution(&cancellation)
+            .unwrap();
+            let result = service.execute(&execution, cancellation.clone()).unwrap();
+            execution
+                .publish(Ok(result), &cancellation)
+                .unwrap()
+                .unwrap()
+        };
+        let method = "main:CommonModule.Handlers.Method.Run";
+        let mut saved = Vec::new();
+        for kind in ["Caller", "Callee"] {
+            let at = format!("{method}.{kind}");
+            let first = view(serde_json::json!({"at": at, "limit": 1}));
+            assert!(first.ok, "the initial saved call-graph page succeeds");
+            let cursor = first.cursor.unwrap();
+            let second = view(serde_json::json!({"at": at, "limit": 1, "cursor": cursor}));
+            assert!(
+                second.ok && second.cursor.is_some(),
+                "saved successor succeeds and continues"
+            );
+            saved.push((at, cursor, second));
+        }
+        assert_eq!(provider.0.load(Ordering::SeqCst), 4);
+        std::fs::remove_file(
+            workspace
+                .path()
+                .join("src/CommonModules/Handlers/Ext/Module.bsl"),
+        )
+        .unwrap();
+        let fresh = view(serde_json::json!({"at": method}));
+        assert!(
+            !fresh.ok,
+            "a fresh read must observe that the owner source was deleted"
+        );
+        for (at, cursor, second) in saved {
+            let repeated = view(serde_json::json!({"at": at, "limit": 1, "cursor": cursor}));
+            assert_eq!(
+                repeated, second,
+                "saved page and successor survive deletion of the owning method"
+            );
+            let final_page =
+                view(serde_json::json!({"at": at, "limit": 1, "cursor": second.cursor}));
+            assert!(
+                final_page.ok && final_page.cursor.is_none(),
+                "the final saved call-graph page succeeds and finishes pagination"
+            );
+            assert_eq!(
+                final_page.data.as_ref().unwrap()["items"][0]["at"],
+                "main:CommonModule.Handlers.Method.Last"
+            );
+        }
+        assert_eq!(
+            provider.0.load(Ordering::SeqCst),
+            4,
+            "saved pages must not read the graph again"
         );
     }
 
@@ -15025,11 +15892,12 @@ mod finite_deadline_guard {
     /// Constructors that start a finite operation deadline.
     const FINITE_DEADLINE_CONSTRUCTORS: [&str; 3] = ["from_budget", "new", "from_started_at"];
 
-    /// Production places that may still start a finite `ProviderDeadline`
+    /// Production places that may construct a finite `ProviderDeadline`
     /// (#1251). Each entry is a per-step safety bound, a deadline the user set
-    /// explicitly, a path the v0.13 wire does not reach, or search work moved
-    /// to #1254. Any other operation path admits work without a deadline; a
-    /// new constructor anywhere, or one more in a listed file, fails here.
+    /// explicitly, an adapter of an existing caller cutoff, a path the v0.13
+    /// wire does not reach, or search work moved to #1254. An existing-cutoff
+    /// adapter must have a test that rejects rearming its input as a budget.
+    /// A new constructor anywhere, or one more in a listed file, fails here.
     const FINITE_DEADLINE_ALLOW_LIST: &[(&str, usize, &str)] = &[
         (
             "application/code_intelligence.rs",
@@ -15050,6 +15918,11 @@ mod finite_deadline_guard {
             "infrastructure/application_ports.rs",
             1,
             "NATIVE_TYPED_INVOCATION_DEADLINE: legacy v0.12 surface",
+        ),
+        (
+            "infrastructure/daemon/invocation_service.rs",
+            1,
+            "saved apply adapts the existing caller cutoff; saved_apply_adapter_preserves_the_existing_cutoff_and_absence rejects rearming",
         ),
         (
             "infrastructure/daemon/runtime_v5.rs",

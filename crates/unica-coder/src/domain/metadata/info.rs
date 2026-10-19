@@ -1,6 +1,6 @@
 use super::{MetadataKind, ObservedMetadataType};
 use crate::domain::source_target::MetadataAddress;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -33,27 +33,30 @@ pub(crate) struct MetaHttpUrlTemplate {
     pub(crate) methods: Vec<MetaHttpMethod>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MetaExpandedName {
     pub(crate) namespace: String,
     pub(crate) local_name: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MetaLocalizedText {
     pub(crate) language: String,
     pub(crate) content: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     rename_all = "camelCase",
     rename_all_fields = "camelCase",
     tag = "kind"
 )]
 pub(crate) enum MetaObservedPropertyValue {
+    UnsignedInteger {
+        value: u32,
+    },
     Text {
         value: String,
     },
@@ -71,7 +74,7 @@ pub(crate) enum MetaObservedPropertyValue {
     Empty {},
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MetaObservedProperty {
     pub(crate) name: String,

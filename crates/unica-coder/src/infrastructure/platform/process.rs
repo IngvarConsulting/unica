@@ -1235,6 +1235,20 @@ impl ManagedChild {
         }
     }
 
+    /// Confirms that the owned leader was reaped, including after a pending
+    /// termination. This does not prove completion of a whole runtime tree.
+    pub(crate) fn poll_owned_leader_exit(&mut self) -> Result<bool, String> {
+        if self.state == ChildState::Reaped {
+            return Ok(true);
+        }
+        if self.try_wait_owned_leader()?.is_some() {
+            self.process_tree.cleanup_after_leader_exit(&mut self.child);
+            self.state = ChildState::Reaped;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     pub fn take_stdout(&mut self) -> Option<ChildStdout> {
         self.child.stdout.take()
     }
@@ -4925,6 +4939,31 @@ mod tests {
         );
         assert!(!output.timed_out);
         assert!(!output.cancelled);
+    }
+
+    #[test]
+    fn managed_child_owned_leader_exit_does_not_accept_pending_termination() {
+        let directory = tempfile::tempdir().unwrap();
+        let cancellation = CancellationToken::new();
+        let child = ManagedChild::spawn(pending_handoff_command(
+            "sleep",
+            &directory.path().join("unused-pid"),
+            cancellation.clone(),
+        ))
+        .unwrap();
+        let mut cleanup = ManagedChildCleanupGuard::new(child, cancellation);
+        let child = cleanup.managed_mut();
+        // Reproduce a termination that has not yet earned an exit observation.
+        child.state = ChildState::Terminating;
+        assert!(!child.is_running().unwrap());
+        assert!(!child.poll_owned_leader_exit().unwrap());
+        child.state = ChildState::Running;
+        child.terminate().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !child.poll_owned_leader_exit().unwrap() {
+            assert!(Instant::now() < deadline, "the owned leader did not exit");
+            thread::yield_now();
+        }
     }
 
     #[test]

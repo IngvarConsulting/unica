@@ -10,7 +10,273 @@ from pathlib import Path
 from tests.agent_evaluation.dcs_driver import DCS_TEMPLATE, allowed_help_command, audit_cli, audit_mcp, audit_review, terminal_calls
 
 
+def detailed_can_response(target, operation):
+    at = target + ".Can." + operation
+    return {"ok": True, "at": at, "data": {"at": at, "kind": "Can", "props": {
+        "op": operation, "implemented": True, "contract": {"argsSchema": {"type": "object"}}}}}
+
+
+def evaluate_mxl_fixture(root, mutation=None):
+    import shutil
+    from types import SimpleNamespace
+    from tests.agent_evaluation import mxl_driver
+    from tests.ci.acceptance_controls import load_acceptance_corpus
+    scenario = next(scenario for scenario in load_acceptance_corpus()["scenarios"] if scenario["id"] == "S335")
+    workspace = root / "workspace"
+    shutil.copytree(mxl_driver.REPO / scenario["workspace"], workspace)
+    body = workspace / (mxl_driver.PREFIX + "Templates/Agent1311/Ext/Template.xml")
+    created = '''<document xmlns="http://v8.1c.ru/8.2/data/spreadsheet" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+<columns><size>4</size></columns>
+<rowsItem><index>0</index><row>
+<c><c><tl><v8:item><v8:content>Товар</v8:content></v8:item></tl></c></c>
+<c><c><tl><v8:item><v8:content>Сумма</v8:content></v8:item></tl></c></c>
+<c><c><tl><v8:item><v8:content/></v8:item></tl></c></c><c><c/></c>
+</row></rowsItem>
+<rowsItem><index>1</index><row>
+<c><c><tl><v8:item><v8:content>Agent1311</v8:content></v8:item></tl></c></c>
+<c><c><tl><v8:item><v8:content>12.5</v8:content></v8:item></tl></c></c>
+<c><c/></c><c><c/></c>
+</row></rowsItem>
+<namedItem><name>Header</name><area><beginRow>0</beginRow><endRow>1</endRow></area></namedItem>
+</document>'''
+
+    def completed_agent(server, scenario, proof_root, **kwargs):
+        # Simulate only the external agent boundary. The wrapper must observe
+        # actual files after it returns; no observation result is mocked.
+        before = {path.relative_to(workspace).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+                  for path in (workspace / "src").rglob("*") if path.is_file()}
+        owner = workspace / "src/cf/Reports/F06Report.xml"
+        owner.write_text(owner.read_text().replace("</ChildObjects>", "<Template>Agent1311</Template></ChildObjects>"))
+        descriptor = workspace / (mxl_driver.PREFIX + "Templates/Agent1311.xml")
+        descriptor.write_text('''<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Template><Properties>
+<TemplateType>SpreadsheetDocument</TemplateType></Properties></Template></MetaDataObject>''')
+        body.parent.mkdir(parents=True)
+        body.write_text(created)
+        if mutation:
+            mutation(workspace, scenario)
+        proof = root / "proof"
+        proof.mkdir()
+        (proof / "manifest.json").write_text(json.dumps({"sourceBefore": before}))
+        return proof
+
+    with patch("tests.agent_evaluation.mxl_driver.evaluate_contract", side_effect=completed_agent):
+        return mxl_driver.evaluate(SimpleNamespace(workspace=workspace), scenario, root / "proofs")
+
+
 class AgentEvaluationAuditTests(unittest.TestCase):
+    def test_mxl_evaluation_records_physical_outcome_and_passes_it_to_independent_review(self):
+        from types import SimpleNamespace
+        from tests.agent_evaluation import mxl_driver
+        with tempfile.TemporaryDirectory() as raw:
+            proof = evaluate_mxl_fixture(Path(raw))
+            observations = proof / "file-observations.json"
+            self.assertTrue(observations.exists(), "MXL evaluation must save actual physical observations")
+            actual = json.loads(observations.read_text())
+            self.assertGreater(len(actual["fileAssertions"]), 10)
+            self.assertEqual([entry["observed"] for entry in actual["fileAssertions"][-4:]],
+                             [["Товар"], ["Сумма"], ["Agent1311"], ["12.5"]])
+            self.assertTrue(actual["preservedTemplatesSha256"])
+            self.assertIn("Agent1311", actual["registeredTemplates"])
+            self.assertEqual(json.loads((proof / "manifest.json").read_text())["fileObservationsSha256"],
+                             hashlib.sha256(observations.read_bytes()).hexdigest())
+            for name, content in {"prompt.md": "Create Header", "final.json": "{}", "mcp.jsonl": "",
+                                  "verification.json": "[]", "scenario.json": "{}", "agent.jsonl": ""}.items():
+                (proof / name).write_text(content)
+            captured = []
+
+            def review(command, prompt, environment, output, **kwargs):
+                captured.append(prompt)
+                (proof / "review.json").write_text(json.dumps({"accepted": True, "reasons": "fixture review"}))
+                transcript = proof / "reviewer.jsonl"
+                transcript.write_text("")
+                return [{"type": "turn.completed"}], transcript, proof / "stderr"
+
+            with patch("tests.agent_evaluation.dcs_driver.codex_command", return_value=[]), \
+                 patch("tests.agent_evaluation.dcs_driver.disabled_skills", return_value=[]), \
+                 patch("tests.agent_evaluation.dcs_driver.run_cli", side_effect=review), \
+                 patch("tests.agent_evaluation.dcs_driver.packager", return_value=SimpleNamespace(
+                     sha256=lambda path: hashlib.sha256(path.read_bytes()).hexdigest())):
+                mxl_driver.independent_review(proof)
+            evidence = json.loads(captured[0].split("\nСвидетельства:\n", 1)[1])
+            self.assertEqual(evidence["fileObservations"], actual)
+            self.assertIn("file-observations.json", json.loads((proof / "receipt.json").read_text())["files"])
+
+    def test_mxl_physical_outcome_rejects_wrong_cells_width_rows_neighbours_and_old_resources(self):
+        from tests.agent_evaluation.mxl_driver import PREFIX
+
+        def change_file(path, old, new):
+            def mutate(workspace, scenario):
+                file = workspace / path
+                file.write_text(file.read_text().replace(old, new))
+            return mutate
+
+        body = PREFIX + "Templates/Agent1311/Ext/Template.xml"
+        for name, mutation in [
+            ("width", change_file(body, "<size>4</size>", "<size>3</size>")),
+            ("rows", change_file(body, "<index>1</index>", "<index>2</index>")),
+            ("cell", change_file(body, "Товар", "Wrong")),
+            ("position", change_file(body, "<c><c><tl>", "<c><i>1</i><c><tl>")),
+            ("neighbour", change_file(body, "<v8:content/>", "<v8:content>unexpected</v8:content>")),
+            ("area", change_file(body, "<name>Header</name>", "<name>Other</name>")),
+            ("area bounds", change_file(body, "<endRow>1</endRow>", "<endRow>2</endRow>")),
+            ("descriptor kind", change_file(PREFIX + "Templates/Agent1311.xml", "SpreadsheetDocument", "DataCompositionSchema")),
+            ("old resource", change_file(PREFIX + "Templates/F06Template/Ext/Template.xml", "Changed", "Corrupted")),
+            ("lost registration", change_file("src/cf/Reports/F06Report.xml", "<Template>F06Template</Template>", "")),
+            ("extra registration", change_file("src/cf/Reports/F06Report.xml", "</ChildObjects>", "<Template>Other</Template></ChildObjects>")),
+            ("lost resource", lambda workspace, scenario: (workspace / (PREFIX + "Templates/F06Template.xml")).unlink()),
+            ("missing assertions", lambda workspace, scenario: [step.pop("fileAssertions", None) for step in scenario["wire"]]),
+        ]:
+            with self.subTest(physical_mutation=name), tempfile.TemporaryDirectory() as raw:
+                with self.assertRaises(ValueError):
+                    evaluate_mxl_fixture(Path(raw), mutation)
+
+    def test_mxl_physical_outcome_rejects_collapsed_cells_that_preserve_frozen_assertions(self):
+        from tests.agent_evaluation.mxl_driver import PREFIX
+        from tests.ci.acceptance_controls import assert_value, file_value
+
+        def collapse_cells(workspace, scenario):
+            body = workspace / (PREFIX + "Templates/Agent1311/Ext/Template.xml")
+            text = body.read_text()
+            for first, second in [("Товар", "Сумма"), ("Agent1311", "12.5")]:
+                first_item = f"<v8:item><v8:content>{first}</v8:content></v8:item>"
+                second_item = f"<v8:item><v8:content>{second}</v8:content></v8:item>"
+                separate = f"<c><c><tl>{first_item}</tl></c></c>\n<c><c><tl>{second_item}</tl></c></c>"
+                collapsed = f"<c><c><tl>{first_item}{second_item}</tl></c></c><c><c/></c>"
+                self.assertIn(separate, text, "the counterexample must collapse both real cells")
+                text = text.replace(separate, collapsed)
+            body.write_text(text)
+            # The old row-wide oracle sees identical ordered text lists even
+            # though both requested columns have collapsed into column one.
+            for step in scenario["wire"]:
+                for assertion in step.get("fileAssertions", []):
+                    assert_value(file_value(workspace, assertion), assertion, {})
+
+        with tempfile.TemporaryDirectory() as raw, self.assertRaises(ValueError):
+            evaluate_mxl_fixture(Path(raw), collapse_cells)
+
+    def test_detailed_can_authorizes_only_its_exact_successful_preceding_target_and_operation(self):
+        import copy
+        target = DCS_TEMPLATE + ".DataSet.F05Data"
+        operation = "field.add"
+        can_at = target + ".Can." + operation
+        trace = []
+        digest = "before"
+
+        def exchange(name, args, result):
+            nonlocal digest
+            identifier = len(trace)
+            method = "tools/list" if name is None else "tools/call"
+            params = {} if name is None else {"name": name, "arguments": args}
+            trace.append({"direction": "request", "sourceSha256": digest,
+                          "payload": {"id": identifier, "method": method, "params": params}})
+            if result.get("data", {}).get("mode") == "published":
+                digest = "after"
+            trace.append({"direction": "response", "sourceSha256": digest,
+                          "payload": {"id": identifier, "result": (
+                              result if name is None else {"structuredContent": result})}})
+
+        exchange(None, {}, {"tools": [{"name": name} for name in ["unica.view", "unica.apply", "unica.check"]]})
+        exchange("unica.view", {"at": can_at}, detailed_can_response(target, operation))
+        exchange("unica.apply", {"at": target, "ops": [{"op": operation, "args": {
+            "items": [{"dataPath": "Added"}]}}]},
+                 {"ok": True, "data": {"mode": "preview", "effects": 1, "executionToken": "plan"}})
+        exchange("unica.apply", {"executionToken": "plan"},
+                 {"ok": True, "data": {"mode": "published", "effects": 1}})
+        exchange("unica.view", {"at": DCS_TEMPLATE}, {"ok": True})
+        exchange("unica.check", {"at": DCS_TEMPLATE}, {"ok": True, "data": {"status": "passed"}})
+
+        def audit(records):
+            audit_mcp(records, required_operations={operation})
+
+        audit(trace)
+        original = detailed_can_response(target, operation)
+        alternatives = {}
+        for key, value in [("ok", False), ("at", DCS_TEMPLATE + ".Can." + operation)]:
+            response = copy.deepcopy(original)
+            response[key] = value
+            alternatives[key] = response
+        for key, value in [("at", DCS_TEMPLATE + ".Can." + operation), ("kind", "Template")]:
+            response = copy.deepcopy(original)
+            response["data"][key] = value
+            alternatives["data." + key] = response
+        for key, value in [("op", "field.remove"), ("implemented", False), ("contract", None)]:
+            response = copy.deepcopy(original)
+            response["data"]["props"][key] = value
+            alternatives["props." + key] = response
+        for schema in [None, {}, [], "object", {"type": "string"}]:
+            response = copy.deepcopy(original)
+            response["data"]["props"]["contract"]["argsSchema"] = schema
+            alternatives["schema " + repr(schema)] = response
+        alternatives["shortlist"] = {"ok": True, "at": target, "data": {"at": target,
+            "kind": "DataSet", "can": [{"op": operation, "implemented": True}]}}
+        alternatives["retired inline contract"] = {"ok": True, "at": target, "data": {
+            "at": target, "kind": "DataSet", "can": [{"op": operation, "implemented": True,
+            "contract": {"argsSchema": {"type": "object"}}}]}}
+        for label, response in alternatives.items():
+            altered = copy.deepcopy(trace)
+            altered[3]["payload"]["result"]["structuredContent"] = response
+            if label in {"shortlist", "retired inline contract"}:
+                altered[2]["payload"]["params"]["arguments"]["at"] = target
+            with self.subTest(response=label), self.assertRaisesRegex(ValueError, "detailed contract"):
+                audit(altered)
+        for missing_path in [("at",), ("data", "at"), ("data", "kind"), ("data", "props", "op"),
+                             ("data", "props", "implemented"), ("data", "props", "contract", "argsSchema")]:
+            altered = copy.deepcopy(trace)
+            response = altered[3]["payload"]["result"]["structuredContent"]
+            for key in missing_path[:-1]:
+                response = response[key]
+            response.pop(missing_path[-1])
+            with self.subTest(missing=missing_path), self.assertRaisesRegex(ValueError, "detailed contract"):
+                audit(altered)
+        transport_failure = copy.deepcopy(trace)
+        transport_failure[3]["payload"]["result"]["isError"] = True
+        with self.assertRaisesRegex(ValueError, "detailed contract"):
+            audit(transport_failure)
+        asynchronous = copy.deepcopy(trace)
+        asynchronous[1]["payload"]["result"]["tools"].append({"name": "unica.task.result"})
+        asynchronous[3]["payload"]["result"]["structuredContent"] = {
+            "ok": True, "data": {"task": {"taskId": "contract-read", "status": "queued"}}}
+        completion = [
+            {"direction": "request", "sourceSha256": "before", "payload": {"id": 99, "method": "tools/call",
+             "params": {"name": "unica.task.result", "arguments": {"taskId": "contract-read"}}}},
+            {"direction": "response", "sourceSha256": "before", "payload": {"id": 99, "result": {
+                "structuredContent": detailed_can_response(target, operation)}}},
+        ]
+        asynchronous[4:4] = completion
+        audit(asynchronous)
+        for broken_reply in [3, 5]:
+            failed = copy.deepcopy(asynchronous)
+            failed[broken_reply]["payload"]["result"]["isError"] = True
+            with self.subTest(failed_async_reply=broken_reply), self.assertRaisesRegex(ValueError, "detailed contract"):
+                audit(failed)
+        missing = copy.deepcopy(trace)
+        del missing[2:4]
+        with self.assertRaisesRegex(ValueError, "detailed contract"):
+            audit(missing)
+        late = copy.deepcopy(trace)
+        late[2:6] = late[4:6] + late[2:4]
+        with self.assertRaisesRegex(ValueError, "detailed contract"):
+            audit(late)
+        late_response = copy.deepcopy(trace)
+        late_response[3], late_response[4] = late_response[4], late_response[3]
+        with self.assertRaisesRegex(ValueError, "detailed contract"):
+            audit(late_response)
+        for other_target, other_operation in [(DCS_TEMPLATE, operation), (target, "field.remove")]:
+            altered = copy.deepcopy(trace)
+            altered[2]["payload"]["params"]["arguments"]["at"] = other_target + ".Can." + other_operation
+            altered[3]["payload"]["result"]["structuredContent"] = detailed_can_response(other_target, other_operation)
+            with self.subTest(target=other_target, operation=other_operation), self.assertRaisesRegex(ValueError, "detailed contract"):
+                audit(altered)
+        for key, value in [("dataSet", "F05Data"), ("variant", "F05Variant")]:
+            altered = copy.deepcopy(trace)
+            selected = DCS_TEMPLATE + (".DataSet." if key == "dataSet" else ".Setting.") + value
+            altered[2]["payload"]["params"]["arguments"]["at"] = selected + ".Can." + operation
+            altered[3]["payload"]["result"]["structuredContent"] = detailed_can_response(selected, operation)
+            altered[4]["payload"]["params"]["arguments"]["at"] = DCS_TEMPLATE
+            altered[4]["payload"]["params"]["arguments"]["ops"][0]["args"]["values"] = {key: value}
+            with self.subTest(retired_selector=key), self.assertRaisesRegex(ValueError, "detailed contract"):
+                audit(altered)
+
     def test_creation_recorder_observes_owner_peers_and_new_files(self):
         from tests.agent_evaluation.mcp_recorder import source_digest
         with tempfile.TemporaryDirectory() as raw:
@@ -90,8 +356,7 @@ class AgentEvaluationAuditTests(unittest.TestCase):
                 result if name is None else {"structuredContent": result})}))
         exchange(None, {}, {"tools": [{"name": name} for name in ["unica.view", "unica.apply", "unica.check"]]})
         for template in [first, second]:
-            exchange("unica.view", {"at": template}, {"ok": True, "data": {"can": [{
-                "op": "field.add", "implemented": True, "contract": {"argsSchema": {"type": "object"}}}]}})
+            exchange("unica.view", {"at": template + ".Can.field.add"}, detailed_can_response(template, "field.add"))
         for token, template in [("first", first), ("peer", second)]:
             exchange("unica.apply", {"at": template, "ops": [{"op": "field.add", "args": {"items": [{"dataPath": "Added"}]}}]},
                      {"ok": True, "data": {"mode": "preview", "effects": 1, "executionToken": token}})
@@ -183,8 +448,8 @@ class AgentEvaluationAuditTests(unittest.TestCase):
                 files_at_call[peer_wrapper] = hashlib.sha256(b"created wrapper").hexdigest()
                 files_at_call[root + ".xml"] = hashlib.sha256(b"registered peer").hexdigest()
             record["sourceSha256"] = tree_digest(files_at_call)
-        creation_overlap[4]["payload"]["params"]["arguments"]["at"] = logical_owner
-        creation_overlap[5]["payload"]["result"]["structuredContent"]["data"]["can"][0]["op"] = "template.add"
+        creation_overlap[4]["payload"]["params"]["arguments"]["at"] = logical_owner + ".Can.template.add"
+        creation_overlap[5]["payload"]["result"]["structuredContent"] = detailed_can_response(logical_owner, "template.add")
         peer_preview = next(record for record in creation_overlap if record["direction"] == "request"
                             and record["payload"].get("params", {}).get("arguments", {}).get("at") == second)
         peer_preview["payload"]["params"]["arguments"] = {"at": logical_owner, "ops": [
@@ -278,11 +543,11 @@ class AgentEvaluationAuditTests(unittest.TestCase):
                                   result if method == "tools/list" else {"structuredContent": result})}})
             exchange("tools/list", {}, {"tools": [{"name": name} for name in ["unica.view", "unica.apply", "unica.check"]]})
             operations = []
-            for op, suffix in [("field.add", ".DataSet.F05Data"), ("query.set", ".DataSet.F05Data"),
-                               ("structure.patch", ".Setting.F05Variant")]:
+            for op, suffix in [("field.add", ".DataSet.F05Data"), ("query.set", ".DataSet.F05Data.Query"),
+                               ("structure.patch", ".Setting.F05Variant.Item.F05Group")]:
                 target = DCS_TEMPLATE + suffix
-                exchange("tools/call", {"name": "unica.view", "arguments": {"at": target}}, {
-                    "ok": True, "data": {"can": [{"op": op, "implemented": True, "contract": {"argsSchema": {"type": "object"}}}]}})
+                exchange("tools/call", {"name": "unica.view", "arguments": {"at": target + ".Can." + op}},
+                         detailed_can_response(target, op))
                 operations.append({"op": op, "args": {"at": target}})
             if discarded_preview:
                 exchange("tools/call", {"name": "unica.apply", "arguments": {"at": DCS_TEMPLATE, "ops": operations}},
@@ -329,11 +594,12 @@ class AgentEvaluationAuditTests(unittest.TestCase):
                        OWNER + ".Template.F06Template.Area.A.Parameter",
                        OWNER + ".Template.F06Template.Area.B"]:
             exchange("unica.view", {"at": target}, {"ok": True})
-        for number, (operation, target) in enumerate([("template.add", OWNER), ("mxl.set", TEMPLATE)]):
-            exchange("unica.view", {"at": target}, {"ok": True, "data": {"can": [{
-                "op": operation, "implemented": True, "contract": {"argsSchema": {"type": "object"}}}]}})
+        for number, (operation, target) in enumerate([("template.add", OWNER), ("area.add", TEMPLATE)]):
+            exchange("unica.view", {"at": target + ".Can." + operation}, detailed_can_response(target, operation))
             exchange("unica.apply", {"at": target, "ops": [{"op": operation, "args": (
-                {"items": [{"name": "Agent1311"}]} if operation == "template.add" else {})}]},
+                {"items": [{"name": "Agent1311", "kind": "SpreadsheetDocument"}]} if operation == "template.add" else
+                {"items": [{"name": "Header", "columns": 4, "cells": {
+                    "R1C1": "Товар", "R1C2": "Сумма", "R2C1": "Agent1311", "R2C2": 12.5}}]})}]},
                      {"ok": True, "data": {"mode": "preview", "effects": 1, "executionToken": str(number)}})
             exchange("unica.apply", {"executionToken": str(number)},
                      {"ok": True, "data": {"mode": "published", "effects": 1}})

@@ -16,6 +16,9 @@ use crate::application::operation_descriptors::ExecutionClass;
 use crate::application::result_store::{
     SearchCursorBinding, SearchCursorStore, StoredSearchCursor, ViewCursorBinding, ViewCursorStore,
 };
+use crate::application::source_navigation::{
+    SOURCE_NAVIGATION_LIMIT_DEFAULT, SOURCE_NAVIGATION_LIMIT_MAX,
+};
 use crate::application::tool_contracts::SurfaceRelease;
 use crate::application::v13::apply::parse_request as parse_apply_request;
 use crate::application::v13::find::{FindIndex, FindRequest};
@@ -139,7 +142,83 @@ impl CanonicalInvocationService for CanonicalV13ReadService {
     }
 }
 
+#[cfg(test)]
+std::thread_local! {
+    static VIEW_CAPABILITY_PROBE_FOR_TEST: std::cell::RefCell<Option<(String, Vec<String>)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// A thread-local observer restores the previous observer even after a panic.
+#[cfg(test)]
+pub(super) struct ViewCapabilityProbeForTest {
+    previous: Option<(String, Vec<String>)>,
+}
+
+#[cfg(test)]
+impl ViewCapabilityProbeForTest {
+    pub(super) fn start(at: &str) -> Self {
+        Self {
+            previous: VIEW_CAPABILITY_PROBE_FOR_TEST
+                .with(|slot| slot.replace(Some((at.to_owned(), Vec::new())))),
+        }
+    }
+
+    pub(super) fn revisions(&self) -> Vec<String> {
+        VIEW_CAPABILITY_PROBE_FOR_TEST.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .expect("capability observer is active")
+                .1
+                .clone()
+        })
+    }
+}
+
+#[cfg(test)]
+impl Drop for ViewCapabilityProbeForTest {
+    fn drop(&mut self) {
+        VIEW_CAPABILITY_PROBE_FOR_TEST.with(|slot| {
+            slot.replace(self.previous.take());
+        });
+    }
+}
+
+#[cfg(test)]
+fn observe_fresh_view_capability_for_test(at: &str, revision: impl FnOnce() -> String) {
+    VIEW_CAPABILITY_PROBE_FOR_TEST.with(|slot| {
+        if let Some((target, revisions)) = slot.borrow_mut().as_mut() {
+            if target == at {
+                revisions.push(revision());
+            }
+        }
+    });
+}
+
 impl CanonicalV13ReadService {
+    #[cfg(test)]
+    pub(super) fn with_view_cursor_budget_for_test(max_total_bytes: usize) -> Self {
+        Self {
+            cursors: Arc::new(ViewCursorStore::new(max_total_bytes)),
+            ..Self::default()
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn retained_view_usage_for_test(
+        &self,
+    ) -> crate::application::result_store::ViewRetainedUsage {
+        self.cursors.retained_usage_for_test()
+    }
+
+    #[cfg(test)]
+    pub(super) fn retained_view_binding_ids_for_test(&self) -> Vec<String> {
+        self.cursors.retained_binding_ids_for_test()
+    }
+
+    #[cfg(test)]
+    pub(super) fn retained_view_payload_identities_for_test(&self) -> Vec<usize> {
+        self.cursors.retained_payload_identities_for_test()
+    }
+
     pub(crate) fn with_capacity_observer(observer: Arc<CapacityObserver>) -> Self {
         let mut service = Self::default();
         service.cursors =
@@ -201,9 +280,21 @@ impl CanonicalV13ReadService {
                     "execution requires only a nonempty executionToken",
                 );
             }
-            return invocation.execute_saved_apply(token.as_str().unwrap(), cancellation, |mut result, publication| {
+            let deadline = crate::domain::operation_deadline::OperationDeadline::NoDeadline;
+            return invocation.execute_saved_apply(token.as_str().unwrap(), cancellation, deadline, |mut result, publication| {
                 match publication {
                     Ok(publication) => {
+                        if publication.effects().disposition() == ApplyEffectDisposition::Committed
+                            && !publication.effects().events().is_empty()
+                        {
+                            use crate::application::ports::ApplicationPorts;
+                            self.ports.notify_committed_changes(
+                                invocation.workspace_context(),
+                                publication.effects().events(),
+                                cancellation,
+                                deadline,
+                            );
+                        }
                         result.summary = "metadata apply published atomically".into();
                         result.rev = Some(publication.rev().to_owned());
                         if let Some(data) = result.data.as_mut() {
@@ -435,6 +526,9 @@ impl CanonicalV13ReadService {
                     json!(token);
                 result
                     .next
+                    .push(json!({"tool": "unica.diff", "arguments": {"executionToken": token}}));
+                result
+                    .next
                     .push(json!({"tool": "unica.apply", "arguments": {"executionToken": token}}));
                 result
             }
@@ -562,6 +656,12 @@ impl CanonicalV13ReadService {
                 "view source set was not admitted by the workspace actor",
             );
         };
+        #[cfg(test)]
+        if request.cursor().is_none() {
+            observe_fresh_view_capability_for_test(&address.to_string(), || {
+                source.revision_identity()
+            });
+        }
         let authority = match source.logical_view_read_authority(cancellation) {
             Ok(authority) => authority,
             Err(error) => {
@@ -597,6 +697,12 @@ impl CanonicalV13ReadService {
                 return error_result(Some(at.to_string()), RefusalCode::BadValue, message);
             }
             let service = ViewService::with_shared_cursors(authority, Arc::clone(&self.cursors));
+            if request.cursor().is_some() {
+                return enforce_view_result_limit(
+                    service.view_saved_collection(request, &owner),
+                    at,
+                );
+            }
             let owner_result = service.view(match ViewRequest::new(&owner.to_string()) {
                 Ok(request) => request,
                 Err(error) => return view_error_result(Some(owner.to_string()), error),
@@ -611,12 +717,6 @@ impl CanonicalV13ReadService {
                     "owning method has no source revision",
                 );
             };
-            if request.cursor().is_some() {
-                return enforce_view_result_limit(
-                    service.view_preloaded_collection(request, &owner, expected_revision, None),
-                    at,
-                );
-            }
             // Ветвь — единственный вход в граф, и анализатор, которого нет на
             // машине, она поставляет этим же вызовом, как `check` и `search`:
             // пока поставка идёт, ответ просит повтор, провал поставки — её
@@ -2206,6 +2306,85 @@ impl CanonicalV13ReadService {
         cancellation: &CancellationToken,
     ) -> DomainResult {
         let arguments = invocation.arguments();
+        if arguments.contains_key("executionToken") {
+            let Some(token) = arguments
+                .get("executionToken")
+                .and_then(Value::as_str)
+                .filter(|token| !token.is_empty())
+            else {
+                return error_result(
+                    None,
+                    RefusalCode::BadValue,
+                    "diff executionToken must be a nonempty string",
+                );
+            };
+            if arguments
+                .keys()
+                .any(|key| !matches!(key.as_str(), "executionToken" | "limit" | "cursor"))
+            {
+                return error_result(
+                    None,
+                    RefusalCode::BadValue,
+                    "saved-plan diff accepts only executionToken, limit and cursor",
+                );
+            }
+            let limit = match arguments.get("limit") {
+                None => SOURCE_NAVIGATION_LIMIT_DEFAULT,
+                Some(value) => match bounded_usize(value)
+                    .filter(|limit| *limit <= SOURCE_NAVIGATION_LIMIT_MAX)
+                {
+                    Some(limit) => limit,
+                    None => {
+                        return error_result(
+                            None,
+                            RefusalCode::BadValue,
+                            "saved-plan diff limit must be an integer from 1 through 50",
+                        )
+                    }
+                },
+            };
+            let cursor = match arguments.get("cursor") {
+                None => None,
+                Some(Value::String(cursor)) => Some(cursor.as_str()),
+                Some(_) => {
+                    return error_result(
+                        None,
+                        RefusalCode::BadValue,
+                        "diff cursor must be a string",
+                    )
+                }
+            };
+            return match invocation.read_saved_apply_diff(token, limit, cursor, cancellation) {
+                Ok(page) => {
+                    let mut result =
+                        DomainResult::success("exact saved source ranges read without execution");
+                    if let Some(cursor) = page["cursor"].as_str() {
+                        result.cursor = Some(cursor.to_owned());
+                        result.next.push(json!({"tool": "unica.diff", "arguments": {"executionToken": token, "limit": limit, "cursor": cursor}}));
+                    }
+                    let mut page = page;
+                    let stopped_by = page
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("stoppedBy")
+                        .expect("saved source page has a stop reason");
+                    result.page = Some(json!({"stoppedBy": stopped_by}));
+                    result.data = Some(page);
+                    result
+                }
+                Err(error) => saved_apply_execution_error_result(error),
+            };
+        }
+        if let Some(unknown) = arguments
+            .keys()
+            .find(|name| !matches!(name.as_str(), "left" | "right" | "limit"))
+        {
+            return error_result(
+                None,
+                RefusalCode::BadValue,
+                format!("canonical invocation has unknown argument `{unknown}`"),
+            );
+        }
         let Some(left) = arguments.get("left").and_then(Value::as_str) else {
             return error_result(
                 None,
@@ -3607,6 +3786,11 @@ fn apply_staging_refusal(
 
 fn saved_apply_execution_error_result(error: SavedApplyExecutionError) -> DomainResult {
     match error {
+        SavedApplyExecutionError::Busy => error_result_detailed(
+            None,
+            RefusalDetail::BackendBusy,
+            "saved plan is busy; retry after the current operation",
+        ),
         SavedApplyExecutionError::Unavailable(message) => {
             error_result(None, RefusalCode::BadValue, message)
         }
@@ -5062,6 +5246,11 @@ mod tests {
         use super::SavedApplyExecutionError;
         use crate::infrastructure::workspace_actor::ApplyPublicationError;
         for (error, code, outcome) in [
+            (
+                SavedApplyExecutionError::Busy,
+                "task_backend_failed",
+                "retry",
+            ),
             (
                 SavedApplyExecutionError::RegistryUnavailable,
                 "invalid_state",

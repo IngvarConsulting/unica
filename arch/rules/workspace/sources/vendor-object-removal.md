@@ -1,7 +1,10 @@
 ---
 id: INV.SOURCE.VENDOR-OBJECT-REMOVAL
-check: []
-gap: https://github.com/IngvarConsulting/unica/issues/943
+check:
+  - crates/unica-coder/src/infrastructure/native_operations/apply_families/mod.rs::vendor_object_removal_requires_separate_off_support_apply
+  - crates/unica-coder/src/infrastructure/native_operations/apply_families/mod.rs::vendor_object_removal_preserves_allowed_support_states
+  - crates/unica-coder/src/infrastructure/native_operations/apply_families/mod.rs::support_removal_and_object_removal_require_separate_batches_under_every_policy
+  - tests/ci/test_acceptance_scenarios.py::AcceptanceCorpusRunTests.test_every_wire_answers_its_frozen_classes
 ---
 
 # Перед удалением объект поставщика снимается с поддержки

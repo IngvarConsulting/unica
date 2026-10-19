@@ -1461,6 +1461,18 @@ pub(super) fn parsed_localized_meta_info_property_value(
     }
 }
 
+pub(super) fn strict_localized_meta_info_property_value(
+    node: roxmltree::Node<'_, '_>,
+) -> Option<MetaObservedPropertyValue> {
+    (node.attributes().len() == 0
+        && node
+            .children()
+            .filter(roxmltree::Node::is_text)
+            .all(|child| child.text().is_none_or(|text| text.trim().is_empty()))
+        && localized_string_is_valid(node))
+    .then(|| parsed_localized_meta_info_property_value(node))
+}
+
 fn localized_string_is_valid(node: roxmltree::Node<'_, '_>) -> bool {
     let items = node
         .children()

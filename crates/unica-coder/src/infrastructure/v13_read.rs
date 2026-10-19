@@ -47,6 +47,57 @@ use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
+#[cfg(test)]
+std::thread_local! {
+    static COMPLETED_VIEW_PROJECTION_PROBE_FOR_TEST: std::cell::RefCell<Option<(String, Vec<String>)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Counts successful complete typed projections of one address on this thread.
+#[cfg(test)]
+pub(crate) struct CompletedViewProjectionProbeForTest {
+    previous: Option<(String, Vec<String>)>,
+}
+
+#[cfg(test)]
+impl CompletedViewProjectionProbeForTest {
+    pub(crate) fn start(at: &str) -> Self {
+        Self {
+            previous: COMPLETED_VIEW_PROJECTION_PROBE_FOR_TEST
+                .with(|slot| slot.replace(Some((at.to_owned(), Vec::new())))),
+        }
+    }
+
+    pub(crate) fn revisions(&self) -> Vec<String> {
+        COMPLETED_VIEW_PROJECTION_PROBE_FOR_TEST.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .expect("projection observer is active")
+                .1
+                .clone()
+        })
+    }
+}
+
+#[cfg(test)]
+impl Drop for CompletedViewProjectionProbeForTest {
+    fn drop(&mut self) {
+        COMPLETED_VIEW_PROJECTION_PROBE_FOR_TEST.with(|slot| {
+            slot.replace(self.previous.take());
+        });
+    }
+}
+
+#[cfg(test)]
+fn observe_completed_view_projection_for_test(at: &QualifiedAddress, revision: &str) {
+    COMPLETED_VIEW_PROJECTION_PROBE_FOR_TEST.with(|slot| {
+        if let Some((target, revisions)) = slot.borrow_mut().as_mut() {
+            if target == &at.to_string() {
+                revisions.push(revision.to_owned());
+            }
+        }
+    });
+}
+
 const MAX_MODULE_BYTES: usize = 8 * 1024 * 1024;
 /// Logical read adapter over one actor-issued source capability. Its read
 /// identity is fixed at admission; the adapter never snapshots the tree.
@@ -959,6 +1010,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
         insert_serialized(&mut payload, "details", &local.details)?;
         insert_serialized(&mut payload, "support", &local.support)?;
         insert_serialized(&mut payload, "properties", &local.properties)?;
+        if let Some(profile) = local.member_read_profile {
+            insert_serialized(&mut payload, "memberReadProfile", &profile)?;
+        }
         insert_serialized(&mut payload, "declarations", &local.declarations)?;
         insert_serialized(&mut payload, "relations", &local.relations)?;
         let collections = serde_json::to_value(&local.collections).map_err(|error| {
@@ -979,7 +1033,10 @@ impl<'a> LogicalViewReadAuthority<'a> {
                     || field.starts_with("properties.")
                     || field.starts_with("relations.")
                     || (field.starts_with("collections.tabularSections[")
-                        && field.contains("].standardAttributes")))
+                        && field.contains("].standardAttributes"))
+                    || local
+                        .member_read_profile
+                        .is_some_and(|profile| profile.owns_diagnostic(field)))
                 .then(|| {
                     json!({
                         "field": field,
@@ -1901,7 +1958,12 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
             self.form_view(&route, admitted)?
         } else {
             let payload = self.typed_payload_for(&route, admitted)?;
-            let projected = project_typed_payload(&route, payload)?;
+            let projected =
+                crate::infrastructure::v13_read_projection::project_typed_payload_for_source(
+                    &route,
+                    payload,
+                    self.read.source_set_kind(),
+                )?;
             self.with_template_body_branches(projected, &route)?
         };
         // Модуль формы без `Form.xml` платформа не выгружает: ветви модуля у
@@ -1929,6 +1991,8 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                 "source revision changed during the typed read",
             ));
         }
+        #[cfg(test)]
+        observe_completed_view_projection_for_test(at, &admitted.revision);
         Ok(projected)
     }
 }

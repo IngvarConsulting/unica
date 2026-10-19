@@ -1,0 +1,559 @@
+{
+  "id": "S-1721-event-implementation-pair",
+  "issue": 1721,
+  "area": "События",
+  "task": "Реализовать событие формы одной публикацией Form.xml и Module.bsl: проверить полные независимые postimage SHA обоих ресурсов, сохранённый token, повторный отказ и отсутствие частичной записи при отравленном пакете; сохранить исходные байты всех соседей.",
+  "workspace": "tests/fixtures/acceptance/workspace",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Event.OnOpen"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/state",
+          "eq": "available"
+        },
+        {
+          "pointer": "/data/props/handler",
+          "eq": "ПриОткрытии"
+        },
+        {
+          "pointer": "/data/props/signature",
+          "eq": "Процедура ПриОткрытии(Отказ)"
+        }
+      ],
+      "captures": {
+        "initial0": {
+          "file": "src/Catalogs/Валюты.xml",
+          "kind": "sha256"
+        },
+        "initial1": {
+          "file": "src/Catalogs/Валюты/Ext/ManagerModule.bsl",
+          "kind": "sha256"
+        },
+        "initial2": {
+          "file": "src/Catalogs/Валюты/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        },
+        "initial3": {
+          "file": "src/Catalogs/Валюты/Forms/ФормаСписка.xml",
+          "kind": "sha256"
+        },
+        "initial4": {
+          "file": "src/Catalogs/Валюты/Forms/ФормаСписка/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "initial5": {
+          "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента.xml",
+          "kind": "sha256"
+        },
+        "initial6": {
+          "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "initial7": {
+          "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        },
+        "initial8": {
+          "file": "src/CommonModules/GoogleПереводчик.xml",
+          "kind": "sha256"
+        },
+        "initial9": {
+          "file": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+          "kind": "sha256"
+        },
+        "initial10": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "initial11": {
+          "file": "src/DocumentJournals/ДокументыОрганизации.xml",
+          "kind": "sha256"
+        },
+        "initial12": {
+          "file": "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "kind": "sha256"
+        },
+        "initial13": {
+          "file": "src/Enums/LanguageAware.xml",
+          "kind": "sha256"
+        },
+        "initial14": {
+          "file": "src/Enums/ВажностьПроблемыУчета.xml",
+          "kind": "sha256"
+        },
+        "initial15": {
+          "file": "src/Enums/НастройкиПоставщика.xml",
+          "kind": "sha256"
+        },
+        "initial16": {
+          "file": "src/Enums/СпособыУстановкиКурсаВалюты.xml",
+          "kind": "sha256"
+        },
+        "initial17": {
+          "file": "src/Ext/ParentConfigurations.bin",
+          "kind": "sha256"
+        },
+        "initial18": {
+          "file": "src/HTTPServices/ПроверкаСвязи.xml",
+          "kind": "sha256"
+        },
+        "initial19": {
+          "file": "src/HTTPServices/ПроверкаСвязи/Ext/Module.bsl",
+          "kind": "sha256"
+        },
+        "initial20": {
+          "file": "src/InformationRegisters/АдминистративнаяИерархия.xml",
+          "kind": "sha256"
+        },
+        "initial21": {
+          "file": "src/Languages/English.xml",
+          "kind": "sha256"
+        },
+        "initial22": {
+          "file": "src/Languages/Русский.xml",
+          "kind": "sha256"
+        },
+        "initial23": {
+          "file": "src/Reports/АнализВерсийОбъектов.xml",
+          "kind": "sha256"
+        },
+        "initial24": {
+          "file": "src/Reports/АнализВерсийОбъектов/Templates/МакетОтчета.xml",
+          "kind": "sha256"
+        },
+        "initial25": {
+          "file": "src/Reports/АнализВерсийОбъектов/Templates/МакетОтчета/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "initial26": {
+          "file": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных.xml",
+          "kind": "sha256"
+        },
+        "initial27": {
+          "file": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "initial28": {
+          "file": "src/Roles/SalesReader.xml",
+          "kind": "sha256"
+        },
+        "initial29": {
+          "file": "src/Roles/SalesReader/Ext/Rights.xml",
+          "kind": "sha256"
+        },
+        "initial30": {
+          "file": "src/Subsystems/Администрирование.xml",
+          "kind": "sha256"
+        },
+        "initial31": {
+          "file": "src/Subsystems/Администрирование/Ext/CommandInterface.xml",
+          "kind": "sha256"
+        },
+        "initial32": {
+          "file": "src/Subsystems/Администрирование/Subsystems/КонтрольРаботыПользователей.xml",
+          "kind": "sha256"
+        },
+        "initial33": {
+          "file": "src/WebServices/ОбменДанными.xml",
+          "kind": "sha256"
+        },
+        "initial34": {
+          "file": "src/WebServices/ОбменДанными/Ext/Module.bsl",
+          "kind": "sha256"
+        },
+        "initial35": {
+          "file": "src/XDTOPackages/EnterpriseData_1_17_3.xml",
+          "kind": "sha256"
+        },
+        "initial36": {
+          "file": "src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+        "ops": [
+          {
+            "op": "event.implement",
+            "args": {
+              "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Event.OnOpen"
+            }
+          },
+          {
+            "op": "event.implement",
+            "args": {
+              "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Event.OnOpen"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "invalid_state"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial6"
+        },
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.initial7"
+        }
+      ],
+      "refusal": "invalid_state: event is Implemented"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Event.OnOpen",
+        "ops": [
+          {
+            "op": "event.implement",
+            "args": {}
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        },
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 2
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial6"
+        },
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.initial7"
+        }
+      ],
+      "captures": {
+        "pairToken": {
+          "pointer": "/data/executionToken"
+        },
+        "pairPlanHash": {
+          "pointer": "/data/planHash"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.pairToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/planHash",
+          "eq": "$capture.pairPlanHash"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "433258850b63dbe9afa4799d27e198b6cd464b5a0badc6759c8a33ac769c9a1e"
+        },
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "2ef9115491b0074f9e8167cfc9f6492449cf977e86d8cced79b2ab6dc8f44bf4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Event.OnOpen"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/state",
+          "eq": "implemented"
+        },
+        {
+          "pointer": "/data/props/handler",
+          "eq": "ПриОткрытии"
+        },
+        {
+          "pointer": "/data/props/implementationAt",
+          "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Module.Form.Method.ПриОткрытии"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Module.Form.Method.ПриОткрытии"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/signature",
+          "eq": "Процедура ПриОткрытии(Отказ)"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Event.OnOpen",
+        "ops": [
+          {
+            "op": "event.implement",
+            "args": {}
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "invalid_state"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial0"
+        },
+        {
+          "path": "src/Catalogs/Валюты/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.initial1"
+        },
+        {
+          "path": "src/Catalogs/Валюты/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.initial2"
+        },
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаСписка.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial3"
+        },
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаСписка/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial4"
+        },
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial5"
+        },
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "433258850b63dbe9afa4799d27e198b6cd464b5a0badc6759c8a33ac769c9a1e"
+        },
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "2ef9115491b0074f9e8167cfc9f6492449cf977e86d8cced79b2ab6dc8f44bf4"
+        },
+        {
+          "path": "src/CommonModules/GoogleПереводчик.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial8"
+        },
+        {
+          "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.initial9"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial10"
+        },
+        {
+          "path": "src/DocumentJournals/ДокументыОрганизации.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial11"
+        },
+        {
+          "path": "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial12"
+        },
+        {
+          "path": "src/Enums/LanguageAware.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial13"
+        },
+        {
+          "path": "src/Enums/ВажностьПроблемыУчета.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial14"
+        },
+        {
+          "path": "src/Enums/НастройкиПоставщика.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial15"
+        },
+        {
+          "path": "src/Enums/СпособыУстановкиКурсаВалюты.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial16"
+        },
+        {
+          "path": "src/Ext/ParentConfigurations.bin",
+          "kind": "sha256",
+          "eq": "$capture.initial17"
+        },
+        {
+          "path": "src/HTTPServices/ПроверкаСвязи.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial18"
+        },
+        {
+          "path": "src/HTTPServices/ПроверкаСвязи/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.initial19"
+        },
+        {
+          "path": "src/InformationRegisters/АдминистративнаяИерархия.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial20"
+        },
+        {
+          "path": "src/Languages/English.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial21"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial22"
+        },
+        {
+          "path": "src/Reports/АнализВерсийОбъектов.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial23"
+        },
+        {
+          "path": "src/Reports/АнализВерсийОбъектов/Templates/МакетОтчета.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial24"
+        },
+        {
+          "path": "src/Reports/АнализВерсийОбъектов/Templates/МакетОтчета/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial25"
+        },
+        {
+          "path": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial26"
+        },
+        {
+          "path": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial27"
+        },
+        {
+          "path": "src/Roles/SalesReader.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial28"
+        },
+        {
+          "path": "src/Roles/SalesReader/Ext/Rights.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial29"
+        },
+        {
+          "path": "src/Subsystems/Администрирование.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial30"
+        },
+        {
+          "path": "src/Subsystems/Администрирование/Ext/CommandInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial31"
+        },
+        {
+          "path": "src/Subsystems/Администрирование/Subsystems/КонтрольРаботыПользователей.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial32"
+        },
+        {
+          "path": "src/WebServices/ОбменДанными.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial33"
+        },
+        {
+          "path": "src/WebServices/ОбменДанными/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.initial34"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial35"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.initial36"
+        }
+      ],
+      "refusal": "invalid_state: event is Implemented"
+    }
+  ]
+}

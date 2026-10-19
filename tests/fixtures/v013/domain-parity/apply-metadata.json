@@ -121,6 +121,7 @@
       "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
       "expected": {
         "scenario": "S111",
+        "wireStep": 3,
         "class": "ok"
       }
     },
@@ -132,6 +133,7 @@
       "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
       "expected": {
         "scenario": "S112",
+        "wireStep": 3,
         "class": "refused",
         "code": "invalid_state"
       }
@@ -144,6 +146,7 @@
       "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
       "expected": {
         "scenario": "S293",
+        "wireStep": 3,
         "class": "ok"
       }
     }

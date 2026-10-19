@@ -1,0 +1,350 @@
+{
+ "id": "S-931-final-object-composition",
+ "issue": 931,
+ "area": "Создание и удаление объектов",
+ "task": "Пустой регистр и веб-сервис без пространства имён отклоняются; создание с обязательными данными и замена единственного ресурса одним пакетом проходят предпросмотр и публикацию",
+ "workspace": "tests/fixtures/acceptance/workspace-metadata-values",
+ "wire": [
+  {
+   "tool": "unica.view",
+   "args": {
+    "at": "main:Configuration"
+   },
+   "expect": [
+    "ok"
+   ],
+   "captures": {
+    "configurationBefore": {
+     "file": "src/Configuration.xml",
+     "kind": "sha256"
+    }
+   }
+  },
+  {
+   "tool": "unica.apply",
+   "args": {
+    "at": "main:Configuration",
+    "ops": [
+     {
+      "op": "object.create",
+      "args": {
+       "values": {
+        "kind": "InformationRegister",
+        "name": "CorpusRequired"
+       }
+      }
+     }
+    ]
+   },
+   "expect": [
+    "refused"
+   ],
+   "assertions": [
+    {
+     "pointer": "/diagnostics/0/code",
+     "eq": "bad_value"
+    }
+   ],
+   "fileAssertions": [
+    {
+     "kind": "sha256",
+     "path": "src/Configuration.xml",
+     "eq": "$capture.configurationBefore"
+    },
+    {
+     "kind": "exists",
+     "path": "src/InformationRegisters/CorpusRequired.xml",
+     "eq": false
+    }
+   ],
+   "refusal": "bad_value: InformationRegister rejects this object: Register without dimensions, resources, and attributes. Provide the required fields in the same apply batch: add at lea"
+  },
+  {
+   "tool": "unica.apply",
+   "args": {
+    "at": "main:Configuration",
+    "ops": [
+     {
+      "op": "object.create",
+      "args": {
+       "values": {
+        "kind": "WebService",
+        "name": "CorpusRequiredService"
+       }
+      }
+     }
+    ]
+   },
+   "expect": [
+    "refused"
+   ],
+   "assertions": [
+    {
+     "pointer": "/diagnostics/0/code",
+     "eq": "bad_value"
+    }
+   ],
+   "fileAssertions": [
+    {
+     "kind": "sha256",
+     "path": "src/Configuration.xml",
+     "eq": "$capture.configurationBefore"
+    },
+    {
+     "kind": "exists",
+     "path": "src/WebServices/CorpusRequiredService.xml",
+     "eq": false
+    }
+   ],
+   "refusal": "bad_value: WebService rejects this object: Empty name space. Provide the required fields in the same apply batch: set a non-empty `Namespace`"
+  },
+  {
+   "tool": "unica.apply",
+   "args": {
+    "at": "main:Configuration",
+    "ops": [
+     {
+      "op": "object.create",
+      "args": {
+       "values": {
+        "kind": "InformationRegister",
+        "name": "CorpusRequired"
+       }
+      }
+     },
+     {
+      "op": "resource.add",
+      "args": {
+       "at": "main:InformationRegister.CorpusRequired",
+       "items": [
+        {
+         "name": "Количество",
+         "type": {
+          "variants": [
+           {
+            "kind": "number",
+            "digits": 10,
+            "fraction": 0,
+            "sign": "any"
+           }
+          ]
+         }
+        }
+       ]
+      }
+     },
+     {
+      "op": "object.create",
+      "args": {
+       "values": {
+        "kind": "WebService",
+        "name": "CorpusRequiredService"
+       }
+      }
+     },
+     {
+      "op": "props.set",
+      "args": {
+       "at": "main:WebService.CorpusRequiredService",
+       "values": {
+        "Namespace": "urn:corpus:required"
+       }
+      }
+     }
+    ]
+   },
+   "expect": [
+    "ok"
+   ],
+   "assertions": [
+    {
+     "pointer": "/data/mode",
+     "eq": "preview"
+    },
+    {
+     "pointer": "/data/executable",
+     "eq": true
+    }
+   ],
+   "fileAssertions": [
+    {
+     "kind": "sha256",
+     "path": "src/Configuration.xml",
+     "eq": "$capture.configurationBefore"
+    },
+    {
+     "kind": "exists",
+     "path": "src/InformationRegisters/CorpusRequired.xml",
+     "eq": false
+    },
+    {
+     "kind": "exists",
+     "path": "src/WebServices/CorpusRequiredService.xml",
+     "eq": false
+    }
+   ]
+  },
+  {
+   "tool": "unica.apply",
+   "args": {
+    "executionToken": "$executionToken"
+   },
+   "expect": [
+    "ok"
+   ],
+   "assertions": [
+    {
+     "pointer": "/data/mode",
+     "eq": "published"
+    }
+   ],
+   "fileAssertions": [
+    {
+     "kind": "xml",
+     "path": "src/InformationRegisters/CorpusRequired.xml",
+     "select": ".//{*}InformationRegister/{*}ChildObjects/{*}Resource/{*}Properties/{*}Name",
+     "eq": [
+      "Количество"
+     ]
+    },
+    {
+     "kind": "xml",
+     "path": "src/WebServices/CorpusRequiredService.xml",
+     "select": ".//{*}WebService/{*}Properties/{*}Namespace",
+     "eq": [
+      "urn:corpus:required"
+     ]
+    }
+   ],
+   "captures": {
+    "registerBefore": {
+     "file": "src/InformationRegisters/CorpusRequired.xml",
+     "kind": "sha256"
+    },
+    "serviceBefore": {
+     "file": "src/WebServices/CorpusRequiredService.xml",
+     "kind": "sha256"
+    }
+   }
+  },
+  {
+   "tool": "unica.apply",
+   "args": {
+    "at": "main:InformationRegister.CorpusRequired.Resource.Количество",
+    "ops": [
+     {
+      "op": "resource.remove",
+      "args": {}
+     }
+    ]
+   },
+   "expect": [
+    "refused"
+   ],
+   "assertions": [
+    {
+     "pointer": "/diagnostics/0/code",
+     "eq": "bad_value"
+    }
+   ],
+   "fileAssertions": [
+    {
+     "kind": "sha256",
+     "path": "src/InformationRegisters/CorpusRequired.xml",
+     "eq": "$capture.registerBefore"
+    },
+    {
+     "kind": "sha256",
+     "path": "src/WebServices/CorpusRequiredService.xml",
+     "eq": "$capture.serviceBefore"
+    }
+   ],
+   "refusal": "bad_value: InformationRegister rejects this object: Register without dimensions, resources, and attributes. Provide the required fields in the same apply batch: add at lea"
+  },
+  {
+   "tool": "unica.apply",
+   "args": {
+    "at": "main:InformationRegister.CorpusRequired",
+    "ops": [
+     {
+      "op": "resource.remove",
+      "args": {
+       "at": "main:InformationRegister.CorpusRequired.Resource.Количество"
+      }
+     },
+     {
+      "op": "resource.add",
+      "args": {
+       "at": "main:InformationRegister.CorpusRequired",
+       "items": [
+        {
+         "name": "НовоеКоличество",
+         "type": {
+          "variants": [
+           {
+            "kind": "number",
+            "digits": 10,
+            "fraction": 0,
+            "sign": "any"
+           }
+          ]
+         }
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "expect": [
+    "ok"
+   ],
+   "assertions": [
+    {
+     "pointer": "/data/mode",
+     "eq": "preview"
+    },
+    {
+     "pointer": "/data/executable",
+     "eq": true
+    }
+   ],
+   "fileAssertions": [
+    {
+     "kind": "sha256",
+     "path": "src/InformationRegisters/CorpusRequired.xml",
+     "eq": "$capture.registerBefore"
+    }
+   ]
+  },
+  {
+   "tool": "unica.apply",
+   "args": {
+    "executionToken": "$executionToken"
+   },
+   "expect": [
+    "ok"
+   ],
+   "assertions": [
+    {
+     "pointer": "/data/mode",
+     "eq": "published"
+    }
+   ],
+   "fileAssertions": [
+    {
+     "kind": "xml",
+     "path": "src/InformationRegisters/CorpusRequired.xml",
+     "select": ".//{*}InformationRegister/{*}ChildObjects/{*}Resource/{*}Properties/{*}Name",
+     "eq": [
+      "НовоеКоличество"
+     ]
+    },
+    {
+     "kind": "sha256",
+     "path": "src/WebServices/CorpusRequiredService.xml",
+     "eq": "$capture.serviceBefore"
+    }
+   ]
+  }
+ ]
+}

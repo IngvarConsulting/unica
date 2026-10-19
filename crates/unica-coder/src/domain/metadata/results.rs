@@ -128,6 +128,8 @@ pub(crate) struct MetaElementData {
     pub(crate) properties: Vec<MetaObservedProperty>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) standard_attributes: Option<Option<Vec<super::MetaStandardAttribute>>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) property_limits: Vec<String>,
     pub(crate) attributes: Vec<MetaElementData>,
 }
 

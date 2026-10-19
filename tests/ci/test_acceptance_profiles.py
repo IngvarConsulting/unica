@@ -13,6 +13,148 @@ from tests.ci.acceptance_profiles import (
 
 
 class AcceptanceProfileTests(unittest.TestCase):
+    def test_legacy_warm_fixture_uses_the_reviewed_source_cache_key(self):
+        from tests.ci.acceptance_diagnostics import legacy_analyzer_cache_key
+        self.assertEqual(legacy_analyzer_cache_key("/workspace", "/workspace/src/cf"),
+                         "source-156ee86cec5364248d3b62f5fd5ba2ddf820f63e50dabeef868d5cb18600d790")
+
+    def test_invalidation_driver_requires_its_owned_warm_fixture(self):
+        from tests.ci.acceptance_diagnostics import prepare_diagnostic_case
+        with self.assertRaisesRegex(ValueError, "staged analyzer and owned fixtures"):
+            prepare_diagnostic_case(Mock(), {"driver": "bsl-analyzer-invalidation"})
+
+    def test_legacy_warm_fixture_cleans_its_process_on_proxy_setup_failure(self):
+        from tests.ci import acceptance_diagnostics as driver
+        for stage in ["construct", "initialize"]:
+            with self.subTest(stage=stage), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                plugin = root / "plugin"
+                (plugin / "third-party").mkdir(parents=True)
+                (plugin / "third-party/tools.lock.json").write_bytes(
+                    (REPO / "plugins/unica/third-party/tools.lock.json").read_bytes())
+                workspace = root / "workspace"
+                (workspace / "src").mkdir(parents=True)
+                backend = Mock(pid=41978)
+                backend.poll.return_value = None
+                proxy = Mock()
+                proxy.request.side_effect = RuntimeError("proxy setup sentinel")
+                with patch("tests.ci.acceptance_profiles.host_target", return_value="linux-x64"), patch.object(
+                    driver.subprocess, "Popen", return_value=backend
+                ), patch.object(
+                    driver, "assert_owned_legacy_broker"
+                ), patch.object(driver, "LegacyBrokerProxy", return_value=proxy,
+                               side_effect=RuntimeError("proxy setup sentinel") if stage == "construct" else None):
+                    with self.assertRaisesRegex(RuntimeError, "proxy setup sentinel"):
+                        with driver.legacy_broker_for_invalidation(plugin, workspace):
+                            self.fail("failed setup cannot enter the scenario")
+                backend.terminate.assert_called_once_with()
+                backend.wait.assert_called_once_with(timeout=5)
+                backend.kill.assert_not_called()
+                if stage == "initialize":
+                    proxy.close.assert_called_once_with()
+
+    def test_legacy_warm_fixture_rejects_a_foreign_lease_owner(self):
+        from tests.ci.acceptance_diagnostics import assert_owned_legacy_broker
+        with tempfile.TemporaryDirectory() as raw:
+            cache = Path(raw)
+            (cache / "writer.lease").write_text(json.dumps({"pid": 41979}))
+            backend = Mock(pid=41978)
+            backend.poll.return_value = None
+            with self.assertRaisesRegex(AssertionError, "another process"):
+                assert_owned_legacy_broker(backend, cache, cache)
+
+    def test_legacy_warm_fixture_distinguishes_a_pending_endpoint_from_ambiguous_ownership(self):
+        from tests.ci.acceptance_diagnostics import assert_owned_legacy_broker
+        with tempfile.TemporaryDirectory() as raw:
+            cache = Path(raw)
+            (cache / "writer.lease").write_text(json.dumps({"pid": 41978}))
+            backend = Mock(pid=41978)
+            backend.poll.return_value = None
+            with patch("tests.ci.acceptance_diagnostics.os.name", "posix"), self.assertRaisesRegex(
+                FileNotFoundError, "not ready"
+            ):
+                assert_owned_legacy_broker(backend, cache, cache)
+            with patch("tests.ci.acceptance_diagnostics.os.name", "posix"), patch.object(
+                Path, "glob", return_value=[Mock(), Mock()]
+            ), self.assertRaisesRegex(AssertionError, "ambiguous"):
+                assert_owned_legacy_broker(backend, cache, cache)
+
+    def test_legacy_proxy_still_closes_owned_handles_after_a_broken_stdin(self):
+        from tests.ci.acceptance_diagnostics import LegacyBrokerProxy
+        proxy = object.__new__(LegacyBrokerProxy)
+        proxy._closed = False
+        proxy.process = Mock()
+        proxy.process.stdin.close.side_effect = BrokenPipeError("closed by provider")
+        proxy.reader = Mock()
+        proxy.reader.is_alive.return_value = False
+        proxy.stderr_file = Mock()
+        proxy.close()
+        proxy.process.wait.assert_called_once_with(timeout=5)
+        proxy.reader.join.assert_called_once_with(timeout=5)
+        proxy.process.stdout.close.assert_called_once_with()
+        proxy.stderr_file.close.assert_called_once_with()
+        proxy.close()
+        proxy.process.stdin.close.assert_called_once_with()
+
+    def test_corpus_closes_owned_fixtures_before_removing_workspace_even_when_server_close_fails(self):
+        from tests.ci import test_acceptance_scenarios as harness
+        for close_fails in [False, True]:
+            events = []
+            servers = []
+            class Server:
+                def __init__(self, workspace, *args):
+                    self.workspace = workspace
+                    servers.append(self)
+                def close(self):
+                    events.append("server")
+                    if close_fails:
+                        raise RuntimeError("server close sentinel")
+            def fail_setup(server, scenario):
+                raise ValueError("original setup sentinel")
+            def cleanup():
+                self.assertTrue(servers[0].workspace.is_dir())
+                events.append("fixture")
+            corpus = {"workspace": SYMBOL_WORKSPACE, "protocolVersion": "2025-03-26",
+                      "scenarios": [{"id": "owned-fixture-failure", "wire": []}]}
+            with self.subTest(close_fails=close_fails), patch.object(harness, "DeliveredAcceptanceServer", Server):
+                expected = RuntimeError if close_fails else ValueError
+                with self.assertRaises(expected) as caught:
+                    harness.run_corpus(self, corpus, Path("/staged-plugin"), scenario_driver=fail_setup,
+                                       fixture_cleanup=cleanup)
+                self.assertEqual(events, ["server", "fixture"])
+                if close_fails:
+                    self.assertIsInstance(caught.exception.__context__, ValueError)
+                    self.assertEqual(str(caught.exception.__context__), "original setup sentinel")
+
+    def test_helper_invalidation_delivery_runs_only_symbol_search_and_its_module_replacement(self):
+        search = {"tool": "unica.search", "args": {"query": "Acceptance", "role": "symbol"}}
+        plan = {"tool": "unica.apply", "args": {
+            "at": "main:CommonModule.SearchProbe", "ops": [{"op": "code.replace", "args": {
+                "at": "main:CommonModule.SearchProbe.Body", "text": "Procedure Updated() Export\nEndProcedure\n",
+            }}],
+        }}
+        execute = {"tool": "unica.apply", "args": {"executionToken": "$executionToken"}}
+        scenario = {"id": "invalidation", "profile": "delivery",
+                    "driver": "bsl-analyzer-invalidation", "workspace": SYMBOL_WORKSPACE,
+                    "wire": [search, plan, execute, search, execute]}
+        corpus = {"workspace": SYMBOL_WORKSPACE, "scenarios": [scenario]}
+        self.assertEqual(select_profile(corpus, "delivery")["scenarios"], [scenario])
+        invalid_steps = [
+            {"tool": "unica.run", "args": {}},
+            {"tool": "unica.search", "args": {"query": "Acceptance", "role": "semantic"}},
+            {"tool": "unica.apply", "args": {"executionToken": "$executionToken", "at": "main:CommonModule.SearchProbe"}},
+            {"tool": "unica.apply", "args": {**plan["args"], "at": "main:CommonModule.Other"}},
+            {"tool": "unica.apply", "args": {**plan["args"], "ops": []}},
+            {"tool": "unica.apply", "args": {**plan["args"], "ops": [{"op": "object.remove", "args": {}}]}},
+            {"tool": "unica.apply", "args": {**plan["args"], "ops": [{"op": "code.replace", "args": {"at": "main:CommonModule.Other.Body", "text": "x"}}]}},
+        ]
+        for step in invalid_steps:
+            with self.subTest(step=step), self.assertRaises(ValueError):
+                select_profile({**corpus, "scenarios": [{**scenario, "wire": [step]}]}, "source")
+        for field, value in [("workspace", DIAGNOSTICS_WORKSPACE), ("evaluation", "plain")]:
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                select_profile({**corpus, "scenarios": [{**scenario, field: value}]}, "delivery")
+
     def test_external_delivery_reaches_only_the_declared_read_only_checks(self):
         workspace = "tests/fixtures/acceptance/workspace-external"
         addresses = [None, "epf:ExternalDataProcessor.Import.Module.Object",

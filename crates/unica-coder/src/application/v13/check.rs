@@ -8,8 +8,6 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::fmt;
 
-const CURSOR_SIZE_PLACEHOLDER: &str = "vc1.00000000000000000000000000000000";
-
 /// Page the diagnostics of one completed node check. The immutable snapshot
 /// holds the verdict and every finding; no first page is published unless
 /// each later indivisible finding fits the transport and the snapshot fits
@@ -22,34 +20,28 @@ pub(crate) fn page_diagnostics(
 ) -> DomainResult {
     let at = Some(binding.canonical_at.clone());
     if let Some(cursor) = cursor {
-        let stored = match cursors.read(cursor, &binding, &binding.snapshot_id) {
+        let stored = match cursors.read(cursor, &binding.question()) {
             Ok(stored) => stored,
-            Err(error) => {
-                return DomainResult::canonical_rejection(
-                    at,
-                    error.code(),
-                    "check cursor is invalid or its source revision changed",
-                )
-            }
+            Err(error) => return error.into_result(at),
         };
         let page = match prepare_check_page(
-            &stored.snapshot.node,
-            &stored.snapshot.items,
+            stored.snapshot.node(),
+            stored.snapshot.items(),
             stored.offset,
             binding.page_limit,
         ) {
             Ok(page) => page,
             Err(message) => return check_page_refusal(at, message),
         };
-        let next = if page.next_offset < stored.snapshot.items.len() {
+        let next = if page.next_offset < stored.snapshot.items().len() {
             match cursors.insert_next(&stored, page.next_offset, cursor) {
-                Some(next) => Some(next),
-                None => return check_page_refusal(at, "check continuation could not be retained"),
+                Ok(next) => Some(next),
+                Err(error) => return error.into_result(at),
             }
         } else {
             None
         };
-        return check_page_result(&stored.snapshot.node, page.items, next, page.stopped_by);
+        return check_page_result(stored.snapshot.node(), page.items, next, page.stopped_by);
     }
 
     let Some(mut result) = fresh else {
@@ -84,13 +76,8 @@ pub(crate) fn page_diagnostics(
     };
     let next = if page.next_offset < items.len() {
         match cursors.insert_snapshot(binding, node.clone(), items, page.next_offset) {
-            Some(next) => Some(next),
-            None => {
-                return check_page_refusal(
-                    at,
-                    "check diagnostics exceed the bounded snapshot store",
-                )
-            }
+            Ok(next) => Some(next),
+            Err(error) => return error.into_result(at),
         }
     } else {
         None
@@ -128,7 +115,7 @@ fn prepare_check_page(
         let probe = check_page_result(
             node,
             candidate.clone(),
-            (offset + 1 < items.len()).then(|| CURSOR_SIZE_PLACEHOLDER.to_string()),
+            (offset + 1 < items.len()).then(ViewCursorStore::token_probe),
             "complete",
         );
         let bytes = serialized_result_size(&probe);
@@ -158,7 +145,7 @@ fn preflight_check_pages(node: &Value, items: &[Value]) -> Result<(), &'static s
         return Err("check result metadata exceed the transport result limit");
     }
     for (index, item) in items.iter().enumerate() {
-        let cursor = (index + 1 < items.len()).then(|| CURSOR_SIZE_PLACEHOLDER.to_string());
+        let cursor = (index + 1 < items.len()).then(ViewCursorStore::token_probe);
         // `complete` is the longest stop reason. The last page may be three
         // bytes larger than an intermediate page even without a cursor.
         let probe = check_page_result(node, vec![item.clone()], cursor, "complete");
@@ -569,7 +556,7 @@ mod tests {
         normalize_native_outcome, page_diagnostics, plan_for_node, CheckStep, CheckValidator,
         NativeCheckOutcome, NodeFacts, TemplateFlavour,
     };
-    use crate::application::result_store::{ViewCursorBinding, ViewCursorStore, DEFAULT_TTL};
+    use crate::application::result_store::{ViewCursorBinding, ViewCursorStore};
     use crate::domain::address::QualifiedAddress;
     use crate::domain::invocation::DomainResult;
     use serde_json::json;
@@ -699,7 +686,7 @@ mod tests {
 
     #[test]
     fn check_refuses_before_first_page_when_snapshot_cannot_be_retained() {
-        let store = ViewCursorStore::new(DEFAULT_TTL, 128, 400);
+        let store = ViewCursorStore::new(400);
         let result = page_diagnostics(
             &store,
             check_binding("main:CommonModule.Example.Module", "revision-1", 20),

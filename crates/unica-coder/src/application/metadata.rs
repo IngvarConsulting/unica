@@ -3,21 +3,26 @@ use super::AdapterOutcome;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::events::{DomainEvent, DomainEventKind};
 use crate::domain::metadata::{
-    fill_value_schema, metadata_kinds_object_pattern, metadata_relation_specs,
+    fill_value_schema, metadata_event_source_input_schema,
+    metadata_relation_field_target_input_schema, metadata_relation_object_target_input_schema,
+    metadata_relation_operation_input_schema, metadata_relation_operation_schema,
     metadata_type_schema, position_schema, unknown_metadata_property_message,
     validate_metadata_kind_collection, validate_metadata_operation_capabilities, DateFractions,
     EventSourceClass, MetaCollection, MetaDiagnostic, MetaDiagnosticCode, MetaEditOperation,
     MetaEditOperationTag, MetaElementInput, MetaElementUpdateInput, MetaEventSource, MetaFillValue,
     MetaPosition, MetaPredefinedAccountType, MetaPredefinedExtDimensionType, MetaPredefinedFields,
     MetaPredefinedItemAdd, MetaPredefinedItemUpdate, MetaPropertyChanges, MetaPropertyInput,
-    MetaPropertyValue, MetaPropertyValueKind, MetaRelation, MetaRelationTarget,
-    MetaRelationTargetPolicy, MetaScope, MetaTemplateKind, MetaValidationStatus, MetadataFieldPath,
-    MetadataKind, MetadataReference, MetadataType, MetadataTypeVariant, NumberSign,
-    RelationEditMode, StringLengthMode, METADATA_PROPERTY_SPECS,
+    MetaPropertyValue, MetaPropertyValueKind, MetaRelation, MetaRelationTarget, MetaScope,
+    MetaTemplateKind, MetaValidationStatus, MetadataFieldPath, MetadataKind, MetadataReference,
+    MetadataType, MetadataTypeVariant, NumberSign, RelationEditMode, StringLengthMode,
+    METADATA_PROPERTY_SPECS,
+};
+use crate::domain::operation_contract::{
+    metadata_element_input_schema, metadata_host_element_schema,
+    metadata_predefined_element_input_schema, ArgumentShape,
 };
 use crate::domain::source_target::{
     metadata_address_kind_spellings, MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20,
-    RECALCULATION_KIND_SPELLINGS,
 };
 use crate::domain::workspace::WorkspaceContext;
 use serde_json::{json, Map, Value};
@@ -716,11 +721,16 @@ fn parse_edit_operation(
                     "lang",
                 ],
             )?;
-            let relation_name = required_string_diagnostic(object, "relation")?;
-            let relation = MetaRelation::parse(&relation_name)?;
-            let mode_name = required_string_diagnostic(object, "mode")?;
-            let mode = RelationEditMode::parse(&mode_name)?;
-            let targets = required_array(object, "targets")?
+            let reader =
+                MetadataArgumentReader::new(object, metadata_relation_operation_input_schema(), "");
+            let relation = reader.read("relation", |object, key, field| {
+                MetaRelation::parse(&required_string_at(object, key, field)?)
+            })?;
+            let mode = reader.read("mode", |object, key, field| {
+                RelationEditMode::parse(&required_string_at(object, key, field)?)
+            })?;
+            let targets = reader
+                .read("targets", required_array_at)?
                 .iter()
                 .enumerate()
                 .map(|(index, target)| {
@@ -766,11 +776,13 @@ fn parse_predefined_add(
     index: usize,
 ) -> Result<MetaPredefinedItemAdd, MetaDiagnostic> {
     let prefix = format!("elements[{index}]");
-    let object = predefined_object(value, &prefix)?;
+    let schema = metadata_predefined_element_input_schema(false);
+    let object = predefined_object(value, &prefix, ArgumentShape::new(schema))?;
+    let reader = MetadataArgumentReader::new(object, schema, &prefix);
     Ok(MetaPredefinedItemAdd {
-        id: canonical_uuid(object, "id", &prefix)?,
-        name: required_string_at(object, "name", &format!("{prefix}.name"))?,
-        fields: parse_predefined_fields(object, &prefix)?,
+        id: reader.read("id", |object, key, _| canonical_uuid(object, key, &prefix))?,
+        name: reader.read("name", required_string_at)?,
+        fields: parse_predefined_fields(&reader)?,
     })
 }
 
@@ -779,42 +791,30 @@ fn parse_predefined_update(
     index: usize,
 ) -> Result<MetaPredefinedItemUpdate, MetaDiagnostic> {
     let prefix = format!("elements[{index}]");
-    let object = predefined_object(value, &prefix)?;
+    let schema = metadata_predefined_element_input_schema(true);
+    let object = predefined_object(value, &prefix, ArgumentShape::new(schema))?;
+    let reader = MetadataArgumentReader::new(object, schema, &prefix);
     Ok(MetaPredefinedItemUpdate {
-        id: canonical_uuid(object, "id", &prefix)?,
-        name: object
-            .get("name")
-            .map(|value| nonempty_string(value, &format!("{prefix}.name")))
-            .transpose()?,
-        fields: parse_predefined_fields(object, &prefix)?,
+        id: reader.read("id", |object, key, _| canonical_uuid(object, key, &prefix))?,
+        name: reader.read("name", |object, key, field| {
+            object
+                .get(key)
+                .map(|value| nonempty_string(value, field))
+                .transpose()
+        })?,
+        fields: parse_predefined_fields(&reader)?,
     })
 }
 
 fn predefined_object<'a>(
     value: &'a Value,
     prefix: &str,
+    shape: ArgumentShape<'_>,
 ) -> Result<&'a Map<String, Value>, MetaDiagnostic> {
     let object = value
         .as_object()
         .ok_or_else(|| invalid(prefix, "predefined item must be an object"))?;
-    reject_unknown_fields(
-        object,
-        &[
-            "id",
-            "name",
-            "code",
-            "description",
-            "isFolder",
-            "type",
-            "accountType",
-            "offBalance",
-            "order",
-            "accountingFlags",
-            "extDimensionTypes",
-            "actionPeriodIsBase",
-        ],
-        &format!("{prefix}."),
-    )?;
+    reject_unknown_shape_fields(object, shape, &format!("{prefix}."))?;
     Ok(object)
 }
 
@@ -830,58 +830,83 @@ fn canonical_uuid(
 }
 
 fn parse_predefined_fields(
-    object: &Map<String, Value>,
-    prefix: &str,
+    reader: &MetadataArgumentReader<'_>,
 ) -> Result<MetaPredefinedFields, MetaDiagnostic> {
     let optional_string = |name: &str| {
-        object
-            .get(name)
-            .map(|value| {
-                value
-                    .as_str()
-                    .map(str::to_string)
-                    .ok_or_else(|| invalid(format!("{prefix}.{name}"), "field must be a string"))
-            })
-            .transpose()
+        reader.read(name, |object, key, field| {
+            object
+                .get(key)
+                .map(|value| {
+                    value
+                        .as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| invalid(field, "field must be a string"))
+                })
+                .transpose()
+        })
     };
     let optional_bool = |name: &str| {
-        object
-            .get(name)
-            .map(|value| {
-                value
-                    .as_bool()
-                    .ok_or_else(|| invalid(format!("{prefix}.{name}"), "field must be a boolean"))
-            })
-            .transpose()
+        reader.read(name, |object, key, field| {
+            object
+                .get(key)
+                .map(|value| {
+                    value
+                        .as_bool()
+                        .ok_or_else(|| invalid(field, "field must be a boolean"))
+                })
+                .transpose()
+        })
     };
     Ok(MetaPredefinedFields {
         code: optional_string("code")?,
         description: optional_string("description")?,
         is_folder: optional_bool("isFolder")?,
-        r#type: object
-            .get("type")
-            .map(|value| parse_metadata_type(value, &format!("{prefix}.type")))
-            .transpose()?,
-        account_type: object
-            .get("accountType")
-            .map(|value| {
-                let field = format!("{prefix}.accountType");
-                let value = value
-                    .as_str()
-                    .ok_or_else(|| invalid(&field, "accountType must be a string"))?;
-                MetaPredefinedAccountType::parse(value, &field)
-            })
-            .transpose()?,
+        r#type: reader.read("type", |object, key, field| {
+            object
+                .get(key)
+                .map(|value| parse_metadata_type(value, field))
+                .transpose()
+        })?,
+        account_type: reader.read("accountType", |object, key, field| {
+            object
+                .get(key)
+                .map(|value| {
+                    let value = value
+                        .as_str()
+                        .ok_or_else(|| invalid(field, "accountType must be a string"))?;
+                    MetaPredefinedAccountType::parse(value, field)
+                })
+                .transpose()
+        })?,
         off_balance: optional_bool("offBalance")?,
         order: optional_string("order")?,
-        accounting_flags: object
-            .get("accountingFlags")
-            .map(|value| parse_predefined_flags(value, &format!("{prefix}.accountingFlags")))
-            .transpose()?,
-        ext_dimension_types: object
-            .get("extDimensionTypes")
-            .map(|value| parse_ext_dimension_types(value, &format!("{prefix}.extDimensionTypes")))
-            .transpose()?,
+        accounting_flags: reader.read("accountingFlags", |object, key, field| {
+            object
+                .get(key)
+                .map(|value| {
+                    parse_predefined_flags(
+                        value,
+                        field,
+                        reader.shape.property(key).expect("predefined flags"),
+                    )
+                })
+                .transpose()
+        })?,
+        ext_dimension_types: reader.read("extDimensionTypes", |object, key, field| {
+            object
+                .get(key)
+                .map(|value| {
+                    parse_ext_dimension_types(
+                        value,
+                        field,
+                        reader
+                            .shape
+                            .property(key)
+                            .expect("predefined ext dimension types"),
+                    )
+                })
+                .transpose()
+        })?,
         action_period_is_base: optional_bool("actionPeriodIsBase")?,
     })
 }
@@ -889,6 +914,7 @@ fn parse_predefined_fields(
 fn parse_predefined_flags(
     value: &Value,
     field: &str,
+    shape: ArgumentShape<'_>,
 ) -> Result<BTreeMap<String, bool>, MetaDiagnostic> {
     let object = value
         .as_object()
@@ -898,10 +924,15 @@ fn parse_predefined_flags(
         if name.is_empty() {
             return Err(invalid(field, "accounting flag name must not be empty"));
         }
-        let value = value
+        let converted = value
             .as_bool()
             .ok_or_else(|| invalid(format!("{field}.{name}"), "accounting flag must be boolean"))?;
-        flags.insert(name.clone(), value);
+        shape
+            .additional_properties()
+            .expect("predefined accounting flag value")
+            .validate_field(value, &format!("{field}.{name}"))
+            .map_err(|error| invalid(error.path, error.message))?;
+        flags.insert(name.clone(), converted);
     }
     Ok(flags)
 }
@@ -909,6 +940,7 @@ fn parse_predefined_flags(
 fn parse_ext_dimension_types(
     value: &Value,
     field: &str,
+    shape: ArgumentShape<'_>,
 ) -> Result<Vec<MetaPredefinedExtDimensionType>, MetaDiagnostic> {
     let values = value
         .as_array()
@@ -920,30 +952,44 @@ fn parse_ext_dimension_types(
         let object = value
             .as_object()
             .ok_or_else(|| invalid(&item_field, "ext-dimension type must be an object"))?;
-        reject_unknown_fields(
+        let reader = MetadataArgumentReader {
             object,
-            &["name", "turnover", "accountingFlags"],
-            &format!("{item_field}."),
-        )?;
-        let name = required_string_at(object, "name", &format!("{item_field}.name"))?;
+            shape: shape.items().expect("predefined ext dimension type"),
+            field: &item_field,
+        };
+        reader.reject_unknown()?;
+        let name = reader.read("name", required_string_at)?;
         if !names.insert(name.to_lowercase()) {
             return Err(invalid(
                 format!("{item_field}.name"),
                 "ext-dimension type name is duplicated",
             ));
         }
-        let turnover = object
-            .get("turnover")
-            .map(|value| {
-                value.as_bool().ok_or_else(|| {
-                    invalid(format!("{item_field}.turnover"), "turnover must be boolean")
+        let turnover = reader.read("turnover", |object, key, field| {
+            object
+                .get(key)
+                .map(|value| {
+                    value
+                        .as_bool()
+                        .ok_or_else(|| invalid(field, "turnover must be boolean"))
                 })
-            })
-            .transpose()?;
-        let accounting_flags = object
-            .get("accountingFlags")
-            .map(|value| parse_predefined_flags(value, &format!("{item_field}.accountingFlags")))
-            .transpose()?;
+                .transpose()
+        })?;
+        let accounting_flags = reader.read("accountingFlags", |object, key, field| {
+            object
+                .get(key)
+                .map(|value| {
+                    parse_predefined_flags(
+                        value,
+                        field,
+                        reader
+                            .shape
+                            .property(key)
+                            .expect("ext dimension accounting flags"),
+                    )
+                })
+                .transpose()
+        })?;
         result.push(MetaPredefinedExtDimensionType {
             name,
             turnover,
@@ -1013,6 +1059,75 @@ fn parse_property_changes(
     MetaPropertyChanges::convert(kind, inputs)
 }
 
+/// Read shared shape facts at the existing conversion stages. Primitive
+/// conversion retains the established diagnostics; the contract also checks
+/// the value, so changing only Can's field type changes productive admission.
+struct MetadataArgumentReader<'a> {
+    object: &'a Map<String, Value>,
+    shape: ArgumentShape<'a>,
+    field: &'a str,
+}
+
+impl<'a> MetadataArgumentReader<'a> {
+    fn new(object: &'a Map<String, Value>, schema: &'a Value, field: &'a str) -> Self {
+        Self {
+            object,
+            shape: ArgumentShape::new(schema),
+            field,
+        }
+    }
+
+    fn reject_unknown(&self) -> Result<(), MetaDiagnostic> {
+        let prefix = if self.field.is_empty() {
+            String::new()
+        } else {
+            format!("{}.", self.field)
+        };
+        reject_unknown_shape_fields(self.object, self.shape, &prefix)
+    }
+
+    fn read<T>(
+        &self,
+        key: &str,
+        convert: impl FnOnce(&'a Map<String, Value>, &str, &str) -> Result<T, MetaDiagnostic>,
+    ) -> Result<T, MetaDiagnostic> {
+        let field = if self.field.is_empty() {
+            key.to_string()
+        } else {
+            format!("{}.{key}", self.field)
+        };
+        let converted = convert(self.object, key, &field)?;
+        if let Some(value) = self.object.get(key) {
+            let shape = self.shape.property(key).expect("known typed input field");
+            shape.validate_field(value, &field).map_err(|error| {
+                let message = if key == "indexing" {
+                    "`indexing` must be DontIndex, Index or IndexWithAdditionalOrder".into()
+                } else {
+                    error.message
+                };
+                invalid(error.path, message)
+            })?;
+        } else if self.shape.requires(key) {
+            return Err(invalid(field, format!("`{key}` is required")));
+        }
+        Ok(converted)
+    }
+}
+
+fn reject_unknown_shape_fields(
+    object: &Map<String, Value>,
+    shape: ArgumentShape<'_>,
+    prefix: &str,
+) -> Result<(), MetaDiagnostic> {
+    if let Some(name) = object.keys().find(|name| shape.property(name).is_none()) {
+        return Err(invalid(
+            format!("{prefix}{name}"),
+            format!("unknown field `{name}`"),
+        ));
+    }
+    Ok(())
+}
+
 fn parse_element_input(
     value: &Value,
     field: &str,
@@ -1021,104 +1136,72 @@ fn parse_element_input(
     let object = value
         .as_object()
         .ok_or_else(|| invalid(field, "element must be an object"))?;
-    let allowed = if allows_attributes {
-        &[
-            "name",
-            "synonym",
-            "comment",
-            "type",
-            "required",
-            "fillValue",
-            "attributes",
-            "position",
-            "templateType",
-            "indexing",
-        ][..]
-    } else {
-        &[
-            "name",
-            "synonym",
-            "comment",
-            "type",
-            "required",
-            "fillValue",
-            "position",
-            "indexing",
-        ][..]
-    };
-    reject_unknown_fields(object, allowed, &format!("{field}."))?;
+    let reader = MetadataArgumentReader::new(
+        object,
+        metadata_element_input_schema(false, allows_attributes),
+        field,
+    );
+    reader.reject_unknown()?;
     let attributes_field = format!("{field}.attributes");
-    let attributes = object
-        .get("attributes")
-        .map(|_| {
-            let attributes = required_array_at(object, "attributes", &attributes_field)?;
-            if attributes.is_empty() {
-                return Err(invalid(
-                    &attributes_field,
-                    "nested attributes must not be empty",
-                ));
-            }
-            attributes
-                .iter()
-                .enumerate()
-                .map(|(index, element)| {
-                    parse_element_input(element, &format!("{attributes_field}[{index}]"), false)
-                })
-                .collect::<Result<Vec<_>, _>>()
-        })
-        .transpose()?;
-    Ok(MetaElementInput {
-        name: required_string_at(object, "name", &format!("{field}.name"))?,
-        synonym: optional_string_at(object, "synonym", &format!("{field}.synonym"))?,
-        comment: optional_string_at(object, "comment", &format!("{field}.comment"))?,
-        r#type: object
-            .get("type")
-            .map(|value| parse_metadata_type(value, &format!("{field}.type")))
-            .transpose()?,
-        required: optional_bool_at(object, "required", &format!("{field}.required"))?,
-        fill_value: object
-            .get("fillValue")
-            .map(|value| parse_fill_value(value, &format!("{field}.fillValue")))
-            .transpose()?,
-        attributes,
-        position: object
-            .get("position")
-            .map(|value| parse_position(value, &format!("{field}.position")))
-            .transpose()?,
-        template_type: object
-            .get("templateType")
-            .map(|value| {
-                let field = format!("{field}.templateType");
-                let value = value
-                    .as_str()
-                    .ok_or_else(|| invalid(&field, "`templateType` must be a string"))?;
-                MetaTemplateKind::parse(value).map_err(|diagnostic| diagnostic.with_field(field))
+    let attributes = reader.read("attributes", |object, key, _| {
+        object
+            .get(key)
+            .map(|_| {
+                let attributes = required_array_at(object, "attributes", &attributes_field)?;
+                if attributes.is_empty() {
+                    return Err(invalid(
+                        &attributes_field,
+                        "nested attributes must not be empty",
+                    ));
+                }
+                attributes
+                    .iter()
+                    .enumerate()
+                    .map(|(index, element)| {
+                        parse_element_input(element, &format!("{attributes_field}[{index}]"), false)
+                    })
+                    .collect::<Result<Vec<_>, _>>()
             })
-            .transpose()?,
-        indexing: parse_indexing(object, field)?,
+            .transpose()
+    })?;
+    Ok(MetaElementInput {
+        name: reader.read("name", required_string_at)?,
+        synonym: reader.read("synonym", optional_string_at)?,
+        comment: reader.read("comment", optional_string_at)?,
+        r#type: reader.read("type", |object, key, field| {
+            object
+                .get(key)
+                .map(|value| parse_metadata_type(value, field))
+                .transpose()
+        })?,
+        required: reader.read("required", optional_bool_at)?,
+        fill_value: reader.read("fillValue", |object, key, field| {
+            object
+                .get(key)
+                .map(|value| parse_fill_value(value, field))
+                .transpose()
+        })?,
+        attributes,
+        position: reader.read("position", |object, key, field| {
+            object
+                .get(key)
+                .map(|value| parse_position(value, field))
+                .transpose()
+        })?,
+        template_type: reader.read("templateType", |object, key, field| {
+            object
+                .get(key)
+                .map(|value| {
+                    let value = value
+                        .as_str()
+                        .ok_or_else(|| invalid(field, "`templateType` must be a string"))?;
+                    MetaTemplateKind::parse(value)
+                        .map_err(|diagnostic| diagnostic.with_field(field))
+                })
+                .transpose()
+        })?,
+        indexing: reader.read("indexing", optional_string_at)?,
     })
-}
-
-/// `indexing`: the platform's closed set for attribute, dimension, resource
-/// and column indexing.
-fn parse_indexing(
-    object: &Map<String, Value>,
-    field: &str,
-) -> Result<Option<String>, MetaDiagnostic> {
-    let Some(value) = object.get("indexing") else {
-        return Ok(None);
-    };
-    let field = format!("{field}.indexing");
-    let value = value
-        .as_str()
-        .ok_or_else(|| invalid(&field, "`indexing` must be a string"))?;
-    match value {
-        "DontIndex" | "Index" | "IndexWithAdditionalOrder" => Ok(Some(value.to_string())),
-        _ => Err(invalid(
-            &field,
-            "`indexing` must be DontIndex, Index or IndexWithAdditionalOrder",
-        )),
-    }
 }
 
 fn parse_element_update(
@@ -1128,40 +1211,34 @@ fn parse_element_update(
     let object = value
         .as_object()
         .ok_or_else(|| invalid(field, "element must be an object"))?;
-    reject_unknown_fields(
-        object,
-        &[
-            "name",
-            "newName",
-            "synonym",
-            "comment",
-            "type",
-            "required",
-            "fillValue",
-            "position",
-            "indexing",
-        ],
-        &format!("{field}."),
-    )?;
+    let reader =
+        MetadataArgumentReader::new(object, metadata_element_input_schema(true, false), field);
+    reader.reject_unknown()?;
     Ok(MetaElementUpdateInput {
-        indexing: parse_indexing(object, field)?,
-        name: required_string_at(object, "name", &format!("{field}.name"))?,
-        new_name: optional_string_at(object, "newName", &format!("{field}.newName"))?,
-        synonym: optional_string_at(object, "synonym", &format!("{field}.synonym"))?,
-        comment: optional_string_at(object, "comment", &format!("{field}.comment"))?,
-        r#type: object
-            .get("type")
-            .map(|value| parse_metadata_type(value, &format!("{field}.type")))
-            .transpose()?,
-        required: optional_bool_at(object, "required", &format!("{field}.required"))?,
-        fill_value: object
-            .get("fillValue")
-            .map(|value| parse_fill_value(value, &format!("{field}.fillValue")))
-            .transpose()?,
-        position: object
-            .get("position")
-            .map(|value| parse_position(value, &format!("{field}.position")))
-            .transpose()?,
+        indexing: reader.read("indexing", optional_string_at)?,
+        name: reader.read("name", required_string_at)?,
+        new_name: reader.read("newName", optional_string_at)?,
+        synonym: reader.read("synonym", optional_string_at)?,
+        comment: reader.read("comment", optional_string_at)?,
+        r#type: reader.read("type", |object, key, field| {
+            object
+                .get(key)
+                .map(|value| parse_metadata_type(value, field))
+                .transpose()
+        })?,
+        required: reader.read("required", optional_bool_at)?,
+        fill_value: reader.read("fillValue", |object, key, field| {
+            object
+                .get(key)
+                .map(|value| parse_fill_value(value, field))
+                .transpose()
+        })?,
+        position: reader.read("position", |object, key, field| {
+            object
+                .get(key)
+                .map(|value| parse_position(value, field))
+                .transpose()
+        })?,
     })
 }
 
@@ -1169,10 +1246,12 @@ fn parse_position(value: &Value, field: &str) -> Result<MetaPosition, MetaDiagno
     let object = value
         .as_object()
         .ok_or_else(|| invalid(field, "position must be an object"))?;
-    reject_unknown_fields(object, &["before", "after"], &format!("{field}."))?;
+    let schema = position_schema();
+    let reader = MetadataArgumentReader::new(object, &schema, field);
+    reader.reject_unknown()?;
     MetaPosition::new_at(
-        optional_string_at(object, "before", &format!("{field}.before"))?,
-        optional_string_at(object, "after", &format!("{field}.after"))?,
+        reader.read("before", optional_string_at)?,
+        reader.read("after", optional_string_at)?,
         field,
     )
 }
@@ -1181,12 +1260,25 @@ fn parse_metadata_type(value: &Value, field: &str) -> Result<MetadataType, MetaD
     let object = value
         .as_object()
         .ok_or_else(|| invalid(field, "type must be a structured object"))?;
-    reject_unknown_fields(object, &["variants"], &format!("{field}."))?;
-    let variants = required_array_at(object, "variants", &format!("{field}.variants"))?
-        .iter()
-        .enumerate()
-        .map(|(index, value)| parse_type_variant(value, index, field))
-        .collect::<Result<Vec<_>, _>>()?;
+    let schema = metadata_type_schema();
+    let reader = MetadataArgumentReader::new(object, &schema, field);
+    reader.reject_unknown()?;
+    let variants = reader.read("variants", |object, key, path| {
+        required_array_at(object, key, path).and_then(|values| {
+            values
+                .iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    parse_type_variant(
+                        value,
+                        index,
+                        field,
+                        &schema["properties"]["variants"]["items"],
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+    })?;
     MetadataType::new(variants).map_err(|mut diagnostic| {
         if let Some(domain_field) = diagnostic.field.as_deref() {
             if let Some(suffix) = domain_field.strip_prefix("type") {
@@ -1201,101 +1293,90 @@ fn parse_type_variant(
     value: &Value,
     index: usize,
     field: &str,
+    schema: &Value,
 ) -> Result<MetadataTypeVariant, MetaDiagnostic> {
     let variant_field = format!("{field}.variants[{index}]");
     let object = value
         .as_object()
         .ok_or_else(|| invalid(&variant_field, "type variant must be an object"))?;
     let kind = required_string_at(object, "kind", &format!("{variant_field}.kind"))?;
-    let (allowed, variant) = match kind.as_str() {
-        "string" => (
-            &["kind", "length", "allowedLength"][..],
-            MetadataTypeVariant::String {
-                length: required_u32(object, "length", &variant_field)?,
-                allowed_length: match required_string_at(
-                    object,
-                    "allowedLength",
-                    &format!("{variant_field}.allowedLength"),
-                )?
+    let variant = match kind.as_str() {
+        "string" => MetadataTypeVariant::String {
+            length: required_u32(object, "length", &variant_field)?,
+            allowed_length: match required_string_at(
+                object,
+                "allowedLength",
+                &format!("{variant_field}.allowedLength"),
+            )?
+            .as_str()
+            {
+                "variable" => StringLengthMode::Variable,
+                "fixed" => StringLengthMode::Fixed,
+                value => {
+                    return Err(invalid(
+                        format!("{variant_field}.allowedLength"),
+                        format!("unsupported allowedLength `{value}`"),
+                    ))
+                }
+            },
+        },
+        "number" => MetadataTypeVariant::Number {
+            digits: required_u32(object, "digits", &variant_field)?,
+            fraction: required_u32(object, "fraction", &variant_field)?,
+            sign: match required_string_at(object, "sign", &format!("{variant_field}.sign"))?
                 .as_str()
-                {
-                    "variable" => StringLengthMode::Variable,
-                    "fixed" => StringLengthMode::Fixed,
-                    value => {
-                        return Err(invalid(
-                            format!("{variant_field}.allowedLength"),
-                            format!("unsupported allowedLength `{value}`"),
-                        ))
-                    }
-                },
+            {
+                "any" => NumberSign::Any,
+                "nonNegative" => NumberSign::NonNegative,
+                value => {
+                    return Err(invalid(
+                        format!("{variant_field}.sign"),
+                        format!("unsupported number sign `{value}`"),
+                    ))
+                }
             },
-        ),
-        "number" => (
-            &["kind", "digits", "fraction", "sign"][..],
-            MetadataTypeVariant::Number {
-                digits: required_u32(object, "digits", &variant_field)?,
-                fraction: required_u32(object, "fraction", &variant_field)?,
-                sign: match required_string_at(object, "sign", &format!("{variant_field}.sign"))?
-                    .as_str()
-                {
-                    "any" => NumberSign::Any,
-                    "nonNegative" => NumberSign::NonNegative,
-                    value => {
-                        return Err(invalid(
-                            format!("{variant_field}.sign"),
-                            format!("unsupported number sign `{value}`"),
-                        ))
-                    }
-                },
+        },
+        "boolean" => MetadataTypeVariant::Boolean,
+        "uuid" => MetadataTypeVariant::Uuid,
+        "date" => MetadataTypeVariant::Date {
+            fractions: match required_string_at(
+                object,
+                "fractions",
+                &format!("{variant_field}.fractions"),
+            )?
+            .as_str()
+            {
+                "date" => DateFractions::Date,
+                "time" => DateFractions::Time,
+                "dateTime" => DateFractions::DateTime,
+                value => {
+                    return Err(invalid(
+                        format!("{variant_field}.fractions"),
+                        format!("unsupported date fractions `{value}`"),
+                    ))
+                }
             },
-        ),
-        "boolean" => (&["kind"][..], MetadataTypeVariant::Boolean),
-        "uuid" => (&["kind"][..], MetadataTypeVariant::Uuid),
-        "date" => (
-            &["kind", "fractions"][..],
-            MetadataTypeVariant::Date {
-                fractions: match required_string_at(
-                    object,
-                    "fractions",
-                    &format!("{variant_field}.fractions"),
-                )?
-                .as_str()
-                {
-                    "date" => DateFractions::Date,
-                    "time" => DateFractions::Time,
-                    "dateTime" => DateFractions::DateTime,
-                    value => {
-                        return Err(invalid(
-                            format!("{variant_field}.fractions"),
-                            format!("unsupported date fractions `{value}`"),
-                        ))
-                    }
-                },
+        },
+        "binaryData" => MetadataTypeVariant::BinaryData {
+            length: required_u32(object, "length", &variant_field)?,
+            allowed_length: match required_string_at(
+                object,
+                "allowedLength",
+                &format!("{variant_field}.allowedLength"),
+            )?
+            .as_str()
+            {
+                "variable" => StringLengthMode::Variable,
+                "fixed" => StringLengthMode::Fixed,
+                value => {
+                    return Err(invalid(
+                        format!("{variant_field}.allowedLength"),
+                        format!("unsupported allowedLength `{value}`"),
+                    ))
+                }
             },
-        ),
-        "binaryData" => (
-            &["kind", "length", "allowedLength"][..],
-            MetadataTypeVariant::BinaryData {
-                length: required_u32(object, "length", &variant_field)?,
-                allowed_length: match required_string_at(
-                    object,
-                    "allowedLength",
-                    &format!("{variant_field}.allowedLength"),
-                )?
-                .as_str()
-                {
-                    "variable" => StringLengthMode::Variable,
-                    "fixed" => StringLengthMode::Fixed,
-                    value => {
-                        return Err(invalid(
-                            format!("{variant_field}.allowedLength"),
-                            format!("unsupported allowedLength `{value}`"),
-                        ))
-                    }
-                },
-            },
-        ),
-        "valueStorage" => (&["kind"][..], MetadataTypeVariant::ValueStorage),
+        },
+        "valueStorage" => MetadataTypeVariant::ValueStorage,
         "reference" | "definedType" => {
             let raw = required_string_at(
                 object,
@@ -1303,12 +1384,11 @@ fn parse_type_variant(
                 &format!("{variant_field}.metadataPath"),
             )?;
             let metadata_path = parse_address(&raw, &format!("{variant_field}.metadataPath"))?;
-            let variant = if kind == "reference" {
+            if kind == "reference" {
                 MetadataTypeVariant::Reference { metadata_path }
             } else {
                 MetadataTypeVariant::DefinedType { metadata_path }
-            };
-            (&["kind", "metadataPath"][..], variant)
+            }
         }
         _ => {
             return Err(invalid(
@@ -1317,7 +1397,17 @@ fn parse_type_variant(
             ))
         }
     };
-    reject_unknown_fields(object, allowed, &format!("{variant_field}."))?;
+    let shape = ArgumentShape::new(schema)
+        .variant("kind", &kind)
+        .expect("converted metadata type variant");
+    reject_unknown_shape_fields(object, shape, &format!("{variant_field}."))?;
+    for (key, value) in object {
+        shape
+            .property(key)
+            .expect("known variant field")
+            .validate_type(value, &format!("{variant_field}.{key}"))
+            .map_err(|error| invalid(error.path, error.message))?;
+    }
     Ok(variant)
 }
 
@@ -1326,17 +1416,10 @@ fn parse_fill_value(value: &Value, field: &str) -> Result<MetaFillValue, MetaDia
         .as_object()
         .ok_or_else(|| invalid(field, "fillValue must be a structured object"))?;
     let kind = required_string_at(object, "kind", &format!("{field}.kind"))?;
-    let (allowed, converted) = match kind.as_str() {
-        "string" => (
-            &["kind", "value"][..],
-            MetaFillValue::String(required_string_value(object, "value", field)?),
-        ),
-        "number" => (
-            &["kind", "value"][..],
-            MetaFillValue::Number(required_string_value(object, "value", field)?),
-        ),
-        "boolean" => (
-            &["kind", "value"][..],
+    let converted = match kind.as_str() {
+        "string" => MetaFillValue::String(required_string_value(object, "value", field)?),
+        "number" => MetaFillValue::Number(required_string_value(object, "value", field)?),
+        "boolean" => {
             MetaFillValue::Boolean(object.get("value").and_then(Value::as_bool).ok_or_else(
                 || {
                     invalid(
@@ -1344,20 +1427,14 @@ fn parse_fill_value(value: &Value, field: &str) -> Result<MetaFillValue, MetaDia
                         "boolean fill value must be a boolean",
                     )
                 },
-            )?),
-        ),
-        "dateTime" => (
-            &["kind", "value"][..],
-            MetaFillValue::DateTime(required_string_value(object, "value", field)?),
-        ),
+            )?)
+        }
+        "dateTime" => MetaFillValue::DateTime(required_string_value(object, "value", field)?),
         "reference" => {
             let raw = required_string_at(object, "metadataPath", &format!("{field}.metadataPath"))?;
-            (
-                &["kind", "metadataPath"][..],
-                MetaFillValue::Reference(MetadataReference {
-                    metadata_path: parse_address(&raw, &format!("{field}.metadataPath"))?,
-                }),
-            )
+            MetaFillValue::Reference(MetadataReference {
+                metadata_path: parse_address(&raw, &format!("{field}.metadataPath"))?,
+            })
         }
         _ => {
             return Err(invalid(
@@ -1366,7 +1443,18 @@ fn parse_fill_value(value: &Value, field: &str) -> Result<MetaFillValue, MetaDia
             ))
         }
     };
-    reject_unknown_fields(object, allowed, &format!("{field}."))?;
+    let schema = fill_value_schema();
+    let shape = ArgumentShape::new(&schema)
+        .variant("kind", &kind)
+        .expect("converted fill value variant");
+    reject_unknown_shape_fields(object, shape, &format!("{field}."))?;
+    for (key, value) in object {
+        shape
+            .property(key)
+            .expect("known fill value field")
+            .validate_type(value, &format!("{field}.{key}"))
+            .map_err(|error| invalid(error.path, error.message))?;
+    }
     Ok(converted)
 }
 
@@ -1374,11 +1462,16 @@ fn parse_reference(value: &Value, field: &str) -> Result<MetadataReference, Meta
     let object = value
         .as_object()
         .ok_or_else(|| invalid(field, "relation target must be an object"))?;
-    reject_unknown_fields(object, &["metadataPath"], &format!("{field}."))?;
-    let path_field = format!("{field}.metadataPath");
-    let raw = required_string_at(object, "metadataPath", &path_field)?;
-    Ok(MetadataReference {
-        metadata_path: parse_address(&raw, &path_field)?,
+    let reader = MetadataArgumentReader::new(
+        object,
+        metadata_relation_object_target_input_schema(),
+        field,
+    );
+    reader.reject_unknown()?;
+    reader.read("metadataPath", |object, key, field| {
+        Ok(MetadataReference {
+            metadata_path: parse_address(&required_string_at(object, key, field)?, field)?,
+        })
     })
 }
 
@@ -1386,12 +1479,16 @@ fn parse_field_reference(value: &Value, field: &str) -> Result<MetadataFieldPath
     let object = value
         .as_object()
         .ok_or_else(|| invalid(field, "inputByString target must be an object"))?;
-    reject_unknown_fields(object, &["fieldPath"], &format!("{field}."))?;
-    let path_field = format!("{field}.fieldPath");
-    let raw = required_string_at(object, "fieldPath", &path_field)?;
-    MetadataFieldPath::parse(&raw).map_err(|mut diagnostic| {
-        diagnostic.field = Some(path_field);
-        diagnostic
+    let reader =
+        MetadataArgumentReader::new(object, metadata_relation_field_target_input_schema(), field);
+    reader.reject_unknown()?;
+    reader.read("fieldPath", |object, key, field| {
+        MetadataFieldPath::parse(&required_string_at(object, key, field)?).map_err(
+            |mut diagnostic| {
+                diagnostic.field = Some(field.to_string());
+                diagnostic
+            },
+        )
     })
 }
 
@@ -1400,27 +1497,42 @@ fn parse_event_source(value: &Value, field: &str) -> Result<MetaEventSource, Met
         .as_object()
         .ok_or_else(|| invalid(field, "event source target must be an object"))?;
     let kind = required_string_at(object, "kind", &format!("{field}.kind"))?;
-    let (allowed, source) = match kind.as_str() {
+    let Some(shape) =
+        ArgumentShape::new(metadata_event_source_input_schema()).variant("kind", &kind)
+    else {
+        return Err(invalid(
+            format!("{field}.kind"),
+            format!("unsupported event source kind `{kind}`"),
+        ));
+    };
+    let reader = MetadataArgumentReader {
+        object,
+        shape,
+        field,
+    };
+    reader.read("kind", required_string_at)?;
+    let source = match kind.as_str() {
         "object" | "manager" | "recordSet" | "definedType" => {
-            let path_field = format!("{field}.metadataPath");
-            let raw = required_string_at(object, "metadataPath", &path_field)?;
-            let metadata_path = parse_address(&raw, &path_field)?;
-            let source = match kind.as_str() {
+            let metadata_path = reader.read("metadataPath", |object, key, field| {
+                parse_address(&required_string_at(object, key, field)?, field)
+            })?;
+            match kind.as_str() {
                 "object" => MetaEventSource::Object { metadata_path },
                 "manager" => {
-                    let source_class = object
-                        .get("sourceClass")
-                        .map(|value| {
-                            let class_field = format!("{field}.sourceClass");
-                            EventSourceClass::parse(value.as_str().ok_or_else(|| {
-                                invalid(&class_field, "sourceClass must be a string")
-                            })?)
-                            .map_err(|mut diagnostic| {
-                                diagnostic.field = Some(class_field);
-                                diagnostic
+                    let source_class = reader.read("sourceClass", |object, key, field| {
+                        object
+                            .get(key)
+                            .map(|value| {
+                                EventSourceClass::parse(value.as_str().ok_or_else(|| {
+                                    invalid(field, "sourceClass must be a string")
+                                })?)
+                                .map_err(|mut diagnostic| {
+                                    diagnostic.field = Some(field.to_string());
+                                    diagnostic
+                                })
                             })
-                        })
-                        .transpose()?;
+                            .transpose()
+                    })?;
                     MetaEventSource::Manager {
                         metadata_path,
                         source_class,
@@ -1429,34 +1541,22 @@ fn parse_event_source(value: &Value, field: &str) -> Result<MetaEventSource, Met
                 "recordSet" => MetaEventSource::RecordSet { metadata_path },
                 "definedType" => MetaEventSource::DefinedType { metadata_path },
                 _ => unreachable!("event source kind match is closed"),
-            };
-            if kind == "manager" {
-                (&["kind", "metadataPath", "sourceClass"][..], source)
-            } else {
-                (&["kind", "metadataPath"][..], source)
             }
         }
         "family" => {
-            let class_field = format!("{field}.sourceClass");
-            let source_class =
-                EventSourceClass::parse(&required_string_at(object, "sourceClass", &class_field)?)
-                    .map_err(|mut diagnostic| {
-                        diagnostic.field = Some(class_field);
+            let source_class = reader.read("sourceClass", |object, key, field| {
+                EventSourceClass::parse(&required_string_at(object, key, field)?).map_err(
+                    |mut diagnostic| {
+                        diagnostic.field = Some(field.to_string());
                         diagnostic
-                    })?;
-            (
-                &["kind", "sourceClass"][..],
-                MetaEventSource::Family { source_class },
-            )
+                    },
+                )
+            })?;
+            MetaEventSource::Family { source_class }
         }
-        _ => {
-            return Err(invalid(
-                format!("{field}.kind"),
-                format!("unsupported event source kind `{kind}`"),
-            ));
-        }
+        _ => unreachable!("the shared event source union has closed kinds"),
     };
-    reject_unknown_fields(object, allowed, &format!("{field}."))?;
+    reader.reject_unknown()?;
     Ok(source)
 }
 
@@ -1971,35 +2071,7 @@ fn host_visible_operation_schema() -> Value {
             .expect("root property schema is always an object")
             .remove("unconstrained");
     }
-    let element = json!({
-        "type": "object",
-        "required": ["name"],
-        "properties": {
-            "name": {"type": "string", "minLength": 1},
-            "newName": {"type": "string", "minLength": 1},
-            "synonym": {"type": "string"},
-            "comment": {"type": "string"},
-            "required": {"type": "boolean"},
-            "type": schema_reference("metadataType"),
-            "fillValue": schema_reference("fillValue"),
-            "templateType": {
-                "type": "string",
-                "enum": MetaTemplateKind::ALL
-                    .iter()
-                    .copied()
-                    .map(MetaTemplateKind::as_str)
-                    .collect::<Vec<_>>(),
-                "description": "Template kind for a new templates element; omitted it defaults to SpreadsheetDocument (ADR-0072).",
-            },
-            "position": schema_reference("position"),
-            "attributes": {
-                "type": "array",
-                "minItems": 1,
-                "items": {"type": "object", "required": ["name"]},
-            },
-        },
-        "description": "Collection element; the legal fields depend on the object kind and collection.",
-    });
+    let element = metadata_host_element_schema();
     let collection_operation = |tag: MetaEditOperationTag, payload_name: &str, payload: Value| {
         json!({
             "type": "object",
@@ -2015,42 +2087,16 @@ fn host_visible_operation_schema() -> Value {
     };
     let elements = || json!({"type": "array", "minItems": 1, "items": element});
     let predefined_fields = || {
-        json!({
-            "id": {
-                "type": "string",
-                "format": "uuid",
-                "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
-            },
-            "name": {"type": "string", "minLength": 1},
-            "code": {"type": "string"},
-            "description": {"type": "string"},
-            "isFolder": {"type": "boolean"},
-            "type": schema_reference("metadataType"),
-            "accountType": {"type": "string", "enum": ["Active", "Passive", "ActivePassive"]},
-            "offBalance": {"type": "boolean"},
-            "order": {"type": "string"},
-            "accountingFlags": {
-                "type": "object",
-                "additionalProperties": {"type": "boolean"},
-            },
-            "extDimensionTypes": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": ["name"],
-                    "properties": {
-                        "name": {"type": "string", "minLength": 1},
-                        "turnover": {"type": "boolean"},
-                        "accountingFlags": {
-                            "type": "object",
-                            "additionalProperties": {"type": "boolean"},
-                        },
-                    },
-                },
-            },
-            "actionPeriodIsBase": {"type": "boolean"},
-        })
+        let mut fields = metadata_predefined_element_input_schema(false)["properties"].clone();
+        fields["id"]
+            .as_object_mut()
+            .expect("predefined id field")
+            .remove("minLength");
+        fields["id"]["format"] = json!("uuid");
+        fields["id"]["pattern"] =
+            json!("^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$");
+        fields["type"] = schema_reference("metadataType");
+        fields
     };
     let predefined_operation = |tag: MetaEditOperationTag, update: bool| {
         json!({
@@ -2067,7 +2113,7 @@ fn host_visible_operation_schema() -> Value {
                         "type": "object",
                         "additionalProperties": false,
                         "minProperties": if update { 2 } else { 0 },
-                        "required": if update { json!(["id"]) } else { json!(["id", "name"]) },
+                        "required": metadata_predefined_element_input_schema(update)["required"].clone(),
                         "properties": predefined_fields(),
                     },
                 },
@@ -2146,233 +2192,6 @@ fn host_visible_operation_schema() -> Value {
     })
 }
 
-fn metadata_relation_operation_schema() -> Value {
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "description": "Edit one relation. Each relation selects its own mode and target contract; EventSubscription source supports non-empty add/remove/replace requests; removing the last logical source is refused.",
-        "required": ["op", "relation", "mode", "targets"],
-        "properties": {
-            "op": {"type": "string", "enum": [MetaEditOperationTag::EditRelations.as_str()]},
-            "relation": {
-                "type": "string",
-                "enum": MetaRelation::ALL.iter().copied().map(MetaRelation::as_str).collect::<Vec<_>>(),
-            },
-            "mode": {
-                "type": "string",
-                "enum": RelationEditMode::ALL.iter().copied().map(RelationEditMode::as_str).collect::<Vec<_>>(),
-            },
-            "targets": {
-                "type": "array",
-                "uniqueItems": true,
-            },
-        },
-        "oneOf": MetaRelation::ALL
-            .iter()
-            .copied()
-            .map(metadata_relation_schema_branch)
-            .collect::<Vec<_>>(),
-    })
-}
-
-fn metadata_relation_schema_branch(relation: MetaRelation) -> Value {
-    let targets = if relation == MetaRelation::Source {
-        metadata_event_source_targets_schema()
-    } else {
-        json!({
-            "type": "array",
-            "minItems": 1,
-            "uniqueItems": true,
-            "items": metadata_relation_target_schema(relation),
-        })
-    };
-    let modes = RelationEditMode::ALL
-        .iter()
-        .copied()
-        .map(RelationEditMode::as_str)
-        .collect::<Vec<_>>();
-    json!({
-        "properties": {
-            "relation": {"const": relation.as_str()},
-            "mode": {"type": "string", "enum": modes},
-            "targets": targets,
-        },
-    })
-}
-
-fn metadata_relation_target_schema(relation: MetaRelation) -> Value {
-    let policies = MetadataKind::ALL
-        .iter()
-        .copied()
-        .flat_map(metadata_relation_specs)
-        .filter(|spec| spec.relation == relation)
-        .map(|spec| spec.target_policy)
-        .collect::<Vec<_>>();
-    let policy = *policies
-        .first()
-        .expect("every public relation has a capability policy");
-    assert!(
-        policies.iter().all(|candidate| *candidate == policy),
-        "one public relation must not publish conflicting target policies"
-    );
-    match policy {
-        MetaRelationTargetPolicy::MetadataKinds(kinds) => json!({
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["metadataPath"],
-            "properties": {
-                "metadataPath": {
-                    "type": "string",
-                    "pattern": metadata_kinds_object_pattern(kinds),
-                },
-            },
-        }),
-        MetaRelationTargetPolicy::SameOwnerField => json!({
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["fieldPath"],
-            "properties": {
-                "fieldPath": {
-                    "type": "string",
-                    "pattern": r"^[^.]+\.[^.]+\.(Attribute|StandardAttribute)\.[^.]+$",
-                },
-            },
-        }),
-        MetaRelationTargetPolicy::EventSources => metadata_event_source_target_schema(),
-    }
-}
-
-fn metadata_event_source_targets_schema() -> Value {
-    json!({
-        "type": "array",
-        "minItems": 1,
-        "uniqueItems": true,
-        "items": metadata_event_source_target_schema(),
-        "description": "Replace the source with one or more logical event source targets.",
-    })
-}
-
-fn metadata_event_source_target_schema() -> Value {
-    let metadata_object = |kind: &str, pattern: String| {
-        json!({
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["kind", "metadataPath"],
-            "properties": {
-                "kind": {"const": kind},
-                "metadataPath": {
-                    "type": "string",
-                    "pattern": pattern,
-                },
-            },
-        })
-    };
-    let named = metadata_identifier_pattern_body();
-    let spelling_group = |values: &[&str]| {
-        values
-            .iter()
-            .flat_map(|value| {
-                metadata_address_kind_spellings(value)
-                    .unwrap_or_else(|| panic!("event source root {value} must be registered"))
-            })
-            .collect::<Vec<_>>()
-            .join("|")
-    };
-    let roots = |values: &[&str]| format!(r"^({})\.{named}$", spelling_group(values));
-    let variants = vec![
-        metadata_object(
-            "object",
-            roots(&[
-                "Catalog",
-                "Document",
-                "ChartOfAccounts",
-                "ChartOfCharacteristicTypes",
-                "ChartOfCalculationTypes",
-                "ExchangePlan",
-                "BusinessProcess",
-                "Task",
-                "Report",
-                "DataProcessor",
-            ]),
-        ),
-        metadata_object(
-            "manager",
-            roots(&[
-                "Catalog",
-                "Document",
-                "Enum",
-                "InformationRegister",
-                "AccumulationRegister",
-                "AccountingRegister",
-                "CalculationRegister",
-                "ChartOfAccounts",
-                "ChartOfCharacteristicTypes",
-                "ChartOfCalculationTypes",
-                "BusinessProcess",
-                "Task",
-                "ExchangePlan",
-                "DocumentJournal",
-                "Report",
-                "DataProcessor",
-                "FilterCriterion",
-                "SettingsStorage",
-            ]),
-        ),
-        json!({
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["kind", "metadataPath", "sourceClass"],
-            "properties": {
-                "kind": {"const": "manager"},
-                "metadataPath": {
-                    "type": "string",
-                    "pattern": roots(&["Constant"]),
-                },
-                "sourceClass": {
-                    "type": "string",
-                    "enum": ["constantManager", "constantValueManager"],
-                },
-            },
-        }),
-        metadata_object(
-            "recordSet",
-            format!(
-                r"^(({})\.{named}|({})\.{named}\.({})\.{named})$",
-                spelling_group(&[
-                    "InformationRegister",
-                    "AccumulationRegister",
-                    "AccountingRegister",
-                    "CalculationRegister",
-                    "Sequence",
-                ]),
-                spelling_group(&["CalculationRegister"]),
-                RECALCULATION_KIND_SPELLINGS.join("|"),
-            ),
-        ),
-        metadata_object("definedType", roots(&["DefinedType"])),
-        json!({
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["kind", "sourceClass"],
-            "properties": {
-                "kind": {"const": "family"},
-                "sourceClass": {
-                    "type": "string",
-                    "enum": EventSourceClass::ALL
-                        .iter()
-                        .copied()
-                        .map(EventSourceClass::as_str)
-                        .collect::<Vec<_>>(),
-                },
-            },
-        }),
-    ];
-    json!({
-        "oneOf": variants,
-        "description": "One member of the closed typed EventSubscription source algebra.",
-    })
-}
-
 fn scope_schema() -> Value {
     json!({
         "type": "object",
@@ -2387,10 +2206,6 @@ fn scope_schema() -> Value {
         "required": ["tabularSection"],
         "description": "Optional scope for a collection owned by a tabular section.",
     })
-}
-
-fn metadata_identifier_pattern_body() -> &'static str {
-    r"[_A-Za-zА-Яа-яЁё][_A-Za-zА-Яа-яЁё0-9]*"
 }
 
 #[cfg(test)]
@@ -2830,6 +2645,15 @@ mod tests {
                 publication_warnings: Vec::new(),
             })
         }
+        fn notify_committed_changes(
+            &self,
+            context: &WorkspaceContext,
+            events: &[crate::domain::events::DomainEvent],
+            _cancellation: &CancellationToken,
+            _deadline: crate::domain::operation_deadline::OperationDeadline,
+        ) {
+            self.notify_invalidation(context, events);
+        }
 
         fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
     }
@@ -2937,6 +2761,7 @@ mod tests {
                 cache_events: Arc::new(Mutex::new(Vec::new())),
                 read: Mutex::new(Some(Ok(MetadataRead {
                     local: MetaLocalInfo {
+                        member_read_profile: None,
                         metadata_path: subject.target.clone(),
                         kind: MetadataKind::Document,
                         details: MetaInfoDetails::empty(MetadataKind::Document),
@@ -3124,6 +2949,7 @@ mod tests {
             cache_events: Arc::new(Mutex::new(Vec::new())),
             read: Mutex::new(Some(Ok(MetadataRead {
                 local: MetaLocalInfo {
+                    member_read_profile: None,
                     metadata_path: subject.target.clone(),
                     kind: MetadataKind::Document,
                     details: MetaInfoDetails::empty(MetadataKind::Document),
@@ -4651,6 +4477,133 @@ mod tests {
     }
 
     #[test]
+    fn relation_readers_preserve_conversion_and_unknown_field_diagnostic_order() {
+        let call = |relation: Value, mode: Value, targets: Value| {
+            json!({
+                "op": "editRelations", "relation": relation, "mode": mode, "targets": targets,
+            })
+        };
+        for (operation, field, message) in [
+            (
+                call(json!("unknown"), json!(false), json!(false)),
+                "relation",
+                "unsupported metadata relation `unknown`",
+            ),
+            (
+                call(json!("owners"), json!("unknown"), json!(false)),
+                "mode",
+                "unsupported relation mode `unknown`",
+            ),
+            (
+                call(
+                    json!("owners"),
+                    json!("add"),
+                    json!([{"metadataPath": false, "extra": true}]),
+                ),
+                "targets[0].extra",
+                "unknown field `extra`",
+            ),
+            (
+                call(
+                    json!("inputByString"),
+                    json!("add"),
+                    json!([{"fieldPath": false, "extra": true}]),
+                ),
+                "targets[0].extra",
+                "unknown field `extra`",
+            ),
+            (
+                call(
+                    json!("source"),
+                    json!("add"),
+                    json!([{"kind": "unknown", "metadataPath": false, "extra": true}]),
+                ),
+                "targets[0].kind",
+                "unsupported event source kind `unknown`",
+            ),
+            (
+                call(
+                    json!("source"),
+                    json!("add"),
+                    json!([{"kind": "manager", "metadataPath": false, "sourceClass": false, "extra": true}]),
+                ),
+                "targets[0].metadataPath",
+                "`targets[0].metadataPath` must be a string",
+            ),
+            (
+                call(
+                    json!("source"),
+                    json!("add"),
+                    json!([{"kind": "manager", "metadataPath": "Catalog.Items", "sourceClass": false, "extra": true}]),
+                ),
+                "targets[0].sourceClass",
+                "sourceClass must be a string",
+            ),
+            (
+                call(
+                    json!("source"),
+                    json!("add"),
+                    json!([{"kind": "family", "sourceClass": false, "extra": true}]),
+                ),
+                "targets[0].sourceClass",
+                "`targets[0].sourceClass` must be a string",
+            ),
+            (
+                call(
+                    json!("source"),
+                    json!("add"),
+                    json!([{"kind": "object", "metadataPath": "Catalog.Items", "extra": true}]),
+                ),
+                "targets[0].extra",
+                "unknown field `extra`",
+            ),
+        ] {
+            let error = parse_edit_operation(&operation, MetadataKind::Catalog).unwrap_err();
+            assert_eq!(error.field.as_deref(), Some(field), "{operation}");
+            assert_eq!(error.message, message, "{operation}");
+        }
+
+        let error = diagnostic(
+            MetadataOperation::Edit,
+            json!({
+                "sourceSet": "main",
+                "metadataPath": "Catalog.Items",
+                "operations": [
+                    {"op": "editRelations", "relation": "owners", "mode": "add", "targets": [{"metadataPath": "Catalog.Parent"}]},
+                    {"op": "editRelations", "relation": "owners", "mode": "unknown", "targets": false},
+                ],
+            }),
+        );
+        assert_eq!(error.operation_index, Some(1));
+        assert_eq!(error.field.as_deref(), Some("mode"));
+        assert_eq!(error.message, "unsupported relation mode `unknown`");
+    }
+
+    #[test]
+    fn raw_event_source_manager_keeps_optional_class_before_domain_correlation() {
+        for (target, class) in [
+            (
+                json!({"kind": "manager", "metadataPath": "Constant.Flag"}),
+                None,
+            ),
+            (
+                json!({"kind": "manager", "metadataPath": "Catalog.Items", "sourceClass": "constantManager"}),
+                Some(EventSourceClass::ConstantManager),
+            ),
+        ] {
+            let parsed = parse_event_source(&target, "targets[1]").unwrap();
+            assert!(
+                matches!(parsed, MetaEventSource::Manager { source_class, .. } if source_class == class)
+            );
+        }
+        let error = parse_event_source(&json!({
+            "kind": "manager", "metadataPath": "Catalog.Items", "sourceClass": "unknown", "extra": true,
+        }), "targets[1]").unwrap_err();
+        assert_eq!(error.field.as_deref(), Some("targets[1].sourceClass"));
+        assert_eq!(error.message, "unsupported event source class `unknown`");
+    }
+
+    #[test]
     fn source_parser_accepts_the_closed_nonempty_logical_event_source_algebra() {
         let call = |targets: Value| {
             json!({
@@ -5683,7 +5636,178 @@ mod tests {
     }
 
     #[test]
+    fn predefined_readers_keep_legacy_compound_error_order() {
+        for (changes, field, message) in [
+            (
+                json!({"id": false, "extra": true}),
+                "elements[3].extra",
+                "unknown field `extra`",
+            ),
+            (
+                json!({"id": "not-a-uuid", "name": false}),
+                "elements[3].id",
+                "predefined item id must be a UUID",
+            ),
+            (
+                json!({"name": false, "code": false}),
+                "elements[3].name",
+                "`elements[3].name` must be a string",
+            ),
+            (
+                json!({"code": false, "description": false}),
+                "elements[3].code",
+                "field must be a string",
+            ),
+            (
+                json!({"isFolder": "bad", "accountType": false}),
+                "elements[3].isFolder",
+                "field must be a boolean",
+            ),
+            (
+                json!({"accountType": false, "offBalance": "bad"}),
+                "elements[3].accountType",
+                "accountType must be a string",
+            ),
+            (
+                json!({"accountType": "bad", "offBalance": "bad"}),
+                "elements[3].accountType",
+                "accountType must be Active, Passive, or ActivePassive",
+            ),
+            (
+                json!({"order": false, "accountingFlags": false}),
+                "elements[3].order",
+                "field must be a string",
+            ),
+            (
+                json!({"accountingFlags": {"": false, "Bad": "bad"}, "extDimensionTypes": false}),
+                "elements[3].accountingFlags",
+                "accounting flag name must not be empty",
+            ),
+            (
+                json!({"accountingFlags": {"Bad": "bad"}, "extDimensionTypes": false}),
+                "elements[3].accountingFlags.Bad",
+                "accounting flag must be boolean",
+            ),
+            (
+                json!({"extDimensionTypes": [{"name": false, "extra": true, "turnover": "bad"}]}),
+                "elements[3].extDimensionTypes[0].extra",
+                "unknown field `extra`",
+            ),
+            (
+                json!({"extDimensionTypes": [{"name": false, "turnover": "bad"}]}),
+                "elements[3].extDimensionTypes[0].name",
+                "`elements[3].extDimensionTypes[0].name` must be a string",
+            ),
+            (
+                json!({"extDimensionTypes": [{"name": "Dim"}, {"name": "dim", "turnover": "bad"}]}),
+                "elements[3].extDimensionTypes[1].name",
+                "ext-dimension type name is duplicated",
+            ),
+            (
+                json!({"extDimensionTypes": [{"name": "Dim", "turnover": "bad", "accountingFlags": false}]}),
+                "elements[3].extDimensionTypes[0].turnover",
+                "turnover must be boolean",
+            ),
+            (
+                json!({"extDimensionTypes": [{"name": "Dim", "accountingFlags": {"": "bad"}}]}),
+                "elements[3].extDimensionTypes[0].accountingFlags",
+                "accounting flag name must not be empty",
+            ),
+        ] {
+            let mut item = json!({"id":"a7d2e6fc-3824-4b56-b4be-ae6be4944c0e","name":"Main"});
+            item.as_object_mut()
+                .unwrap()
+                .extend(changes.as_object().unwrap().clone());
+            let error = parse_predefined_add(&item, 3).unwrap_err();
+            assert_eq!(error.field.as_deref(), Some(field), "{item}: {error:?}");
+            assert_eq!(error.message, message, "{item}: {error:?}");
+        }
+        let item = json!({"id":"a7d2e6fc-3824-4b56-b4be-ae6be4944c0e","code":""});
+        assert!(parse_predefined_update(&item, 3).unwrap().name.is_none());
+        let error =
+            parse_predefined_update(&json!({"id":false,"newName":"Renamed"}), 3).unwrap_err();
+        assert_eq!(error.field.as_deref(), Some("elements[3].newName"));
+        assert_eq!(error.message, "unknown field `newName`");
+    }
+
+    #[test]
+    fn predefined_fields_consume_the_shared_primitive_and_nested_shapes() {
+        let item = json!({"code":"C","description":"D","isFolder":false,
+            "accountType":"Active","offBalance":false,"order":"O",
+            "accountingFlags":{"Flag":true},"extDimensionTypes":[{"name":"Dim","turnover":false,"accountingFlags":{"Flag":true}}],
+            "actionPeriodIsBase":false});
+        let object = item.as_object().unwrap();
+        assert!(parse_predefined_fields(&MetadataArgumentReader::new(
+            object,
+            metadata_predefined_element_input_schema(false),
+            "elements[3]"
+        ))
+        .is_ok());
+        for (pointer, field) in [
+            ("/properties/code/type", "elements[3].code"),
+            ("/properties/description/type", "elements[3].description"),
+            ("/properties/isFolder/type", "elements[3].isFolder"),
+            ("/properties/accountType/type", "elements[3].accountType"),
+            ("/properties/offBalance/type", "elements[3].offBalance"),
+            ("/properties/order/type", "elements[3].order"),
+            ("/properties/accountingFlags/additionalProperties/type", "elements[3].accountingFlags.Flag"),
+            ("/properties/extDimensionTypes/items/properties/name/type", "elements[3].extDimensionTypes[0].name"),
+            ("/properties/extDimensionTypes/items/properties/turnover/type", "elements[3].extDimensionTypes[0].turnover"),
+            ("/properties/extDimensionTypes/items/properties/accountingFlags/additionalProperties/type", "elements[3].extDimensionTypes[0].accountingFlags.Flag"),
+            ("/properties/actionPeriodIsBase/type", "elements[3].actionPeriodIsBase"),
+        ] {
+            let mut schema = metadata_predefined_element_input_schema(false).clone();
+            *schema.pointer_mut(pointer).unwrap() = json!("integer");
+            let reader = MetadataArgumentReader::new(object, &schema, "elements[3]");
+            let error = parse_predefined_fields(&reader).unwrap_err();
+            assert_eq!(error.field.as_deref(), Some(field), "{pointer}: {error:?}");
+        }
+    }
+
+    #[test]
     fn predefined_items_schema_and_parser_use_uuid_typed_collection_contract() {
+        let name_shape = json!({"type":"string","minLength":1});
+        for update in [false, true] {
+            let raw = metadata_predefined_element_input_schema(update);
+            assert_eq!(raw["properties"]["id"], name_shape);
+            assert_eq!(raw["properties"]["name"], name_shape);
+            assert_eq!(
+                raw["properties"]["extDimensionTypes"]["items"]["properties"]["name"],
+                name_shape
+            );
+        }
+        let host = host_visible_operation_schema();
+        let predefined_operations = host["oneOf"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|operation| {
+                operation["properties"]["collection"]["enum"][0] == "predefinedItems"
+                    && operation["properties"].get("elements").is_some()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(predefined_operations.len(), 2);
+        for operation in predefined_operations {
+            let fields = &operation["properties"]["elements"]["items"]["properties"];
+            assert_eq!(fields["name"], name_shape);
+            assert_eq!(
+                fields["extDimensionTypes"]["items"]["properties"]["name"],
+                name_shape
+            );
+            assert_eq!(
+                fields["id"],
+                json!({"type":"string","format":"uuid","pattern":"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"})
+            );
+            assert!(fields.get("newName").is_none());
+        }
+        let can = crate::domain::operation_contract::OperationContract::metadata_predefined_add(
+            Some(MetadataKind::ChartOfAccounts),
+        );
+        assert_eq!(
+            can.schema["properties"]["items"]["items"]["properties"]["extDimensionTypes"]["items"]
+                ["properties"]["name"],
+            name_shape
+        );
         let schema = metadata_input_schema(MetadataOperation::Edit);
         let validator = jsonschema::validator_for(&schema).unwrap();
         let valid = json!({

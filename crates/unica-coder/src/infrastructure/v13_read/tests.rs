@@ -1,10 +1,19 @@
+mod catalog_attribute_properties;
+mod catalog_attribute_tooltip;
+mod catalog_tabular_properties;
+mod form;
+mod metadata;
+mod support;
+
+use support::*;
+
 use super::{
     project_known_suffix, project_typed_payload, resolve_platform_xml_target,
     LogicalViewReadAuthority, MetadataAddress, SourceTarget, TargetKindPolicy,
     PLATFORM_XML_8_3_27_FORMAT_2_20,
 };
 use crate::application::result_store::ViewCursorStore;
-use crate::application::v13::find::{FindRequest, FindResult};
+use crate::application::v13::find::FindRequest;
 use crate::application::v13::view::{ViewError, ViewReadAuthority, ViewRequest, ViewService};
 use crate::domain::address::QualifiedAddress;
 use crate::domain::cancellation::CancellationToken;
@@ -499,6 +508,12 @@ fn typed_projection_never_leaks_provider_or_physical_slots() {
                 "location": {"path": "/secret/Subsystems/Продажи.xml"},
                 "fileExists": true,
                 "provider": "raw",
+                "support": {
+                    "state": "locked",
+                    "directEditSafe": false,
+                    "location": "/secret/ParentConfigurations.bin",
+                    "provider": {"raw": "x".repeat(4096)}
+                },
                 "content": ["Catalog.Товары"],
                 "commandInterface": {"visibility": []}
             }),
@@ -506,6 +521,16 @@ fn typed_projection_never_leaks_provider_or_physical_slots() {
         .unwrap(),
     )
     .unwrap();
+    assert!(
+        view.get("props")
+            .and_then(serde_json::Value::as_object)
+            .into_iter()
+            .flat_map(|props| props.values())
+            .all(|value| !value.is_object() && !value.is_array()),
+        "subsystem props must contain only scalar values: {view}"
+    );
+    assert_eq!(view["props"]["support"], "locked");
+    assert_eq!(view["props"]["directEditSafe"], false);
     let text = view.to_string();
     for forbidden in ["/secret", "fileExists", "provider", "sourceState", "layout"] {
         assert!(!text.contains(forbidden), "leaked {forbidden}: {text}");
@@ -514,16 +539,22 @@ fn typed_projection_never_leaks_provider_or_physical_slots() {
 
 #[test]
 fn typed_projection_rejects_unknown_provider_payload_instead_of_dumping_it() {
-    let at = QualifiedAddress::parse("main:Configuration").unwrap();
-    let route = route_logical_address(&at, PlatformProfile::v8_3_27()).unwrap();
+    for raw in [
+        "main:Configuration",
+        "main:Catalog.Items",
+        "main:CommonForm.Test",
+    ] {
+        let at = QualifiedAddress::parse(raw).unwrap();
+        let route = route_logical_address(&at, PlatformProfile::v8_3_27()).unwrap();
 
-    let error = project_typed_payload(
-        &route,
-        json!({"name": "Main", "mysteryProviderPayload": {"raw": "secret"}}),
-    )
-    .unwrap_err();
+        let error = project_typed_payload(
+            &route,
+            json!({"name": "Main", "mysteryProviderPayload": {"raw": "secret"}}),
+        )
+        .unwrap_err();
 
-    assert_eq!(error.code().as_str(), "provider_unavailable");
+        assert_eq!(error.code().as_str(), "provider_unavailable", "{raw}");
+    }
 }
 
 #[test]
@@ -1113,1037 +1144,6 @@ fn capability_bound_configuration_reader_preserves_complete_cf_info_semantics() 
 }
 
 #[test]
-fn metadata_kind_branch_lists_registered_objects_with_canonical_addresses() {
-    let fixture = RealReaderFixture::new();
-    let cancellation = CancellationToken::new();
-    let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
-    let authority = LogicalViewReadAuthority::new(
-        &cancellation,
-        "main",
-        "actor-fixture-main",
-        SourceSetKind::Configuration,
-        source_root,
-        PlatformProfile::v8_3_27(),
-    );
-    let service = ViewService::new(authority, ViewCursorStore::default());
-
-    let branch = service.view(ViewRequest::new("main:Catalog").unwrap());
-    assert!(branch.ok, "{:?}", refusal_codes(&branch));
-    assert_eq!(
-        branch.data.as_ref().unwrap()["items"],
-        json!([
-            {
-                "at": "main:Catalog.Items",
-                "kind": "Catalog",
-                "title": "Items"
-            },
-            {
-                "at": "main:Catalog.Владельцы",
-                "kind": "Catalog",
-                "title": "Владельцы"
-            }
-        ]),
-    );
-}
-
-#[test]
-fn metadata_node_props_carry_the_observed_object_properties() {
-    let fixture = RealReaderFixture::new();
-    let service = fixture.view_service();
-
-    let result = service.view(ViewRequest::new("main:Catalog.Items").unwrap());
-
-    assert!(result.ok, "{:?}", refusal_codes(&result));
-    let props = &result.data.as_ref().unwrap()["props"];
-    // Свойства объекта отвечают на узле объекта: раньше проекция искала шесть
-    // скаляров в `details`, где их нет ни у одного вида, и узел молчал.
-    assert_eq!(props["Hierarchical"], json!(true));
-    assert_eq!(props["CodeLength"], json!(11));
-    assert_eq!(props["kind"], json!("Catalog"));
-}
-
-/// Три роли дампа `PrintWebDAV`: заимствован с перекрытием, заимствован без
-/// перекрытия, собственный объект расширения.
-///
-/// Признак заимствования — `ExtendedConfigurationObject`, а не `Adopted`:
-/// корень `Configuration` самого расширения тоже `Adopted`, и читать его как
-/// заимствованный объект — дефект. `xr:PropertyState` несёт **список**
-/// перекрытых свойств, а не флаг: заимствованный объект без перекрытий его не
-/// несёт вовсе.
-#[test]
-fn borrowing_props_name_the_three_roles_of_an_extension_source_set() {
-    let fixture = RealReaderFixture::new();
-    fixture.borrow_catalog("Catalogs/Владельцы.xml", Some("Synonym"));
-    fixture.borrow_catalog("Documents/Order.xml", None);
-    let service = fixture.extension_view_service();
-
-    let overridden = service.view(ViewRequest::new("main:Catalog.Владельцы").unwrap());
-    assert!(overridden.ok, "{:?}", refusal_codes(&overridden));
-    let props = &overridden.data.as_ref().unwrap()["props"];
-    assert_eq!(props["belonging"], json!("borrowed"));
-    assert_eq!(
-        props["parentId"],
-        json!("11111111-1111-4111-8111-111111111111")
-    );
-    assert_eq!(props["overrides"], json!("Synonym"));
-    assert!(
-        props.get("extends").is_none(),
-        "UUID is not a readable parent address"
-    );
-    assert_eq!(props["parentStatus"], json!("unavailable"));
-
-    let plain = service.view(ViewRequest::new("main:Document.Order").unwrap());
-    assert!(plain.ok, "{:?}", refusal_codes(&plain));
-    let props = &plain.data.as_ref().unwrap()["props"];
-    assert_eq!(props["belonging"], json!("borrowed"));
-    assert_eq!(
-        props["parentId"],
-        json!("11111111-1111-4111-8111-111111111111")
-    );
-    assert!(
-        props.get("overrides").is_none(),
-        "заимствование без перекрытий ключа `overrides` не несёт: пустой список — это его отсутствие"
-    );
-
-    let own = service.view(ViewRequest::new("main:Catalog.Items").unwrap());
-    assert!(own.ok, "{:?}", refusal_codes(&own));
-    let props = &own.data.as_ref().unwrap()["props"];
-    assert_eq!(props["belonging"], json!("own"));
-    assert!(props.get("extends").is_none());
-    assert!(props.get("overrides").is_none());
-}
-
-/// Заимствование не стоит второго чтения дескриптора.
-///
-/// Свойства объекта и его заимствование разбираются из одних и тех же байтов.
-/// Второе чтение того же файла стоило бы лишнего доступа и, что хуже, могло бы
-/// застать файл изменившимся между чтениями — тогда два ответа об одном
-/// объекте описывали бы разные состояния источника.
-#[test]
-fn borrowing_costs_no_second_descriptor_read() {
-    let fixture = RealReaderFixture::new();
-    fixture.borrow_catalog("Catalogs/Владельцы.xml", Some("Synonym"));
-    let authority = fixture.extension_read_authority();
-
-    assert_reader_reaches(&authority, &["main:Catalog.Владельцы"]);
-
-    assert_eq!(
-        authority.metadata_descriptor_read_count("Catalog.Владельцы"),
-        2,
-        "заимствование читается тем же дескриптором, что и свойства объекта: \
-         доказательство владельца плюс типизированная проекция, и ни чтением больше",
-    );
-}
-
-/// В наборе вида `configuration` заимствования не бывает, и `belonging: own`
-/// у каждого объекта было бы шумом.
-#[test]
-fn a_configuration_source_set_carries_no_borrowing_props() {
-    let fixture = RealReaderFixture::new();
-    let service = fixture.view_service();
-
-    let result = service.view(ViewRequest::new("main:Catalog.Items").unwrap());
-
-    assert!(result.ok, "{:?}", refusal_codes(&result));
-    let props = &result.data.as_ref().unwrap()["props"];
-    for key in ["belonging", "extends", "overrides"] {
-        assert!(props.get(key).is_none(), "{key} в конфигурации не отвечает");
-    }
-}
-
-#[test]
-fn metadata_attribute_fill_value_is_a_bounded_observed_fact() {
-    let fixture = RealReaderFixture::new();
-    let descriptor = fixture.source.join("Catalogs/Items.xml");
-    let original = fs::read_to_string(&descriptor).unwrap();
-    let document = roxmltree::Document::parse(&original).unwrap();
-    let range = document
-        .root_element()
-        .first_element_child()
-        .unwrap()
-        .children()
-        .find(|node| node.has_tag_name(("http://v8.1c.ru/8.3/MDClasses", "ChildObjects")))
-        .unwrap()
-        .range();
-    let attributes = r#"<Attribute xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><Properties><Name>Empty</Name><Type><v8:Type>cfg:CatalogRef.Items</v8:Type></Type><FillValue xsi:type="xr:DesignTimeRef">Catalog.Items.EmptyRef</FillValue></Properties></Attribute><Attribute xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><Properties><Name>Flag</Name><Type><v8:Type>cfg:EnumRef.Flags</v8:Type></Type><FillValue xsi:type="xr:DesignTimeRef">Enum.Flags.EnumValue.Yes</FillValue></Properties></Attribute>"#;
-    write(
-        &descriptor,
-        &format!(
-            "{}<ChildObjects>{attributes}</ChildObjects>{}",
-            &original[..range.start],
-            &original[range.end..]
-        ),
-    );
-    let service = fixture.view_service();
-    for (name, owner, item) in [
-        ("Empty", "Catalog.Items", "EmptyRef"),
-        ("Flag", "Enum.Flags", "EnumValue.Yes"),
-    ] {
-        let result = service
-            .view(ViewRequest::new(&format!("main:Catalog.Items.Attribute.{name}")).unwrap());
-        assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
-        let props = &result.data.as_ref().unwrap()["props"];
-        assert!(props.get("incomplete").is_none(), "{props}");
-        let observed: serde_json::Value =
-            serde_json::from_str(props["fillValue"].as_str().unwrap()).unwrap();
-        assert_eq!(
-            observed,
-            json!({"kind": "reference", "metadataPath": owner, "item": item})
-        );
-    }
-}
-
-#[test]
-fn metadata_node_props_lay_out_the_per_kind_facts_by_role() {
-    let fixture = RealReaderFixture::new();
-    let service = fixture.view_service();
-
-    // Обработчик регламентного задания: два поля, две роли.
-    let job = service.view(ViewRequest::new("main:ScheduledJob.MonthClose").unwrap());
-    assert!(job.ok, "{:?}", refusal_codes(&job));
-    let props = &job.data.as_ref().unwrap()["props"];
-    assert_eq!(props["handlerModule"], json!("CommonModule.MonthClose"));
-    assert_eq!(props["handlerMethod"], json!("RunScheduled"));
-
-    // Расписание регистра расчёта: три поля, три роли.
-    let register = service.view(ViewRequest::new("main:CalculationRegister.Payroll").unwrap());
-    assert!(register.ok, "{:?}", refusal_codes(&register));
-    let props = &register.data.as_ref().unwrap()["props"];
-    assert_eq!(
-        props["scheduleRegister"],
-        json!("InformationRegister.WorkSchedules")
-    );
-    assert_eq!(
-        props["scheduleValueField"],
-        json!("InformationRegister.WorkSchedules.Resource.DayValue")
-    );
-    assert_eq!(
-        props["scheduleDateField"],
-        json!("InformationRegister.WorkSchedules.Dimension.Date")
-    );
-
-    // Тип константы: одно составное значение, компактной строкой — тем же
-    // механизмом, каким отвечает тип реквизита.
-    let constant = service.view(ViewRequest::new("main:Constant.MainCurrency").unwrap());
-    assert!(constant.ok, "{:?}", refusal_codes(&constant));
-    let rendered = constant.data.as_ref().unwrap()["props"]["type"]
-        .as_str()
-        .expect("constant type renders compactly");
-    assert!(rendered.contains("string"), "{rendered}");
-}
-
-/// Сервис в том виде, в каком его выгружает Конфигуратор 8.3.27: у шаблона
-/// и метода есть `Synonym` и `<Comment/>` (#634).
-fn install_configurator_http_service(fixture: &RealReaderFixture, edit: impl Fn(&str) -> String) {
-    let xml = fixture_text("platform_8_3_27/meta_info/edge/http-service-configurator.xml")
-        .replace("<Name>ПроверкаСвязи</Name>", "<Name>ExternalAPI</Name>");
-    write(
-        &fixture.source.join("HTTPServices/ExternalAPI.xml"),
-        &edit(&xml),
-    );
-}
-
-#[test]
-fn configurator_http_service_view_lists_its_templates_and_methods() {
-    let fixture = RealReaderFixture::new();
-    install_configurator_http_service(&fixture, str::to_string);
-    let service = fixture.view_service();
-
-    let http = service.view(ViewRequest::new("main:HTTPService.ExternalAPI").unwrap());
-    assert!(http.ok, "{:?}", refusal_codes(&http));
-    let node = http.data.as_ref().unwrap();
-    assert!(
-        node["branches"]
-            .as_array()
-            .unwrap()
-            .contains(&json!({"at": "main:HTTPService.ExternalAPI.URLTemplate", "count": 2})),
-        "{node:#}"
-    );
-    assert!(node.get("limits").is_none(), "{node:#}");
-
-    let templates =
-        service.view(ViewRequest::new("main:HTTPService.ExternalAPI.URLTemplate").unwrap());
-    assert!(templates.ok, "{:?}", refusal_codes(&templates));
-    let names = templates.data.as_ref().unwrap()["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|item| item["at"].as_str().unwrap().to_string())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        names,
-        [
-            "main:HTTPService.ExternalAPI.URLTemplate.Пинг",
-            "main:HTTPService.ExternalAPI.URLTemplate.ПринятьДанные",
-        ]
-    );
-
-    let method = service.view(
-        ViewRequest::new("main:HTTPService.ExternalAPI.URLTemplate.ПринятьДанные.Method.POST")
-            .unwrap(),
-    );
-    assert!(method.ok, "{:?}", refusal_codes(&method));
-    let method = method.data.as_ref().unwrap();
-    assert_eq!(method["props"]["httpMethod"], json!("POST"));
-    assert_eq!(method["props"]["handler"], json!("ПринятьДанныеPOST"));
-}
-
-/// Веб-сервис в том виде, в каком его выгружает Конфигуратор 8.3.27:
-/// у операции есть `Synonym`, `<Comment/>` и `DataLockControlMode`,
-/// у параметра — `Synonym` и `<Comment/>`.
-#[test]
-fn configurator_web_service_view_opens_its_operations_and_parameters() {
-    let fixture = RealReaderFixture::new();
-    write(
-        &fixture.source.join("WebServices/Exchange.xml"),
-        &fixture_text("platform_8_3_27/meta_info/edge/web-service-configurator.xml")
-            .replace("<Name>ОбменДанными</Name>", "<Name>Exchange</Name>"),
-    );
-    let service = fixture.view_service();
-
-    let web = service.view(ViewRequest::new("main:WebService.Exchange").unwrap());
-    assert!(web.ok, "{:?}", refusal_codes(&web));
-    let node = web.data.as_ref().unwrap();
-    assert!(
-        node["branches"]
-            .as_array()
-            .unwrap()
-            .contains(&json!({"at": "main:WebService.Exchange.Operation", "count": 2})),
-        "{node:#}"
-    );
-    assert!(node.get("limits").is_none(), "{node:#}");
-
-    let operation =
-        service.view(ViewRequest::new("main:WebService.Exchange.Operation.ПринятьПакет").unwrap());
-    assert!(operation.ok, "{:?}", refusal_codes(&operation));
-    let operation = operation.data.as_ref().unwrap();
-    assert_eq!(operation["props"]["procedure"], json!("ПринятьПакет"));
-    assert_eq!(
-        operation["branches"],
-        json!([{"at": "main:WebService.Exchange.Operation.ПринятьПакет.Parameter", "count": 3}]),
-    );
-
-    let parameter = service.view(
-        ViewRequest::new("main:WebService.Exchange.Operation.ПринятьПакет.Parameter.Ошибка")
-            .unwrap(),
-    );
-    assert!(parameter.ok, "{:?}", refusal_codes(&parameter));
-    assert_eq!(
-        parameter.data.as_ref().unwrap()["props"]["direction"],
-        json!("out")
-    );
-}
-
-/// Непрочитанный шаблон не выдаётся за пустой сервис: узел называет поле
-/// в `limits`, а ветвь шаблонов отказывает с причиной вместо «нет такой».
-#[test]
-fn an_unreadable_http_template_is_named_rather_than_reported_absent() {
-    let fixture = RealReaderFixture::new();
-    install_configurator_http_service(&fixture, |xml| {
-        xml.replacen("<Name>Пинг</Name>", "<Name>bad name</Name>", 1)
-    });
-    let service = fixture.view_service();
-
-    let http = service.view(ViewRequest::new("main:HTTPService.ExternalAPI").unwrap());
-    assert!(http.ok, "{:?}", refusal_codes(&http));
-    let node = http.data.as_ref().unwrap();
-    let limits = node["limits"]
-        .as_array()
-        .expect("the unread field is named");
-    assert!(
-        limits.iter().any(|limit| limit
-            .as_str()
-            .is_some_and(|limit| limit.starts_with("details.urlTemplates[0].name"))),
-        "{node:#}"
-    );
-
-    let templates =
-        service.view(ViewRequest::new("main:HTTPService.ExternalAPI.URLTemplate").unwrap());
-    assert!(!templates.ok, "{:#?}", templates.data);
-    assert_eq!(refusal_codes(&templates), ["provider_unavailable"]);
-    let message = templates.diagnostics[0]["message"].as_str().unwrap();
-    assert!(
-        message.contains("details.urlTemplates[0].name"),
-        "{message}"
-    );
-}
-
-#[test]
-fn declared_service_kinds_finally_get_their_subject() {
-    let fixture = RealReaderFixture::new();
-    let service = fixture.view_service();
-
-    // Виды `URLTemplate` и `Operation` были объявлены в грамматике и не
-    // подключены ни к чему; здесь у них появляется предмет.
-    let http = service.view(ViewRequest::new("main:HTTPService.ExternalAPI").unwrap());
-    assert!(http.ok, "{:?}", refusal_codes(&http));
-    let branches = http.data.as_ref().unwrap()["branches"].as_array().unwrap();
-    assert!(
-        branches.contains(&json!({
-            "at": "main:HTTPService.ExternalAPI.URLTemplate",
-            "count": 1
-        })),
-        "{branches:#?}"
-    );
-
-    let template =
-        service.view(ViewRequest::new("main:HTTPService.ExternalAPI.URLTemplate.Metrics").unwrap());
-    assert!(template.ok, "{:?}", refusal_codes(&template));
-    let template = template.data.as_ref().unwrap();
-    assert_eq!(template["props"]["template"], json!("/v1/kpi/"));
-    // Последовательность методов — ветвь, а не строка в `props`: коллекция
-    // обязана быть адресуемой.
-    assert_eq!(
-        template["branches"],
-        json!([{
-            "at": "main:HTTPService.ExternalAPI.URLTemplate.Metrics.Method",
-            "count": 1
-        }]),
-    );
-
-    let method = service.view(
-        ViewRequest::new("main:HTTPService.ExternalAPI.URLTemplate.Metrics.Method.Get").unwrap(),
-    );
-    assert!(method.ok, "{:?}", refusal_codes(&method));
-    let method = method.data.as_ref().unwrap();
-    assert_eq!(method["props"]["httpMethod"], json!("GET"));
-    assert_eq!(method["props"]["handler"], json!("MetricsGet"));
-
-    let operation =
-        service.view(ViewRequest::new("main:WebService.Exchange.Operation.Send").unwrap());
-    assert!(operation.ok, "{:?}", refusal_codes(&operation));
-    let operation = operation.data.as_ref().unwrap();
-    assert_eq!(operation["props"]["procedure"], json!("SendData"));
-    assert_eq!(operation["props"]["transactioned"], json!(true));
-    assert!(
-        operation["props"]["returnType"]
-            .as_str()
-            .is_some_and(|rendered| rendered.contains("boolean")),
-        "{operation:#}"
-    );
-    assert_eq!(
-        operation["branches"],
-        json!([{"at": "main:WebService.Exchange.Operation.Send.Parameter", "count": 1}]),
-    );
-
-    let parameter = service.view(
-        ViewRequest::new("main:WebService.Exchange.Operation.Send.Parameter.Payload").unwrap(),
-    );
-    assert!(parameter.ok, "{:?}", refusal_codes(&parameter));
-    assert_eq!(
-        parameter.data.as_ref().unwrap()["props"]["direction"],
-        json!("in")
-    );
-}
-
-#[test]
-fn every_reference_of_an_object_answers_in_one_relation_branch() {
-    let fixture = RealReaderFixture::new();
-    let service = fixture.view_service();
-
-    let document = service.view(ViewRequest::new("main:Document.Order").unwrap());
-    assert!(document.ok, "{:?}", refusal_codes(&document));
-    let branches = document.data.as_ref().unwrap()["branches"]
-        .as_array()
-        .unwrap();
-    // Платформа держит движение и основание в разных местах, но вопрос один:
-    // на что объект показывает. Одна ветвь, имя связи — поле элемента.
-    assert!(
-        branches.contains(&json!({"at": "main:Document.Order.Relation", "count": 2})),
-        "{branches:#?}"
-    );
-
-    let relations = service.view(ViewRequest::new("main:Document.Order.Relation").unwrap());
-    assert!(relations.ok, "{:?}", refusal_codes(&relations));
-    assert_eq!(
-        relations.data.as_ref().unwrap()["items"],
-        json!([
-            {
-                "relation": "registerRecord",
-                "at": "main:CalculationRegister.Payroll",
-                "kind": "CalculationRegister"
-            },
-            {
-                "relation": "basedOn",
-                "at": "main:Catalog.Items",
-                "kind": "Catalog"
-            }
-        ]),
-    );
-
-    // Правило обещает всякую ссылку, поэтому проверяются все её источники, а
-    // не те два, что лежали ближе. `relations` и пофактовая часть вида
-    // приходят из разных мест платформы и должны сойтись в одной ветви.
-    let sources = |at: &str| -> Vec<(String, String)> {
-        let node = service.view(ViewRequest::new(at).unwrap());
-        assert!(node.ok, "{at}: {:?}", refusal_codes(&node));
-        node.data.as_ref().unwrap()["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|item| {
-                (
-                    item["relation"].as_str().unwrap().to_string(),
-                    item["at"].as_str().unwrap().to_string(),
-                )
-            })
-            .collect()
-    };
-    assert_eq!(
-        sources("main:Catalog.Items.Relation"),
-        [
-            ("owner".to_string(), "main:Catalog.Владельцы".to_string()),
-            (
-                "inputByString".to_string(),
-                "main:Catalog.Items.Attribute.Code".to_string()
-            ),
-            (
-                "dataLockField".to_string(),
-                "main:Catalog.Items.Attribute.Code".to_string()
-            ),
-        ]
-    );
-    assert_eq!(
-        sources("main:DocumentJournal.Журнал.Relation"),
-        [(
-            "registeredDocument".to_string(),
-            "main:Document.Order".to_string()
-        )]
-    );
-    assert_eq!(
-        sources("main:ChartOfCalculationTypes.ВидыРасчета.Relation"),
-        [(
-            "baseCalculationType".to_string(),
-            "main:ChartOfCalculationTypes.ВидыРасчета".to_string()
-        )]
-    );
-    assert_eq!(
-        sources("main:EventSubscription.ПриЗаписи.Relation"),
-        [("source".to_string(), "main:Catalog.Items".to_string())]
-    );
-    // Пакет XDTO бывает ссылкой и бывает пространством имён; в ветвь попадает
-    // только адресуемый вариант, и это названная граница, а не потеря.
-    assert_eq!(
-        sources("main:WebService.Exchange.Relation"),
-        [(
-            "xdtoPackage".to_string(),
-            "main:XDTOPackage.Exchange".to_string()
-        )]
-    );
-
-    // Элемент ветви показывает наружу, поэтому спускаться в него нельзя:
-    // цель читается по своему адресу.
-    let inward = service.view(ViewRequest::new("main:Document.Order.Relation.Items").unwrap());
-    assert!(!inward.ok, "{:?}", refusal_codes(&inward));
-    assert_eq!(refusal_codes(&inward), ["not_found"]);
-}
-
-#[test]
-fn root_declarations_get_branches_and_only_the_named_one_is_addressable() {
-    let fixture = RealReaderFixture::new();
-    let service = fixture.view_service();
-
-    // Стандартная табличная часть носит имя, поэтому адресуется, а её
-    // собственная последовательность становится вложенной ветвью.
-    let section = service.view(
-        ViewRequest::new("main:ChartOfAccounts.Accounts.StandardTabularSection.ExtDimensionTypes")
-            .unwrap(),
-    );
-    assert!(section.ok, "{:?}", refusal_codes(&section));
-    let section = section.data.as_ref().unwrap();
-    assert_eq!(section["kind"], "StandardTabularSection");
-    assert_eq!(
-        section["branches"],
-        json!([{
-            "at": "main:ChartOfAccounts.Accounts.StandardTabularSection.ExtDimensionTypes.StandardAttribute",
-            "count": 1
-        }]),
-    );
-
-    let attribute = service.view(
-        ViewRequest::new(
-            "main:ChartOfAccounts.Accounts.StandardTabularSection.ExtDimensionTypes.StandardAttribute.ExtDimensionType",
-        )
-        .unwrap(),
-    );
-    assert!(attribute.ok, "{:?}", refusal_codes(&attribute));
-    assert_eq!(
-        attribute.data.as_ref().unwrap()["title"],
-        "ExtDimensionType"
-    );
-
-    // Характеристика имени не носит: ветвь адресуема, а её элементы —
-    // строки данных, и адреса у них нет.
-    let characteristics =
-        service.view(ViewRequest::new("main:Catalog.Items.Characteristic").unwrap());
-    assert!(characteristics.ok, "{:?}", refusal_codes(&characteristics));
-    let items = characteristics.data.as_ref().unwrap()["items"]
-        .as_array()
-        .unwrap();
-    assert_eq!(items.len(), 1);
-    assert!(items[0].get("at").is_none(), "{items:#?}");
-    assert_eq!(items[0]["values"]["source"], "Catalog.Items");
-
-    let named = service.view(ViewRequest::new("main:Catalog.Items.Characteristic.Any").unwrap());
-    assert!(!named.ok, "{:?}", refusal_codes(&named));
-    assert_eq!(refusal_codes(&named), ["not_found"]);
-}
-
-#[test]
-fn predefined_items_beyond_first_page_answer_by_address() {
-    let fixture = predefined_page_fixture();
-    let service = fixture.view_service();
-    let owner = service.view(ViewRequest::new("main:Catalog.Items").unwrap());
-    assert!(owner.ok, "{owner:?}");
-    assert!(owner.data.as_ref().unwrap()["branches"]
-        .as_array()
-        .unwrap()
-        .contains(&json!({"at": "main:Catalog.Items.PredefinedItem", "count": 72})));
-    for index in [1, 16, 17, 19, 21, 50, 51, 53, 54, 55, 72] {
-        let result = service.view(
-            ViewRequest::new(&format!("main:Catalog.Items.PredefinedItem.Item{index:03}")).unwrap(),
-        );
-        assert!(result.ok, "item {index}: {result:?}");
-        let data = result.data.unwrap();
-        assert_eq!(data["title"], format!("Item{index:03}"));
-        assert_eq!(
-            data["props"]["id"],
-            format!("00000000-0000-4000-8000-{index:012}")
-        );
-        assert_eq!(data["props"]["code"], format!("{index:03}"));
-        assert_eq!(data["props"]["description"], format!("Description {index}"));
-        assert_eq!(data["props"]["isFolder"], predefined_page_is_folder(index));
-        assert_eq!(
-            data["props"]["parentId"],
-            predefined_page_parent(index).map_or(json!(null), |parent| json!(format!(
-                "00000000-0000-4000-8000-{parent:012}"
-            )))
-        );
-    }
-    let missing =
-        service.view(ViewRequest::new("main:Catalog.Items.PredefinedItem.Absent").unwrap());
-    assert_eq!(refusal_codes(&missing), ["not_found"]);
-}
-
-#[test]
-fn predefined_items_pages_preserve_complete_document_order() {
-    let fixture = predefined_page_fixture();
-    let service = fixture.view_service();
-    for limit in [1, 17, 50] {
-        let mut cursor = None;
-        let mut names = Vec::new();
-        loop {
-            let mut request = ViewRequest::new("main:Catalog.Items.PredefinedItem")
-                .unwrap()
-                .with_limit(limit)
-                .unwrap();
-            if let Some(previous) = cursor.take() {
-                request = request.with_cursor(previous);
-            }
-            let page = service.view(request);
-            assert!(page.ok, "{page:?}");
-            let data = page.data.unwrap();
-            let items = data["items"].as_array().unwrap();
-            assert!(!items.is_empty() && items.len() <= limit);
-            names.extend(
-                items
-                    .iter()
-                    .map(|item| item["at"].as_str().unwrap().to_owned()),
-            );
-            cursor = page.cursor;
-            if cursor.is_none() {
-                break;
-            }
-            assert!(names.len() < 72, "continuation must make progress");
-        }
-        let expected = (1..=72)
-            .map(|index| format!("main:Catalog.Items.PredefinedItem.Item{index:03}"))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            names, expected,
-            "limit {limit}: no missing or duplicate items"
-        );
-    }
-}
-
-/// Родитель элемента страничной фикстуры. Группы стоят в середине списка и
-/// вложены в два уровня, а границы страниц 17 и 50 проходят внутри их
-/// поддеревьев: обход в ширину переставил бы детей в хвост, и порядок
-/// `Item001..Item072` перестал бы совпадать с документным.
-fn predefined_page_parent(index: usize) -> Option<usize> {
-    match index {
-        17 | 18 | 21 => Some(16),
-        19 | 20 => Some(18),
-        51 | 52 | 54 => Some(50),
-        53 => Some(52),
-        _ => None,
-    }
-}
-
-fn predefined_page_is_folder(index: usize) -> bool {
-    matches!(index, 16 | 18 | 50 | 52)
-}
-
-fn push_predefined_page_item(items: &mut String, index: usize) {
-    items.push_str(&format!(
-        "<Item id=\"00000000-0000-4000-8000-{index:012}\"><Name>Item{index:03}</Name><Code>{index:03}</Code><Description>Description {index}</Description><IsFolder>{}</IsFolder>",
-        predefined_page_is_folder(index),
-    ));
-    let children = (index + 1..=72)
-        .filter(|child| predefined_page_parent(*child) == Some(index))
-        .collect::<Vec<_>>();
-    if !children.is_empty() {
-        items.push_str("<ChildItems>");
-        for child in children {
-            push_predefined_page_item(items, child);
-        }
-        items.push_str("</ChildItems>");
-    }
-    items.push_str("</Item>");
-}
-
-fn predefined_page_fixture() -> RealReaderFixture {
-    let fixture = RealReaderFixture::new();
-    let mut items = String::new();
-    for index in (1..=72).filter(|index| predefined_page_parent(*index).is_none()) {
-        push_predefined_page_item(&mut items, index);
-    }
-    write(&fixture.source.join("Catalogs/Items/Ext/Predefined.xml"), &format!(
-        "<PredefinedData xmlns=\"http://v8.1c.ru/8.3/xcf/predef\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:type=\"CatalogPredefinedItems\" version=\"2.20\">{items}</PredefinedData>"
-    ));
-    fixture
-}
-
-#[test]
-fn predefined_items_empty_inapplicable_and_unreadable_are_distinct() {
-    let fixture = RealReaderFixture::new();
-    let path = fixture.source.join("Catalogs/Items/Ext/Predefined.xml");
-    fs::remove_file(&path).unwrap();
-    let service = fixture.view_service();
-    let owner = service.view(ViewRequest::new("main:Catalog.Items").unwrap());
-    assert!(owner.ok, "{owner:?}");
-    let authority = fixture.read_authority();
-    let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items").unwrap();
-    let empty_data = authority
-        .read
-        .predefined_items(
-            &target,
-            crate::domain::metadata::MetadataKind::Catalog,
-            Some("String"),
-            &mut || Ok(()),
-        )
-        .unwrap()
-        .unwrap();
-    assert_eq!(empty_data.total, 0);
-    assert!(!empty_data.truncated);
-    let empty = service.view(ViewRequest::new("main:Catalog.Items.PredefinedItem").unwrap());
-    assert!(empty.ok, "{empty:?}");
-    assert_eq!(empty.data.unwrap()["items"], json!([]));
-    assert!(empty.cursor.is_none());
-    let absent =
-        service.view(ViewRequest::new("main:Catalog.Items.PredefinedItem.Absent").unwrap());
-    assert_eq!(refusal_codes(&absent), ["not_found"]);
-    let inapplicable =
-        service.view(ViewRequest::new("main:Document.Order.PredefinedItem").unwrap());
-    // Неприменимому виду отказано в самой коллекции, а не в элементе:
-    // пустой список он не получает.
-    assert!(!inapplicable.ok, "{inapplicable:?}");
-    assert_eq!(refusal_codes(&inapplicable), ["not_found"]);
-    assert_eq!(
-        inapplicable.diagnostics[0]["message"],
-        "metadata has no PredefinedItem collection"
-    );
-    assert!(inapplicable.cursor.is_none());
-
-    write(&path, "<PredefinedData><broken>");
-    let unreadable = fixture
-        .view_service()
-        .view(ViewRequest::new("main:Catalog.Items.PredefinedItem").unwrap());
-    assert!(!unreadable.ok, "{unreadable:?}");
-    assert_eq!(refusal_codes(&unreadable), ["provider_unavailable"]);
-    assert_eq!(unreadable.diagnostics[0]["detailCode"], "source_unreadable");
-    assert!(unreadable.cursor.is_none());
-}
-
-#[test]
-fn predefined_items_cursor_replays_after_source_removal() {
-    let fixture = predefined_page_fixture();
-    let service = fixture.view_service();
-    let request = || {
-        ViewRequest::new("main:Catalog.Items.PredefinedItem")
-            .unwrap()
-            .with_limit(50)
-            .unwrap()
-    };
-    let first = service.view(request());
-    assert!(first.ok, "{first:?}");
-    let cursor = first.cursor.expect("72 elements need a continuation");
-    let before = service.view(request().with_cursor(cursor.clone()));
-    assert!(before.ok, "{before:?}");
-    fs::remove_file(fixture.source.join("Catalogs/Items/Ext/Predefined.xml")).unwrap();
-    let after = service.view(request().with_cursor(cursor.clone()));
-    assert!(after.ok, "{after:?}");
-    assert_eq!(before.data, after.data);
-    assert_eq!(before.cursor, after.cursor);
-    let items = after.data.unwrap()["items"].as_array().unwrap().clone();
-    assert_eq!(items.len(), 22);
-    assert_eq!(items[0]["at"], "main:Catalog.Items.PredefinedItem.Item051");
-    assert_eq!(items[21]["at"], "main:Catalog.Items.PredefinedItem.Item072");
-    let tampered = service.view(request().with_cursor(format!("{cursor}x")));
-    assert_eq!(refusal_codes(&tampered), ["invalid_cursor"]);
-    let fresh = fixture.view_service().view(request());
-    assert!(fresh.ok, "{fresh:?}");
-    assert_eq!(fresh.data.unwrap()["items"], json!([]));
-}
-
-#[test]
-fn predefined_items_refuse_file_and_snapshot_budget_without_cursor() {
-    let fixture = predefined_page_fixture();
-    let service = ViewService::new(
-        fixture.read_authority(),
-        ViewCursorStore::new(crate::application::result_store::DEFAULT_TTL, 128, 512),
-    );
-    let result = service.view(ViewRequest::new("main:Catalog.Items.PredefinedItem").unwrap());
-    assert_eq!(refusal_codes(&result), ["result_too_large"]);
-    assert!(result.cursor.is_none());
-
-    write(
-        &fixture.source.join("Catalogs/Items/Ext/Predefined.xml"),
-        &"x".repeat(8 * 1024 * 1024 + 1),
-    );
-    let result = fixture
-        .view_service()
-        .view(ViewRequest::new("main:Catalog.Items.PredefinedItem").unwrap());
-    assert!(!result.ok, "{result:?}");
-    assert!(
-        serde_json::to_string(&result.diagnostics)
-            .unwrap()
-            .contains("8388608-byte read limit"),
-        "{result:?}"
-    );
-    assert!(result.cursor.is_none());
-}
-
-#[test]
-fn predefined_items_checkpoint_preserves_cancellation_and_deadline() {
-    use crate::domain::metadata::MetadataKind;
-    let fixture = predefined_page_fixture();
-    let authority = fixture.read_authority();
-    let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items").unwrap();
-    let mut completed_checkpoints = 0;
-    let data = authority
-        .read
-        .predefined_items(&target, MetadataKind::Catalog, Some("String"), &mut || {
-            completed_checkpoints += 1;
-            Ok(())
-        })
-        .unwrap()
-        .unwrap();
-    assert_eq!(data.total, 72);
-    assert!(completed_checkpoints > 2 * data.total);
-    for code in [RefusalCode::Cancelled, RefusalCode::DeadlineExceeded] {
-        for stop_at in [2, 16, completed_checkpoints - 10] {
-            let mut checkpoints = 0;
-            let error = authority
-                .read
-                .predefined_items(&target, MetadataKind::Catalog, Some("String"), &mut || {
-                    checkpoints += 1;
-                    if checkpoints == stop_at {
-                        Err(ViewError::new(code, "interrupted predefined read"))
-                    } else {
-                        Ok(())
-                    }
-                })
-                .unwrap_err();
-            assert_eq!(error.code(), code, "checkpoint {stop_at}");
-            assert_eq!(checkpoints, stop_at);
-        }
-    }
-}
-
-#[test]
-fn predefined_items_other_owner_fields_survive_addressed_reads() {
-    use crate::domain::metadata::{MetadataType, MetadataTypeVariant};
-    let fixture = RealReaderFixture::new();
-    let config_path = fixture.source.join("Configuration.xml");
-    let config = fs::read_to_string(&config_path).unwrap();
-    write(&config_path, &config.replace("</ChildObjects>",
-        "<ChartOfCharacteristicTypes>Characteristics</ChartOfCharacteristicTypes><ChartOfCalculationTypes>Calculations</ChartOfCalculationTypes></ChildObjects>"));
-    for (kind, directory, name) in [
-        (
-            "ChartOfCharacteristicTypes",
-            "ChartsOfCharacteristicTypes",
-            "Characteristics",
-        ),
-        (
-            "ChartOfCalculationTypes",
-            "ChartsOfCalculationTypes",
-            "Calculations",
-        ),
-    ] {
-        write_metadata_owner(&fixture.source, directory, kind, name, "");
-        if kind == "ChartOfCalculationTypes" {
-            let path = fixture.source.join(format!("{directory}/{name}.xml"));
-            let xml = fs::read_to_string(&path).unwrap();
-            write(
-                &path,
-                &xml.replace("</Properties>", "<CodeType>String</CodeType></Properties>"),
-            );
-        }
-    }
-    for (directory, name, fixture_file) in [
-        ("ChartsOfAccounts", "Accounts", "ChartOfAccounts.xml"),
-        (
-            "ChartsOfCharacteristicTypes",
-            "Characteristics",
-            "ChartOfCharacteristicTypes.xml",
-        ),
-        (
-            "ChartsOfCalculationTypes",
-            "Calculations",
-            "ChartOfCalculationTypes.xml",
-        ),
-    ] {
-        write(
-            &fixture
-                .source
-                .join(format!("{directory}/{name}/Ext/Predefined.xml")),
-            &fixture_text(&format!("platform_8_3_27/predefined/{fixture_file}")),
-        );
-    }
-    let service = fixture.view_service();
-    let account = service.view(
-        ViewRequest::new("main:ChartOfAccounts.Accounts.PredefinedItem.ОСвОрганизации").unwrap(),
-    );
-    assert!(account.ok, "{account:?}");
-    let props = &account.data.as_ref().unwrap()["props"];
-    assert_eq!(props["accountType"], "Active");
-    assert_eq!(props["offBalance"], false);
-    assert_eq!(props["order"], " 01.01");
-    assert_eq!(
-        serde_json::from_str::<serde_json::Value>(props["accountingFlags"].as_str().unwrap())
-            .unwrap(),
-        json!({
-            "ChartOfAccounts.Хозрасчетный.AccountingFlag.Валютный": false,
-            "ChartOfAccounts.Хозрасчетный.AccountingFlag.Количественный": false,
-            "ChartOfAccounts.Хозрасчетный.AccountingFlag.УчетПоПодразделениям": true,
-            "ChartOfAccounts.Хозрасчетный.AccountingFlag.НалоговыйУчет": true,
-        })
-    );
-    assert_eq!(
-        serde_json::from_str::<serde_json::Value>(props["extDimensionTypes"].as_str().unwrap())
-            .unwrap(),
-        json!([{
-            "name": "ChartOfCharacteristicTypes.ВидыСубконтоХозрасчетные.ОсновныеСредства",
-            "turnover": false,
-            "accountingFlags": {
-                "ChartOfAccounts.Хозрасчетный.ExtDimensionAccountingFlag.Суммовой": true,
-                "ChartOfAccounts.Хозрасчетный.ExtDimensionAccountingFlag.Валютный": true,
-                "ChartOfAccounts.Хозрасчетный.ExtDimensionAccountingFlag.Количественный": true,
-            },
-        }])
-    );
-    let characteristic = service.view(ViewRequest::new("main:ChartOfCharacteristicTypes.Characteristics.PredefinedItem.УдалитьБухгалтерскийУчет").unwrap());
-    assert!(characteristic.ok, "{characteristic:?}");
-    assert_eq!(
-        characteristic.data.as_ref().unwrap()["props"]["isFolder"],
-        false
-    );
-    assert_eq!(
-        serde_json::from_str::<serde_json::Value>(
-            characteristic.data.as_ref().unwrap()["props"]["type"]
-                .as_str()
-                .unwrap(),
-        )
-        .unwrap(),
-        json!(MetadataType::new(vec![MetadataTypeVariant::Reference {
-            metadata_path: MetadataAddress::parse(
-                PLATFORM_XML_8_3_27_FORMAT_2_20,
-                "ChartOfCharacteristicTypes.РазделыДатЗапретаИзменения"
-            )
-            .unwrap(),
-        }])
-        .unwrap())
-    );
-    let calculation = service.view(
-        ViewRequest::new("main:ChartOfCalculationTypes.Calculations.PredefinedItem.ОкладПоДням")
-            .unwrap(),
-    );
-    assert!(calculation.ok, "{calculation:?}");
-    assert_eq!(
-        calculation.data.as_ref().unwrap()["props"]["actionPeriodIsBase"],
-        false
-    );
-}
-
-#[test]
-fn predefined_items_answer_by_address_with_the_count_from_the_reader() {
-    let fixture = RealReaderFixture::new();
-    let service = fixture.view_service();
-
-    let node = service.view(ViewRequest::new("main:Catalog.Items").unwrap());
-    assert!(node.ok, "{:?}", refusal_codes(&node));
-    let branches = node.data.as_ref().unwrap()["branches"].as_array().unwrap();
-    // Счёт пришёл из ответа читателя, а не из длины страницы.
-    assert!(
-        branches.contains(&json!({"at": "main:Catalog.Items.PredefinedItem", "count": 1})),
-        "{branches:#?}"
-    );
-
-    let page = service.view(ViewRequest::new("main:Catalog.Items.PredefinedItem").unwrap());
-    assert!(page.ok, "{:?}", refusal_codes(&page));
-    let items = page.data.as_ref().unwrap()["items"].as_array().unwrap();
-    assert_eq!(items.len(), 1);
-    assert_eq!(items[0]["at"], "main:Catalog.Items.PredefinedItem.Основной");
-    assert_eq!(items[0]["kind"], "PredefinedItem");
-
-    let item =
-        service.view(ViewRequest::new("main:Catalog.Items.PredefinedItem.Основной").unwrap());
-    assert!(item.ok, "{:?}", refusal_codes(&item));
-    let item = item.data.as_ref().unwrap();
-    // Заголовок называет элемент его именем; представление — отдельный факт.
-    assert_eq!(item["title"], "Основной");
-    assert_eq!(item["props"]["description"], "Основной элемент");
-    assert_eq!(item["props"]["id"], "c7d2e6fc-3824-4b56-b4be-ae6be4944c0e");
-
-    // Вид без этой коллекции ветви не получает: неприменимое не отвечает
-    // пустотой, его просто нет.
-    let document = service.view(ViewRequest::new("main:Document.Order").unwrap());
-    assert!(document.ok, "{:?}", refusal_codes(&document));
-    let branch_addresses: Vec<&str> = document.data.as_ref().unwrap()["branches"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|branch| branch["at"].as_str())
-        .collect();
-    assert!(
-        !branch_addresses
-            .iter()
-            .any(|at| at.ends_with(".PredefinedItem")),
-        "{branch_addresses:?}"
-    );
-}
-
-#[test]
-fn metadata_tabular_section_attribute_consumes_the_complete_suffix() {
-    let fixture = RealReaderFixture::new();
-    let service = fixture.view_service();
-
-    let result = service.view(
-        ViewRequest::new("main:Catalog.Items.TabularSection.Lines.Attribute.Quantity").unwrap(),
-    );
-
-    assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
-    let data = result.data.as_ref().unwrap();
-    assert_eq!(
-        data["at"],
-        "main:Catalog.Items.TabularSection.Lines.Attribute.Quantity"
-    );
-    assert_eq!(data["kind"], "Attribute");
-    assert_eq!(data["title"], "Quantity");
-}
-
-#[test]
 fn role_right_rls_consumes_the_complete_suffix() {
     let fixture = RealReaderFixture::new();
     let service = fixture.view_service();
@@ -2228,867 +1228,6 @@ fn role_merges_access_by_canonical_object_and_keeps_rls_under_that_right() {
         rls.data.unwrap()["at"],
         "main:Role.SalesReader.Right.Catalog_Products.RLS.View"
     );
-}
-
-#[test]
-fn form_table_column_event_consumes_arbitrary_depth_and_preserves_owner_address() {
-    let fixture = RealReaderFixture::new();
-    let service = fixture.view_service();
-    let event_at = "main:Report.ParityReport.Form.MainForm.Item.Goods.Item.Quantity.Event.OnChange";
-
-    let event = service.view(ViewRequest::new(event_at).unwrap());
-    assert!(event.ok, "{} {:?}", event.summary, event.diagnostics);
-    let event_data = event.data.as_ref().unwrap();
-    assert_eq!(event_data["at"], event_at);
-    assert_eq!(event_data["kind"], "Event");
-
-    let method = service.view(
-        ViewRequest::new(
-            "main:Report.ParityReport.Form.MainForm.Module.Form.Method.QuantityOnChange",
-        )
-        .unwrap(),
-    );
-    assert!(method.ok, "{} {:?}", method.summary, method.diagnostics);
-    let method_data = method.data.as_ref().unwrap();
-    assert!(
-        method_data["props"]["handles"]
-            .as_array()
-            .is_some_and(|handles| handles.iter().any(|handle| {
-                handle["owner"] == "column"
-                    && handle["at"]
-                        == "main:Report.ParityReport.Form.MainForm.Item.Goods.Item.Quantity"
-                    && handle["event"] == "OnChange"
-            })),
-        "{method_data}"
-    );
-}
-
-#[test]
-fn pure_event_source_resolver_returns_relative_platform_and_nested_form_identities() {
-    use crate::infrastructure::event_projection::resolve_property_event_source;
-    use crate::infrastructure::logical_event_source::{
-        resolve_event_source, LogicalEventSource, PropertyEventOwnerKind,
-    };
-
-    let platform = resolve_event_source(
-        "main",
-        SourceSetKind::Configuration,
-        PlatformProfile::v8_3_27(),
-        &QualifiedAddress::parse("main:Document.Заказ.Module.Object.Event.BeforeWrite").unwrap(),
-    )
-    .unwrap();
-    let LogicalEventSource::Platform(platform) = platform else {
-        panic!("platform event must resolve to a platform module")
-    };
-    assert_eq!(
-        platform.module_at.to_string(),
-        "main:Document.Заказ.Module.Object"
-    );
-    assert_eq!(
-        platform.module_target.as_str(),
-        "Document.Заказ.ObjectModule"
-    );
-    assert_eq!(
-        platform.module_relative,
-        PathBuf::from("Documents/Заказ/Ext/ObjectModule.bsl")
-    );
-    assert_eq!(
-        platform.descriptor_requirements,
-        vec![PathBuf::from("Documents/Заказ.xml")]
-    );
-
-    let fixture = RealReaderFixture::new();
-    let property_at = QualifiedAddress::parse(
-        "main:Report.ParityReport.Form.MainForm.Item.Goods.Item.Quantity.Event.OnChange",
-    )
-    .unwrap();
-    let form_xml = fs::read_to_string(
-        fixture
-            .source
-            .join("Reports/ParityReport/Forms/MainForm/Ext/Form.xml"),
-    )
-    .unwrap();
-    let property = resolve_property_event_source(
-        "main",
-        SourceSetKind::Configuration,
-        PlatformProfile::v8_3_27(),
-        &property_at,
-        &form_xml,
-    )
-    .unwrap();
-    assert_eq!(
-        property.form_xml_relative,
-        PathBuf::from("Reports/ParityReport/Forms/MainForm/Ext/Form.xml")
-    );
-    assert_eq!(
-        property.module_relative,
-        PathBuf::from("Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl")
-    );
-    assert_eq!(
-        property
-            .owner_chain
-            .iter()
-            .map(|owner| owner.kind)
-            .collect::<Vec<_>>(),
-        vec![
-            PropertyEventOwnerKind::Form,
-            PropertyEventOwnerKind::Table,
-            PropertyEventOwnerKind::Column,
-        ]
-    );
-    assert_eq!(
-        property.descriptor_requirements,
-        vec![
-            PathBuf::from("Reports/ParityReport.xml"),
-            PathBuf::from("Reports/ParityReport/Forms/MainForm.xml"),
-        ]
-    );
-
-    let external = resolve_event_source(
-        "epf",
-        SourceSetKind::ExternalProcessor,
-        PlatformProfile::v8_3_27(),
-        &QualifiedAddress::parse(
-            "epf:ExternalDataProcessor.Import.Module.Object.Event.BeforeWrite",
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    let LogicalEventSource::Platform(external) = external else {
-        panic!("external object event must resolve to its object module")
-    };
-    assert_eq!(
-        external.module_relative,
-        PathBuf::from("Import/Ext/ObjectModule.bsl")
-    );
-    assert_eq!(
-        external.descriptor_requirements,
-        vec![PathBuf::from("Import.xml")]
-    );
-}
-
-#[test]
-fn pure_event_source_resolver_requires_form_evidence_for_every_item_depth() {
-    use crate::infrastructure::logical_event_source::resolve_event_source;
-
-    for raw in [
-        "main:Report.ParityReport.Form.MainForm.Item.Field.Event.OnChange",
-        "main:Report.ParityReport.Form.MainForm.Item.Rows.Item.Column.Event.OnChange",
-        "main:Report.ParityReport.Form.MainForm.Item.Tabs.Item.Page.Item.Field.Event.OnChange",
-    ] {
-        let error = resolve_event_source(
-            "main",
-            SourceSetKind::Configuration,
-            PlatformProfile::v8_3_27(),
-            &QualifiedAddress::parse(raw).unwrap(),
-        )
-        .unwrap_err();
-        assert_eq!(
-            error.code().as_str(),
-            "provider_unavailable",
-            "{raw}: {error}"
-        );
-    }
-}
-
-#[test]
-fn form_evidence_resolver_returns_complete_typed_owner_chains_at_arbitrary_depth() {
-    use crate::infrastructure::event_projection::{
-        project_property_event, resolve_property_event_source,
-    };
-    use crate::infrastructure::logical_event_source::PropertyEventOwnerKind;
-    use crate::infrastructure::v13_read::event_node_value;
-
-    let fixture = RealReaderFixture::new();
-    fixture.install_main_form_sources(
-        r#"<?xml version="1.0" encoding="utf-8"?>
-<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">
-  <ChildItems>
-    <InputField name="Field"><Events><Event name="OnChange">FieldChanged</Event></Events></InputField>
-    <Table name="Rows"><Events><Event name="Selection">RowsSelected</Event></Events><ChildItems>
-      <InputField name="Column"><Events><Event name="OnChange">ColumnChanged</Event></Events></InputField>
-    </ChildItems></Table>
-    <UsualGroup name="Group"><ChildItems>
-      <InputField name="GroupedField"><Events><Event name="OnChange">GroupedFieldChanged</Event></Events></InputField>
-    </ChildItems></UsualGroup>
-    <Pages name="Tabs"><ChildItems><Page name="FirstPage"><ChildItems>
-      <InputField name="PageField"><Events><Event name="OnChange">PageFieldChanged</Event></Events></InputField>
-    </ChildItems></Page></ChildItems></Pages>
-  </ChildItems>
-</Form>"#,
-        "",
-    );
-    let form_xml = fs::read_to_string(
-        fixture
-            .source
-            .join("Reports/ParityReport/Forms/MainForm/Ext/Form.xml"),
-    )
-    .unwrap();
-    let cases = [
-        (
-            "main:Report.ParityReport.Form.MainForm.Item.Field.Event.OnChange",
-            vec![
-                PropertyEventOwnerKind::Form,
-                PropertyEventOwnerKind::Element,
-            ],
-            vec![
-                "main:Report.ParityReport.Form.MainForm",
-                "main:Report.ParityReport.Form.MainForm.Item.Field",
-            ],
-        ),
-        (
-            "main:Report.ParityReport.Form.MainForm.Item.Rows.Event.Selection",
-            vec![
-                PropertyEventOwnerKind::Form,
-                PropertyEventOwnerKind::Table,
-            ],
-            vec![
-                "main:Report.ParityReport.Form.MainForm",
-                "main:Report.ParityReport.Form.MainForm.Item.Rows",
-            ],
-        ),
-        (
-            "main:Report.ParityReport.Form.MainForm.Item.Rows.Item.Column.Event.OnChange",
-            vec![
-                PropertyEventOwnerKind::Form,
-                PropertyEventOwnerKind::Table,
-                PropertyEventOwnerKind::Column,
-            ],
-            vec![
-                "main:Report.ParityReport.Form.MainForm",
-                "main:Report.ParityReport.Form.MainForm.Item.Rows",
-                "main:Report.ParityReport.Form.MainForm.Item.Rows.Item.Column",
-            ],
-        ),
-        (
-            "main:Report.ParityReport.Form.MainForm.Item.Group.Item.GroupedField.Event.OnChange",
-            vec![
-                PropertyEventOwnerKind::Form,
-                PropertyEventOwnerKind::Element,
-                PropertyEventOwnerKind::Element,
-            ],
-            vec![
-                "main:Report.ParityReport.Form.MainForm",
-                "main:Report.ParityReport.Form.MainForm.Item.Group",
-                "main:Report.ParityReport.Form.MainForm.Item.Group.Item.GroupedField",
-            ],
-        ),
-        (
-            "main:Report.ParityReport.Form.MainForm.Item.Tabs.Item.FirstPage.Item.PageField.Event.OnChange",
-            vec![
-                PropertyEventOwnerKind::Form,
-                PropertyEventOwnerKind::Element,
-                PropertyEventOwnerKind::Element,
-                PropertyEventOwnerKind::Element,
-            ],
-            vec![
-                "main:Report.ParityReport.Form.MainForm",
-                "main:Report.ParityReport.Form.MainForm.Item.Tabs",
-                "main:Report.ParityReport.Form.MainForm.Item.Tabs.Item.FirstPage",
-                "main:Report.ParityReport.Form.MainForm.Item.Tabs.Item.FirstPage.Item.PageField",
-            ],
-        ),
-    ];
-    let service = fixture.view_service();
-    for (raw, expected_kinds, expected_addresses) in cases {
-        let at = QualifiedAddress::parse(raw).unwrap();
-        let source = resolve_property_event_source(
-            "main",
-            SourceSetKind::Configuration,
-            PlatformProfile::v8_3_27(),
-            &at,
-            &form_xml,
-        )
-        .unwrap();
-        assert_eq!(
-            source
-                .owner_chain
-                .iter()
-                .map(|owner| owner.kind)
-                .collect::<Vec<_>>(),
-            expected_kinds,
-            "{raw}"
-        );
-        assert_eq!(
-            source
-                .owner_chain
-                .iter()
-                .map(|owner| owner.at.to_string())
-                .collect::<Vec<_>>(),
-            expected_addresses,
-            "{raw}"
-        );
-        let pure = project_property_event(&source, &form_xml, Some("")).unwrap();
-        let physical = service.view(ViewRequest::new(raw).unwrap());
-        assert!(
-            physical.ok,
-            "{raw}: {} {:?}",
-            physical.summary, physical.diagnostics
-        );
-        assert_eq!(physical.data.as_ref().unwrap()["props"]["state"], "missing");
-        assert_eq!(physical.data.unwrap(), event_node_value(&pure));
-    }
-}
-
-#[test]
-fn pure_event_source_resolver_fails_closed_for_unproved_event_layouts() {
-    use crate::infrastructure::logical_event_source::resolve_event_source;
-
-    for (kind, raw) in [
-        (
-            SourceSetKind::Extension,
-            "main:Document.Заказ.Module.Object.Event.BeforeWrite",
-        ),
-        (
-            SourceSetKind::Configuration,
-            "main:WebSocketClient.Телефония.Module.WebSocketClient.Event.OnMessage",
-        ),
-        (
-            SourceSetKind::Configuration,
-            "main:CommonModule.ЗаказыСервер.Event.BeforeStart",
-        ),
-        (
-            SourceSetKind::Configuration,
-            "main:EventSubscription.Изменение.Event.Change",
-        ),
-        (
-            SourceSetKind::Configuration,
-            "main:Report.ParityReport.Form.MainForm.Item.Rows.Event.Selection",
-        ),
-    ] {
-        let error = resolve_event_source(
-            "main",
-            kind,
-            PlatformProfile::v8_3_27(),
-            &QualifiedAddress::parse(raw).unwrap(),
-        )
-        .unwrap_err();
-        assert_eq!(
-            error.code().as_str(),
-            "provider_unavailable",
-            "{raw}: {error}"
-        );
-    }
-}
-
-#[test]
-fn pure_event_projectors_match_physical_view_service_event_nodes() {
-    use crate::infrastructure::event_projection::{
-        project_platform_event, project_property_event, resolve_property_event_source,
-    };
-    use crate::infrastructure::logical_event_source::{resolve_event_source, LogicalEventSource};
-    use crate::infrastructure::v13_read::event_node_value;
-
-    let profile = PlatformProfile::v8_3_27();
-    let platform_at =
-        QualifiedAddress::parse("main:Document.Заказ.Module.Object.Event.BeforeWrite").unwrap();
-    for source in [
-        None,
-        Some("Процедура ПередЗаписью(Отказ, РежимЗаписи, РежимПроведения)\nКонецПроцедуры"),
-        Some("Функция ПередЗаписью(Отказ, РежимЗаписи, РежимПроведения)\nКонецФункции"),
-    ] {
-        let fixture = RealReaderFixture::new();
-        fixture.install_accepted_profile_sources();
-        if let Some(source) = source {
-            write(
-                &fixture.source.join("Documents/Заказ/Ext/ObjectModule.bsl"),
-                source,
-            );
-        }
-        let LogicalEventSource::Platform(resolved) =
-            resolve_event_source("main", SourceSetKind::Configuration, profile, &platform_at)
-                .unwrap()
-        else {
-            panic!("platform event must resolve to a module source")
-        };
-        let capability = profile.module_prefix_capability(&platform_at).unwrap();
-        let pure = project_platform_event(&resolved, capability, source).unwrap();
-        let physical = fixture
-            .view_service()
-            .view(ViewRequest::new(&platform_at.to_string()).unwrap());
-        assert!(
-            physical.ok,
-            "{} {:?}",
-            physical.summary, physical.diagnostics
-        );
-        assert_eq!(physical.data.unwrap(), event_node_value(&pure));
-    }
-
-    let fixture = RealReaderFixture::new();
-    let property_at = QualifiedAddress::parse(
-        "main:Report.ParityReport.Form.MainForm.Item.Goods.Item.Quantity.Event.OnChange",
-    )
-    .unwrap();
-    let form_xml = fs::read_to_string(
-        fixture
-            .source
-            .join("Reports/ParityReport/Forms/MainForm/Ext/Form.xml"),
-    )
-    .unwrap();
-    let resolved = resolve_property_event_source(
-        "main",
-        SourceSetKind::Configuration,
-        profile,
-        &property_at,
-        &form_xml,
-    )
-    .unwrap();
-    let module_bsl = fs::read_to_string(fixture.source.join(&resolved.module_relative)).unwrap();
-    let pure = project_property_event(&resolved, &form_xml, Some(&module_bsl)).unwrap();
-    let physical = fixture
-        .view_service()
-        .view(ViewRequest::new(&property_at.to_string()).unwrap());
-    assert!(
-        physical.ok,
-        "{} {:?}",
-        physical.summary, physical.diagnostics
-    );
-    assert_eq!(physical.data.unwrap(), event_node_value(&pure));
-}
-
-#[test]
-fn pure_form_projector_matches_every_physical_owner_and_all_event_states() {
-    use crate::infrastructure::event_projection::{
-        project_property_event, resolve_property_event_source,
-    };
-    use crate::infrastructure::v13_read::event_node_value;
-
-    let fixture = RealReaderFixture::new();
-    fixture.install_main_form_sources(
-        r#"<?xml version="1.0" encoding="utf-8"?>
-<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">
-  <ChildItems>
-    <InputField name="Field"/>
-    <Table name="Rows"><DataPath>Rows</DataPath>
-      <Events><Event name="Selection">MissingSelection</Event></Events>
-      <ChildItems><InputField name="Column"><Events><Event name="OnChange">WrongColumn</Event></Events></InputField></ChildItems>
-    </Table>
-  </ChildItems>
-  <Events><Event name="OnOpen">FormOpen</Event></Events>
-  <Commands><Command name="Run" id="1"><Action>RunAction</Action></Command></Commands>
-</Form>"#,
-        concat!(
-            "&AtClient\nProcedure FormOpen(Cancel)\nEndProcedure\n\n",
-            "Procedure WrongColumn()\nEndProcedure\n\n",
-            "&AtClient\nProcedure RunAction(Command)\nEndProcedure\n",
-        ),
-    );
-    let form_path = fixture
-        .source
-        .join("Reports/ParityReport/Forms/MainForm/Ext/Form.xml");
-    let module_path = fixture
-        .source
-        .join("Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl");
-    let form_xml = fs::read_to_string(form_path).unwrap();
-    let module_bsl = fs::read_to_string(module_path).unwrap();
-    let service = fixture.view_service();
-    for (event_at, state) in [
-        (
-            "main:Report.ParityReport.Form.MainForm.Event.OnOpen",
-            "implemented",
-        ),
-        (
-            "main:Report.ParityReport.Form.MainForm.Item.Field.Event.OnChange",
-            "available",
-        ),
-        (
-            "main:Report.ParityReport.Form.MainForm.Item.Rows.Event.Selection",
-            "missing",
-        ),
-        (
-            "main:Report.ParityReport.Form.MainForm.Item.Rows.Item.Column.Event.OnChange",
-            "invalid",
-        ),
-        (
-            "main:Report.ParityReport.Form.MainForm.Command.Run.Event.Execute",
-            "implemented",
-        ),
-    ] {
-        let at = QualifiedAddress::parse(event_at).unwrap();
-        let source = resolve_property_event_source(
-            "main",
-            SourceSetKind::Configuration,
-            PlatformProfile::v8_3_27(),
-            &at,
-            &form_xml,
-        )
-        .unwrap();
-        let pure = project_property_event(&source, &form_xml, Some(&module_bsl)).unwrap();
-        let physical = service.view(ViewRequest::new(event_at).unwrap());
-        assert!(
-            physical.ok,
-            "{} {:?}",
-            physical.summary, physical.diagnostics
-        );
-        assert_eq!(physical.data.as_ref().unwrap()["props"]["state"], state);
-        assert_eq!(physical.data.unwrap(), event_node_value(&pure));
-    }
-}
-
-#[test]
-fn production_form_command_execute_has_one_semantic_identity_across_view_and_find() {
-    let fixture = RealReaderFixture::new();
-    fixture.install_main_form_sources(
-        r#"<?xml version="1.0" encoding="utf-8"?>
-<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">
-  <Commands>
-    <Command name="Zero" id="1"/>
-    <Command name="Missing" id="2"><Action>MissingAction</Action></Command>
-    <Command name="Implemented" id="3"><Action>ImplementedAction</Action></Command>
-    <Command name="Duplicate" id="4"><Action>FirstAction</Action><Action>SecondAction</Action></Command>
-  </Commands>
-</Form>"#,
-        "&НаКлиенте\nПроцедура ImplementedAction(Команда)\nКонецПроцедуры\n",
-    );
-    let service = fixture.view_service();
-    let form_at = "main:Report.ParityReport.Form.MainForm";
-    let expected_contexts = json!([
-        "thinClient",
-        "webClient",
-        "thickClientManaged",
-        "mobileClient",
-        "mobileAppClient"
-    ]);
-    for (command, state, handler, has_can) in [
-        ("Zero", "available", Some("ОбработкаКоманды"), true),
-        ("Missing", "missing", Some("MissingAction"), true),
-        (
-            "Implemented",
-            "implemented",
-            Some("ImplementedAction"),
-            false,
-        ),
-        ("Duplicate", "invalid", None, false),
-    ] {
-        let command_at = format!("{form_at}.Command.{command}");
-        let event_at = format!("{command_at}.Event.Execute");
-        let collection = service.view(ViewRequest::new(&format!("{command_at}.Event")).unwrap());
-        assert!(
-            collection.ok,
-            "{command}: {} {:?}",
-            collection.summary, collection.diagnostics
-        );
-        let items = collection.data.as_ref().unwrap()["items"]
-            .as_array()
-            .unwrap();
-        assert_eq!(items.len(), 1, "{command}: {items:?}");
-        assert_eq!(items[0]["at"], event_at);
-        assert_eq!(items[0]["props"]["eventId"], "Execute");
-        assert_eq!(items[0]["props"]["state"], state);
-        assert_eq!(items[0]["props"]["contexts"], expected_contexts);
-        if let Some(handler) = handler {
-            assert_eq!(items[0]["props"]["handler"], handler);
-            let expected_signature = format!("Процедура {handler}(Команда)");
-            assert_eq!(items[0]["props"]["signature"], expected_signature);
-        }
-        assert_eq!(
-            items[0].get("can").is_some(),
-            has_can,
-            "{command}: {}",
-            items[0]
-        );
-        if has_can {
-            assert_eq!(items[0]["can"].as_array().unwrap().len(), 1);
-            assert_eq!(items[0]["can"][0]["op"], "event.implement");
-            assert_eq!(items[0]["can"][0]["args"], json!({"at": event_at}));
-        }
-        if state == "missing" {
-            assert!(items[0]["props"]["implementationAt"].is_null());
-        }
-        if state == "implemented" {
-            assert_eq!(
-                items[0]["props"]["implementationAt"],
-                format!("{form_at}.Module.Form.Method.ImplementedAction")
-            );
-        }
-
-        let direct = service.view(ViewRequest::new(&event_at).unwrap());
-        assert!(
-            direct.ok,
-            "{command}: {} {:?}",
-            direct.summary, direct.diagnostics
-        );
-        assert_eq!(direct.data.as_ref().unwrap(), &items[0]);
-    }
-
-    let authority = fixture.operation_read_authority();
-    let index = ReaderReach::new(vec![("main", &authority)]);
-    for command in ["Zero", "Missing", "Implemented", "Duplicate"] {
-        let event_at = format!("{form_at}.Command.{command}.Event.Execute");
-        let found = index.find(
-            FindRequest::new(&event_at)
-                .unwrap()
-                .with_limit(100)
-                .unwrap(),
-        );
-        assert!(!found.is_nearest(), "{event_at}: {found:?}");
-        assert_eq!(
-            found
-                .candidates()
-                .iter()
-                .filter(|candidate| candidate.at() == event_at)
-                .count(),
-            1,
-            "{event_at}: {found:?}"
-        );
-    }
-}
-
-#[test]
-fn production_form_command_execute_requires_an_exact_client_directive() {
-    let fixture = RealReaderFixture::new();
-    let module_bsl = concat!(
-        "&НаКлиенте\n",
-        "Процедура RussianClientAction(Команда)\n",
-        "КонецПроцедуры\n\n",
-        "&AtClient\n",
-        "Процедура EnglishClientAction(Команда)\n",
-        "КонецПроцедуры\n\n",
-        "&наклиенте\n",
-        "Процедура RussianLowerAction(Команда)\n",
-        "КонецПроцедуры\n\n",
-        "&нАкЛиЕнТе\n",
-        "Процедура RussianMixedAction(Команда)\n",
-        "КонецПроцедуры\n\n",
-        "&atclient\n",
-        "Процедура EnglishLowerAction(Команда)\n",
-        "КонецПроцедуры\n\n",
-        "&aTcLiEnT\n",
-        "Процедура EnglishMixedAction(Команда)\n",
-        "КонецПроцедуры\n\n",
-        "  &AtClient  \r\n",
-        "Процедура WhitespaceCrLfAction(Команда)\r\n",
-        "КонецПроцедуры\r\n\r\n",
-        "Процедура MissingDirectiveAction(Команда)\n",
-        "КонецПроцедуры\n\n",
-        "&наклиентенасервере\n",
-        "Процедура RussianClientServerLowerAction(Команда)\n",
-        "КонецПроцедуры\n\n",
-        "&aTcLiEnTaTsErVeR\n",
-        "Процедура EnglishClientServerMixedAction(Команда)\n",
-        "КонецПроцедуры\n\n",
-        "#Если Клиент Тогда\n",
-        "Процедура GuardOnlyAction(Команда)\n",
-        "КонецПроцедуры\n",
-        "#КонецЕсли\n",
-    );
-    fixture.install_main_form_sources(
-        r#"<?xml version="1.0" encoding="utf-8"?>
-<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">
-  <Commands>
-    <Command name="RussianClient" id="1"><Action>RussianClientAction</Action></Command>
-    <Command name="EnglishClient" id="2"><Action>EnglishClientAction</Action></Command>
-    <Command name="RussianLower" id="3"><Action>RussianLowerAction</Action></Command>
-    <Command name="RussianMixed" id="4"><Action>RussianMixedAction</Action></Command>
-    <Command name="EnglishLower" id="5"><Action>EnglishLowerAction</Action></Command>
-    <Command name="EnglishMixed" id="6"><Action>EnglishMixedAction</Action></Command>
-    <Command name="WhitespaceCrLf" id="7"><Action>WhitespaceCrLfAction</Action></Command>
-    <Command name="MissingDirective" id="8"><Action>MissingDirectiveAction</Action></Command>
-    <Command name="RussianClientServerLower" id="9"><Action>RussianClientServerLowerAction</Action></Command>
-    <Command name="EnglishClientServerMixed" id="10"><Action>EnglishClientServerMixedAction</Action></Command>
-    <Command name="GuardOnly" id="11"><Action>GuardOnlyAction</Action></Command>
-  </Commands>
-</Form>"#,
-        module_bsl,
-    );
-    let service = fixture.view_service();
-    let form_at = "main:Report.ParityReport.Form.MainForm";
-    for (command, handler, state) in [
-        ("RussianClient", "RussianClientAction", "implemented"),
-        ("EnglishClient", "EnglishClientAction", "implemented"),
-        ("RussianLower", "RussianLowerAction", "implemented"),
-        ("RussianMixed", "RussianMixedAction", "implemented"),
-        ("EnglishLower", "EnglishLowerAction", "implemented"),
-        ("EnglishMixed", "EnglishMixedAction", "implemented"),
-        ("WhitespaceCrLf", "WhitespaceCrLfAction", "implemented"),
-        ("MissingDirective", "MissingDirectiveAction", "invalid"),
-        (
-            "RussianClientServerLower",
-            "RussianClientServerLowerAction",
-            "invalid",
-        ),
-        (
-            "EnglishClientServerMixed",
-            "EnglishClientServerMixedAction",
-            "invalid",
-        ),
-        ("GuardOnly", "GuardOnlyAction", "invalid"),
-    ] {
-        let command_at = format!("{form_at}.Command.{command}");
-        let event_at = format!("{command_at}.Event.Execute");
-        let collection = service.view(ViewRequest::new(&format!("{command_at}.Event")).unwrap());
-        assert!(
-            collection.ok,
-            "{command}: {} {:?}",
-            collection.summary, collection.diagnostics
-        );
-        let items = collection.data.as_ref().unwrap()["items"]
-            .as_array()
-            .unwrap();
-        assert_eq!(items.len(), 1, "{command}: {items:?}");
-        assert_eq!(items[0]["at"], event_at);
-        assert_eq!(items[0]["props"]["eventId"], "Execute");
-        assert_eq!(items[0]["props"]["state"], state, "{command}: {}", items[0]);
-        assert_eq!(
-            items[0]["props"]["implementationAt"],
-            format!("{form_at}.Module.Form.Method.{handler}")
-        );
-        assert!(items[0].get("can").is_none(), "{command}: {}", items[0]);
-
-        let direct = service.view(ViewRequest::new(&event_at).unwrap());
-        assert!(
-            direct.ok,
-            "{command}: {} {:?}",
-            direct.summary, direct.diagnostics
-        );
-        assert_eq!(direct.data.as_ref().unwrap(), &items[0]);
-    }
-
-    let authority = fixture.operation_read_authority();
-    let index = ReaderReach::new(vec![("main", &authority)]);
-    for command in [
-        "RussianClient",
-        "EnglishClient",
-        "RussianLower",
-        "RussianMixed",
-        "EnglishLower",
-        "EnglishMixed",
-        "WhitespaceCrLf",
-        "MissingDirective",
-        "RussianClientServerLower",
-        "EnglishClientServerMixed",
-        "GuardOnly",
-    ] {
-        let event_at = format!("{form_at}.Command.{command}.Event.Execute");
-        let found = index.find(
-            FindRequest::new(&event_at)
-                .unwrap()
-                .with_limit(100)
-                .unwrap(),
-        );
-        assert!(!found.is_nearest(), "{event_at}: {found:?}");
-        assert_eq!(
-            found
-                .candidates()
-                .iter()
-                .filter(|candidate| candidate.at() == event_at)
-                .count(),
-            1,
-            "{event_at}: {found:?}"
-        );
-    }
-}
-
-#[test]
-fn production_borrowed_command_defaults_after_and_base_form_only_has_no_can() {
-    let borrowed = RealReaderFixture::new();
-    borrowed.install_main_form_sources(
-        r#"<?xml version="1.0" encoding="utf-8"?>
-<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">
-  <Commands><Command name="Borrowed" id="1"/></Commands>
-  <BaseForm version="2.20"/>
-</Form>"#,
-        "",
-    );
-    let event_at = "main:Report.ParityReport.Form.MainForm.Command.Borrowed.Event.Execute";
-    let event = borrowed
-        .view_service()
-        .view(ViewRequest::new(event_at).unwrap());
-    assert!(event.ok, "{} {:?}", event.summary, event.diagnostics);
-    let event = event.data.as_ref().unwrap();
-    assert_eq!(event["props"]["state"], "available");
-    assert_eq!(event["can"][0]["op"], "event.implement");
-    assert_eq!(
-        event["can"][0]["args"],
-        json!({"at": event_at, "callType": "After"})
-    );
-
-    let base_only = RealReaderFixture::new();
-    base_only.install_main_form_sources(
-        r#"<?xml version="1.0" encoding="utf-8"?>
-<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">
-  <BaseForm version="2.20"/>
-</Form>"#,
-        "",
-    );
-    let event = base_only
-        .view_service()
-        .view(ViewRequest::new("main:Report.ParityReport.Form.MainForm.Event.OnOpen").unwrap());
-    assert!(event.ok, "{} {:?}", event.summary, event.diagnostics);
-    let event = event.data.as_ref().unwrap();
-    assert_eq!(event["props"]["state"], "available");
-    assert!(event.get("can").is_none(), "{event}");
-}
-
-#[test]
-fn production_form_empty_handlers_are_invalid_for_every_property_owner() {
-    let regular = RealReaderFixture::new();
-    regular.install_main_form_sources(
-        r#"<?xml version="1.0" encoding="utf-8"?>
-<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">
-  <ChildItems>
-    <InputField name="Field"><Events><Event name="OnChange">   </Event></Events></InputField>
-    <Table name="Rows">
-      <DataPath>Rows</DataPath>
-      <Events><Event name="Selection"></Event></Events>
-      <ChildItems>
-        <InputField name="Column"><Events><Event name="OnChange">
-        </Event></Events></InputField>
-      </ChildItems>
-    </Table>
-  </ChildItems>
-  <Events><Event name="OnOpen"> </Event></Events>
-  <Commands><Command name="Regular" id="1"><Action>   </Action></Command></Commands>
-</Form>"#,
-        "",
-    );
-    let service = regular.view_service();
-    for event_at in [
-        "main:Report.ParityReport.Form.MainForm.Event.OnOpen",
-        "main:Report.ParityReport.Form.MainForm.Item.Field.Event.OnChange",
-        "main:Report.ParityReport.Form.MainForm.Item.Rows.Event.Selection",
-        "main:Report.ParityReport.Form.MainForm.Item.Rows.Item.Column.Event.OnChange",
-        "main:Report.ParityReport.Form.MainForm.Command.Regular.Event.Execute",
-    ] {
-        let event = service.view(ViewRequest::new(event_at).unwrap());
-        assert!(
-            event.ok,
-            "{event_at}: {} {:?}",
-            event.summary, event.diagnostics
-        );
-        let event = event.data.as_ref().unwrap();
-        assert_eq!(event["props"]["state"], "invalid", "{event_at}: {event}");
-        assert!(event.get("can").is_none(), "{event_at}: {event}");
-        assert!(
-            event["props"]
-                .as_object()
-                .unwrap()
-                .contains_key("implementationAt"),
-            "{event_at}: {event}"
-        );
-    }
-
-    let borrowed = RealReaderFixture::new();
-    borrowed.install_main_form_sources(
-        r#"<?xml version="1.0" encoding="utf-8"?>
-<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">
-  <Commands><Command name="Borrowed" id="1"><Action callType="After">   </Action></Command></Commands>
-  <BaseForm version="2.20"/>
-</Form>"#,
-        "",
-    );
-    let event_at = "main:Report.ParityReport.Form.MainForm.Command.Borrowed.Event.Execute";
-    let event = borrowed
-        .view_service()
-        .view(ViewRequest::new(event_at).unwrap());
-    assert!(event.ok, "{} {:?}", event.summary, event.diagnostics);
-    let event = event.data.as_ref().unwrap();
-    assert_eq!(event["props"]["state"], "invalid", "{event}");
-    assert!(event.get("can").is_none(), "{event}");
-    assert!(event["props"]
-        .as_object()
-        .unwrap()
-        .contains_key("implementationAt"));
 }
 
 #[test]
@@ -3280,17 +1419,6 @@ fn mxl_area_parameter_consumes_the_complete_suffix() {
     assert_eq!(data["title"], "Title");
 }
 
-/// Коды отказов из ответа. Сообщение провала несёт только их: разбор в панике
-/// затягивает в текст всю нагрузку вместе с идентификаторами фикстуры, и
-/// сканер справедливо не отличает такой текст от записи в журнал.
-fn refusal_codes(result: &crate::domain::invocation::DomainResult) -> Vec<&str> {
-    result
-        .diagnostics
-        .iter()
-        .filter_map(|diagnostic| diagnostic.get("code").and_then(serde_json::Value::as_str))
-        .collect()
-}
-
 /// Видимость команды в интерфейсе — это не одно значение. Замер на боевой
 /// конфигурации: 99 блоков видимости из 1050 несут переопределения по ролям,
 /// то есть каждая одиннадцатая команда. Отдать `visible` за всю правду
@@ -3451,6 +1579,162 @@ fn subsystem_descriptor(name: &str, content: &[&str], children: &[&str]) -> Stri
   <Subsystem><Properties><Name>{name}</Name><Synonym/><IncludeInCommandInterface>true</IncludeInCommandInterface><UseOneCommand>false</UseOneCommand><Content>{content}</Content></Properties><ChildObjects>{children}</ChildObjects></Subsystem>
 </MetaDataObject>"#
     )
+}
+
+fn install_supported_subsystem_descriptors(fixture: &RealReaderFixture) {
+    for (relative, name, children, uuid) in [
+        (
+            "Subsystems/Sales.xml",
+            "Sales",
+            &["Orders"][..],
+            "11111111-1111-4111-8111-111111111111",
+        ),
+        (
+            "Subsystems/Sales/Subsystems/Orders.xml",
+            "Orders",
+            &[][..],
+            "22222222-2222-4222-8222-222222222222",
+        ),
+    ] {
+        write(
+            &fixture.source.join(relative),
+            &subsystem_descriptor(name, &[], children).replacen(
+                "<Subsystem>",
+                &format!("<Subsystem uuid=\"{uuid}\">"),
+                1,
+            ),
+        );
+    }
+}
+
+#[test]
+fn canonical_subsystem_view_preserves_support_for_own_and_nested_descriptors() {
+    let parent_uuid = "11111111-1111-4111-8111-111111111111";
+    let child_uuid = "22222222-2222-4222-8222-222222222222";
+    let support =
+        |state, direct_edit_safe| json!({"support": state, "directEditSafe": direct_edit_safe});
+    for (case, marker, parent, child) in [
+        (
+            "different object rules",
+            Some(format!("{{6,0,1,0,0,{parent_uuid},1,0,{child_uuid}}}")),
+            support("locked", Some(false)),
+            support("editableWithSupport", Some(true)),
+        ),
+        (
+            "removed object",
+            Some(format!("{{6,0,1,2,0,{parent_uuid},0,0,{child_uuid}}}")),
+            support("removedFromSupport", Some(true)),
+            support("locked", Some(false)),
+        ),
+        (
+            "configuration read only",
+            Some(format!("{{6,1,1,0,0,{parent_uuid},1,0,{child_uuid}}}")),
+            support("configurationReadOnly", Some(false)),
+            support("configurationReadOnly", Some(false)),
+        ),
+        (
+            "configuration removed from support",
+            Some(String::new()),
+            support("removedFromSupport", Some(true)),
+            support("removedFromSupport", Some(true)),
+        ),
+        (
+            "marker absent",
+            None,
+            support("notSupported", None),
+            support("notSupported", None),
+        ),
+        (
+            "UUID absent from marker",
+            Some("{6,0,1,0,0,33333333-3333-4333-8333-333333333333}".to_string()),
+            support("notSupported", None),
+            support("notSupported", None),
+        ),
+    ] {
+        let fixture = RealReaderFixture::new();
+        install_supported_subsystem_descriptors(&fixture);
+        if let Some(marker) = marker {
+            write(
+                &fixture.source.join("Ext/ParentConfigurations.bin"),
+                &marker,
+            );
+        }
+        let service = fixture.view_service();
+        for (at, expected) in [
+            ("main:Subsystem.Sales", &parent),
+            ("main:Subsystem.Sales.Subsystem.Orders", &child),
+            ("main:Subsystem.Sales", &parent),
+        ] {
+            let result = service.view(ViewRequest::new(at).unwrap());
+            assert!(result.ok, "{case} {at}: view must succeed");
+            let props = &result.data.as_ref().unwrap()["props"];
+            assert_eq!(props["support"], expected["support"], "{case} {at}");
+            assert_eq!(
+                props["directEditSafe"], expected["directEditSafe"],
+                "{case} {at}"
+            );
+            assert!(!serde_json::to_string(&result)
+                .unwrap()
+                .contains(fixture.source.to_str().unwrap()));
+        }
+    }
+}
+
+#[test]
+fn canonical_view_distinguishes_absent_support_from_unreadable_and_invalid_markers() {
+    for marker_kind in ["absent", "invalid", "directory"] {
+        let fixture = RealReaderFixture::new();
+        install_supported_subsystem_descriptors(&fixture);
+        let marker = fixture.source.join("Ext/ParentConfigurations.bin");
+        match marker_kind {
+            "invalid" => write(&marker, "{9,0,1}, invalid support header"),
+            "directory" => fs::create_dir_all(&marker).unwrap(),
+            _ => {}
+        }
+        let service = fixture.view_service();
+        for at in [
+            "main:Catalog.Items",
+            "main:Subsystem.Sales",
+            "main:Subsystem.Sales.Subsystem.Orders",
+        ] {
+            let result = service.view(ViewRequest::new(at).unwrap());
+            if marker_kind == "absent" {
+                assert!(
+                    result.ok,
+                    "{at}: view must succeed without a support marker"
+                );
+                let expected = if at == "main:Catalog.Items" {
+                    json!("supported")
+                } else {
+                    json!("notSupported")
+                };
+                assert_eq!(
+                    result.data.as_ref().unwrap()["props"]["support"],
+                    expected,
+                    "{at}"
+                );
+                let props = &result.data.as_ref().unwrap()["props"];
+                if at == "main:Catalog.Items" {
+                    assert!(props.get("directEditSafe").is_none());
+                } else {
+                    assert_eq!(props["directEditSafe"], serde_json::Value::Null);
+                    assert!(props.as_object().unwrap().contains_key("directEditSafe"));
+                }
+            } else {
+                assert!(!result.ok, "{marker_kind} {at}: view must refuse");
+                assert!(
+                    result.data.is_none(),
+                    "{marker_kind} {at}: data must be absent"
+                );
+                assert_eq!(result.diagnostics[0]["code"], "provider_unavailable");
+                assert_eq!(result.diagnostics[0]["detailCode"], "source_unreadable");
+                assert_eq!(result.diagnostics[0]["outcome"], "fixSource");
+            }
+            assert!(!serde_json::to_string(&result)
+                .unwrap()
+                .contains(fixture.source.to_str().unwrap()));
+        }
+    }
 }
 
 fn view_items(result: &crate::domain::invocation::DomainResult) -> Vec<serde_json::Value> {
@@ -3923,40 +2207,6 @@ fn every_reader_rejects_an_extra_unconsumed_address_tail() {
     );
     assert!(!module.ok, "{:?}", module.data);
     assert_eq!(module.diagnostics[0]["code"], "not_found");
-}
-
-#[test]
-fn form_projection_uses_a_positive_nested_scalar_allowlist() {
-    let at = QualifiedAddress::parse("main:CommonForm.Test.Item.Secret").unwrap();
-    let route = route_logical_address(&at, PlatformProfile::v8_3_27()).unwrap();
-    let view = project_typed_payload(
-        &route,
-        json!({
-            "name": "Test",
-            "elements": [{
-                "name": "Secret",
-                "tag": "[Input]",
-                "visible": true,
-                "enabled": true,
-                "readOnly": false,
-                "mysteryProviderScalar": "must-not-leak",
-                "events": [],
-                "children": []
-            }],
-            "attributes": [],
-            "parameters": [],
-            "commands": [],
-            "events": []
-        }),
-    )
-    .unwrap();
-
-    let serialized = serde_json::to_string(&view).unwrap();
-    assert!(
-        !serialized.contains("mysteryProviderScalar"),
-        "{serialized}"
-    );
-    assert!(!serialized.contains("must-not-leak"), "{serialized}");
 }
 
 #[test]
@@ -5038,889 +3288,6 @@ fn ambiguous_short_role_alias_is_rejected_and_canonical_aliases_work() {
             format!("main:Role.SalesReader.Right.{canonical}")
         );
     }
-}
-
-struct RealExternalReaderFixture {
-    _root: tempfile::TempDir,
-    context: WorkspaceContext,
-    processor: PathBuf,
-    report: PathBuf,
-    cancellation: CancellationToken,
-}
-
-impl RealExternalReaderFixture {
-    fn new() -> Self {
-        let root = tempfile::tempdir().unwrap();
-        let cache = root.path().join("cache");
-        let processor = root.path().join("processor");
-        let report = root.path().join("report");
-        fs::create_dir_all(&cache).unwrap();
-        fs::create_dir_all(&processor).unwrap();
-        fs::create_dir_all(&report).unwrap();
-        write_external_artifact(&processor, "ExternalDataProcessor", "Import");
-        write_external_artifact(&processor, "ExternalDataProcessor", "Импорт");
-        write_external_artifact(&report, "ExternalReport", "Sales");
-        write_external_artifact(&report, "ExternalReport", "Продажи");
-        fs::copy(
-            fixture_path("platform_8_3_27/staged_dump_roots/ConfigDumpInfo.xml"),
-            processor.join("ConfigDumpInfo.xml"),
-        )
-        .unwrap();
-        fs::copy(
-            fixture_path("platform_8_3_27/staged_dump_roots/ConfigDumpInfo.xml"),
-            report.join("ConfigDumpInfo.xml"),
-        )
-        .unwrap();
-        fs::write(
-            root.path().join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: artifact_processor\n    type: EXTERNAL_PROCESSOR\n    path: processor\n  - name: artifact_report\n    type: EXTERNAL_REPORT\n    path: report\n",
-        )
-        .unwrap();
-        let canonical_root = fs::canonicalize(root.path()).unwrap();
-        let processor = fs::canonicalize(processor).unwrap();
-        let report = fs::canonicalize(report).unwrap();
-        let context = WorkspaceContext {
-            cwd: canonical_root.clone(),
-            workspace_root: canonical_root,
-            cache_root: cache,
-            workspace_epoch: 1,
-        };
-        Self {
-            _root: root,
-            context,
-            processor,
-            report,
-            cancellation: CancellationToken::new(),
-        }
-    }
-
-    fn read_authority(
-        &self,
-        source_set: &str,
-        kind: SourceSetKind,
-    ) -> LogicalViewReadAuthority<'_> {
-        let source = if kind == SourceSetKind::ExternalProcessor {
-            &self.processor
-        } else {
-            &self.report
-        };
-        let root = Arc::new(RetainedDirectoryCapability::open(source).unwrap());
-        LogicalViewReadAuthority::new(
-            &self.cancellation,
-            source_set,
-            format!("actor-{source_set}"),
-            kind,
-            root,
-            PlatformProfile::v8_3_27(),
-        )
-    }
-
-    fn operation_read_authority(
-        &self,
-        source_set: &str,
-        kind: SourceSetKind,
-    ) -> LogicalViewReadAuthority<'_> {
-        let source = if kind == SourceSetKind::ExternalProcessor {
-            &self.processor
-        } else {
-            &self.report
-        };
-        let root = Arc::new(RetainedDirectoryCapability::open(source).unwrap());
-        let deadline = ProviderDeadline::no_deadline();
-        LogicalViewReadAuthority::with_read_authority(
-            &self.cancellation,
-            ProviderReadAuthority::new(source_set, format!("actor-{source_set}"), kind, root),
-            PlatformProfile::v8_3_27(),
-            deadline,
-        )
-    }
-}
-
-fn write_external_artifact(source: &Path, kind: &str, name: &str) {
-    let (form_name, command_name) = match name {
-        "Импорт" => ("Основная", "Выполнить"),
-        "Продажи" => ("Основная", "Сформировать"),
-        _ => ("Main", "Run"),
-    };
-    write(
-        &source.join(format!("{name}.xml")),
-        &format!(
-            r#"<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
-  <{kind} uuid="10000000-0000-4000-8000-000000000010">
-    <Properties><Name>{name}</Name></Properties>
-    <ChildObjects><Form>{form_name}</Form><Command uuid="10000000-0000-4000-8000-000000000012"><Properties><Name>{command_name}</Name></Properties></Command></ChildObjects>
-  </{kind}>
-</MetaDataObject>"#,
-        ),
-    );
-    write(
-        &source.join(format!("{name}/Forms/{form_name}.xml")),
-        &format!(
-            r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form uuid="10000000-0000-4000-8000-000000000011"><Properties><Name>{form_name}</Name><FormType>Managed</FormType></Properties></Form></MetaDataObject>"#
-        ),
-    );
-    write(
-        &source.join(format!("{name}/Forms/{form_name}/Ext/Form.xml")),
-        r#"<?xml version="1.0" encoding="UTF-8"?><Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><ChildItems/></Form>"#,
-    );
-    write(
-        &source.join(format!("{name}/Commands/{command_name}/Ext/CommandModule.bsl")),
-        "&AtClient\nProcedure CommandProcessing(CommandParameter, CommandExecuteParameters)\nEndProcedure\n",
-    );
-    write(
-        &source.join(format!("{name}/Ext/ObjectModule.bsl")),
-        "Procedure Execute()\nEndProcedure\n",
-    );
-}
-
-/// Proves the typed reader reaches an address. `find` no longer traverses the
-/// logical tree, so reader coverage is asserted against the reader itself.
-fn assert_reader_reaches(authority: &LogicalViewReadAuthority<'_>, addresses: &[&str]) {
-    for at in addresses {
-        let address = QualifiedAddress::parse(at).unwrap_or_else(|error| panic!("{at}: {error}"));
-        let admitted = authority
-            .snapshot(&address)
-            .unwrap_or_else(|error| panic!("{at}: {error:?}"));
-        authority
-            .read_exact(&address, &admitted)
-            .unwrap_or_else(|error| panic!("{at}: {error:?}"));
-    }
-}
-
-/// `find` is a layout directory now, so reader-coverage tests probe the typed
-/// reader directly. The shim keeps the assertion shape those tests already use.
-struct ReaderReach<'a> {
-    authorities: Vec<(&'a str, &'a LogicalViewReadAuthority<'a>)>,
-}
-
-impl<'a> ReaderReach<'a> {
-    fn new(authorities: Vec<(&'a str, &'a LogicalViewReadAuthority<'a>)>) -> Self {
-        Self { authorities }
-    }
-
-    fn find(&self, request: FindRequest) -> FindResult {
-        let at = request.query();
-        let reached = QualifiedAddress::parse(at).is_ok_and(|address| {
-            self.authorities
-                .iter()
-                .filter(|(name, _)| *name == address.source_set())
-                .any(|(_, authority)| {
-                    authority.snapshot(&address).is_ok_and(|admitted| {
-                        match authority.read_exact(&address, &admitted) {
-                            Ok(_) => true,
-                            // WebSocketClient is the one profile identity whose
-                            // source layout 8.3.27 leaves unspecified: it
-                            // answers a typed `provider_unavailable` while the
-                            // reader still knows the address. No other provider
-                            // failure counts as coverage.
-                            Err(error) => {
-                                error.code().as_str() == "provider_unavailable"
-                                    && address.segments().first().is_some_and(|segment| {
-                                        segment.kind()
-                                            == crate::domain::address::NodeKind::WebSocketClient
-                                    })
-                            }
-                        }
-                    })
-                })
-        });
-        FindResult::reader_probe(at, reached)
-    }
-}
-
-fn write_metadata_owner(
-    source: &Path,
-    directory: &str,
-    kind: &str,
-    name: &str,
-    child_objects: &str,
-) {
-    write(
-        &source.join(format!("{directory}/{name}.xml")),
-        &format!(
-            r#"<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
-  <{kind} uuid="10000000-0000-4000-8000-000000000020">
-    <Properties><Name>{name}</Name></Properties>
-    <ChildObjects>{child_objects}</ChildObjects>
-  </{kind}>
-</MetaDataObject>"#,
-        ),
-    );
-}
-
-struct RealReaderFixture {
-    root: tempfile::TempDir,
-    context: WorkspaceContext,
-    source: PathBuf,
-    cancellation: CancellationToken,
-}
-
-impl RealReaderFixture {
-    fn new() -> Self {
-        let root = tempfile::tempdir().unwrap();
-        let source = root.path().join("src");
-        let cache = root.path().join("cache");
-        fs::create_dir_all(&source).unwrap();
-        fs::create_dir_all(&cache).unwrap();
-        fs::write(
-                root.path().join("v8project.yaml"),
-                "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-            )
-            .unwrap();
-        let config = fixture_text("xdto/enterprise-data-minimal/Configuration.xml");
-        fs::write(
-                source.join("Configuration.xml"),
-                replace_child_objects(
-                    &config,
-                    "\n\t\t\t<Constant>MainCurrency</Constant>\n\t\t\t<Catalog>Items</Catalog>\n\t\t\t<Document>Order</Document>\n\t\t\t<ChartOfAccounts>Accounts</ChartOfAccounts>\n\t\t\t<Catalog>Владельцы</Catalog>\n\t\t\t<DocumentJournal>Журнал</DocumentJournal>\n\t\t\t<ChartOfCalculationTypes>ВидыРасчета</ChartOfCalculationTypes>\n\t\t\t<EventSubscription>ПриЗаписи</EventSubscription>\n\t\t\t<CalculationRegister>Payroll</CalculationRegister>\n\t\t\t<Report>ParityReport</Report>\n\t\t\t<Role>SalesReader</Role>\n\t\t\t<Subsystem>Sales</Subsystem>\n\t\t\t<XDTOPackage>EnterpriseData_1_17_3</XDTOPackage>\n\t\t\t<CommonModule>РеактивныйСервер</CommonModule>\n\t\t\t<ScheduledJob>MonthClose</ScheduledJob>\n\t\t\t<HTTPService>ExternalAPI</HTTPService>\n\t\t\t<WebService>Exchange</WebService>\n\t\t",
-                ),
-            )
-            .unwrap();
-        let catalog = with_root_version(&fixture_text(
-            "platform_8_3_27/meta_info/edge/catalog-child-kinds.xml",
-        ))
-        .replace(
-            "<TabularSection><Properties><Name>Lines</Name></Properties><ChildObjects/></TabularSection>",
-            "<TabularSection><Properties><Name>Lines</Name></Properties><ChildObjects><Attribute><Properties><Name>Quantity</Name><Type><v8:Type>xs:decimal</v8:Type></Type></Properties></Attribute></ChildObjects></TabularSection>",
-        )
-        // Свойства корня каталога: без них узел метаданных нечем проверить.
-        .replace(
-            "<Properties><Name>Items</Name></Properties>",
-            concat!(
-                "<Properties xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\"",
-                " xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"",
-                " xmlns:xs=\"http://www.w3.org/2001/XMLSchema\">",
-                "<Name>Items</Name><Hierarchical>true</Hierarchical>",
-                "<CodeType>String</CodeType><CodeLength>11</CodeLength>",
-                "<Owners><xr:Item xsi:type=\"xr:MDObjectRef\">Catalog.Владельцы</xr:Item></Owners>",
-                "<InputByString><xr:Field>Catalog.Items.Attribute.Code</xr:Field></InputByString>",
-                "<DataLockFields><xr:Field>Catalog.Items.Attribute.Code</xr:Field></DataLockFields>",
-                // Характеристика названа парой источников, а не именем.
-                "<Characteristics>",
-                "<xr:Characteristic>",
-                "<xr:CharacteristicTypes from=\"Catalog.Items.TabularSection.Lines.Attribute.Quantity\">",
-                "<xr:KeyField>Catalog.Items.Attribute.Code</xr:KeyField>",
-                "<xr:TypesFilterField>Catalog.Items.Attribute.Code</xr:TypesFilterField>",
-                "<xr:TypesFilterValue xsi:type=\"xs:string\">Catalog_Items</xr:TypesFilterValue>",
-                "<xr:DataPathField>-1</xr:DataPathField>",
-                "<xr:MultipleValuesUseField>-1</xr:MultipleValuesUseField>",
-                "</xr:CharacteristicTypes>",
-                "<xr:CharacteristicValues from=\"Catalog.Items\">",
-                "<xr:ObjectField>Catalog.Items.Attribute.Code</xr:ObjectField>",
-                "<xr:TypeField>Catalog.Items.Attribute.Code</xr:TypeField>",
-                "<xr:ValueField>Catalog.Items.Attribute.Code</xr:ValueField>",
-                "<xr:MultipleValuesKeyField>-1</xr:MultipleValuesKeyField>",
-                "<xr:MultipleValuesOrderField>-1</xr:MultipleValuesOrderField>",
-                "</xr:CharacteristicValues>",
-                "</xr:Characteristic></Characteristics></Properties>",
-            ),
-        );
-        write(&source.join("Catalogs/Items.xml"), &catalog);
-        // Остальные источники ссылок: владелец, журнал, базовые виды расчёта и
-        // источник события подписки. Правило обещает всякую ссылку, и проверить
-        // его можно только всеми её источниками.
-        for (relative, body) in [
-            (
-                "Catalogs/Владельцы.xml",
-                r#"<Catalog uuid="99999999-9999-4999-8999-999999999991"><Properties><Name>Владельцы</Name></Properties><ChildObjects/></Catalog>"#,
-            ),
-            (
-                "DocumentJournals/Журнал.xml",
-                r#"<DocumentJournal uuid="99999999-9999-4999-8999-999999999992"><Properties><Name>Журнал</Name><RegisteredDocuments><xr:Item xsi:type="xr:MDObjectRef">Document.Order</xr:Item></RegisteredDocuments></Properties><ChildObjects/></DocumentJournal>"#,
-            ),
-            (
-                "ChartsOfCalculationTypes/ВидыРасчета.xml",
-                r#"<ChartOfCalculationTypes uuid="99999999-9999-4999-8999-999999999993"><Properties><Name>ВидыРасчета</Name><BaseCalculationTypes><xr:Item xsi:type="xr:MDObjectRef">ChartOfCalculationTypes.ВидыРасчета</xr:Item></BaseCalculationTypes></Properties><ChildObjects/></ChartOfCalculationTypes>"#,
-            ),
-            (
-                "EventSubscriptions/ПриЗаписи.xml",
-                r#"<EventSubscription uuid="99999999-9999-4999-8999-999999999994"><Properties><Name>ПриЗаписи</Name><Source><v8:Type>cfg:CatalogObject.Items</v8:Type></Source><Event>BeforeWrite</Event><Handler>CommonModule.РеактивныйСервер.ПриЗаписи</Handler></Properties></EventSubscription>"#,
-            ),
-        ] {
-            write(
-                &source.join(relative),
-                &format!(
-                    concat!(
-                        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
-                        "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\"",
-                        " xmlns:v8=\"http://v8.1c.ru/8.1/data/core\"",
-                        " xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\"",
-                        " xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\"",
-                        " xmlns:xs=\"http://www.w3.org/2001/XMLSchema\"",
-                        " xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"",
-                        " version=\"2.20\">{}</MetaDataObject>"
-                    ),
-                    body
-                ),
-            );
-        }
-        // План счетов со стандартной табличной частью: у неё есть имя, и она
-        // адресуется, а внутри — своя последовательность.
-        write(
-            &source.join("ChartsOfAccounts/Accounts.xml"),
-            r#"<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20">
-  <ChartOfAccounts uuid="77777777-7777-4777-8777-777777777778">
-    <Properties>
-      <Name>Accounts</Name>
-      <StandardTabularSections>
-        <xr:StandardTabularSection name="ExtDimensionTypes">
-          <xr:Synonym/><xr:Comment/><xr:ToolTip/>
-          <xr:FillChecking>DontCheck</xr:FillChecking>
-          <xr:StandardAttributes>
-            <xr:StandardAttribute name="ExtDimensionType"/>
-          </xr:StandardAttributes>
-        </xr:StandardTabularSection>
-      </StandardTabularSections>
-    </Properties>
-    <ChildObjects/>
-  </ChartOfAccounts>
-</MetaDataObject>"#,
-        );
-        // Предопределённые элементы справочника: писатель у них есть, и теперь
-        // есть читатель.
-        write(
-            &source.join("Catalogs/Items/Ext/Predefined.xml"),
-            r#"<?xml version="1.0" encoding="UTF-8"?>
-<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="CatalogPredefinedItems" version="2.20">
-  <Item id="c7d2e6fc-3824-4b56-b4be-ae6be4944c0e">
-    <Name>Основной</Name>
-    <Code/>
-    <Description>Основной элемент</Description>
-    <IsFolder>false</IsFolder>
-  </Item>
-</PredefinedData>"#,
-        );
-        // Документ со ссылками наружу: движение по регистру и основание.
-        write(
-            &source.join("Documents/Order.xml"),
-            r#"<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
-  <Document uuid="88888888-8888-4888-8888-888888888888">
-    <Properties>
-      <Name>Order</Name>
-      <RegisterRecords>
-        <xr:Item xsi:type="xr:MDObjectRef">CalculationRegister.Payroll</xr:Item>
-      </RegisterRecords>
-      <BasedOn>
-        <xr:Item xsi:type="xr:MDObjectRef">Catalog.Items</xr:Item>
-      </BasedOn>
-    </Properties>
-    <ChildObjects/>
-  </Document>
-</MetaDataObject>"#,
-        );
-        // Три вида с собственными данными: обработчик, расписание и тип.
-        for (relative, fixture) in [
-            ("Constants/MainCurrency.xml", "constant-type.xml"),
-            (
-                "CalculationRegisters/Payroll.xml",
-                "calculation-register.xml",
-            ),
-            ("ScheduledJobs/MonthClose.xml", "scheduled-job.xml"),
-            ("HTTPServices/ExternalAPI.xml", "http-service.xml"),
-            ("WebServices/Exchange.xml", "web-service.xml"),
-        ] {
-            write(
-                &source.join(relative),
-                &with_root_version(&fixture_text(&format!(
-                    "platform_8_3_27/meta_info/edge/{fixture}"
-                ))),
-            );
-        }
-        write(
-            &source.join("Catalogs/Items/Forms/ItemForm.xml"),
-            r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form uuid="10000000-0000-4000-8000-000000000031"><Properties><Name>ItemForm</Name><FormType>Managed</FormType></Properties></Form></MetaDataObject>"#,
-        );
-        write(
-            &source.join("Catalogs/Items/Forms/ItemForm/Ext/Form.xml"),
-            r#"<?xml version="1.0" encoding="UTF-8"?><Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><ChildItems/></Form>"#,
-        );
-        write(
-            &source.join("Catalogs/Items/Templates/Print.xml"),
-            r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Template uuid="10000000-0000-4000-8000-000000000032"><Properties><Name>Print</Name><TemplateType>SpreadsheetDocument</TemplateType></Properties></Template></MetaDataObject>"#,
-        );
-        copy_fixture(
-            "platform_8_3_27/mxl/Template.xml",
-            &source.join("Catalogs/Items/Templates/Print/Ext/Template.xml"),
-        );
-        write(
-            &source.join("Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl"),
-            "&AtClient\nProcedure CommandProcessing(CommandParameter, CommandExecuteParameters)\nEndProcedure\n",
-        );
-        let report = fixture_text("unica_mcp_script_parity/form-remove/ParityReport.xml");
-        fs::create_dir_all(source.join("Reports")).unwrap();
-        fs::write(
-                source.join("Reports/ParityReport.xml"),
-                replace_child_objects(
-                    &report,
-                    "\n\t\t\t<Form>MainForm</Form>\n\t\t\t<Template>MainSchema</Template>\n\t\t\t<Template>Print</Template>\n\t\t",
-                ),
-            )
-            .unwrap();
-        copy_fixture(
-            "unica_mcp_script_parity/form-remove/ParityReport/Forms/MainForm.xml",
-            &source.join("Reports/ParityReport/Forms/MainForm.xml"),
-        );
-        let form = r#"<?xml version="1.0" encoding="utf-8"?>
-<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20">
-  <ChildItems>
-    <Table name="Goods">
-      <ChildItems>
-        <InputField name="Quantity">
-          <Events><Event name="OnChange">QuantityOnChange</Event></Events>
-        </InputField>
-      </ChildItems>
-    </Table>
-  </ChildItems>
-  <Events><Event name="OnOpen">OnOpen</Event></Events>
-</Form>"#;
-        write(
-            &source.join("Reports/ParityReport/Forms/MainForm/Ext/Form.xml"),
-            form,
-        );
-        write(
-            &source.join("Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl"),
-            "&AtClient\nProcedure OnOpen()\nEndProcedure\n\n&AtClient\nProcedure QuantityOnChange()\nEndProcedure\n",
-        );
-        write(
-            &source.join("Roles/SalesReader.xml"),
-            &with_root_version(&fixture_text(
-                "unica_mcp_script_parity/role-info/SalesReader.xml",
-            )),
-        );
-        write(
-            &source.join("Roles/SalesReader/Ext/Rights.xml"),
-            &fixture_text("unica_mcp_script_parity/role-info/SalesReader/Ext/Rights.xml")
-                .replace("version=\"2.17\"", "version=\"2.20\""),
-        );
-        let subsystem = r#"<?xml version="1.0" encoding="utf-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
-  <Subsystem><Properties><Name>Sales</Name><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Продажи</v8:content></v8:item></Synonym><IncludeInCommandInterface>true</IncludeInCommandInterface><UseOneCommand>false</UseOneCommand><Content><xr:Item xsi:type="xr:MDObjectRef">Catalog.Items</xr:Item></Content></Properties><ChildObjects/></Subsystem>
-</MetaDataObject>"#;
-        write(&source.join("Subsystems/Sales.xml"), subsystem);
-        copy_fixture(
-            "unica_mcp_script_parity/meta-remove/Subsystems/Sales/Ext/CommandInterface.xml",
-            &source.join("Subsystems/Sales/Ext/CommandInterface.xml"),
-        );
-        copy_fixture(
-            "unica_mcp_script_parity/template-remove/ParityReport/Templates/MainSchema.xml",
-            &source.join("Reports/ParityReport/Templates/MainSchema.xml"),
-        );
-        let dcs = fixture_text("unica_mcp_script_parity/dcs-validate/BadPrefix.xml")
-            .replace(
-                "xmlns:bad=\"http://example.com\">bad:CatalogRef.X",
-                ">xs:string",
-            )
-            .replace(
-                "\n</DataCompositionSchema>",
-                "\n\t<parameter><name>Period</name><valueType><v8:Type>xs:dateTime</v8:Type></valueType></parameter>\n</DataCompositionSchema>",
-            );
-        write(
-            &source.join("Reports/ParityReport/Templates/MainSchema/Ext/Template.xml"),
-            &dcs,
-        );
-        let print_descriptor = fixture_text(
-            "unica_mcp_script_parity/template-remove/ParityReport/Templates/MainSchema.xml",
-        )
-        .replace("MainSchema", "Print")
-        .replace("DataCompositionSchema", "SpreadsheetDocument");
-        write(
-            &source.join("Reports/ParityReport/Templates/Print.xml"),
-            &print_descriptor,
-        );
-        let mxl = fixture_text("platform_8_3_27/mxl/Template.xml")
-            .replace(
-                "\n\t<templateMode>true</templateMode>",
-                "\n\t<namedItem xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:type=\"NamedItemCells\"><name>Header</name><area><type>Rows</type><beginRow>0</beginRow><endRow>0</endRow><beginColumn>-1</beginColumn><endColumn>-1</endColumn></area></namedItem>\n\t<templateMode>true</templateMode>",
-            )
-            .replace(
-                "\n\t\t\t<empty>true</empty>",
-                "\n\t\t\t<c><c><f>0</f><parameter>Title</parameter></c></c><c><c><f>1</f><tl><content>Sales report</content></tl></c></c><c><c><f>2</f><tl><content>Period: [Since]</content></tl></c></c>",
-            );
-        write(
-            &source.join("Reports/ParityReport/Templates/Print/Ext/Template.xml"),
-            &mxl,
-        );
-        copy_fixture(
-            "xdto/enterprise-data-minimal/XDTOPackages/EnterpriseData_1_17_3.xml",
-            &source.join("XDTOPackages/EnterpriseData_1_17_3.xml"),
-        );
-        copy_fixture(
-            "xdto/enterprise-data-minimal/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
-            &source.join("XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin"),
-        );
-        copy_fixture(
-            "platform_8_3_27/support-edit-bin-only/src/CommonModules/РеактивныйСервер.xml",
-            &source.join("CommonModules/РеактивныйСервер.xml"),
-        );
-        copy_fixture(
-                "platform_8_3_27/support-edit-bin-only/src/CommonModules/РеактивныйСервер/Ext/Module.bsl",
-                &source.join("CommonModules/РеактивныйСервер/Ext/Module.bsl"),
-            );
-        let common_module_path = source.join("CommonModules/РеактивныйСервер/Ext/Module.bsl");
-        let mut common_module = fs::read_to_string(&common_module_path).unwrap();
-        common_module.push_str("\nПроцедура InternalService()\nКонецПроцедуры\n");
-        fs::write(common_module_path, common_module).unwrap();
-        let canonical_root = fs::canonicalize(root.path()).unwrap();
-        let source = fs::canonicalize(&source).unwrap();
-        let context = WorkspaceContext {
-            cwd: canonical_root.clone(),
-            workspace_root: canonical_root,
-            cache_root: cache,
-            workspace_epoch: 1,
-        };
-        Self {
-            root,
-            context,
-            source,
-            cancellation: CancellationToken::new(),
-        }
-    }
-
-    fn read_authority(&self) -> LogicalViewReadAuthority<'_> {
-        let source_root = Arc::new(RetainedDirectoryCapability::open(&self.source).unwrap());
-        LogicalViewReadAuthority::new(
-            &self.cancellation,
-            "main",
-            "actor-fixture-main",
-            SourceSetKind::Configuration,
-            source_root,
-            PlatformProfile::v8_3_27(),
-        )
-    }
-
-    fn operation_read_authority(&self) -> LogicalViewReadAuthority<'_> {
-        let root = Arc::new(RetainedDirectoryCapability::open(&self.source).unwrap());
-        let deadline = ProviderDeadline::no_deadline();
-        LogicalViewReadAuthority::with_read_authority(
-            &self.cancellation,
-            ProviderReadAuthority::new(
-                "main",
-                "actor-fixture-main",
-                SourceSetKind::Configuration,
-                root,
-            ),
-            PlatformProfile::v8_3_27(),
-            deadline,
-        )
-    }
-
-    fn view_service(&self) -> ViewService<LogicalViewReadAuthority<'_>> {
-        ViewService::new(self.read_authority(), ViewCursorStore::default())
-    }
-
-    /// Тот же набор, объявленный расширением: заимствование живёт только здесь.
-    fn extension_read_authority(&self) -> LogicalViewReadAuthority<'_> {
-        let source_root = Arc::new(RetainedDirectoryCapability::open(&self.source).unwrap());
-        LogicalViewReadAuthority::new(
-            &self.cancellation,
-            "main",
-            "actor-fixture-extension-borrowing",
-            SourceSetKind::Extension,
-            source_root,
-            PlatformProfile::v8_3_27(),
-        )
-    }
-
-    fn extension_view_service(&self) -> ViewService<LogicalViewReadAuthority<'_>> {
-        ViewService::new(self.extension_read_authority(), ViewCursorStore::default())
-    }
-
-    /// Платформенная форма заимствования: `Adopted` в свойствах,
-    /// `ExtendedConfigurationObject` с UUID родителя после имени и, когда
-    /// свойство перекрыто, запись `xr:PropertyState` в `InternalInfo`.
-    fn borrow_catalog(&self, relative: &str, overridden: Option<&str>) {
-        let path = self.source.join(relative);
-        let text = fs::read_to_string(&path).unwrap();
-        let properties = text.find("<Properties>").unwrap();
-        let after_open = properties + "<Properties>".len();
-        let mut patched = format!(
-            "{}<ObjectBelonging>Adopted</ObjectBelonging>{}",
-            &text[..after_open],
-            &text[after_open..]
-        );
-        let name_end = patched.find("</Name>").unwrap() + "</Name>".len();
-        patched = format!(
-            "{}<ExtendedConfigurationObject>11111111-1111-4111-8111-111111111111</ExtendedConfigurationObject>{}",
-            &patched[..name_end],
-            &patched[name_end..]
-        );
-        if let Some(property) = overridden {
-            let properties = patched.find("<Properties>").unwrap();
-            patched = format!(
-                "{}<InternalInfo><xr:PropertyState><xr:Property>{property}</xr:Property><xr:State>Extended</xr:State></xr:PropertyState></InternalInfo>{}",
-                &patched[..properties],
-                &patched[properties..]
-            );
-        }
-        write(&path, &patched);
-    }
-
-    fn install_main_form_sources(&self, form_xml: &str, module_bsl: &str) {
-        write(
-            &self
-                .source
-                .join("Reports/ParityReport/Forms/MainForm/Ext/Form.xml"),
-            form_xml,
-        );
-        write(
-            &self
-                .source
-                .join("Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl"),
-            module_bsl,
-        );
-    }
-
-    fn install_module_matrix_sources(&self) {
-        let configuration_path = self.source.join("Configuration.xml");
-        let configuration = fs::read_to_string(&configuration_path).unwrap();
-        let registrations = [
-            ("Document", "Заказ"),
-            ("Document", "ЕщеНеВыгружен"),
-            ("InformationRegister", "Цены"),
-            ("Constant", "ОсновнаяВалюта"),
-            ("CommonModule", "ЗаказыСервер"),
-            ("CommonForm", "Подбор"),
-            ("CommonCommand", "ОткрытьНастройки"),
-            ("HTTPService", "API"),
-            ("WebService", "Обмен"),
-            ("IntegrationService", "Шина"),
-            ("Bot", "Помощник"),
-            ("WebSocketClient", "Телефония"),
-        ]
-        .into_iter()
-        .map(|(kind, name)| format!("\n\t\t\t<{kind}>{name}</{kind}>"))
-        .collect::<String>();
-        fs::write(
-            &configuration_path,
-            configuration.replacen(
-                "</ChildObjects>",
-                &format!("{registrations}\n\t\t</ChildObjects>"),
-                1,
-            ),
-        )
-        .unwrap();
-
-        write_metadata_owner(
-            &self.source,
-            "Documents",
-            "Document",
-            "Заказ",
-            "<Form>ФормаДокумента</Form><Command uuid=\"10000000-0000-4000-8000-000000000022\"><Properties><Name>ПровестиИЗакрыть</Name></Properties></Command>",
-        );
-        write_metadata_owner(&self.source, "Documents", "Document", "ЕщеНеВыгружен", "");
-        write_metadata_owner(
-            &self.source,
-            "InformationRegisters",
-            "InformationRegister",
-            "Цены",
-            "",
-        );
-        write_metadata_owner(&self.source, "Constants", "Constant", "ОсновнаяВалюта", "");
-        let common = fixture_text(
-            "platform_8_3_27/support-edit-bin-only/src/CommonModules/РеактивныйСервер.xml",
-        )
-        .replace("РеактивныйСервер", "ЗаказыСервер");
-        write(&self.source.join("CommonModules/ЗаказыСервер.xml"), &common);
-        write_metadata_owner(&self.source, "CommonForms", "CommonForm", "Подбор", "");
-        write(
-            &self.source.join("CommonForms/Подбор/Ext/Form.xml"),
-            r#"<?xml version="1.0" encoding="UTF-8"?><Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><ChildItems/></Form>"#,
-        );
-        write_metadata_owner(
-            &self.source,
-            "CommonCommands",
-            "CommonCommand",
-            "ОткрытьНастройки",
-            "",
-        );
-        for (directory, kind, name) in [
-            ("HTTPServices", "HTTPService", "API"),
-            ("WebServices", "WebService", "Обмен"),
-            ("IntegrationServices", "IntegrationService", "Шина"),
-            ("Bots", "Bot", "Помощник"),
-        ] {
-            write_metadata_owner(&self.source, directory, kind, name, "");
-        }
-        write(
-            &self.source.join("Documents/Заказ/Forms/ФормаДокумента.xml"),
-            r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form uuid="10000000-0000-4000-8000-000000000021"><Properties><Name>ФормаДокумента</Name><FormType>Managed</FormType></Properties></Form></MetaDataObject>"#,
-        );
-        write(
-            &self
-                .source
-                .join("Documents/Заказ/Forms/ФормаДокумента/Ext/Form.xml"),
-            r#"<?xml version="1.0" encoding="UTF-8"?><Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><ChildItems/></Form>"#,
-        );
-        write(
-            &self
-                .source
-                .join("Documents/Заказ/Commands/ПровестиИЗакрыть/Ext/CommandModule.bsl"),
-            "&AtClient\nProcedure CommandProcessing(CommandParameter, CommandExecuteParameters)\nEndProcedure\n",
-        );
-    }
-
-    fn install_accepted_profile_sources(&self) {
-        let configuration_path = self.source.join("Configuration.xml");
-        let configuration = fs::read_to_string(&configuration_path).unwrap();
-        fs::write(
-            configuration_path,
-            configuration.replace(
-                "</ChildObjects>",
-                "\n<Document>Заказ</Document>\n<Role>Кладовщик</Role>\n<Report>Продажи</Report>\n</ChildObjects>",
-            ),
-        )
-        .unwrap();
-
-        write(
-            &self.source.join("Documents/Заказ.xml"),
-            r#"<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema" version="2.20">
-  <Document uuid="10000000-0000-4000-8000-000000000001">
-    <Properties><Name>Заказ</Name></Properties>
-    <ChildObjects>
-      <Attribute><Properties><Name>Контрагент</Name><Type><v8:Type>xs:string</v8:Type></Type></Properties></Attribute>
-      <TabularSection><Properties><Name>Товары</Name></Properties><ChildObjects>
-        <Attribute><Properties><Name>Количество</Name><Type><v8:Type>xs:decimal</v8:Type></Type></Properties></Attribute>
-      </ChildObjects></TabularSection>
-      <Form>ФормаДокумента</Form>
-    </ChildObjects>
-  </Document>
-</MetaDataObject>"#,
-        );
-        write(
-            &self.source.join("Documents/Заказ/Forms/ФормаДокумента.xml"),
-            r#"<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form uuid="10000000-0000-4000-8000-000000000002"><Properties><Name>ФормаДокумента</Name><FormType>Managed</FormType></Properties></Form></MetaDataObject>"#,
-        );
-        write(
-            &self
-                .source
-                .join("Documents/Заказ/Forms/ФормаДокумента/Ext/Form.xml"),
-            r#"<?xml version="1.0" encoding="UTF-8"?>
-<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema" version="2.20">
-  <ChildItems>
-    <InputField name="Склад" id="1"/>
-    <Table name="Товары" id="2"><ChildItems><InputField name="Количество" id="3"><Events><Event name="Change">КоличествоИзменение</Event></Events></InputField></ChildItems></Table>
-  </ChildItems>
-  <Attributes><Attribute name="Объект" id="1"><Type><v8:Type>xs:string</v8:Type></Type></Attribute></Attributes>
-  <Parameters><Parameter name="Режим"><Type><v8:Type>xs:string</v8:Type></Type></Parameter></Parameters>
-  <Commands><Command name="Пересчитать" id="1"/></Commands>
-</Form>"#,
-        );
-
-        write(
-            &self.source.join("Roles/Кладовщик.xml"),
-            r#"<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Role uuid="10000000-0000-4000-8000-000000000003"><Properties><Name>Кладовщик</Name></Properties></Role></MetaDataObject>"#,
-        );
-        write(
-            &self.source.join("Roles/Кладовщик/Ext/Rights.xml"),
-            r#"<?xml version="1.0" encoding="UTF-8"?>
-<Rights xmlns="http://v8.1c.ru/8.2/roles" version="2.20"><object><name>Catalog.Товары</name><right><name>Read</name><value>true</value><restrictionByCondition><condition>Товары.Владелец = &amp;ТекущийПользователь</condition></restrictionByCondition></right></object></Rights>"#,
-        );
-
-        let report = fixture_text("unica_mcp_script_parity/form-remove/ParityReport.xml")
-            .replace("ParityReport", "Продажи");
-        write(
-            &self.source.join("Reports/Продажи.xml"),
-            &replace_child_objects(
-                &report,
-                "<Template>ОсновнаяСхема</Template><Template>Печать</Template>",
-            ),
-        );
-        let schema_descriptor = fixture_text(
-            "unica_mcp_script_parity/template-remove/ParityReport/Templates/MainSchema.xml",
-        )
-        .replace("MainSchema", "ОсновнаяСхема");
-        write(
-            &self
-                .source
-                .join("Reports/Продажи/Templates/ОсновнаяСхема.xml"),
-            &schema_descriptor,
-        );
-        let dcs = fixture_text("unica_mcp_script_parity/dcs-validate/BadPrefix.xml")
-            .replace("MainData", "Продажи")
-            .replace("Code", "Сумма")
-            .replace(
-                "xmlns:bad=\"http://example.com\">bad:CatalogRef.X",
-                ">xs:decimal",
-            )
-            .replace(
-                "\n</DataCompositionSchema>",
-                "\n<parameter><name>Период</name><valueType><v8:Type>xs:dateTime</v8:Type></valueType></parameter>\n</DataCompositionSchema>",
-            );
-        write(
-            &self
-                .source
-                .join("Reports/Продажи/Templates/ОсновнаяСхема/Ext/Template.xml"),
-            &dcs,
-        );
-        let print_descriptor = schema_descriptor
-            .replace("ОсновнаяСхема", "Печать")
-            .replace("DataCompositionSchema", "SpreadsheetDocument");
-        write(
-            &self.source.join("Reports/Продажи/Templates/Печать.xml"),
-            &print_descriptor,
-        );
-        let mxl = fixture_text("platform_8_3_27/mxl/Template.xml")
-            .replace(
-                "\n\t<templateMode>true</templateMode>",
-                "\n\t<namedItem xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:type=\"NamedItemCells\"><name>Шапка</name><area><type>Rows</type><beginRow>0</beginRow><endRow>0</endRow><beginColumn>-1</beginColumn><endColumn>-1</endColumn></area></namedItem>\n\t<templateMode>true</templateMode>",
-            )
-            .replace(
-                "\n\t\t\t<empty>true</empty>",
-                "\n\t\t\t<c><c><f>0</f><parameter>Заголовок</parameter></c></c>",
-            );
-        write(
-            &self
-                .source
-                .join("Reports/Продажи/Templates/Печать/Ext/Template.xml"),
-            &mxl,
-        );
-    }
-}
-
-fn fixture_path(relative: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures")
-        .join(relative)
-}
-
-fn fixture_text(relative: &str) -> String {
-    fs::read_to_string(fixture_path(relative)).unwrap()
-}
-
-fn copy_fixture(relative: &str, destination: &Path) {
-    fs::create_dir_all(destination.parent().unwrap()).unwrap();
-    fs::copy(fixture_path(relative), destination).unwrap();
-}
-
-fn write(path: &Path, text: &str) {
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(path, text).unwrap();
-}
-
-fn replace_child_objects(document: &str, body: &str) -> String {
-    let start = document.find("<ChildObjects>").unwrap();
-    let end = document.find("</ChildObjects>").unwrap() + "</ChildObjects>".len();
-    format!(
-        "{}<ChildObjects>{body}</ChildObjects>{}",
-        &document[..start],
-        &document[end..]
-    )
-}
-
-fn with_root_version(document: &str) -> String {
-    let start = document.find("<MetaDataObject").unwrap();
-    let end = document[start..].find('>').unwrap() + start;
-    if document[start..end].contains("version=") {
-        return document.to_string();
-    }
-    format!("{} version=\"2.20\"{}", &document[..end], &document[end..])
 }
 
 #[test]
@@ -7901,71 +5268,6 @@ fn retained_mxl_check_keeps_unbounded_body_read_and_format_warnings() {
     assert!(authority.mxl_validation_input(&at).is_err());
 }
 
-/// Описание из выгрузки платформы, сверенное с `manifest.json` опыта: тест
-/// читает ровно ту форму, которую выгрузила платформа.
-fn platform_borrow_fixture(name: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let manifest: serde_json::Value =
-        serde_json::from_str(&fixture_text("platform_8_3_27/cfe_borrow/manifest.json")).unwrap();
-    let text = fixture_text(&format!("platform_8_3_27/cfe_borrow/{name}"));
-    let digest = Sha256::digest(text.as_bytes())
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    assert_eq!(
-        manifest["files"][name]["sha256"].as_str(),
-        Some(digest.as_str()),
-        "{name} differs from the platform export recorded in the manifest"
-    );
-    text
-}
-
-/// Дерево из выгрузки опыта #1381: роль, общая форма, обработка с формой и
-/// двумя макетами и пакет XDTO заимствованы без своих файлов содержимого.
-fn install_inherited_objects(fixture: &RealReaderFixture) {
-    let configuration = fs::read_to_string(fixture.source.join("Configuration.xml")).unwrap();
-    write(
-        &fixture.source.join("Configuration.xml"),
-        &configuration.replace(
-            "</ChildObjects>",
-            "<CommonForm>ОбщаяФорма</CommonForm><DataProcessor>Обработка</DataProcessor><XDTOPackage>ПакетОбмена</XDTOPackage></ChildObjects>",
-        ),
-    );
-    fs::remove_dir_all(fixture.source.join("Roles/SalesReader")).unwrap();
-    for (relative, name) in [
-        ("Roles/SalesReader.xml", "extension-role-inherited.xml"),
-        (
-            "CommonForms/ОбщаяФорма.xml",
-            "extension-common-form-inherited.xml",
-        ),
-        (
-            "DataProcessors/Обработка.xml",
-            "extension-data-processor.xml",
-        ),
-        (
-            "DataProcessors/Обработка/Forms/Форма.xml",
-            "extension-object-form-inherited.xml",
-        ),
-        (
-            "DataProcessors/Обработка/Templates/Макет.xml",
-            "extension-template-spreadsheet-inherited.xml",
-        ),
-        (
-            "DataProcessors/Обработка/Templates/СхемаКомпоновки.xml",
-            "extension-template-schema-inherited.xml",
-        ),
-        (
-            "XDTOPackages/ПакетОбмена.xml",
-            "extension-xdto-package-inherited.xml",
-        ),
-    ] {
-        write(
-            &fixture.source.join(relative),
-            &platform_borrow_fixture(name),
-        );
-    }
-}
-
 /// #1381: платформа 8.3.27 выгружает заимствованные роль, формы, макеты и
 /// пакет XDTO без `Rights.xml`, `Form.xml`, `Template.xml` и `Package.bin`.
 /// Такой узел читается по описанию: заимствование, `content: "inherited"`,
@@ -8815,253 +6117,6 @@ fn canonical_subsystem_check_preserves_bom_format_warning() {
     }
 }
 
-fn install_form_metadata_test_sources(fixture: &RealReaderFixture) {
-    let config = fs::read_to_string(fixture.source.join("Configuration.xml")).unwrap();
-    write(&fixture.source.join("Configuration.xml"), &config.replace("</ChildObjects>", "<CommonForm>ОбщаяФорма</CommonForm><DataProcessor>Обработка</DataProcessor></ChildObjects>"));
-    write_metadata_owner(
-        &fixture.source,
-        "DataProcessors",
-        "DataProcessor",
-        "Обработка",
-        "<Form>Форма</Form>",
-    );
-    for (descriptor, artifact, name, content) in [
-        (
-            "CommonForms/ОбщаяФорма.xml",
-            "CommonForm",
-            "ОбщаяФорма",
-            "CommonForms/ОбщаяФорма/Ext/Form.xml",
-        ),
-        (
-            "DataProcessors/Обработка/Forms/Форма.xml",
-            "Form",
-            "Форма",
-            "DataProcessors/Обработка/Forms/Форма/Ext/Form.xml",
-        ),
-    ] {
-        write(
-            &fixture.source.join(descriptor),
-            &format!(
-                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{artifact} uuid="e9455333-3333-4333-8333-333333333333"><Properties><Name>{name}</Name><FormType>Managed</FormType></Properties></{artifact}></MetaDataObject>"#
-            ),
-        );
-        write(
-            &fixture.source.join(content),
-            r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><ChildItems/></Form>"#,
-        );
-    }
-}
-
-#[test]
-fn form_metadata_has_its_own_descriptor_properties_and_resource_identity() {
-    let fixture = RealReaderFixture::new();
-    install_form_metadata_test_sources(&fixture);
-    for (root, descriptor, artifact, name, uuid, content) in [
-        (
-            "main:CommonForm.ОбщаяФорма",
-            "CommonForms/ОбщаяФорма.xml",
-            "CommonForm",
-            "ОбщаяФорма",
-            "e9455111-1111-4111-8111-111111111111",
-            "CommonForms/ОбщаяФорма/Ext/Form.xml",
-        ),
-        (
-            "main:DataProcessor.Обработка.Form.Форма",
-            "DataProcessors/Обработка/Forms/Форма.xml",
-            "Form",
-            "Форма",
-            "e9455222-2222-4222-8222-222222222222",
-            "DataProcessors/Обработка/Forms/Форма/Ext/Form.xml",
-        ),
-    ] {
-        write(
-            &fixture.source.join(descriptor),
-            &format!(
-                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" version="2.20"><{artifact} uuid="{uuid}"><Properties><Name>{name}</Name><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Описание формы</v8:content></v8:item><v8:item><v8:lang>en</v8:lang><v8:content>Form declaration</v8:content></v8:item></Synonym><ExtendedPresentation><v8:item><v8:lang>ru</v8:lang><v8:content>Расширенное представление</v8:content></v8:item><v8:item><v8:lang>en</v8:lang><v8:content>Extended presentation</v8:content></v8:item></ExtendedPresentation><Explanation><v8:item><v8:lang>ru</v8:lang><v8:content>Пояснение</v8:content></v8:item><v8:item><v8:lang>en</v8:lang><v8:content>Explanation</v8:content></v8:item></Explanation><FutureProperty><Nested>preserved source</Nested></FutureProperty><Comment>Only descriptor properties</Comment><FormType>Managed</FormType><UseStandardCommands>false</UseStandardCommands><UsePurposes><v8:Value xsi:type="app:ApplicationUsePurpose">PlatformApplication</v8:Value><v8:Value xsi:type="app:ApplicationUsePurpose">MobilePlatformApplication</v8:Value></UsePurposes></Properties></{artifact}></MetaDataObject>"#
-            ),
-        );
-        let service = fixture.view_service();
-        let metadata_at = format!("{root}.Metadata");
-        let view = service.view(ViewRequest::new(&metadata_at).unwrap());
-        assert!(view.ok, "{metadata_at}: {view:?}");
-        let data = view.data.unwrap();
-        assert_eq!(data["kind"], "Metadata");
-        assert_eq!(data["props"]["uuid"], uuid);
-        assert_eq!(data["props"]["Name"], name);
-        assert_eq!(data["props"]["Comment"], "Only descriptor properties");
-        assert_eq!(data["props"]["FormType"], "Managed");
-        assert_eq!(data["props"]["UseStandardCommands"], false);
-        assert_eq!(
-            data["props"]["UsePurposes"],
-            json!(["PlatformApplication", "MobilePlatformApplication"])
-        );
-        assert_eq!(
-            data["props"]["Synonym"],
-            json!({"kind":"localizedString","values":[{"language":"ru","content":"Описание формы"},{"language":"en","content":"Form declaration"}]})
-        );
-        for (key, ru, en) in [
-            (
-                "ExtendedPresentation",
-                "Расширенное представление",
-                "Extended presentation",
-            ),
-            ("Explanation", "Пояснение", "Explanation"),
-        ] {
-            assert_eq!(
-                data["props"][key],
-                json!({"kind":"localizedString","values":[{"language":"ru","content":ru},{"language":"en","content":en}]})
-            );
-        }
-        assert!(data["limits"].as_array().unwrap().iter().any(|limit| limit
-            .as_str()
-            .is_some_and(|text| text.contains("FutureProperty"))));
-        assert!(data["props"].get("FutureProperty").is_none());
-        let root_view = service.view(ViewRequest::new(root).unwrap());
-        assert!(root_view.ok);
-        let root_data = root_view.data.unwrap();
-        assert_eq!(root_data["kind"], "Form");
-        assert!(root_data["props"].get("Comment").is_none());
-        assert!(root_data["branches"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|branch| branch["at"] == metadata_at));
-        let authority = fixture.read_authority();
-        assert_eq!(
-            authority
-                .existing_export_path(&QualifiedAddress::parse(root).unwrap(), None)
-                .unwrap(),
-            content
-        );
-        assert_eq!(
-            authority
-                .existing_export_path(&QualifiedAddress::parse(&metadata_at).unwrap(), None)
-                .unwrap(),
-            descriptor
-        );
-    }
-}
-
-#[test]
-fn inherited_form_metadata_is_local_without_claiming_a_local_form_payload() {
-    let fixture = RealReaderFixture::new();
-    install_inherited_objects(&fixture);
-    let service = fixture.extension_view_service();
-    for (root, descriptor) in [
-        ("main:CommonForm.ОбщаяФорма", "CommonForms/ОбщаяФорма.xml"),
-        (
-            "main:DataProcessor.Обработка.Form.Форма",
-            "DataProcessors/Обработка/Forms/Форма.xml",
-        ),
-    ] {
-        let metadata_at = format!("{root}.Metadata");
-        let metadata = service.view(ViewRequest::new(&metadata_at).unwrap());
-        assert!(metadata.ok, "{metadata_at}: {metadata:?}");
-        let data = metadata.data.unwrap();
-        assert_eq!(data["kind"], "Metadata");
-        assert!(data["props"]["uuid"].is_string());
-        assert!(data["props"]["Name"].is_string());
-        assert!(data["props"].get("content").is_none());
-        let form = service.view(ViewRequest::new(root).unwrap());
-        assert!(form.ok);
-        assert_eq!(form.data.unwrap()["props"]["content"], "inherited");
-        let authority = fixture.extension_read_authority();
-        assert_eq!(
-            authority
-                .existing_export_path(&QualifiedAddress::parse(&metadata_at).unwrap(), None)
-                .unwrap(),
-            descriptor
-        );
-        assert!(authority
-            .existing_export_path(&QualifiedAddress::parse(root).unwrap(), None)
-            .is_err());
-    }
-}
-
-#[test]
-fn form_metadata_rejects_orphans_and_does_not_follow_descriptor_links() {
-    let fixture = RealReaderFixture::new();
-    install_form_metadata_test_sources(&fixture);
-    copy_fixture(
-        "acceptance/workspace-resolve-resources/src/CommonForms/Orphan.xml",
-        &fixture.source.join("CommonForms/Orphan.xml"),
-    );
-    let service = fixture.view_service();
-    let orphan = service.view(ViewRequest::new("main:CommonForm.Orphan.Metadata").unwrap());
-    assert!(!orphan.ok);
-    assert_eq!(orphan.diagnostics[0]["code"], "not_found");
-    for raw in [
-        "main:CommonForm.ОбщаяФорма.Metadata.Item.X",
-        "main:DataProcessor.Обработка.Metadata",
-        "main:DataProcessor.Обработка.Form.Metadata",
-    ] {
-        let refused = ViewRequest::new(raw).map(|request| service.view(request));
-        assert!(refused.is_err() || !refused.unwrap().ok, "{raw}");
-    }
-    {
-        use crate::infrastructure::platform::testing::{
-            create_file_link_fixture_for_test, FileLinkFixtureOutcome,
-        };
-        let descriptor = fixture.source.join("CommonForms/ОбщаяФорма.xml");
-        let outside = fixture.root.path().join("outside-form.xml");
-        fs::rename(&descriptor, &outside).unwrap();
-        let outcome = create_file_link_fixture_for_test(&outside, &descriptor).unwrap();
-        if outcome != FileLinkFixtureOutcome::Created {
-            eprintln!("[SKIPPED FIXTURE] file link unavailable: {outcome:?}");
-            return;
-        }
-        let fresh = fixture.view_service();
-        let refused = fresh.view(ViewRequest::new("main:CommonForm.ОбщаяФорма.Metadata").unwrap());
-        assert!(
-            !refused.ok,
-            "metadata must stay under the retained no-follow root"
-        );
-    }
-}
-
-#[test]
-fn external_form_metadata_uses_the_local_descriptor_without_a_companion() {
-    let fixture = RealExternalReaderFixture::new();
-    for (source, kind, root, descriptor) in [
-        (
-            "artifact_processor",
-            SourceSetKind::ExternalProcessor,
-            "ExternalDataProcessor.Import.Form.Main",
-            fixture.processor.join("Import/Forms/Main.xml"),
-        ),
-        (
-            "artifact_report",
-            SourceSetKind::ExternalReport,
-            "ExternalReport.Sales.Form.Main",
-            fixture.report.join("Sales/Forms/Main.xml"),
-        ),
-    ] {
-        let form_xml = descriptor.with_extension("").join("Ext/Form.xml");
-        fs::remove_file(form_xml).unwrap();
-        let service = ViewService::new(
-            fixture.read_authority(source, kind),
-            ViewCursorStore::default(),
-        );
-        let metadata_at = format!("{source}:{root}.Metadata");
-        let view = service.view(ViewRequest::new(&metadata_at).unwrap());
-        assert!(view.ok, "{metadata_at}: {view:?}");
-        let data = view.data.unwrap();
-        assert_eq!(data["kind"], "Metadata");
-        assert_eq!(data["props"]["Name"], "Main");
-        assert!(data["props"].get("Comment").is_none());
-        assert!(data["props"].get("UseStandardCommands").is_none());
-        assert_eq!(
-            data["props"]["uuid"],
-            "10000000-0000-4000-8000-000000000011"
-        );
-        assert!(
-            !service
-                .view(ViewRequest::new(&format!("{source}:{root}")).unwrap())
-                .ok
-        );
-    }
-}
-
 #[test]
 fn tabular_sections_expose_source_standard_attributes_without_losing_applied_attributes() {
     let fixture = RealReaderFixture::new();
@@ -9278,5 +6333,82 @@ fn tabular_standard_attribute_damage_is_local_and_not_an_empty_observation() {
             }
         }
         assert_eq!(fs::read(&path).unwrap(), before);
+    }
+}
+
+#[test]
+fn tabular_standard_attributes_preserve_profiled_member_facts_and_independent_limits() {
+    for (damaged_standard, damaged_member) in
+        [(false, false), (true, false), (false, true), (true, true)]
+    {
+        let fixture = RealReaderFixture::new();
+        let original = fixture_text("acceptance/workspace-tabular-standard/src/Catalogs/Items.xml");
+        let use_value = if damaged_member { "broken" } else { "ForItem" };
+        let mut xml = original.replacen(
+            "<Name>Rows</Name>",
+            &format!(
+                "<Name>Rows</Name><LineNumberLength>5</LineNumberLength><Use>{use_value}</Use>"
+            ),
+            1,
+        );
+        if damaged_standard {
+            xml = xml.replacen("<xr:ToolTip/>", "<xr:ToolTip>broken</xr:ToolTip>", 1);
+        }
+        write(&fixture.source.join("Catalogs/Items.xml"), &xml);
+        let before = crate::test_support::tree_snapshot(&fixture.source);
+        let service = fixture.view_service();
+        let at = "main:Catalog.Items.TabularSection.Rows";
+        let section = service.view(ViewRequest::new(at).unwrap());
+        assert!(section.ok, "{section:?}");
+        let data = section.data.as_ref().unwrap();
+        assert_eq!(data["props"]["LineNumberLength"], 5);
+        if damaged_member {
+            assert!(data["props"].get("Use").is_none());
+        } else {
+            assert_eq!(data["props"]["Use"], "ForItem");
+        }
+        let limits = data["limits"].to_string();
+        assert_eq!(limits.contains(".properties.Use"), damaged_member);
+        assert_eq!(limits.contains(".standardAttributes"), damaged_standard);
+        let sections = view_items(
+            &service.view(ViewRequest::new("main:Catalog.Items.TabularSection").unwrap()),
+        );
+        let listed = sections.iter().find(|item| item["at"] == at).unwrap();
+        assert_eq!(listed["props"], data["props"]);
+        assert_eq!(listed.get("limits"), data.get("limits"));
+        assert_eq!(
+            view_items(&service.view(ViewRequest::new(&format!("{at}.Attribute")).unwrap())).len(),
+            10
+        );
+        let standard =
+            service.view(ViewRequest::new(&format!("{at}.StandardAttribute.LineNumber")).unwrap());
+        if damaged_standard {
+            assert!(!standard.ok, "{standard:?}");
+            assert_eq!(standard.diagnostics[0]["detailCode"], "source_unreadable");
+        } else {
+            assert!(standard.ok, "{standard:?}");
+            assert_eq!(
+                standard.data.as_ref().unwrap()["props"]
+                    .as_object()
+                    .unwrap()
+                    .len(),
+                25
+            );
+        }
+        let healthy_at = "main:Catalog.Items.TabularSection.Healthy";
+        let healthy = service.view(ViewRequest::new(healthy_at).unwrap());
+        assert!(healthy.ok, "{healthy:?}");
+        let healthy_limits = healthy.data.as_ref().unwrap()["limits"].to_string();
+        assert!(!healthy_limits.contains(".properties.Use"));
+        assert!(!healthy_limits.contains(".standardAttributes"));
+        assert!(
+            service
+                .view(
+                    ViewRequest::new(&format!("{healthy_at}.StandardAttribute.LineNumber"))
+                        .unwrap()
+                )
+                .ok
+        );
+        assert_eq!(crate::test_support::tree_snapshot(&fixture.source), before);
     }
 }

@@ -80,6 +80,8 @@ mod help_facet;
 mod info;
 mod info_projection;
 mod integrity_check;
+mod member_properties;
+pub(crate) use integrity_check::check_meta_object_integrity;
 mod predefined;
 mod publisher;
 
@@ -132,7 +134,7 @@ pub(crate) fn apply_typed_operations_to_image_with_seed(
     };
     edit::apply_typed_operations_with_uuid(xml_text, operations, lang, &mut next_uuid).map(|_| ())
 }
-pub(crate) use info::{parse_typed_meta_local_info, read_typed_meta_info};
+pub(crate) use info::{parse_typed_meta_local_info_for_source, read_typed_meta_info};
 #[cfg(test)]
 pub(crate) use info::{
     with_meta_info_descriptor_image_hook, with_registrar_processing_hook,

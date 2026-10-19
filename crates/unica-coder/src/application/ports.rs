@@ -292,6 +292,7 @@ pub(crate) enum MetadataEvidenceAvailability {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MetaLocalInfo {
+    pub(crate) member_read_profile: Option<crate::domain::metadata::MetaMemberReadProfile>,
     pub(crate) metadata_path: MetadataAddress,
     pub(crate) kind: MetadataKind,
     pub(crate) details: MetaInfoDetails,
@@ -714,6 +715,14 @@ pub(crate) trait ApplicationPorts: Send + Sync {
     ) -> Result<CacheReport, String>;
 
     fn notify_invalidation(&self, context: &WorkspaceContext, events: &[DomainEvent]);
+
+    fn notify_committed_changes(
+        &self,
+        context: &WorkspaceContext,
+        events: &[DomainEvent],
+        cancellation: &CancellationToken,
+        deadline: crate::domain::operation_deadline::OperationDeadline,
+    );
 }
 
 #[cfg(test)]

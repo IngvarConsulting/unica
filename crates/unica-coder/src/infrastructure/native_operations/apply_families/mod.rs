@@ -59,8 +59,10 @@ fn changes_support_state(
 /// Vendor-support gate of the canonical mutation path. When the actor's
 /// support policy is `deny`, a request whose owner is a vendor object with
 /// the rule `locked`, or whose configuration is on support with changes
-/// disabled, refuses `invalid_state` before any family stages a byte. The
-/// owner is the top-level metadata object of the addressed node, or the
+/// disabled, refuses `invalid_state` before any family stages a byte.
+/// Removing a vendor object also requires its own rule to be `off-support`:
+/// permission to edit it does not permit its removal.
+/// The owner is the top-level metadata object of the addressed node, or the
 /// configuration root for root-level targets; nested forms, templates and
 /// attributes inherit the rule of their owner, as they do in the platform.
 fn refuse_targets_on_locked_vendor_objects(
@@ -98,7 +100,7 @@ fn refuse_targets_on_locked_vendor_objects(
     if !state.global_editing_enabled() {
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::InvalidState,
-            "the configuration is on vendor support with changes disabled; enable editing with `supportCapability.set` first",
+            "the configuration is on vendor support with changes disabled; enable editing with `supportCapability.set` in a separate apply before ordinary edits",
         )
         .at_path(at));
     }
@@ -112,13 +114,32 @@ fn refuse_targets_on_locked_vendor_objects(
     else {
         return Ok(());
     };
-    let locked =
-        support_root_uuid_from_bytes(&bytes).and_then(|uuid| state.object_rule(&uuid)) == Some(0);
-    if locked {
+    let support_rule =
+        support_root_uuid_from_bytes(&bytes).and_then(|uuid| state.object_rule(&uuid));
+    if matches!(support_rule, Some(0 | 1))
+        && request.ops().iter().any(|operation| {
+            crate::domain::metadata_operation::MetadataOperation::named(operation.name())
+                == Some(crate::domain::metadata_operation::MetadataOperation::ObjectRemove)
+        })
+    {
+        let rule_name = if support_rule == Some(0) {
+            "locked"
+        } else {
+            "editable"
+        };
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::InvalidState,
             format!(
-                "`{owner}` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` first"
+                "`{owner}` is a vendor object with the support rule `{rule_name}`; set `off-support` with `supportRule.set` in a separate apply before removal"
+            ),
+        )
+        .at_path(at));
+    }
+    if support_rule == Some(0) {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidState,
+            format!(
+                "`{owner}` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
             ),
         )
         .at_path(at));
@@ -250,120 +271,6 @@ impl ParsedApplyOperation {
     fn same_family(&self, other: &Self) -> bool {
         std::mem::discriminant(self) == std::mem::discriminant(other)
     }
-}
-
-/// A planner that already reconciled its events against its own staged
-/// changes reports them tied to every path the batch changed: the request
-/// finalizer then keeps an event only while all of those paths stay changed
-/// in the final postimage.
-/// Object and manager events by their Russian names, as developers write them.
-const RUSSIAN_EVENT_NAMES: &[(&str, &str)] = &[
-    ("ПередЗаписью", "BeforeWrite"),
-    ("ПриЗаписи", "OnWrite"),
-    ("ПередУдалением", "BeforeDelete"),
-    ("ОбработкаЗаполнения", "Filling"),
-    ("ОбработкаПроверкиЗаполнения", "FillCheckProcessing"),
-    ("ПриКопировании", "OnCopy"),
-    ("ПриУстановкеНовогоНомера", "OnSetNewNumber"),
-    ("ПриУстановкеНовогоКода", "OnSetNewCode"),
-    ("ОбработкаПроведения", "Posting"),
-    ("ОбработкаУдаленияПроведения", "UndoPosting"),
-    ("ОбработкаПолученияДанныхВыбора", "ChoiceDataGetProcessing"),
-    ("ОбработкаПолученияФормы", "FormGetProcessing"),
-    (
-        "ОбработкаПолученияПолейПредставления",
-        "PresentationFieldsGetProcessing",
-    ),
-    (
-        "ОбработкаПолученияПредставления",
-        "PresentationGetProcessing",
-    ),
-    (
-        "ОбработкаФормированияИзВерсииИсторииДанных",
-        "GenerateFromDataHistoryVersionProcessing",
-    ),
-    (
-        "ОбработкаПослеЗаписиВерсийИсторииДанных",
-        "AfterWriteDataHistoryVersionsProcessing",
-    ),
-];
-
-const MANAGER_EVENTS: &[&str] = &[
-    "ChoiceDataGetProcessing",
-    "FormGetProcessing",
-    "PresentationFieldsGetProcessing",
-    "PresentationGetProcessing",
-    "AfterWriteDataHistoryVersionsProcessing",
-];
-
-/// `Owner.Name.Event.ПриЗаписи` is how a developer names an object event; the
-/// event planner addresses the module that hosts it
-/// (`Owner.Name.Module.Object.Event.OnWrite`). Both spellings are accepted:
-/// the module role follows the owner kind and the event, and Russian event
-/// names map onto the registry. Anything else passes through unchanged.
-fn canonical_event_args(args: serde_json::Value) -> serde_json::Value {
-    use crate::domain::address::{NodeKind, QualifiedAddress};
-    let Some(raw) = args.get("at").and_then(serde_json::Value::as_str) else {
-        return args;
-    };
-    let Ok(address) = QualifiedAddress::parse(raw) else {
-        return args;
-    };
-    let segments = address.segments();
-    let english = |name: &str| -> String {
-        RUSSIAN_EVENT_NAMES
-            .iter()
-            .find(|(russian, _)| *russian == name)
-            .map_or_else(|| name.to_string(), |(_, english)| (*english).to_string())
-    };
-    let rewritten = match segments {
-        [owner, event] if event.kind() == NodeKind::Event => {
-            let (Some(owner_name), Some(event_name)) = (owner.name(), event.name()) else {
-                return args;
-            };
-            let event_name = english(event_name);
-            let role = if MANAGER_EVENTS.contains(&event_name.as_str()) {
-                "Manager"
-            } else {
-                match owner.kind() {
-                    NodeKind::InformationRegister
-                    | NodeKind::AccumulationRegister
-                    | NodeKind::AccountingRegister
-                    | NodeKind::CalculationRegister => "RecordSet",
-                    NodeKind::Constant => "ValueManager",
-                    _ => "Object",
-                }
-            };
-            format!(
-                "{}:{}.{owner_name}.Module.{role}.Event.{event_name}",
-                address.source_set(),
-                owner.kind().as_str()
-            )
-        }
-        [owner, module, role, event]
-            if module.kind() == NodeKind::Module && event.kind() == NodeKind::Event =>
-        {
-            let (Some(owner_name), Some(role_name), Some(event_name)) = (
-                owner.name(),
-                role.name().or(Some(role.kind().as_str())),
-                event.name(),
-            ) else {
-                return args;
-            };
-            format!(
-                "{}:{}.{owner_name}.Module.{role_name}.Event.{}",
-                address.source_set(),
-                owner.kind().as_str(),
-                english(event_name)
-            )
-        }
-        _ => return args,
-    };
-    let mut args = args;
-    if let Some(object) = args.as_object_mut() {
-        object.insert("at".to_string(), serde_json::Value::String(rewritten));
-    }
-    args
 }
 
 /// The event planner reports through its own error type; the apply seam
@@ -580,7 +487,9 @@ fn parse_family_operation(
         return Err(hidden_apply_family_unimplemented(op_index));
     };
     let args = serde_json::Value::Object(operation.args().clone());
-    if operation.name() == "object.borrow" {
+    if descriptor.metadata_operation()
+        == Some(crate::domain::metadata_operation::MetadataOperation::ObjectBorrow)
+    {
         return borrow::parse(&args, op_index, binding).map(ParsedApplyOperation::Borrow);
     }
     let parsed = match descriptor.family() {
@@ -612,8 +521,13 @@ fn parse_family_operation(
             ParsedApplyOperation::FormResource(IndexedPlanOperation::new(op_index, parsed))
         }
         OperationFamily::Dcs | OperationFamily::Mxl => {
-            let parsed =
-                dcs_mxl::parse_dcs_mxl_plan_operation(operation.name(), &args, op_index, binding)?;
+            let parsed = dcs_mxl::parse_dcs_mxl_plan_operation_in(
+                Some(descriptor),
+                operation.name(),
+                &args,
+                op_index,
+                binding,
+            )?;
             ParsedApplyOperation::DcsMxl(IndexedPlanOperation::new(op_index, parsed))
         }
         OperationFamily::Code => {
@@ -635,13 +549,15 @@ fn parse_family_operation(
             ParsedApplyOperation::Xdto(IndexedPlanOperation::new(op_index, parsed))
         }
         OperationFamily::Event => {
-            let args = canonical_event_args(args);
-            let parsed =
-                crate::infrastructure::native_operations::event::parse_event_implement_args(
-                    &args,
-                    &format!("ops[{op_index}].args"),
-                )
-                .map_err(event_plan_error_to_apply)?;
+            let operation = descriptor
+                .event_operation()
+                .ok_or_else(|| hidden_apply_family_unimplemented(op_index))?;
+            let parsed = crate::infrastructure::native_operations::event::parse_event_operation(
+                operation,
+                args,
+                &format!("ops[{op_index}].args"),
+            )
+            .map_err(event_plan_error_to_apply)?;
             ParsedApplyOperation::Event(IndexedPlanOperation::new(op_index, parsed))
         }
     };
@@ -1105,6 +1021,7 @@ pub(crate) fn plan_hidden_v13_apply(
         cursor = end;
     }
 
+    metadata::validate_final_object_integrity(&staged, binding)?;
     let mut effects = reconcile_effects(&staged, provisional);
     effects.set_borrowing(borrowing);
     Ok((staged, effects))
@@ -1112,6 +1029,9 @@ pub(crate) fn plan_hidden_v13_apply(
 
 #[cfg(test)]
 mod inherited_content_tests;
+
+#[cfg(test)]
+mod object_integrity_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1674,6 +1594,146 @@ mod tests {
         }
     }
 
+    #[test]
+    fn vendor_object_removal_requires_separate_off_support_apply() {
+        use crate::test_support::tree_snapshot;
+
+        for rule in [1, 0] {
+            let fixture = ApplySeamFixture::new();
+            let marker = fixture.source_dir().join("Ext/ParentConfigurations.bin");
+            std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+            std::fs::write(&marker, vendor_removal_support_marker(rule, true)).unwrap();
+            let before = tree_snapshot(&fixture.source_dir());
+            if rule == 1 {
+                let ordinary = seam_request(
+                    "main:Document.First",
+                    "props.set",
+                    serde_json::json!({"values": {"Comment": "editable"}}),
+                );
+                let (staged, _) =
+                    plan_hidden_v13_apply(&ordinary, &fixture.binding, &fixture.admission())
+                        .expect("the editable rule still permits ordinary property edits");
+                assert!(!staged.planned_changes().is_empty());
+            }
+            for force in [false, true] {
+                let request = seam_request(
+                    "main:Document.First",
+                    "object.remove",
+                    serde_json::json!({"force": force}),
+                );
+                let error = plan_hidden_v13_apply(&request, &fixture.binding, &fixture.admission())
+                    .expect_err("a vendor object must be off support before removal");
+                assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);
+                assert!(error.to_string().contains("off-support"), "{error}");
+                assert!(error.to_string().contains("supportRule.set"), "{error}");
+                assert!(error.to_string().contains("separate apply"), "{error}");
+                assert_eq!(tree_snapshot(&fixture.source_dir()), before);
+            }
+        }
+    }
+
+    fn vendor_removal_support_marker(rule: u8, editing_enabled: bool) -> String {
+        let global_flag = u8::from(!editing_enabled);
+        format!(
+            "\u{feff}{{6,{global_flag},1,dddddddd-dddd-4ddd-8ddd-dddddddddddd,0,33333333-3333-4333-8333-333333333333,\"1.0\",\"Vendor\",\"VendorConf\",3,{rule},0,11111111-1111-4111-8111-111111111111,11111111-1111-4111-8111-111111111111}}"
+        )
+    }
+
+    #[test]
+    fn vendor_object_removal_preserves_allowed_support_states() {
+        use crate::test_support::tree_snapshot;
+
+        for (policy, marker) in [
+            ("deny", None),
+            ("deny", Some(vendor_removal_support_marker(2, true))),
+            ("deny", Some("\u{feff}{6,0,0}".to_string())),
+            (
+                "deny",
+                Some(vendor_removal_support_marker(0, true).replace(
+                    "11111111-1111-4111-8111-111111111111",
+                    "22222222-2222-4222-8222-222222222222",
+                )),
+            ),
+            ("warn", Some(vendor_removal_support_marker(0, false))),
+            ("warn", Some(vendor_removal_support_marker(1, true))),
+            ("off", Some(vendor_removal_support_marker(0, false))),
+            ("off", Some(vendor_removal_support_marker(1, true))),
+        ] {
+            let fixture = ApplySeamFixture::new();
+            std::fs::write(
+                fixture
+                    .source_dir()
+                    .parent()
+                    .unwrap()
+                    .join(".v8-project.json"),
+                serde_json::json!({"editingAllowedCheck": policy}).to_string(),
+            )
+            .unwrap();
+            if let Some(marker) = marker {
+                let path = fixture.source_dir().join("Ext/ParentConfigurations.bin");
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, marker).unwrap();
+            }
+            let before = tree_snapshot(&fixture.source_dir());
+            let request = seam_request(
+                "main:Document.First",
+                "object.remove",
+                serde_json::json!({}),
+            );
+            let (mut staged, _) =
+                plan_hidden_v13_apply(&request, &fixture.binding, &fixture.admission())
+                    .unwrap_or_else(|error| panic!("allowed removal under {policy}: {error}"));
+            assert!(staged
+                .read(std::path::Path::new("Documents/First.xml"))
+                .unwrap()
+                .is_none());
+            assert_eq!(tree_snapshot(&fixture.source_dir()), before);
+        }
+    }
+
+    #[test]
+    fn support_removal_and_object_removal_require_separate_batches_under_every_policy() {
+        use crate::test_support::tree_snapshot;
+
+        for policy in ["deny", "warn", "off"] {
+            let fixture = ApplySeamFixture::new();
+            std::fs::write(
+                fixture
+                    .source_dir()
+                    .parent()
+                    .unwrap()
+                    .join(".v8-project.json"),
+                serde_json::json!({"editingAllowedCheck": policy}).to_string(),
+            )
+            .unwrap();
+            let marker = fixture.source_dir().join("Ext/ParentConfigurations.bin");
+            std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+            std::fs::write(marker, vendor_removal_support_marker(1, true)).unwrap();
+            let before = tree_snapshot(&fixture.source_dir());
+            let request = ApplyRequest::parse(
+                serde_json::json!({
+                    "at": "main:Document.First",
+                    "ops": [
+                        {"op": "supportRule.set", "args": {"values": {"rule": "off-support"}}},
+                        {"op": "object.remove", "args": {}}
+                    ], "dryRun": true
+                })
+                .as_object()
+                .unwrap(),
+                &["main"],
+            )
+            .unwrap();
+            let error = plan_hidden_v13_apply(&request, &fixture.binding, &fixture.admission())
+                .expect_err("support removal cannot authorize removal in the same apply");
+            assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);
+            assert!(
+                error.to_string().contains("separate apply"),
+                "{policy}: {error}"
+            );
+            assert_eq!(tree_snapshot(&fixture.source_dir()), before);
+        }
+    }
+
     /// The vendor-support gate of the canonical path: a locked vendor object
     /// refuses every family before a byte is staged, the support operations
     /// stay the way out of the lock, and a source without the marker is not
@@ -1868,18 +1928,29 @@ mod tests {
         )
         .unwrap();
         let admission = fixture.admission();
+        let before = snapshot();
+        for (operation, args) in [
+            (
+                "props.set",
+                serde_json::json!({"values": {"Comment": "edited"}}),
+            ),
+            ("object.remove", serde_json::json!({})),
+        ] {
+            let request = seam_request("main:Document.Second", operation, args);
+            let error = plan_hidden_v13_apply(&request, &fixture.binding, &admission).unwrap_err();
+            assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);
+            assert!(error.to_string().contains("changes disabled"), "{error}");
+            assert_eq!(snapshot(), before);
+        }
+
+        // Without the marker the source is not on support and edits plan.
+        std::fs::remove_file(ext.join("ParentConfigurations.bin")).unwrap();
+        let admission = fixture.admission();
         let request = seam_request(
             "main:Document.Second",
             "props.set",
             serde_json::json!({"values": {"Comment": "edited"}}),
         );
-        let error = plan_hidden_v13_apply(&request, &fixture.binding, &admission).unwrap_err();
-        assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);
-        assert!(error.to_string().contains("changes disabled"), "{error}");
-
-        // Without the marker the source is not on support and edits plan.
-        std::fs::remove_file(ext.join("ParentConfigurations.bin")).unwrap();
-        let admission = fixture.admission();
         plan_hidden_v13_apply(&request, &fixture.binding, &admission)
             .expect("a source without the support marker is editable");
     }

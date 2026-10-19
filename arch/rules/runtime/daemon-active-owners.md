@@ -13,7 +13,6 @@ check:
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::warm_actor_expires_after_the_idle_ttl_and_is_rebuilt
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::idle_cleanup_retains_unknown_actor_state_without_rejecting_other_profiles
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::idle_listener_retains_unknown_registry_ownership
-gap: https://github.com/IngvarConsulting/unica/issues/980
 ---
 
 # Демон работает, пока у него остаются активные владельцы
@@ -36,4 +35,4 @@ gap: https://github.com/IngvarConsulting/unica/issues/980
 и завершает работу; точная длительность не является публичным контрактом.
 Пустой прогретый актор сам по себе демон не удерживает. Явная остановка
 завершает демон и при сохранённом плане: сохранение токена после остановки
-или перезапуска не обещается. Остальные разрывы жизненного цикла указаны в `gap`.
+или перезапуска не обещается.
