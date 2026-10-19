@@ -181,7 +181,7 @@ def unwind_history(history: Path) -> int:
     return unwound
 
 
-SITE_PROFILES = ("main", "release", "large", "all")
+SITE_PROFILES = ("queue", "main", "release", "large", "all")
 
 
 def unpack(archive: Path, target: Path) -> Path:

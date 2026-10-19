@@ -15,7 +15,6 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::published_sources_survive_missing_terminal_ack_failure_and_late_cancel
   - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::canonical_ready_root_replacement_after_capture_remains_unowned
   - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::canonical_ready_same_inode_mutation_after_capture_is_not_recaptured
-gap: https://github.com/IngvarConsulting/unica/issues/981
 ---
 
 # Полная выгрузка подтверждает проверенный результат и сохраняет данные при отказе
@@ -32,6 +31,3 @@ gap: https://github.com/IngvarConsulting/unica/issues/981
 цели и сведения о сохранённых данных для восстановления. Неподтверждённое дерево
 может остаться по целевому пути; такой отказ не означает прежнего состояния
 исходников. Эта гарантия действует на всех поддерживаемых ОС.
-
-Сквозное подтверждение этой гарантии в публичном `pull` на поддерживаемых ОС
-остаётся разрывом из `gap`.

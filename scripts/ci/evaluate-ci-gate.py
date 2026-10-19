@@ -10,6 +10,9 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import NamedTuple
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from workflow_routing import CACHE_JOB, RUST_JOBS, rust_route  # noqa: E402
+
 
 CLASSIFICATION_OUTPUTS = (
     "rust_changed",
@@ -22,6 +25,7 @@ CLASSIFICATION_OUTPUTS = (
     "release_required",
     "assessment_required",
 )
+SCOPE_OUTPUTS = (*CLASSIFICATION_OUTPUTS, "docs_only")
 ALWAYS_JOBS = (
     "classify-changes",
     "guards",
@@ -60,14 +64,16 @@ def _validated_classification(
 ) -> tuple[dict[str, bool], tuple[str, str] | None]:
     invalid = [
         f"{name}={outputs.get(name, 'missing')}"
-        for name in CLASSIFICATION_OUTPUTS
+        for name in SCOPE_OUTPUTS
         if outputs.get(name) not in {"true", "false"}
     ]
     if invalid:
         return {}, (", ".join(invalid), "all typed outputs are true or false")
 
-    values = {name: outputs[name] == "true" for name in CLASSIFICATION_OUTPUTS}
+    values = {name: outputs[name] == "true" for name in SCOPE_OUTPUTS}
     contradictions: list[str] = []
+    if values["docs_only"] and any(values[name] for name in CLASSIFICATION_OUTPUTS):
+        contradictions.append("docs_only cannot enable code contours")
     if values["platform_changed"] and not (values["rust_changed"] or values["ci_changed"]):
         contradictions.append("platform_changed requires rust_changed or ci_changed")
     if values["toolchain_changed"] and not (
@@ -99,28 +105,35 @@ def expected_results(
 
     if classification_error is not None:
         invalid["classification"] = classification_error
-        values = {name: False for name in CLASSIFICATION_OUTPUTS}
+        values = {name: False for name in SCOPE_OUTPUTS}
 
     is_tag = event_name == "push" and ref.startswith("refs/tags/")
     # Push в `main` приходит из очереди слияния: это дерево уже проверено на
-    # `merge_group`, и прогон здесь ничего не решает. Тесты на нём не идут;
-    # Rust-джоба поднимается только чтобы записать кэш зависимостей, когда
-    # сменился его ключ (toolchain), или когда правили сам конвейер.
+    # `merge_group`. Отдельная compile-only джоба может обновить кэш;
+    # она не исполняет тесты и не заменяет проверку очереди.
     is_main_push = event_name == "push" and ref == "refs/heads/main"
     # Push в релизную линию — ворота линии: очереди там нет, поэтому полный
     # набор тестов без упаковки. Отсюда сайт собирает отчёт линии.
     is_branch = event_name == "push" and ref.startswith("refs/heads/") and not is_main_push
-    # Очередь слияния — ворота будущего main: полный набор без отбора и без
-    # упаковки, как push в релизную линию. Отсюда сайт собирает отчёт `main`.
+    # Кодовая очередь — полный набор. Исключение для известной прозы задаёт
+    # classifier по всему immutable диапазону группы, а не по одному PR.
     is_queue = event_name == "merge_group"
     is_manual = event_name == "workflow_dispatch"
     is_pr = event_name == "pull_request"
     if not (is_tag or is_main_push or is_branch or is_queue or is_manual or is_pr):
         invalid["event"] = (f"{event_name}:{ref}", "pull_request, merge_group, branch push, tag push, or workflow_dispatch")
+    profiles = {"main", "large"} if is_manual else {
+        "release" if is_tag else "queue" if is_queue else "pr" if is_pr else "main"
+    }
+    if gate_profile is not None and gate_profile not in profiles:
+        invalid["gate_profile"] = (gate_profile, ", ".join(sorted(profiles)))
 
-    if (is_tag or is_branch or is_queue or is_manual) and not all(values.values()):
+    docs_only = values["docs_only"]
+    if docs_only and not (is_pr or is_queue):
+        invalid["docs_only"] = ("true", "documentation exception only on PR or merge_group")
+    if (is_tag or is_branch or (is_queue and not docs_only) or is_manual) and not all(values[name] for name in CLASSIFICATION_OUTPUTS):
         invalid["classification"] = (
-            ", ".join(name for name, enabled in values.items() if not enabled) or "invalid",
+            ", ".join(name for name in CLASSIFICATION_OUTPUTS if not values[name]) or "invalid",
             "all contours enabled for tag, release-line push, merge_group or workflow_dispatch",
         )
 
@@ -140,26 +153,22 @@ def expected_results(
     elif gate_profile == "large":
         invalid["python_matrix"] = ("missing", "the classified Python matrix")
 
-    # Любая правка Rust — Rust-джоба обязательна; состав раннеров решает workflow:
-    # pull request — ubuntu, очередь и push — обе платформы. На push в `main`
-    # Rust-джоба — запись кэша, и её поднимает только смена ключа кэша или
-    # правка конвейера: правка исходников кэш зависимостей не меняет.
+    # The classifier emits this same policy for workflow conditions. The gate
+    # derives it again from validated scope: missing routing outputs cannot
+    # turn a required job into an accepted skip.
+    route = rust_route(event_name, ref, values, docs_only=docs_only)
     if is_main_push:
-        full_matrix = values["toolchain_changed"] or values["ci_changed"]
         expected["test-python"] = "skipped"
-    else:
-        full_matrix = (
-            values["rust_changed"] or values["platform_changed"] or values["toolchain_changed"] or values["ci_changed"]
-        )
-        if is_manual and gate_profile == "large" and python_matrix == "[]":
-            expected["test-python"] = "skipped"
+    elif is_manual and gate_profile == "large" and python_matrix == "[]":
+        expected["test-python"] = "skipped"
     # Сборка пакета и холодные старты сняты с pull request до пересборки системы
     # тестирования: прослеживаемости они не давали, а гейт красили. Тег и ручной
     # запуск их сохраняют — выпуск обязан собираться. Push в ветку упаковку тоже
     # не гоняет: это ворота тестов, а упаковка — дело тега.
     package_pipeline = (values["release_required"] or values["ci_changed"]) and (is_tag or is_manual)
 
-    expected["test-rust-platforms"] = "success" if full_matrix else "skipped"
+    expected.update({job: "success" if route.required else "skipped" for job in RUST_JOBS})
+    expected[CACHE_JOB] = "success" if route.warm_cache else "skipped"
     expected.update({job: "success" if package_pipeline else "skipped" for job in PACKAGE_JOBS})
     expected[ASSESSMENT_JOB] = (
         "success" if values["assessment_required"] and (is_tag or is_manual) else "skipped"
@@ -182,7 +191,9 @@ def expected_results(
         contour = "queue"
     elif not is_pr:
         contour = "invalid"
-    elif all(values.values()) or values["ci_changed"]:
+    elif docs_only:
+        contour = "documentation"
+    elif all(values[name] for name in CLASSIFICATION_OUTPUTS) or values["ci_changed"]:
         contour = "full"
     elif values["platform_changed"]:
         contour = "platform"
@@ -227,7 +238,7 @@ def evaluate_gate(
     return GateEvaluation(
         event_name=event_name,
         ref=ref,
-        classification={name: classification.get(name, "") for name in CLASSIFICATION_OUTPUTS},
+        classification={name: classification.get(name, "") for name in SCOPE_OUTPUTS},
         contour=contour,
         results=dict(results),
         expected=expected,
@@ -247,7 +258,7 @@ def render_summary(evaluation: GateEvaluation) -> str:
         "### Classification",
         "",
     ]
-    for name in CLASSIFICATION_OUTPUTS:
+    for name in SCOPE_OUTPUTS:
         label = name.replace("_", " ").capitalize()
         lines.append(f"- {label}: `{evaluation.classification.get(name) or 'missing'}`")
 
@@ -284,7 +295,7 @@ def main() -> int:
     outputs = classifier.get("outputs", {}) if isinstance(classifier, dict) else {}
     classification = {
         name: outputs.get(name, "") if isinstance(outputs, dict) else ""
-        for name in CLASSIFICATION_OUTPUTS
+        for name in SCOPE_OUTPUTS
     }
     results = {
         job: details.get("result", "missing")
