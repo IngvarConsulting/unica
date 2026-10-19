@@ -787,10 +787,7 @@ fn predefined_items_cursor_replays_after_source_removal() {
 #[test]
 fn predefined_items_refuse_file_and_snapshot_budget_without_cursor() {
     let fixture = predefined_page_fixture();
-    let service = ViewService::new(
-        fixture.read_authority(),
-        ViewCursorStore::new(crate::application::result_store::DEFAULT_TTL, 128, 512),
-    );
+    let service = ViewService::new(fixture.read_authority(), ViewCursorStore::new(512));
     let result = service.view(ViewRequest::new("main:Catalog.Items.PredefinedItem").unwrap());
     assert_eq!(refusal_codes(&result), ["result_too_large"]);
     assert!(result.cursor.is_none());
