@@ -1546,8 +1546,16 @@ impl ManagedChild {
         mut input: LineStreamInput,
         clock: &dyn ProcessWaitClock,
     ) -> Result<ManagedLineOutput, String> {
-        let stdout = start_line_reader(self.take_stdout(), max_line_bytes);
-        let stderr = start_reader(self.take_stderr(), STDERR_CAPTURE_LIMIT);
+        let stdout = self.take_stdout();
+        let stderr = self.take_stderr();
+        if input.is_controlled() && (stdout.is_none() || stderr.is_none()) {
+            self.terminate_after_wait_error();
+            return Err(
+                "process_failed: controlled output requires stdout and stderr pipes".into(),
+            );
+        }
+        let stdout = start_line_reader(stdout, max_line_bytes);
+        let stderr = start_reader(stderr, STDERR_CAPTURE_LIMIT);
         let started = clock.elapsed();
         let mut first_line_error = None;
         let mut leader_status = None;
@@ -1561,7 +1569,8 @@ impl ManagedChild {
                 .is_some_and(|limit| clock.elapsed().saturating_sub(started) >= limit)
                 || protected_finish
                     .is_some_and(|(anchor, limit)| clock.elapsed().saturating_sub(anchor) >= limit);
-            let drained = if input.is_writing()
+            let drained = if stdout_eof
+                || input.is_writing()
                 || reply_write_error.is_some()
                 || (input.is_controlled() && deadline_expired)
             {
@@ -1580,6 +1589,10 @@ impl ManagedChild {
                 LineDrain::End => {
                     stdout_eof = true;
                     ProcessLineReply::Continue
+                }
+                LineDrain::Disconnected => {
+                    self.terminate_after_wait_error();
+                    return Err("process_failed: stdout reader disconnected before EOF".into());
                 }
                 LineDrain::Reply(reply) => reply,
             };
@@ -1618,7 +1631,7 @@ impl ManagedChild {
                     );
                     return Ok(finish_line_output(
                         None,
-                        stderr,
+                        receive_output(stderr),
                         false,
                         true,
                         false,
@@ -1634,7 +1647,7 @@ impl ManagedChild {
                 );
                 return Ok(finish_line_output(
                     leader_status,
-                    stderr,
+                    receive_output(stderr),
                     false,
                     false,
                     leader_status.is_none_or(|status: ExitStatus| status.success()),
@@ -1659,7 +1672,7 @@ impl ManagedChild {
                 );
                 return Ok(finish_line_output(
                     None,
-                    stderr,
+                    receive_output(stderr),
                     false,
                     true,
                     false,
@@ -1681,7 +1694,7 @@ impl ManagedChild {
                 );
                 return Ok(finish_line_output(
                     None,
-                    stderr,
+                    receive_output(stderr),
                     true,
                     false,
                     false,
@@ -1694,9 +1707,25 @@ impl ManagedChild {
             }
             if let Some(status) = leader_status {
                 if !input.is_writing() && stdout_eof {
+                    let captured_stderr = if input.is_controlled() {
+                        let receiver = stderr.as_ref().expect("controlled stderr was checked");
+                        match receive_complete_capture(receiver) {
+                            Ok(Some(captured)) => captured,
+                            Ok(None) => {
+                                clock.sleep(PROCESS_POLL_INTERVAL);
+                                continue;
+                            }
+                            Err(error) => {
+                                self.terminate_after_wait_error();
+                                return Err(error);
+                            }
+                        }
+                    } else {
+                        receive_output(stderr)
+                    };
                     return Ok(finish_line_output(
                         Some(status),
-                        stderr,
+                        captured_stderr,
                         false,
                         false,
                         false,
@@ -3079,6 +3108,7 @@ struct CapturedOutput {
 }
 
 enum LineMessage {
+    End,
     Line(usize, Vec<u8>),
     TooLong(usize),
     ReadError(usize, String),
@@ -3087,6 +3117,7 @@ enum LineMessage {
 enum LineDrain {
     Pending,
     End,
+    Disconnected,
     Reply(ProcessLineReply),
 }
 
@@ -3138,6 +3169,7 @@ where
             } else if !line.is_empty() {
                 let _ = sender.send(LineMessage::Line(line_number, line));
             }
+            let _ = sender.send(LineMessage::End);
         });
         receiver
     })
@@ -3162,9 +3194,10 @@ where
         wait_for_end,
         LineStreamKind::Observe,
     ) {
-        LineDrain::Pending | LineDrain::End | LineDrain::Reply(ProcessLineReply::Continue) => {
-            StreamControl::Continue
-        }
+        LineDrain::Pending
+        | LineDrain::End
+        | LineDrain::Disconnected
+        | LineDrain::Reply(ProcessLineReply::Continue) => StreamControl::Continue,
         LineDrain::Reply(ProcessLineReply::Reply(_))
         | LineDrain::Reply(ProcessLineReply::ReplyAndProtect { .. })
         | LineDrain::Reply(ProcessLineReply::Stop) => StreamControl::Stop,
@@ -3200,23 +3233,37 @@ fn drain_replied_line_messages(
     kind: LineStreamKind,
 ) -> LineDrain {
     let Some(receiver) = receiver else {
-        return LineDrain::End;
+        return match kind {
+            LineStreamKind::Observe => LineDrain::End,
+            LineStreamKind::Controlled => LineDrain::Disconnected,
+        };
     };
     loop {
         let message = if wait_for_end {
             match receiver.recv_timeout(READER_WAIT_LIMIT) {
                 Ok(message) => message,
                 Err(mpsc::RecvTimeoutError::Timeout) => return LineDrain::Pending,
-                Err(mpsc::RecvTimeoutError::Disconnected) => return LineDrain::End,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return match kind {
+                        LineStreamKind::Observe => LineDrain::End,
+                        LineStreamKind::Controlled => LineDrain::Disconnected,
+                    };
+                }
             }
         } else {
             match receiver.try_recv() {
                 Ok(message) => message,
                 Err(TryRecvError::Empty) => return LineDrain::Pending,
-                Err(TryRecvError::Disconnected) => return LineDrain::End,
+                Err(TryRecvError::Disconnected) => {
+                    return match kind {
+                        LineStreamKind::Observe => LineDrain::End,
+                        LineStreamKind::Controlled => LineDrain::Disconnected,
+                    };
+                }
             }
         };
         match message {
+            LineMessage::End => return LineDrain::End,
             LineMessage::Line(number, bytes) => {
                 let reply = on_line(number, &bytes);
                 if reply != ProcessLineReply::Continue {
@@ -3351,7 +3398,7 @@ where
         && status.success();
     finish_line_output(
         Some(status),
-        stderr,
+        receive_output(stderr),
         false,
         false,
         stopped_by_consumer,
@@ -3361,13 +3408,12 @@ where
 
 fn finish_line_output(
     status: Option<ExitStatus>,
-    stderr: Option<Receiver<CapturedOutput>>,
+    stderr: CapturedOutput,
     timed_out: bool,
     cancelled: bool,
     stopped_by_consumer: bool,
     line_error: Option<(usize, String)>,
 ) -> ManagedLineOutput {
-    let stderr = receive_output(stderr);
     ManagedLineOutput {
         status_success: status.is_some_and(|status| status.success())
             && !timed_out
@@ -3459,7 +3505,6 @@ mod tests {
     use std::ffi::OsString;
     use std::io::{BufRead, Read, Write};
     use std::path::{Path, PathBuf};
-    #[cfg(windows)]
     use std::process::Child;
     use std::process::{Command, Stdio};
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -3468,6 +3513,7 @@ mod tests {
 
     const HELPER_ENV: &str = "UNICA_MANAGED_CHILD_HELPER";
     const HELPER_PID_FILE_ENV: &str = "UNICA_MANAGED_CHILD_PID_FILE";
+    const CONTROLLED_STDERR_SOCKET_ENV: &str = "UNICA_CONTROLLED_STDERR_SOCKET";
     #[cfg(unix)]
     const RUNTIME_SENTINEL_HELPER_ENV: &str = "UNICA_RUNTIME_SENTINEL_HELPER";
     #[cfg(unix)]
@@ -3677,6 +3723,26 @@ mod tests {
                 // so the owner can observe real exit before draining it.
                 for _ in 0..16 {
                     helper_frame(br#"{"event":"tail"}"#);
+                }
+                std::process::exit(0);
+            }
+            "controlled_stderr_writer" | "controlled_stderr_leader" => {
+                let address = std::env::var(CONTROLLED_STDERR_SOCKET_ENV).unwrap();
+                let mut control = std::net::TcpStream::connect(address).unwrap();
+                control
+                    .set_read_timeout(Some(Duration::from_secs(10)))
+                    .unwrap();
+                if mode == "controlled_stderr_writer" {
+                    std::io::stderr().write_all(b"stderr-before\n").unwrap();
+                    std::io::stderr().flush().unwrap();
+                    control.write_all(b"w").unwrap();
+                    control.read_exact(&mut [0_u8]).unwrap();
+                    std::io::stderr().write_all(b"stderr-after\n").unwrap();
+                    std::io::stderr().flush().unwrap();
+                } else {
+                    control.write_all(b"l").unwrap();
+                    helper_frame(br#"{"event":"terminal"}"#);
+                    control.read_exact(&mut [0_u8]).unwrap();
                 }
                 std::process::exit(0);
             }
@@ -4051,10 +4117,8 @@ mod tests {
         }
     }
 
-    #[cfg(windows)]
     struct ChildCleanupGuard(Option<Child>);
 
-    #[cfg(windows)]
     impl ChildCleanupGuard {
         fn child_mut(&mut self) -> &mut Child {
             self.0.as_mut().unwrap()
@@ -4066,7 +4130,6 @@ mod tests {
         }
     }
 
-    #[cfg(windows)]
     impl Drop for ChildCleanupGuard {
         fn drop(&mut self) {
             if let Some(child) = &mut self.0 {
@@ -5662,6 +5725,347 @@ mod tests {
             cancellation,
         })
         .unwrap()
+    }
+
+    struct ControlledStderrFixture {
+        writer: Option<ChildCleanupGuard>,
+        writer_control: std::net::TcpStream,
+        leader_control: std::net::TcpStream,
+        #[cfg(unix)]
+        leader_id: u32,
+        #[cfg(windows)]
+        leader: super::RuntimeProcessTreeTestProbe,
+    }
+
+    impl ControlledStderrFixture {
+        fn accept(listener: &std::net::TcpListener, expected: u8) -> std::net::TcpStream {
+            listener.set_nonblocking(true).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                match listener.accept() {
+                    Ok((mut control, _)) => {
+                        control.set_nonblocking(false).unwrap();
+                        control
+                            .set_read_timeout(Some(Duration::from_secs(5)))
+                            .unwrap();
+                        control
+                            .set_write_timeout(Some(Duration::from_secs(5)))
+                            .unwrap();
+                        let mut ready = [0_u8];
+                        control.read_exact(&mut ready).unwrap();
+                        assert_eq!(ready, [expected]);
+                        return control;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "stream fixture did not connect");
+                        thread::yield_now();
+                    }
+                    Err(error) => panic!("accept stream fixture: {error}"),
+                }
+            }
+        }
+
+        fn spawn() -> (ManagedChild, Self) {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap().to_string();
+            let mut writer = ChildCleanupGuard(Some(
+                Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "infrastructure::platform::process::tests::managed_child_test_helper",
+                        "--nocapture",
+                    ])
+                    .env(HELPER_ENV, "controlled_stderr_writer")
+                    .env(CONTROLLED_STDERR_SOCKET_ENV, &address)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .unwrap(),
+            ));
+            let writer_control = Self::accept(&listener, b'w');
+            let mut managed = ManagedChild::spawn(ManagedCommand {
+                program: std::env::current_exe().unwrap(),
+                args: vec![
+                    "--exact".into(),
+                    "infrastructure::platform::process::tests::managed_child_test_helper".into(),
+                    "--nocapture".into(),
+                ],
+                cwd: std::env::current_dir().unwrap(),
+                env: vec![
+                    (HELPER_ENV.into(), "controlled_stderr_leader".into()),
+                    (CONTROLLED_STDERR_SOCKET_ENV.into(), address.into()),
+                ],
+                env_remove: Vec::new(),
+                capture_limits: None,
+                timeout: Some(Duration::from_secs(2)),
+                cancellation: CancellationToken::new(),
+            })
+            .unwrap();
+            let leader_control = Self::accept(&listener, b'l');
+            // Only the test connects this actual pipe to the controlled owner.
+            // Its writer remains our direct Child, independently reapable even
+            // after the managed leader has exited. This tests stream completion,
+            // without asserting a process-tree completion guarantee.
+            managed.child.stderr = writer.child_mut().stderr.take();
+            let fixture = Self {
+                writer: Some(writer),
+                writer_control,
+                leader_control,
+                #[cfg(unix)]
+                leader_id: managed.id(),
+                #[cfg(windows)]
+                leader: super::RuntimeProcessTreeTestProbe::capture(managed.id()).unwrap(),
+            };
+            (managed, fixture)
+        }
+
+        fn release_leader_and_observe_exit(&mut self) {
+            self.leader_control.write_all(b"x").unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                #[cfg(unix)]
+                let exited = super::unix_leader_exit_unreaped(self.leader_id)
+                    .expect("observe our unreaped leader")
+                    .is_some();
+                #[cfg(windows)]
+                let exited = !self.leader.is_alive().expect("observe retained leader");
+                if exited {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "controlled fixture leader did not exit"
+                );
+                thread::yield_now();
+            }
+        }
+
+        fn release_stderr_and_reap(&mut self) {
+            self.writer_control.write_all(b"x").unwrap();
+            let mut writer = self.writer.take().unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if let Some(status) = writer.child_mut().try_wait().unwrap() {
+                    writer.wait();
+                    assert!(status.success(), "stderr fixture failed");
+                    return;
+                }
+                assert!(Instant::now() < deadline, "stderr fixture did not exit");
+                thread::yield_now();
+            }
+        }
+    }
+
+    #[test]
+    fn controlled_stream_held_stderr_keeps_timeout_after_leader_exit() {
+        let (mut managed, mut fixture) = ControlledStderrFixture::spawn();
+        fixture.release_leader_and_observe_exit();
+        let mut terminals = 0;
+        let result = managed.wait_for_controlled_line_output(1024, &mut |_, bytes| {
+            if bytes == br#"{"event":"terminal"}"# {
+                terminals += 1;
+            }
+            ProcessLineReply::Continue
+        });
+        let writer_was_still_alive = fixture
+            .writer
+            .as_mut()
+            .unwrap()
+            .child_mut()
+            .try_wait()
+            .unwrap()
+            .is_none();
+        fixture.release_stderr_and_reap();
+        let output = result.unwrap();
+        assert!(
+            writer_was_still_alive,
+            "stderr must remain held until test release"
+        );
+        assert_eq!(terminals, 1);
+        assert!(
+            output.timed_out,
+            "controlled success escaped an unfinished stderr capture"
+        );
+        assert!(!output.status_success && !output.cancelled);
+        assert_eq!(managed.state, ChildState::Reaped);
+    }
+
+    #[test]
+    fn controlled_stream_late_stderr_eof_preserves_tail_after_leader_exit() {
+        let (mut managed, mut fixture) = ControlledStderrFixture::spawn();
+        let mut terminals = 0;
+        let output = managed
+            .wait_for_controlled_line_output(1024, &mut |_, bytes| {
+                if bytes == br#"{"event":"terminal"}"# {
+                    terminals += 1;
+                    fixture.release_leader_and_observe_exit();
+                    fixture.release_stderr_and_reap();
+                }
+                ProcessLineReply::Continue
+            })
+            .unwrap();
+        assert_eq!(terminals, 1);
+        assert!(output.status_success, "{output:?}");
+        assert!(!output.timed_out && !output.cancelled && output.line_error.is_none());
+        assert_eq!(output.stderr, "stderr-before\nstderr-after\n");
+        assert_eq!(managed.state, ChildState::Reaped);
+    }
+
+    enum ControlledReaderFault {
+        Error,
+        Panic,
+    }
+
+    struct ControlledFaultingRead {
+        prefix: std::io::Cursor<&'static [u8]>,
+        fault: ControlledReaderFault,
+        finished: std::sync::mpsc::Sender<()>,
+    }
+
+    impl Read for ControlledFaultingRead {
+        fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+            if self.prefix.position() < self.prefix.get_ref().len() as u64 {
+                return self.prefix.read(bytes);
+            }
+            match self.fault {
+                ControlledReaderFault::Error => Err(std::io::Error::other("fixture read fault")),
+                ControlledReaderFault::Panic => panic!("fixture reader panic"),
+            }
+        }
+    }
+
+    impl Drop for ControlledFaultingRead {
+        fn drop(&mut self) {
+            let _ = self.finished.send(());
+        }
+    }
+
+    fn controlled_faulting_read(
+        fault: ControlledReaderFault,
+    ) -> (ControlledFaultingRead, std::sync::mpsc::Receiver<()>) {
+        let (finished, receiver) = std::sync::mpsc::channel();
+        (
+            ControlledFaultingRead {
+                prefix: std::io::Cursor::new(b"frame\n"),
+                fault,
+                finished,
+            },
+            receiver,
+        )
+    }
+
+    #[test]
+    fn controlled_stdout_read_error_stays_an_error_after_disconnect() {
+        let (reader, finished) = controlled_faulting_read(ControlledReaderFault::Error);
+        let receiver = super::start_line_reader(Some(reader), 1024);
+        let mut error = None;
+        let mut lines = 0;
+        let mut on_line = |_, bytes: &[u8]| {
+            assert_eq!(bytes, b"frame");
+            lines += 1;
+            ProcessLineReply::Continue
+        };
+        assert!(matches!(
+            super::drain_replied_line_messages(
+                &receiver,
+                &mut on_line,
+                &mut error,
+                true,
+                super::LineStreamKind::Controlled,
+            ),
+            super::LineDrain::Reply(ProcessLineReply::Continue)
+        ));
+        finished.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(matches!(
+            super::drain_replied_line_messages(
+                &receiver,
+                &mut on_line,
+                &mut error,
+                true,
+                super::LineStreamKind::Controlled,
+            ),
+            super::LineDrain::Reply(ProcessLineReply::Stop)
+        ));
+        assert!(error
+            .as_ref()
+            .is_some_and(|(_, text)| text.contains("fixture read fault")));
+        assert!(
+            !matches!(
+                super::drain_replied_line_messages(
+                    &receiver,
+                    &mut on_line,
+                    &mut error,
+                    true,
+                    super::LineStreamKind::Controlled,
+                ),
+                super::LineDrain::End
+                    | super::LineDrain::Pending
+                    | super::LineDrain::Reply(ProcessLineReply::Continue)
+            ),
+            "disconnect after a read error is not clean EOF"
+        );
+        assert_eq!(lines, 1);
+    }
+
+    #[test]
+    fn controlled_stdout_reader_panic_is_not_eof() {
+        let (reader, finished) = controlled_faulting_read(ControlledReaderFault::Panic);
+        let receiver = super::start_line_reader(Some(reader), 1024);
+        let mut error = None;
+        let mut lines = 0;
+        let mut on_line = |_, bytes: &[u8]| {
+            assert_eq!(bytes, b"frame");
+            lines += 1;
+            ProcessLineReply::Continue
+        };
+        assert!(matches!(
+            super::drain_replied_line_messages(
+                &receiver,
+                &mut on_line,
+                &mut error,
+                true,
+                super::LineStreamKind::Controlled,
+            ),
+            super::LineDrain::Reply(ProcessLineReply::Continue)
+        ));
+        finished.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(
+            !matches!(
+                super::drain_replied_line_messages(
+                    &receiver,
+                    &mut on_line,
+                    &mut error,
+                    true,
+                    super::LineStreamKind::Controlled,
+                ),
+                super::LineDrain::End
+                    | super::LineDrain::Pending
+                    | super::LineDrain::Reply(ProcessLineReply::Continue)
+            ),
+            "a panicked reader did not observe EOF"
+        );
+        assert_eq!(lines, 1);
+    }
+
+    #[test]
+    fn controlled_stderr_reader_faults_do_not_satisfy_eof() {
+        for fault in [ControlledReaderFault::Error, ControlledReaderFault::Panic] {
+            let (reader, finished) = controlled_faulting_read(fault);
+            let receiver = super::start_reader(Some(reader), 1024).unwrap();
+            finished.recv_timeout(Duration::from_secs(5)).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                match super::receive_complete_capture(&receiver) {
+                    Err(_) => break,
+                    Ok(None) => {
+                        assert!(Instant::now() < deadline, "reader did not disconnect");
+                        thread::yield_now();
+                    }
+                    Ok(Some(_)) => panic!("reader fault was accepted as stderr EOF"),
+                }
+            }
+        }
     }
 
     #[test]
