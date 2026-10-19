@@ -1193,7 +1193,7 @@ mod tests {
                 &runner,
                 cancellation,
                 &tool(root.path()),
-                "0.15.1",
+                "0.15.2",
             ),
         );
         assert!(!result.ok);
@@ -1278,7 +1278,7 @@ mod tests {
             &runner,
             CancellationToken::new(),
             &tool(root.path()),
-            "0.15.1",
+            "0.15.2",
         );
         assert!(!result.ok, "untrusted platform was dispatched: {result:?}");
         assert_eq!(

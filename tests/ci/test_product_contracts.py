@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import copy
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 import gc
 import importlib.util
 import json
@@ -820,6 +820,230 @@ class ProductContractTests(unittest.TestCase):
             ),
         )
 
+    def test_v8_runner_full_pull_windows_verbatim_paths_keep_the_exact_target(self) -> None:
+        module = load_contract_module()
+        normalize = module._ordinary_v8_runner_publication_path
+        for ordinary, reported in [
+            (r"C:\guard\1cv8.exe", r"\\?\C:\guard\1cv8.exe"),
+            (r"\\server\share\sources", r"\\?\UNC\server\share\sources"),
+            (r"C:\guard\stage", "//?/C:/guard/stage"),
+        ]:
+            with self.subTest(reported=reported):
+                self.assertEqual(normalize(reported), ordinary)
+        self.assertEqual(normalize(r"C:\guard\1cv8.exe"), r"C:\guard\1cv8.exe")
+        self.assertNotEqual(normalize(r"\\?\C:\other\1cv8.exe"), r"C:\guard\1cv8.exe")
+
+    def test_v8_runner_full_pull_frames_require_nonce_executor_and_prepared_target(self) -> None:
+        module = load_contract_module()
+        nonce = "11111111-1111-4111-8111-111111111111"
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw).resolve()
+            source, stage, platform = [root / name for name in ("sources", "stage", "1cv8")]
+            selected = {"phase": "selected", "version": 1, "nonce": nonce,
+                        "provider": {"selected": "designer", "origin": {"kind": "override", "file": "v8project.yaml"}},
+                        "executor": {"kind": "local", "executable": str(platform), "endpoint": None}}
+            ready = {"phase": "ready", "version": 1, "nonce": nonce, "command": "pull",
+                     "requested_mode": "FULL", "mode": "FULL", "mode_reason": None,
+                     "extension": None, "provider_dispatched": True, "source_set": "main",
+                     "target_path": str(source), "stage_path": str(stage),
+                     "snapshot": "prepared", "snapshot_warning": None}
+            terminal = {"phase": "terminal", "version": 1, "nonce": nonce,
+                        "publication": "published", "memory": "saved", "result": {
+                            "ok": True, "command": "pull", "duration_ms": 0,
+                            "data": {}, "warnings": [], "steps": []}}
+            for value in [selected, ready, terminal]:
+                self.assertEqual(module.validate_v8_runner_publication_frame(
+                    value, value["phase"], nonce, source, stage, platform), [])
+            defects = [
+                (selected, {"nonce": "not-a-uuid"}),
+                (selected, {"executor": {**selected["executor"], "kind": "attached"}}),
+                (selected, {"executor": {**selected["executor"], "executable": str(root / "other")}}),
+                (selected, {"executor": {**selected["executor"], "endpoint": "foreign:1545"}}),
+                (selected, {"provider": {"selected": "agent"}}),
+                (ready, {"nonce": "22222222-2222-4222-8222-222222222222"}),
+                (ready, {"version": True}),
+                (ready, {"version": 2}),
+                (ready, {"phase": "terminal"}),
+                (ready, {"target_path": str(root / "other")}),
+                (ready, {"stage_path": "relative-stage"}),
+                (ready, {"snapshot": "unavailable"}),
+                (ready, {"provider_dispatched": False}),
+                (ready, {"source_set": "other"}),
+                (ready, {"unexpected": True}),
+                (terminal, {"nonce": "22222222-2222-4222-8222-222222222222"}),
+            ]
+            for value, defect in defects:
+                with self.subTest(phase=value["phase"], fields=sorted(defect)):
+                    self.assertTrue(module.validate_v8_runner_publication_frame(
+                        {**value, **defect}, value["phase"], nonce, source, stage, platform))
+
+    def test_v8_runner_full_pull_selected_requires_closed_configured_provider_receipt(self) -> None:
+        module = load_contract_module()
+        nonce = "11111111-1111-4111-8111-111111111111"
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw).resolve()
+            source, stage, platform = [root / name for name in ("sources", "stage", "1cv8")]
+            origin = {"kind": "override", "file": "v8project.yaml"}
+            provider = {"selected": "designer", "origin": origin}
+            selected = {"phase": "selected", "version": 1, "nonce": nonce,
+                        "provider": provider,
+                        "executor": {"kind": "local", "executable": str(platform), "endpoint": None}}
+            for receipt in [provider, {**provider, "skipped": [], "endpoint": None}]:
+                self.assertEqual(module.validate_v8_runner_publication_frame(
+                    {**selected, "provider": receipt}, "selected", nonce, source, stage, platform), [])
+            invalid_receipts = [
+                {"selected": "designer"},
+                {**provider, "origin": None},
+                {**provider, "origin": {"kind": "override"}},
+                {**provider, "origin": {"kind": "default"}},
+                {**provider, "origin": {**origin, "file": "v8project.local.yaml"}},
+                {**provider, "origin": {**origin, "file": None}},
+                {**provider, "origin": {**origin, "unexpected": True}},
+                {**provider, "unexpected": True},
+                {**provider, "skipped": None},
+                {**provider, "skipped": [{"provider": "agent", "reason": "not this explicit override"}]},
+                {**provider, "endpoint": {"mode": "attached", "address": "other:1545"}},
+            ]
+            for receipt in invalid_receipts:
+                with self.subTest(receipt=receipt):
+                    self.assertTrue(module.validate_v8_runner_publication_frame(
+                        {**selected, "provider": receipt}, "selected", nonce, source, stage, platform))
+            for executor in [
+                {"kind": "local", "executable": str(platform)},
+                {**selected["executor"], "unexpected": True},
+            ]:
+                with self.subTest(executor=executor):
+                    self.assertTrue(module.validate_v8_runner_publication_frame(
+                        {**selected, "executor": executor}, "selected", nonce, source, stage, platform))
+
+    def test_v8_runner_full_pull_terminal_requires_closed_common_envelope(self) -> None:
+        module = load_contract_module()
+        nonce = "11111111-1111-4111-8111-111111111111"
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw).resolve()
+            source, stage, platform = [root / name for name in ("sources", "stage", "1cv8")]
+            result = {"ok": True, "command": "pull", "duration_ms": 0,
+                      "data": {}, "warnings": [], "steps": []}
+            terminal = {"phase": "terminal", "version": 1, "nonce": nonce,
+                        "publication": "published", "memory": "saved", "result": result}
+            failure = {**result, "ok": False, "error": {
+                "code": "runtime_failure", "kind": "runtime", "message": "control input closed"}}
+            for envelope in [result, {**result, "error": None}, {**result, "warnings": ["diagnostic"]}, failure]:
+                self.assertEqual(module.validate_v8_runner_publication_frame(
+                    {**terminal, "result": envelope}, "terminal", nonce, source, stage, platform), [])
+            invalid_results = [
+                {key: value for key, value in result.items() if key != removed}
+                for removed in result
+            ] + [
+                {**result, "unexpected": True},
+                {**result, "ok": 1},
+                {**result, "command": None},
+                {**result, "duration_ms": True},
+                {**result, "duration_ms": -1},
+                {**result, "duration_ms": "0"},
+                {**result, "warnings": {}},
+                {**result, "warnings": [1]},
+                {**result, "steps": {}},
+                {**result, "steps": [{}]},
+                {**result, "error": []},
+                {**result, "ok": False},
+                {**failure, "error": {"code": "runtime_failure", "kind": "runtime"}},
+                {**failure, "error": {**failure["error"], "unexpected": True}},
+                {**failure, "error": {**failure["error"], "code": True}},
+                {**failure, "error": {**failure["error"], "kind": "platform"}},
+                {**failure, "error": {**failure["error"], "message": ""}},
+            ]
+            for envelope in invalid_results:
+                with self.subTest(envelope=envelope):
+                    self.assertTrue(module.validate_v8_runner_publication_frame(
+                        {**terminal, "result": envelope}, "terminal", nonce, source, stage, platform))
+
+    def test_v8_runner_full_pull_preview_cannot_hide_missing_memory_or_a_late_edit(self) -> None:
+        module = load_contract_module()
+        def envelope(mode):
+            return {"ok": True, "command": "push", "data": {
+                "ok": True, "provider_dispatched": False,
+                "steps": [{"source_set": "main", "mode": mode, "ok": True, "applied": False}]}}
+        unchanged = envelope("skipped")
+        changed = envelope({"partial": {"file_count": 1}})
+        full = envelope("full")
+        self.assertEqual(module.validate_v8_runner_post_pull_preview(unchanged, 0, changed=False), [])
+        self.assertEqual(module.validate_v8_runner_post_pull_preview(changed, 0, changed=True), [])
+        self.assertEqual(module.validate_v8_runner_post_pull_preview(full, 0, changed=True), [])
+        cases = [
+            (unchanged, 0, True), (changed, 0, False),
+            (full, 0, False),
+            ({**unchanged, "ok": False, "error": {"code": "no_memory"}}, 2, False),
+            ({**unchanged, "data": {**unchanged["data"], "steps": []}}, 0, False),
+            ({**unchanged, "data": {**unchanged["data"], "provider_dispatched": True}}, 0, False),
+            (envelope(None), 0, True),
+            (envelope({"partial": {"file_count": 0}}), 0, True),
+            (envelope({"partial": {"file_count": True}}), 0, True),
+        ]
+        for index, (value, status, expect_changed) in enumerate(cases):
+            with self.subTest(case=index):
+                self.assertTrue(module.validate_v8_runner_post_pull_preview(value, status, changed=expect_changed))
+
+    def test_v8_runner_full_pull_preserves_every_prepared_file(self) -> None:
+        module = load_contract_module()
+        prepared = {"Configuration.xml": b"configuration", "Module.bsl": b"prepared",
+                    "ConfigDumpInfo.xml": b"dump info"}
+        late_edit = {**prepared, "Module.bsl": b"late edit"}
+        self.assertEqual(module.validate_v8_runner_publication_tree(dict(prepared), prepared), [])
+        self.assertEqual(module.validate_v8_runner_publication_tree(dict(late_edit), late_edit), [])
+        defects = [
+            {name: payload for name, payload in prepared.items() if name != "Configuration.xml"},
+            {**prepared, "Configuration.xml": b"corrupted configuration"},
+            {name: payload for name, payload in prepared.items() if name != "ConfigDumpInfo.xml"},
+            {**prepared, "ConfigDumpInfo.xml": b"corrupted dump info"},
+            {**prepared, "unexpected.bsl": b"extra"},
+            {**prepared, "Module.bsl": b"unexpected edit"},
+        ]
+        for index, tree in enumerate(defects):
+            with self.subTest(case=index):
+                self.assertTrue(module.validate_v8_runner_publication_tree(tree, prepared))
+
+    def test_v8_runner_full_pull_invalid_frame_still_closes_each_owned_process(self) -> None:
+        from io import StringIO
+        from queue import Queue
+        from types import SimpleNamespace
+        module = load_contract_module()
+        sessions = []
+        def start(command, environment, timeout_seconds, *, cwd, deadline):
+            del timeout_seconds, deadline
+            calls = Path(environment["UNICA_FULL_PULL_CALLS"])
+            if not calls.exists():
+                calls.write_bytes(b"probe\n")
+            output = {"ok": True} if "pull" in command else {"ok": True, "command": "push", "data": {
+                "ok": True, "provider_dispatched": False,
+                "steps": [{"source_set": "main", "mode": "skipped", "ok": True, "applied": False}]}}
+            if "--publication-stdio" in command:
+                output = {"phase": "selected"}  # Invalid before any reply or publication.
+            lines = Queue()
+            lines.put(json.dumps(output) + "\n")
+            lines.put("")
+            reader = SimpleNamespace(join=lambda timeout: None, is_alive=lambda: False)
+            session = SimpleNamespace(
+                process=SimpleNamespace(stdin=StringIO(), wait=lambda timeout: 0),
+                lines=lines, reader=reader, error_reader=reader, diagnostics=[])
+            sessions.append(session)
+            return session
+        def close(session, root):
+            del root
+            session.process.stdin.close()
+        with tempfile.TemporaryDirectory() as raw:
+            runner = Path(raw) / "v8-runner"
+            runner.write_bytes(b"test-only supplied binary stand-in")
+            with patch.object(module, "compile_rust_platform_stub", return_value=[]), patch.object(
+                module, "load_shared_mcp_smoke_module", return_value=SimpleNamespace(McpSession=start)
+            ), patch.object(module, "terminate_shared_mcp_session", side_effect=close) as cleanup:
+                errors = module.check_v8_runner_full_pull_publication_contract(runner, "linux-x64")
+        self.assertEqual(len(sessions), 3)
+        self.assertEqual(cleanup.call_count, 3)
+        self.assertTrue(all(session.process.stdin.closed for session in sessions))
+        self.assertEqual(len(errors), 1)
+        self.assertIn("selected frame", errors[0])
+
     def test_v8_runner_platform_stub_compilation_timeout_is_bounded(self) -> None:
         module = load_contract_module()
 
@@ -1442,31 +1666,26 @@ class ProductContractTests(unittest.TestCase):
                     self.assertEqual(len(errors), 1, errors)
                     self.assertIn(expected, errors[0])
 
-    def test_targeted_tool_contracts_run_both_v8_runner_behavioral_smokes(self) -> None:
+    def test_targeted_tool_contracts_run_all_v8_runner_behavioral_smokes(self) -> None:
         module = load_contract_module()
-
+        checks = [
+            "check_v8_runner_partial_load_contract",
+            "check_v8_runner_bounded_external_epf_contract",
+            "check_v8_runner_windows_external_publication_contract",
+            "check_v8_runner_full_pull_publication_contract",
+        ]
         with tempfile.TemporaryDirectory() as tmp:
             tools_dir = Path(tmp)
             runner = tools_dir / "v8-runner"
             runner.write_bytes(b"runner")
-            with (
-                patch.object(module, "TOOL_HELP_CHECKS", []),
-                patch.object(
-                    module,
-                    "check_v8_runner_partial_load_contract",
-                    return_value=["behavioral failure"],
-                ) as behavioral_check,
-                patch.object(
-                    module,
-                    "check_v8_runner_bounded_external_epf_contract",
-                    return_value=["bounded failure"],
-                ) as bounded_check,
-            ):
+            with ExitStack() as patches:
+                patches.enter_context(patch.object(module, "TOOL_HELP_CHECKS", []))
+                mocks = [patches.enter_context(patch.object(module, name, return_value=[name]))
+                         for name in checks]
                 errors = module.check_tool_contracts(tools_dir, "linux-x64")
-
-        self.assertEqual(errors, ["behavioral failure", "bounded failure"])
-        behavioral_check.assert_called_once_with(runner.resolve(), "linux-x64")
-        bounded_check.assert_called_once_with(runner.resolve(), "linux-x64")
+        self.assertEqual(errors, checks)
+        for check in mocks:
+            check.assert_called_once_with(runner.resolve(), "linux-x64")
 
     def test_tool_contracts_find_the_runner_inside_its_publisher_archive_directory(
         self,
@@ -1523,6 +1742,11 @@ class ProductContractTests(unittest.TestCase):
                     "check_v8_runner_windows_external_publication_contract",
                     return_value=["windows publication failure"],
                 ) as publication_check,
+                patch.object(
+                    module,
+                    "check_v8_runner_full_pull_publication_contract",
+                    return_value=[],
+                ),
             ):
                 errors = module.check_tool_contracts(tools_dir, "win-x64")
 
