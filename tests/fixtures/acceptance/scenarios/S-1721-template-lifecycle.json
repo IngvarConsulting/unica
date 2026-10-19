@@ -2,7 +2,7 @@
   "id": "S-1721-template-lifecycle",
   "issue": 1721,
   "area": "Макеты",
-  "task": "Изменить синоним и комментарий существующей схемы через сохранённый executionToken, независимо прочитать макет и XML описания при неизменном теле; отдельным вызовом удалить макет, весь payload и ссылку MainDataCompositionSchema, сохранив соседний макет, модули BSL и остальные файлы.",
+  "task": "Изменить синоним и комментарий существующей схемы через сохранённый executionToken, независимо прочитать макет и XML описания при неизменном теле; отдельным вызовом удалить макет, все файлы payload и ссылку MainDataCompositionSchema, сохранив соседний макет, модули BSL и остальные файлы.",
   "workspace": "tests/fixtures/acceptance/workspace",
   "wire": [
     {
@@ -1435,11 +1435,6 @@
           "eq": false
         },
         {
-          "path": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных",
-          "kind": "exists",
-          "eq": false
-        },
-        {
           "path": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
           "kind": "exists",
           "eq": false
@@ -1669,11 +1664,6 @@
           "eq": false
         },
         {
-          "path": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных",
-          "kind": "exists",
-          "eq": false
-        },
-        {
           "path": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
           "kind": "exists",
           "eq": false
@@ -1898,11 +1888,6 @@
         },
         {
           "path": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных.xml",
-          "kind": "exists",
-          "eq": false
-        },
-        {
-          "path": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных",
           "kind": "exists",
           "eq": false
         },
