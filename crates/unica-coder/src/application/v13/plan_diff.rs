@@ -75,12 +75,17 @@ impl PlanDiffLayout {
                     while !text.is_char_boundary(range.end) {
                         range.end += 1;
                     }
-                    let mut lines = 0;
-                    while range.start > 0 && lines < 3 {
-                        range.start -= 1;
-                        lines += usize::from(bytes[range.start] == b'\n');
-                        if range.start % 65536 == 0 {
-                            checkpoint()?;
+                    // Include the changed line's prefix and up to three complete preceding lines.
+                    for preceding in 0..=3 {
+                        checkpoint()?;
+                        if preceding > 0 && range.start > 0 {
+                            range.start -= 1;
+                        }
+                        while range.start > 0 && bytes[range.start - 1] != b'\n' {
+                            range.start -= 1;
+                            if range.start % 65536 == 0 {
+                                checkpoint()?;
+                            }
                         }
                     }
                     let mut lines = 0;
@@ -195,6 +200,103 @@ impl PlanDiffLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_saved_source_context_uses_complete_leading_lines(newline: &str) {
+        let discarded = format!("discarded{newline}");
+        let preceding =
+            format!("prior-one{newline}prior-two-кириллица{newline}prior-three{newline}");
+        let prefix = format!("{discarded}{preceding}");
+        let tail = format!("{newline}tail-one{newline}tail-two{newline}tail-three");
+        for (case, before, after, expected_start) in [
+            (
+                "midline",
+                format!("{prefix}changed old{tail}"),
+                format!("{prefix}changed new{tail}"),
+                discarded.len(),
+            ),
+            (
+                "line-start",
+                format!("{prefix}old{tail}"),
+                format!("{prefix}new{tail}"),
+                discarded.len(),
+            ),
+            (
+                "eof",
+                format!("{prefix}old"),
+                format!("{prefix}new"),
+                discarded.len(),
+            ),
+            ("bof", format!("old{tail}"), format!("new{tail}"), 0),
+        ] {
+            let images = [SourceImage {
+                path_encoding: "utf8",
+                path: "Module.bsl".into(),
+                before: Some(before.as_bytes()),
+                after: Some(after.as_bytes()),
+            }];
+            let layout = PlanDiffLayout::new(&images, || Ok(())).unwrap();
+            let page = layout
+                .page(&images, "whole-leading-context", 20, None, || Ok(()))
+                .unwrap();
+            let chunks = page["chunks"].as_array().unwrap();
+            assert_eq!(chunks.len(), 2, "{case}: both saved sides");
+            assert!(page["cursor"].is_null(), "{case}: complete small page");
+            for (chunk, text) in chunks.iter().zip([before.as_str(), after.as_str()]) {
+                let actual_start = usize::try_from(chunk["rangeStart"].as_u64().unwrap()).unwrap();
+                assert!(
+                    actual_start == 0 || text.as_bytes()[actual_start - 1] == b'\n',
+                    "{case}: context must start at a physical line beginning"
+                );
+                assert!(
+                    !(actual_start > 0
+                        && text.as_bytes()[actual_start - 1] == b'\r'
+                        && text.as_bytes().get(actual_start) == Some(&b'\n')),
+                    "{case}: context must not start between CRLF bytes"
+                );
+                assert_eq!(
+                    actual_start, expected_start,
+                    "{case}: include the current line prefix and up to three whole preceding lines"
+                );
+                let expected_end = if case == "eof" {
+                    text.len()
+                } else {
+                    text.find("tail-three").unwrap()
+                };
+                assert_eq!(chunk["startByte"], json!(expected_start), "{case}");
+                assert_eq!(
+                    chunk["rangeEnd"],
+                    json!(expected_end),
+                    "{case}: existing forward policy"
+                );
+                assert_eq!(
+                    chunk["endByte"],
+                    json!(expected_end),
+                    "{case}: complete small window"
+                );
+                assert_eq!(
+                    chunk["content"],
+                    json!(&text[expected_start..expected_end]),
+                    "{case}: exact untouched line bytes and indentation"
+                );
+                if expected_start > 0 {
+                    assert!(
+                        chunk["content"].as_str().unwrap().starts_with(&preceding),
+                        "{case}: all three complete preceding lines remain"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn saved_source_context_starts_with_three_whole_preceding_lf_lines() {
+        assert_saved_source_context_uses_complete_leading_lines("\n");
+    }
+
+    #[test]
+    fn saved_source_context_starts_with_three_whole_preceding_crlf_lines() {
+        assert_saved_source_context_uses_complete_leading_lines("\r\n");
+    }
 
     fn collect(images: &[SourceImage<'_>], limit: usize) -> Vec<Value> {
         let layout = PlanDiffLayout::new(images, || Ok(())).unwrap();

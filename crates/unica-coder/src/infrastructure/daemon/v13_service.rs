@@ -2359,6 +2359,7 @@ impl CanonicalV13ReadService {
                     let mut result =
                         DomainResult::success("exact saved source ranges read without execution");
                     if let Some(cursor) = page["cursor"].as_str() {
+                        result.cursor = Some(cursor.to_owned());
                         result.next.push(json!({"tool": "unica.diff", "arguments": {"executionToken": token, "limit": limit, "cursor": cursor}}));
                     }
                     let mut page = page;
