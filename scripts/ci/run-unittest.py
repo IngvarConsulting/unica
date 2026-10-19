@@ -65,18 +65,37 @@ class AllureResult(unittest.TextTestResult):
 
     def startTest(self, test):
         super().startTest(test)
-        self._started = allure_results.now_ms()
+        self._started = (test, allure_results.now_ms())
 
     def _emit(self, test, status, message=None, trace=None):
         if self.out is None:
             return
         cls = test.__class__
-        full_name = f"{cls.__module__}.{cls.__qualname__}.{test._testMethodName}"
-        doc = (test._testMethodDoc or "").strip().splitlines()
+        method_name = getattr(test, "_testMethodName", None)
+        test_id = test.id()
+        if method_name is not None:
+            full_name = f"{cls.__module__}.{cls.__qualname__}.{method_name}"
+            doc = (getattr(test, "_testMethodDoc", None) or "").strip().splitlines()
+            name = doc[0] if doc else method_name
+            sub_suite = cls.__qualname__
+            size_id = test_id
+        else:
+            # unittest reports class/module fixtures as synthetic test ids,
+            # without TestCase method attributes or a startTest callback.
+            full_name = name = test_id
+            sub_suite = size_id = test_id
+            for hook in ("setUpClass", "tearDownClass", "setUpModule", "tearDownModule"):
+                prefix = f"{hook} ("
+                if test_id.startswith(prefix) and test_id.endswith(")"):
+                    sub_suite = size_id = test_id[len(prefix):-1]
+                    break
+        stop = allure_results.now_ms()
+        started_test, started_at = getattr(self, "_started", (None, None))
+        start = started_at if started_test is test else stop
         allure_results.write(
             self.out,
             allure_results.record(
-                name=doc[0] if doc else test._testMethodName,
+                name=name,
                 full_name=full_name,
                 status=status,
                 runner=self.runner_name,
@@ -85,15 +104,15 @@ class AllureResult(unittest.TextTestResult):
                     "framework": "unittest",
                     "parentSuite": "python",
                     "suite": self.suite_name,
-                    "subSuite": cls.__qualname__,
+                    "subSuite": sub_suite,
                     "profile": self.profile,
-                    "size": self.sizes.size_of(test.id()),
+                    "size": self.sizes.size_of(size_id),
                 },
                 tags=(self.profile,),
                 message=message,
                 trace=trace,
-                start=self._started,
-                stop=allure_results.now_ms(),
+                start=start,
+                stop=stop,
             ),
         )
 

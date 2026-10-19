@@ -5,7 +5,6 @@ check:
   - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::windows_runner_project_layers_are_owner_only_before_secret_bytes_are_written
   - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::windows_applied_full_dump_rejects_effective_config_acl_mutation_before_runner_and_cleans_created_identity
   - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::private_root_swap_cannot_escape_secret_scrubbing_or_anchor_cleanup
-gap: https://github.com/IngvarConsulting/unica/issues/981
 ---
 
 # Подготовка полной выгрузки не раскрывает рабочую конфигурацию
