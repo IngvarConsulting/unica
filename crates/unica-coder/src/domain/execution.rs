@@ -18,7 +18,12 @@ pub(crate) enum Tool {
 }
 impl Tool {
     pub(crate) fn is_read(self) -> bool {
-        !matches!(self, Self::Apply | Self::Run)
+        match self {
+            Self::View | Self::Resolve | Self::Search | Self::Check | Self::Diff | Self::Docs => {
+                true
+            }
+            Self::Apply | Self::Run => false,
+        }
     }
 }
 
