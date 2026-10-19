@@ -142,6 +142,12 @@ supplied properties and keeps unspecified settings. A `clear` operation
 clears its whole selected collection; use an individual removal operation
 when its contract is available and only one item should be removed.
 
+Query fields derive their types from the query: `field.add` and `field.set`
+refuse an explicit `type` on them. An Auto order item refuses `direction`;
+Field order defaults to Asc. A `valueType` modifier needs its value or value
+list; an explicitly empty parameter list is valid. Removing a dataset link
+takes its selector and refuses properties used to patch that link.
+
 Read `Setting.<name>.Item` to see the grouping structure in document order.
 A named item that is unique among its siblings is a node with `at`
 (`Setting.<name>.Item.<item>`), `kind`, `axis` and `groupBy`, and its own
@@ -166,6 +172,14 @@ form one group by both fields, not two nested groups. `structure.set`
 replaces the variant's structure; with `details:true` it adds detail records
 under that group. Empty `groupBy` means detail records. Choose a targeted
 patch or addition when other structure should be preserved.
+
+`groupBy` belongs to a group; table and chart additions refuse it. Add their
+grouping on the appropriate axis. Collection `index` and `parentIndexes`
+accept JSON integers such as `0`, `0.0` and `0e0`; fractions are refused.
+
+Source removal checks references in the batch's final schema. One batch can
+remove a source before removing its referring dataset. If a dataset still
+refers to the removed source at the end, the whole batch is refused.
 
 Preview the complete `ops` batch. Preview writes no sources; execute only
 its successful `data.executionToken`. If the response contains a Task,

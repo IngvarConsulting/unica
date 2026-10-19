@@ -1,4 +1,5 @@
 use crate::domain::address::{escape_name, AddressSegment, NodeKind, QualifiedAddress};
+use crate::domain::dcs_operation::Primitive;
 use crate::domain::event_operation::EventOperation;
 use crate::domain::form_operation::FormOperation;
 use crate::domain::logical_route::{classify_route, RouteClass};
@@ -1036,6 +1037,7 @@ impl FormItemRole {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TypedOperation {
+    Dcs(Primitive),
     Mxl(MxlOperation),
     Event(EventOperation),
     Metadata(MetadataOperation),
@@ -1244,6 +1246,23 @@ impl OperationDescriptor {
     pub(crate) const fn form_operation(self) -> Option<FormOperation> {
         match self.typed_operation {
             Some(TypedOperation::Form(operation)) => Some(operation),
+            _ => None,
+        }
+    }
+
+    const fn dcs(operation: Primitive) -> Self {
+        Self {
+            name: operation.name(),
+            family: OperationFamily::Dcs,
+            applicability: operation.applicability(),
+            skeleton: operation.skeleton(),
+            typed_operation: Some(TypedOperation::Dcs(operation)),
+        }
+    }
+
+    pub(crate) const fn dcs_operation(self) -> Option<Primitive> {
+        match self.typed_operation {
+            Some(TypedOperation::Dcs(operation)) => Some(operation),
             _ => None,
         }
     }
@@ -1498,7 +1517,7 @@ impl OperationDescriptor {
 
     pub(crate) fn argument_contract(self) -> Option<super::operation_contract::OperationContract> {
         match self.family {
-            OperationFamily::Dcs => super::operation_contract::OperationContract::dcs(self.name),
+            OperationFamily::Dcs => self.dcs_operation().map(Primitive::contract),
             OperationFamily::Mxl => self.mxl_operation().map(MxlOperation::contract),
             OperationFamily::Metadata => self
                 .metadata_operation()
@@ -1566,6 +1585,14 @@ pub(super) const fn operation_names_equal(left: &str, right: &str) -> bool {
 }
 
 macro_rules! operation_descriptor {
+    (($name:literal, Dcs, $applicability:ident, $skeleton:ident)) => {
+        compile_error!(
+            "Dcs operations must register a typed Primitive with a mandatory contract"
+        )
+    };
+    ((Primitive::$variant:ident)) => {
+        OperationDescriptor::dcs(Primitive::$variant)
+    };
     (($name:literal, Mxl, $applicability:ident, $skeleton:ident)) => {
         compile_error!(
             "Mxl operations must register a typed MxlOperation with a mandatory contract"
@@ -1681,76 +1708,61 @@ operation_descriptors!(
     (RoleOperation::Create),
     (RoleOperation::RightAdd),
     (RoleOperation::RightSet),
-    ("dataSource.add", Dcs, DcsSchema, Items),
-    ("dataSource.set", Dcs, DcsDataSource, Values),
-    ("dataSource.remove", Dcs, DcsDataSource, Target),
-    ("dataSet.add", Dcs, DcsDataContainer, Items),
-    ("dataSet.set", Dcs, DcsData, Values),
-    ("dataSet.remove", Dcs, DcsData, Target),
-    ("field.add", Dcs, DcsData, Items),
-    ("field.set", Dcs, DcsField, Values),
-    ("field.remove", Dcs, DcsField, Target),
-    ("fieldRole.set", Dcs, DcsField, Values),
-    ("parameter.add", Dcs, DcsSchema, Items),
-    ("parameter.set", Dcs, DcsParameter, Values),
-    ("parameter.remove", Dcs, DcsParameter, Target),
-    ("parameter.rename", Dcs, DcsParameter, Values),
-    ("parameter.reorder", Dcs, DcsSchema, Items),
-    ("calculatedField.add", Dcs, DcsSchema, Items),
-    ("calculatedField.remove", Dcs, DcsCalculatedField, Target),
-    ("total.add", Dcs, DcsSchema, Items),
-    ("total.remove", Dcs, DcsTotal, Target),
-    ("variant.add", Dcs, DcsSchema, Items),
-    ("variant.set", Dcs, DcsSettings, Values),
-    ("variant.remove", Dcs, DcsSettings, Target),
-    ("query.set", Dcs, DcsQuery, Values),
-    ("query.patch", Dcs, DcsQuery, Values),
-    ("filter.add", Dcs, DcsSettingsContainer, Items),
-    ("filter.set", Dcs, DcsSettingsContainer, Values),
-    ("filter.remove", Dcs, DcsSettingsContainer, Values),
-    ("filter.clear", Dcs, DcsSettingsContainer, Values),
-    ("selection.add", Dcs, DcsSettingsContainer, Items),
-    ("selection.clear", Dcs, DcsSettingsContainer, Values),
-    ("order.add", Dcs, DcsSettingsContainer, Items),
-    ("order.clear", Dcs, DcsSettingsContainer, Values),
+    (Primitive::DataSourceAdd),
+    (Primitive::DataSourceSet),
+    (Primitive::DataSourceRemove),
+    (Primitive::DataSetAdd),
+    (Primitive::DataSetSet),
+    (Primitive::DataSetRemove),
+    (Primitive::FieldAdd),
+    (Primitive::FieldSet),
+    (Primitive::FieldRemove),
+    (Primitive::FieldRoleSet),
+    (Primitive::ParameterAdd),
+    (Primitive::ParameterSet),
+    (Primitive::ParameterRemove),
+    (Primitive::ParameterRename),
+    (Primitive::ParameterReorder),
+    (Primitive::CalculatedFieldAdd),
+    (Primitive::CalculatedFieldRemove),
+    (Primitive::TotalAdd),
+    (Primitive::TotalRemove),
+    (Primitive::VariantAdd),
+    (Primitive::VariantSet),
+    (Primitive::VariantRemove),
+    (Primitive::QuerySet),
+    (Primitive::QueryPatch),
+    (Primitive::FilterAdd),
+    (Primitive::FilterSet),
+    (Primitive::FilterRemove),
+    (Primitive::FilterClear),
+    (Primitive::SelectionAdd),
+    (Primitive::SelectionClear),
+    (Primitive::OrderAdd),
+    (Primitive::OrderClear),
     // Параметры данных есть только у самих настроек варианта: у элемента
     // структуры их коллекции нет.
-    ("dataParameter.add", Dcs, DcsSettings, Items),
-    ("dataParameter.set", Dcs, DcsSettings, Values),
-    ("outputParameter.set", Dcs, DcsSettingsContainer, Values),
-    (
-        "conditionalAppearance.add",
-        Dcs,
-        DcsSettingsContainer,
-        Items
-    ),
-    (
-        "conditionalAppearance.clear",
-        Dcs,
-        DcsSettingsContainer,
-        Values
-    ),
-    ("structure.add", Dcs, DcsSettingsContainer, Items),
-    ("structure.set", Dcs, DcsSettings, Values),
-    ("structure.patch", Dcs, DcsStructureItem, Values),
-    ("structure.remove", Dcs, DcsStructureItem, Target),
-    ("dataSetLink.add", Dcs, DcsSchema, Items),
-    ("calculatedField.set", Dcs, DcsCalculatedField, Values),
-    ("total.set", Dcs, DcsTotal, Values),
-    ("selection.set", Dcs, DcsSettingsContainer, Values),
-    ("selection.remove", Dcs, DcsSettingsContainer, Values),
-    ("order.set", Dcs, DcsSettingsContainer, Values),
-    ("order.remove", Dcs, DcsSettingsContainer, Values),
-    ("dataParameter.remove", Dcs, DcsSettings, Values),
-    ("outputParameter.remove", Dcs, DcsSettingsContainer, Values),
-    (
-        "conditionalAppearance.remove",
-        Dcs,
-        DcsSettingsContainer,
-        Values
-    ),
-    ("dataSetLink.set", Dcs, DcsSchema, Values),
-    ("dataSetLink.remove", Dcs, DcsSchema, Values),
+    (Primitive::DataParameterAdd),
+    (Primitive::DataParameterSet),
+    (Primitive::OutputParameterSet),
+    (Primitive::ConditionalAppearanceAdd),
+    (Primitive::ConditionalAppearanceClear),
+    (Primitive::StructureAdd),
+    (Primitive::StructureSet),
+    (Primitive::StructurePatch),
+    (Primitive::StructureRemove),
+    (Primitive::DataSetLinkAdd),
+    (Primitive::CalculatedFieldSet),
+    (Primitive::TotalSet),
+    (Primitive::SelectionSet),
+    (Primitive::SelectionRemove),
+    (Primitive::OrderSet),
+    (Primitive::OrderRemove),
+    (Primitive::DataParameterRemove),
+    (Primitive::OutputParameterRemove),
+    (Primitive::ConditionalAppearanceRemove),
+    (Primitive::DataSetLinkSet),
+    (Primitive::DataSetLinkRemove),
     (MxlOperation::Set),
     (MxlOperation::AreaAdd),
     ("valueType.add", Xdto, XdtoPackage, Values),
@@ -2812,8 +2824,8 @@ mod tests {
     use super::{
         ApplyRequest, EventOperation, FormOperation, MetadataOperation, MxlOperation,
         OperationApplicability, OperationDescriptor, OperationFamily, OperationRegistry,
-        OperationSite, OperationSkeleton, RoleOperation, SourceSetTraits, SupportOperation,
-        TemplateFormat, TypedOperation, OPERATION_DESCRIPTORS, RETIRED_ARGUMENTS,
+        OperationSite, OperationSkeleton, Primitive, RoleOperation, SourceSetTraits,
+        SupportOperation, TemplateFormat, TypedOperation, OPERATION_DESCRIPTORS, RETIRED_ARGUMENTS,
     };
     use crate::domain::address::QualifiedAddress;
     use crate::domain::platform_profile::PlatformProfile;
@@ -3099,6 +3111,12 @@ mod tests {
 
     fn typed_registration_is_consistent(descriptor: OperationDescriptor) -> bool {
         let (family, name, applicability, skeleton) = match descriptor.typed_operation {
+            Some(TypedOperation::Dcs(operation)) => (
+                OperationFamily::Dcs,
+                operation.name(),
+                operation.applicability(),
+                operation.skeleton(),
+            ),
             Some(TypedOperation::Mxl(operation)) => (
                 OperationFamily::Mxl,
                 operation.name(),
@@ -3138,7 +3156,8 @@ mod tests {
             None => {
                 return !matches!(
                     descriptor.family(),
-                    OperationFamily::Mxl
+                    OperationFamily::Dcs
+                        | OperationFamily::Mxl
                         | OperationFamily::Event
                         | OperationFamily::Role
                         | OperationFamily::Support
@@ -3238,11 +3257,17 @@ mod tests {
     }
 
     #[test]
-    fn mxl_and_event_registration_reject_missing_and_mismatched_typed_operations() {
-        let descriptors = MxlOperation::ALL
+    fn dcs_mxl_and_event_registration_reject_missing_and_mismatched_typed_operations() {
+        let descriptors = Primitive::ALL
             .iter()
             .copied()
-            .map(OperationDescriptor::mxl)
+            .map(OperationDescriptor::dcs)
+            .chain(
+                MxlOperation::ALL
+                    .iter()
+                    .copied()
+                    .map(OperationDescriptor::mxl),
+            )
             .chain(
                 EventOperation::ALL
                     .iter()
@@ -3288,7 +3313,7 @@ mod tests {
         for descriptor in OPERATION_DESCRIPTORS {
             if matches!(
                 descriptor.family(),
-                OperationFamily::Mxl | OperationFamily::Event
+                OperationFamily::Dcs | OperationFamily::Mxl | OperationFamily::Event
             ) {
                 assert!(typed_registration_is_consistent(*descriptor));
             }

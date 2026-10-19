@@ -1022,6 +1022,14 @@ pub(crate) fn plan_hidden_v13_apply(
     }
 
     metadata::validate_final_object_integrity(&staged, binding)?;
+    dcs_mxl::validate_final_dcs_resources(
+        &mut staged,
+        binding,
+        parsed.iter().filter_map(|operation| match operation {
+            ParsedApplyOperation::DcsMxl(operation) => Some(operation),
+            _ => None,
+        }),
+    )?;
     let mut effects = reconcile_effects(&staged, provisional);
     effects.set_borrowing(borrowing);
     Ok((staged, effects))

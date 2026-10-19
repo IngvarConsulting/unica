@@ -8,6 +8,8 @@ pub mod cache;
 pub(crate) mod call_graph_identity;
 pub mod cancellation;
 pub mod code_intelligence;
+pub(crate) mod dcs_arguments;
+pub(crate) mod dcs_operation;
 pub mod diagnostics;
 pub mod documentation;
 pub mod engine;
