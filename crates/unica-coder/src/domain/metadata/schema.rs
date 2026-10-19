@@ -4,12 +4,69 @@
 
 use super::{
     metadata_reference_type_kinds, metadata_relation_specs, EventSourceClass, MetaEditOperationTag,
-    MetaRelation, MetaRelationTargetPolicy, MetadataKind, RelationEditMode,
-    METADATA_XS_DATETIME_PATTERN,
+    MetaPropertyValueKind, MetaRelation, MetaRelationTargetPolicy, MetadataKind, RelationEditMode,
+    METADATA_PROPERTY_SPECS, METADATA_XS_DATETIME_PATTERN,
 };
 use crate::domain::source_target::{metadata_address_kind_spellings, RECALCULATION_KIND_SPELLINGS};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::sync::OnceLock;
+
+/// Project the existing property vocabulary, narrowed before merging any
+/// owner-specific enum. The legacy host consumes the kind-agnostic union.
+pub(crate) fn metadata_property_schemas(kind: Option<MetadataKind>) -> Map<String, Value> {
+    let mut root_properties: Map<String, Value> = Map::new();
+    for spec in METADATA_PROPERTY_SPECS
+        .iter()
+        .filter(|spec| kind.is_none_or(|kind| spec.allowed_kinds.contains(&kind)))
+    {
+        let entry = root_properties
+            .entry(spec.public_name.to_string())
+            .or_insert_with(|| match spec.value_kind {
+                MetaPropertyValueKind::Type => metadata_type_schema(),
+                MetaPropertyValueKind::String => json!({"type": "string"}),
+                MetaPropertyValueKind::Boolean => json!({"type": "boolean"}),
+                MetaPropertyValueKind::UnsignedInteger => {
+                    json!({"type": "integer", "minimum": 0, "maximum": u32::MAX})
+                }
+            })
+            .as_object_mut()
+            .expect("root property schema is always an object");
+        if let Some(pattern) = spec.string_pattern {
+            entry.insert("pattern".into(), Value::String(pattern.to_string()));
+        }
+        if spec.enum_values.is_empty() {
+            // A kind that accepts a free value widens the published name.
+            entry.remove("enum");
+            entry.insert("unconstrained".into(), Value::Bool(true));
+            continue;
+        }
+        if entry.contains_key("unconstrained") {
+            continue;
+        }
+        let merged = entry
+            .remove("enum")
+            .and_then(|value| match value {
+                Value::Array(values) => Some(values),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let mut values = merged;
+        for candidate in spec.enum_values {
+            let candidate = Value::String((*candidate).to_string());
+            if !values.contains(&candidate) {
+                values.push(candidate);
+            }
+        }
+        entry.insert("enum".into(), Value::Array(values));
+    }
+    for value in root_properties.values_mut() {
+        value
+            .as_object_mut()
+            .expect("root property schema is always an object")
+            .remove("unconstrained");
+    }
+    root_properties
+}
 
 pub(crate) fn metadata_kinds_object_pattern(kinds: &[MetadataKind]) -> String {
     format!(

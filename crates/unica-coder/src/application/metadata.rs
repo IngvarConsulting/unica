@@ -3,7 +3,7 @@ use super::AdapterOutcome;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::events::{DomainEvent, DomainEventKind};
 use crate::domain::metadata::{
-    fill_value_schema, metadata_event_source_input_schema,
+    fill_value_schema, metadata_event_source_input_schema, metadata_property_schemas,
     metadata_relation_field_target_input_schema, metadata_relation_object_target_input_schema,
     metadata_relation_operation_input_schema, metadata_relation_operation_schema,
     metadata_type_schema, position_schema, unknown_metadata_property_message,
@@ -1022,7 +1022,7 @@ fn parse_scope(value: Option<&Value>) -> Result<Option<MetaScope>, MetaDiagnosti
     }))
 }
 
-fn parse_property_changes(
+pub(crate) fn parse_property_changes(
     object: &Map<String, Value>,
     kind: MetadataKind,
 ) -> Result<MetaPropertyChanges, MetaDiagnostic> {
@@ -1816,7 +1816,7 @@ fn required_u32(
     })
 }
 
-fn json_u32(value: &Value) -> Option<u32> {
+pub(crate) fn json_u32(value: &Value) -> Option<u32> {
     let number = value.as_number()?;
     if let Some(value) = number.as_u64() {
         return u32::try_from(value).ok();
@@ -2018,59 +2018,7 @@ fn host_visible_operation_schema() -> Value {
         .filter(|collection| *collection != MetaCollection::PredefinedItems)
         .map(MetaCollection::as_str)
         .collect::<Vec<_>>();
-    // One public name can carry several per-kind specs. They are merged rather
-    // than repeated: the value kind is shared, and a name whose legal values
-    // differ by object kind publishes the union so the union stays a superset
-    // of every per-kind domain. The writer still rejects a value the concrete
-    // kind does not allow, naming the exact `values.<name>` field.
-    let mut root_properties: Map<String, Value> = Map::new();
-    for spec in METADATA_PROPERTY_SPECS {
-        let entry = root_properties
-            .entry(spec.public_name.to_string())
-            .or_insert_with(|| match spec.value_kind {
-                MetaPropertyValueKind::Type => metadata_type_schema(),
-                MetaPropertyValueKind::String => json!({"type": "string"}),
-                MetaPropertyValueKind::Boolean => json!({"type": "boolean"}),
-                MetaPropertyValueKind::UnsignedInteger => {
-                    json!({"type": "integer", "minimum": 0, "maximum": u32::MAX})
-                }
-            })
-            .as_object_mut()
-            .expect("root property schema is always an object");
-        if let Some(pattern) = spec.string_pattern {
-            entry.insert("pattern".into(), Value::String(pattern.to_string()));
-        }
-        if spec.enum_values.is_empty() {
-            // A kind that accepts a free value widens the published name.
-            entry.remove("enum");
-            entry.insert("unconstrained".into(), Value::Bool(true));
-            continue;
-        }
-        if entry.contains_key("unconstrained") {
-            continue;
-        }
-        let merged = entry
-            .remove("enum")
-            .and_then(|value| match value {
-                Value::Array(values) => Some(values),
-                _ => None,
-            })
-            .unwrap_or_default();
-        let mut values = merged;
-        for candidate in spec.enum_values {
-            let candidate = Value::String((*candidate).to_string());
-            if !values.contains(&candidate) {
-                values.push(candidate);
-            }
-        }
-        entry.insert("enum".into(), Value::Array(values));
-    }
-    for value in root_properties.values_mut() {
-        value
-            .as_object_mut()
-            .expect("root property schema is always an object")
-            .remove("unconstrained");
-    }
+    let root_properties = metadata_property_schemas(None);
     let element = metadata_host_element_schema();
     let collection_operation = |tag: MetaEditOperationTag, payload_name: &str, payload: Value| {
         json!({
