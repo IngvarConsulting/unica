@@ -13,6 +13,9 @@ pub mod documentation;
 pub mod engine;
 pub(crate) mod event_operation;
 pub mod events;
+// P1 model is default-compiled; P3 connects the production execution route.
+#[allow(dead_code)]
+pub(crate) mod execution;
 pub mod form_edit;
 pub(crate) mod form_operation;
 pub mod format_profile;
