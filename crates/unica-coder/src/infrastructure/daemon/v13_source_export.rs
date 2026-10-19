@@ -1806,11 +1806,13 @@ mod tests {
     #[test]
     fn full_export_reports_unconfirmed_private_location_without_changing_publication_facts() {
         use crate::infrastructure::platform::filesystem::{
-            file_identity, open_directory_nofollow, FileIdentity,
+            file_identity, is_file_sharing_violation, open_directory_nofollow, FileIdentity,
         };
         use std::collections::BTreeMap;
 
-        fn capture(root: &Path) -> (BTreeMap<PathBuf, Vec<u8>>, BTreeMap<PathBuf, FileIdentity>) {
+        type CapturedTree = (BTreeMap<PathBuf, Vec<u8>>, BTreeMap<PathBuf, FileIdentity>);
+
+        fn capture(root: &Path) -> CapturedTree {
             fn visit(
                 root: &Path,
                 current: &Path,
@@ -1834,6 +1836,22 @@ mod tests {
             let mut identities = BTreeMap::new();
             visit(root, root, &mut identities);
             (crate::test_support::tree_snapshot(root), identities)
+        }
+
+        enum Relocation {
+            Relocated {
+                private: PathBuf,
+                displaced: PathBuf,
+                owned_before: CapturedTree,
+                foreign_before: CapturedTree,
+                public_at_effect: CapturedTree,
+            },
+            Denied {
+                private: PathBuf,
+                displaced: PathBuf,
+                owned_before: CapturedTree,
+                public_at_effect: CapturedTree,
+            },
         }
 
         let mut invalid_reports = Vec::new();
@@ -1863,22 +1881,60 @@ mod tests {
                 let displaced = private.with_file_name("displaced-owned-private");
                 let owned_before = capture(&private);
                 let public_at_effect = capture(&effect_target);
-                fs::rename(&private, &displaced).unwrap();
-                fs::create_dir(&private).unwrap();
-                fs::create_dir(private.join("foreign")).unwrap();
-                fs::write(
-                    private.join("foreign/sentinel.txt"),
-                    b"foreign private replacement sentinel",
-                )
-                .unwrap();
-                let foreign_before = capture(&private);
-                *effect_observed.lock().unwrap() = Some((
-                    private,
-                    displaced,
-                    owned_before,
-                    foreign_before,
-                    public_at_effect,
-                ));
+                let absent = fs::symlink_metadata(&displaced).unwrap_err();
+                assert_eq!(
+                    absent.kind(),
+                    std::io::ErrorKind::NotFound,
+                    "{phase}: {absent}"
+                );
+                let outcome = match fs::rename(&private, &displaced) {
+                    Ok(()) => {
+                        fs::create_dir(&private).unwrap();
+                        fs::create_dir(private.join("foreign")).unwrap();
+                        fs::write(
+                            private.join("foreign/sentinel.txt"),
+                            b"foreign private replacement sentinel",
+                        )
+                        .unwrap();
+                        let foreign_before = capture(&private);
+                        Relocation::Relocated {
+                            private,
+                            displaced,
+                            owned_before,
+                            foreign_before,
+                            public_at_effect,
+                        }
+                    }
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::PermissionDenied
+                            || is_file_sharing_violation(&error) =>
+                    {
+                        assert_eq!(
+                            capture(&private), owned_before,
+                            "{phase}: denied relocation must preserve all private bytes and identities"
+                        );
+                        assert_eq!(
+                            capture(&effect_target), public_at_effect,
+                            "{phase}: denied relocation must preserve all public bytes and identities"
+                        );
+                        let absent = fs::symlink_metadata(&displaced).unwrap_err();
+                        assert_eq!(
+                            absent.kind(),
+                            std::io::ErrorKind::NotFound,
+                            "{phase}: {absent}"
+                        );
+                        Relocation::Denied {
+                            private,
+                            displaced,
+                            owned_before,
+                            public_at_effect,
+                        }
+                    }
+                    Err(error) => panic!(
+                        "{phase}: expected actual relocation or access/share denial: {error}"
+                    ),
+                };
+                *effect_observed.lock().unwrap() = Some(outcome);
             });
             let mut runner = SequenceRunner::exporting(
                 vec![
@@ -1897,30 +1953,11 @@ mod tests {
                 &prepared(root.path(), ExportMode::Full, None, None, false),
                 &runner,
             );
-            let (private, displaced, owned_before, foreign_before, public_at_effect) = observed
+            let outcome = observed
                 .lock()
                 .unwrap()
                 .take()
-                .expect("the real private-directory replacement must execute");
-            assert_eq!(
-                capture(&displaced),
-                owned_before,
-                "{phase}: finalization must preserve all owned private identities and bytes"
-            );
-            assert_eq!(
-                capture(&private),
-                foreign_before,
-                "{phase}: finalization must preserve all foreign identities and bytes"
-            );
-            assert_ne!(
-                owned_before.1[Path::new("")],
-                foreign_before.1[Path::new("")]
-            );
-            assert_eq!(
-                fs::read(private.join("foreign/sentinel.txt")).unwrap(),
-                b"foreign private replacement sentinel"
-            );
-            assert_eq!(capture(&target), public_at_effect, "{phase}");
+                .expect("the real private-directory rename attempt must execute");
             assert_eq!(
                 fs::read(root.path().join(CONFIG_NAME)).unwrap(),
                 config_before
@@ -1929,57 +1966,156 @@ mod tests {
                 fs::read(root.path().join(LOCAL_CONFIG_NAME)).unwrap(),
                 local_before
             );
-            if after_publication {
-                assert!(result.ok, "{phase}");
-                assert_eq!(
-                    result.changed,
-                    vec![json!({"path":"main","kind":"replaced"})],
-                    "{phase}"
-                );
-                assert_eq!(result.data.as_ref().unwrap()["state"], "replaced");
-                assert!(!target.join("replaced.bsl").exists());
-                assert!(target.join("Catalogs/Items.xml").is_file());
-                assert!(owned_before.0.values().any(|bytes| bytes == b"old source"));
-            } else {
-                assert!(!result.ok, "{phase}");
-                assert_eq!(
-                    result.diagnostics[0]["code"], "concurrent_change",
-                    "{phase}"
-                );
-                assert!(result.changed.is_empty(), "{phase}");
-                assert_eq!(capture(&target), public_before, "{phase}");
-                assert_eq!(
-                    fs::read(target.join("replaced.bsl")).unwrap(),
-                    b"old source"
-                );
-                assert_ne!(
-                    result.data.as_ref().and_then(|data| data["state"].as_str()),
-                    Some("unknown"),
-                    "private location uncertainty must not change public publication facts"
-                );
-            }
             let encoded = serde_json::to_string(&result).unwrap();
             assert!(!encoded.contains("private-location-secret"), "{phase}");
             assert!(!encoded.contains("1cv8"), "{phase}");
             assert!(!encoded.contains("--config"), "{phase}");
             assert!(!encoded.contains(CONFIG_NAME), "{phase}");
-            let annotation = format!("original name: {}", private.display());
-            let mut without_location_note = serde_json::to_value(&result).unwrap();
-            let warnings = without_location_note["warnings"].as_array_mut().unwrap();
-            let before_count = warnings.len();
-            warnings.retain(|warning| {
-                !(warning["code"] == "export_cleanup"
-                    && warning["message"].as_str().is_some_and(|message| {
-                        message.contains("current location is unconfirmed")
-                            && message.contains(&annotation)
-                    }))
-            });
-            let exact_location_note = warnings.len() < before_count;
-            let no_other_private_path = !serde_json::to_string(&without_location_note)
-                .unwrap()
-                .contains(".unica-dump-guard-");
-            if !result.artifacts.is_empty() || !exact_location_note || !no_other_private_path {
-                invalid_reports.push(phase);
+            match outcome {
+                Relocation::Relocated {
+                    private,
+                    displaced,
+                    owned_before,
+                    foreign_before,
+                    public_at_effect,
+                } => {
+                    assert_eq!(
+                        capture(&displaced),
+                        owned_before,
+                        "{phase}: finalization must preserve all owned private identities and bytes"
+                    );
+                    assert_eq!(
+                        capture(&private),
+                        foreign_before,
+                        "{phase}: finalization must preserve all foreign identities and bytes"
+                    );
+                    assert_ne!(
+                        owned_before.1[Path::new("")],
+                        foreign_before.1[Path::new("")]
+                    );
+                    assert_eq!(
+                        fs::read(private.join("foreign/sentinel.txt")).unwrap(),
+                        b"foreign private replacement sentinel"
+                    );
+                    assert_eq!(capture(&target), public_at_effect, "{phase}");
+                    if after_publication {
+                        assert!(result.ok, "{phase}");
+                        assert_eq!(
+                            result.changed,
+                            vec![json!({"path":"main","kind":"replaced"})],
+                            "{phase}"
+                        );
+                        assert_eq!(result.data.as_ref().unwrap()["state"], "replaced");
+                        assert!(!target.join("replaced.bsl").exists());
+                        assert!(target.join("Catalogs/Items.xml").is_file());
+                        assert!(owned_before.0.values().any(|bytes| bytes == b"old source"));
+                    } else {
+                        assert!(!result.ok, "{phase}");
+                        assert_eq!(
+                            result.diagnostics[0]["code"], "concurrent_change",
+                            "{phase}"
+                        );
+                        assert!(result.changed.is_empty(), "{phase}");
+                        assert_eq!(capture(&target), public_before, "{phase}");
+                        assert_eq!(
+                            fs::read(target.join("replaced.bsl")).unwrap(),
+                            b"old source"
+                        );
+                        assert_ne!(
+                            result.data.as_ref().and_then(|data| data["state"].as_str()),
+                            Some("unknown"),
+                            "private location uncertainty must not change public publication facts"
+                        );
+                    }
+                    let annotation = format!("original name: {}", private.display());
+                    let mut without_location_note = serde_json::to_value(&result).unwrap();
+                    let warnings = without_location_note["warnings"].as_array_mut().unwrap();
+                    let before_count = warnings.len();
+                    warnings.retain(|warning| {
+                        !(warning["code"] == "export_cleanup"
+                            && warning["message"].as_str().is_some_and(|message| {
+                                message.contains("current location is unconfirmed")
+                                    && message.contains(&annotation)
+                            }))
+                    });
+                    let exact_location_note = warnings.len() < before_count;
+                    let no_other_private_path = !serde_json::to_string(&without_location_note)
+                        .unwrap()
+                        .contains(".unica-dump-guard-");
+                    if !result.artifacts.is_empty()
+                        || !exact_location_note
+                        || !no_other_private_path
+                    {
+                        invalid_reports.push(phase);
+                    }
+                    eprintln!("private_relocation_observed phase={phase} outcome=relocated");
+                }
+                Relocation::Denied {
+                    private,
+                    displaced,
+                    owned_before,
+                    public_at_effect,
+                } => {
+                    assert!(result.ok, "{phase}: {result:?}");
+                    assert_eq!(
+                        runner.call_count(),
+                        2,
+                        "{phase}: preview and apply must both run"
+                    );
+                    assert_eq!(
+                        result.changed,
+                        vec![json!({"path":"main","kind":"replaced"})]
+                    );
+                    assert_eq!(result.data.as_ref().unwrap()["state"], "replaced");
+                    assert_eq!(result.data.as_ref().unwrap()["files"], 2);
+                    assert!(!target.join("replaced.bsl").exists(), "{phase}");
+                    assert!(target.join("Catalogs/Items.xml").is_file(), "{phase}");
+                    if after_publication {
+                        assert_eq!(capture(&target), public_at_effect, "{phase}");
+                        assert!(owned_before.0.values().any(|bytes| bytes == b"old source"));
+                    } else {
+                        assert_eq!(public_at_effect, public_before, "{phase}");
+                        assert!(public_at_effect
+                            .0
+                            .values()
+                            .any(|bytes| bytes == b"old source"));
+                    }
+                    let replies = runner.replies.lock().unwrap();
+                    assert_eq!(
+                        replies
+                            .iter()
+                            .filter(|reply| {
+                                reply["phase"] == "ready" && reply["decision"] == "published"
+                            })
+                            .count(),
+                        1,
+                        "{phase}: publication must be acknowledged normally"
+                    );
+                    assert!(result.artifacts.is_empty(), "{phase}: {result:?}");
+                    assert!(
+                        !result.warnings.iter().any(|warning| {
+                            matches!(
+                                warning["code"].as_str(),
+                                Some("sync_memory_unconfirmed" | "export_cleanup")
+                            )
+                        }),
+                        "{phase}: {result:?}"
+                    );
+                    assert!(
+                        !encoded.contains(".unica-dump-guard-"),
+                        "{phase}: {result:?}"
+                    );
+                    for path in [&private, &displaced] {
+                        let absent = fs::symlink_metadata(path)
+                            .expect_err("confirmed finish removes private names");
+                        assert_eq!(
+                            absent.kind(),
+                            std::io::ErrorKind::NotFound,
+                            "{phase}: {absent}"
+                        );
+                    }
+                    eprintln!("private_relocation_observed phase={phase} outcome=denied");
+                }
             }
         }
         assert!(
