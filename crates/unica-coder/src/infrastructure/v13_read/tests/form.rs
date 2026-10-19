@@ -895,43 +895,6 @@ fn form_projection_uses_a_positive_nested_scalar_allowlist() {
     assert!(!serialized.contains("must-not-leak"), "{serialized}");
 }
 
-fn install_form_metadata_test_sources(fixture: &RealReaderFixture) {
-    let config = fs::read_to_string(fixture.source.join("Configuration.xml")).unwrap();
-    write(&fixture.source.join("Configuration.xml"), &config.replace("</ChildObjects>", "<CommonForm>ОбщаяФорма</CommonForm><DataProcessor>Обработка</DataProcessor></ChildObjects>"));
-    write_metadata_owner(
-        &fixture.source,
-        "DataProcessors",
-        "DataProcessor",
-        "Обработка",
-        "<Form>Форма</Form>",
-    );
-    for (descriptor, artifact, name, content) in [
-        (
-            "CommonForms/ОбщаяФорма.xml",
-            "CommonForm",
-            "ОбщаяФорма",
-            "CommonForms/ОбщаяФорма/Ext/Form.xml",
-        ),
-        (
-            "DataProcessors/Обработка/Forms/Форма.xml",
-            "Form",
-            "Форма",
-            "DataProcessors/Обработка/Forms/Форма/Ext/Form.xml",
-        ),
-    ] {
-        write(
-            &fixture.source.join(descriptor),
-            &format!(
-                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{artifact} uuid="e9455333-3333-4333-8333-333333333333"><Properties><Name>{name}</Name><FormType>Managed</FormType></Properties></{artifact}></MetaDataObject>"#
-            ),
-        );
-        write(
-            &fixture.source.join(content),
-            r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><ChildItems/></Form>"#,
-        );
-    }
-}
-
 #[test]
 fn form_metadata_has_its_own_descriptor_properties_and_resource_identity() {
     let fixture = RealReaderFixture::new();
