@@ -1990,50 +1990,253 @@ mod tests {
 
     #[test]
     fn a_verified_publication_with_no_terminal_retains_its_recovery() {
-        let root = workspace();
-        let target = root.path().join("main");
-        write_valid_dump(&target, false);
-        fs::write(target.join("replaced.bsl"), b"old source").unwrap();
-        let private_root = std::sync::Arc::new(Mutex::new(None));
-        let private_root_for_runner = private_root.clone();
-        let mut runner = SequenceRunner::exporting(
-            vec![
-                process(envelope(root.path(), "main", "FULL", None, false), true),
-                process(envelope(root.path(), "main", "FULL", None, true), true),
-            ],
-            target.clone(),
-        );
-        runner.fault = Some(PublicationFault::MissingTerminal);
-        runner.after_apply = Some(Box::new(move |_, stage| {
-            *private_root_for_runner.lock().unwrap() =
-                Some(stage.parent().unwrap().parent().unwrap().to_path_buf());
-        }));
-        let result = run(
-            root.path(),
-            &prepared(root.path(), ExportMode::Full, None, None, false),
-            &runner,
-        );
-        assert!(result.ok);
-        assert_eq!(
-            result.changed,
-            vec![json!({"path":"main","kind":"replaced"})]
-        );
-        assert_eq!(result.data.as_ref().unwrap()["state"], "replaced");
-        assert!(!target.join("replaced.bsl").exists());
-        assert!(target.join("Catalogs/Items.xml").is_file());
-        assert!(result
-            .warnings
-            .iter()
-            .any(|warning| warning["code"] == "sync_memory_unconfirmed"));
-        let private_root = private_root.lock().unwrap().take().unwrap();
-        assert!(private_root.is_dir(), "unconfirmed finish removed recovery");
+        use std::time::Duration;
+
+        struct ObservedSystemRunner {
+            fixture_cutoff: Option<Duration>,
+            outputs: Mutex<Vec<Result<ProcessStreamOutput, ProcessStreamFailure>>>,
+            delivered_frames: Mutex<Vec<Vec<Vec<u8>>>>,
+        }
+
+        impl ProcessRunner for ObservedSystemRunner {
+            fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+                SystemProcessRunner.run(command)
+            }
+
+            fn run_controlled_streaming_staged(
+                &self,
+                command: &ProcessCommand,
+                max_line_bytes: usize,
+                on_line: &mut dyn FnMut(usize, &[u8]) -> ProcessLineReply,
+            ) -> Result<ProcessStreamOutput, ProcessStreamFailure> {
+                let mut bounded = command.clone();
+                if let Some(cutoff) = self.fixture_cutoff {
+                    bounded.timeout = Some(
+                        bounded
+                            .timeout
+                            .map_or(cutoff, |existing| existing.min(cutoff)),
+                    );
+                }
+                let mut delivered = Vec::new();
+                let output = SystemProcessRunner.run_controlled_streaming_staged(
+                    &bounded,
+                    max_line_bytes,
+                    &mut |number, bytes| {
+                        let reply = on_line(number, bytes);
+                        delivered.push(bytes.to_vec());
+                        reply
+                    },
+                );
+                self.delivered_frames.lock().unwrap().push(delivered);
+                self.outputs.lock().unwrap().push(output.clone());
+                output
+            }
+        }
+
+        let build = tempfile::tempdir().unwrap();
+        let compiled = build.path().join(format!(
+            "publication-producer{}",
+            std::env::consts::EXE_SUFFIX
+        ));
+        let compilation =
+            std::process::Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+                .arg("--edition=2021")
+                .arg(
+                    Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("tests/support/real_publication_producer.rs"),
+                )
+                .arg("-o")
+                .arg(&compiled)
+                .output()
+                .expect("compile controlled publication producer");
         assert!(
-            crate::test_support::tree_snapshot(&private_root)
-                .values()
-                .any(|bytes| bytes == b"old source"),
-            "original source bytes must remain available for recovery"
+            compilation.status.success(),
+            "producer compilation failed: {}",
+            String::from_utf8_lossy(&compilation.stderr)
         );
-        assert_retained_artifact_names_directory(&result, root.path(), &private_root);
+
+        for mode in ["complete", "missing-terminal", "withheld-eof"] {
+            let root = workspace();
+            let canonical_root = normalize_path_identity(root.path()).unwrap();
+            let target = canonical_root.join("main");
+            write_valid_dump(&target, false);
+            fs::write(target.join("replaced.bsl"), b"old source").unwrap();
+            let platform = trusted_platform(&canonical_root);
+            let producer = canonical_root.join(format!(
+                "publication-producer{}",
+                std::env::consts::EXE_SUFFIX
+            ));
+            fs::copy(&compiled, &producer).unwrap();
+            fs::write(
+                producer.with_extension("fixture"),
+                format!(
+                    "{mode}\n{}\n{}\n{}\n{}\n",
+                    serde_json::to_string(&platform).unwrap(),
+                    serde_json::to_string(&target).unwrap(),
+                    envelope(&canonical_root, "main", "FULL", None, false),
+                    envelope(&canonical_root, "main", "FULL", None, true),
+                ),
+            )
+            .unwrap();
+            let runner = ObservedSystemRunner {
+                // The fixture deliberately never closes its output pipes in this case.
+                // Production FINISH_TIMEOUT and all callback replies stay unchanged.
+                fixture_cutoff: (mode == "withheld-eof").then_some(Duration::from_secs(5)),
+                outputs: Mutex::new(Vec::new()),
+                delivered_frames: Mutex::new(Vec::new()),
+            };
+            // Only installation attestation is a fixture. Process ownership, both
+            // pipes, reply writes, publication and guard cleanup execute normally.
+            let result = with_test_platform(&platform, "8.3.27.2074", || {
+                execute_with_resolved_runner(
+                    &prepared(&canonical_root, ExportMode::Full, None, None, false),
+                    &runner,
+                    CancellationToken::new(),
+                    &BundledTool {
+                        program: producer.clone(),
+                        warnings: Vec::new(),
+                        missing: None,
+                    },
+                    "0.15.2-test-fixture",
+                )
+            });
+            let outputs = runner.outputs.lock().unwrap();
+            assert_eq!(outputs.len(), 2, "{mode}: preview and apply must both run");
+            let preview = outputs[0].as_ref().expect("real preview process output");
+            assert!(
+                preview.status_success && !preview.timed_out,
+                "{mode}: {preview:?}"
+            );
+            assert!(!preview.cancelled && !preview.stopped_by_consumer);
+            assert!(preview.line_error.is_none(), "{mode}: {preview:?}");
+            let apply = outputs[1].as_ref().expect("real apply process output");
+            assert_eq!(apply.timed_out, mode == "withheld-eof", "{mode}: {apply:?}");
+            assert_eq!(
+                apply.status_success,
+                mode != "withheld-eof",
+                "{mode}: {apply:?}"
+            );
+            assert!(
+                !apply.cancelled && !apply.stopped_by_consumer,
+                "{mode}: {apply:?}"
+            );
+            assert!(apply.line_error.is_none(), "{mode}: {apply:?}");
+            assert!(
+                apply.stderr.contains("publication producer stderr"),
+                "{mode}: {apply:?}"
+            );
+
+            assert!(result.ok, "{mode}: {result:?}");
+            assert_eq!(
+                result.changed,
+                vec![json!({"path":"main","kind":"replaced"})]
+            );
+            let data = result.data.as_ref().unwrap();
+            assert_eq!(data["state"], "replaced", "{mode}: {result:?}");
+            assert_eq!(data["files"], 2, "{mode}: {result:?}");
+            assert!(!target.join("replaced.bsl").exists(), "{mode}");
+            assert!(target.join("Catalogs/Items.xml").is_file(), "{mode}");
+            let records: Vec<Value> = fs::read_to_string(producer.with_extension("events.jsonl"))
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            let ready: Vec<_> = records
+                .iter()
+                .filter(|record| record["event"] == "ready")
+                .collect();
+            assert_eq!(ready.len(), 1, "{mode}: {records:?}");
+            let ready = ready[0];
+            assert!(ready["pid"].as_u64().is_some_and(|pid| pid != 0), "{mode}");
+            let stage = PathBuf::from(ready["stage"].as_str().unwrap());
+            let private_root = stage.parent().unwrap().parent().unwrap();
+            let published_ack: Vec<_> = records
+                .iter()
+                .filter(|record| record["event"] == "published_ack")
+                .collect();
+            assert_eq!(published_ack.len(), 1, "{mode}: {records:?}");
+            assert_eq!(
+                published_ack[0]["reply"],
+                json!({
+                    "version":1,"nonce":ready["nonce"],"phase":"ready","decision":"published"
+                }),
+                "{mode}: {records:?}"
+            );
+            // Observe delivery after the production callback, not only the
+            // producer's flush: the deadline can expire with a frame still queued.
+            let delivered = runner.delivered_frames.lock().unwrap();
+            assert_eq!(
+                delivered.len(),
+                2,
+                "{mode}: preview and apply callback deliveries"
+            );
+            let apply_frames: Vec<Value> = delivered[1]
+                .iter()
+                .map(|bytes| serde_json::from_slice(bytes).unwrap())
+                .collect();
+            let terminals: Vec<_> = apply_frames
+                .iter()
+                .filter(|frame| frame["phase"] == "terminal")
+                .collect();
+            if mode == "missing-terminal" {
+                assert!(terminals.is_empty(), "{mode}: {apply_frames:?}");
+            } else {
+                assert_eq!(terminals.len(), 1, "{mode}: {apply_frames:?}");
+                assert_eq!(
+                    terminals[0],
+                    &json!({
+                        "version":1,
+                        "nonce":ready["nonce"],
+                        "phase":"terminal",
+                        "publication":"published",
+                        "memory":"saved",
+                        "result":envelope(&canonical_root, "main", "FULL", None, true),
+                    }),
+                    "{mode}: callback did not receive the valid terminal outcome"
+                );
+            }
+            let has_event = |name: &str| records.iter().any(|record| record["event"] == name);
+            assert_eq!(
+                has_event("terminal_sent"),
+                mode != "missing-terminal",
+                "{mode}: {records:?}"
+            );
+            assert_eq!(
+                has_event("exit_without_terminal"),
+                mode == "missing-terminal",
+                "{mode}: {records:?}"
+            );
+            assert_eq!(
+                has_event("eof_withheld"),
+                mode == "withheld-eof",
+                "{mode}: {records:?}"
+            );
+            assert_eq!(
+                result
+                    .warnings
+                    .iter()
+                    .any(|warning| warning["code"] == "sync_memory_unconfirmed"),
+                mode != "complete",
+                "{mode}: {result:?}"
+            );
+            if mode == "complete" {
+                let absence = fs::symlink_metadata(private_root)
+                    .expect_err("confirmed finite producer must release its recovery directory");
+                assert_eq!(absence.kind(), std::io::ErrorKind::NotFound, "{absence}");
+            } else {
+                assert!(
+                    private_root.is_dir(),
+                    "{mode}: unconfirmed finish removed recovery"
+                );
+                assert!(
+                    crate::test_support::tree_snapshot(private_root)
+                        .values()
+                        .any(|bytes| bytes == b"old source"),
+                    "{mode}: original source bytes must remain available for recovery"
+                );
+                assert_retained_artifact_names_directory(&result, &canonical_root, private_root);
+            }
+        }
     }
 
     #[test]
