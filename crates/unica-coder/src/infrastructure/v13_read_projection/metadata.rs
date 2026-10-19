@@ -388,17 +388,31 @@ fn unreadable_limits(payload: &Value) -> Vec<String> {
 /// Без неё `URLTemplate` сервиса, чей шаблон читатель не разобрал, отвечал бы
 /// «нет такой коллекции», и агент счёл бы сервис пустым.
 fn unreadable_collection(payload: &Value, kind: NodeKind) -> Option<String> {
-    let prefix = match kind {
-        NodeKind::PredefinedItem => "predefinedItems",
-        NodeKind::UrlTemplate => "details.urlTemplates",
-        NodeKind::Operation => "details.operations",
+    let (prefix, property) = match kind {
+        NodeKind::PredefinedItem => ("predefinedItems", None),
+        NodeKind::UrlTemplate => ("details.urlTemplates", None),
+        NodeKind::Operation => ("details.operations", None),
+        NodeKind::StandardAttribute => {
+            ("standardAttributes", Some("properties.StandardAttributes"))
+        }
+        NodeKind::Characteristic => ("characteristics", Some("properties.Characteristics")),
+        NodeKind::StandardTabularSection => (
+            "standardTabularSections",
+            Some("properties.StandardTabularSections"),
+        ),
         _ => return None,
     };
+    // У применимой декларации есть ключ, даже если её состав не прочитан.
+    // Чужое одноимённое свойство не делает декларацию применимой к объекту.
+    if property.is_some() && metadata_collection(payload, kind).is_none() {
+        return None;
+    }
     let reasons = unreadable_entries(payload)
         .filter(|(field, _)| {
-            field
-                .strip_prefix(prefix)
-                .is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '[']))
+            property == Some(*field)
+                || field
+                    .strip_prefix(prefix)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '[']))
         })
         .map(|(field, message)| format!("{field}: {message}"))
         .collect::<Vec<_>>();

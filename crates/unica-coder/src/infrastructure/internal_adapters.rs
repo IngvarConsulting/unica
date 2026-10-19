@@ -34,6 +34,8 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+pub use crate::infrastructure::platform::ProcessLineReply;
+
 const DEFAULT_PROCESS_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Clone)]
@@ -136,6 +138,20 @@ pub trait ProcessRunner {
     ) -> Result<ProcessStreamOutput, ProcessStreamFailure> {
         self.run_streaming(command, max_line_bytes, on_line)
             .map_err(ProcessStreamFailure::Run)
+    }
+
+    /// Exchange live, bounded line replies with one owned process. Unlike the
+    /// observation-only fallback, this cannot replay a captured `run` output:
+    /// the process must receive each decision before producing its next frame.
+    fn run_controlled_streaming_staged(
+        &self,
+        _command: &ProcessCommand,
+        _max_line_bytes: usize,
+        _on_line: &mut dyn FnMut(usize, &[u8]) -> ProcessLineReply,
+    ) -> Result<ProcessStreamOutput, ProcessStreamFailure> {
+        Err(ProcessStreamFailure::Run(
+            "process_failed: process runner does not support controlled streaming".into(),
+        ))
     }
 
     fn run_pending_handoff(
@@ -2443,6 +2459,22 @@ impl ProcessRunner for SystemProcessRunner {
             .map_err(ProcessStreamFailure::from_spawn)?;
         let output = child
             .wait_for_line_output(max_line_bytes, on_line)
+            .map_err(ProcessStreamFailure::Run)?;
+        Ok(map_managed_line_output(output))
+    }
+
+    fn run_controlled_streaming_staged(
+        &self,
+        command: &ProcessCommand,
+        max_line_bytes: usize,
+        on_line: &mut dyn FnMut(usize, &[u8]) -> ProcessLineReply,
+    ) -> Result<ProcessStreamOutput, ProcessStreamFailure> {
+        #[cfg(test)]
+        process_launch_probe::record(&command.cwd, command.program.as_ref());
+        let mut child = ManagedChild::spawn_staged(managed_command(command))
+            .map_err(ProcessStreamFailure::from_spawn)?;
+        let output = child
+            .wait_for_controlled_line_output(max_line_bytes, on_line)
             .map_err(ProcessStreamFailure::Run)?;
         Ok(map_managed_line_output(output))
     }
@@ -6295,6 +6327,13 @@ analyze_timeout_seconds = 900
             matches!(streaming, ProcessStreamFailure::Run(_)),
             "{streaming:?}"
         );
+        let controlled = SYSTEM_PROCESS_RUNNER
+            .run_controlled_streaming_staged(&command, 1024, &mut |_, _| ProcessLineReply::Continue)
+            .expect_err("a missing working directory cannot run");
+        assert!(
+            matches!(controlled, ProcessStreamFailure::Run(_)),
+            "{controlled:?}"
+        );
         let handoff = match SYSTEM_PROCESS_RUNNER.run_pending_handoff_staged(&command) {
             Ok(_) => panic!("a missing working directory cannot run"),
             Err(failure) => failure,
@@ -6303,6 +6342,32 @@ analyze_timeout_seconds = 900
             matches!(handoff, ProcessStreamFailure::Run(_)),
             "{handoff:?}"
         );
+    }
+
+    #[test]
+    fn controlled_streaming_refuses_a_runner_without_live_pipe_support() {
+        struct CapturedOnlyRunner;
+        impl ProcessRunner for CapturedOnlyRunner {
+            fn run(&self, _: &ProcessCommand) -> Result<ProcessOutput, String> {
+                panic!("controlled streaming must never replay captured output")
+            }
+        }
+        let command = ProcessCommand {
+            program: PathBuf::from("unused-captured-runner"),
+            args: Vec::new(),
+            cwd: std::env::temp_dir(),
+            env: Vec::new(),
+            env_remove: Vec::new(),
+            capture_limits: None,
+            timeout: None,
+            cancellation: CancellationToken::new(),
+        };
+        let failure = CapturedOnlyRunner
+            .run_controlled_streaming_staged(&command, 1024, &mut |_, _| {
+                panic!("unsupported runner must not invoke the live callback")
+            })
+            .expect_err("captured-only runner has no live decisions");
+        assert!(matches!(failure, ProcessStreamFailure::Run(_)));
     }
 
     #[test]

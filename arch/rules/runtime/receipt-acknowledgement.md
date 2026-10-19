@@ -1,6 +1,7 @@
 ---
 id: INV.APP.RECEIPT-ACKNOWLEDGEMENT
 check:
+  - crates/unica-coder/src/application/execution/tests.rs::first_acknowledgement_is_immutable_across_duplicates_and_reopen
   - crates/unica-coder/src/infrastructure/receipt_ledger/tests/crash_process_tests.rs::ack_crash_after_compact_row_rename_reopens_the_same_tombstone
   - crates/unica-coder/src/infrastructure/receipt_ledger/tests/crash_process_tests.rs::ack_crash_after_witness_row_before_generation_heals_and_compacts_on_reopen
   - crates/unica-coder/src/infrastructure/receipt_ledger/tests.rs::rejected_ack_does_not_reclaim_an_unrelated_expired_tombstone
@@ -12,10 +13,15 @@ gap: https://github.com/IngvarConsulting/unica/issues/1119
 # Подтверждение прямого ответа освобождает результат и сохраняет след вызова
 
 Подтверждение принимается только для конечной прямой квитанции с совпавшими
-ключом и хешем результата. Преждевременное подтверждение или другой хеш
-не меняют запись.
+ключом, хешем результата и capability владельца Submit. Преждевременное
+подтверждение, чужая capability или другой хеш не меняют запись.
+Полномочия и порядок Direct/Task описаны в
+[правиле выдачи](execution-delivery.md).
 
-После подтверждения полное содержимое удаляется. Остаётся компактная запись
+Подтверждение снимает право прямого ответа, но сохраняет независимое обещание
+публичного Task и нужный живым держателям результат producer. Полное содержимое
+можно удалить только при отсутствии таких прав. После разрешённого сжатия
+остаётся компактная запись
 с ключом, хешем и временем первого подтверждения. Повтор подтверждения
 возвращает те же сведения; повтор вызова получает эту запись и не запускает
 операцию заново. Компактная запись восстанавливается после повторного
@@ -27,4 +33,6 @@ gap: https://github.com/IngvarConsulting/unica/issues/1119
 
 Проверки подтверждают допуск ACK, сжатие результата, восстановление
 компактной записи и отсутствие повторного исполнения. Сохранность результата
-и следа вызова за действующими сроками хранения остаётся в `gap`.
+и следа вызова за действующими сроками хранения остаётся в `gap`. Capability
+и независимые права Task ещё не подключены к рабочему протоколу; их реализация
+и приёмка ведутся в [#1743](https://github.com/IngvarConsulting/unica/issues/1743).

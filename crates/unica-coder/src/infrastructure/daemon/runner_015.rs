@@ -22,15 +22,17 @@
 //! lives elsewhere, so every such path is made absolute against the workspace
 //! root before the copy is written.
 use super::v13_workspace_bootstrap::read_yaml_config;
+use crate::domain::cancellation::CancellationToken;
 use crate::infrastructure::internal_adapters::{
     ProcessCommand, ProcessOutput, ProcessRunner, ProcessStreamFailure, SystemProcessRunner,
 };
+use crate::infrastructure::platform::full_dump_publication::RunnerProjectStore;
 use crate::infrastructure::platform::PendingProcessHandoff;
 use crate::infrastructure::source_roots::normalize_path_identity;
 use serde_yaml::{Mapping, Value};
 use std::path::{Path, PathBuf};
 
-pub(super) const VERSION: &str = "0.15.1";
+pub(super) const VERSION: &str = "0.15.2";
 pub(super) fn check_version(version: &str) -> Result<(), String> {
     if version == VERSION {
         Ok(())
@@ -116,6 +118,23 @@ fn with_projected_config<T>(
     command: &ProcessCommand,
     execute: impl FnOnce(&ProcessCommand) -> Result<T, String>,
 ) -> Result<T, String> {
+    let (_, root) = project_location(command)?;
+    let mut store = lock_project(root, &command.cancellation).map_err(|error| error.to_string())?;
+    with_projected_config_in_store(command, &mut store, execute)
+}
+
+pub(super) fn lock_project(
+    root: &Path,
+    cancellation: &CancellationToken,
+) -> Result<
+    RunnerProjectStore,
+    crate::infrastructure::platform::full_dump_publication::RunnerProjectLockFailure,
+> {
+    let root = normalize_path_identity(root).map_err(refuse)?;
+    RunnerProjectStore::open_and_lock(&projection_directory(&root), cancellation)
+}
+
+fn project_location(command: &ProcessCommand) -> Result<(usize, &Path), String> {
     let position = command
         .args
         .iter()
@@ -129,6 +148,15 @@ fn with_projected_config<T>(
             .ok_or("missing project config argument")?,
     );
     let root = path.parent().ok_or("project config has no parent")?;
+    Ok((position, root))
+}
+
+fn with_projected_config_in_store<T>(
+    command: &ProcessCommand,
+    store: &mut RunnerProjectStore,
+    execute: impl FnOnce(&ProcessCommand) -> Result<T, String>,
+) -> Result<T, String> {
+    let (position, root) = project_location(command)?;
     let base = read_yaml_config(root, BASE_NAME)
         .map_err(refuse)?
         .ok_or_else(|| refuse(format!("{BASE_NAME} is absent")))?;
@@ -141,32 +169,18 @@ fn with_projected_config<T>(
     if !needs_projection(&base, local.as_ref()) {
         // The workspace itself holds the infobase now: a former projection must
         // not stay alive as another working copy that still declares it.
-        let root = normalize_path_identity(root).map_err(refuse)?;
-        match std::fs::remove_dir_all(projection_directory(&root)) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return Err("cannot remove the former projected runner config".into()),
-        }
+        store.remove_projection()?;
         return execute(command);
     }
     let root = normalize_path_identity(root).map_err(refuse)?;
     // Project both layers before creating private files or starting any process.
     let (base, local) = project(base, local, &root)?;
-    let directory = projection_directory(&root);
-    create_private_directory(&directory)?;
+    let directory = store.directory().to_path_buf();
     let config = directory.join(BASE_NAME);
-    write_config(&config, &base)?;
-    let local_path = directory.join(LOCAL_NAME);
-    match local {
-        Some(local) => write_config(&local_path, &local)?,
-        None => match std::fs::remove_file(&local_path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return Err("cannot remove a stale projected local layer".into()),
-        },
-    }
+    store.write_projection(&base, local.as_ref())?;
     let mut projected = command.clone();
     projected.args[position] = config.display().to_string();
+    store.verify()?;
     // Keep cwd and every invocation argument: only the config is a compatibility projection.
     execute(&projected)
 }
@@ -192,40 +206,6 @@ fn projection_directory_in(root: &Path, cache_override: Option<PathBuf>) -> Path
             cache.join("runner-project").join(key)
         }
     }
-}
-
-/// The local layer carries credentials: the directory is readable by its owner
-/// only.
-fn create_private_directory(directory: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(directory)
-        .map_err(|_| "cannot create private runner config directory")?;
-    crate::infrastructure::platform::restrict_directory_to_owner(directory)
-        .map_err(|_| "cannot restrict private runner config directory".into())
-}
-
-/// Writes one projected layer atomically: a concurrent command of the same
-/// working copy reads either the previous or the new copy, never a half.
-fn write_config(path: &Path, value: &Value) -> Result<(), String> {
-    use std::io::Write;
-    let bytes =
-        serde_yaml::to_string(value).map_err(|_| "cannot serialize projected runner config")?;
-    let directory = path.parent().ok_or("projected config has no directory")?;
-    let mut file = tempfile::NamedTempFile::new_in(directory)
-        .map_err(|_| "cannot write private projected runner config")?;
-    file.write_all(bytes.as_bytes())
-        .map_err(|_| "cannot write private projected runner config")?;
-    // The directory is recorded as the infobase owner: after a crash the copy
-    // must be either the previous or the new one, never empty. The file is
-    // flushed everywhere; the rename is made durable on Unix, where a
-    // directory can be synced (on Windows the platform helper is a no-op).
-    file.as_file()
-        .sync_all()
-        .map_err(|_| "cannot write private projected runner config")?;
-    file.persist(path)
-        .map_err(|_| "cannot write private projected runner config")?;
-    crate::infrastructure::platform::filesystem::sync_parent_directory(directory)
-        .map_err(|_| "cannot write private projected runner config")?;
-    Ok(())
 }
 
 fn mapping<'a>(value: &'a Value, file: &str) -> Result<&'a Mapping, String> {
@@ -365,6 +345,68 @@ fn project(
             .as_mapping_mut()
             .expect("projected local layer is a mapping")
             .insert(Value::from("infobases"), Value::Mapping(bases));
+    }
+    Ok((base, local))
+}
+
+/// Builds the snapshotted effective input of a verified full export with the
+/// same layer precedence as an ordinary runner command. The publication guard
+/// accepts the selected origin as `infobase`; its final runner projection puts
+/// that section back in the private local layer.
+pub(super) fn normalize_full_export_config(
+    base: Value,
+    local: Option<Value>,
+    root: &Path,
+) -> Result<Value, String> {
+    validate_layer(&base, BASE_NAME)?;
+    if let Some(local) = &local {
+        validate_layer(local, LOCAL_NAME)?;
+        for key in mapping(local, LOCAL_NAME)?.keys() {
+            match key.as_str() {
+                Some(
+                    "workPath" | "infobase" | "infobases" | "tools" | "tests" | "mcp" | "providers",
+                ) => {}
+                Some(key) => return Err(refuse(format!("{LOCAL_NAME} cannot override `{key}`"))),
+                None => return Err(refuse(format!("{LOCAL_NAME} contains a non-string key"))),
+            }
+        }
+    }
+    let (mut effective, local) = project(base, local, root)?;
+    if let Some(local) = local {
+        merge_yaml_values(&mut effective, local);
+    }
+    if let Some(origin) = take_origin(&mut effective, BASE_NAME)? {
+        effective
+            .as_mapping_mut()
+            .expect("projected effective config is a mapping")
+            .insert(Value::from("infobase"), origin);
+    }
+    Ok(effective)
+}
+
+/// Projects a snapshotted effective document without changing its public
+/// source identity or provider. The guard owns private creation and publication.
+pub(super) fn project_full_export_config(
+    effective: Value,
+    root: &Path,
+) -> Result<(Value, Option<Value>), String> {
+    validate_layer(&effective, BASE_NAME)?;
+    let (mut base, mut local) = project(effective, None, root)?;
+    // The effective document has already merged the two source layers. Keep
+    // every machine-local section in the local projection, including tool
+    // credentials whose original layer is no longer represented here.
+    for key in ["workPath", "tools", "tests", "mcp", "providers"] {
+        if let Some(value) = base
+            .as_mapping_mut()
+            .expect("projected primary config is a mapping")
+            .remove(Value::from(key))
+        {
+            local
+                .get_or_insert_with(|| Value::Mapping(Mapping::new()))
+                .as_mapping_mut()
+                .expect("projected local config is a mapping")
+                .insert(Value::from(key), value);
+        }
     }
     Ok((base, local))
 }
@@ -777,6 +819,120 @@ mod tests {
         path.display().to_string()
     }
 
+    #[test]
+    fn full_export_normalization_preserves_the_effective_origin_and_layer_paths() {
+        let base = "format: DESIGNER\ninfobase: {connection: 'File=base', user: Admin}\nproviders: {dump: designer}\nsource-set: [{name: main, type: configuration, path: src}]\n";
+        let local = "infobases: {origin: {password: private-test-secret, user: Tester}}\nworkPath: local-build\nproviders: {pull: ibcmd}\ntools: {platform: {path: platform, version: 8.3.27.1800}}\n";
+        let workspace = workspace(base, Some(local));
+        let root = identity(workspace.path());
+        let effective = normalize_full_export_config(
+            serde_yaml::from_str(base).unwrap(),
+            Some(serde_yaml::from_str(local).unwrap()),
+            &root,
+        )
+        .unwrap();
+        assert_eq!(effective["infobase"]["user"], "Tester");
+        assert_eq!(effective["infobase"]["password"], "private-test-secret");
+        assert_eq!(
+            effective["infobase"]["connection"],
+            format!("File=\"{}\"", root.join("base").display())
+        );
+        assert!(effective.get("infobases").is_none());
+        assert_eq!(effective["providers"]["pull"], "ibcmd");
+        assert!(effective["providers"].get("dump").is_none());
+        assert_eq!(effective["workPath"], text(root.join("local-build")));
+        assert_eq!(effective["source-set"][0]["path"], text(root.join("src")));
+        assert_eq!(effective["source-set"][0]["type"], "CONFIGURATION");
+        assert_eq!(
+            effective["tools"]["platform"]["path"],
+            text(root.join("platform"))
+        );
+        assert_eq!(std::fs::read_to_string(root.join(BASE_NAME)).unwrap(), base);
+        assert_eq!(
+            std::fs::read_to_string(root.join(LOCAL_NAME)).unwrap(),
+            local
+        );
+        assert!(
+            !projection_directory(&root).exists(),
+            "pure normalization wrote a projection"
+        );
+    }
+
+    #[test]
+    fn full_export_projection_keeps_the_staged_target_and_attested_platform() {
+        let workspace = tempfile::tempdir().unwrap();
+        let root = identity(workspace.path());
+        let stage = root.join("private-dump/staged");
+        let platform = root.join("trusted-platform/1cv8");
+        let effective = serde_yaml::from_str::<Value>(&format!(
+            "format: DESIGNER\nworkPath: build\ninfobase: {{connection: 'File=ib', password: private-test-secret}}\nsource-set:\n  - {{name: main, type: CONFIGURATION, path: '{}'}}\n  - {{name: ext, type: EXTENSION, path: ext}}\ntools: {{platform: {{path: '{}', version: 8.3.27.1800}}}}\n",
+            stage.display(), platform.display()
+        )).unwrap();
+        let (base, local) = project_full_export_config(effective, &root).unwrap();
+        assert_eq!(base["source-set"][0]["path"], text(stage));
+        assert_eq!(base["source-set"][1]["path"], text(root.join("ext")));
+        let local = local.unwrap();
+        assert_eq!(local["tools"]["platform"]["path"], text(platform));
+        assert_eq!(local["tools"]["platform"]["version"], "8.3.27.1800");
+        assert!(base.get("infobase").is_none());
+        assert!(base.get("infobases").is_none());
+        assert!(base.get("tools").is_none());
+        assert_eq!(
+            local["infobases"]["origin"]["password"],
+            "private-test-secret"
+        );
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn full_export_projection_keeps_machine_local_secrets_out_of_the_primary() {
+        let root = std::env::temp_dir();
+        let base = serde_yaml::from_str::<Value>(
+            "format: DESIGNER\nsource-set: [{name: main, type: CONFIGURATION, path: src}]\n",
+        )
+        .unwrap();
+        let local = serde_yaml::from_str::<Value>(
+            "infobases: {origin: {connection: 'File=ib', password: base-test-secret}}\ntools: {designer_agent: {host-key: agent-test-secret.key}}\ntests: {va: {params_path: tests-test-secret.json}}\nmcp: {http: {allowed_hosts: [mcp-private-host]}}\nproviders: {pull: designer}\n",
+        ).unwrap();
+        let effective = normalize_full_export_config(base, Some(local), &root).unwrap();
+        let (base, local) = project_full_export_config(effective, &root).unwrap();
+        let primary = serde_yaml::to_string(&base).unwrap();
+        for secret in [
+            "base-test-secret",
+            "agent-test-secret",
+            "tests-test-secret",
+            "mcp-private-host",
+        ] {
+            assert!(!primary.contains(secret), "primary contains {secret}");
+        }
+        let local = local.unwrap();
+        assert_eq!(local["infobases"]["origin"]["password"], "base-test-secret");
+        assert_eq!(
+            local["tools"]["designer_agent"]["host-key"],
+            text(root.join("agent-test-secret.key"))
+        );
+        assert_eq!(
+            local["tests"]["va"]["params_path"],
+            text(root.join("tests-test-secret.json"))
+        );
+        assert_eq!(local["mcp"]["http"]["allowed_hosts"][0], "mcp-private-host");
+        assert_eq!(local["providers"]["pull"], "designer");
+    }
+
+    #[test]
+    fn full_export_normalization_refuses_local_identity_overrides() {
+        let root = std::env::temp_dir();
+        let base = serde_yaml::from_str::<Value>(
+            "source-set: [{name: main, type: CONFIGURATION, path: src}]\n",
+        )
+        .unwrap();
+        for key in ["source-set", "format", "builder", "unknown-local-setting"] {
+            let local = serde_yaml::from_str::<Value>(&format!("{key}: ignored\n")).unwrap();
+            let error = normalize_full_export_config(base.clone(), Some(local), &root).unwrap_err();
+            assert!(config_refusal(&error).unwrap().contains(key), "{error}");
+        }
+    }
+
     /// Раннер 0.15 записывает владельцем файловой базы каталог прочитанного
     /// конфига. Каталог проекции поэтому постоянный и один на рабочую копию:
     /// повтор пишет туда же, лишний местный слой убирается, а команда без
@@ -1102,6 +1258,7 @@ mod tests {
     #[test]
     fn unknown_runner_versions_are_not_probed_by_executing_an_operation() {
         assert!(check_version(VERSION).is_ok());
+        assert!(check_version("0.15.2").is_ok());
         for version in [
             "0.9.0",
             "0.11.3",
@@ -1110,7 +1267,9 @@ mod tests {
             "0.13.0",
             "0.14.0",
             "0.15.0",
-            "0.15.2",
+            "0.15.1",
+            "0.15.3",
+            "0.15.2-rc.1",
             "1.0.0",
             "1.0.0-rc.1",
             "",

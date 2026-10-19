@@ -27,6 +27,7 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/runtime_v5/join_freshness.rs::a_file_edited_after_the_walk_started_forbids_the_join
   - crates/unica-coder/src/infrastructure/daemon/runtime_v5/join_freshness.rs::a_file_edited_within_the_margin_before_the_walk_forbids_the_join
   - crates/unica-coder/src/infrastructure/daemon/runtime_v5/join_freshness.rs::an_edited_project_file_forbids_the_join
+gap: https://github.com/IngvarConsulting/unica/issues/1743
 ---
 
 # Одинаковое чтение присоединяется к идущему заданию
@@ -67,7 +68,14 @@ check:
 общего задания видят все держатели.
 
 Учёт держателей живёт в памяти демона и ограничен: при переполнении новый
-вызов исполняется сам. Запись держателя удаляется вместе с общим заданием
-по сроку его хранения. После перезапуска демона `taskId` присоединившегося
+вызов исполняется сам. Очистка временного держателя не разрешает удалять обещанный результат
+или след дедупликации по возрасту. После перезапуска демона `taskId` присоединившегося
 вызова неизвестен (`task_not_found`), а общее задание получает
 восстановительный конечный статус.
+
+Личный конечный вид первоначального держателя сохраняется отдельно от исхода
+producer и переживает перезапуск по [правилу выдачи](execution-delivery.md).
+Ранний Task lookup не меняет допустимость присоединения. Существующие проверки
+отмены первоначального держателя подтверждают порядок в живом процессе;
+долговечность его личного результата и единая authority состава держателей
+остаются в `gap`.

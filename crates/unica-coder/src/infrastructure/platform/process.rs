@@ -778,6 +778,138 @@ pub enum StreamControl {
     Stop,
 }
 
+/// A response to one live stdout line. Replies contain exactly one nonempty,
+/// LF-terminated UTF-8 line, including the LF, and at most 4096 bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProcessLineReply {
+    Continue,
+    Reply(Vec<u8>),
+    /// The caller has already committed its external effect under its
+    /// cancellation gate. Stop observing cancellation before writing this
+    /// reply and finish within this budget. The command's explicit timeout
+    /// still applies; further protected replies cannot extend this budget.
+    ReplyAndProtect {
+        reply: Vec<u8>,
+        finish_timeout: Duration,
+    },
+    Stop,
+}
+
+const STREAM_REPLY_LIMIT: usize = 4096;
+
+/// Only the pipe writer runs off-thread. ManagedChild remains the sole owner
+/// of process polling, cancellation, deadlines and process-tree cleanup.
+struct LineReplyWriter {
+    requests: mpsc::SyncSender<Vec<u8>>,
+    results: Receiver<Result<(), String>>,
+    writing: bool,
+}
+
+impl LineReplyWriter {
+    fn start(mut stdin: ChildStdin) -> Self {
+        let (requests, pending) = mpsc::sync_channel::<Vec<u8>>(1);
+        let (finished, results) = mpsc::sync_channel(1);
+        thread::spawn(move || {
+            while let Ok(bytes) = pending.recv() {
+                let result = stdin.write_all(&bytes).map_err(|error| {
+                    format!("process_failed: process stdin reply write failed: {error}")
+                });
+                let failed = result.is_err();
+                if finished.send(result).is_err() || failed {
+                    break;
+                }
+            }
+        });
+        Self {
+            requests,
+            results,
+            writing: false,
+        }
+    }
+
+    fn reply(&mut self, bytes: Vec<u8>) -> Result<(), String> {
+        if bytes.len() < 2
+            || bytes.len() > STREAM_REPLY_LIMIT
+            || bytes.last() != Some(&b'\n')
+            || bytes[..bytes.len() - 1]
+                .iter()
+                .any(|byte| matches!(*byte, b'\n' | b'\r'))
+            || std::str::from_utf8(&bytes).is_err()
+        {
+            return Err("process_failed: process stdin reply must be one LF-terminated UTF-8 line of at most 4096 bytes".into());
+        }
+        if self.writing {
+            return Err("process_failed: process stdin reply is still pending".into());
+        }
+        self.requests
+            .try_send(bytes)
+            .map_err(|_| "process_failed: process stdin reply writer is unavailable".to_string())?;
+        self.writing = true;
+        Ok(())
+    }
+
+    fn poll(&mut self) -> Result<(), String> {
+        if !self.writing {
+            return Ok(());
+        }
+        match self.results.try_recv() {
+            Ok(result) => {
+                self.writing = false;
+                result
+            }
+            Err(TryRecvError::Empty) => Ok(()),
+            Err(TryRecvError::Disconnected) => {
+                Err("process_failed: process stdin reply writer disconnected".into())
+            }
+        }
+    }
+}
+
+enum LineStreamInput {
+    Closed,
+    Replies(LineReplyWriter),
+}
+
+#[derive(Clone, Copy)]
+enum LineStreamKind {
+    Observe,
+    Controlled,
+}
+
+impl LineStreamInput {
+    fn is_controlled(&self) -> bool {
+        matches!(self, Self::Replies(_))
+    }
+
+    fn is_writing(&self) -> bool {
+        match self {
+            Self::Closed => false,
+            Self::Replies(writer) => writer.writing,
+        }
+    }
+
+    fn kind(&self) -> LineStreamKind {
+        match self {
+            Self::Closed => LineStreamKind::Observe,
+            Self::Replies(_) => LineStreamKind::Controlled,
+        }
+    }
+
+    fn poll(&mut self) -> Result<(), String> {
+        match self {
+            Self::Closed => Ok(()),
+            Self::Replies(writer) => writer.poll(),
+        }
+    }
+
+    fn reply(&mut self, bytes: Vec<u8>) -> Result<(), String> {
+        match self {
+            Self::Closed => Err("process_failed: process stdin is closed".into()),
+            Self::Replies(writer) => writer.reply(bytes),
+        }
+    }
+}
+
 pub struct ManagedChild {
     child: Child,
     process_tree: ProcessTree,
@@ -859,25 +991,25 @@ pub(crate) struct ManagedStartupChild {
     child: Option<Child>,
     process_tree: ProcessTree,
     termination_attempted: bool,
-    termination_clock: Arc<dyn StartupTerminationClock>,
+    termination_clock: Arc<dyn ProcessWaitClock>,
     #[cfg(test)]
     termination_probe: Option<ManualStartupTerminationProbe>,
 }
 
-trait StartupTerminationClock: Send + Sync {
+trait ProcessWaitClock: Send + Sync {
     fn elapsed(&self) -> Duration;
     fn sleep(&self, duration: Duration);
 }
 
-struct SystemStartupTerminationClock(Instant);
+struct SystemProcessWaitClock(Instant);
 
-impl SystemStartupTerminationClock {
+impl SystemProcessWaitClock {
     fn new() -> Self {
         Self(Instant::now())
     }
 }
 
-impl StartupTerminationClock for SystemStartupTerminationClock {
+impl ProcessWaitClock for SystemProcessWaitClock {
     fn elapsed(&self) -> Duration {
         self.0.elapsed()
     }
@@ -890,11 +1022,11 @@ impl StartupTerminationClock for SystemStartupTerminationClock {
 struct StartupTerminationDeadline {
     started: Duration,
     budget: Duration,
-    clock: Arc<dyn StartupTerminationClock>,
+    clock: Arc<dyn ProcessWaitClock>,
 }
 
 impl StartupTerminationDeadline {
-    fn new(budget: Duration, clock: Arc<dyn StartupTerminationClock>) -> Self {
+    fn new(budget: Duration, clock: Arc<dyn ProcessWaitClock>) -> Self {
         let started = clock.elapsed();
         Self {
             started,
@@ -904,7 +1036,7 @@ impl StartupTerminationDeadline {
     }
 
     fn system(budget: Duration) -> Self {
-        Self::new(budget, Arc::new(SystemStartupTerminationClock::new()))
+        Self::new(budget, Arc::new(SystemProcessWaitClock::new()))
     }
 
     fn remaining(&self) -> Duration {
@@ -993,7 +1125,7 @@ impl ManualStartupTerminationProbe {
 }
 
 #[cfg(test)]
-impl StartupTerminationClock for ManualStartupTerminationProbe {
+impl ProcessWaitClock for ManualStartupTerminationProbe {
     fn elapsed(&self) -> Duration {
         self.elapsed()
     }
@@ -1368,15 +1500,127 @@ impl ManagedChild {
         F: FnMut(usize, &[u8]) -> StreamControl,
     {
         drop(self.take_stdin());
-        let stdout = start_line_reader(self.take_stdout(), max_line_bytes);
-        let stderr = start_reader(self.take_stderr(), STDERR_CAPTURE_LIMIT);
-        let started = Instant::now();
+        self.wait_for_line_output_inner(
+            max_line_bytes,
+            &mut |number, bytes| match on_line(number, bytes) {
+                StreamControl::Continue => ProcessLineReply::Continue,
+                StreamControl::Stop => ProcessLineReply::Stop,
+            },
+            LineStreamInput::Closed,
+        )
+    }
+
+    pub(crate) fn wait_for_controlled_line_output(
+        &mut self,
+        max_line_bytes: usize,
+        on_line: &mut dyn FnMut(usize, &[u8]) -> ProcessLineReply,
+    ) -> Result<ManagedLineOutput, String> {
+        let stdin = self
+            .take_stdin()
+            .ok_or("process_failed: process stdin is unavailable")?;
+        self.wait_for_line_output_inner(
+            max_line_bytes,
+            on_line,
+            LineStreamInput::Replies(LineReplyWriter::start(stdin)),
+        )
+    }
+
+    fn wait_for_line_output_inner(
+        &mut self,
+        max_line_bytes: usize,
+        on_line: &mut dyn FnMut(usize, &[u8]) -> ProcessLineReply,
+        input: LineStreamInput,
+    ) -> Result<ManagedLineOutput, String> {
+        self.wait_for_line_output_inner_with_clock(
+            max_line_bytes,
+            on_line,
+            input,
+            &SystemProcessWaitClock::new(),
+        )
+    }
+
+    fn wait_for_line_output_inner_with_clock(
+        &mut self,
+        max_line_bytes: usize,
+        on_line: &mut dyn FnMut(usize, &[u8]) -> ProcessLineReply,
+        mut input: LineStreamInput,
+        clock: &dyn ProcessWaitClock,
+    ) -> Result<ManagedLineOutput, String> {
+        let stdout = self.take_stdout();
+        let stderr = self.take_stderr();
+        if input.is_controlled() && (stdout.is_none() || stderr.is_none()) {
+            self.terminate_after_wait_error();
+            return Err(
+                "process_failed: controlled output requires stdout and stderr pipes".into(),
+            );
+        }
+        let stdout = start_line_reader(stdout, max_line_bytes);
+        let stderr = start_reader(stderr, STDERR_CAPTURE_LIMIT);
+        let started = clock.elapsed();
         let mut first_line_error = None;
+        let mut leader_status = None;
+        let mut stdout_eof = false;
+        let mut protected_finish: Option<(Duration, Duration)> = None;
 
         loop {
-            if drain_line_messages(&stdout, &mut on_line, &mut first_line_error, false)
-                == StreamControl::Stop
+            let reply_write_error = input.poll().err();
+            let deadline_expired = self
+                .timeout
+                .is_some_and(|limit| clock.elapsed().saturating_sub(started) >= limit)
+                || protected_finish
+                    .is_some_and(|(anchor, limit)| clock.elapsed().saturating_sub(anchor) >= limit);
+            let drained = if stdout_eof
+                || input.is_writing()
+                || reply_write_error.is_some()
+                || (input.is_controlled() && deadline_expired)
             {
+                LineDrain::Pending
+            } else {
+                drain_replied_line_messages(
+                    &stdout,
+                    on_line,
+                    &mut first_line_error,
+                    false,
+                    input.kind(),
+                )
+            };
+            let reply = match drained {
+                LineDrain::Pending => ProcessLineReply::Continue,
+                LineDrain::End => {
+                    stdout_eof = true;
+                    ProcessLineReply::Continue
+                }
+                LineDrain::Disconnected => {
+                    self.terminate_after_wait_error();
+                    return Err("process_failed: stdout reader disconnected before EOF".into());
+                }
+                LineDrain::Reply(reply) => reply,
+            };
+            // This response reports an effect that already happened in the
+            // caller. A concurrent cancellation between that commit and this
+            // match must not prevent its ACK or replace its factual outcome.
+            let reply = match reply {
+                ProcessLineReply::ReplyAndProtect {
+                    reply,
+                    finish_timeout,
+                } => {
+                    self.cancellation = CancellationToken::new();
+                    match protected_finish.as_mut() {
+                        Some((anchor, budget)) => {
+                            *budget = (*budget).min(
+                                clock
+                                    .elapsed()
+                                    .saturating_sub(*anchor)
+                                    .saturating_add(finish_timeout),
+                            );
+                        }
+                        None => protected_finish = Some((clock.elapsed(), finish_timeout)),
+                    }
+                    ProcessLineReply::Reply(reply)
+                }
+                reply => reply,
+            };
+            if reply == ProcessLineReply::Stop {
                 if self.cancellation.is_cancelled() {
                     self.terminate_gracefully()?;
                     drain_line_messages(
@@ -1387,7 +1631,7 @@ impl ManagedChild {
                     );
                     return Ok(finish_line_output(
                         None,
-                        stderr,
+                        receive_output(stderr),
                         false,
                         true,
                         false,
@@ -1402,50 +1646,116 @@ impl ManagedChild {
                     true,
                 );
                 return Ok(finish_line_output(
-                    None,
-                    stderr,
+                    leader_status,
+                    receive_output(stderr),
                     false,
                     false,
-                    true,
+                    leader_status.is_none_or(|status: ExitStatus| status.success()),
                     first_line_error,
                 ));
+            }
+            if let ProcessLineReply::Reply(bytes) = reply {
+                if !self.cancellation.is_cancelled() {
+                    if let Err(error) = input.reply(bytes) {
+                        self.terminate_after_wait_error();
+                        return Err(error);
+                    }
+                }
             }
             if self.cancellation.is_cancelled() {
                 self.terminate_gracefully()?;
-                drain_line_messages(&stdout, &mut on_line, &mut first_line_error, true);
-                return Ok(finish_line_output(
-                    None,
-                    stderr,
-                    false,
-                    true,
-                    false,
-                    first_line_error,
-                ));
-            }
-            if self.timeout.is_some_and(|limit| started.elapsed() >= limit) {
-                self.terminate()?;
-                drain_line_messages(&stdout, &mut on_line, &mut first_line_error, true);
-                return Ok(finish_line_output(
-                    None,
-                    stderr,
-                    true,
-                    false,
-                    false,
-                    first_line_error,
-                ));
-            }
-            if let Some(status) = self.try_wait_owned_leader()? {
-                self.process_tree.cleanup_after_leader_exit(&mut self.child);
-                self.state = ChildState::Reaped;
-                return Ok(finish_completed_line_output(
-                    status,
+                drain_finishing_line_messages(
                     &stdout,
-                    stderr,
-                    &mut on_line,
+                    on_line,
                     &mut first_line_error,
+                    input.kind(),
+                );
+                return Ok(finish_line_output(
+                    None,
+                    receive_output(stderr),
+                    false,
+                    true,
+                    false,
+                    first_line_error,
                 ));
             }
-            thread::sleep(PROCESS_POLL_INTERVAL);
+            if self
+                .timeout
+                .is_some_and(|limit| clock.elapsed().saturating_sub(started) >= limit)
+                || protected_finish
+                    .is_some_and(|(anchor, limit)| clock.elapsed().saturating_sub(anchor) >= limit)
+            {
+                self.terminate()?;
+                drain_finishing_line_messages(
+                    &stdout,
+                    on_line,
+                    &mut first_line_error,
+                    input.kind(),
+                );
+                return Ok(finish_line_output(
+                    None,
+                    receive_output(stderr),
+                    true,
+                    false,
+                    false,
+                    first_line_error,
+                ));
+            }
+            if let Some(error) = reply_write_error {
+                self.terminate_after_wait_error();
+                return Err(error);
+            }
+            if let Some(status) = leader_status {
+                if !input.is_writing() && stdout_eof {
+                    let captured_stderr = if input.is_controlled() {
+                        let receiver = stderr.as_ref().expect("controlled stderr was checked");
+                        match receive_complete_capture(receiver) {
+                            Ok(Some(captured)) => captured,
+                            Ok(None) => {
+                                clock.sleep(PROCESS_POLL_INTERVAL);
+                                continue;
+                            }
+                            Err(error) => {
+                                self.terminate_after_wait_error();
+                                return Err(error);
+                            }
+                        }
+                    } else {
+                        receive_output(stderr)
+                    };
+                    return Ok(finish_line_output(
+                        Some(status),
+                        captured_stderr,
+                        false,
+                        false,
+                        false,
+                        first_line_error,
+                    ));
+                }
+            }
+            if leader_status.is_none() {
+                if let Some(status) = self.try_wait_owned_leader()? {
+                    self.process_tree.cleanup_after_leader_exit(&mut self.child);
+                    self.state = ChildState::Reaped;
+                    if !input.is_controlled() {
+                        return Ok(finish_completed_line_output(
+                            status,
+                            &stdout,
+                            stderr,
+                            &mut |number, bytes| match on_line(number, bytes) {
+                                ProcessLineReply::Continue => StreamControl::Continue,
+                                ProcessLineReply::Reply(_)
+                                | ProcessLineReply::ReplyAndProtect { .. }
+                                | ProcessLineReply::Stop => StreamControl::Stop,
+                            },
+                            &mut first_line_error,
+                        ));
+                    }
+                    leader_status = Some(status);
+                    continue;
+                }
+            }
+            clock.sleep(PROCESS_POLL_INTERVAL);
         }
     }
 
@@ -1640,7 +1950,7 @@ impl ManagedStartupChild {
             child: Some(child),
             process_tree,
             termination_attempted: false,
-            termination_clock: Arc::new(SystemStartupTerminationClock::new()),
+            termination_clock: Arc::new(SystemProcessWaitClock::new()),
             #[cfg(test)]
             termination_probe: None,
         };
@@ -2798,9 +3108,17 @@ struct CapturedOutput {
 }
 
 enum LineMessage {
+    End,
     Line(usize, Vec<u8>),
     TooLong(usize),
     ReadError(usize, String),
+}
+
+enum LineDrain {
+    Pending,
+    End,
+    Disconnected,
+    Reply(ProcessLineReply),
 }
 
 fn start_line_reader<R>(pipe: Option<R>, max_line_bytes: usize) -> Option<Receiver<LineMessage>>
@@ -2851,6 +3169,7 @@ where
             } else if !line.is_empty() {
                 let _ = sender.send(LineMessage::Line(line_number, line));
             }
+            let _ = sender.send(LineMessage::End);
         });
         receiver
     })
@@ -2865,22 +3184,90 @@ fn drain_line_messages<F>(
 where
     F: FnMut(usize, &[u8]) -> StreamControl,
 {
+    match drain_replied_line_messages(
+        receiver,
+        &mut |number, bytes| match on_line(number, bytes) {
+            StreamControl::Continue => ProcessLineReply::Continue,
+            StreamControl::Stop => ProcessLineReply::Stop,
+        },
+        first_error,
+        wait_for_end,
+        LineStreamKind::Observe,
+    ) {
+        LineDrain::Pending
+        | LineDrain::End
+        | LineDrain::Disconnected
+        | LineDrain::Reply(ProcessLineReply::Continue) => StreamControl::Continue,
+        LineDrain::Reply(ProcessLineReply::Reply(_))
+        | LineDrain::Reply(ProcessLineReply::ReplyAndProtect { .. })
+        | LineDrain::Reply(ProcessLineReply::Stop) => StreamControl::Stop,
+    }
+}
+
+fn drain_finishing_line_messages(
+    receiver: &Option<Receiver<LineMessage>>,
+    on_line: &mut dyn FnMut(usize, &[u8]) -> ProcessLineReply,
+    first_error: &mut Option<(usize, String)>,
+    kind: LineStreamKind,
+) {
+    // Legacy observers still receive the final drain after cancellation or
+    // timeout. A controlled callback could publish a new effect, so never
+    // invoke it after the owned process has already been stopped.
+    let _ = drain_replied_line_messages(
+        receiver,
+        &mut |number, bytes| match kind {
+            LineStreamKind::Observe => on_line(number, bytes),
+            LineStreamKind::Controlled => ProcessLineReply::Continue,
+        },
+        first_error,
+        true,
+        LineStreamKind::Observe,
+    );
+}
+
+fn drain_replied_line_messages(
+    receiver: &Option<Receiver<LineMessage>>,
+    on_line: &mut dyn FnMut(usize, &[u8]) -> ProcessLineReply,
+    first_error: &mut Option<(usize, String)>,
+    wait_for_end: bool,
+    kind: LineStreamKind,
+) -> LineDrain {
     let Some(receiver) = receiver else {
-        return StreamControl::Continue;
+        return match kind {
+            LineStreamKind::Observe => LineDrain::End,
+            LineStreamKind::Controlled => LineDrain::Disconnected,
+        };
     };
     loop {
         let message = if wait_for_end {
-            receiver.recv_timeout(READER_WAIT_LIMIT).ok()
+            match receiver.recv_timeout(READER_WAIT_LIMIT) {
+                Ok(message) => message,
+                Err(mpsc::RecvTimeoutError::Timeout) => return LineDrain::Pending,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return match kind {
+                        LineStreamKind::Observe => LineDrain::End,
+                        LineStreamKind::Controlled => LineDrain::Disconnected,
+                    };
+                }
+            }
         } else {
-            receiver.try_recv().ok()
-        };
-        let Some(message) = message else {
-            break;
+            match receiver.try_recv() {
+                Ok(message) => message,
+                Err(TryRecvError::Empty) => return LineDrain::Pending,
+                Err(TryRecvError::Disconnected) => {
+                    return match kind {
+                        LineStreamKind::Observe => LineDrain::End,
+                        LineStreamKind::Controlled => LineDrain::Disconnected,
+                    };
+                }
+            }
         };
         match message {
+            LineMessage::End => return LineDrain::End,
             LineMessage::Line(number, bytes) => {
-                if on_line(number, &bytes) == StreamControl::Stop {
-                    return StreamControl::Stop;
+                let reply = on_line(number, &bytes);
+                if reply != ProcessLineReply::Continue {
+                    return LineDrain::Reply(reply);
                 }
             }
             LineMessage::TooLong(number) => {
@@ -2892,8 +3279,15 @@ where
                 });
             }
         }
+        if matches!(kind, LineStreamKind::Controlled) && first_error.is_some() {
+            return LineDrain::Reply(ProcessLineReply::Stop);
+        }
+        // Controlled callbacks yield after every line, including the queued
+        // tail after leader exit, so each line remains inside its deadline.
+        if matches!(kind, LineStreamKind::Controlled) {
+            return LineDrain::Reply(ProcessLineReply::Continue);
+        }
     }
-    StreamControl::Continue
 }
 
 fn start_reader<R>(pipe: Option<R>, limit: usize) -> Option<Receiver<CapturedOutput>>
@@ -3004,7 +3398,7 @@ where
         && status.success();
     finish_line_output(
         Some(status),
-        stderr,
+        receive_output(stderr),
         false,
         false,
         stopped_by_consumer,
@@ -3014,13 +3408,12 @@ where
 
 fn finish_line_output(
     status: Option<ExitStatus>,
-    stderr: Option<Receiver<CapturedOutput>>,
+    stderr: CapturedOutput,
     timed_out: bool,
     cancelled: bool,
     stopped_by_consumer: bool,
     line_error: Option<(usize, String)>,
 ) -> ManagedLineOutput {
-    let stderr = receive_output(stderr);
     ManagedLineOutput {
         status_success: status.is_some_and(|status| status.success())
             && !timed_out
@@ -3106,22 +3499,21 @@ mod tests {
     use super::{
         permission_denied_proves_empty_group, runtime_process_tree_is_terminal,
         windows_job_object_is_empty, ChildState, ManagedChild, ManagedCommand, ManagedOutput,
-        ManagedStartupChild, ManualStartupTerminationProbe, StreamControl,
+        ManagedStartupChild, ManualStartupTerminationProbe, ProcessLineReply, StreamControl,
     };
     use crate::domain::cancellation::CancellationToken;
     use std::ffi::OsString;
-    use std::io::{Read, Write};
+    use std::io::{BufRead, Read, Write};
     use std::path::{Path, PathBuf};
-    #[cfg(windows)]
     use std::process::Child;
     use std::process::{Command, Stdio};
-    #[cfg(unix)]
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::thread;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     const HELPER_ENV: &str = "UNICA_MANAGED_CHILD_HELPER";
     const HELPER_PID_FILE_ENV: &str = "UNICA_MANAGED_CHILD_PID_FILE";
+    const CONTROLLED_STDERR_SOCKET_ENV: &str = "UNICA_CONTROLLED_STDERR_SOCKET";
     #[cfg(unix)]
     const RUNTIME_SENTINEL_HELPER_ENV: &str = "UNICA_RUNTIME_SENTINEL_HELPER";
     #[cfg(unix)]
@@ -3167,6 +3559,37 @@ mod tests {
             "install SIGTERM handler: {}",
             std::io::Error::last_os_error()
         );
+    }
+
+    fn helper_expect_line_reply(expected: &[u8]) {
+        let mut reply = Vec::new();
+        std::io::stdin()
+            .lock()
+            .read_until(b'\n', &mut reply)
+            .unwrap();
+        assert_eq!(reply, expected);
+    }
+
+    fn helper_frame(bytes: &[u8]) {
+        let mut stdout = std::io::stdout().lock();
+        stdout.write_all(bytes).unwrap();
+        stdout.write_all(b"\n").unwrap();
+        stdout.flush().unwrap();
+    }
+
+    fn helper_close_stdin() {
+        #[cfg(unix)]
+        // SAFETY: this fixture closes only its own inherited stdin descriptor.
+        assert_eq!(unsafe { libc::close(libc::STDIN_FILENO) }, 0);
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+            use windows_sys::Win32::System::Console::{GetStdHandle, STD_INPUT_HANDLE};
+            // SAFETY: this fixture closes only its own inherited stdin handle.
+            let stdin = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+            assert!(!stdin.is_null() && stdin != INVALID_HANDLE_VALUE);
+            assert_ne!(unsafe { CloseHandle(stdin) }, 0);
+        }
     }
 
     /// Ревью #549: незапуском программы называется только отказ ОС создать
@@ -3255,6 +3678,86 @@ mod tests {
                     input.len(),
                     input.iter().filter(|byte| **byte == 0).count()
                 );
+            }
+            "controlled_two_replies" => {
+                helper_frame(br#"{"event":"prepare"}"#);
+                helper_expect_line_reply(b"{\"decision\":\"stage\"}\n");
+                helper_frame(br#"{"event":"ready"}"#);
+                helper_expect_line_reply(b"{\"decision\":\"commit\"}\n");
+                helper_frame(br#"{"event":"terminal"}"#);
+                std::process::exit(0);
+            }
+            "controlled_empty_eof" => std::process::exit(0),
+            "controlled_invalid_frame" => {
+                helper_frame(b"{\"event\":\"bad\"}\xff");
+                thread::sleep(Duration::from_secs(10));
+            }
+            "controlled_oversized_frame" => {
+                helper_frame(&vec![b'x'; 8193]);
+                thread::sleep(Duration::from_secs(10));
+            }
+            "controlled_closed_stdin" => {
+                helper_close_stdin();
+                helper_frame(br#"{"event":"ready"}"#);
+                thread::sleep(Duration::from_secs(10));
+            }
+            "controlled_wait_after_reply" => {
+                helper_frame(br#"{"event":"ready"}"#);
+                helper_expect_line_reply(b"{\"decision\":\"commit\"}\n");
+                helper_frame(br#"{"event":"waiting"}"#);
+                thread::sleep(Duration::from_secs(10));
+            }
+            "controlled_tail_after_reply" => {
+                helper_frame(br#"{"event":"ready"}"#);
+                helper_expect_line_reply(b"{\"decision\":\"commit\"}\n");
+                let release = PathBuf::from(std::env::var_os(HELPER_PID_FILE_ENV).unwrap());
+                let watchdog = Instant::now() + Duration::from_secs(5);
+                while !release.exists() {
+                    assert!(
+                        Instant::now() < watchdog,
+                        "tail fixture exit was not released"
+                    );
+                    thread::yield_now();
+                }
+                // The complete tail fits into every supported host's pipe,
+                // so the owner can observe real exit before draining it.
+                for _ in 0..16 {
+                    helper_frame(br#"{"event":"tail"}"#);
+                }
+                std::process::exit(0);
+            }
+            "controlled_stderr_writer" | "controlled_stderr_leader" => {
+                let address = std::env::var(CONTROLLED_STDERR_SOCKET_ENV).unwrap();
+                let mut control = std::net::TcpStream::connect(address).unwrap();
+                control
+                    .set_read_timeout(Some(Duration::from_secs(10)))
+                    .unwrap();
+                if mode == "controlled_stderr_writer" {
+                    std::io::stderr().write_all(b"stderr-before\n").unwrap();
+                    std::io::stderr().flush().unwrap();
+                    control.write_all(b"w").unwrap();
+                    control.read_exact(&mut [0_u8]).unwrap();
+                    std::io::stderr().write_all(b"stderr-after\n").unwrap();
+                    std::io::stderr().flush().unwrap();
+                } else {
+                    control.write_all(b"l").unwrap();
+                    helper_frame(br#"{"event":"terminal"}"#);
+                    control.read_exact(&mut [0_u8]).unwrap();
+                }
+                std::process::exit(0);
+            }
+            "controlled_max_reply" => {
+                helper_frame(br#"{"event":"ready"}"#);
+                let mut reply = Vec::new();
+                std::io::stdin()
+                    .lock()
+                    .read_until(b'\n', &mut reply)
+                    .unwrap();
+                assert_eq!(reply.len(), 4096);
+                assert!(reply.starts_with(b"{\"padding\":\""));
+                assert!(reply.ends_with(b"\"}\n"));
+                helper_frame(br#"{"event":"terminal"}"#);
+                std::process::exit(0);
             }
             "write_invalid_utf8" => {
                 std::io::stdout().write_all(b"ok\xffend").unwrap();
@@ -3614,10 +4117,8 @@ mod tests {
         }
     }
 
-    #[cfg(windows)]
     struct ChildCleanupGuard(Option<Child>);
 
-    #[cfg(windows)]
     impl ChildCleanupGuard {
         fn child_mut(&mut self) -> &mut Child {
             self.0.as_mut().unwrap()
@@ -3629,7 +4130,6 @@ mod tests {
         }
     }
 
-    #[cfg(windows)]
     impl Drop for ChildCleanupGuard {
         fn drop(&mut self) {
             if let Some(child) = &mut self.0 {
@@ -5207,6 +5707,719 @@ mod tests {
         assert!(!output.cancelled);
         assert!(started.elapsed() < Duration::from_secs(2));
         assert_eq!(managed.state, ChildState::Reaped);
+    }
+
+    fn controlled_helper(mode: &str, cancellation: CancellationToken) -> ManagedChild {
+        ManagedChild::spawn(ManagedCommand {
+            program: std::env::current_exe().unwrap(),
+            args: vec![
+                "--exact".into(),
+                "infrastructure::platform::process::tests::managed_child_test_helper".into(),
+                "--nocapture".into(),
+            ],
+            cwd: std::env::current_dir().unwrap(),
+            env: vec![(OsString::from(HELPER_ENV), OsString::from(mode))],
+            env_remove: Vec::new(),
+            capture_limits: None,
+            timeout: Some(Duration::from_secs(5)),
+            cancellation,
+        })
+        .unwrap()
+    }
+
+    struct ControlledStderrFixture {
+        writer: Option<ChildCleanupGuard>,
+        writer_control: std::net::TcpStream,
+        leader_control: std::net::TcpStream,
+        #[cfg(unix)]
+        leader_id: u32,
+        #[cfg(windows)]
+        leader: super::RuntimeProcessTreeTestProbe,
+    }
+
+    impl ControlledStderrFixture {
+        fn accept(listener: &std::net::TcpListener, expected: u8) -> std::net::TcpStream {
+            listener.set_nonblocking(true).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                match listener.accept() {
+                    Ok((mut control, _)) => {
+                        control.set_nonblocking(false).unwrap();
+                        control
+                            .set_read_timeout(Some(Duration::from_secs(5)))
+                            .unwrap();
+                        control
+                            .set_write_timeout(Some(Duration::from_secs(5)))
+                            .unwrap();
+                        let mut ready = [0_u8];
+                        control.read_exact(&mut ready).unwrap();
+                        assert_eq!(ready, [expected]);
+                        return control;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "stream fixture did not connect");
+                        thread::yield_now();
+                    }
+                    Err(error) => panic!("accept stream fixture: {error}"),
+                }
+            }
+        }
+
+        fn spawn() -> (ManagedChild, Self) {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap().to_string();
+            let mut writer = ChildCleanupGuard(Some(
+                Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "infrastructure::platform::process::tests::managed_child_test_helper",
+                        "--nocapture",
+                    ])
+                    .env(HELPER_ENV, "controlled_stderr_writer")
+                    .env(CONTROLLED_STDERR_SOCKET_ENV, &address)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .unwrap(),
+            ));
+            let writer_control = Self::accept(&listener, b'w');
+            let mut managed = ManagedChild::spawn(ManagedCommand {
+                program: std::env::current_exe().unwrap(),
+                args: vec![
+                    "--exact".into(),
+                    "infrastructure::platform::process::tests::managed_child_test_helper".into(),
+                    "--nocapture".into(),
+                ],
+                cwd: std::env::current_dir().unwrap(),
+                env: vec![
+                    (HELPER_ENV.into(), "controlled_stderr_leader".into()),
+                    (CONTROLLED_STDERR_SOCKET_ENV.into(), address.into()),
+                ],
+                env_remove: Vec::new(),
+                capture_limits: None,
+                timeout: Some(Duration::from_secs(2)),
+                cancellation: CancellationToken::new(),
+            })
+            .unwrap();
+            let leader_control = Self::accept(&listener, b'l');
+            // Only the test connects this actual pipe to the controlled owner.
+            // Its writer remains our direct Child, independently reapable even
+            // after the managed leader has exited. This tests stream completion,
+            // without asserting a process-tree completion guarantee.
+            managed.child.stderr = writer.child_mut().stderr.take();
+            let fixture = Self {
+                writer: Some(writer),
+                writer_control,
+                leader_control,
+                #[cfg(unix)]
+                leader_id: managed.id(),
+                #[cfg(windows)]
+                leader: super::RuntimeProcessTreeTestProbe::capture(managed.id()).unwrap(),
+            };
+            (managed, fixture)
+        }
+
+        fn release_leader_and_observe_exit(&mut self) {
+            self.leader_control.write_all(b"x").unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                #[cfg(unix)]
+                let exited = super::unix_leader_exit_unreaped(self.leader_id)
+                    .expect("observe our unreaped leader")
+                    .is_some();
+                #[cfg(windows)]
+                let exited = !self.leader.is_alive().expect("observe retained leader");
+                if exited {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "controlled fixture leader did not exit"
+                );
+                thread::yield_now();
+            }
+        }
+
+        fn release_stderr_and_reap(&mut self) {
+            self.writer_control.write_all(b"x").unwrap();
+            let mut writer = self.writer.take().unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if let Some(status) = writer.child_mut().try_wait().unwrap() {
+                    writer.wait();
+                    assert!(status.success(), "stderr fixture failed");
+                    return;
+                }
+                assert!(Instant::now() < deadline, "stderr fixture did not exit");
+                thread::yield_now();
+            }
+        }
+    }
+
+    #[test]
+    fn controlled_stream_held_stderr_keeps_timeout_after_leader_exit() {
+        let (mut managed, mut fixture) = ControlledStderrFixture::spawn();
+        fixture.release_leader_and_observe_exit();
+        let mut terminals = 0;
+        let result = managed.wait_for_controlled_line_output(1024, &mut |_, bytes| {
+            if bytes == br#"{"event":"terminal"}"# {
+                terminals += 1;
+            }
+            ProcessLineReply::Continue
+        });
+        let writer_was_still_alive = fixture
+            .writer
+            .as_mut()
+            .unwrap()
+            .child_mut()
+            .try_wait()
+            .unwrap()
+            .is_none();
+        fixture.release_stderr_and_reap();
+        let output = result.unwrap();
+        assert!(
+            writer_was_still_alive,
+            "stderr must remain held until test release"
+        );
+        assert_eq!(terminals, 1);
+        assert!(
+            output.timed_out,
+            "controlled success escaped an unfinished stderr capture"
+        );
+        assert!(!output.status_success && !output.cancelled);
+        assert_eq!(managed.state, ChildState::Reaped);
+    }
+
+    #[test]
+    fn controlled_stream_late_stderr_eof_preserves_tail_after_leader_exit() {
+        let (mut managed, mut fixture) = ControlledStderrFixture::spawn();
+        let mut terminals = 0;
+        let output = managed
+            .wait_for_controlled_line_output(1024, &mut |_, bytes| {
+                if bytes == br#"{"event":"terminal"}"# {
+                    terminals += 1;
+                    fixture.release_leader_and_observe_exit();
+                    fixture.release_stderr_and_reap();
+                }
+                ProcessLineReply::Continue
+            })
+            .unwrap();
+        assert_eq!(terminals, 1);
+        assert!(output.status_success, "{output:?}");
+        assert!(!output.timed_out && !output.cancelled && output.line_error.is_none());
+        assert_eq!(output.stderr, "stderr-before\nstderr-after\n");
+        assert_eq!(managed.state, ChildState::Reaped);
+    }
+
+    enum ControlledReaderFault {
+        Error,
+        Panic,
+    }
+
+    struct ControlledFaultingRead {
+        prefix: std::io::Cursor<&'static [u8]>,
+        fault: ControlledReaderFault,
+        finished: std::sync::mpsc::Sender<()>,
+    }
+
+    impl Read for ControlledFaultingRead {
+        fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+            if self.prefix.position() < self.prefix.get_ref().len() as u64 {
+                return self.prefix.read(bytes);
+            }
+            match self.fault {
+                ControlledReaderFault::Error => Err(std::io::Error::other("fixture read fault")),
+                ControlledReaderFault::Panic => panic!("fixture reader panic"),
+            }
+        }
+    }
+
+    impl Drop for ControlledFaultingRead {
+        fn drop(&mut self) {
+            let _ = self.finished.send(());
+        }
+    }
+
+    fn controlled_faulting_read(
+        fault: ControlledReaderFault,
+    ) -> (ControlledFaultingRead, std::sync::mpsc::Receiver<()>) {
+        let (finished, receiver) = std::sync::mpsc::channel();
+        (
+            ControlledFaultingRead {
+                prefix: std::io::Cursor::new(b"frame\n"),
+                fault,
+                finished,
+            },
+            receiver,
+        )
+    }
+
+    #[test]
+    fn controlled_stdout_read_error_stays_an_error_after_disconnect() {
+        let (reader, finished) = controlled_faulting_read(ControlledReaderFault::Error);
+        let receiver = super::start_line_reader(Some(reader), 1024);
+        let mut error = None;
+        let mut lines = 0;
+        let mut on_line = |_, bytes: &[u8]| {
+            assert_eq!(bytes, b"frame");
+            lines += 1;
+            ProcessLineReply::Continue
+        };
+        assert!(matches!(
+            super::drain_replied_line_messages(
+                &receiver,
+                &mut on_line,
+                &mut error,
+                true,
+                super::LineStreamKind::Controlled,
+            ),
+            super::LineDrain::Reply(ProcessLineReply::Continue)
+        ));
+        finished.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(matches!(
+            super::drain_replied_line_messages(
+                &receiver,
+                &mut on_line,
+                &mut error,
+                true,
+                super::LineStreamKind::Controlled,
+            ),
+            super::LineDrain::Reply(ProcessLineReply::Stop)
+        ));
+        assert!(error
+            .as_ref()
+            .is_some_and(|(_, text)| text.contains("fixture read fault")));
+        assert!(
+            !matches!(
+                super::drain_replied_line_messages(
+                    &receiver,
+                    &mut on_line,
+                    &mut error,
+                    true,
+                    super::LineStreamKind::Controlled,
+                ),
+                super::LineDrain::End
+                    | super::LineDrain::Pending
+                    | super::LineDrain::Reply(ProcessLineReply::Continue)
+            ),
+            "disconnect after a read error is not clean EOF"
+        );
+        assert_eq!(lines, 1);
+    }
+
+    #[test]
+    fn controlled_stdout_reader_panic_is_not_eof() {
+        let (reader, finished) = controlled_faulting_read(ControlledReaderFault::Panic);
+        let receiver = super::start_line_reader(Some(reader), 1024);
+        let mut error = None;
+        let mut lines = 0;
+        let mut on_line = |_, bytes: &[u8]| {
+            assert_eq!(bytes, b"frame");
+            lines += 1;
+            ProcessLineReply::Continue
+        };
+        assert!(matches!(
+            super::drain_replied_line_messages(
+                &receiver,
+                &mut on_line,
+                &mut error,
+                true,
+                super::LineStreamKind::Controlled,
+            ),
+            super::LineDrain::Reply(ProcessLineReply::Continue)
+        ));
+        finished.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(
+            !matches!(
+                super::drain_replied_line_messages(
+                    &receiver,
+                    &mut on_line,
+                    &mut error,
+                    true,
+                    super::LineStreamKind::Controlled,
+                ),
+                super::LineDrain::End
+                    | super::LineDrain::Pending
+                    | super::LineDrain::Reply(ProcessLineReply::Continue)
+            ),
+            "a panicked reader did not observe EOF"
+        );
+        assert_eq!(lines, 1);
+    }
+
+    #[test]
+    fn controlled_stderr_reader_faults_do_not_satisfy_eof() {
+        for fault in [ControlledReaderFault::Error, ControlledReaderFault::Panic] {
+            let (reader, finished) = controlled_faulting_read(fault);
+            let receiver = super::start_reader(Some(reader), 1024).unwrap();
+            finished.recv_timeout(Duration::from_secs(5)).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                match super::receive_complete_capture(&receiver) {
+                    Err(_) => break,
+                    Ok(None) => {
+                        assert!(Instant::now() < deadline, "reader did not disconnect");
+                        thread::yield_now();
+                    }
+                    Ok(Some(_)) => panic!("reader fault was accepted as stderr EOF"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn controlled_stream_exchanges_two_replies_over_real_pipes() {
+        let mut managed = controlled_helper("controlled_two_replies", CancellationToken::new());
+        let mut frames = Vec::new();
+        let output = managed
+            .wait_for_controlled_line_output(1024, &mut |number, bytes| {
+                if !bytes.starts_with(b"{\"event\":") {
+                    return ProcessLineReply::Continue;
+                }
+                frames.push((number, bytes.to_vec()));
+                match bytes {
+                    br#"{"event":"prepare"}"# => {
+                        ProcessLineReply::Reply(b"{\"decision\":\"stage\"}\n".to_vec())
+                    }
+                    br#"{"event":"ready"}"# => {
+                        ProcessLineReply::Reply(b"{\"decision\":\"commit\"}\n".to_vec())
+                    }
+                    _ => ProcessLineReply::Continue,
+                }
+            })
+            .unwrap();
+        assert!(output.status_success, "{output:?}");
+        assert_eq!(frames.len(), 3, "{frames:?}");
+        assert_eq!(frames[2].1, br#"{"event":"terminal"}"#);
+        assert!(frames.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        assert_eq!(managed.state, ChildState::Reaped);
+    }
+
+    #[test]
+    fn controlled_stream_cancel_before_publication_stops_without_a_reply() {
+        let cancellation = CancellationToken::new();
+        let mut managed = controlled_helper("controlled_two_replies", cancellation.clone());
+        let mut prepare_seen = false;
+        let output = managed
+            .wait_for_controlled_line_output(1024, &mut |_, bytes| {
+                if bytes == br#"{"event":"prepare"}"# {
+                    prepare_seen = true;
+                    cancellation.cancel();
+                    return ProcessLineReply::Reply(b"{\"decision\":\"stage\"}\n".to_vec());
+                }
+                ProcessLineReply::Continue
+            })
+            .unwrap();
+        assert!(prepare_seen);
+        assert!(output.cancelled, "{output:?}");
+        assert!(!output.status_success);
+        assert!(!cancellation.protected_process_started());
+        assert_eq!(managed.state, ChildState::Reaped);
+    }
+
+    #[test]
+    fn controlled_stream_committed_reply_survives_cancel_before_its_ack() {
+        let cancellation = CancellationToken::new();
+        let mut managed = controlled_helper("controlled_two_replies", cancellation.clone());
+        let mut published = false;
+        let mut terminal_seen = false;
+        let output = managed
+            .wait_for_controlled_line_output(1024, &mut |_, bytes| match bytes {
+                br#"{"event":"prepare"}"# => {
+                    ProcessLineReply::Reply(b"{\"decision\":\"stage\"}\n".to_vec())
+                }
+                br#"{"event":"ready"}"# => {
+                    cancellation
+                        .handoff_with_gate(|| {
+                            published = true;
+                            Ok(())
+                        })
+                        .unwrap();
+                    // Deterministically land cancellation after the effect and
+                    // before ManagedChild can dispatch the commit ACK.
+                    cancellation.cancel();
+                    ProcessLineReply::ReplyAndProtect {
+                        reply: b"{\"decision\":\"commit\"}\n".to_vec(),
+                        finish_timeout: Duration::from_secs(2),
+                    }
+                }
+                br#"{"event":"terminal"}"# => {
+                    terminal_seen = true;
+                    ProcessLineReply::Continue
+                }
+                _ => ProcessLineReply::Continue,
+            })
+            .unwrap();
+        assert!(published && terminal_seen);
+        assert!(cancellation.is_cancelled());
+        assert!(cancellation.protected_process_started());
+        assert!(output.status_success, "{output:?}");
+        assert!(!output.cancelled);
+        assert_eq!(managed.state, ChildState::Reaped);
+    }
+
+    #[test]
+    fn controlled_stream_eof_invalid_and_oversized_frames_release_the_process() {
+        let mut empty = controlled_helper("controlled_empty_eof", CancellationToken::new());
+        let mut frames = 0;
+        let output = empty
+            .wait_for_controlled_line_output(1024, &mut |_, bytes| {
+                if bytes.starts_with(b"{\"event\":") {
+                    frames += 1;
+                }
+                ProcessLineReply::Continue
+            })
+            .unwrap();
+        assert!(output.status_success, "{output:?}");
+        assert_eq!(frames, 0);
+        assert_eq!(empty.state, ChildState::Reaped);
+
+        let mut invalid = controlled_helper("controlled_invalid_frame", CancellationToken::new());
+        let output = invalid
+            .wait_for_controlled_line_output(1024, &mut |_, bytes| {
+                if std::str::from_utf8(bytes).is_err() {
+                    ProcessLineReply::Stop
+                } else {
+                    ProcessLineReply::Continue
+                }
+            })
+            .unwrap();
+        assert!(output.stopped_by_consumer, "{output:?}");
+        assert!(!output.cancelled && !output.timed_out);
+        assert_eq!(invalid.state, ChildState::Reaped);
+
+        let mut oversized =
+            controlled_helper("controlled_oversized_frame", CancellationToken::new());
+        let mut oversized_delivered = false;
+        let output = oversized
+            .wait_for_controlled_line_output(1024, &mut |_, bytes| {
+                oversized_delivered |= bytes.len() > 1024;
+                ProcessLineReply::Continue
+            })
+            .unwrap();
+        assert!(!oversized_delivered);
+        assert!(output.stopped_by_consumer, "{output:?}");
+        assert!(output
+            .line_error
+            .as_ref()
+            .is_some_and(|(_, message)| { message == super::STREAM_LINE_TOO_LONG_ERROR }));
+        assert!(!output.timed_out);
+        assert_eq!(oversized.state, ChildState::Reaped);
+    }
+
+    #[test]
+    fn controlled_stream_ack_write_failure_reaps_without_erasing_publication() {
+        let cancellation = CancellationToken::new();
+        let mut managed = controlled_helper("controlled_closed_stdin", cancellation.clone());
+        let mut published = false;
+        let error = managed
+            .wait_for_controlled_line_output(1024, &mut |_, bytes| {
+                if bytes != br#"{"event":"ready"}"# {
+                    return ProcessLineReply::Continue;
+                }
+                cancellation
+                    .handoff_with_gate(|| {
+                        published = true;
+                        Ok(())
+                    })
+                    .unwrap();
+                cancellation.cancel();
+                ProcessLineReply::ReplyAndProtect {
+                    reply: b"{\"decision\":\"commit\"}\n".to_vec(),
+                    finish_timeout: Duration::from_secs(2),
+                }
+            })
+            .expect_err("closed stdin must fail its ACK write");
+        assert!(error.contains("stdin reply write failed"), "{error}");
+        assert!(published);
+        assert!(cancellation.protected_process_started());
+        assert_eq!(managed.state, ChildState::Reaped);
+    }
+
+    #[test]
+    fn controlled_stream_reply_limit_accepts_one_line_and_reaps_invalid_replies() {
+        let mut maximum = controlled_helper("controlled_max_reply", CancellationToken::new());
+        let mut terminal_seen = false;
+        let output = maximum
+            .wait_for_controlled_line_output(1024, &mut |_, bytes| match bytes {
+                br#"{"event":"ready"}"# => ProcessLineReply::Reply(
+                    format!("{{\"padding\":\"{}\"}}\n", "x".repeat(4081)).into_bytes(),
+                ),
+                br#"{"event":"terminal"}"# => {
+                    terminal_seen = true;
+                    ProcessLineReply::Continue
+                }
+                _ => ProcessLineReply::Continue,
+            })
+            .unwrap();
+        assert!(terminal_seen && output.status_success, "{output:?}");
+
+        for reply in [
+            b"{}".to_vec(),
+            b"{}\n{}\n".to_vec(),
+            b"\xff\n".to_vec(),
+            format!("{{\"padding\":\"{}\"}}\n", "x".repeat(4082)).into_bytes(),
+        ] {
+            let mut invalid =
+                controlled_helper("controlled_wait_after_reply", CancellationToken::new());
+            let mut reply = Some(reply);
+            let error = invalid
+                .wait_for_controlled_line_output(1024, &mut |_, bytes| {
+                    if bytes == br#"{"event":"ready"}"# {
+                        ProcessLineReply::Reply(reply.take().unwrap())
+                    } else {
+                        ProcessLineReply::Continue
+                    }
+                })
+                .expect_err("invalid reply must stop before its write");
+            assert!(error.contains("one LF-terminated UTF-8 line"), "{error}");
+            assert_eq!(invalid.state, ChildState::Reaped);
+        }
+    }
+
+    #[test]
+    fn controlled_stream_protection_bounds_finish_and_keeps_consumer_stop() {
+        for (overall_timeout, finish_timeout, stop_after_ack) in [
+            (None, Duration::from_millis(250), false),
+            (Some(Duration::from_secs(2)), Duration::from_secs(30), false),
+            (None, Duration::from_secs(2), true),
+        ] {
+            let cancellation = CancellationToken::new();
+            let mut managed =
+                controlled_helper("controlled_wait_after_reply", cancellation.clone());
+            managed.timeout = overall_timeout;
+            let mut ack_seen = false;
+            let output = managed
+                .wait_for_controlled_line_output(1024, &mut |_, bytes| match bytes {
+                    br#"{"event":"ready"}"# => {
+                        cancellation.handoff_with_gate(|| Ok(())).unwrap();
+                        cancellation.cancel();
+                        ProcessLineReply::ReplyAndProtect {
+                            reply: b"{\"decision\":\"commit\"}\n".to_vec(),
+                            finish_timeout,
+                        }
+                    }
+                    br#"{"event":"waiting"}"# => {
+                        ack_seen = true;
+                        if stop_after_ack {
+                            ProcessLineReply::Stop
+                        } else {
+                            ProcessLineReply::Continue
+                        }
+                    }
+                    _ => ProcessLineReply::Continue,
+                })
+                .unwrap();
+            assert!(ack_seen, "{output:?}");
+            assert!(!output.cancelled, "{output:?}");
+            assert_eq!(output.stopped_by_consumer, stop_after_ack, "{output:?}");
+            assert_eq!(output.timed_out, !stop_after_ack, "{output:?}");
+            assert_eq!(managed.state, ChildState::Reaped);
+        }
+    }
+
+    #[test]
+    fn controlled_stream_finish_deadline_covers_the_tail_after_real_leader_exit() {
+        struct TailClock {
+            now: std::sync::Mutex<Duration>,
+            release_on_sleep: AtomicBool,
+            exit_observed: AtomicBool,
+            release: PathBuf,
+            #[cfg(unix)]
+            process_id: u32,
+            #[cfg(windows)]
+            process: super::RuntimeProcessTreeTestProbe,
+        }
+
+        impl super::ProcessWaitClock for TailClock {
+            fn elapsed(&self) -> Duration {
+                *self.now.lock().unwrap()
+            }
+
+            fn sleep(&self, duration: Duration) {
+                if self.release_on_sleep.swap(false, Ordering::SeqCst) {
+                    std::fs::write(&self.release, b"release owned fixture exit").unwrap();
+                    let watchdog = Instant::now() + Duration::from_secs(5);
+                    loop {
+                        #[cfg(unix)]
+                        let exited = super::unix_leader_exit_unreaped(self.process_id)
+                            .expect("observe owned fixture exit without reaping")
+                            .is_some();
+                        #[cfg(windows)]
+                        let exited = !self
+                            .process
+                            .is_alive()
+                            .expect("observe retained fixture handle");
+                        if exited {
+                            break;
+                        }
+                        assert!(Instant::now() < watchdog, "tail fixture did not exit");
+                        thread::yield_now();
+                    }
+                    self.exit_observed.store(true, Ordering::SeqCst);
+                }
+                thread::sleep(duration);
+            }
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let release = root.path().join("release-tail-exit");
+        let cancellation = CancellationToken::new();
+        let mut managed = ManagedChild::spawn(pending_handoff_command(
+            "controlled_tail_after_reply",
+            &release,
+            cancellation.clone(),
+        ))
+        .unwrap();
+        let clock = TailClock {
+            now: std::sync::Mutex::new(Duration::ZERO),
+            release_on_sleep: AtomicBool::new(false),
+            exit_observed: AtomicBool::new(false),
+            release,
+            #[cfg(unix)]
+            process_id: managed.id(),
+            #[cfg(windows)]
+            process: super::RuntimeProcessTreeTestProbe::capture(managed.id()).unwrap(),
+        };
+        let input = super::LineStreamInput::Replies(super::LineReplyWriter::start(
+            managed.take_stdin().unwrap(),
+        ));
+        let mut tails = 0;
+        let output = managed
+            .wait_for_line_output_inner_with_clock(
+                1024,
+                &mut |_, bytes| match bytes {
+                    br#"{"event":"ready"}"# => {
+                        cancellation.handoff_with_gate(|| Ok(())).unwrap();
+                        clock.release_on_sleep.store(true, Ordering::SeqCst);
+                        ProcessLineReply::ReplyAndProtect {
+                            reply: b"{\"decision\":\"commit\"}\n".to_vec(),
+                            finish_timeout: Duration::from_secs(1),
+                        }
+                    }
+                    br#"{"event":"tail"}"# => {
+                        assert!(clock.exit_observed.load(Ordering::SeqCst));
+                        tails += 1;
+                        if tails == 2 {
+                            // The first callback is followed by the owner's
+                            // leader reap. This second callback expires the
+                            // protected budget inside its queued final tail.
+                            *clock.now.lock().unwrap() = Duration::from_secs(2);
+                        }
+                        ProcessLineReply::Continue
+                    }
+                    _ => ProcessLineReply::Continue,
+                },
+                input,
+                &clock,
+            )
+            .unwrap();
+        assert_eq!(tails, 2, "callbacks after the expired finish window ran");
+        assert!(output.timed_out, "{output:?}");
+        assert!(!output.cancelled && !output.status_success);
+        assert_eq!(managed.state, ChildState::Reaped);
+        assert!(cancellation.protected_process_started());
     }
 
     #[test]

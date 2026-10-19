@@ -1,0 +1,881 @@
+{
+  "id": "S-931-declaration-diagnostics",
+  "issue": 931,
+  "area": "Метаданные",
+  "task": "Прочитать три семейства деклараций метаданных, получить точную причину отказа зависимых ветвей и продолжить чтение исправных соседей, сохранив исходные файлы.",
+  "workspace": "tests/fixtures/acceptance/metadata-declaration-diagnostics",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.StandardAttribute"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Catalog.Items.StandardAttribute.Ref"
+        },
+        {
+          "pointer": "/data/items/0/title",
+          "eq": "Ref"
+        },
+        {
+          "pointer": "/data/items/1",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/DuplicateAttributes.xml",
+          "eq": "29f967d2a49cdb43b794d4bf3cc5e8909acc64e99273775a0fcd48f67802df63"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "aa2c8ce75da1d2e73ef082aa74791a8eb4b80a2c0384875463b85375970c7f94"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/MissingCharacteristicSource.xml",
+          "eq": "057c63541d783bf913a443c50b9659d4f2b0266d525f841149f409c1619bd8a3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ChartsOfAccounts/Accounts.xml",
+          "eq": "3ca943a881cf2531bbfa03037c1754cdc67f2d38d6ab574c37981c33767d89f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ChartsOfAccounts/BrokenNestedAttribute.xml",
+          "eq": "353b593e26538958b9cdc4bcea6ef3074960b545f9dc3b23b1c9f743bb7b2b7a"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "6dcc986db5f8fdd31abfa3dece3580dc0964989dab6b21f1a86bfe8d6842d8a7"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Characteristic"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/values/source",
+          "eq": "Catalog.Items"
+        },
+        {
+          "pointer": "/data/items/0/types/typesFilterValue/value",
+          "eq": "Catalog_Items"
+        },
+        {
+          "pointer": "/data/items/0/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/1",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/DuplicateAttributes.xml",
+          "eq": "29f967d2a49cdb43b794d4bf3cc5e8909acc64e99273775a0fcd48f67802df63"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "aa2c8ce75da1d2e73ef082aa74791a8eb4b80a2c0384875463b85375970c7f94"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/MissingCharacteristicSource.xml",
+          "eq": "057c63541d783bf913a443c50b9659d4f2b0266d525f841149f409c1619bd8a3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ChartsOfAccounts/Accounts.xml",
+          "eq": "3ca943a881cf2531bbfa03037c1754cdc67f2d38d6ab574c37981c33767d89f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ChartsOfAccounts/BrokenNestedAttribute.xml",
+          "eq": "353b593e26538958b9cdc4bcea6ef3074960b545f9dc3b23b1c9f743bb7b2b7a"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "6dcc986db5f8fdd31abfa3dece3580dc0964989dab6b21f1a86bfe8d6842d8a7"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfAccounts.Accounts.StandardTabularSection.ExtDimensionTypes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:ChartOfAccounts.Accounts.StandardTabularSection.ExtDimensionTypes"
+        },
+        {
+          "pointer": "/data/branches/0/at",
+          "eq": "main:ChartOfAccounts.Accounts.StandardTabularSection.ExtDimensionTypes.StandardAttribute"
+        },
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/DuplicateAttributes.xml",
+          "eq": "29f967d2a49cdb43b794d4bf3cc5e8909acc64e99273775a0fcd48f67802df63"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "aa2c8ce75da1d2e73ef082aa74791a8eb4b80a2c0384875463b85375970c7f94"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/MissingCharacteristicSource.xml",
+          "eq": "057c63541d783bf913a443c50b9659d4f2b0266d525f841149f409c1619bd8a3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ChartsOfAccounts/Accounts.xml",
+          "eq": "3ca943a881cf2531bbfa03037c1754cdc67f2d38d6ab574c37981c33767d89f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ChartsOfAccounts/BrokenNestedAttribute.xml",
+          "eq": "353b593e26538958b9cdc4bcea6ef3074960b545f9dc3b23b1c9f743bb7b2b7a"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "6dcc986db5f8fdd31abfa3dece3580dc0964989dab6b21f1a86bfe8d6842d8a7"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.DuplicateAttributes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Catalog.DuplicateAttributes"
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "properties.StandardAttributes не прочитано:"
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "duplicate property"
+        },
+        {
+          "pointer": "/data/props/CodeLength",
+          "eq": 11
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/DuplicateAttributes.xml",
+          "eq": "29f967d2a49cdb43b794d4bf3cc5e8909acc64e99273775a0fcd48f67802df63"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "aa2c8ce75da1d2e73ef082aa74791a8eb4b80a2c0384875463b85375970c7f94"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/MissingCharacteristicSource.xml",
+          "eq": "057c63541d783bf913a443c50b9659d4f2b0266d525f841149f409c1619bd8a3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ChartsOfAccounts/Accounts.xml",
+          "eq": "3ca943a881cf2531bbfa03037c1754cdc67f2d38d6ab574c37981c33767d89f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ChartsOfAccounts/BrokenNestedAttribute.xml",
+          "eq": "353b593e26538958b9cdc4bcea6ef3074960b545f9dc3b23b1c9f743bb7b2b7a"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "6dcc986db5f8fdd31abfa3dece3580dc0964989dab6b21f1a86bfe8d6842d8a7"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.DuplicateAttributes.StandardAttribute"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": false
+        },
+        {
+          "pointer": "/at",
+          "eq": "main:Catalog.DuplicateAttributes.StandardAttribute"
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "provider_unavailable"
+        },
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "eq": "source_unreadable"
+        },
+        {
+          "pointer": "/diagnostics/0/outcome",
+          "eq": "fixSource"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": " properties.StandardAttributes: "
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "duplicate property"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/DuplicateAttributes.xml",
+          "eq": "29f967d2a49cdb43b794d4bf3cc5e8909acc64e99273775a0fcd48f67802df63"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "aa2c8ce75da1d2e73ef082aa74791a8eb4b80a2c0384875463b85375970c7f94"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/MissingCharacteristicSource.xml",
+          "eq": "057c63541d783bf913a443c50b9659d4f2b0266d525f841149f409c1619bd8a3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ChartsOfAccounts/Accounts.xml",
+          "eq": "3ca943a881cf2531bbfa03037c1754cdc67f2d38d6ab574c37981c33767d89f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ChartsOfAccounts/BrokenNestedAttribute.xml",
+          "eq": "353b593e26538958b9cdc4bcea6ef3074960b545f9dc3b23b1c9f743bb7b2b7a"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "6dcc986db5f8fdd31abfa3dece3580dc0964989dab6b21f1a86bfe8d6842d8a7"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.DuplicateAttributes.Characteristic"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/values/source",
+          "eq": "Catalog.Items"
+        },
+        {
+          "pointer": "/data/items/1",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/DuplicateAttributes.xml",
+          "eq": "29f967d2a49cdb43b794d4bf3cc5e8909acc64e99273775a0fcd48f67802df63"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "aa2c8ce75da1d2e73ef082aa74791a8eb4b80a2c0384875463b85375970c7f94"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/MissingCharacteristicSource.xml",
+          "eq": "057c63541d783bf913a443c50b9659d4f2b0266d525f841149f409c1619bd8a3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ChartsOfAccounts/Accounts.xml",
+          "eq": "3ca943a881cf2531bbfa03037c1754cdc67f2d38d6ab574c37981c33767d89f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ChartsOfAccounts/BrokenNestedAttribute.xml",
+          "eq": "353b593e26538958b9cdc4bcea6ef3074960b545f9dc3b23b1c9f743bb7b2b7a"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "6dcc986db5f8fdd31abfa3dece3580dc0964989dab6b21f1a86bfe8d6842d8a7"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.MissingCharacteristicSource"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Catalog.MissingCharacteristicSource"
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "characteristics[0].types.source не прочитано:"
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "source is missing"
+        },
+        {
+          "pointer": "/data/props/CodeLength",
+          "eq": 11
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/DuplicateAttributes.xml",
+          "eq": "29f967d2a49cdb43b794d4bf3cc5e8909acc64e99273775a0fcd48f67802df63"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "aa2c8ce75da1d2e73ef082aa74791a8eb4b80a2c0384875463b85375970c7f94"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/MissingCharacteristicSource.xml",
+          "eq": "057c63541d783bf913a443c50b9659d4f2b0266d525f841149f409c1619bd8a3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ChartsOfAccounts/Accounts.xml",
+          "eq": "3ca943a881cf2531bbfa03037c1754cdc67f2d38d6ab574c37981c33767d89f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ChartsOfAccounts/BrokenNestedAttribute.xml",
+          "eq": "353b593e26538958b9cdc4bcea6ef3074960b545f9dc3b23b1c9f743bb7b2b7a"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "6dcc986db5f8fdd31abfa3dece3580dc0964989dab6b21f1a86bfe8d6842d8a7"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.MissingCharacteristicSource.Characteristic"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": false
+        },
+        {
+          "pointer": "/at",
+          "eq": "main:Catalog.MissingCharacteristicSource.Characteristic"
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "provider_unavailable"
+        },
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "eq": "source_unreadable"
+        },
+        {
+          "pointer": "/diagnostics/0/outcome",
+          "eq": "fixSource"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": " characteristics[0].types.source: "
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "source is missing"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/DuplicateAttributes.xml",
+          "eq": "29f967d2a49cdb43b794d4bf3cc5e8909acc64e99273775a0fcd48f67802df63"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "aa2c8ce75da1d2e73ef082aa74791a8eb4b80a2c0384875463b85375970c7f94"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/MissingCharacteristicSource.xml",
+          "eq": "057c63541d783bf913a443c50b9659d4f2b0266d525f841149f409c1619bd8a3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ChartsOfAccounts/Accounts.xml",
+          "eq": "3ca943a881cf2531bbfa03037c1754cdc67f2d38d6ab574c37981c33767d89f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ChartsOfAccounts/BrokenNestedAttribute.xml",
+          "eq": "353b593e26538958b9cdc4bcea6ef3074960b545f9dc3b23b1c9f743bb7b2b7a"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "6dcc986db5f8fdd31abfa3dece3580dc0964989dab6b21f1a86bfe8d6842d8a7"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.MissingCharacteristicSource.StandardAttribute.Ref"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/title",
+          "eq": "Ref"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/DuplicateAttributes.xml",
+          "eq": "29f967d2a49cdb43b794d4bf3cc5e8909acc64e99273775a0fcd48f67802df63"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "aa2c8ce75da1d2e73ef082aa74791a8eb4b80a2c0384875463b85375970c7f94"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/MissingCharacteristicSource.xml",
+          "eq": "057c63541d783bf913a443c50b9659d4f2b0266d525f841149f409c1619bd8a3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ChartsOfAccounts/Accounts.xml",
+          "eq": "3ca943a881cf2531bbfa03037c1754cdc67f2d38d6ab574c37981c33767d89f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ChartsOfAccounts/BrokenNestedAttribute.xml",
+          "eq": "353b593e26538958b9cdc4bcea6ef3074960b545f9dc3b23b1c9f743bb7b2b7a"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "6dcc986db5f8fdd31abfa3dece3580dc0964989dab6b21f1a86bfe8d6842d8a7"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfAccounts.BrokenNestedAttribute"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:ChartOfAccounts.BrokenNestedAttribute"
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "standardTabularSections[0].standardAttributes[0].name не прочитано:"
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "no name"
+        },
+        {
+          "pointer": "/data/props/kind",
+          "eq": "ChartOfAccounts"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/DuplicateAttributes.xml",
+          "eq": "29f967d2a49cdb43b794d4bf3cc5e8909acc64e99273775a0fcd48f67802df63"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "aa2c8ce75da1d2e73ef082aa74791a8eb4b80a2c0384875463b85375970c7f94"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/MissingCharacteristicSource.xml",
+          "eq": "057c63541d783bf913a443c50b9659d4f2b0266d525f841149f409c1619bd8a3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ChartsOfAccounts/Accounts.xml",
+          "eq": "3ca943a881cf2531bbfa03037c1754cdc67f2d38d6ab574c37981c33767d89f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ChartsOfAccounts/BrokenNestedAttribute.xml",
+          "eq": "353b593e26538958b9cdc4bcea6ef3074960b545f9dc3b23b1c9f743bb7b2b7a"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "6dcc986db5f8fdd31abfa3dece3580dc0964989dab6b21f1a86bfe8d6842d8a7"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfAccounts.BrokenNestedAttribute.StandardTabularSection"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": false
+        },
+        {
+          "pointer": "/at",
+          "eq": "main:ChartOfAccounts.BrokenNestedAttribute.StandardTabularSection"
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "provider_unavailable"
+        },
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "eq": "source_unreadable"
+        },
+        {
+          "pointer": "/diagnostics/0/outcome",
+          "eq": "fixSource"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": " standardTabularSections[0].standardAttributes[0].name: "
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "no name"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/DuplicateAttributes.xml",
+          "eq": "29f967d2a49cdb43b794d4bf3cc5e8909acc64e99273775a0fcd48f67802df63"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "aa2c8ce75da1d2e73ef082aa74791a8eb4b80a2c0384875463b85375970c7f94"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/MissingCharacteristicSource.xml",
+          "eq": "057c63541d783bf913a443c50b9659d4f2b0266d525f841149f409c1619bd8a3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ChartsOfAccounts/Accounts.xml",
+          "eq": "3ca943a881cf2531bbfa03037c1754cdc67f2d38d6ab574c37981c33767d89f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ChartsOfAccounts/BrokenNestedAttribute.xml",
+          "eq": "353b593e26538958b9cdc4bcea6ef3074960b545f9dc3b23b1c9f743bb7b2b7a"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "6dcc986db5f8fdd31abfa3dece3580dc0964989dab6b21f1a86bfe8d6842d8a7"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfAccounts.BrokenNestedAttribute.StandardTabularSection.ExtDimensionTypes.StandardAttribute"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": false
+        },
+        {
+          "pointer": "/at",
+          "eq": "main:ChartOfAccounts.BrokenNestedAttribute.StandardTabularSection.ExtDimensionTypes.StandardAttribute"
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "provider_unavailable"
+        },
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "eq": "source_unreadable"
+        },
+        {
+          "pointer": "/diagnostics/0/outcome",
+          "eq": "fixSource"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": " standardTabularSections[0].standardAttributes[0].name: "
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "no name"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/DuplicateAttributes.xml",
+          "eq": "29f967d2a49cdb43b794d4bf3cc5e8909acc64e99273775a0fcd48f67802df63"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "aa2c8ce75da1d2e73ef082aa74791a8eb4b80a2c0384875463b85375970c7f94"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/MissingCharacteristicSource.xml",
+          "eq": "057c63541d783bf913a443c50b9659d4f2b0266d525f841149f409c1619bd8a3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ChartsOfAccounts/Accounts.xml",
+          "eq": "3ca943a881cf2531bbfa03037c1754cdc67f2d38d6ab574c37981c33767d89f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ChartsOfAccounts/BrokenNestedAttribute.xml",
+          "eq": "353b593e26538958b9cdc4bcea6ef3074960b545f9dc3b23b1c9f743bb7b2b7a"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "6dcc986db5f8fdd31abfa3dece3580dc0964989dab6b21f1a86bfe8d6842d8a7"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfAccounts.BrokenNestedAttribute.StandardAttribute.Ref"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/title",
+          "eq": "Ref"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/DuplicateAttributes.xml",
+          "eq": "29f967d2a49cdb43b794d4bf3cc5e8909acc64e99273775a0fcd48f67802df63"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Items.xml",
+          "eq": "aa2c8ce75da1d2e73ef082aa74791a8eb4b80a2c0384875463b85375970c7f94"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/MissingCharacteristicSource.xml",
+          "eq": "057c63541d783bf913a443c50b9659d4f2b0266d525f841149f409c1619bd8a3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ChartsOfAccounts/Accounts.xml",
+          "eq": "3ca943a881cf2531bbfa03037c1754cdc67f2d38d6ab574c37981c33767d89f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ChartsOfAccounts/BrokenNestedAttribute.xml",
+          "eq": "353b593e26538958b9cdc4bcea6ef3074960b545f9dc3b23b1c9f743bb7b2b7a"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "6dcc986db5f8fdd31abfa3dece3580dc0964989dab6b21f1a86bfe8d6842d8a7"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    }
+  ]
+}

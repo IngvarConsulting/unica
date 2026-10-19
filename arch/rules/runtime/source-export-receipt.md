@@ -8,17 +8,18 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::apply_without_prior_preview_counts_the_exported_files_itself
   - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::apply_refuses_another_target_and_an_empty_target
   - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::apply_names_the_export_mode_that_happened_when_it_differs
+  - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::published_sources_survive_missing_terminal_ack_failure_and_late_cancel
+  - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::invalid_terminal_after_publication_keeps_changed_and_reports_invalid_result
+  - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::authenticated_ready_capture_precedes_concurrent_input_refusal
 gap: https://github.com/IngvarConsulting/unica/issues/950
 ---
 
 # Выгрузка исходников подтверждает согласованную цель
 
 `pull` требует `force:true` и полностью заменяет один набор исходников.
-Защита локальных изменений и поколений базы отсутствует: незафиксированные
-и неотслеживаемые файлы набора раннер удаляет без копии.
-Аргументы — `force`, необязательные `sourceSet` и `extension`.
-Выбор отдельных объектов
-не поддерживается. Без `sourceSet` раннер выбирает набор конфигурации;
+`force:true` подтверждает замену всего набора, включая незафиксированные
+и неотслеживаемые файлы. Аргументы — `force`, необязательные `sourceSet`
+и `extension`. Без `sourceSet` выбирается набор конфигурации;
 для набора расширения требуется совпадающее имя расширения.
 
 Preview `pull` принимает только объявленный набор и цель внутри
@@ -27,9 +28,8 @@ Preview `pull` принимает только объявленный набор
 [режим previewApply](../mcp/run-operation-names.md). Ответ раннера о другом
 наборе или другой цели не признаётся успехом.
 Запрошенный режим и имя расширения в ответе должны совпасть с аргументами
-вызова. Случившийся режим раннер 0.15 называет отдельно, и ответ передаёт его
-как `performedMode` с причиной расхождения `modeReason`, не выдавая его
-за запрошенный; preview так же называет режим плана раннера `plannedMode`.
+вызова. Ответ передаёт фактический режим как `performedMode` с причиной расхождения
+`modeReason`; preview называет режим плана раннера `plannedMode`.
 
 Исполнение проверяет объявленный состав наборов и цель выгрузки
 по текущему проекту.
@@ -37,15 +37,9 @@ Preview `pull` принимает только объявленный набор
 состав наборов сверяются до и после внутреннего preview раннера.
 Их изменение даёт `concurrent_change` до исполнения.
 
-После выгрузки Unica сама считает обычные файлы в целевом каталоге,
-не переходя по символическим ссылкам. Отсутствующая
-или пустая цель вызывает отказ. Это квитанция о наличии файлов, а не
-проверка полноты или содержимого выгрузки. Состояние информационной базы
-между preview и применением не фиксируется.
+Успешная квитанция называет относительную цель, число проверенных обычных
+файлов и состоявшуюся замену. При отказе квитанция сохраняет фактический исход
+публикации, в том числе если подтверждение раннера потеряно после замены.
+Состояние информационной базы между preview и применением не фиксируется.
 
-Проверки используют управляемый раннер и реальные каталоги. Они не
-запускают выгрузку платформой 1С и не обещают отмену внешних записей раннера
-при отказе.
-
-Полная выгрузка должна также соблюдать [безопасную публикацию дерева](full-export-publication.md).
-Подключение этой защиты к текущему `pull` ещё не завершено.
+Полная выгрузка соблюдает [безопасную публикацию дерева](full-export-publication.md).
