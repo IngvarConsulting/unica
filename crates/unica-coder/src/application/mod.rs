@@ -38,6 +38,7 @@ pub(crate) mod operation_descriptors;
 pub(crate) mod operational_config;
 mod outcome;
 pub(crate) mod ports;
+pub(crate) mod properties;
 // The receipt authority is compiled before the private v5 daemon becomes the
 // default composition.
 #[allow(dead_code)]
