@@ -139,9 +139,14 @@ impl ApplyRequest {
                         MetadataKind::parse(kind).ok()?;
                     }
                     let object_name = value.get("name")?.as_str()?;
-                    if !crate::domain::metadata::metadata_identifier_is_valid(object_name) {
-                        return None;
-                    }
+                    let object_name = if created_kind.is_some() {
+                        crate::domain::metadata::canonical_creation_identifier(object_name)?
+                    } else {
+                        if !crate::domain::metadata::metadata_identifier_is_valid(object_name) {
+                            return None;
+                        }
+                        object_name
+                    };
                     QualifiedAddress::parse(&format!(
                         "{}:{kind}.{object_name}",
                         operation_at.source_set()
@@ -3064,6 +3069,47 @@ mod tests {
                     .location(),
                 "ops[1].args.at"
             );
+        }
+    }
+
+    fn padded_created_name_scope(create: &str, kind: &str) {
+        for source in ["main", "extension"] {
+            for (raw, canonical) in [
+                (" Reader ", "Reader"),
+                ("\u{a0}Читатель\u{2003}", "Читатель"),
+            ] {
+                let target = format!("{source}:{kind}.{canonical}");
+                let ops = json!([
+                    {"op":create,"args":{"values":{"name":raw}}},
+                    {"op":"props.set","args":{"at":target,"values":{"Comment":"x"}}}
+                ]);
+                let result =
+                    parse(json!({"at":format!("{source}:Configuration"),"ops":ops,"dryRun":true}));
+                assert!(result.is_ok(), "{create} {raw:?} {source}: {result:?}");
+                assert_eq!(result.unwrap().ops()[0].args()["values"]["name"], raw);
+            }
+        }
+    }
+
+    #[test]
+    fn padded_role_creation_scope_uses_the_canonical_name() {
+        padded_created_name_scope("role.create", "Role");
+    }
+
+    #[test]
+    fn padded_subsystem_creation_scope_uses_the_canonical_name() {
+        padded_created_name_scope("subsystem.create", "Subsystem");
+    }
+
+    #[test]
+    fn padded_object_create_does_not_extend_scope_with_a_trimmed_name() {
+        for raw in [" Enabled ", "\u{a0}Enabled\u{2003}"] {
+            let error = parse(json!({"at":"main:Configuration","ops":[
+                {"op":"object.create","args":{"values":{"kind":"Constant","name":raw}}},
+                {"op":"props.set","args":{"at":"main:Constant.Enabled","values":{"Comment":"x"}}}
+            ]}))
+            .unwrap_err();
+            assert_eq!(error.location(), "ops[1].args.at");
         }
     }
 

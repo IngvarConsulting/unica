@@ -4,10 +4,86 @@ import tempfile
 import json
 import hashlib
 import os
+import copy
+import xml.etree.ElementTree as ET
 from unittest.mock import patch
 from pathlib import Path
 
 from tests.agent_evaluation.dcs_driver import DCS_TEMPLATE, allowed_help_command, audit_cli, audit_mcp, audit_review, terminal_calls
+
+
+def dcs_physical_fixture(root, *, keep_source=True, keep_variant=True, keep_group=True, keep_selection=True):
+    """Required facts plus the independently frozen, optional creation scaffold."""
+    import shutil
+    from tests.agent_evaluation import dcs_driver
+    workspace = root / "workspace"
+    shutil.copytree(dcs_driver.REPO / "tests/fixtures/acceptance/workspace-dcs", workspace)
+    s = "{http://v8.1c.ru/8.1/data-composition-system/schema}"
+    t = "{http://v8.1c.ru/8.1/data-composition-system/settings}"
+    v = "{http://v8.1c.ru/8.1/data/core}"
+    xsi = "{http://www.w3.org/2001/XMLSchema-instance}"
+    old = ET.parse(workspace / dcs_driver.XML)
+    data = old.find(s + "dataSet")
+    data.find(s + "query").text = 'ВЫБРАТЬ "Agent1310" КАК Category, 3 КАК Amount, 4 КАК Added'
+    field = ET.SubElement(data, s + "field", {xsi + "type": "DataSetFieldField"})
+    ET.SubElement(field, s + "dataPath").text = "Added"
+    ET.SubElement(field, s + "field").text = "Added"
+    title = ET.SubElement(field, s + "title")
+    item = ET.SubElement(title, v + "item")
+    ET.SubElement(item, v + "content").text = "Added"
+    old.find(".//" + t + "groupItems/" + t + "item/" + t + "field").text = "Amount"
+    old.write(workspace / dcs_driver.XML, encoding="utf-8")
+    new = ET.parse(dcs_driver.FIXTURE / "template-add-scaffold.xml")
+    for child in list(new.getroot()):
+        if child.tag == s + "dataSource" and not keep_source:
+            new.getroot().remove(child)
+        elif child.tag == s + "settingsVariant" and not keep_variant:
+            new.getroot().remove(child)
+        elif child.tag == s + "settingsVariant":
+            settings = child.find(t + "settings")
+            if not keep_group:
+                settings.remove(settings.find(t + "item"))
+            if not keep_selection:
+                settings.remove(settings.find(t + "selection"))
+    source = ET.SubElement(new.getroot(), s + "dataSource")
+    ET.SubElement(source, s + "name").text = "AgentSource"
+    ET.SubElement(source, s + "dataSourceType").text = "Local"
+    data = ET.SubElement(new.getroot(), s + "dataSet", {xsi + "type": "DataSetQuery"})
+    ET.SubElement(data, s + "name").text = "AgentData"
+    for name in ["Category", "Amount", "Added"]:
+        field = ET.SubElement(data, s + "field", {xsi + "type": "DataSetFieldField"})
+        ET.SubElement(field, s + "dataPath").text = name
+        ET.SubElement(field, s + "field").text = name
+    ET.SubElement(data, s + "dataSource").text = "AgentSource"
+    ET.SubElement(data, s + "query").text = 'ВЫБРАТЬ "Agent1310New" КАК Category, 7 КАК Amount, 8 КАК Added'
+    variant = ET.SubElement(new.getroot(), s + "settingsVariant")
+    ET.SubElement(variant, t + "name").text = "AgentVariant"
+    settings = ET.SubElement(variant, t + "settings")
+    selection = ET.SubElement(settings, t + "selection")
+    for name in ["Category", "Amount", "Added"]:
+        selected = ET.SubElement(selection, t + "item", {xsi + "type": "dcsset:SelectedItemField"})
+        ET.SubElement(selected, t + "field").text = name
+    group = ET.SubElement(settings, t + "item", {xsi + "type": "dcsset:StructureItemGroup"})
+    ET.SubElement(group, t + "name").text = "AgentGroup"
+    groups = ET.SubElement(group, t + "groupItems")
+    item = ET.SubElement(groups, t + "item", {xsi + "type": "dcsset:GroupItemField"})
+    ET.SubElement(item, t + "field").text = "Category"
+    ET.SubElement(item, t + "groupType").text = "Items"
+    ET.SubElement(item, t + "periodAdditionType").text = "None"
+    created = workspace / dcs_driver.NEW_DCS_XML
+    created.parent.mkdir(parents=True)
+    # QName-valued attributes retain these published bindings through the test
+    # fixture's ElementTree serialization; the oracle must compare their meaning.
+    new.getroot().set("xmlns:dcsset", t[1:-1])
+    new.getroot().set("xmlns", s[1:-1])
+    new.getroot().set("xmlns:xs", "http://www.w3.org/2001/XMLSchema")
+    new.write(created, encoding="utf-8")
+    descriptor = created.parent.parent.parent / "Agent1310Schema.xml"
+    descriptor.write_text('''<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Template><Properties>
+<TemplateType>DataCompositionSchema</TemplateType></Properties></Template></MetaDataObject>''')
+    owner = workspace / "src/cf/Reports/F05Report.xml"
+    owner.write_text(owner.read_text().replace("</ChildObjects>", "<Template>Agent1310Schema</Template></ChildObjects>"))
+    return workspace
 
 
 def detailed_can_response(target, operation):
@@ -64,6 +140,138 @@ def evaluate_mxl_fixture(root, mutation=None):
 
 
 class AgentEvaluationAuditTests(unittest.TestCase):
+    def test_dcs_physical_outcome_reports_kept_and_removed_creation_scaffold(self):
+        from tests.agent_evaluation.dcs_driver import verify_dcs_images
+        for keep_source, keep_variant, keep_group, keep_selection in [
+            (True, True, True, True), (False, False, False, False),
+            (True, False, False, False), (False, True, True, True),
+            (True, True, False, True), (True, True, False, False), (True, True, True, False),
+        ]:
+            with self.subTest(source=keep_source, variant=keep_variant, group=keep_group,
+                              selection=keep_selection), tempfile.TemporaryDirectory() as raw:
+                workspace = dcs_physical_fixture(Path(raw), keep_source=keep_source, keep_variant=keep_variant,
+                                                 keep_group=keep_group, keep_selection=keep_selection)
+                observed = verify_dcs_images(workspace)
+                self.assertEqual(observed["created"]["templateAddScaffold"], {
+                    "dataSource": {"name": "ИсточникДанных1", "count": int(keep_source)},
+                    "variant": {"name": "Основной", "count": int(keep_variant),
+                                "emptyGroupCount": int(keep_variant and keep_group),
+                                "emptySelectionCount": int(keep_variant and keep_selection)},
+                })
+                self.assertEqual(observed["created"]["dataSource"], "AgentSource")
+                self.assertEqual(observed["created"]["dataSet"], "AgentData")
+                self.assertEqual(observed["created"]["groupBy"], ["Category"])
+
+    def test_dcs_scaffold_comparison_uses_qname_namespaces(self):
+        from tests.agent_evaluation.dcs_driver import NEW_DCS_XML, verify_dcs_images
+        with tempfile.TemporaryDirectory() as raw:
+            workspace = dcs_physical_fixture(Path(raw))
+            path = workspace / NEW_DCS_XML
+            text = path.read_text().replace("dcsset:", "settingsAlias:").replace(
+                "xmlns:dcsset=", "xmlns:settingsAlias=",
+            ).replace("xs:string", "schemaAlias:string").replace("xmlns:xs=", "xmlns:schemaAlias=")
+            path.write_text(text)
+            observed = verify_dcs_images(workspace)
+            self.assertEqual(observed["created"]["templateAddScaffold"]["variant"]["emptyGroupCount"], 1)
+            path.write_text(text.replace('xmlns:settingsAlias="http://v8.1c.ru/8.1/data-composition-system/settings"',
+                                         'xmlns:settingsAlias="urn:foreign-settings"'))
+            with self.assertRaises(ValueError):
+                verify_dcs_images(workspace)
+
+    def test_dcs_physical_outcome_rejects_extra_or_mutated_creation_nodes(self):
+        from tests.agent_evaluation.dcs_driver import NEW_DCS_XML, verify_dcs_images
+        s = "{http://v8.1c.ru/8.1/data-composition-system/schema}"
+        t = "{http://v8.1c.ru/8.1/data-composition-system/settings}"
+        xsi = "{http://www.w3.org/2001/XMLSchema-instance}"
+        for mutation in ["extra-source", "duplicate-source", "source-kind", "source-name", "source-child",
+                         "duplicate-variant", "variant-name", "variant-title", "variant-child",
+                         "group-type", "group-name", "group-child", "duplicate-group", "extra-agent-group",
+                         "selection-child", "duplicate-empty-selection", "settings-attribute", "group-text-tail",
+                         "reordered-default-settings", "agent-group-child", "duplicate-agent-presentation",
+                         "extra-agent-selection", "extra-dataset", "extra-root-node", "agent-source-child",
+                         "missing-agent-source", "missing-agent-dataset", "missing-agent-variant", "missing-agent-group"]:
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as raw:
+                workspace = dcs_physical_fixture(Path(raw))
+                path = workspace / NEW_DCS_XML
+                document = ET.parse(path)
+                root = document.getroot()
+                source = root.find(s + "dataSource[" + s + "name='ИсточникДанных1']")
+                variant = root.find(s + "settingsVariant[" + t + "name='Основной']")
+                settings = variant.find(t + "settings")
+                group = settings.find(t + "item")
+                agent = root.find(s + "settingsVariant[" + t + "name='AgentVariant']/" + t + "settings")
+                if mutation == "extra-source":
+                    extra = copy.deepcopy(source)
+                    extra.find(s + "name").text = "ExtraSource"
+                    root.append(extra)
+                elif mutation == "duplicate-source":
+                    root.append(copy.deepcopy(source))
+                elif mutation == "source-kind":
+                    source.find(s + "dataSourceType").text = "External"
+                elif mutation == "source-name":
+                    source.find(s + "name").text = "RenamedDefault"
+                elif mutation == "source-child":
+                    ET.SubElement(source, s + "unexpected").text = "added"
+                elif mutation == "duplicate-variant":
+                    root.append(copy.deepcopy(variant))
+                elif mutation == "variant-name":
+                    variant.find(t + "name").text = "RenamedDefault"
+                elif mutation == "variant-title":
+                    variant.find(t + "presentation").text = "Changed"
+                elif mutation == "variant-child":
+                    ET.SubElement(settings, t + "filter")
+                elif mutation == "group-type":
+                    group.set(xsi + "type", "dcsset:StructureItemTable")
+                elif mutation == "group-name":
+                    ET.SubElement(group, t + "name").text = "Changed"
+                elif mutation == "group-child":
+                    ET.SubElement(group, t + "groupItems")
+                elif mutation == "duplicate-group":
+                    settings.append(copy.deepcopy(group))
+                elif mutation == "selection-child":
+                    ET.SubElement(settings.find(t + "selection"), t + "item")
+                elif mutation == "duplicate-empty-selection":
+                    settings.insert(0, copy.deepcopy(settings.find(t + "selection")))
+                elif mutation == "settings-attribute":
+                    settings.set("changed", "true")
+                elif mutation == "group-text-tail":
+                    group.tail = "unexpected content"
+                elif mutation == "reordered-default-settings":
+                    settings.remove(group)
+                    settings.insert(0, group)
+                elif mutation == "agent-group-child":
+                    ET.SubElement(agent.find(t + "item/" + t + "groupItems/" + t + "item"), t + "unexpected")
+                elif mutation == "duplicate-agent-presentation":
+                    owner_variant = root.find(s + "settingsVariant[" + t + "name='AgentVariant']")
+                    ET.SubElement(owner_variant, t + "presentation").text = "first"
+                    ET.SubElement(owner_variant, t + "presentation").text = "second"
+                elif mutation == "extra-agent-group":
+                    agent.append(copy.deepcopy(group))
+                elif mutation == "extra-agent-selection":
+                    ET.SubElement(agent.find(t + "selection"), t + "item", {xsi + "type": "dcsset:SelectedItemAuto"})
+                elif mutation == "extra-dataset":
+                    extra = copy.deepcopy(root.find(s + "dataSet"))
+                    extra.find(s + "name").text = "ExtraData"
+                    root.append(extra)
+                elif mutation == "extra-root-node":
+                    ET.SubElement(root, s + "parameter")
+                elif mutation == "agent-source-child":
+                    ET.SubElement(root.find(s + "dataSource[" + s + "name='AgentSource']"), s + "unexpected")
+                elif mutation == "missing-agent-group":
+                    agent.remove(agent.find(t + "item"))
+                else:
+                    kind, name = {"missing-agent-source": ("dataSource", "AgentSource"),
+                                  "missing-agent-dataset": ("dataSet", "AgentData"),
+                                  "missing-agent-variant": ("settingsVariant", "AgentVariant")}[mutation]
+                    name_tag = t if kind == "settingsVariant" else s
+                    root.remove(root.find(s + kind + "[" + name_tag + "name='" + name + "']"))
+                root.set("xmlns:dcsset", t[1:-1])
+                root.set("xmlns", s[1:-1])
+                root.set("xmlns:xs", "http://www.w3.org/2001/XMLSchema")
+                document.write(path, encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    verify_dcs_images(workspace)
+
     def test_mxl_evaluation_records_physical_outcome_and_passes_it_to_independent_review(self):
         from types import SimpleNamespace
         from tests.agent_evaluation import mxl_driver
