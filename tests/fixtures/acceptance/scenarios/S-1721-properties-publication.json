@@ -4330,7 +4330,7 @@
       ],
       "status": "passed",
       "validators": [
-        "metadata"
+        "meta"
       ],
       "fileAssertions": [
         {

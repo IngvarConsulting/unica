@@ -50,7 +50,8 @@ RUBRIC = (
     "драйвера за собственное чтение XML. Ответ верно объясняет, что values не может "
     "быть пустым, boolean требует JSON false вместо строки, обе формы одного alias "
     "не допускаются, но synonym+Comment относятся к разным свойствам. Проверка "
-    "Configuration.Can через Unica подтверждает отсутствие props.set у корня; "
+    "опубликованного Can-каталога Configuration в ответе узла или по адресу .Can "
+    "через Unica подтверждает отсутствие props.set у корня; "
     "агент не обещает поддержку Configuration. Нет ручной записи XML и незапрошенных "
     "изменений; нет заявления о загрузке в 1С без протокола такого запуска."
 )
@@ -112,6 +113,17 @@ def audit(records):
             at = args.get("at")
             if args == {} and result.get("ok") is True:
                 discovery = True
+            if at == "main:Configuration" and result.get("ok") is True:
+                capabilities = data.get("can")
+                if (result.get("at") == at and data.get("at") == at and data.get("kind") == "Configuration"
+                        and isinstance(capabilities, list) and capabilities
+                        and all(isinstance(item, dict) and isinstance(item.get("op"), str) and item["op"]
+                                and item["op"] == item["op"].strip()
+                                and isinstance(item.get("args"), str) and item["args"]
+                                and type(item.get("implemented")) is bool for item in capabilities)):
+                    operations = [item["op"] for item in capabilities]
+                    if len(set(operations)) == len(operations) and "props.set" not in operations:
+                        configuration = True
             if at in {"main:Configuration.Can", "main:Configuration.Can.props.set"}:
                 if at.endswith(".Can") and result.get("ok") is True:
                     items = data.get("items")

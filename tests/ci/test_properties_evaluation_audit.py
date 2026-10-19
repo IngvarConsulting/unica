@@ -122,6 +122,78 @@ class PropertiesEvidenceTests(unittest.TestCase):
             call("unica.check", {"at": target}, result, after, after)
         return records
 
+    def direct_configuration_records(self):
+        records = self.accepted_records()
+        request = next(record for record in records if record["direction"] == "request"
+                       and record["payload"].get("method") == "tools/call"
+                       and record["payload"]["params"]["arguments"].get("at") == "main:Configuration.Can")
+        request["payload"]["params"]["arguments"]["at"] = "main:Configuration"
+        response = next(record for record in records if record["direction"] == "response"
+                        and record["payload"]["id"] == request["payload"]["id"])
+        response["payload"]["result"]["structuredContent"] = {
+            "ok": True, "at": "main:Configuration", "data": {
+                "at": "main:Configuration", "kind": "Configuration", "can": [
+                    {"op": "object.create", "args": "values", "implemented": True},
+                    {"op": "role.create", "args": "values", "implemented": True},
+                ]}}
+        return records, response
+
+    def test_audit_accepts_published_configuration_capabilities_on_the_node(self):
+        records, _ = self.direct_configuration_records()
+        allowed, calls = props_driver.audit(records)
+        self.assertEqual(allowed, {"unica.view", "unica.apply", "unica.check"})
+        self.assertTrue(calls)
+
+    def test_audit_rejects_unproven_direct_configuration_capabilities(self):
+        for mutation in ["missing can", "null can", "empty can", "non-list can", "non-object capability", "missing op", "empty op",
+                         "whitespace op", "non-text op", "duplicate op", "missing args", "non-text args",
+                         "missing implemented", "non-boolean implemented", "foreign result at", "foreign data at", "foreign kind",
+                         "props.set", "MCP error"]:
+            with self.subTest(mutation=mutation):
+                records, response = self.direct_configuration_records()
+                answer = response["payload"]["result"]["structuredContent"]
+                data = answer["data"]
+                if mutation == "missing can":
+                    del data["can"]
+                elif mutation == "null can":
+                    data["can"] = None
+                elif mutation == "empty can":
+                    data["can"] = []
+                elif mutation == "non-list can":
+                    data["can"] = {"op": "object.create"}
+                elif mutation == "non-object capability":
+                    data["can"][0] = "object.create"
+                elif mutation == "missing op":
+                    del data["can"][0]["op"]
+                elif mutation == "empty op":
+                    data["can"][0]["op"] = ""
+                elif mutation == "whitespace op":
+                    data["can"][0]["op"] = " props.set "
+                elif mutation == "non-text op":
+                    data["can"][0]["op"] = 7
+                elif mutation == "duplicate op":
+                    data["can"][1]["op"] = data["can"][0]["op"]
+                elif mutation == "missing args":
+                    del data["can"][0]["args"]
+                elif mutation == "non-text args":
+                    data["can"][0]["args"] = {}
+                elif mutation == "missing implemented":
+                    del data["can"][0]["implemented"]
+                elif mutation == "non-boolean implemented":
+                    data["can"][0]["implemented"] = "true"
+                elif mutation == "foreign result at":
+                    answer["at"] = props_driver.ROLE
+                elif mutation == "foreign data at":
+                    data["at"] = props_driver.ROLE
+                elif mutation == "foreign kind":
+                    data["kind"] = "Role"
+                elif mutation == "props.set":
+                    data["can"].append({"op": "props.set", "args": "values", "implemented": False})
+                else:
+                    response["payload"]["result"]["isError"] = True
+                with self.assertRaises(ValueError):
+                    props_driver.audit(records)
+
     def test_audit_accepts_contextual_contracts_saved_token_and_honest_provider(self):
         allowed, calls = props_driver.audit(self.accepted_records())
         self.assertEqual(allowed, {"unica.view", "unica.apply", "unica.check"})

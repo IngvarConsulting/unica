@@ -1811,7 +1811,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: operation target must be the same logical node or its descendant in the top-level source set",
+      "refusal": "bad_value: ops[0].args.at: operation target must be the same logical node or its descendant in the top-level source set",
       "assertions": [
         {
           "pointer": "/diagnostics/0/code",
