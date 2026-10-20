@@ -23,32 +23,12 @@ RUN_UNITTEST = Path(__file__).with_name("run-unittest.py")
 PYTHON_SIZES = REPO_ROOT / ".config" / "python-sizes.toml"
 NEXTEST_JUNIT = REPO_ROOT / "target" / "nextest" / "default" / "junit.xml"
 
-# Ворота конвейера плюс локальный `all` — все наборы, которыми управляет CI.
-# Агентная приёмка требует локальной авторизации и намеренно исключена.
-PROFILES = ("all", "pr", "queue", "main", "release", "large")
-SIZES = ("small", "medium", "large")
-# Какие размеры принимают ворота — таблица «Что тестировать и когда» из
-# замысла площадки. Пока все наборы `small`, и любые ворота гоняют всё:
-# площадка под ярусы готова, отбора нет.
-ADMITTED = {
-    "all": SIZES,
-    "pr": ("small",),
-    "queue": ("small", "medium"),
-    "main": ("small", "medium"),
-    "release": SIZES,
-    # Ночной прогон: только тяжёлый ярус. Пока он пуст и честно гоняет ноль.
-    "large": ("large",),
-}
-ECOSYSTEMS = ("rust", "python", "all")
-
-# Наборы Python: сначала проверки CI, потом инструментов разработчика.
-# `--durations` показывает, какие проверки занимают время.
-# У Python роль выражения размера играет сам набор: размер объявлен здесь,
-# рядом с ним, и ворота отбирают наборы по нему.
-PYTHON_SUITES = (
-    ("tests/ci", "small", ("--durations", "20")),
-    ("tests/dev", "small", ("--durations", "20")),
+from workflow_routing import (  # noqa: E402
+    ADMITTED, LANED_SUITES, PROFILES, PYTHON_SUITES, SIZES,
+    python_admitted, python_matrix, python_slug, python_suite_names,
 )
+
+ECOSYSTEMS = ("rust", "python", "all")
 
 
 # Профиль ворот и профиль nextest — разные имена: ворота описывают, когда
@@ -176,41 +156,6 @@ def rust_list_commands(profile: str) -> list[list[str]]:
     ]
 
 
-# Наборы, которые в CI делятся на полосы по размеру: одна джоба на размер.
-# `tests/ci` одним процессом шёл в очереди шесть с половиной минут, из них
-# четыре — несколько `medium`-тестов; полоса `medium` идёт своей джобой.
-LANED_SUITES = ("tests/ci",)
-
-
-def python_suite_names() -> tuple[str, ...]:
-    return tuple(suite for suite, _, _ in PYTHON_SUITES)
-
-
-def python_slug(suite: str, lane: str) -> str:
-    """Имя джобы и артефакта: основание набора и полоса, если она есть."""
-    base = suite.rstrip("/").split("/")[-1]
-    return f"{base}-{lane}" if lane else base
-
-
-def python_matrix(profile: str) -> list[dict]:
-    """Матрица джоб Python для ворот: набор на джобу, полосатый набор — по размеру.
-
-    Считается швом, а не пишется в workflow: список наборов и допуски ворот
-    живут здесь, и workflow берёт матрицу готовой.
-    """
-    try:
-        admitted = ADMITTED[profile]
-    except KeyError:
-        raise ValueError(f"профиль {profile!r} для Python не описан") from None
-    entries: list[dict] = []
-    for suite, size, _ in PYTHON_SUITES:
-        if size not in admitted:
-            continue
-        lanes = [lane for lane in SIZES if lane in admitted] if suite in LANED_SUITES else [""]
-        for lane in lanes:
-            entries.append({"suite": suite, "lane": lane, "slug": python_slug(suite, lane)})
-    return entries
-
 
 def python_commands(
     profile: str,
@@ -219,6 +164,7 @@ def python_commands(
     runner: str = "local",
     suite: str | None = None,
     only_size: str | None = None,
+    docs_only: bool = False,
 ) -> list[list[str]]:
     """Команды Python для профиля: наборы тех размеров, что ворота принимают.
 
@@ -228,10 +174,11 @@ def python_commands(
     `suite` сужает прогон до одного набора: в CI наборы идут параллельными
     джобами, по одной на набор, и каждая зовёт этот же шов.
     """
-    try:
-        admitted = ADMITTED[profile]
-    except KeyError:
-        raise ValueError(f"профиль {profile!r} для Python не описан") from None
+    admitted = python_admitted(profile, docs_only=docs_only)
+    if docs_only:
+        if only_size not in (None, "small"):
+            raise ValueError("docs-only исполняет только Python small")
+        only_size = "small"
     if suite is not None and suite not in python_suite_names():
         raise ValueError(f"набор {suite!r} не описан; известны: {', '.join(python_suite_names())}")
     # Полоса размера: джоба гоняет один размер из допущенных воротами внутри
@@ -253,8 +200,10 @@ def python_commands(
             sizing = ["--sizes", str(PYTHON_SIZES), "--admit", ",".join(lane_sizes)]
         if only_size:
             sizing += ["--lane", only_size]
+        if docs_only and "medium" in ADMITTED[profile]:
+            sizing += ["--scope-skip-medium"]
         if results is None:
-            return ([] if size == "small" else ["--size", size]) + sizing
+            return (["--profile", profile] if docs_only else []) + ([] if size == "small" else ["--size", size]) + sizing
         return ["--results", str(results), "--runner", runner, "--profile", profile, "--size", size, "--sizes", str(PYTHON_SIZES), *sizing]
 
     return [
@@ -272,16 +221,19 @@ def commands(
     runner: str = "local",
     suite: str | None = None,
     only_size: str | None = None,
+    docs_only: bool = False,
 ) -> list[list[str]]:
     if profile not in PROFILES:
         raise ValueError(f"неизвестный профиль {profile!r}; известны: {', '.join(PROFILES)}")
     if ecosystem not in ECOSYSTEMS:
         raise ValueError(f"неизвестная экосистема {ecosystem!r}; известны: {', '.join(ECOSYSTEMS)}")
+    if docs_only and ecosystem != "python":
+        raise ValueError("docs-only допускается только для Python")
     planned: list[list[str]] = []
     if ecosystem in ("rust", "all"):
         planned.extend(rust_commands(profile))
     if ecosystem in ("python", "all"):
-        planned.extend(python_commands(profile, interpreter, results, runner, suite, only_size))
+        planned.extend(python_commands(profile, interpreter, results, runner, suite, only_size, docs_only))
     return planned
 
 
@@ -298,9 +250,9 @@ def write_rust_plan(results: Path, profile: str) -> int:
     return len(entries)
 
 
-def write_python_plan(profile: str, results: Path, runner: str, suite: str | None = None, only_size: str | None = None) -> int:
+def write_python_plan(profile: str, results: Path, runner: str, suite: str | None = None, only_size: str | None = None, docs_only: bool = False) -> int:
     """План Python — тем же швом и теми же командами, что и прогон, только состав."""
-    for command in python_commands(profile, results=results, runner=runner, suite=suite, only_size=only_size):
+    for command in python_commands(profile, results=results, runner=runner, suite=suite, only_size=only_size, docs_only=docs_only):
         completed = subprocess.run([*command, "--plan-only"], cwd=REPO_ROOT, stdout=subprocess.DEVNULL)
         if completed.returncode != 0:
             raise SystemExit(f"план Python не записан: {' '.join(command)}")
@@ -368,14 +320,17 @@ def main(argv: list[str] | None = None) -> int:
                         help="один набор Python вместо всех: в CI наборы идут джобами, по одной на набор")
     parser.add_argument("--only-size", default="", help="полоса размера набора Python; пусто — все допущенные")
     parser.add_argument("--python-matrix", action="store_true", help="напечатать матрицу джоб Python для ворот и выйти")
+    parser.add_argument("--docs-only", nargs="?", const="true", default="false", choices=("true", "false"),
+                        help="только Python small для подтверждённого изменения прозы")
     args = parser.parse_args(argv)
+    args.docs_only = args.docs_only == "true"
     only_size = args.only_size or None
 
     if args.python_matrix:
-        print(json.dumps(python_matrix(args.profile), ensure_ascii=False, separators=(",", ":")))
+        print(json.dumps(python_matrix(args.profile, docs_only=args.docs_only), ensure_ascii=False, separators=(",", ":")))
         return 0
 
-    planned = commands(args.profile, args.ecosystem, results=args.results, runner=args.runner, suite=args.suite, only_size=only_size)
+    planned = commands(args.profile, args.ecosystem, results=args.results, runner=args.runner, suite=args.suite, only_size=only_size, docs_only=args.docs_only)
     if args.dry_run:
         for command in planned:
             print(" ".join(command))
@@ -392,10 +347,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.ecosystem in ("rust", "all"):
             print(f"план Rust: {write_rust_plan(args.results, args.profile)} тестов")
         if args.ecosystem in ("python", "all"):
-            print(f"план Python: {write_python_plan(args.profile, args.results, args.runner, args.suite, only_size)} тестов")
+            print(f"план Python: {write_python_plan(args.profile, args.results, args.runner, args.suite, only_size, args.docs_only)} тестов")
         return 0
 
-    return execute(args.profile, args.ecosystem, args.results, args.runner, line=args.line, sha=args.sha, suite=args.suite, only_size=only_size)
+    return execute(args.profile, args.ecosystem, args.results, args.runner, line=args.line, sha=args.sha, suite=args.suite, only_size=only_size, docs_only=args.docs_only)
 
 
 def execute(
@@ -410,6 +365,7 @@ def execute(
     suite: str | None = None,
     only_size: str | None = None,
     before_feature_build=None,
+    docs_only: bool = False,
 ) -> int:
     """Прогнать экосистемы и оставить результаты.
 
@@ -418,6 +374,8 @@ def execute(
     успел написать JUnit. Результаты Rust пишутся, только если JUnit есть.
     """
     run_commands = run if run_commands is None else run_commands
+    if docs_only:
+        commands(profile, ecosystem, suite=suite, only_size=only_size, docs_only=True)
     if before_feature_build is None and run_commands is run:
         before_feature_build = surviving_product_report()
     if results is not None:
@@ -443,7 +401,7 @@ def execute(
         if code != 0:
             return code
     if ecosystem in ("python", "all"):
-        code = run_commands(python_commands(profile, results=results, runner=runner, suite=suite, only_size=only_size))
+        code = run_commands(python_commands(profile, results=results, runner=runner, suite=suite, only_size=only_size, docs_only=docs_only))
     return code
 
 
