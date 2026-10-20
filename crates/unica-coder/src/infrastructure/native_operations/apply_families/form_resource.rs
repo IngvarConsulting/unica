@@ -2434,6 +2434,9 @@ fn stage_form_remove(
     staged
         .remove(&descriptor_relative, &descriptor_preimage)
         .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+    staged
+        .remove_owned_directories(&payload_relative, &descriptor_relative, &forms_dir)
+        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
     touched.push(descriptor_relative);
     let (deregistered, removed) =
         crate::infrastructure::native_operations::meta::remove::remove_metadata_child_text_with_flag(
