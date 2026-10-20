@@ -439,6 +439,17 @@ def xml_with_namespaces(path):
     return parser.root, contexts
 
 
+def resolved_xsi_type(node, contexts):
+    value = node.attrib.get("{http://www.w3.org/2001/XMLSchema-instance}type")
+    if value is None:
+        return None
+    prefix, local = value.split(":", 1) if ":" in value else ("", value)
+    namespace = contexts[node].get(prefix)
+    if namespace is None:
+        raise ValueError("xsi:type has an unbound namespace")
+    return "{" + namespace + "}" + local
+
+
 def xml_shape(node, contexts, *, without=frozenset()):
     """Compare semantic XML exactly; only indentation and namespace aliases vary."""
     def content(text):
@@ -447,12 +458,7 @@ def xml_shape(node, contexts, *, without=frozenset()):
     attributes = dict(node.attrib)
     xsi_type = "{http://www.w3.org/2001/XMLSchema-instance}type"
     if xsi_type in attributes:
-        value = attributes[xsi_type]
-        prefix, local = value.split(":", 1) if ":" in value else ("", value)
-        namespace = contexts[node].get(prefix)
-        if namespace is None:
-            raise ValueError("scaffold xsi:type has an unbound namespace")
-        attributes[xsi_type] = "{" + namespace + "}" + local
+        attributes[xsi_type] = resolved_xsi_type(node, contexts)
     return (node.tag, tuple(sorted(attributes.items())), content(node.text),
             tuple(xml_shape(child, contexts, without=without) for child in node if child not in without),
             content(node.tail))
@@ -555,6 +561,10 @@ def verify_dcs_images(workspace):
         if any(tag not in allowed or (tag not in repeated and tags.count(tag) > 1) for tag in tags):
             raise ValueError("requested DCS node contains an unrequested child")
 
+    def require_settings_type(node, local):
+        if resolved_xsi_type(node, new_contexts) != t + local:
+            raise ValueError(f"requested DCS node is not a settings {local}")
+
     new_source = one(new, s + "dataSource[" + s + "name='AgentSource']")
     closed_children(new_source, {s + "name", s + "dataSourceType"})
     one(new_source, s + "dataSourceType")
@@ -583,12 +593,14 @@ def verify_dcs_images(workspace):
     new_settings = one(new_variant, t + "settings")
     closed_children(new_settings, {t + "selection", t + "item"})
     new_group = one(new_settings, t + "item[" + t + "name='AgentGroup']")
+    require_settings_type(new_group, "StructureItemGroup")
     if new_settings.findall(t + "item") != [new_group]:
         raise ValueError("new variant contains an unrequested group")
     closed_children(new_group, {t + "name", t + "groupItems"})
     new_group_items = one(new_group, t + "groupItems")
     closed_children(new_group_items, {t + "item"})
     group_item = one(new_group_items, t + "item")
+    require_settings_type(group_item, "GroupItemField")
     closed_children(group_item, {t + "field", t + "groupType", t + "periodAdditionType"})
     one(group_item, t + "field")
     new_group_by = [node.text for node in new_group.findall(t + "groupItems/" + t + "item/" + t + "field")]
@@ -597,6 +609,7 @@ def verify_dcs_images(workspace):
     selection = one(new_settings, t + "selection")
     closed_children(selection, {t + "item"}, repeated={t + "item"})
     for item in selection:
+        require_settings_type(item, "SelectedItemField")
         closed_children(item, {t + "field"})
         one(item, t + "field")
     selected = [node.text for node in selection.findall(t + "item/" + t + "field")]

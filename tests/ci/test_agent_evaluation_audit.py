@@ -178,6 +178,68 @@ class AgentEvaluationAuditTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 verify_dcs_images(workspace)
 
+    def test_dcs_required_settings_reject_missing_wrong_and_foreign_types(self):
+        from tests.agent_evaluation.dcs_driver import NEW_DCS_XML, verify_dcs_images
+        s = "{http://v8.1c.ru/8.1/data-composition-system/schema}"
+        t = "{http://v8.1c.ru/8.1/data-composition-system/settings}"
+        xsi = "{http://www.w3.org/2001/XMLSchema-instance}"
+        targets = [("group", "StructureItemGroup"), ("group-item", "GroupItemField")]
+        targets += [("selection-" + field, "SelectedItemField") for field in ["Category", "Amount", "Added"]]
+        for target, type_name in targets:
+            for mutation in ["missing", "wrong", "foreign"]:
+                with self.subTest(target=target, mutation=mutation), tempfile.TemporaryDirectory() as raw:
+                    workspace = dcs_physical_fixture(Path(raw))
+                    path = workspace / NEW_DCS_XML
+                    document = ET.parse(path)
+                    settings = document.find(s + "settingsVariant[" + t + "name='AgentVariant']/" + t + "settings")
+                    group = settings.find(t + "item[" + t + "name='AgentGroup']")
+                    if target == "group":
+                        node = group
+                    elif target == "group-item":
+                        node = group.find(t + "groupItems/" + t + "item")
+                    else:
+                        field = target.removeprefix("selection-")
+                        node = settings.find(t + "selection/" + t + "item[" + t + "field='" + field + "']")
+                    if mutation == "missing":
+                        del node.attrib[xsi + "type"]
+                    elif mutation == "wrong":
+                        node.set(xsi + "type", "dcsset:UnexpectedSettingsType")
+                    else:
+                        node.set("xmlns:foreignSettings", "urn:foreign-settings")
+                        node.set(xsi + "type", "foreignSettings:" + type_name)
+                    # Keep the optional scaffold and its QName bindings intact;
+                    # only the addressed required node has a mutated type.
+                    document.getroot().set("xmlns:dcsset", t[1:-1])
+                    document.getroot().set("xmlns", s[1:-1])
+                    document.getroot().set("xmlns:xs", "http://www.w3.org/2001/XMLSchema")
+                    document.write(path, encoding="utf-8")
+                    with self.assertRaises(ValueError):
+                        verify_dcs_images(workspace)
+
+    def test_dcs_required_settings_accept_equivalent_type_prefixes(self):
+        from tests.agent_evaluation.dcs_driver import NEW_DCS_XML, verify_dcs_images
+        s = "{http://v8.1c.ru/8.1/data-composition-system/schema}"
+        t = "{http://v8.1c.ru/8.1/data-composition-system/settings}"
+        xsi = "{http://www.w3.org/2001/XMLSchema-instance}"
+        with tempfile.TemporaryDirectory() as raw:
+            workspace = dcs_physical_fixture(Path(raw))
+            before = verify_dcs_images(workspace)
+            path = workspace / NEW_DCS_XML
+            document = ET.parse(path)
+            settings = document.find(s + "settingsVariant[" + t + "name='AgentVariant']/" + t + "settings")
+            group = settings.find(t + "item[" + t + "name='AgentGroup']")
+            nodes = [group, group.find(t + "groupItems/" + t + "item")]
+            nodes += list(settings.find(t + "selection"))
+            self.assertEqual(len(nodes), 5)
+            for node in nodes:
+                node.set("xmlns:requiredAlias", t[1:-1])
+                node.set(xsi + "type", "requiredAlias:" + node.attrib[xsi + "type"].split(":", 1)[-1])
+            document.getroot().set("xmlns:dcsset", t[1:-1])
+            document.getroot().set("xmlns", s[1:-1])
+            document.getroot().set("xmlns:xs", "http://www.w3.org/2001/XMLSchema")
+            document.write(path, encoding="utf-8")
+            self.assertEqual(verify_dcs_images(workspace), before)
+
     def test_dcs_physical_outcome_rejects_extra_or_mutated_creation_nodes(self):
         from tests.agent_evaluation.dcs_driver import NEW_DCS_XML, verify_dcs_images
         s = "{http://v8.1c.ru/8.1/data-composition-system/schema}"
