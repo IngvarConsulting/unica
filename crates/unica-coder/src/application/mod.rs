@@ -48,6 +48,7 @@ pub(crate) mod properties;
 pub(crate) mod receipt_ledger;
 #[allow(dead_code)]
 pub(crate) mod receipt_ledger_actor;
+pub(crate) mod result_delivery;
 pub(crate) mod result_store;
 pub(crate) mod runtime_admission;
 pub(crate) mod shared_work;

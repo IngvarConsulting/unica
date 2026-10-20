@@ -4420,12 +4420,7 @@ impl V5ReceiptRuntime {
         }
         let (prepared, direct_outcome) = match self.drive_inline_invocation(actor_bound, &begun)? {
             InlineDrive::Rejected(result) => {
-                let terminal = crate::application::receipt_ledger::canonical_v5_terminal(
-                    &crate::application::receipt_ledger::ReceiptTerminalOutcome::Completed {
-                        result,
-                    },
-                )
-                .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
+                let terminal = rejection_terminal(&ReceiptTerminalOutcome::Completed { result })?;
                 return self.publish_direct_terminal(begun, epoch_ms, terminal, deadline);
             }
             InlineDrive::HandedOff(reply) => return Ok(*reply),
@@ -5260,8 +5255,7 @@ impl V5ReceiptRuntime {
         let prepared = match actor_bound.prepare() {
             Ok(prepared) => prepared,
             Err(result) => {
-                let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed { result })
-                    .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
+                let terminal = rejection_terminal(&ReceiptTerminalOutcome::Completed { result })?;
                 return self.publish_bound_terminal_reply(
                     &bound,
                     &task_record,
@@ -5812,8 +5806,7 @@ impl V5ReceiptRuntime {
         epoch_ms: u64,
         deadline: Instant,
     ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
-        let terminal = canonical_v5_terminal(&outcome)
-            .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
+        let terminal = rejection_terminal(&outcome)?;
         let reply = self.publish_pre_actor_terminal(reservation, epoch_ms, terminal, deadline);
         if fail_stop {
             self.hooks.restart_requested();
@@ -6907,6 +6900,25 @@ impl V5RuntimeReply {
             Self::Json(response) => Self::JsonFailStop(response),
             Self::Prepared(frame) => Self::PreparedFailStop(frame),
             closed @ (Self::JsonFailStop(_) | Self::PreparedFailStop(_)) => closed,
+        }
+    }
+}
+
+/// Pre-execution refusals have the same delivery limit as executed outcomes.
+/// An oversized recovery route is a closed size failure, not store corruption.
+fn rejection_terminal(
+    outcome: &ReceiptTerminalOutcome,
+) -> Result<crate::application::receipt_ledger::V5CanonicalTerminal, ReceiptLedgerError> {
+    match canonical_v5_terminal(outcome) {
+        Ok(terminal) => Ok(terminal),
+        Err(CanonicalTerminalError::ResultTooLarge) => {
+            canonical_v5_terminal(&ReceiptTerminalOutcome::Failed {
+                reason: V5SafeFailureReason::ResultTooLarge,
+            })
+            .map_err(|_| ReceiptLedgerError::Corrupt("canonical size refusal failed"))
+        }
+        Err(CanonicalTerminalError::Serialization) => {
+            Err(ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))
         }
     }
 }

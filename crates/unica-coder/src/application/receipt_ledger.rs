@@ -3232,6 +3232,16 @@ pub(crate) fn task_link_digest(identity: &TaskLinkIdentity) -> TaskLinkDigest {
 pub(crate) fn canonical_v5_terminal(
     outcome: &ReceiptTerminalOutcome,
 ) -> Result<V5CanonicalTerminal, CanonicalTerminalError> {
+    if let ReceiptTerminalOutcome::Completed { result } = outcome {
+        use crate::application::invocation_store::CanonicalResultSizeError;
+        crate::application::result_delivery::validate_result_delivery(result).map_err(|error| {
+            match error {
+                CanonicalResultSizeError::TooLarge => CanonicalTerminalError::ResultTooLarge,
+                CanonicalResultSizeError::Serialization => CanonicalTerminalError::Serialization,
+                CanonicalResultSizeError::Checkpoint(never) => match never {},
+            }
+        })?;
+    }
     canonical_v5_terminal_from_shared(Arc::new(outcome.clone()))
 }
 
@@ -4086,6 +4096,56 @@ mod tests {
 
         assert_eq!(
             canonical_v5_terminal(&oversized),
+            Err(CanonicalTerminalError::ResultTooLarge)
+        );
+    }
+
+    #[test]
+    fn recovery_that_cannot_be_delivered_is_rejected_before_terminal_admission() {
+        let mut result = DomainResult::success("ambiguous target");
+        result.ok = false;
+        result.next = vec![serde_json::json!({
+            "tool": "unica.view", "args": {"at": "x".repeat(4_300_000)}
+        })];
+        assert!(serde_json::to_vec(&result).unwrap().len() < MAX_CANONICAL_RESULT_BYTES);
+        let outcome = ReceiptTerminalOutcome::Completed {
+            result: Box::new(result),
+        };
+        assert_eq!(
+            canonical_v5_terminal(&outcome),
+            Err(CanonicalTerminalError::ResultTooLarge)
+        );
+        // Reading an older canonical terminal must not reinterpret its bytes
+        // or digest under a newer delivery policy.
+        assert!(canonical_v5_terminal_from_shared(Arc::new(outcome)).is_ok());
+    }
+
+    #[test]
+    fn recovery_admission_reserves_space_for_task_metadata() {
+        let mut result = DomainResult::success("ambiguous target");
+        result.ok = false;
+        result.next = vec![serde_json::json!({
+            "tool": "unica.view", "args": {"at": "x".repeat(70_000)}
+        })];
+        result.data = Some(serde_json::json!({"padding": ""}));
+        let diagnostic = serde_json::to_string(&serde_json::json!({
+            "summary": result.summary, "diagnostics": []
+        }))
+        .unwrap();
+        let recovery = serde_json::to_string(&serde_json::json!({"next": result.next})).unwrap();
+        let quoted_text_bytes = serde_json::to_vec(&diagnostic).unwrap().len()
+            + serde_json::to_vec(&recovery).unwrap().len();
+        // The bare CallToolResult's 97-byte structure fits, but only 103
+        // bytes remain for the Task, less than even its ordinary metadata.
+        let payload_budget = MAX_CANONICAL_RESULT_BYTES + MAX_TASK_RECORD_ENVELOPE_BYTES - 200;
+        let base = serde_json::to_vec(&result).unwrap().len() + quoted_text_bytes;
+        result.data = Some(serde_json::json!({"padding": "x".repeat(payload_budget - base)}));
+        assert!(serde_json::to_vec(&result).unwrap().len() < MAX_CANONICAL_RESULT_BYTES);
+        let outcome = ReceiptTerminalOutcome::Completed {
+            result: Box::new(result),
+        };
+        assert_eq!(
+            canonical_v5_terminal(&outcome),
             Err(CanonicalTerminalError::ResultTooLarge)
         );
     }

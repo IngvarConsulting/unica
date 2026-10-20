@@ -4,6 +4,7 @@ use crate::application::invocation_store::{
 };
 use crate::application::invocation_store_v5::V5SafeFailureReason;
 use crate::application::receipt_ledger::ReceiptTerminalOutcome;
+use crate::application::result_delivery::error_delivery_text;
 use crate::application::v13::source_text::apply_response_budget;
 use crate::domain::invocation::{DomainResult, InvocationStatus};
 use crate::infrastructure::daemon::protocol_v5::V5DaemonTaskSnapshot;
@@ -18,32 +19,6 @@ use unica_bootstrap::ResponseBudget;
 
 const MAX_MCP_TASK_PROJECTION_BYTES: usize =
     MAX_CANONICAL_RESULT_BYTES + MAX_TASK_RECORD_ENVELOPE_BYTES;
-
-// Even sixfold JSON escaping leaves this fallback within the envelope reserve.
-const MAX_ERROR_TEXT_BYTES: usize = 4_096;
-const ERROR_TEXT_TRUNCATED: &str = "\n[truncated; full diagnostics are in structuredContent]";
-
-fn error_text(result: &DomainResult) -> Result<String, TaskProjectionError> {
-    #[derive(Serialize)]
-    struct ErrorText<'a> {
-        summary: &'a str,
-        diagnostics: &'a [serde_json::Value],
-    }
-    let mut text = serde_json::to_string(&ErrorText {
-        summary: &result.summary,
-        diagnostics: &result.diagnostics,
-    })
-    .map_err(|_| TaskProjectionError::Serialization)?;
-    if text.len() > MAX_ERROR_TEXT_BYTES {
-        let mut end = MAX_ERROR_TEXT_BYTES - ERROR_TEXT_TRUNCATED.len();
-        while !text.is_char_boundary(end) {
-            end -= 1;
-        }
-        text.truncate(end);
-        text.push_str(ERROR_TEXT_TRUNCATED);
-    }
-    Ok(text)
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TaskProjectionError {
@@ -128,15 +103,23 @@ pub(super) fn call_tool_result(
         return Ok(projected);
     }
     let value = serde_json::to_value(result).map_err(|_| TaskProjectionError::Serialization)?;
-    // Hosts may ignore structuredContent when isError is true. Mirror only
-    // bounded diagnostics, never the potentially 8 MiB subject data.
+    // Hosts may ignore structuredContent when isError is true. Keep the
+    // diagnostic fallback bounded, but mirror every recovery call intact:
+    // truncating its arguments or dropping alternatives changes the route.
+    // Subject data stays in structuredContent; the total projection is bounded below.
     let mut projected = CallToolResult::default();
     projected.structured_content = Some(value);
     projected.is_error = Some(!result.ok);
     if !result.ok {
-        projected
-            .content
-            .push(ContentBlock::text(error_text(result)?));
+        let text = error_delivery_text(result).map_err(|error| match error {
+            CanonicalResultSizeError::TooLarge => TaskProjectionError::ResultTooLarge,
+            CanonicalResultSizeError::Serialization => TaskProjectionError::Serialization,
+            CanonicalResultSizeError::Checkpoint(never) => match never {},
+        })?;
+        projected.content.push(ContentBlock::text(text.diagnostic));
+        if let Some(recovery) = text.recovery {
+            projected.content.push(ContentBlock::text(recovery));
+        }
     }
     ensure_projection_bounded(&projected)?;
     Ok(projected)
@@ -394,7 +377,10 @@ mod tests {
             warnings: vec![],
             diagnostics: vec![json!({"code": "bad_value"})],
             artifacts: vec![],
-            next: vec![],
+            next: vec![
+                json!({"tool": "unica.view", "args": {"at": "main:Catalog.Товары.Can.props.set"}, "reason": "контракт операции"}),
+                json!({"tool": "unica.view", "arguments": {"at": "main:Catalog.Товары.Attribute"}}),
+            ],
             rev: None,
             cursor: None,
             page: None,
@@ -451,6 +437,70 @@ mod tests {
         assert_eq!(fallback["summary"], "checked");
         assert_eq!(fallback["diagnostics"], json!([{"code": "bad_value"}]));
         assert!(fallback.get("data").is_none());
+        let recovery: Value = serde_json::from_str(
+            wire["content"][1]["text"]
+                .as_str()
+                .expect("complete recovery"),
+        )
+        .expect("recovery is a complete JSON object");
+        assert_eq!(recovery["next"], wire["structuredContent"]["next"]);
+        assert_eq!(recovery["next"].as_array().unwrap().len(), 2);
+        assert!(recovery.get("data").is_none());
+    }
+
+    #[test]
+    fn error_recovery_preserves_all_hints_beyond_the_diagnostic_text_budget() {
+        let mut result = DomainResult::success("ambiguous operation target");
+        result.ok = false;
+        result.diagnostics = vec![json!({
+            "code": "bad_value", "outcome": "fixCall", "message": "Ошибка🙂".repeat(4_096)
+        })];
+        result.next = (0..3)
+            .map(|index| json!({
+                "tool": "unica.view",
+                "args": {"at": format!("main:Subsystem.{}.Can.props.set", "Раздел".repeat(160))},
+                "reason": format!("кандидат {index}: \\\"\\n🙂; END_OF_HINT_{index}")
+            }))
+            .collect();
+        result.data = Some(json!({"privateSubjectData": "must not enter text"}));
+        assert!(serde_json::to_vec(&result.next).unwrap().len() > 4_096);
+        let original = serde_json::to_value(&result).unwrap();
+
+        let wire = serde_json::to_value(
+            super::call_tool_result(&result, ResponseBudget::default()).unwrap(),
+        )
+        .unwrap();
+        let diagnostic = wire["content"][0]["text"].as_str().unwrap();
+        assert!(diagnostic.len() <= 4_096);
+        assert!(diagnostic.ends_with(crate::application::result_delivery::ERROR_TEXT_TRUNCATED));
+        let recovery: Value = serde_json::from_str(
+            wire["content"][1]["text"]
+                .as_str()
+                .expect("untruncated recovery"),
+        )
+        .expect("long recovery remains valid JSON");
+        assert_eq!(recovery, json!({"next": result.next}));
+        assert_eq!(wire["structuredContent"], original);
+        assert!(!serde_json::to_string(&wire["content"])
+            .unwrap()
+            .contains("privateSubjectData"));
+    }
+
+    #[test]
+    fn error_recovery_that_exceeds_the_total_projection_limit_is_refused_whole() {
+        use crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES;
+
+        let mut result = DomainResult::success("ambiguous target");
+        result.ok = false;
+        result.next = vec![json!({
+            "tool": "unica.view",
+            "args": {"at": "x".repeat(MAX_CANONICAL_RESULT_BYTES / 2 + 65_536)}
+        })];
+        assert!(serde_json::to_vec(&result).unwrap().len() < MAX_CANONICAL_RESULT_BYTES);
+        assert_eq!(
+            super::call_tool_result(&result, ResponseBudget::default()).unwrap_err(),
+            super::TaskProjectionError::ResultTooLarge
+        );
     }
 
     #[test]
@@ -461,6 +511,7 @@ mod tests {
             let mut result = DomainResult::success("provider failed");
             result.ok = false;
             result.diagnostics = vec![json!({"code": "provider_unavailable", "message": message})];
+            result.next = vec![json!({"tool":"unica.view", "args":{"at":"main:Catalog.Товары"}})];
             result.data = Some(json!({"padding": ""}));
             let base_size = serde_json::to_vec(&result).unwrap().len();
             result.data =
@@ -469,12 +520,25 @@ mod tests {
                 serde_json::to_vec(&result).unwrap().len(),
                 MAX_CANONICAL_RESULT_BYTES
             );
+            let outcome = crate::application::receipt_ledger::ReceiptTerminalOutcome::Completed {
+                result: Box::new(result.clone()),
+            };
+            let admitted = crate::application::receipt_ledger::canonical_v5_terminal(&outcome)
+                .expect("eight MiB with small recovery is admitted before persistence");
+            let restored = crate::application::receipt_ledger::canonical_v5_terminal_from_shared(
+                std::sync::Arc::new(outcome),
+            )
+            .unwrap();
+            assert_eq!(admitted.payload(), restored.payload());
+            assert_eq!(admitted.digest(), restored.digest());
             let projected = super::call_tool_result(&result, ResponseBudget::default())
                 .expect("exact-limit error is admitted");
             let wire = serde_json::to_value(&projected).unwrap();
             let text = wire["content"][0]["text"].as_str().unwrap();
-            assert!(text.len() <= super::MAX_ERROR_TEXT_BYTES);
-            assert!(text.ends_with(super::ERROR_TEXT_TRUNCATED));
+            assert!(
+                text.len() <= crate::application::result_delivery::MAX_ERROR_DIAGNOSTIC_TEXT_BYTES
+            );
+            assert!(text.ends_with(crate::application::result_delivery::ERROR_TEXT_TRUNCATED));
             assert!(!text.contains("padding"));
             assert_eq!(
                 wire["structuredContent"],
@@ -482,16 +546,18 @@ mod tests {
             );
 
             let (task_id, invocation_id, receipt_key_digest) = v5_common();
+            let maximum_timestamp =
+                chrono::DateTime::<chrono::Utc>::MAX_UTC.timestamp_millis() as u64;
             let snapshot = V5DaemonTaskSnapshot::Completed {
                 task_id,
                 invocation_id,
                 receipt_key_digest,
-                created_at_epoch_ms: 1_777_012_345_678,
-                updated_at_epoch_ms: 1_777_012_346_789,
-                ttl_ms: 3_600_000,
-                poll_interval_ms: 250,
+                created_at_epoch_ms: maximum_timestamp,
+                updated_at_epoch_ms: maximum_timestamp,
+                ttl_ms: u64::MAX,
+                poll_interval_ms: u64::MAX,
                 version: 3,
-                cancel_requested: false,
+                cancel_requested: true,
                 terminal_epoch_ms: 1_777_012_346_789,
                 terminal_digest: v5_terminal_digest(),
                 result: Box::new(result),
@@ -500,6 +566,24 @@ mod tests {
                 .expect("exact-limit Task is admitted");
             let detailed_wire = serde_json::to_value(&detailed).unwrap();
             assert_eq!(detailed_wire["result"], wire);
+            let quoted_text_bytes: usize = wire["content"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|block| {
+                    serde_json::to_vec(block["text"].as_str().unwrap())
+                        .unwrap()
+                        .len()
+                })
+                .sum();
+            let envelope_bytes = serde_json::to_vec(&detailed).unwrap().len()
+                - MAX_CANONICAL_RESULT_BYTES
+                - quoted_text_bytes;
+            assert!(
+                envelope_bytes
+                    <= crate::application::result_delivery::ERROR_DELIVERY_ENVELOPE_BYTES,
+                "SDK metadata outgrew the pre-admission reserve: {envelope_bytes}"
+            );
             assert!(
                 serde_json::to_vec(&detailed).unwrap().len()
                     <= super::MAX_MCP_TASK_PROJECTION_BYTES

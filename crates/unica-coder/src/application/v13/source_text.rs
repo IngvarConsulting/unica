@@ -299,6 +299,53 @@ fn first_body_chunk(result: &DomainResult, budget: usize) -> Option<Value> {
     ))
 }
 
+fn body_budget_refusal(result: &DomainResult, text_bytes: usize, budget: usize) -> DomainResult {
+    let error = match result.at.as_deref() {
+        Some(at) => oversized_body(at, text_bytes as u64),
+        None => ViewError::new(
+            RefusalCode::ResultTooLarge,
+            "source text is over the budget",
+        ),
+    };
+    let mut refused = DomainResult::canonical_rejection(
+        result.at.clone(),
+        RefusalCode::ResultTooLarge,
+        format!(
+            "the source text is {text_bytes} bytes, over this client's {budget}-byte response budget; read the module by regions and methods",
+        ),
+    );
+    if let Some(chunk) = first_body_chunk(result, budget) {
+        refused.next.push(chunk);
+    }
+    refused.next.extend(error.next().iter().cloned());
+    refused
+}
+
+/// Largest possible refusal representation for durable admission, independent
+/// of the current client. A smaller supported budget shortens the summary's
+/// number and can only shorten or remove the first complete-line range.
+pub(crate) fn maximum_delivery_refusal(result: &DomainResult) -> Option<DomainResult> {
+    if let (true, Some(text)) = (result.ok, result.source_text.as_deref()) {
+        return Some(body_budget_refusal(
+            result,
+            text.len(),
+            MAX_SOURCE_TEXT_BYTES,
+        ));
+    }
+    if !result.ok && result.source_text_read_hint.is_some() {
+        // If a client cannot fit even one complete line, projection may also
+        // mark branches overBudget. Include those flags as well as the longest
+        // range, even though those two forms need not occur for one client.
+        let mut refused = apply_response_budget(result, 0).into_owned();
+        refused.source_text_read_hint = None;
+        if let Some(chunk) = first_body_chunk(result, MAX_SOURCE_TEXT_BYTES) {
+            refused.next.insert(0, chunk);
+        }
+        return Some(refused);
+    }
+    None
+}
+
 /// Ответ в бюджете клиента. Исходный текст, не помещающийся в бюджет вместе
 /// с конвертом, заменяется отказом `result_too_large` с маршрутом к структуре
 /// модуля; ветвь с размером `bytes`, чей текст не поместится, получает
@@ -307,26 +354,7 @@ fn first_body_chunk(result: &DomainResult, budget: usize) -> Option<Value> {
 pub(crate) fn apply_response_budget(result: &DomainResult, budget: usize) -> Cow<'_, DomainResult> {
     if let (true, Some(text)) = (result.ok, result.source_text.as_deref()) {
         if !body_fits(result, budget) {
-            let error = match result.at.as_deref() {
-                Some(at) => oversized_body(at, text.len() as u64),
-                None => ViewError::new(
-                    RefusalCode::ResultTooLarge,
-                    "source text is over the budget",
-                ),
-            };
-            let mut refused = DomainResult::canonical_rejection(
-                result.at.clone(),
-                RefusalCode::ResultTooLarge,
-                format!(
-                    "the source text is {} bytes, over this client's {budget}-byte response budget; read the module by regions and methods",
-                    text.len()
-                ),
-            );
-            if let Some(chunk) = first_body_chunk(result, budget) {
-                refused.next.push(chunk);
-            }
-            refused.next.extend(error.next().iter().cloned());
-            return Cow::Owned(refused);
+            return Cow::Owned(body_budget_refusal(result, text.len(), budget));
         }
         return Cow::Borrowed(result);
     }
@@ -589,6 +617,66 @@ mod body_chunks {
             prefix: None,
         }));
         result
+    }
+
+    #[test]
+    fn admission_refusal_bounds_client_specific_range_hints() {
+        use crate::application::result_delivery::error_delivery_text;
+
+        fn delivery_bytes(result: &DomainResult) -> usize {
+            let mut public = result.clone();
+            public.source_text_read_hint = None;
+            let text = error_delivery_text(&public).unwrap();
+            serde_json::to_vec(&public).unwrap().len()
+                + serde_json::to_vec(&text.diagnostic).unwrap().len()
+                + text
+                    .recovery
+                    .map_or(0, |text| serde_json::to_vec(&text).unwrap().len())
+        }
+
+        let text = format!("{}\n", "ю🙂".repeat(30)).repeat(500);
+        for first in [9, 99, 999] {
+            let original = body(&text, first);
+            let mut stored_refusal = original.clone();
+            stored_refusal.ok = false;
+            stored_refusal.source_text = None;
+            stored_refusal
+                .source_text_read_hint
+                .as_mut()
+                .unwrap()
+                .prefix = Some(complete_prefix(&text).to_owned());
+            stored_refusal.next =
+                oversized_body(original.at.as_deref().unwrap(), text.len() as u64)
+                    .next()
+                    .to_vec();
+            stored_refusal.data.as_mut().unwrap()["branches"] = json!([{"bytes": 1}]);
+            for stored in [original, stored_refusal] {
+                let upper = maximum_delivery_refusal(&stored).unwrap();
+                assert!(!upper.ok);
+                assert!(upper.source_text_read_hint.is_none());
+                let upper_bytes = delivery_bytes(&upper);
+                for budget in [
+                    1_024,
+                    1_025,
+                    4_095,
+                    4_096,
+                    16_384,
+                    16_385,
+                    MAX_SOURCE_TEXT_BYTES,
+                ] {
+                    let actual = apply_response_budget(&stored, budget);
+                    assert!(
+                        !actual.ok,
+                        "fixture must exercise refusal at budget {budget}"
+                    );
+                    assert!(
+                        delivery_bytes(&actual) <= upper_bytes,
+                        "budget {budget}, first line {first} outgrew admission"
+                    );
+                }
+                crate::application::result_delivery::validate_result_delivery(&stored).unwrap();
+            }
+        }
     }
 
     #[test]
