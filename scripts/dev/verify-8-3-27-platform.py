@@ -100,32 +100,18 @@ EXPECTED_PLATFORM_VERSION = "8.3.27.2074"
 EXPECTED_IBCMD_SHA256 = "e00f3c945fb6f60bb2802151df1b4e7ee4f3caaf7c9e24a981020af575fda6e5"
 EXPECTED_PLATFORM_INSTALL_SHA256 = "5eb8897c4f7e95876572f2f36943439b0d57e47688314b622f5771e5a22df0ef"
 EXPECTED_PLATFORM_INSTALL_FILE_COUNT = 4337
+# Full 66-case gate on 1C 8.3.27.2074 passed on 2026-10-20:
+# 450 commands in two rounds, no accepted-normalized or source-error cases.
+# Two independent corpora from composition 4bf85f5f32c7fdea3728a8a5b50b9aa2b77cb202
+# agree on this contract. Native report SHA256:
+# db331df7f10c4272a625613138c2471a273a8647f3cc6878dafbe60696e86372.
+# This records semantic retention and stable round trips under the existing
+# comparison policy; it is not whole-tree raw-byte or full-release acceptance.
 LAST_VERIFIED_CASE_CONTRACT_SHA256 = (
-    "1c4afc7adf86cdb8a0e94c1f87e2166e4759387158317848746de0cee678bedf"
+    "d25fbc7acd95f9e460b31f8895ae9f134cc933da512c23b9d4c063ea624aa9bb"
 )
-# LAST_VERIFIED records the previous successful full platform run. Two
-# independent generations agree on the current direct-DCS public contract.
-# The first candidate exposed DCS loss hidden by a stable normalized export.
-# The corrected DCS cases now preserve their full content. The six MXL and
-# empty-template imports that timed out (#1325) stopped hanging once the
-# emitter registered forms and templates in the owner by name instead of
-# writing a full descriptor into ChildObjects (the shape platform dumps never
-# use): the same corpus generated with the fix runs all 69 cases under
-# --jobs 1 without a source error. Nine cases remain accepted-normalized
-# (#1369), so the run is not a pass. Keep LAST_VERIFIED.
-# #1448 removed the three cases of the retired DSL compilers (mxl-compile,
-# role-compile, subsystem-compile). #1450 moved support-edit-bin-only to the
-# configuration root and xdto-add-nested-property to the property address.
-# Two independent generations agree on the 66-case contract below. The full
-# --jobs 1 run on 8.3.27.2074 processes all 66 cases without a source error:
-# 57 pass and the same nine of #1369 stay accepted-normalized, so the run is
-# not a pass. Keep LAST_VERIFIED.
-# #1751 removed the unsupported type argument from the three DCS field.add
-# calls. Two independent 66-case generations on f1982d917 agree on the new
-# public-call contract below. This pin only admits the candidate corpus;
-# the current platform round-trip has not passed. Keep LAST_VERIFIED.
 EXPECTED_CASE_CONTRACT_SHA256: str | None = (
-    "7b9ecc3dbe53a0feb0c90a3e004b7a69c8f6062616235ed41d45de8461445df9"
+    "d25fbc7acd95f9e460b31f8895ae9f134cc933da512c23b9d4c063ea624aa9bb"
 )
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 300.0
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
