@@ -6574,6 +6574,7 @@ mod tests {
         armed: AtomicBool,
         entered: AtomicBool,
         released: AtomicBool,
+        flush_completed: AtomicBool,
         observed: tokio::sync::Notify,
         waiter: Mutex<Option<std::task::Waker>>,
         partial_write: AtomicBool,
@@ -6584,6 +6585,18 @@ mod tests {
     }
 
     impl ManualFlushGate {
+        fn poll_held(&self, cx: &mut std::task::Context<'_>) -> bool {
+            if self.armed.load(Ordering::Acquire) && !self.released.load(Ordering::Acquire) {
+                *self.waiter.lock().unwrap() = Some(cx.waker().clone());
+                self.entered.store(true, Ordering::Release);
+                self.observed.notify_waiters();
+                if !self.released.load(Ordering::Acquire) {
+                    return true;
+                }
+            }
+            false
+        }
+
         async fn wait(&self) -> bool {
             timeout(Duration::from_secs(3), async {
                 loop {
@@ -6609,6 +6622,7 @@ mod tests {
     struct ManualFlushWriter {
         writer: tokio::io::WriteHalf<tokio::io::DuplexStream>,
         gate: Arc<ManualFlushGate>,
+        initialize_flush_pause: Option<Arc<ManualFlushGate>>,
     }
 
     impl tokio::io::AsyncWrite for ManualFlushWriter {
@@ -6660,17 +6674,25 @@ mod tests {
             mut self: std::pin::Pin<&mut Self>,
             cx: &mut std::task::Context<'_>,
         ) -> std::task::Poll<std::io::Result<()>> {
-            if self.gate.armed.load(Ordering::Acquire)
-                && !self.gate.released.load(Ordering::Acquire)
-            {
-                *self.gate.waiter.lock().unwrap() = Some(cx.waker().clone());
-                self.gate.entered.store(true, Ordering::Release);
-                self.gate.observed.notify_waiters();
-                if !self.gate.released.load(Ordering::Acquire) {
-                    return std::task::Poll::Pending;
+            let initialize_frame_written = self.initialize_flush_pause.is_some()
+                && self.gate.written.lock().unwrap().contains(&b'\n');
+            if initialize_frame_written {
+                if let Some(pause) = &self.initialize_flush_pause {
+                    if !pause.flush_completed.load(Ordering::Acquire) && pause.poll_held(cx) {
+                        return std::task::Poll::Pending;
+                    }
                 }
             }
-            std::pin::Pin::new(&mut self.writer).poll_flush(cx)
+            if self.gate.poll_held(cx) {
+                return std::task::Poll::Pending;
+            }
+            let result = std::pin::Pin::new(&mut self.writer).poll_flush(cx);
+            if initialize_frame_written && matches!(&result, std::task::Poll::Ready(Ok(()))) {
+                if let Some(pause) = &self.initialize_flush_pause {
+                    pause.flush_completed.store(true, Ordering::Release);
+                }
+            }
+            result
         }
 
         fn poll_shutdown(
@@ -6841,13 +6863,25 @@ mod tests {
         server: UnicaServer,
         gate: Arc<ManualFlushGate>,
     ) -> (McpClient, Arc<InFlightRegistry>) {
+        spawn_manual_flush_server_with_initialize_pause(server, gate, None)
+    }
+
+    fn spawn_manual_flush_server_with_initialize_pause(
+        server: UnicaServer,
+        gate: Arc<ManualFlushGate>,
+        initialize_flush_pause: Option<Arc<ManualFlushGate>>,
+    ) -> (McpClient, Arc<InFlightRegistry>) {
         let (client_io, server_io) = tokio::io::duplex(4 * 1024 * 1024);
         let in_flight = server.in_flight();
         let server = tokio::spawn(async move {
             let (read, writer) = tokio::io::split(server_io);
             let transport = rmcp::transport::async_rw::AsyncRwTransport::new_server(
                 read,
-                ManualFlushWriter { writer, gate },
+                ManualFlushWriter {
+                    writer,
+                    gate,
+                    initialize_flush_pause,
+                },
             );
             let transport = DiscoveryProbeTransport::new(transport, &server);
             match ObservedServer(server).serve(transport).await {
@@ -8011,19 +8045,47 @@ mod tests {
         let anchor = daemon.owner();
         let (server, keys) = manual_daemon_server(daemon.owner(), daemon.workspace_hint.clone());
         let calls = server.manual_calls.clone();
-        let (mut client, in_flight) = spawn_manual_flush_server(server, flush.clone());
+        let initialize_flush_pause = Arc::new(ManualFlushGate::default());
+        initialize_flush_pause.armed.store(true, Ordering::Release);
+        let initialize_flush_release = ManualFlushRelease(initialize_flush_pause.clone());
+        let (mut client, in_flight) = spawn_manual_flush_server_with_initialize_pause(
+            server,
+            flush.clone(),
+            Some(initialize_flush_pause.clone()),
+        );
         client.send(json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2026-07-28","capabilities":{},"clientInfo":{"name":"unica-tests","version":"1"}}})).await;
         let initialized = client.receive().await;
         assert_eq!(
             initialized["result"]["protocolVersion"], "2026-07-28",
             "{initialized}"
         );
+        assert_eq!(initialized["id"], 0, "{initialized}");
+        assert!(
+            initialize_flush_pause.wait().await,
+            "causal fixture must pause the complete initialize frame before its flush"
+        );
         client
             .send(json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
             .await;
-        flush.armed.store(true, Ordering::Release);
         client.send(json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"unica.run","arguments":{"op":"test.long-work","args":{"label":"reuse-original"}},"_meta":modern_meta()}})).await;
-        assert!(service.wait("reuse-original", false).await);
+        drop(initialize_flush_release);
+        let original_entered = service.wait("reuse-original", false).await;
+        let receipt_count = keys.lock().unwrap().len();
+        assert!(
+            original_entered,
+            "initial execute not observed: init_pause_entered={}, init_pause_released={}, initialize_flush_completed={}, response_flush_entered={}, receipt_keys={}, executions={}",
+            initialize_flush_pause.entered.load(Ordering::Acquire),
+            initialize_flush_pause.released.load(Ordering::Acquire),
+            initialize_flush_pause.flush_completed.load(Ordering::Acquire),
+            flush.entered.load(Ordering::Acquire),
+            receipt_count,
+            service.executions("reuse-original")
+        );
+        assert!(
+            initialize_flush_pause.flush_completed.load(Ordering::Acquire),
+            "original execute must follow the completed initialize flush"
+        );
+        flush.armed.store(true, Ordering::Release);
         service.release("reuse-original");
         let actual_flush_held = flush.wait().await;
         // The modern sender has received a complete original response. That
