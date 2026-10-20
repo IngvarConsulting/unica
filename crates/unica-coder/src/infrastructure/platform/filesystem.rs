@@ -10,6 +10,9 @@ pub(crate) mod execution_store;
 #[cfg(target_os = "macos")]
 mod macos_acl;
 
+#[cfg(test)]
+mod retained_directory_moves;
+
 /// A nonblocking fs2 lock refusal is expected contention. Other I/O errors
 /// remain failures, including a Windows file-sharing violation.
 pub(crate) fn is_file_lock_contended(error: &io::Error) -> bool {
@@ -151,11 +154,31 @@ pub(crate) mod retained_read_probe {
 }
 
 #[cfg(test)]
+type DirectoryMoveTestHook = Box<dyn FnOnce() -> io::Result<()>>;
+
+#[cfg(test)]
 thread_local! {
     static TEST_POST_RENAME_SYNC_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static TEST_BEFORE_IDENTITY_BOUND_NO_REPLACE_RENAME: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
     static TEST_BEFORE_IDENTITY_BOUND_CLEANUP_MUTATION: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
     static TEST_BEFORE_IDENTITY_BOUND_DIRECTORY_CLEANUP_MUTATION: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+    static TEST_AFTER_RETAINED_DIRECTORY_MOVE: std::cell::RefCell<Option<DirectoryMoveTestHook>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn set_after_retained_directory_move_hook(hook: impl FnOnce() -> io::Result<()> + 'static) {
+    TEST_AFTER_RETAINED_DIRECTORY_MOVE.with(|slot| {
+        assert!(slot.borrow().is_none(), "directory move test seam is busy");
+        slot.replace(Some(Box::new(hook)));
+    });
+}
+
+#[cfg(test)]
+fn run_after_retained_directory_move_hook() -> io::Result<()> {
+    match TEST_AFTER_RETAINED_DIRECTORY_MOVE.with(|slot| slot.borrow_mut().take()) {
+        Some(hook) => hook(),
+        None => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -204,7 +227,7 @@ pub(crate) fn set_before_identity_bound_directory_cleanup_mutation_hook(
     });
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 fn run_before_identity_bound_directory_cleanup_mutation_hook() {
     if let Some(hook) =
         TEST_BEFORE_IDENTITY_BOUND_DIRECTORY_CLEANUP_MUTATION.with(|slot| slot.borrow_mut().take())
@@ -918,6 +941,175 @@ impl RetainedDirectoryCapability {
             ));
         }
         Ok(published)
+    }
+
+    /// Displaces an existing, exact child into an unoccupied recovery name in
+    /// this same retained parent. The original directory object, including its
+    /// permissions and ACL, is moved rather than recreated. An error after a
+    /// successful rename carries the retained artifact for the caller's
+    /// rollback journal; its current name must still be validated before use.
+    ///
+    /// If Unix moved a raced successor, it is restored without replacement.
+    /// When that restoration fails, the error carries the observed successor,
+    /// whose identity differs from `expected`: it must be preserved, never
+    /// adopted as an owned recovery tree by the caller.
+    pub(crate) fn displace_directory_child_no_replace(
+        &self,
+        source_name: &std::ffi::OsStr,
+        expected: &Self,
+        recovery_name: &std::ffi::OsStr,
+    ) -> Result<Self, RetainedDirectoryPublicationError> {
+        self.move_directory_child_no_replace_observed(source_name, expected, recovery_name)
+    }
+
+    /// Restores an exact displaced child through the retained parent without
+    /// replacing a concurrent public child. Returns the same physical object
+    /// rebound to its restored name, including on a journalable late failure.
+    pub(crate) fn restore_displaced_directory_child_no_replace(
+        &self,
+        displaced: &Self,
+        destination_name: &std::ffi::OsStr,
+    ) -> Result<Self, RetainedDirectoryPublicationError> {
+        let parent = displaced.parent.as_ref().ok_or_else(|| {
+            RetainedDirectoryPublicationError::without_artifact(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "source-root directory is not a displaced child",
+            ))
+        })?;
+        self.move_directory_child_no_replace_observed(&parent.name, displaced, destination_name)
+    }
+
+    fn rebound_directory_child(&self, retained: &Self, name: &std::ffi::OsStr) -> Self {
+        Self {
+            path: self.path.join(name),
+            retained: Arc::clone(&retained.retained),
+            parent: Some(Arc::new(RetainedDirectoryParent {
+                directory: self.clone(),
+                name: name.to_os_string(),
+            })),
+        }
+    }
+
+    fn move_directory_child_no_replace_observed(
+        &self,
+        source_name: &std::ffi::OsStr,
+        expected: &Self,
+        destination_name: &std::ffi::OsStr,
+    ) -> Result<Self, RetainedDirectoryPublicationError> {
+        let before = RetainedDirectoryPublicationError::without_artifact;
+        let parent = expected.parent.as_ref().ok_or_else(|| {
+            before(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "source-root directory cannot be moved as a child",
+            ))
+        })?;
+        if parent.directory.identity() != self.identity() || parent.name != source_name {
+            return Err(before(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "retained directory belongs to another parent or child name",
+            )));
+        }
+        if self
+            .child_name_comparator()
+            .and_then(|comparator| comparator.names_equivalent(source_name, destination_name))
+            .map_err(before)?
+        {
+            return Err(before(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "directory move requires distinct child names",
+            )));
+        }
+        rename_identity_bound_directory_child_no_replace(
+            &self.retained.directory,
+            source_name,
+            expected.identity(),
+            &expected.retained.directory,
+            &self.retained.directory,
+            destination_name,
+        )
+        .map_err(before)?;
+
+        // Keep the original descriptor even when observation or a later sync
+        // fails. Reopening the destination is evidence, not new authority.
+        let rebound = self.rebound_directory_child(expected, destination_name);
+        let after = |error, artifact: Self, name: &std::ffi::OsStr| {
+            RetainedDirectoryPublicationError::with_artifact(
+                error,
+                artifact,
+                name.to_os_string(),
+                true,
+            )
+        };
+        #[cfg(test)]
+        if let Err(error) = run_after_retained_directory_move_hook() {
+            return Err(after(error, rebound, destination_name));
+        }
+        let observed = self
+            .retain_directory_child(destination_name)
+            .map_err(|error| after(error, rebound.clone(), destination_name))?;
+        if observed.identity() != expected.identity() {
+            return Err(match self.restore_unexpected_directory_move(
+                destination_name,
+                &observed,
+                source_name,
+            ) {
+                Ok(()) => before(io::Error::other(
+                    "directory identity changed at mutation boundary; unexpected directory was restored and preserved",
+                )),
+                Err((error, artifact, name)) => {
+                    after(
+                        io::Error::new(
+                            error.kind(),
+                            format!(
+                                "directory identity changed at mutation boundary; unexpected directory was preserved because restoration failed: {error}"
+                            ),
+                        ),
+                        artifact,
+                        &name,
+                    )
+                }
+            });
+        }
+        drop(observed);
+        sync_directory(&self.retained.directory)
+            .and_then(|()| rebound.validate_named_identity())
+            .map_err(|error| after(error, rebound.clone(), destination_name))?;
+        Ok(rebound)
+    }
+
+    /// One bounded restoration attempt for a successor moved by a Unix name
+    /// race. A second race is reported with the actually observed artifact;
+    /// it never recurses, overwrites, or deletes either directory.
+    fn restore_unexpected_directory_move(
+        &self,
+        moved_name: &std::ffi::OsStr,
+        moved: &Self,
+        source_name: &std::ffi::OsStr,
+    ) -> Result<(), (io::Error, Self, std::ffi::OsString)> {
+        rename_identity_bound_directory_child_no_replace(
+            &self.retained.directory,
+            moved_name,
+            moved.identity(),
+            &moved.retained.directory,
+            &self.retained.directory,
+            source_name,
+        )
+        .map_err(|error| (error, moved.clone(), moved_name.to_os_string()))?;
+        let restored = self.rebound_directory_child(moved, source_name);
+        let observed = self
+            .retain_directory_child(source_name)
+            .map_err(|error| (error, restored.clone(), source_name.to_os_string()))?;
+        if observed.identity() != moved.identity() {
+            return Err((
+                io::Error::other(
+                    "a second directory identity change raced restoration; observed directory was preserved",
+                ),
+                observed,
+                source_name.to_os_string(),
+            ));
+        }
+        sync_directory(&self.retained.directory)
+            .map_err(|error| (error, restored, source_name.to_os_string()))
     }
 
     /// Removes this retained directory only while its admitted parent/name
@@ -1764,6 +1956,10 @@ impl RetainedRegularFileCapability {
 }
 
 impl PortablePermissions {
+    pub(crate) fn stable_bytes(&self) -> [u8; 4] {
+        self.key.to_be_bytes()
+    }
+
     pub(crate) fn readonly(&self) -> bool {
         self.permissions.readonly()
     }
@@ -6349,6 +6545,10 @@ fn remove_identity_bound_empty_directory_child_with(
     expected_identity: FileIdentity,
     retained: &fs::File,
 ) -> io::Result<()> {
+    // Windows binds deletion to this handle; inject the competing name before
+    // that final binding, after the caller's retained image validation.
+    #[cfg(test)]
+    run_before_identity_bound_directory_cleanup_mutation_hook();
     let named = open_any_child_for_delete(parent, name)?;
     if opened_child_kind(&named)? != OpenedChildKind::Directory
         || file_identity(&named)? != expected_identity

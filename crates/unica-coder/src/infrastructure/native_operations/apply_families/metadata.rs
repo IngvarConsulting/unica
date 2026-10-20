@@ -2516,6 +2516,13 @@ fn stage_object_remove(
     staged
         .remove(&descriptor_relative, &descriptor_preimage)
         .map_err(|error| ApplyPlanError::staging(error, at_path))?;
+    staged
+        .remove_owned_directories(
+            &PathBuf::from(layout.directory).join(name),
+            &descriptor_relative,
+            Path::new(layout.directory),
+        )
+        .map_err(|error| ApplyPlanError::staging(error, format!("ops[{op_index}].args.at")))?;
     touched.push(descriptor_relative);
     let effect = ProvisionalApplyEffect::spanning(
         touched,
