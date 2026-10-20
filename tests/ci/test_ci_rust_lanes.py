@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from xml.etree import ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts/ci"))
 import ci_rust_lanes as lanes
@@ -18,7 +19,7 @@ def manifest(lane="ordinary", host="ubuntu-latest", profile="queue"):
     parts = [[{"binary": f"package-{lane}", "name": f"case_{i}", "ignored": False}] for i in range(lanes.shards(profile, lane))]
     return {"schemaVersion": 1, "identity": {"sha": "a" * 40}, "profile": profile, "runner": host,
             "lane": lane, "selection": list(lanes.selection(lane)), "nextestProfile": lanes.runner.nextest_profile(profile, lanes.selection(lane)),
-            "archiveSha256": "archive-" + lane, "inventory": sum(parts, []), "shards": parts}
+            "archiveSha256": "archive-" + lane, "inventory": sum(parts, []), "ignoredInventory": [], "shards": parts}
 
 
 def result(plan, index):
@@ -100,8 +101,179 @@ class RustLaneTests(unittest.TestCase):
                 lanes.verify_union(Path(temporary), "large", [], "a" * 40)
 
 
+class IgnoredJUnitArchiveTests(unittest.TestCase):
+    # Exact names/reason from root's native nightly-full/hash-partition control.
+    native_ignored = (
+        "infrastructure::internal_adapters::tests::system_process_runner_large_stderr_helper",
+        "infrastructure::internal_adapters::tests::system_process_runner_large_stdout_helper",
+        "infrastructure::workspace_services::persistent_provider_cwd_native_tests::helper_inherited_cwd_subprocess_fixture",
+    )
+
+    def run_archive_with_ignored(self, lane="receipt", *, change=None):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(lanes.os.environ, {}, clear=True):
+            root = Path(temporary)
+            prepared = root / "prepared"
+            prepared.mkdir()
+            archive = prepared / "tests.tar.zst"
+            archive.write_bytes(b"immutable archive fixture")
+            selected = {"binary": "unica-coder", "name": "selected", "ignored": False}
+            ignored = [{"binary": "unica-coder", "name": name, "ignored": True} for name in self.native_ignored]
+            plan = manifest(lane, profile="large")
+            plan.update(workspace=str(root.resolve()), nextestVersion="fixture nextest", inventory=[selected],
+                        ignoredInventory=ignored, shards=[[selected]],
+                        archiveSha256=lanes.prepared_binary.digest(archive), archiveBytes=archive.stat().st_size)
+            if lane == "ordinary":
+                plan.update(inventory=[selected, *ignored], shards=[[selected], ignored])
+            raw_cases = [(selected["name"], "passed"), *[(case["name"], "skipped") for case in ignored]]
+            if change is not None:
+                change(plan, raw_cases)
+            lanes.write(prepared / "lane.json", plan)
+            skipped = '<skipped message="Skipped: test does not match the run-ignored option"/>'
+            markers = {"passed": "", "skipped": skipped, "failed": '<failure message="failed"/>',
+                       "conflict": skipped + '<failure message="failed"/>',
+                       "attempted_skip": skipped + '<rerunFailure message="earlier failure"/>'}
+            raw = ('<testsuites tests="4" skipped="3"><testsuite name="unica-coder" tests="4" skipped="3">'
+                   + ''.join(f'<testcase name="{name}">{markers[status]}</testcase>'
+                             for name, status in raw_cases) + '</testsuite></testsuites>').encode()
+
+            def nextest(command, _root, *, capture=False):
+                self.assertEqual(command[2], "run")
+                junit = root / "target/nextest" / plan["nextestProfile"] / "junit.xml"
+                junit.parent.mkdir(parents=True, exist_ok=True)
+                junit.write_bytes(raw)
+                return subprocess.CompletedProcess(command, 0), 0.2
+
+            destination = root / "result"
+            with patch.object(lanes.prepared_binary, "identity", return_value=plan["identity"]), \
+                 patch.object(lanes.prepared_binary, "output", return_value=plan["nextestVersion"]), \
+                 patch.object(lanes, "signature"), patch.object(lanes, "timed", side_effect=nextest), \
+                 patch.object(lanes.runner.allure_results, "ignore_reasons", return_value={}):
+                try:
+                    status = lanes.run_archive(root, prepared, destination, lane, "large", "ubuntu-latest", 1, None)
+                except ValueError:
+                    if (root / "target/nextest" / plan["nextestProfile"] / "junit.xml").exists():
+                        self.assertEqual((destination / "junit.raw.xml").read_bytes(), raw)
+                    raise
+            record = json.loads((destination / "shard.json").read_text())
+            allure = [json.loads(path.read_text()) for path in destination.glob("*-result.json")]
+            return status, record, raw, (destination / "junit.raw.xml").read_bytes(), allure
+
+    def test_native_ignored_outside_receipt_filter_stays_visible_without_allure_duplicates(self):
+        status, record, original, copied, allure = self.run_archive_with_ignored()
+        self.assertEqual(status, 0)
+        self.assertEqual(original, copied, "the exact native-shaped JUnit remains available")
+        self.assertEqual(record["records"], [{"id": "unica-coder::selected", "status": "passed"}])
+        self.assertEqual({row["id"] for row in record["frameworkAnnotations"]},
+                         {"unica-coder::" + name for name in self.native_ignored})
+        self.assertTrue(all(row["status"] == "skipped" for row in record["frameworkAnnotations"]))
+        self.assertEqual([entry["fullName"] for entry in allure], ["unica-coder::selected"])
+
+    def test_other_partition_ignored_cases_are_annotations_not_duplicate_results(self):
+        _, record, original, copied, allure = self.run_archive_with_ignored("ordinary")
+        self.assertEqual(original, copied)
+        self.assertEqual(len(record["frameworkAnnotations"]), 3)
+        self.assertEqual([row["id"] for row in record["records"]], ["unica-coder::selected"])
+        self.assertEqual(len(allure), 1)
+
+    def test_raw_listing_retains_ignored_mismatches_separately_from_selected_plan(self):
+        listing = {"rust-suites": {"bin": {"binary-id": "unica-coder", "testcases": {
+            "selected": {"ignored": False, "filter-match": {"status": "matches"}},
+            "outside_ignored": {"ignored": True, "filter-match": {"status": "mismatch", "reason": "expression"}},
+            "outside_required": {"ignored": False, "filter-match": {"status": "mismatch", "reason": "partition"}},
+        }}}}
+        self.assertEqual(lanes.inventory(listing), [{"binary": "unica-coder", "name": "selected", "ignored": False}])
+        self.assertEqual(lanes.ignored_inventory(listing), [{"binary": "unica-coder", "name": "outside_ignored", "ignored": True}])
+
+    def test_unknown_executed_duplicate_and_required_skipped_raw_cases_fail(self):
+        def replace_case(index, status):
+            return lambda _plan, cases: cases.__setitem__(index, (cases[index][0], status))
+
+        changes = {
+            "unknown skipped": lambda _p, c: c.append(("unknown", "skipped")),
+            "unknown passed": lambda _p, c: c.append(("unknown", "passed")),
+            "unknown failed": lambda _p, c: c.append(("unknown", "failed")),
+            "known ignored passed": replace_case(1, "passed"),
+            "known ignored failed": replace_case(1, "failed"),
+            "required skipped": replace_case(0, "skipped"),
+            "duplicate ignored": lambda _p, c: c.append(c[1]),
+            "duplicate assigned": lambda _p, c: c.append(c[0]),
+            "skipped and failure": replace_case(1, "conflict"),
+            "skipped after attempt": replace_case(1, "attempted_skip"),
+        }
+        for name, change in changes.items():
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                self.run_archive_with_ignored(change=change)
+
+        for status in ("skipped", "passed", "failed"):
+            def other_required(plan, cases):
+                case = {"binary": "unica-coder", "name": "other_partition_required", "ignored": False}
+                plan["inventory"].append(case)
+                plan["shards"][1].append(case)
+                cases.append((case["name"], status))
+            with self.subTest(other_partition_status=status), self.assertRaises(ValueError):
+                self.run_archive_with_ignored("ordinary", change=other_required)
+
+    def test_union_validator_rechecks_catalogue_annotations_and_duplicates(self):
+        plan = manifest()
+        ignored = {"binary": "package-ordinary", "name": "ignored", "ignored": True}
+        plan["inventory"].append(ignored)
+        plan["shards"][1].append(ignored)
+        plan["ignoredInventory"] = [ignored]
+        good = result(plan, 1)
+        annotation = {"id": lanes.case_id(ignored), "status": "skipped", "reason": "native run-ignored annotation"}
+        good["frameworkAnnotations"] = [annotation]
+        lanes.validate_result(plan, good, 1)
+        for extra in (
+            {**annotation, "id": "unknown::ignored"}, {**annotation, "status": "passed"},
+            {**annotation, "status": "failed"}, good["records"][0],
+        ):
+            with self.subTest(annotation=extra), self.assertRaises(ValueError):
+                lanes.validate_result(plan, {**good, "frameworkAnnotations": [extra]}, 1)
+        with self.assertRaises(ValueError):
+            lanes.validate_result(plan, {**good, "frameworkAnnotations": [annotation, annotation]}, 1)
+        with self.assertRaises(ValueError):
+            lanes.validate_result(plan, {**good, "records": good["records"] + [annotation]}, 1)
+        for catalogue in (None, {}, [{}], [{**ignored, "ignored": False}], [ignored, ignored], []):
+            malformed = {**plan, "ignoredInventory": catalogue}
+            with self.subTest(catalogue=catalogue), self.assertRaises(ValueError):
+                lanes.validate_result(malformed, good, 1)
+        missing = {key: value for key, value in plan.items() if key != "ignoredInventory"}
+        with self.assertRaises(ValueError):
+            lanes.validate_result(missing, good, 1)
+        changed = copy.deepcopy(plan)
+        changed["inventory"][0]["ignored"] = True
+        with self.assertRaises(ValueError):
+            lanes.validate_result(changed, good, 1)
+
+    def test_assigned_failure_and_retry_nodes_survive_filtering_with_honest_counts(self):
+        for final in ("", '<failure message="assertion failed">final failure</failure>'):
+            with self.subTest(final=final), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                plan = manifest("receipt")
+                selected = plan["inventory"][0]
+                ignored = {"binary": selected["binary"], "name": "outside", "ignored": True}
+                plan["ignoredInventory"] = [ignored]
+                raw = (f'<testsuites tests="2" skipped="1"><testsuite name="{selected["binary"]}" tests="2" skipped="1">'
+                       f'<testcase name="{selected["name"]}" time="1"><rerunFailure message="assertion failed">original attempt</rerunFailure>'
+                       + final + '</testcase><testcase name="outside"><skipped message="ignored"/></testcase></testsuite></testsuites>').encode()
+                source = root / "native.xml"
+                source.write_bytes(raw)
+                owned, records, annotations = lanes.assigned_junit(source, root / "result", plan, plan["shards"][0])
+                self.assertEqual((root / "result/junit.raw.xml").read_bytes(), raw)
+                parsed = ET.parse(owned).getroot()
+                self.assertEqual(parsed.get("tests"), "1")
+                self.assertEqual(parsed.get("skipped"), "0")
+                self.assertEqual(parsed.get("failures"), "1" if final else "0")
+                self.assertEqual(parsed.find("testsuite/testcase/rerunFailure").text, "original attempt")
+                self.assertEqual(records[0]["status"], "failed" if final else "passed")
+                self.assertEqual(len(annotations), 1)
+                with patch.object(lanes.runner.allure_results, "ignore_reasons", return_value={}):
+                    count = lanes.runner.emit_rust(root / "result", "queue", "ubuntu-latest", owned)
+                self.assertEqual(count, 2, "one original failed attempt and the assigned final result remain visible")
+
+
 class ShadowArchiveTests(unittest.TestCase):
-    def run_shadow(self, lane, packages, *, listing_failure=False, full_failure=False):
+    def run_shadow(self, lane, packages, *, listing_failure=False, full_failure=False, ignored_annotation=False):
         """Run the real archive control flow with a bounded nextest CLI oracle."""
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -115,6 +287,8 @@ class ShadowArchiveTests(unittest.TestCase):
             plan.update(workspace=str(root.resolve()), nextestVersion="fixture nextest",
                         inventory=[case], shards=[[case]],
                         archiveSha256=lanes.prepared_binary.digest(archive), archiveBytes=archive.stat().st_size)
+            if ignored_annotation:
+                plan["ignoredInventory"] = [{"binary": package, "name": "outside_lane_ignored", "ignored": True}]
             lanes.write(prepared / "lane.json", plan)
             decision = root / "decision.json"
             lanes.write(decision, {"mode": "affected", "mandatoryMode": "full", "affectedAdmission": False,
@@ -137,7 +311,8 @@ class ShadowArchiveTests(unittest.TestCase):
                     return subprocess.CompletedProcess(command, 0, stdout=json.dumps(document)), 0.1
                 junit = root / "target/nextest" / plan["nextestProfile"] / "junit.xml"
                 junit.parent.mkdir(parents=True, exist_ok=True)
-                junit.write_text(f'<testsuites><testsuite name="{package}"><testcase name="lane_case"/></testsuite></testsuites>')
+                annotation = '<testcase name="outside_lane_ignored"><skipped message="native ignored annotation"/></testcase>' if ignored_annotation else ''
+                junit.write_text(f'<testsuites><testsuite name="{package}"><testcase name="lane_case"/>{annotation}</testsuite></testsuites>')
                 return subprocess.CompletedProcess(command, 1 if full_failure else 0), 0.2
 
             destination = root / "result"
@@ -146,7 +321,19 @@ class ShadowArchiveTests(unittest.TestCase):
                  patch.object(lanes, "signature"), patch.object(lanes.runner, "emit_rust"), \
                  patch.object(lanes, "timed", side_effect=nextest):
                 status = lanes.run_archive(root, prepared, destination, lane, "queue", "ubuntu-latest", 1, None, decision)
+            if ignored_annotation:
+                self.assertEqual((destination / "junit.raw.xml").read_bytes(),
+                                 (destination / "shadow/junit.raw.xml").read_bytes())
             return status, commands, json.loads((destination / "shadow.json").read_text()), json.loads((destination / "shard.json").read_text())
+
+    def test_shadow_keeps_known_unassigned_ignored_annotations_out_of_both_outcome_sets(self):
+        status, commands, shadow, full = self.run_shadow("receipt", ["unica-coder"], ignored_annotation=True)
+        self.assertEqual(status, 0)
+        self.assertEqual(len(commands), 3)
+        self.assertEqual(shadow["records"], full["records"])
+        self.assertEqual(shadow["frameworkAnnotations"], full["frameworkAnnotations"])
+        self.assertEqual(len(shadow["records"]), 1)
+        self.assertEqual(shadow["frameworkAnnotations"][0]["id"], "unica-coder::outside_lane_ignored")
 
     def test_vendor_candidate_outside_archive_records_no_shadow_after_full_pass(self):
         status, commands, shadow, full = self.run_shadow("vendor", ["unica-dcs", "unica-coder"])

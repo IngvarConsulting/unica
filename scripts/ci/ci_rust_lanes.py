@@ -98,6 +98,32 @@ def inventory(document: dict) -> list[dict]:
     return sorted(cases, key=case_id)
 
 
+def ignored_inventory(document: dict) -> list[dict]:
+    """Archive-known ignored cases, including expression/partition mismatches."""
+    return sorted([
+        {"binary": suite["binary-id"], "name": name, "ignored": True}
+        for suite in document["rust-suites"].values()
+        for name, case in suite["testcases"].items() if case.get("ignored") is True
+    ], key=case_id)
+
+
+def ignored_ids(manifest: dict) -> set[str]:
+    catalogue = manifest.get("ignoredInventory")
+    if not isinstance(catalogue, list) or any(
+        not isinstance(case, dict) or case.get("ignored") is not True
+        or any(not isinstance(case.get(key), str) or not case[key] for key in ("binary", "name"))
+        for case in catalogue
+    ):
+        raise ValueError("missing or malformed archive ignored inventory")
+    identifiers = [case_id(case) for case in catalogue]
+    known = set(identifiers)
+    if len(known) != len(identifiers) or any(
+        (case_id(case) in known) != case["ignored"] for case in manifest["inventory"]
+    ):
+        raise ValueError("archive ignored inventory conflicts with the selected inventory")
+    return known
+
+
 def case_id(case: dict) -> str:
     return case["binary"] + "::" + case["name"]
 
@@ -133,9 +159,55 @@ def timed(command: list[str], root: Path, *, capture: bool = False):
 
 
 def junit_outcomes(path: Path) -> list[dict]:
-    return [{"id": suite.get("name", "") + "::" + case.get("name", ""),
-             "status": "skipped" if case.find("skipped") is not None else "failed" if case.find("failure") is not None or case.find("error") is not None else "passed"}
-            for suite in ET.parse(path).getroot().iter("testsuite") for case in suite.findall("testcase")]
+    records = []
+    for suite in ET.parse(path).getroot().iter("testsuite"):
+        for case in suite.findall("testcase"):
+            markers = [child for child in case if child.tag in {"skipped", "failure", "error"}]
+            if len(markers) > 1 or (case.find("skipped") is not None and any(
+                child.tag in allure_results.RETRIED_ATTEMPTS for child in case
+            )):
+                raise ValueError("JUnit case has conflicting or executed skipped outcomes")
+            skipped = case.find("skipped")
+            record = {"id": suite.get("name", "") + "::" + case.get("name", ""),
+                      "status": "skipped" if skipped is not None else "failed" if markers else "passed"}
+            if skipped is not None:
+                record["reason"] = skipped.get("message", "")
+            records.append(record)
+    return records
+
+
+def assigned_junit(source: Path, destination: Path, manifest: dict, plan: list[dict]) -> tuple[Path, list[dict], list[dict]]:
+    """Keep raw bytes; emit only owned cases, retaining their attempt nodes."""
+    destination.mkdir(parents=True, exist_ok=True)
+    raw = destination / "junit.raw.xml"
+    raw.write_bytes(source.read_bytes())
+    records = junit_outcomes(raw)
+    observed = Counter(record["id"] for record in records)
+    if any(count != 1 for count in observed.values()):
+        raise ValueError("JUnit repeats a raw case ID")
+    known_ignored = ignored_ids(manifest)
+    owned = {case_id(case) for case in plan}
+    annotations = [record for record in records if record["id"] not in owned]
+    if any(record["id"] not in known_ignored or record["status"] != "skipped" for record in annotations):
+        raise ValueError("JUnit contains an unknown or executed unassigned case")
+    assigned = [record for record in records if record["id"] in owned]
+    tree = ET.parse(raw)
+    for suite in tree.getroot().iter("testsuite"):
+        for case in list(suite.findall("testcase")):
+            if suite.get("name", "") + "::" + case.get("name", "") not in owned:
+                suite.remove(case)
+        set_junit_counts(suite, suite.findall("testcase"))
+    if tree.getroot().tag == "testsuites":
+        set_junit_counts(tree.getroot(), list(tree.getroot().iter("testcase")))
+    filtered = destination / "junit.assigned.xml"
+    tree.write(filtered, encoding="utf-8", xml_declaration=True)
+    return filtered, assigned, annotations
+
+
+def set_junit_counts(node: ET.Element, cases: list[ET.Element]) -> None:
+    node.set("tests", str(len(cases)))
+    for name, tag in (("skipped", "skipped"), ("failures", "failure"), ("errors", "error")):
+        node.set(name, str(sum(case.find(tag) is not None for case in cases)))
 
 
 def build(root: Path, destination: Path, lane: str, profile: str, host: str, line: str | None) -> None:
@@ -151,7 +223,8 @@ def build(root: Path, destination: Path, lane: str, profile: str, host: str, lin
     full_command = reuse_command("list", root, archive, lane, profile)
     completed, list_seconds = timed(full_command, root, capture=True)
     completed.check_returncode()
-    full = inventory(json.loads(completed.stdout))
+    listed = json.loads(completed.stdout)
+    full = inventory(listed)
     parts = []
     for index in range(1, shards(profile, lane) + 1):
         command = reuse_command("list", root, archive, lane, profile, f"hash:{index}/{shards(profile, lane)}")
@@ -166,6 +239,7 @@ def build(root: Path, destination: Path, lane: str, profile: str, host: str, lin
         "nextestVersion": prepared_binary.output(root, ["cargo", "nextest", "--version"]),
         "selection": list(selection(lane)), "archiveSha256": prepared_binary.digest(archive),
         "archiveBytes": archive.stat().st_size, "inventory": full, "shards": parts,
+        "ignoredInventory": ignored_inventory(listed),
         "buildSeconds": seconds, "listSeconds": list_seconds,
         "runId": os.environ.get("GITHUB_RUN_ID"), "attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
     }
@@ -182,6 +256,7 @@ def validate_manifest(document: dict, *, profile: str, host: str, lane: str, sha
     if len(document.get("shards", [])) != shards(profile, lane):
         raise ValueError("archive has an unexpected shard count")
     validate_partition(document["inventory"], document["shards"])
+    ignored_ids(document)
 
 
 def run_archive(root: Path, prepared: Path, destination: Path, lane: str, profile: str, host: str, index: int, line: str | None, shadow: Path | None = None) -> int:
@@ -211,13 +286,14 @@ def run_archive(root: Path, prepared: Path, destination: Path, lane: str, profil
     completed, seconds = timed(command, root)
     found = [path for path in candidates if path.is_file()]
     records = []
+    annotations = []
     if len(found) == 1:
-        runner.emit_rust(destination, profile, host, found[0], selection=selection(lane))
-        records = junit_outcomes(found[0])
+        filtered, records, annotations = assigned_junit(found[0], destination, document, plan)
+        runner.emit_rust(destination, profile, host, filtered, selection=selection(lane))
     status = {
         "schemaVersion": 1, "sha": current["sha"], "profile": profile, "runner": host,
         "lane": lane, "shard": index, "archiveSha256": document["archiveSha256"],
-        "plan": plan, "records": records, "exitCode": completed.returncode,
+        "plan": plan, "records": records, "frameworkAnnotations": annotations, "exitCode": completed.returncode,
         "executionSeconds": seconds, "runId": os.environ.get("GITHUB_RUN_ID"),
         "attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
     }
@@ -260,11 +336,13 @@ def run_archive(root: Path, prepared: Path, destination: Path, lane: str, profil
                 if shadow_run.returncode != 0 or len(shadow_reports) != 1:
                     write(destination / "shadow.json", comparison)
                     raise ValueError("shadow execution failed or did not report results")
-                comparison["records"] = junit_outcomes(shadow_reports[0])
+                _, comparison["records"], comparison["frameworkAnnotations"] = assigned_junit(
+                    shadow_reports[0], destination / "shadow", document, affected)
                 write(destination / "shadow.json", comparison)
                 shadow_manifest = {**document, "shards": list(document["shards"])}
                 shadow_manifest["shards"][index - 1] = affected
-                validate_result(shadow_manifest, {**status, "plan": affected, "records": comparison["records"], "exitCode": shadow_run.returncode}, index)
+                validate_result(shadow_manifest, {**status, "plan": affected, "records": comparison["records"],
+                                "frameworkAnnotations": comparison["frameworkAnnotations"], "exitCode": shadow_run.returncode}, index)
             else:
                 comparison.update(kind="affected-no-runnable-tests", affectedSeconds=0, exitCode=0)
         write(destination / "shadow.json", comparison)
@@ -281,8 +359,12 @@ def validate_result(manifest: dict, result: dict, index: int) -> None:
     wanted = {case_id(case) for case in result["plan"] if not case["ignored"]}
     allowed = {case_id(case) for case in result["plan"]}
     records = result.get("records", [])
-    observed = Counter(record["id"] for record in records)
-    if any(count != 1 for count in observed.values()) or not wanted.issubset(observed) or not set(observed).issubset(allowed):
+    annotations = result.get("frameworkAnnotations", [])
+    known_ignored = ignored_ids(manifest)
+    if any(record["id"] in allowed or record["id"] not in known_ignored or record["status"] != "skipped" for record in annotations):
+        raise ValueError("invalid unassigned ignored framework annotation")
+    observed = Counter(record["id"] for record in records + annotations)
+    if any(count != 1 for count in observed.values()) or not wanted.issubset({record["id"] for record in records}) or not {record["id"] for record in records}.issubset(allowed):
         raise ValueError("shard results do not cover their assigned tests exactly once")
     if any(record["status"] == "skipped" and record["id"] in wanted for record in records):
         raise ValueError("a required shard test did not execute")
