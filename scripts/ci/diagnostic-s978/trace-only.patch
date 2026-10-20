@@ -1,0 +1,141 @@
+--- a/crates/unica-coder/src/infrastructure/code_intelligence.rs
++++ b/crates/unica-coder/src/infrastructure/code_intelligence.rs
+@@ -372,12 +372,41 @@
+         timeout: Duration,
+         cancellation: &CancellationToken,
+     ) -> Result<WorkspaceServiceBslOutput, String> {
+-        WorkspaceServiceManager::new().call_bsl_mcp_cancellable_with_budget(
++        let diagnostic = std::env::var_os("UNICA_S978_TRACE_DIR").is_some();
++        static DIAGNOSTIC_CALL_SEQ: std::sync::atomic::AtomicU64 =
++            std::sync::atomic::AtomicU64::new(1);
++        let diagnostic_id = diagnostic.then(|| {
++            DIAGNOSTIC_CALL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
++        });
++        if diagnostic {
++            crate::infrastructure::workspace_services::s978_diagnostic_trace(json!({
++                "kind": "bslToolStart", "callId": diagnostic_id,
++                "tool": tool, "arguments": &arguments,
++                "workspaceRoot": context.workspace.workspace_root.to_string_lossy(),
++                "sourceRoot": context.source_root.path.to_string_lossy(),
++                "cacheRoot": context.workspace.cache_root.to_string_lossy(),
++                "contextCwd": context.workspace.cwd.to_string_lossy(),
++            }));
++        }
++        let result = WorkspaceServiceManager::new().call_bsl_mcp_cancellable_with_budget(
+             &context.workspace,
+             &context.source_root.path,
+             WorkspaceServiceBslCall::new(tool, arguments, timeout, timeout),
+             cancellation,
+-        )
++        );
++        if diagnostic {
++            let outcome = match &result {
++                Ok(output) => json!({
++                    "ok": true, "resultText": &output.result_text, "stderrTail": &output.stderr,
++                }),
++                Err(error) => json!({"ok": false, "error": error}),
++            };
++            crate::infrastructure::workspace_services::s978_diagnostic_trace(json!({
++                "kind": "bslToolEnd", "callId": diagnostic_id,
++                "tool": tool, "outcome": outcome,
++            }));
++        }
++        result
+     }
+ }
+ 
+--- a/crates/unica-coder/src/infrastructure/workspace_services.rs
++++ b/crates/unica-coder/src/infrastructure/workspace_services.rs
+@@ -2974,6 +2974,35 @@
+     Unready(IndexReadiness),
+ }
+ 
++// Temporary source-only S978 diagnostic probe; excluded from a product change.
++pub(crate) fn s978_diagnostic_trace(event: Value) {
++    let Some(root) = env::var_os("UNICA_S978_TRACE_DIR") else {
++        return;
++    };
++    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
++    let outcome = (|| -> io::Result<()> {
++        let _guard = LOCK.lock().map_err(|_| io::Error::other("S978 trace lock poisoned"))?;
++        fs::create_dir_all(&root)?;
++        let mut file = OpenOptions::new()
++            .create(true)
++            .append(true)
++            .open(Path::new(&root).join(format!("rust-{}.jsonl", std::process::id())))?;
++        let row = json!({
++            "processPid": std::process::id(),
++            "unixMillis": std::time::SystemTime::now()
++                .duration_since(std::time::UNIX_EPOCH)
++                .map(|elapsed| elapsed.as_millis()).unwrap_or(0),
++            "event": event,
++        });
++        let mut bytes = serde_json::to_vec(&row).map_err(io::Error::other)?;
++        bytes.push(b'\n');
++        file.write_all(&bytes)
++    })();
++    if let Err(error) = outcome {
++        eprintln!("UNICA_S978_TRACE_WRITE_FAILED: {error}");
++    }
++}
++
+ struct PersistentMcpSession {
+     child: ManagedChild,
+     writer: Option<mpsc::SyncSender<BslWriteRequest>>,
+@@ -3088,8 +3117,55 @@
+         if cancellation.is_cancelled() {
+             return Err(cancelled_error("persistent MCP start stopped"));
+         }
++        let diagnostic_command = env::var_os("UNICA_S978_TRACE_DIR").map(|_| {
++            let names = [
++                "UNICA_CACHE_DIR", "UNICA_PROVIDER_STATE_DIR", "UNICA_PLUGIN_ROOT",
++                "UNICA_ARTIFACT_CACHE", "XDG_RUNTIME_DIR", "TMPDIR", "BSL_MCP_BROKER",
++                "BSL_MCP_IDLE_TTL_SECS", "BSL_MCP_ORPHAN_GRACE_SECS",
++                "HOME", "PATH", "XDG_CACHE_HOME", "XDG_STATE_HOME",
++            ];
++            let inherited = names.iter().map(|name| json!({
++                "name": name,
++                "value": env::var_os(name).map(|value| value.to_string_lossy().into_owned()),
++            })).collect::<Vec<_>>();
++            let overrides = command.get_envs().filter(|(name, _)| {
++                names.iter().any(|allowed| *name == std::ffi::OsStr::new(allowed))
++            }).map(|(name, value)| json!({
++                "name": name.to_string_lossy(),
++                "value": value.map(|value| value.to_string_lossy().into_owned()),
++            })).collect::<Vec<_>>();
++            let inherited_cwd = match env::current_dir() {
++                Ok(path) => json!({"path": path.to_string_lossy()}),
++                Err(error) => json!({"error": error.to_string()}),
++            };
++            let effective_cwd = command.get_current_dir()
++                .map(|path| json!({"path": path.to_string_lossy()}))
++                .unwrap_or_else(|| inherited_cwd.clone());
++            json!({
++                "program": command.get_program().to_string_lossy(),
++                "argv": command.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect::<Vec<_>>(),
++                "cwd": command.get_current_dir().map(|cwd| cwd.to_string_lossy().into_owned()),
++                "inheritedCwd": inherited_cwd,
++                "effectiveCwd": effective_cwd,
++                "inheritedEnvironment": inherited,
++                "environmentOverrides": overrides,
++            })
++        });
+         let mut child = ManagedChild::spawn_process(command, None, cancellation.clone())
+-            .map_err(|err| format!("failed to start persistent MCP transport: {err}"))?;
++            .map_err(|err| {
++                if let Some(snapshot) = &diagnostic_command {
++                    s978_diagnostic_trace(json!({
++                        "kind": "persistentMcpSpawnFailed", "command": snapshot,
++                        "error": err.to_string(),
++                    }));
++                }
++                format!("failed to start persistent MCP transport: {err}")
++            })?;
++        if let Some(snapshot) = diagnostic_command {
++            s978_diagnostic_trace(json!({
++                "kind": "persistentMcpSpawned", "helperPid": child.id(), "command": snapshot,
++            }));
++        }
+         let stdin = child
+             .take_stdin()
+             .ok_or_else(|| "failed to open persistent MCP stdin".to_string())?;

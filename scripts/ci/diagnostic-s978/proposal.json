@@ -1,0 +1,42 @@
+{
+  "status": "PROPOSAL_NOT_EXECUTED_OR_APPLIED",
+  "sourceRefs": [
+    "80ad95b3fe8e46bd8d9964387c10af19566d68ea",
+    "47cdae67e8248432ff539c554bc7023065ebed79"
+  ],
+  "sourceBeforeSha256": {
+    "crates/unica-coder/src/infrastructure/workspace_services.rs": "99bae0e2c77792cd5f70be4faa21f811c16190ffc158393e7da58a8097cfe0b9",
+    "crates/unica-coder/src/infrastructure/code_intelligence.rs": "31e96a7d1b29b78115b134e4ccc270e0503be0a9925e69719b9d3026dcb2ad98"
+  },
+  "sourceAfterSha256": {
+    "crates/unica-coder/src/infrastructure/workspace_services.rs": "a3fa8e1e8fdf42b194e90414022d1df4e3692efaffef5fbe4a5f1980bed22b72",
+    "crates/unica-coder/src/infrastructure/code_intelligence.rs": "fce0485864ccae7285b8a470f671c66d582980130c20c3f8d3a7cb7a028468ac"
+  },
+  "patchSha256": "c2370aac92bf75c9312c200722a68b9be84c44a68045a990a92fe383f1d43062",
+  "controllerSha256": "89dd2dfbd5d40dccc7b39078e442c76b09b2af14088a87f5502df228094bba3e",
+  "observationsPerSource": 10,
+  "samePatchAppliesToBothSourceRefs": true,
+  "newEnvironment": "UNICA_S978_TRACE_DIR points to own absolute ignored observation/producer root",
+  "noProtocolOrOutcomeChanges": "The original Command, call arguments, deadlines/cancellation, Result and corpus assertions are forwarded unchanged; only private file observation is added. Logging failure is separately detectable and not converted into provider error.",
+  "limits": [
+    "S978-only isolation differs from original ordered full delivery testcase",
+    "stderr is existing bounded64KiB snapshot/error tail; this is not full lifetime stderr",
+    "instrumented sources are sourceRef+trace-only patch; not byte-identical original executable",
+    "controller only validates hashes/source delta; root must supply fresh:false build/artifact-origin+retained executable evidence before dispatch"
+  ],
+  "v2Changes": [
+    "automatic trace-write marker scan",
+    "per-process callId + exactStartEnd pairing",
+    "mandatory final-command spawn outcome",
+    "effective/inherited cwd and HOME/PATH/XDG cache env",
+    "source delta stable before/after",
+    "optional exact-SHA operational manifest admits only reviewed dispatch-only unica-plugin-release.yml; no other tracked script/code delta"
+  ],
+  "v3Changes": [
+    "safe_main returns2 for gate/collector failures while preserving legitimate main return1 for observed scenario failure",
+    "machine JSON progress+summary before observation and before final collector",
+    "collector file IO caught per observation; remaining fixed observations continue",
+    "preflight/early abort retains observationsActual and incomplete classification; existing output directory is not overwritten",
+    "unchanged source Rust probe from v2"
+  ]
+}
