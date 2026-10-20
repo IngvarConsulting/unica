@@ -1,0 +1,21 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "result": {
+      "type": "string"
+    },
+    "checks": {
+      "type": "string",
+      "description": "Итог чтения созданных узлов, двух прямых unica.view удалённых адресов с not_found и честная граница check пакета."
+    },
+    "inputContract": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "result",
+    "checks",
+    "inputContract"
+  ]
+}

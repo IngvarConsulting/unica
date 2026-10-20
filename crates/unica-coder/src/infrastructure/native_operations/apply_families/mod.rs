@@ -11,7 +11,7 @@ use crate::infrastructure::native_operations::apply::{
     PlannedApplyEffects,
 };
 use crate::infrastructure::workspace_actor::{ApplyAdmission, ProviderRootBinding};
-use request::{reconcile_effects, IndexedPlanOperation, ProvisionalApplyEffect};
+pub(crate) use request::{reconcile_effects, IndexedPlanOperation, ProvisionalApplyEffect};
 
 /// The writable platform XML profile is single (`DEC.2026-08-21.SINGLE-WRITABLE-PLATFORM-XML-PROFILE`):
 /// a write outside it refuses before the first byte. The retired v0.12
@@ -270,7 +270,7 @@ enum ParsedApplyOperation {
     FormResource(IndexedPlanOperation<form_resource::FormResourcePlanOperation>),
     DcsMxl(IndexedPlanOperation<dcs_mxl::DcsMxlPlanOperation>),
     Code(IndexedPlanOperation<crate::infrastructure::native_operations::code::CodePlanOperation>),
-    Xdto(IndexedPlanOperation<crate::infrastructure::native_operations::xdto::XdtoPlanOperation>),
+    Xdto(IndexedPlanOperation<crate::domain::xdto_operation::XdtoPlanOperation>),
     Event(
         IndexedPlanOperation<crate::infrastructure::native_operations::event::EventImplementArgs>,
     ),
@@ -551,12 +551,13 @@ fn parse_family_operation(
             ParsedApplyOperation::Code(IndexedPlanOperation::new(op_index, parsed))
         }
         OperationFamily::Xdto => {
-            let parsed = crate::infrastructure::native_operations::xdto::parse_xdto_plan_operation(
-                operation.name(),
-                &args,
-                op_index,
-                binding,
-            )?;
+            let operation = descriptor
+                .xdto_operation()
+                .ok_or_else(|| hidden_apply_family_unimplemented(op_index))?;
+            let parsed =
+                crate::infrastructure::native_operations::xdto::decode_xdto_plan_operation(
+                    operation, &args, op_index, binding,
+                )?;
             ParsedApplyOperation::Xdto(IndexedPlanOperation::new(op_index, parsed))
         }
         OperationFamily::Event => {
@@ -888,6 +889,8 @@ pub(crate) fn plan_hidden_v13_apply(
         .at_path("ops"));
     }
     let mut provisional = Vec::new();
+    let mut xdto_validation =
+        crate::infrastructure::native_operations::xdto::XdtoValidationLedger::default();
     let mut borrowing = Vec::new();
     let mut cursor = 0;
     while cursor < parsed.len() {
@@ -967,25 +970,19 @@ pub(crate) fn plan_hidden_v13_apply(
                 let operations = parsed[cursor..end]
                     .iter()
                     .map(|operation| match operation {
-                        ParsedApplyOperation::Xdto(operation) => operation.operation().clone(),
+                        ParsedApplyOperation::Xdto(operation) => operation.clone(),
                         _ => unreachable!("the selected run is XDTO-only"),
                     })
-                    .collect::<Vec<_>>();
-                let before = staged
-                    .planned_changes()
-                    .into_iter()
-                    .map(|change| change.relative_path)
                     .collect::<Vec<_>>();
                 let authority = admission.xdto_planning_authority(binding)?;
                 let planned = crate::infrastructure::native_operations::xdto::plan_xdto_batch(
                     staged,
-                    authority,
+                    &authority,
                     &operations,
+                    &mut xdto_validation,
                 )?;
                 staged = planned.0;
-                provisional.extend(batch_effects_as_provisional(
-                    &before, &staged, planned.1, cursor,
-                ));
+                provisional.extend(planned.1);
             }
             ParsedApplyOperation::Metadata(_) => {
                 let operations = parsed[cursor..end]
@@ -1041,6 +1038,18 @@ pub(crate) fn plan_hidden_v13_apply(
             _ => None,
         }),
     )?;
+    if !xdto_validation.is_empty() {
+        let authority = admission.xdto_planning_authority(binding)?;
+        crate::infrastructure::native_operations::xdto::validate_final_xdto_resources(
+            &mut staged,
+            &authority,
+            &xdto_validation,
+            parsed.iter().filter_map(|operation| match operation {
+                ParsedApplyOperation::Xdto(operation) => Some(operation),
+                _ => None,
+            }),
+        )?;
+    }
     let mut effects = reconcile_effects(&staged, provisional);
     effects.set_borrowing(borrowing);
     Ok((staged, effects))

@@ -13,6 +13,7 @@ use crate::domain::properties_operation::{PropertiesOperation, PropertiesSite};
 use crate::domain::refusal::RefusalCode;
 use crate::domain::role_operation::RoleOperation;
 use crate::domain::support_operation::SupportOperation;
+use crate::domain::xdto_operation::{XdtoOperation, XdtoSite};
 use serde_json::{Map, Value};
 use std::fmt;
 
@@ -872,31 +873,16 @@ impl OperationApplicability {
             Self::DcsSettingsContainer => site.dcs_structure_depth().is_some(),
             Self::DcsStructureItem => site.dcs_structure_depth().is_some_and(|depth| depth > 0),
             Self::XdtoPackage => {
-                site.route == RouteClass::Xdto
-                    && matches!(segments, [package] if package.name().is_some())
+                site.route == RouteClass::Xdto && XdtoSite::XdtoPackage.matches(site.at())
             }
             Self::XdtoType => {
-                site.route == RouteClass::Xdto
-                    && matches!(segments, [package, ty]
-                        if package.name().is_some()
-                            && ty.kind() == NodeKind::Type
-                            && ty.name().is_some())
+                site.route == RouteClass::Xdto && XdtoSite::XdtoType.matches(site.at())
             }
-            Self::XdtoProperty | Self::XdtoPropertyContainer => {
-                site.route == RouteClass::Xdto
-                    && match segments {
-                        [package, ty, properties @ ..] => {
-                            package.name().is_some()
-                                && ty.kind() == NodeKind::Type
-                                && ty.name().is_some()
-                                && (self == Self::XdtoPropertyContainer || !properties.is_empty())
-                                && properties.iter().all(|property| {
-                                    property.kind() == NodeKind::Property
-                                        && property.name().is_some()
-                                })
-                        }
-                        _ => false,
-                    }
+            Self::XdtoProperty => {
+                site.route == RouteClass::Xdto && XdtoSite::XdtoProperty.matches(site.at())
+            }
+            Self::XdtoPropertyContainer => {
+                site.route == RouteClass::Xdto && XdtoSite::XdtoPropertyContainer.matches(site.at())
             }
             Self::InterfaceGroup => {
                 site.route == RouteClass::Interface
@@ -1046,6 +1032,7 @@ enum TypedOperation {
     Role(RoleOperation),
     Support(SupportOperation),
     Properties(PropertiesOperation),
+    Xdto(XdtoOperation),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1218,6 +1205,23 @@ pub(crate) const IMPLEMENTED_APPLY_OPERATIONS: &[&str] = &[
 ];
 
 impl OperationDescriptor {
+    const fn xdto(operation: XdtoOperation) -> Self {
+        Self {
+            name: operation.name(),
+            family: OperationFamily::Xdto,
+            applicability: operation.applicability(),
+            skeleton: operation.skeleton(),
+            typed_operation: Some(TypedOperation::Xdto(operation)),
+        }
+    }
+
+    pub(crate) const fn xdto_operation(self) -> Option<XdtoOperation> {
+        match self.typed_operation {
+            Some(TypedOperation::Xdto(operation)) => Some(operation),
+            _ => None,
+        }
+    }
+
     const fn properties(operation: PropertiesOperation) -> Self {
         Self {
             name: operation.name(),
@@ -1545,6 +1549,7 @@ impl OperationDescriptor {
             OperationFamily::Support => self.support_operation().map(SupportOperation::contract),
             OperationFamily::Form => self.form_operation().map(FormOperation::contract),
             OperationFamily::Event => self.event_operation().map(EventOperation::contract),
+            OperationFamily::Xdto => self.xdto_operation().map(XdtoOperation::contract),
             _ => None,
         }
     }
@@ -1610,6 +1615,14 @@ pub(super) const fn operation_names_equal(left: &str, right: &str) -> bool {
 }
 
 macro_rules! operation_descriptor {
+    (($name:literal, Xdto, $applicability:ident, $skeleton:ident)) => {
+        compile_error!(
+            "Xdto operations must register a typed XdtoOperation with a mandatory contract"
+        )
+    };
+    ((XdtoOperation::$variant:ident)) => {
+        OperationDescriptor::xdto(XdtoOperation::$variant)
+    };
     (($name:literal, Properties, $applicability:ident, $skeleton:ident)) => {
         compile_error!(
             "Properties operations must register a typed PropertiesOperation with a mandatory contextual contract"
@@ -1798,11 +1811,11 @@ operation_descriptors!(
     (Primitive::DataSetLinkRemove),
     (MxlOperation::Set),
     (MxlOperation::AreaAdd),
-    ("valueType.add", Xdto, XdtoPackage, Values),
-    ("objectType.add", Xdto, XdtoPackage, Values),
-    ("property.add", Xdto, XdtoPropertyContainer, Values),
-    ("type.remove", Xdto, XdtoType, Target),
-    ("property.remove", Xdto, XdtoProperty, Target),
+    (XdtoOperation::AddValueType),
+    (XdtoOperation::AddObjectType),
+    (XdtoOperation::AddProperty),
+    (XdtoOperation::RemoveType),
+    (XdtoOperation::RemoveProperty),
     ("subsystem.create", Subsystem, Configuration, Values),
     ("content.add", Subsystem, Subsystem, Items),
     ("content.remove", Subsystem, Subsystem, Target),
@@ -2864,6 +2877,7 @@ mod tests {
     use crate::domain::platform_profile::PlatformProfile;
     use crate::domain::project_sources::SourceSetKind;
     use crate::domain::properties_operation::{PropertiesOperation, PropertiesSite};
+    use crate::domain::xdto_operation::XdtoOperation;
     use serde_json::{json, Value};
 
     fn address(raw: &str) -> QualifiedAddress {
@@ -3186,6 +3200,12 @@ mod tests {
 
     fn typed_registration_is_consistent(descriptor: OperationDescriptor) -> bool {
         let (family, name, applicability, skeleton) = match descriptor.typed_operation {
+            Some(TypedOperation::Xdto(operation)) => (
+                OperationFamily::Xdto,
+                operation.name(),
+                operation.applicability(),
+                operation.skeleton(),
+            ),
             Some(TypedOperation::Properties(operation)) => (
                 OperationFamily::Properties,
                 operation.name(),
@@ -3245,6 +3265,7 @@ mod tests {
                         | OperationFamily::Form
                         | OperationFamily::Metadata
                         | OperationFamily::Properties
+                        | OperationFamily::Xdto
                 )
             }
         };
@@ -3322,6 +3343,60 @@ mod tests {
             );
             assert_eq!(valid.applies_at(&site), expected, "{raw}");
         }
+    }
+
+    #[test]
+    fn xdto_registration_requires_its_typed_identity_and_contract() {
+        for &operation in XdtoOperation::ALL {
+            let valid = OperationDescriptor::xdto(operation);
+            assert!(typed_registration_is_consistent(valid));
+            assert_eq!(valid.xdto_operation(), Some(operation));
+            assert!(valid.argument_contract().is_some());
+            assert_eq!(
+                OperationRegistry::closed()
+                    .descriptors()
+                    .iter()
+                    .filter(|descriptor| descriptor.xdto_operation() == Some(operation))
+                    .count(),
+                1
+            );
+            for invalid in [
+                OperationDescriptor {
+                    typed_operation: None,
+                    ..valid
+                },
+                OperationDescriptor {
+                    family: OperationFamily::Subsystem,
+                    ..valid
+                },
+                OperationDescriptor {
+                    name: "future.uncontractedXdto",
+                    ..valid
+                },
+                OperationDescriptor {
+                    applicability: OperationApplicability::Configuration,
+                    ..valid
+                },
+                OperationDescriptor {
+                    skeleton: OperationSkeleton::Items,
+                    ..valid
+                },
+                OperationDescriptor {
+                    typed_operation: Some(TypedOperation::Role(RoleOperation::Create)),
+                    ..valid
+                },
+            ] {
+                assert!(!typed_registration_is_consistent(invalid), "{invalid:?}");
+            }
+        }
+        assert_eq!(
+            OperationRegistry::closed()
+                .descriptors()
+                .iter()
+                .filter(|descriptor| descriptor.family() == OperationFamily::Xdto)
+                .count(),
+            XdtoOperation::ALL.len()
+        );
     }
 
     #[test]

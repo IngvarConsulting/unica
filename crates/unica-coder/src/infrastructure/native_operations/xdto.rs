@@ -4,20 +4,28 @@ use crate::application::source_navigation::{
     SOURCE_NAVIGATION_LIMIT_MAX,
 };
 use crate::application::{AdapterOutcome, SupportGuardRequirement};
-use crate::domain::address::{escape_name, NodeKind, QualifiedAddress};
+use crate::domain::address::{NodeKind, QualifiedAddress};
 use crate::domain::events::{DomainEvent, DomainEventKind};
 use crate::domain::project_sources::SourceSetKind;
-use crate::domain::source_target::xml_ncname_is_valid;
 use crate::domain::source_target::{
     MetadataAddress, SourceTarget, SourceTargetError, SourceTargetErrorCode,
     SourceTargetErrorReason, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
 };
 use crate::domain::workspace::WorkspaceContext;
+#[cfg(test)]
+use crate::domain::xdto_operation::{
+    PrefixedXmlQName, XdtoAddObjectTypeArgs, XdtoAddPropertyArgs, XdtoAddValueTypeArgs,
+    XdtoPropertySpec, XdtoRemovePropertyArgs, XdtoRemoveTypeArgs, XmlNcName,
+};
+use crate::domain::xdto_operation::{XdtoOperation, XdtoPlanOperation, XdtoPropertyPath};
 use crate::infrastructure::logical_event_source::{
     attached_resource_relative, metadata_descriptor_relative,
 };
 use crate::infrastructure::native_operations::apply::{
-    ApplyPlanError, ApplyPlanErrorKind, ApplyStagedState, PlannedApplyEffects,
+    ApplyPlanError, ApplyPlanErrorKind, ApplyStagedState,
+};
+use crate::infrastructure::native_operations::apply_families::{
+    IndexedPlanOperation, ProvisionalApplyEffect,
 };
 use crate::infrastructure::native_operations::common::{
     guard_resolved_platform_xml_target_dependencies, parse_support_state_compat_bytes,
@@ -43,6 +51,7 @@ use roxmltree::Document;
 use serde::Serialize;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -52,335 +61,51 @@ mod validation;
 mod writer;
 
 use model::{PackageModel, XDTO_NS};
-use validation::{validate, ValidationDiff};
+use validation::{validate, Finding, FindingSeverity, FindingState, ValidationDiff};
 
 const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct XmlNcName(String);
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PrefixedXmlQName(String);
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct XdtoPropertyPath(String);
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct XdtoPropertySpec {
-    pub(crate) name: XmlNcName,
-    pub(crate) type_ref: PrefixedXmlQName,
-    pub(crate) min_occurs: Option<u8>,
+pub(crate) fn decode_xdto_plan_operation(
+    operation: XdtoOperation,
+    value: &Value,
+    op_index: usize,
+    binding: &ProviderRootBinding,
+) -> Result<XdtoPlanOperation, ApplyPlanError> {
+    operation
+        .decode(
+            value,
+            &format!("ops[{op_index}].args"),
+            binding.source_set_name(),
+        )
+        .map_err(|error| bad_xdto_argument(&error.path, error.message))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct XdtoAddValueTypeArgs {
-    pub(crate) at: QualifiedAddress,
-    pub(crate) name: XmlNcName,
-    pub(crate) base: PrefixedXmlQName,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct XdtoAddObjectTypeArgs {
-    pub(crate) at: QualifiedAddress,
-    pub(crate) name: XmlNcName,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct XdtoAddPropertyArgs {
-    pub(crate) at: QualifiedAddress,
-    pub(crate) property: XdtoPropertySpec,
-    pub(crate) property_path: Option<XdtoPropertyPath>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct XdtoRemoveTypeArgs {
-    pub(crate) at: QualifiedAddress,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct XdtoRemovePropertyArgs {
-    pub(crate) at: QualifiedAddress,
-    pub(crate) name: XmlNcName,
-    pub(crate) property_path: Option<XdtoPropertyPath>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum XdtoPlanOperation {
-    AddValueType(XdtoAddValueTypeArgs),
-    AddObjectType(XdtoAddObjectTypeArgs),
-    AddProperty(XdtoAddPropertyArgs),
-    RemoveType(XdtoRemoveTypeArgs),
-    RemoveProperty(XdtoRemovePropertyArgs),
-}
-
-pub(crate) fn parse_xdto_plan_operation(
+#[cfg(test)]
+fn parse_xdto_plan_operation(
     operation: &str,
     value: &Value,
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<XdtoPlanOperation, ApplyPlanError> {
-    let base = format!("ops[{op_index}].args");
-    let raw_object = value
-        .as_object()
-        .ok_or_else(|| bad_xdto_argument(&base, "XDTO operation arguments must be an object"))?;
-    // The published skeleton of the XDTO writers is `values`: the flat member
-    // fields arrive inside that envelope next to the operation target, and the
-    // legacy flat form stays accepted for the typed migration.
-    let unwrapped;
-    let object = match raw_object.get("values") {
-        Some(Value::Object(values)) => {
-            let mut merged = values.clone();
-            if let Some(at) = raw_object.get("at") {
-                merged.insert("at".to_string(), at.clone());
-            }
-            if let Some(extra) = raw_object
-                .keys()
-                .find(|key| !matches!(key.as_str(), "values" | "at"))
-            {
-                return Err(bad_xdto_argument(
-                    &format!("{base}.{extra}"),
-                    "XDTO operation arguments travel inside `values`",
-                ));
-            }
-            unwrapped = merged;
-            &unwrapped
-        }
-        Some(_) => {
-            return Err(bad_xdto_argument(
-                &format!("{base}.values"),
-                "values must be an object",
-            ))
-        }
-        None => raw_object,
-    };
-    let allowed = match operation {
-        "valueType.add" => &["at", "name", "base"][..],
-        "objectType.add" => &["at", "name"][..],
-        "property.add" => &["at", "property"][..],
-        "type.remove" | "property.remove" => &["at"][..],
-        _ => return Err(bad_xdto_argument(&base, "unsupported XDTO operation")),
-    };
-    if let Some(field) = object
-        .keys()
-        .find(|field| !allowed.contains(&field.as_str()))
-    {
-        return Err(bad_xdto_argument(
-            &format!("{base}.{field}"),
-            "unknown XDTO operation argument",
-        ));
-    }
-
-    let target = match operation {
-        "property.add" => XdtoTarget::PropertyContainer,
-        "type.remove" => XdtoTarget::Type,
-        "property.remove" => XdtoTarget::Property,
-        _ => XdtoTarget::Package,
-    };
-    let (at, properties) = parse_xdto_at(object, &base, binding, target)?;
-    match operation {
-        "valueType.add" => Ok(XdtoPlanOperation::AddValueType(XdtoAddValueTypeArgs {
-            at,
-            name: parse_xdto_ncname(object, "name", &base)?,
-            base: parse_xdto_qname(object, "base", &base)?,
-        })),
-        "objectType.add" => Ok(XdtoPlanOperation::AddObjectType(XdtoAddObjectTypeArgs {
-            at,
-            name: parse_xdto_ncname(object, "name", &base)?,
-        })),
-        "property.add" => {
-            let property_path = xdto_property_path(&properties);
-            let property_base = format!("{base}.property");
-            let property = object
-                .get("property")
-                .and_then(Value::as_object)
-                .ok_or_else(|| bad_xdto_argument(&property_base, "property must be an object"))?;
-            let property_allowed = ["name", "type", "minOccurs"];
-            if let Some(field) = property
-                .keys()
-                .find(|field| !property_allowed.contains(&field.as_str()))
-            {
-                return Err(bad_xdto_argument(
-                    &format!("{property_base}.{field}"),
-                    "unknown XDTO property argument",
-                ));
-            }
-            let min_occurs = property
-                .get("minOccurs")
-                .map(|value| match value.as_u64() {
-                    Some(value @ 0..=1) => Ok(value as u8),
-                    _ => Err(bad_xdto_argument(
-                        &format!("{property_base}.minOccurs"),
-                        "minOccurs must be 0 or 1",
-                    )),
-                })
-                .transpose()?;
-            Ok(XdtoPlanOperation::AddProperty(XdtoAddPropertyArgs {
-                at,
-                property: XdtoPropertySpec {
-                    name: parse_xdto_ncname(property, "name", &property_base)?,
-                    type_ref: parse_xdto_qname(property, "type", &property_base)?,
-                    min_occurs,
-                },
-                property_path,
-            }))
-        }
-        "type.remove" => Ok(XdtoPlanOperation::RemoveType(XdtoRemoveTypeArgs { at })),
-        "property.remove" => {
-            let (name, path) = properties
-                .split_last()
-                .expect("a property target names at least one property");
-            Ok(XdtoPlanOperation::RemoveProperty(XdtoRemovePropertyArgs {
-                at,
-                name: XmlNcName(name.clone()),
-                property_path: xdto_property_path(path),
-            }))
-        }
-        _ => unreachable!("operation was closed above"),
-    }
+    let operation = XdtoOperation::named(operation).ok_or_else(|| {
+        bad_xdto_argument(
+            &format!("ops[{op_index}].args"),
+            "unsupported XDTO operation",
+        )
+    })?;
+    decode_xdto_plan_operation(operation, value, op_index, binding)
 }
 
 fn bad_xdto_argument(path: &str, message: impl Into<String>) -> ApplyPlanError {
     ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(path)
 }
 
-/// Узел XDTO, который адресует операция.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum XdtoTarget {
-    /// `XDTOPackage.P`.
-    Package,
-    /// `XDTOPackage.P.Type.T`.
-    Type,
-    /// `XDTOPackage.P.Type.T.Property.A[.Property.B…]`.
-    Property,
-    /// Тип или свойство любой вложенности: место нового свойства.
-    PropertyContainer,
-}
-
-/// Адрес операции XDTO: адрес пакета или типа, по которому писатель
-/// находит документ, и цепочка свойств после типа. Вложенное свойство
-/// задаётся адресом `Type.T.Property.A.Property.B`, а не аргументом.
-fn parse_xdto_at(
-    object: &Map<String, Value>,
-    base: &str,
-    binding: &ProviderRootBinding,
-    target: XdtoTarget,
-) -> Result<(QualifiedAddress, Vec<String>), ApplyPlanError> {
-    let path = format!("{base}.at");
-    let raw = object
-        .get("at")
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty() && *value == value.trim())
-        .ok_or_else(|| bad_xdto_argument(&path, "at must be a non-empty logical address"))?;
-    let address = QualifiedAddress::parse(raw)
-        .map_err(|_| bad_xdto_argument(&path, "at is not a valid logical XDTO address"))?;
-    if address.source_set() != binding.source_set_name() {
-        return Err(bad_xdto_argument(
-            &path,
-            "at belongs to a different admitted source set",
-        ));
-    }
-    let refused = || bad_xdto_argument(&path, "at does not identify the required XDTO node");
-    let segments = address.segments();
-    let Some(package) = segments.first() else {
-        return Err(refused());
-    };
-    if package.kind() != NodeKind::XdtoPackage || package.name().is_none() {
-        return Err(refused());
-    }
-    if target == XdtoTarget::Package {
-        return (segments.len() == 1)
-            .then(|| (address.clone(), Vec::new()))
-            .ok_or_else(refused);
-    }
-    let Some(type_segment) = segments.get(1) else {
-        return Err(refused());
-    };
-    if type_segment.kind() != NodeKind::Type || type_segment.name().is_none() {
-        return Err(refused());
-    }
-    let mut properties = Vec::new();
-    for segment in &segments[2..] {
-        match (segment.kind(), segment.name()) {
-            (NodeKind::Property, Some(name)) => properties.push(name.to_string()),
-            _ => return Err(refused()),
-        }
-    }
-    let shape = match target {
-        XdtoTarget::Type => properties.is_empty(),
-        XdtoTarget::Property => !properties.is_empty(),
-        XdtoTarget::PropertyContainer | XdtoTarget::Package => true,
-    };
-    if !shape {
-        return Err(refused());
-    }
-    let type_at = QualifiedAddress::parse(&format!(
-        "{}:{}.{}.{}.{}",
-        address.source_set(),
-        package.kind().as_str(),
-        escape_name(package.name().unwrap_or_default()),
-        type_segment.kind().as_str(),
-        escape_name(type_segment.name().unwrap_or_default()),
-    ))
-    .map_err(|_| refused())?;
-    Ok((type_at, properties))
-}
-
-/// Путь писателя к вложенному анонимному типу: имена свойств адреса, где
-/// буквальная точка имени экранирована `\.`. Пустая цепочка — сам тип.
-fn xdto_property_path(properties: &[String]) -> Option<XdtoPropertyPath> {
-    (!properties.is_empty()).then(|| {
-        XdtoPropertyPath(
-            properties
-                .iter()
-                .map(|name| escape_name(name).into_owned())
-                .collect::<Vec<_>>()
-                .join("."),
-        )
-    })
-}
-
-fn parse_xdto_ncname(
-    object: &Map<String, Value>,
-    field: &str,
-    base: &str,
-) -> Result<XmlNcName, ApplyPlanError> {
-    let path = format!("{base}.{field}");
-    let value = object
-        .get(field)
-        .and_then(Value::as_str)
-        .filter(|value| *value == value.trim() && xml_ncname_is_valid(value))
-        .ok_or_else(|| bad_xdto_argument(&path, "value must be an XML NCName"))?;
-    Ok(XmlNcName(value.to_string()))
-}
-
-fn parse_xdto_qname(
-    object: &Map<String, Value>,
-    field: &str,
-    base: &str,
-) -> Result<PrefixedXmlQName, ApplyPlanError> {
-    let path = format!("{base}.{field}");
-    let value = object
-        .get(field)
-        .and_then(Value::as_str)
-        .filter(|value| *value == value.trim())
-        .ok_or_else(|| bad_xdto_argument(&path, "value must be a prefixed XML QName"))?;
-    let mut parts = value.split(':');
-    let valid = match (parts.next(), parts.next(), parts.next()) {
-        (Some(prefix), Some(local), None) => {
-            xml_ncname_is_valid(prefix) && xml_ncname_is_valid(local)
-        }
-        _ => false,
-    };
-    valid
-        .then(|| PrefixedXmlQName(value.to_string()))
-        .ok_or_else(|| bad_xdto_argument(&path, "value must be a prefixed XML QName"))
-}
-
 pub(crate) fn plan_xdto_batch(
     mut staged: ApplyStagedState,
-    authority: XdtoApplyAuthority<'_>,
-    operations: &[XdtoPlanOperation],
-) -> Result<(ApplyStagedState, PlannedApplyEffects), ApplyPlanError> {
+    authority: &XdtoApplyAuthority<'_>,
+    operations: &[IndexedPlanOperation<XdtoPlanOperation>],
+    validation_ledger: &mut XdtoValidationLedger,
+) -> Result<(ApplyStagedState, Vec<ProvisionalApplyEffect>), ApplyPlanError> {
     if !authority.owns_staged_state(&staged) {
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::InvalidState,
@@ -396,7 +121,9 @@ pub(crate) fn plan_xdto_batch(
 
     let mut package: Option<StagedXdtoPackage> = None;
     let mut provisional_effects = Vec::new();
-    for (op_index, operation) in operations.iter().enumerate() {
+    for indexed in operations {
+        let op_index = indexed.index();
+        let operation = indexed.operation();
         let at_path = format!("ops[{op_index}].args.at");
         let selected = staged_xdto_package(
             operation,
@@ -416,7 +143,7 @@ pub(crate) fn plan_xdto_batch(
         package.get_or_insert_with(|| selected.clone());
 
         let descriptor_namespace =
-            prove_staged_xdto_owner(&mut staged, &authority, &selected, &at_path)?;
+            prove_staged_xdto_owner(&mut staged, authority, &selected, &at_path)?;
         prove_staged_xdto_support(
             &mut staged,
             authority.support_policy_mode(),
@@ -439,7 +166,14 @@ pub(crate) fn plan_xdto_batch(
         if before_model.target_namespace() != Some(descriptor_namespace.as_str()) {
             return Err(invalid_staged_xdto(&at_path));
         }
-        let baseline = validate(&before_model);
+        validation_ledger.retain_original_baseline(
+            &staged,
+            &selected,
+            &before_model,
+            &before,
+            op_index,
+            &at_path,
+        )?;
         let writer_operation = staged_writer_operation(operation);
         let writer_plan = writer::plan_typed(&before_text, writer_operation)
             .map_err(|error| staged_writer_error(error, operation, op_index))?;
@@ -451,18 +185,12 @@ pub(crate) fn plan_xdto_batch(
                 "writer changed the admitted XDTO namespace identity",
             ));
         }
-        let validation = ValidationDiff::between(&baseline, validate(&after_model));
-        if writer_plan.blocks() || validation.blocks() {
-            let error_path = if writer_plan.blocks() {
-                xdto_operation_identity_path(operation, op_index)
-            } else {
-                xdto_validation_error_path(operation, op_index)
-            };
+        if writer_plan.blocks() {
             return Err(ApplyPlanError::new(
                 ApplyPlanErrorKind::InvalidState,
                 "XDTO operation conflicts with the package postimage",
             )
-            .at_path(error_path));
+            .at_path(xdto_operation_identity_path(operation, op_index)));
         }
         let after = encode_like(&before, &writer_plan.after);
         if before != after {
@@ -480,24 +208,36 @@ pub(crate) fn plan_xdto_batch(
                     "staged XDTO postimage did not remain exact",
                 ));
             }
-            provisional_effects.push((
+            provisional_effects.push(ProvisionalApplyEffect::single(
                 selected.resource_relative.clone(),
                 DomainEvent::new(DomainEventKind::MetadataChanged, selected.owner_at.clone()),
+                op_index,
             ));
         }
         prove_staged_xdto_addition_repeat(&writer_plan.after, operation, &at_path)?;
+        validation_ledger.record_postimage(&selected, validate(&after_model), &after, op_index);
     }
 
-    let final_changes = staged.planned_changes();
-    let mut effects = PlannedApplyEffects::default();
-    for (relative, event) in provisional_effects {
-        if final_changes
-            .iter()
-            .any(|change| change.relative_path == relative)
-        {
-            effects.append_at(event, vec![relative]);
-        }
-    }
+    Ok((staged, provisional_effects))
+}
+
+#[cfg(test)]
+fn plan_unindexed_xdto_batch(
+    staged: ApplyStagedState,
+    authority: XdtoApplyAuthority<'_>,
+    operations: &[XdtoPlanOperation],
+) -> Result<(ApplyStagedState, super::apply::PlannedApplyEffects), ApplyPlanError> {
+    let indexed = operations
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(index, operation)| IndexedPlanOperation::new(index, operation))
+        .collect::<Vec<_>>();
+    let mut validation_ledger = XdtoValidationLedger::default();
+    let (mut staged, provisional) =
+        plan_xdto_batch(staged, &authority, &indexed, &mut validation_ledger)?;
+    validate_final_xdto_resources(&mut staged, &authority, &validation_ledger, indexed.iter())?;
+    let effects = super::apply_families::reconcile_effects(&staged, provisional);
     Ok((staged, effects))
 }
 
@@ -507,6 +247,182 @@ struct StagedXdtoPackage {
     package_name: String,
     descriptor_relative: PathBuf,
     resource_relative: PathBuf,
+}
+
+/// Request-local provenance for the package's final semantic validation. This
+/// survives separate XDTO runs within the same admitted public batch.
+#[derive(Default)]
+pub(crate) struct XdtoValidationLedger {
+    resources: BTreeMap<PathBuf, XdtoResourceValidation>,
+}
+
+struct XdtoResourceValidation {
+    package: StagedXdtoPackage,
+    baseline: Vec<Finding>,
+    origins: HashMap<(String, String), VecDeque<Option<usize>>>,
+    postimage_digest: [u8; 32],
+    last_operation_index: usize,
+}
+
+impl XdtoValidationLedger {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.resources.is_empty()
+    }
+
+    fn retain_original_baseline(
+        &mut self,
+        staged: &ApplyStagedState,
+        package: &StagedXdtoPackage,
+        before_model: &PackageModel,
+        before: &[u8],
+        op_index: usize,
+        at_path: &str,
+    ) -> Result<(), ApplyPlanError> {
+        if self.resources.contains_key(&package.resource_relative) {
+            return Ok(());
+        }
+        let baseline = match staged.original_image(&package.resource_relative) {
+            Some(original) => {
+                let text = decode(original).map_err(|_| invalid_staged_xdto(at_path))?;
+                let model = PackageModel::parse(&text).map_err(|_| invalid_staged_xdto(at_path))?;
+                validate(&model)
+            }
+            None => Vec::new(),
+        };
+        let mut origins = HashMap::<_, VecDeque<_>>::new();
+        for finding in validate(before_model) {
+            origins
+                .entry((finding.code, finding.location.key))
+                .or_default()
+                .push_back(None);
+        }
+        self.resources.insert(
+            package.resource_relative.clone(),
+            XdtoResourceValidation {
+                package: package.clone(),
+                baseline,
+                origins,
+                postimage_digest: Sha256::digest(before).into(),
+                last_operation_index: op_index,
+            },
+        );
+        Ok(())
+    }
+
+    fn record_postimage(
+        &mut self,
+        package: &StagedXdtoPackage,
+        findings: Vec<Finding>,
+        after: &[u8],
+        op_index: usize,
+    ) {
+        let resource = self
+            .resources
+            .get_mut(&package.resource_relative)
+            .expect("the XDTO preimage retained its original baseline");
+        let mut prior = std::mem::take(&mut resource.origins);
+        for finding in findings {
+            let key = (finding.code, finding.location.key);
+            let origin = prior
+                .get_mut(&key)
+                .and_then(VecDeque::pop_front)
+                .unwrap_or(Some(op_index));
+            resource.origins.entry(key).or_default().push_back(origin);
+        }
+        resource.postimage_digest = Sha256::digest(after).into();
+        resource.last_operation_index = op_index;
+    }
+}
+
+/// Semantic references may be completed or removed by later operations. Only
+/// the whole admitted batch postimage is compared with the retained original.
+pub(crate) fn validate_final_xdto_resources<'a>(
+    staged: &mut ApplyStagedState,
+    authority: &XdtoApplyAuthority<'_>,
+    ledger: &XdtoValidationLedger,
+    operations: impl Iterator<Item = &'a IndexedPlanOperation<XdtoPlanOperation>>,
+) -> Result<(), ApplyPlanError> {
+    if !authority.owns_staged_state(staged) {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidState,
+            "staged source belongs to another apply admission",
+        ));
+    }
+    let operations = operations
+        .map(|indexed| (indexed.index(), indexed.operation()))
+        .collect::<HashMap<_, _>>();
+    let mut first_conflict: Option<(usize, ApplyPlanError)> = None;
+    for resource in ledger.resources.values() {
+        let at_path = format!("ops[{}].args.at", resource.last_operation_index);
+        let namespace = prove_staged_xdto_owner(staged, authority, &resource.package, &at_path)?;
+        prove_staged_xdto_support(
+            staged,
+            authority.support_policy_mode(),
+            &resource.package,
+            &at_path,
+        )?;
+        let after = staged
+            .read(&resource.package.resource_relative)
+            .map_err(|error| ApplyPlanError::staging(error, &at_path))?
+            .ok_or_else(|| postcondition_xdto(&at_path, "final XDTO package is absent"))?;
+        let digest: [u8; 32] = Sha256::digest(&after).into();
+        if digest != resource.postimage_digest {
+            return Err(postcondition_xdto(
+                &at_path,
+                "final XDTO package has no operation provenance",
+            ));
+        }
+        let text = decode(&after).map_err(|_| invalid_staged_xdto(&at_path))?;
+        let model = PackageModel::parse(&text).map_err(|_| invalid_staged_xdto(&at_path))?;
+        if model.target_namespace() != Some(namespace.as_str()) {
+            return Err(invalid_staged_xdto(&at_path));
+        }
+        let validation = ValidationDiff::between(&resource.baseline, validate(&model));
+        let mut origins = resource.origins.clone();
+        for finding in validation.findings {
+            let key = (finding.code, finding.location.key);
+            let origin = origins
+                .get_mut(&key)
+                .and_then(VecDeque::pop_front)
+                .ok_or_else(|| {
+                    postcondition_xdto(&at_path, "final XDTO finding has no provenance")
+                })?;
+            if finding.state != FindingState::Introduced
+                || finding.severity != FindingSeverity::Error
+            {
+                continue;
+            }
+            let index = origin.ok_or_else(|| {
+                postcondition_xdto(
+                    &at_path,
+                    "introduced XDTO finding has no operation provenance",
+                )
+            })?;
+            let operation = operations.get(&index).ok_or_else(|| {
+                postcondition_xdto(
+                    &at_path,
+                    "XDTO finding origin is outside the admitted batch",
+                )
+            })?;
+            if first_conflict
+                .as_ref()
+                .is_none_or(|(first, _)| index < *first)
+            {
+                first_conflict = Some((
+                    index,
+                    ApplyPlanError::new(
+                        ApplyPlanErrorKind::InvalidState,
+                        "XDTO operation conflicts with the package postimage",
+                    )
+                    .at_path(xdto_validation_error_path(operation, index)),
+                ));
+            }
+        }
+    }
+    match first_conflict {
+        Some((_, error)) => Err(error),
+        None => Ok(()),
+    }
 }
 
 fn xdto_operation_at(operation: &XdtoPlanOperation) -> &QualifiedAddress {
@@ -693,20 +609,20 @@ fn prove_staged_xdto_support(
 fn staged_writer_operation(operation: &XdtoPlanOperation) -> writer::TypedWriterOperation<'_> {
     match operation {
         XdtoPlanOperation::AddValueType(args) => writer::TypedWriterOperation::AddValueType {
-            name: &args.name.0,
-            base: &args.base.0,
+            name: args.name.as_str(),
+            base: args.base.as_str(),
         },
-        XdtoPlanOperation::AddObjectType(args) => {
-            writer::TypedWriterOperation::AddObjectType { name: &args.name.0 }
-        }
+        XdtoPlanOperation::AddObjectType(args) => writer::TypedWriterOperation::AddObjectType {
+            name: args.name.as_str(),
+        },
         XdtoPlanOperation::AddProperty(args) => writer::TypedWriterOperation::AddProperty {
             type_name: args.at.segments()[1]
                 .name()
                 .expect("closed XDTO type target has a name"),
-            name: &args.property.name.0,
-            type_ref: &args.property.type_ref.0,
+            name: args.property.name.as_str(),
+            type_ref: args.property.type_ref.as_str(),
             min_occurs: args.property.min_occurs.map(u64::from),
-            property_path: args.property_path.as_ref().map(|path| path.0.as_str()),
+            property_path: args.property_path.as_ref().map(XdtoPropertyPath::as_str),
         },
         XdtoPlanOperation::RemoveType(args) => writer::TypedWriterOperation::RemoveType {
             name: args.at.segments()[1]
@@ -717,8 +633,8 @@ fn staged_writer_operation(operation: &XdtoPlanOperation) -> writer::TypedWriter
             type_name: args.at.segments()[1]
                 .name()
                 .expect("closed XDTO type target has a name"),
-            name: &args.name.0,
-            property_path: args.property_path.as_ref().map(|path| path.0.as_str()),
+            name: args.name.as_str(),
+            property_path: args.property_path.as_ref().map(XdtoPropertyPath::as_str),
         },
     }
 }
@@ -743,7 +659,7 @@ fn staged_writer_error(
         // Цепочка свойств и имя удаляемого свойства задаются адресом.
         writer::WriterErrorField::PropertyPath => format!("{base}.at"),
         writer::WriterErrorField::PropertyName => match operation {
-            XdtoPlanOperation::AddProperty(_) => format!("{base}.property.name"),
+            XdtoPlanOperation::AddProperty(_) => format!("{base}.values.property.name"),
             _ => format!("{base}.at"),
         },
     };
@@ -761,9 +677,9 @@ fn xdto_operation_identity_path(operation: &XdtoPlanOperation, op_index: usize) 
     let base = format!("ops[{op_index}].args");
     match operation {
         XdtoPlanOperation::AddValueType(_) | XdtoPlanOperation::AddObjectType(_) => {
-            format!("{base}.name")
+            format!("{base}.values.name")
         }
-        XdtoPlanOperation::AddProperty(_) => format!("{base}.property.name"),
+        XdtoPlanOperation::AddProperty(_) => format!("{base}.values.property.name"),
         XdtoPlanOperation::RemoveType(_) | XdtoPlanOperation::RemoveProperty(_) => {
             format!("{base}.at")
         }
@@ -773,9 +689,9 @@ fn xdto_operation_identity_path(operation: &XdtoPlanOperation, op_index: usize) 
 fn xdto_validation_error_path(operation: &XdtoPlanOperation, op_index: usize) -> String {
     let base = format!("ops[{op_index}].args");
     match operation {
-        XdtoPlanOperation::AddValueType(_) => format!("{base}.base"),
+        XdtoPlanOperation::AddValueType(_) => format!("{base}.values.base"),
         XdtoPlanOperation::AddObjectType(_) => format!("{base}.at"),
-        XdtoPlanOperation::AddProperty(_) => format!("{base}.property.type"),
+        XdtoPlanOperation::AddProperty(_) => format!("{base}.values.property.type"),
         XdtoPlanOperation::RemoveType(_) | XdtoPlanOperation::RemoveProperty(_) => {
             format!("{base}.at")
         }
@@ -2309,10 +2225,11 @@ fn required<'a>(args: &'a Map<String, Value>, name: &str) -> Result<&'a str, Str
 pub(crate) mod tests {
     use super::{
         apply_with_data, decode, encode_like, info_with_data, model, parse_xdto_info_bytes,
-        parse_xdto_plan_operation, plan_xdto_batch, preview_with_data, staged_writer_error,
-        staged_writer_operation, writer, PrefixedXmlQName, XdtoAddObjectTypeArgs,
-        XdtoAddPropertyArgs, XdtoAddValueTypeArgs, XdtoPlanOperation, XdtoPropertyPath,
-        XdtoPropertySpec, XdtoRemovePropertyArgs, XdtoRemoveTypeArgs, XmlNcName,
+        parse_xdto_plan_operation, plan_unindexed_xdto_batch, plan_xdto_batch, preview_with_data,
+        staged_writer_error, staged_writer_operation, validate_final_xdto_resources, writer,
+        IndexedPlanOperation, PrefixedXmlQName, XdtoAddObjectTypeArgs, XdtoAddPropertyArgs,
+        XdtoAddValueTypeArgs, XdtoPlanOperation, XdtoPropertyPath, XdtoPropertySpec,
+        XdtoRemovePropertyArgs, XdtoRemoveTypeArgs, XdtoValidationLedger, XmlNcName,
     };
     use crate::application::SupportGuardRequirement;
     use crate::domain::events::DomainEventKind;
@@ -3443,6 +3360,11 @@ pub(crate) mod tests {
         fs::remove_dir_all(context.workspace_root).unwrap();
     }
 
+    const REFERENCED_PACKAGE: &str = r#"<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:tns="urn:test" targetNamespace="urn:test">
+	<valueType name="Used" base="xs:string"/>
+	<objectType name="Consumer"><property name="Value" type="tns:Used"/></objectType>
+</package>"#;
+
     struct StagedXdtoFixture {
         context: WorkspaceContext,
         source: PathBuf,
@@ -3520,7 +3442,7 @@ pub(crate) mod tests {
     > {
         let staged = admission.staged_state().unwrap();
         let authority = admission.xdto_planning_authority(binding)?;
-        plan_xdto_batch(staged, authority, operations)
+        plan_unindexed_xdto_batch(staged, authority, operations)
     }
 
     fn qaddr(value: &str) -> crate::domain::address::QualifiedAddress {
@@ -3528,11 +3450,11 @@ pub(crate) mod tests {
     }
 
     fn ncname(value: &str) -> XmlNcName {
-        XmlNcName(value.to_string())
+        XmlNcName::for_test(value)
     }
 
     fn qname(value: &str) -> PrefixedXmlQName {
-        PrefixedXmlQName(value.to_string())
+        PrefixedXmlQName::for_test(value)
     }
 
     fn add_object(at: &str, name: &str) -> XdtoPlanOperation {
@@ -3564,7 +3486,7 @@ pub(crate) mod tests {
                 type_ref: qname(type_ref),
                 min_occurs,
             },
-            property_path: property_path.map(|value| XdtoPropertyPath(value.to_string())),
+            property_path: property_path.map(XdtoPropertyPath::for_test),
         })
     }
 
@@ -3576,7 +3498,7 @@ pub(crate) mod tests {
         XdtoPlanOperation::RemoveProperty(XdtoRemovePropertyArgs {
             at: qaddr(at),
             name: ncname(name),
-            property_path: property_path.map(|value| XdtoPropertyPath(value.to_string())),
+            property_path: property_path.map(XdtoPropertyPath::for_test),
         })
     }
 
@@ -3656,10 +3578,7 @@ pub(crate) mod tests {
 
     #[test]
     fn staged_xdto_poisoned_second_op_publishes_nothing() {
-        let referenced = r#"<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:tns="urn:test" targetNamespace="urn:test">
-	<valueType name="Used" base="xs:string"/>
-	<objectType name="Consumer"><property name="Value" type="tns:Used"/></objectType>
-</package>"#;
+        let referenced = REFERENCED_PACKAGE;
         for (name, before, poison) in [
             (
                 "missing",
@@ -3836,7 +3755,7 @@ pub(crate) mod tests {
         assert_eq!(foreign_error.kind(), ApplyPlanErrorKind::InvalidState);
         let second = staged_xdto_admission(&fixture, None, true);
         let authority = first.xdto_planning_authority(&fixture.binding).unwrap();
-        let error = plan_xdto_batch(
+        let error = plan_unindexed_xdto_batch(
             second.staged_state().unwrap(),
             authority,
             &[add_object("main:XDTOPackage.Sample", "Added")],
@@ -3849,18 +3768,19 @@ pub(crate) mod tests {
     #[test]
     fn staged_xdto_args_are_closed_typed_and_report_exact_paths() {
         let fixture = staged_xdto_fixture("args", PACKAGE.as_bytes());
+        let mut failures = Vec::new();
         for (operation, value) in [
             (
                 "valueType.add",
-                json!({"at":"main:XDTOPackage.Sample", "name":"Added", "base":"xs:string"}),
+                json!({"at":"main:XDTOPackage.Sample", "values":{"name":"Added", "base":"xs:string"}}),
             ),
             (
                 "objectType.add",
-                json!({"at":"main:XDTOPackage.Sample", "name":"Added"}),
+                json!({"at":"main:XDTOPackage.Sample", "values":{"name":"Added"}}),
             ),
             (
                 "property.add",
-                json!({"at":"main:XDTOPackage.Sample.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект", "property":{"name":"Added", "type":"xs:string", "minOccurs":0}}),
+                json!({"at":"main:XDTOPackage.Sample.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект", "values":{"property":{"name":"Added", "type":"xs:string", "minOccurs":0}}}),
             ),
             (
                 "type.remove",
@@ -3874,37 +3794,106 @@ pub(crate) mod tests {
             parse_xdto_plan_operation(operation, &value, 0, &fixture.binding)
                 .unwrap_or_else(|error| panic!("valid {operation} rejected: {error:?}"));
         }
+
+        for (literal, expected) in [
+            (None, None),
+            (Some("0"), Some(0)),
+            (Some("1"), Some(1)),
+            (Some("0.0"), Some(0)),
+            (Some("0e0"), Some(0)),
+            (Some("1.0"), Some(1)),
+            (Some("1e0"), Some(1)),
+        ] {
+            let mut value = json!({
+                "at":"main:XDTOPackage.Sample.Type.ЛюбаяСсылка",
+                "values":{"property":{"name":"Added", "type":"xs:string"}}
+            });
+            if let Some(literal) = literal {
+                value["values"]["property"]["minOccurs"] = serde_json::from_str(literal).unwrap();
+            }
+            match parse_xdto_plan_operation("property.add", &value, 2, &fixture.binding) {
+                Ok(XdtoPlanOperation::AddProperty(args)) => {
+                    if args.property.min_occurs != expected {
+                        failures.push(format!(
+                            "minOccurs {literal:?}: expected {expected:?}, got {:?}",
+                            args.property.min_occurs
+                        ));
+                    }
+                }
+                result => failures.push(format!(
+                    "mathematical integer minOccurs {literal:?} rejected: {result:?}"
+                )),
+            }
+        }
+
+        // Flat add payloads are not a second grammar beside `values`.
+        for (operation, value) in [
+            (
+                "valueType.add",
+                json!({"at":"main:XDTOPackage.Sample", "name":"Added", "base":"xs:string"}),
+            ),
+            (
+                "objectType.add",
+                json!({"at":"main:XDTOPackage.Sample", "name":"Added"}),
+            ),
+            (
+                "property.add",
+                json!({"at":"main:XDTOPackage.Sample.Type.ЛюбаяСсылка", "property":{"name":"Added", "type":"xs:string"}}),
+            ),
+        ] {
+            match parse_xdto_plan_operation(operation, &value, 2, &fixture.binding) {
+                Err(error) if error.kind() == ApplyPlanErrorKind::BadValue => {}
+                result => failures.push(format!(
+                    "flat {operation} must refuse without an alias: {result:?}"
+                )),
+            }
+        }
         let invalid = [
             ("valueType.add", json!(null), "ops[2].args"),
             (
                 "valueType.add",
-                json!({"name":"A", "base":"xs:string"}),
+                json!({"values":{"name":"A", "base":"xs:string"}}),
                 "ops[2].args.at",
             ),
             (
                 "valueType.add",
-                json!({"at":"main:XDTOPackage.Sample", "name":"bad:name", "base":"xs:string"}),
-                "ops[2].args.name",
+                json!({"at":"main:XDTOPackage.Sample", "values":{"name":"bad:name", "base":"xs:string"}}),
+                "ops[2].args.values.name",
             ),
             (
                 "valueType.add",
-                json!({"at":"main:XDTOPackage.Sample", "name":"A", "base":"xs::string"}),
-                "ops[2].args.base",
+                json!({"at":"main:XDTOPackage.Sample", "values":{"name":"A", "base":"xs::string"}}),
+                "ops[2].args.values.base",
             ),
             (
                 "objectType.add",
-                json!({"at":"main:XDTOPackage.Sample", "name":"A", "sourceSet":"main"}),
+                json!({"at":"main:XDTOPackage.Sample", "values":{"name":"A"}, "sourceSet":"main"}),
                 "ops[2].args.sourceSet",
             ),
             (
                 "property.add",
-                json!({"at":"main:XDTOPackage.Sample.Type.ЛюбаяСсылка", "property":{"name":"A", "type":"xs:string", "minOccurs":2}}),
-                "ops[2].args.property.minOccurs",
+                json!({"at":"main:XDTOPackage.Sample.Type.ЛюбаяСсылка", "values":{"property":{"name":"A", "type":"xs:string", "minOccurs":2}}}),
+                "ops[2].args.values.property.minOccurs",
             ),
             (
                 "property.add",
-                json!({"at":"main:XDTOPackage.Sample.Type.ЛюбаяСсылка", "property":{"name":"A", "type":"xs:string", "legacy":1}}),
-                "ops[2].args.property.legacy",
+                json!({"at":"main:XDTOPackage.Sample.Type.ЛюбаяСсылка", "values":{"property":{"name":"A", "type":"xs:string", "legacy":1}}}),
+                "ops[2].args.values.property.legacy",
+            ),
+            (
+                "valueType.add",
+                json!({"at":"main:XDTOPackage.Sample", "values":{"name":"A", "base":"xs:string", "at":false}}),
+                "ops[2].args.values.at",
+            ),
+            (
+                "type.remove",
+                json!({"at":"main:XDTOPackage.Sample.Type.ЛюбаяСсылка", "values":{}}),
+                "ops[2].args.values",
+            ),
+            (
+                "property.remove",
+                json!({"at":"main:XDTOPackage.Sample.Type.ЛюбаяСсылка.Property.A", "values":{}}),
+                "ops[2].args.values",
             ),
             (
                 "property.remove",
@@ -3924,7 +3913,7 @@ pub(crate) mod tests {
             ),
             (
                 "property.add",
-                json!({"at":"main:XDTOPackage.Sample.Type.ЛюбаяСсылка", "property":{"name":"A", "type":"xs:string"}, "propertyPath":"СсылкаНаОбъект"}),
+                json!({"at":"main:XDTOPackage.Sample.Type.ЛюбаяСсылка", "values":{"property":{"name":"A", "type":"xs:string"}}, "propertyPath":"СсылкаНаОбъект"}),
                 "ops[2].args.propertyPath",
             ),
             (
@@ -3934,12 +3923,34 @@ pub(crate) mod tests {
             ),
         ];
         for (operation, value, path) in invalid {
-            let error = parse_xdto_plan_operation(operation, &value, 2, &fixture.binding)
-                .expect_err("invalid XDTO arguments were accepted");
-            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{value}");
-            assert_eq!(error.path(), Some(path), "{value}");
+            match parse_xdto_plan_operation(operation, &value, 2, &fixture.binding) {
+                Err(error)
+                    if error.kind() == ApplyPlanErrorKind::BadValue
+                        && error.path() == Some(path) => {}
+                result => failures.push(format!(
+                    "{operation} {value}: expected bad_value at {path}, got {result:?}"
+                )),
+            }
+        }
+        for literal in [
+            "-1", "2", "0.25", "0.5", "1.5", "1.0001", "null", "true", "\"1\"",
+        ] {
+            let mut value = json!({
+                "at":"main:XDTOPackage.Sample.Type.ЛюбаяСсылка",
+                "values":{"property":{"name":"Added", "type":"xs:string"}}
+            });
+            value["values"]["property"]["minOccurs"] = serde_json::from_str(literal).unwrap();
+            match parse_xdto_plan_operation("property.add", &value, 2, &fixture.binding) {
+                Err(error)
+                    if error.kind() == ApplyPlanErrorKind::BadValue
+                        && error.path() == Some("ops[2].args.values.property.minOccurs") => {}
+                result => failures.push(format!(
+                    "minOccurs {literal} must refuse without rounding at its caller path: {result:?}"
+                )),
+            }
         }
         fixture.cleanup();
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
     #[test]
@@ -4207,7 +4218,7 @@ pub(crate) mod tests {
         };
         assert_eq!(args.at.to_string(), "main:XDTOPackage.Sample.Type.Target");
         assert_eq!(
-            args.property_path.as_ref().map(|path| path.0.as_str()),
+            args.property_path.as_ref().map(XdtoPropertyPath::as_str),
             Some(r"A\.B.Child")
         );
         let planned = writer::plan_typed(before, staged_writer_operation(&added)).unwrap();
@@ -4232,9 +4243,9 @@ pub(crate) mod tests {
         let XdtoPlanOperation::RemoveProperty(args) = &removed else {
             panic!("property.remove parses into a removal");
         };
-        assert_eq!(args.name.0, "Leaf");
+        assert_eq!(args.name.as_str(), "Leaf");
         assert_eq!(
-            args.property_path.as_ref().map(|path| path.0.as_str()),
+            args.property_path.as_ref().map(XdtoPropertyPath::as_str),
             Some(r"A\.B.Child")
         );
         let planned = writer::plan_typed(before, staged_writer_operation(&removed)).unwrap();
@@ -4253,7 +4264,7 @@ pub(crate) mod tests {
             panic!("property.remove parses into a removal");
         };
         assert_eq!(
-            (args.name.0.as_str(), args.property_path.is_none()),
+            (args.name.as_str(), args.property_path.is_none()),
             ("A.B", true)
         );
 
@@ -4279,15 +4290,15 @@ pub(crate) mod tests {
         for (operation, value) in [
             (
                 "valueType.add",
-                json!({"at":"main:XDTOPackage.Sample", "name":"Value", "base":"xs:string"}),
+                json!({"at":"main:XDTOPackage.Sample", "values":{"name":"Value", "base":"xs:string"}}),
             ),
             (
                 "objectType.add",
-                json!({"at":"main:XDTOPackage.Sample", "name":"Object"}),
+                json!({"at":"main:XDTOPackage.Sample", "values":{"name":"Object"}}),
             ),
             (
                 "property.add",
-                json!({"at":"main:XDTOPackage.Sample.Type.ЛюбаяСсылка", "property":{"name":"Added", "type":"xs:string"}}),
+                json!({"at":"main:XDTOPackage.Sample.Type.ЛюбаяСсылка", "values":{"property":{"name":"Added", "type":"xs:string"}}}),
             ),
             (
                 "type.remove",
@@ -4321,7 +4332,7 @@ pub(crate) mod tests {
         ] {
             let error = parse_xdto_plan_operation(
                 "objectType.add",
-                &json!({"at":raw, "name":"Added"}),
+                &json!({"at":raw, "values":{"name":"Added"}}),
                 3,
                 &fixture.binding,
             )
@@ -4329,6 +4340,99 @@ pub(crate) mod tests {
             assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{raw}");
             assert_eq!(error.path(), Some("ops[3].args.at"), "{raw}");
         }
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn staged_xdto_final_validation_keeps_original_baseline_and_origin_across_runs() {
+        let fixture = staged_xdto_fixture("final-origin", PACKAGE.as_bytes());
+        let admission = staged_xdto_admission(&fixture, None, true);
+        let authority = admission.xdto_planning_authority(&fixture.binding).unwrap();
+        let operations = [
+            IndexedPlanOperation::new(
+                4,
+                add_value("main:XDTOPackage.Sample", "Bad", "tns:Missing"),
+            ),
+            IndexedPlanOperation::new(9, add_object("main:XDTOPackage.Sample", "Unrelated")),
+        ];
+        let mut ledger = XdtoValidationLedger::default();
+        let (state, first_effects) = plan_xdto_batch(
+            admission.staged_state().unwrap(),
+            &authority,
+            &operations[..1],
+            &mut ledger,
+        )
+        .expect("a later operation may complete a forward reference");
+        assert_eq!(first_effects.len(), 1);
+        let (mut state, _) =
+            plan_xdto_batch(state, &authority, &operations[1..], &mut ledger).unwrap();
+        let error =
+            validate_final_xdto_resources(&mut state, &authority, &ledger, operations.iter())
+                .expect_err(
+                    "a subsequent run must not adopt an introduced finding as its baseline",
+                );
+        assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);
+        assert_eq!(error.path(), Some("ops[4].args.values.base"));
+        assert_eq!(fs::read(&fixture.package).unwrap(), PACKAGE.as_bytes());
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn staged_xdto_final_validation_preserves_original_findings() {
+        let original = REFERENCED_PACKAGE.replace("tns:Used", "tns:Missing");
+        let fixture = staged_xdto_fixture("final-preexisting", original.as_bytes());
+        let admission = staged_xdto_admission(&fixture, None, true);
+        let (mut state, effects) = plan_admitted_xdto(
+            &admission,
+            &fixture.binding,
+            &[add_object("main:XDTOPackage.Sample", "Unrelated")],
+        )
+        .expect("an unchanged finding in the retained original package is not introduced");
+        let after = state
+            .read(Path::new("XDTOPackages/Sample/Ext/Package.bin"))
+            .unwrap()
+            .unwrap();
+        let text = decode(&after).unwrap();
+        let model = model::PackageModel::parse(&text).unwrap();
+        let findings = super::validate(&model);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].code, "unknown_type_reference");
+        assert_eq!(effects.events().len(), 1);
+        assert_eq!(fs::read(&fixture.package).unwrap(), original.as_bytes());
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn staged_xdto_final_validation_allows_removing_the_reference_later() {
+        let fixture = staged_xdto_fixture("final-remove-reference", REFERENCED_PACKAGE.as_bytes());
+        let admission = staged_xdto_admission(&fixture, None, true);
+        let (mut state, effects) = plan_admitted_xdto(
+            &admission,
+            &fixture.binding,
+            &[
+                remove_type("main:XDTOPackage.Sample.Type.Used"),
+                remove_property("main:XDTOPackage.Sample.Type.Consumer", "Value", None),
+            ],
+        )
+        .expect("the final package no longer references the removed type");
+        let after = state
+            .read(Path::new("XDTOPackages/Sample/Ext/Package.bin"))
+            .unwrap()
+            .unwrap();
+        let text = decode(&after).unwrap();
+        let xml = roxmltree::Document::parse(&text).unwrap();
+        assert!(!xml
+            .descendants()
+            .any(|node| node.is_element() && node.attribute("name") == Some("Used")));
+        assert!(!xml
+            .descendants()
+            .any(|node| node.has_tag_name((super::XDTO_NS, "property"))));
+        assert!(super::validate(&model::PackageModel::parse(&text).unwrap()).is_empty());
+        assert_eq!(effects.events().len(), 1);
+        assert_eq!(
+            fs::read(&fixture.package).unwrap(),
+            REFERENCED_PACKAGE.as_bytes()
+        );
         fixture.cleanup();
     }
 

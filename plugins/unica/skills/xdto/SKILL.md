@@ -36,9 +36,13 @@ allowed-tools:
   нативных инструментов выше.
 
 Операции семейства XDTO в `ops` — закрытое объединение с тегом `op`, а их
-аргументы едут внутри `args.values`: `valueType.add` (`name`, `base`),
-`objectType.add` (`name`), `property.add` (`property`), `type.remove`,
-`property.remove` (без аргументов). Узел, над которым идёт операция, называет
+аргументы добавления едут только внутри `args.values`: `valueType.add`
+(`name`, `base`), `objectType.add` (`name`), `property.add` (`property`).
+`type.remove` и `property.remove` не принимают payload, включая пустой
+`values`. Плоские поля добавления и `values.at` отклоняются с `bad_value`.
+Необязательный `property.minOccurs` принимает целое JSON-значение `0` или `1`,
+включая эквивалентные записи `0.0`, `0e0`, `1.0`, `1e0`. Отсутствующее поле
+не подставляется как явная единица. Узел, над которым идёт операция, называет
 `at`, а не отдельный аргумент: `property.add` — на типе или на свойстве, во
 вложенный анонимный тип которого добавляется новое
 (`…Type.ЛюбаяСсылка.Property.СсылкаНаОбъект`); `property.remove` — на самом

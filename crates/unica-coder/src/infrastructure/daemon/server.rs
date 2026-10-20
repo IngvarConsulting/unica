@@ -1298,6 +1298,9 @@ mod form_move_tests;
 mod metadata_can_tests;
 #[cfg(test)]
 mod retained_directory_removal_tests;
+#[cfg(test)]
+#[path = "xdto_can_tests.rs"]
+mod xdto_can_tests;
 
 #[cfg(test)]
 mod html_template_tests;

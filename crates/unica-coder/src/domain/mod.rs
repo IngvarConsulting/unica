@@ -54,3 +54,4 @@ pub mod subsystem;
 pub(crate) mod support_operation;
 pub mod support_state;
 pub mod workspace;
+pub(crate) mod xdto_operation;

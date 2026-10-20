@@ -1,0 +1,2144 @@
+{
+  "id": "S-1721-xdto-contextual",
+  "issue": 1721,
+  "area": "XDTO",
+  "task": "Прочитать подробный contextual Can всех пяти операций и обоих property.add sites. Canonical values-only add/no-payload remove и математические 0/1 включая 0.0/1.0 дают preview. Flat, inner at, payload remove и неверные minOccurs/type дают адресный отказ по фактическому values. Все файлы, включая соседний пакет, сохраняются.",
+  "workspace": "tests/fixtures/acceptance/workspace-xdto-contract",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1e8968d49b7f27e9b030747a3d8e8acd9ce7ad09c6ff6b4479b42c7c33af83e0"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "5c3ee35a9f33b57c3ffc33646639da6892edbfbbd5554d0bcb497cd0aa7ab9dd"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "3114d40a44da3301f5c7949e7a68f2d59ddeb6fcfdc33ad9a4678bc5b6824816"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "e79d010f2276973f32687d129cd74519a4471ab0ea0a8c3b15db3cb307848665"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3.xml",
+          "kind": "sha256",
+          "eq": "373601283bc1481fd2d3677b2ee0940a5d50b250c148174c43a0942cb3a5c880"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "4fb61dfd5a71f072580650bef99714fc16ce11b13fe72da49d1b1fea70f9c49f"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor.xml",
+          "kind": "sha256",
+          "eq": "e9ae4541ced8678aa47b5cfedf64a9555e22902016681ba262464818ae097dca"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Can.valueType.add"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Can.valueType.add"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Can"
+        },
+        {
+          "pointer": "/data/props/op",
+          "eq": "valueType.add"
+        },
+        {
+          "pointer": "/data/props/implemented",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/type",
+          "eq": "object"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/additionalProperties",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/contract/exampleArgs/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/required",
+          "eq": [
+            "values"
+          ]
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/additionalProperties",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1e8968d49b7f27e9b030747a3d8e8acd9ce7ad09c6ff6b4479b42c7c33af83e0"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "5c3ee35a9f33b57c3ffc33646639da6892edbfbbd5554d0bcb497cd0aa7ab9dd"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "3114d40a44da3301f5c7949e7a68f2d59ddeb6fcfdc33ad9a4678bc5b6824816"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "e79d010f2276973f32687d129cd74519a4471ab0ea0a8c3b15db3cb307848665"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3.xml",
+          "kind": "sha256",
+          "eq": "373601283bc1481fd2d3677b2ee0940a5d50b250c148174c43a0942cb3a5c880"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "4fb61dfd5a71f072580650bef99714fc16ce11b13fe72da49d1b1fea70f9c49f"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor.xml",
+          "kind": "sha256",
+          "eq": "e9ae4541ced8678aa47b5cfedf64a9555e22902016681ba262464818ae097dca"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Can.objectType.add"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Can.objectType.add"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Can"
+        },
+        {
+          "pointer": "/data/props/op",
+          "eq": "objectType.add"
+        },
+        {
+          "pointer": "/data/props/implemented",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/type",
+          "eq": "object"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/additionalProperties",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/contract/exampleArgs/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/required",
+          "eq": [
+            "values"
+          ]
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/additionalProperties",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1e8968d49b7f27e9b030747a3d8e8acd9ce7ad09c6ff6b4479b42c7c33af83e0"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "5c3ee35a9f33b57c3ffc33646639da6892edbfbbd5554d0bcb497cd0aa7ab9dd"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "3114d40a44da3301f5c7949e7a68f2d59ddeb6fcfdc33ad9a4678bc5b6824816"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "e79d010f2276973f32687d129cd74519a4471ab0ea0a8c3b15db3cb307848665"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3.xml",
+          "kind": "sha256",
+          "eq": "373601283bc1481fd2d3677b2ee0940a5d50b250c148174c43a0942cb3a5c880"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "4fb61dfd5a71f072580650bef99714fc16ce11b13fe72da49d1b1fea70f9c49f"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor.xml",
+          "kind": "sha256",
+          "eq": "e9ae4541ced8678aa47b5cfedf64a9555e22902016681ba262464818ae097dca"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.EnterpriseData.Can.property.add"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.EnterpriseData.Can.property.add"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Can"
+        },
+        {
+          "pointer": "/data/props/op",
+          "eq": "property.add"
+        },
+        {
+          "pointer": "/data/props/implemented",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/type",
+          "eq": "object"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/additionalProperties",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/contract/exampleArgs/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/required",
+          "eq": [
+            "values"
+          ]
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/additionalProperties",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1e8968d49b7f27e9b030747a3d8e8acd9ce7ad09c6ff6b4479b42c7c33af83e0"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "5c3ee35a9f33b57c3ffc33646639da6892edbfbbd5554d0bcb497cd0aa7ab9dd"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "3114d40a44da3301f5c7949e7a68f2d59ddeb6fcfdc33ad9a4678bc5b6824816"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "e79d010f2276973f32687d129cd74519a4471ab0ea0a8c3b15db3cb307848665"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3.xml",
+          "kind": "sha256",
+          "eq": "373601283bc1481fd2d3677b2ee0940a5d50b250c148174c43a0942cb3a5c880"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "4fb61dfd5a71f072580650bef99714fc16ce11b13fe72da49d1b1fea70f9c49f"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor.xml",
+          "kind": "sha256",
+          "eq": "e9ae4541ced8678aa47b5cfedf64a9555e22902016681ba262464818ae097dca"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект.Can.property.add"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект.Can.property.add"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Can"
+        },
+        {
+          "pointer": "/data/props/op",
+          "eq": "property.add"
+        },
+        {
+          "pointer": "/data/props/implemented",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/type",
+          "eq": "object"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/additionalProperties",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/contract/exampleArgs/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/required",
+          "eq": [
+            "values"
+          ]
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/additionalProperties",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1e8968d49b7f27e9b030747a3d8e8acd9ce7ad09c6ff6b4479b42c7c33af83e0"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "5c3ee35a9f33b57c3ffc33646639da6892edbfbbd5554d0bcb497cd0aa7ab9dd"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "3114d40a44da3301f5c7949e7a68f2d59ddeb6fcfdc33ad9a4678bc5b6824816"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "e79d010f2276973f32687d129cd74519a4471ab0ea0a8c3b15db3cb307848665"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3.xml",
+          "kind": "sha256",
+          "eq": "373601283bc1481fd2d3677b2ee0940a5d50b250c148174c43a0942cb3a5c880"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "4fb61dfd5a71f072580650bef99714fc16ce11b13fe72da49d1b1fea70f9c49f"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor.xml",
+          "kind": "sha256",
+          "eq": "e9ae4541ced8678aa47b5cfedf64a9555e22902016681ba262464818ae097dca"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.СоставнойЛюбойОбъект.Can.type.remove"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.СоставнойЛюбойОбъект.Can.type.remove"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Can"
+        },
+        {
+          "pointer": "/data/props/op",
+          "eq": "type.remove"
+        },
+        {
+          "pointer": "/data/props/implemented",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/type",
+          "eq": "object"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/additionalProperties",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/contract/exampleArgs/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/exampleArgs",
+          "eq": {}
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1e8968d49b7f27e9b030747a3d8e8acd9ce7ad09c6ff6b4479b42c7c33af83e0"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "5c3ee35a9f33b57c3ffc33646639da6892edbfbbd5554d0bcb497cd0aa7ab9dd"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "3114d40a44da3301f5c7949e7a68f2d59ddeb6fcfdc33ad9a4678bc5b6824816"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "e79d010f2276973f32687d129cd74519a4471ab0ea0a8c3b15db3cb307848665"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3.xml",
+          "kind": "sha256",
+          "eq": "373601283bc1481fd2d3677b2ee0940a5d50b250c148174c43a0942cb3a5c880"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "4fb61dfd5a71f072580650bef99714fc16ce11b13fe72da49d1b1fea70f9c49f"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor.xml",
+          "kind": "sha256",
+          "eq": "e9ae4541ced8678aa47b5cfedf64a9555e22902016681ba262464818ae097dca"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.EnterpriseData.Property.Версия.Can.property.remove"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.EnterpriseData.Property.Версия.Can.property.remove"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Can"
+        },
+        {
+          "pointer": "/data/props/op",
+          "eq": "property.remove"
+        },
+        {
+          "pointer": "/data/props/implemented",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/type",
+          "eq": "object"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/additionalProperties",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/contract/exampleArgs/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/exampleArgs",
+          "eq": {}
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1e8968d49b7f27e9b030747a3d8e8acd9ce7ad09c6ff6b4479b42c7c33af83e0"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "5c3ee35a9f33b57c3ffc33646639da6892edbfbbd5554d0bcb497cd0aa7ab9dd"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "3114d40a44da3301f5c7949e7a68f2d59ddeb6fcfdc33ad9a4678bc5b6824816"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "e79d010f2276973f32687d129cd74519a4471ab0ea0a8c3b15db3cb307848665"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3.xml",
+          "kind": "sha256",
+          "eq": "373601283bc1481fd2d3677b2ee0940a5d50b250c148174c43a0942cb3a5c880"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "4fb61dfd5a71f072580650bef99714fc16ce11b13fe72da49d1b1fea70f9c49f"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor.xml",
+          "kind": "sha256",
+          "eq": "e9ae4541ced8678aa47b5cfedf64a9555e22902016681ba262464818ae097dca"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3",
+        "ops": [
+          {
+            "op": "valueType.add",
+            "args": {
+              "values": {
+                "name": "ContextualValue",
+                "base": "xs:string"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1e8968d49b7f27e9b030747a3d8e8acd9ce7ad09c6ff6b4479b42c7c33af83e0"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "5c3ee35a9f33b57c3ffc33646639da6892edbfbbd5554d0bcb497cd0aa7ab9dd"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "3114d40a44da3301f5c7949e7a68f2d59ddeb6fcfdc33ad9a4678bc5b6824816"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "e79d010f2276973f32687d129cd74519a4471ab0ea0a8c3b15db3cb307848665"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3.xml",
+          "kind": "sha256",
+          "eq": "373601283bc1481fd2d3677b2ee0940a5d50b250c148174c43a0942cb3a5c880"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "4fb61dfd5a71f072580650bef99714fc16ce11b13fe72da49d1b1fea70f9c49f"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor.xml",
+          "kind": "sha256",
+          "eq": "e9ae4541ced8678aa47b5cfedf64a9555e22902016681ba262464818ae097dca"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3",
+        "ops": [
+          {
+            "op": "objectType.add",
+            "args": {
+              "values": {
+                "name": "ContextualObject"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1e8968d49b7f27e9b030747a3d8e8acd9ce7ad09c6ff6b4479b42c7c33af83e0"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "5c3ee35a9f33b57c3ffc33646639da6892edbfbbd5554d0bcb497cd0aa7ab9dd"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "3114d40a44da3301f5c7949e7a68f2d59ddeb6fcfdc33ad9a4678bc5b6824816"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "e79d010f2276973f32687d129cd74519a4471ab0ea0a8c3b15db3cb307848665"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3.xml",
+          "kind": "sha256",
+          "eq": "373601283bc1481fd2d3677b2ee0940a5d50b250c148174c43a0942cb3a5c880"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "4fb61dfd5a71f072580650bef99714fc16ce11b13fe72da49d1b1fea70f9c49f"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor.xml",
+          "kind": "sha256",
+          "eq": "e9ae4541ced8678aa47b5cfedf64a9555e22902016681ba262464818ae097dca"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.СоставнойЛюбойОбъект",
+        "ops": [
+          {
+            "op": "type.remove",
+            "args": {}
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1e8968d49b7f27e9b030747a3d8e8acd9ce7ad09c6ff6b4479b42c7c33af83e0"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "5c3ee35a9f33b57c3ffc33646639da6892edbfbbd5554d0bcb497cd0aa7ab9dd"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "3114d40a44da3301f5c7949e7a68f2d59ddeb6fcfdc33ad9a4678bc5b6824816"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "e79d010f2276973f32687d129cd74519a4471ab0ea0a8c3b15db3cb307848665"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3.xml",
+          "kind": "sha256",
+          "eq": "373601283bc1481fd2d3677b2ee0940a5d50b250c148174c43a0942cb3a5c880"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "4fb61dfd5a71f072580650bef99714fc16ce11b13fe72da49d1b1fea70f9c49f"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor.xml",
+          "kind": "sha256",
+          "eq": "e9ae4541ced8678aa47b5cfedf64a9555e22902016681ba262464818ae097dca"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.EnterpriseData.Property.Версия",
+        "ops": [
+          {
+            "op": "property.remove",
+            "args": {}
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1e8968d49b7f27e9b030747a3d8e8acd9ce7ad09c6ff6b4479b42c7c33af83e0"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "5c3ee35a9f33b57c3ffc33646639da6892edbfbbd5554d0bcb497cd0aa7ab9dd"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "3114d40a44da3301f5c7949e7a68f2d59ddeb6fcfdc33ad9a4678bc5b6824816"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "e79d010f2276973f32687d129cd74519a4471ab0ea0a8c3b15db3cb307848665"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3.xml",
+          "kind": "sha256",
+          "eq": "373601283bc1481fd2d3677b2ee0940a5d50b250c148174c43a0942cb3a5c880"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "4fb61dfd5a71f072580650bef99714fc16ce11b13fe72da49d1b1fea70f9c49f"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor.xml",
+          "kind": "sha256",
+          "eq": "e9ae4541ced8678aa47b5cfedf64a9555e22902016681ba262464818ae097dca"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.EnterpriseData",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "property": {
+                  "name": "ContextualProperty",
+                  "type": "xs:string",
+                  "minOccurs": 0
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1e8968d49b7f27e9b030747a3d8e8acd9ce7ad09c6ff6b4479b42c7c33af83e0"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "5c3ee35a9f33b57c3ffc33646639da6892edbfbbd5554d0bcb497cd0aa7ab9dd"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "3114d40a44da3301f5c7949e7a68f2d59ddeb6fcfdc33ad9a4678bc5b6824816"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "e79d010f2276973f32687d129cd74519a4471ab0ea0a8c3b15db3cb307848665"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3.xml",
+          "kind": "sha256",
+          "eq": "373601283bc1481fd2d3677b2ee0940a5d50b250c148174c43a0942cb3a5c880"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "4fb61dfd5a71f072580650bef99714fc16ce11b13fe72da49d1b1fea70f9c49f"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor.xml",
+          "kind": "sha256",
+          "eq": "e9ae4541ced8678aa47b5cfedf64a9555e22902016681ba262464818ae097dca"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.EnterpriseData",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "property": {
+                  "name": "ContextualProperty",
+                  "type": "xs:string",
+                  "minOccurs": 0.0
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1e8968d49b7f27e9b030747a3d8e8acd9ce7ad09c6ff6b4479b42c7c33af83e0"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "5c3ee35a9f33b57c3ffc33646639da6892edbfbbd5554d0bcb497cd0aa7ab9dd"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "3114d40a44da3301f5c7949e7a68f2d59ddeb6fcfdc33ad9a4678bc5b6824816"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "e79d010f2276973f32687d129cd74519a4471ab0ea0a8c3b15db3cb307848665"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3.xml",
+          "kind": "sha256",
+          "eq": "373601283bc1481fd2d3677b2ee0940a5d50b250c148174c43a0942cb3a5c880"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "4fb61dfd5a71f072580650bef99714fc16ce11b13fe72da49d1b1fea70f9c49f"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor.xml",
+          "kind": "sha256",
+          "eq": "e9ae4541ced8678aa47b5cfedf64a9555e22902016681ba262464818ae097dca"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.EnterpriseData",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "property": {
+                  "name": "ContextualProperty",
+                  "type": "xs:string",
+                  "minOccurs": 1
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1e8968d49b7f27e9b030747a3d8e8acd9ce7ad09c6ff6b4479b42c7c33af83e0"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "5c3ee35a9f33b57c3ffc33646639da6892edbfbbd5554d0bcb497cd0aa7ab9dd"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "3114d40a44da3301f5c7949e7a68f2d59ddeb6fcfdc33ad9a4678bc5b6824816"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "e79d010f2276973f32687d129cd74519a4471ab0ea0a8c3b15db3cb307848665"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3.xml",
+          "kind": "sha256",
+          "eq": "373601283bc1481fd2d3677b2ee0940a5d50b250c148174c43a0942cb3a5c880"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "4fb61dfd5a71f072580650bef99714fc16ce11b13fe72da49d1b1fea70f9c49f"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor.xml",
+          "kind": "sha256",
+          "eq": "e9ae4541ced8678aa47b5cfedf64a9555e22902016681ba262464818ae097dca"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.EnterpriseData",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "property": {
+                  "name": "ContextualProperty",
+                  "type": "xs:string",
+                  "minOccurs": 1.0
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1e8968d49b7f27e9b030747a3d8e8acd9ce7ad09c6ff6b4479b42c7c33af83e0"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "5c3ee35a9f33b57c3ffc33646639da6892edbfbbd5554d0bcb497cd0aa7ab9dd"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "3114d40a44da3301f5c7949e7a68f2d59ddeb6fcfdc33ad9a4678bc5b6824816"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "e79d010f2276973f32687d129cd74519a4471ab0ea0a8c3b15db3cb307848665"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3.xml",
+          "kind": "sha256",
+          "eq": "373601283bc1481fd2d3677b2ee0940a5d50b250c148174c43a0942cb3a5c880"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "4fb61dfd5a71f072580650bef99714fc16ce11b13fe72da49d1b1fea70f9c49f"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor.xml",
+          "kind": "sha256",
+          "eq": "e9ae4541ced8678aa47b5cfedf64a9555e22902016681ba262464818ae097dca"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "property": {
+                  "name": "Contextual.A",
+                  "type": "xs:string"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1e8968d49b7f27e9b030747a3d8e8acd9ce7ad09c6ff6b4479b42c7c33af83e0"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "5c3ee35a9f33b57c3ffc33646639da6892edbfbbd5554d0bcb497cd0aa7ab9dd"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "3114d40a44da3301f5c7949e7a68f2d59ddeb6fcfdc33ad9a4678bc5b6824816"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "e79d010f2276973f32687d129cd74519a4471ab0ea0a8c3b15db3cb307848665"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3.xml",
+          "kind": "sha256",
+          "eq": "373601283bc1481fd2d3677b2ee0940a5d50b250c148174c43a0942cb3a5c880"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "4fb61dfd5a71f072580650bef99714fc16ce11b13fe72da49d1b1fea70f9c49f"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor.xml",
+          "kind": "sha256",
+          "eq": "e9ae4541ced8678aa47b5cfedf64a9555e22902016681ba262464818ae097dca"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3",
+        "ops": [
+          {
+            "op": "valueType.add",
+            "args": {
+              "name": "FlatValue",
+              "base": "xs:string"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: unknown XDTO operation argument",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        },
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.base"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1e8968d49b7f27e9b030747a3d8e8acd9ce7ad09c6ff6b4479b42c7c33af83e0"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "5c3ee35a9f33b57c3ffc33646639da6892edbfbbd5554d0bcb497cd0aa7ab9dd"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "3114d40a44da3301f5c7949e7a68f2d59ddeb6fcfdc33ad9a4678bc5b6824816"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "e79d010f2276973f32687d129cd74519a4471ab0ea0a8c3b15db3cb307848665"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3.xml",
+          "kind": "sha256",
+          "eq": "373601283bc1481fd2d3677b2ee0940a5d50b250c148174c43a0942cb3a5c880"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "4fb61dfd5a71f072580650bef99714fc16ce11b13fe72da49d1b1fea70f9c49f"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor.xml",
+          "kind": "sha256",
+          "eq": "e9ae4541ced8678aa47b5cfedf64a9555e22902016681ba262464818ae097dca"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3",
+        "ops": [
+          {
+            "op": "objectType.add",
+            "args": {
+              "values": {
+                "name": "InnerAt",
+                "at": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: unknown XDTO operation argument",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        },
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.at"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1e8968d49b7f27e9b030747a3d8e8acd9ce7ad09c6ff6b4479b42c7c33af83e0"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "5c3ee35a9f33b57c3ffc33646639da6892edbfbbd5554d0bcb497cd0aa7ab9dd"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "3114d40a44da3301f5c7949e7a68f2d59ddeb6fcfdc33ad9a4678bc5b6824816"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "e79d010f2276973f32687d129cd74519a4471ab0ea0a8c3b15db3cb307848665"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3.xml",
+          "kind": "sha256",
+          "eq": "373601283bc1481fd2d3677b2ee0940a5d50b250c148174c43a0942cb3a5c880"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "4fb61dfd5a71f072580650bef99714fc16ce11b13fe72da49d1b1fea70f9c49f"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor.xml",
+          "kind": "sha256",
+          "eq": "e9ae4541ced8678aa47b5cfedf64a9555e22902016681ba262464818ae097dca"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.СоставнойЛюбойОбъект",
+        "ops": [
+          {
+            "op": "type.remove",
+            "args": {
+              "values": {}
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: unknown XDTO operation argument",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        },
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1e8968d49b7f27e9b030747a3d8e8acd9ce7ad09c6ff6b4479b42c7c33af83e0"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "5c3ee35a9f33b57c3ffc33646639da6892edbfbbd5554d0bcb497cd0aa7ab9dd"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "3114d40a44da3301f5c7949e7a68f2d59ddeb6fcfdc33ad9a4678bc5b6824816"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "e79d010f2276973f32687d129cd74519a4471ab0ea0a8c3b15db3cb307848665"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3.xml",
+          "kind": "sha256",
+          "eq": "373601283bc1481fd2d3677b2ee0940a5d50b250c148174c43a0942cb3a5c880"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "4fb61dfd5a71f072580650bef99714fc16ce11b13fe72da49d1b1fea70f9c49f"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor.xml",
+          "kind": "sha256",
+          "eq": "e9ae4541ced8678aa47b5cfedf64a9555e22902016681ba262464818ae097dca"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.EnterpriseData.Property.Версия",
+        "ops": [
+          {
+            "op": "property.remove",
+            "args": {
+              "values": {}
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: unknown XDTO operation argument",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        },
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1e8968d49b7f27e9b030747a3d8e8acd9ce7ad09c6ff6b4479b42c7c33af83e0"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "5c3ee35a9f33b57c3ffc33646639da6892edbfbbd5554d0bcb497cd0aa7ab9dd"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "3114d40a44da3301f5c7949e7a68f2d59ddeb6fcfdc33ad9a4678bc5b6824816"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "e79d010f2276973f32687d129cd74519a4471ab0ea0a8c3b15db3cb307848665"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3.xml",
+          "kind": "sha256",
+          "eq": "373601283bc1481fd2d3677b2ee0940a5d50b250c148174c43a0942cb3a5c880"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "4fb61dfd5a71f072580650bef99714fc16ce11b13fe72da49d1b1fea70f9c49f"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor.xml",
+          "kind": "sha256",
+          "eq": "e9ae4541ced8678aa47b5cfedf64a9555e22902016681ba262464818ae097dca"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.EnterpriseData",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "property": {
+                  "name": "InvalidBound",
+                  "type": "xs:string",
+                  "minOccurs": 0.5
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: expected \"integer\"",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        },
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.property.minOccurs"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1e8968d49b7f27e9b030747a3d8e8acd9ce7ad09c6ff6b4479b42c7c33af83e0"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "5c3ee35a9f33b57c3ffc33646639da6892edbfbbd5554d0bcb497cd0aa7ab9dd"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "3114d40a44da3301f5c7949e7a68f2d59ddeb6fcfdc33ad9a4678bc5b6824816"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "e79d010f2276973f32687d129cd74519a4471ab0ea0a8c3b15db3cb307848665"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3.xml",
+          "kind": "sha256",
+          "eq": "373601283bc1481fd2d3677b2ee0940a5d50b250c148174c43a0942cb3a5c880"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "4fb61dfd5a71f072580650bef99714fc16ce11b13fe72da49d1b1fea70f9c49f"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor.xml",
+          "kind": "sha256",
+          "eq": "e9ae4541ced8678aa47b5cfedf64a9555e22902016681ba262464818ae097dca"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.EnterpriseData",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "property": {
+                  "name": "InvalidBound",
+                  "type": "xs:string",
+                  "minOccurs": -1
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: minOccurs must be 0 or 1",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        },
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.property.minOccurs"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1e8968d49b7f27e9b030747a3d8e8acd9ce7ad09c6ff6b4479b42c7c33af83e0"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "5c3ee35a9f33b57c3ffc33646639da6892edbfbbd5554d0bcb497cd0aa7ab9dd"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "3114d40a44da3301f5c7949e7a68f2d59ddeb6fcfdc33ad9a4678bc5b6824816"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "e79d010f2276973f32687d129cd74519a4471ab0ea0a8c3b15db3cb307848665"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3.xml",
+          "kind": "sha256",
+          "eq": "373601283bc1481fd2d3677b2ee0940a5d50b250c148174c43a0942cb3a5c880"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "4fb61dfd5a71f072580650bef99714fc16ce11b13fe72da49d1b1fea70f9c49f"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor.xml",
+          "kind": "sha256",
+          "eq": "e9ae4541ced8678aa47b5cfedf64a9555e22902016681ba262464818ae097dca"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.EnterpriseData",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "property": {
+                  "name": "InvalidBound",
+                  "type": "xs:string",
+                  "minOccurs": 2
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: minOccurs must be 0 or 1",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        },
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.property.minOccurs"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1e8968d49b7f27e9b030747a3d8e8acd9ce7ad09c6ff6b4479b42c7c33af83e0"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "5c3ee35a9f33b57c3ffc33646639da6892edbfbbd5554d0bcb497cd0aa7ab9dd"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "3114d40a44da3301f5c7949e7a68f2d59ddeb6fcfdc33ad9a4678bc5b6824816"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "e79d010f2276973f32687d129cd74519a4471ab0ea0a8c3b15db3cb307848665"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3.xml",
+          "kind": "sha256",
+          "eq": "373601283bc1481fd2d3677b2ee0940a5d50b250c148174c43a0942cb3a5c880"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "4fb61dfd5a71f072580650bef99714fc16ce11b13fe72da49d1b1fea70f9c49f"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor.xml",
+          "kind": "sha256",
+          "eq": "e9ae4541ced8678aa47b5cfedf64a9555e22902016681ba262464818ae097dca"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.EnterpriseData",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "property": {
+                  "name": "InvalidBound",
+                  "type": "xs:string",
+                  "minOccurs": false
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: expected \"integer\"",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        },
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.property.minOccurs"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1e8968d49b7f27e9b030747a3d8e8acd9ce7ad09c6ff6b4479b42c7c33af83e0"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "5c3ee35a9f33b57c3ffc33646639da6892edbfbbd5554d0bcb497cd0aa7ab9dd"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "3114d40a44da3301f5c7949e7a68f2d59ddeb6fcfdc33ad9a4678bc5b6824816"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "e79d010f2276973f32687d129cd74519a4471ab0ea0a8c3b15db3cb307848665"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3.xml",
+          "kind": "sha256",
+          "eq": "373601283bc1481fd2d3677b2ee0940a5d50b250c148174c43a0942cb3a5c880"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "4fb61dfd5a71f072580650bef99714fc16ce11b13fe72da49d1b1fea70f9c49f"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor.xml",
+          "kind": "sha256",
+          "eq": "e9ae4541ced8678aa47b5cfedf64a9555e22902016681ba262464818ae097dca"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.EnterpriseData",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "property": {
+                  "name": "InvalidBound",
+                  "type": "xs:string",
+                  "minOccurs": null
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: expected \"integer\"",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        },
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.property.minOccurs"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1e8968d49b7f27e9b030747a3d8e8acd9ce7ad09c6ff6b4479b42c7c33af83e0"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "5c3ee35a9f33b57c3ffc33646639da6892edbfbbd5554d0bcb497cd0aa7ab9dd"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "3114d40a44da3301f5c7949e7a68f2d59ddeb6fcfdc33ad9a4678bc5b6824816"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "e79d010f2276973f32687d129cd74519a4471ab0ea0a8c3b15db3cb307848665"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3.xml",
+          "kind": "sha256",
+          "eq": "373601283bc1481fd2d3677b2ee0940a5d50b250c148174c43a0942cb3a5c880"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "4fb61dfd5a71f072580650bef99714fc16ce11b13fe72da49d1b1fea70f9c49f"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor.xml",
+          "kind": "sha256",
+          "eq": "e9ae4541ced8678aa47b5cfedf64a9555e22902016681ba262464818ae097dca"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.EnterpriseData",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "property": {
+                  "name": "InvalidBound",
+                  "type": "xs:string",
+                  "minOccurs": "0"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: expected \"integer\"",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        },
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.property.minOccurs"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1e8968d49b7f27e9b030747a3d8e8acd9ce7ad09c6ff6b4479b42c7c33af83e0"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "5c3ee35a9f33b57c3ffc33646639da6892edbfbbd5554d0bcb497cd0aa7ab9dd"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "3114d40a44da3301f5c7949e7a68f2d59ddeb6fcfdc33ad9a4678bc5b6824816"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "e79d010f2276973f32687d129cd74519a4471ab0ea0a8c3b15db3cb307848665"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3.xml",
+          "kind": "sha256",
+          "eq": "373601283bc1481fd2d3677b2ee0940a5d50b250c148174c43a0942cb3a5c880"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "4fb61dfd5a71f072580650bef99714fc16ce11b13fe72da49d1b1fea70f9c49f"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor.xml",
+          "kind": "sha256",
+          "eq": "e9ae4541ced8678aa47b5cfedf64a9555e22902016681ba262464818ae097dca"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.EnterpriseData",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "property": {
+                  "name": "InvalidType",
+                  "type": false
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: expected \"string\"",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        },
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.property.type"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1e8968d49b7f27e9b030747a3d8e8acd9ce7ad09c6ff6b4479b42c7c33af83e0"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "5c3ee35a9f33b57c3ffc33646639da6892edbfbbd5554d0bcb497cd0aa7ab9dd"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "3114d40a44da3301f5c7949e7a68f2d59ddeb6fcfdc33ad9a4678bc5b6824816"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "e79d010f2276973f32687d129cd74519a4471ab0ea0a8c3b15db3cb307848665"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3.xml",
+          "kind": "sha256",
+          "eq": "373601283bc1481fd2d3677b2ee0940a5d50b250c148174c43a0942cb3a5c880"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "4fb61dfd5a71f072580650bef99714fc16ce11b13fe72da49d1b1fea70f9c49f"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor.xml",
+          "kind": "sha256",
+          "eq": "e9ae4541ced8678aa47b5cfedf64a9555e22902016681ba262464818ae097dca"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3",
+        "ops": [
+          {
+            "op": "objectType.add",
+            "args": {
+              "at": "main:XDTOPackage.ReadonlyNeighbor",
+              "values": {
+                "name": "Outside"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: ops[0].args.at: operation target must be the same logical node or its descendant in the top-level source set",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        },
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.at"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1e8968d49b7f27e9b030747a3d8e8acd9ce7ad09c6ff6b4479b42c7c33af83e0"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "5c3ee35a9f33b57c3ffc33646639da6892edbfbbd5554d0bcb497cd0aa7ab9dd"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "3114d40a44da3301f5c7949e7a68f2d59ddeb6fcfdc33ad9a4678bc5b6824816"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "e79d010f2276973f32687d129cd74519a4471ab0ea0a8c3b15db3cb307848665"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3.xml",
+          "kind": "sha256",
+          "eq": "373601283bc1481fd2d3677b2ee0940a5d50b250c148174c43a0942cb3a5c880"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "4fb61dfd5a71f072580650bef99714fc16ce11b13fe72da49d1b1fea70f9c49f"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor.xml",
+          "kind": "sha256",
+          "eq": "e9ae4541ced8678aa47b5cfedf64a9555e22902016681ba262464818ae097dca"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    }
+  ]
+}
