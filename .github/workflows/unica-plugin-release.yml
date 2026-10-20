@@ -19,20 +19,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-latest
-            target: linux-x64
           - runner: windows-latest
             target: win-x64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 50
     steps:
+      - name: Preserve source bytes in both checkouts
+        shell: bash
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           path: control
           persist-credentials: false
-      - name: Preserve source bytes in the separate case checkout
-        shell: bash
-        run: git config --global core.autocrlf false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ inputs.case_commit }}
@@ -73,3 +71,17 @@ jobs:
             e961-results-${{ matrix.target }}/owned/events.jsonl
             e961-results-${{ matrix.target }}/owned/inner.stdout
             e961-results-${{ matrix.target }}/owned/inner.stderr
+      - name: Retain actual control checkout bytes
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p e961-control-source
+          cp control/.github/workflows/unica-plugin-release.yml e961-control-source/workflow.yml
+          cp control/scripts/dev/e961-pinned-compat/manifest.json control/scripts/dev/e961-pinned-compat/pinned_compat.rs control/scripts/dev/e961-pinned-compat/run_probe.py control/scripts/dev/e961-pinned-compat/source-pins.json e961-control-source/
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: e961-control-source-${{ matrix.target }}
+          if-no-files-found: error
+          retention-days: 7
+          path: e961-control-source/
