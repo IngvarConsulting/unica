@@ -1,0 +1,69 @@
+{
+  "caseCommit": "de78b1f5f407179fb5eb4af63bf8e5da744dd7d7",
+  "pins": [
+    {
+      "path": "Cargo.lock",
+      "sha256": "7582d76565155f43e6a7f51fc917e8f6a405785f4df0922f1a99c7cda24af0d4"
+    },
+    {
+      "path": "Cargo.toml",
+      "sha256": "4fc8a62df93851d388fa036c0f151e01a611e5ffdb73504d366dc94352043892"
+    },
+    {
+      "path": "crates/unica-coder/Cargo.toml",
+      "sha256": "fdab93a2fdf0ad6970f5e8910411b02584ca99b22debb3a5f2b5fa2b12d906e1"
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/workspace_services.rs",
+      "sha256": "93e6a6330e70030184c99ec95fb36e72d99f8583139d44cb2fe8399ad38eed23"
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/workspace_index.rs",
+      "sha256": "ee9323f07c5be849ae8c4b2fafd6e339aac1ddd2e7c1bb67c8a73644d185e93c"
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/bundled_tools.rs",
+      "sha256": "93e64d5e96065a124dcb3cd019ddd984a22077709ba0360d257430b1bd1b2f23"
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/plugin_runtime.rs",
+      "sha256": "1e43cde8a69209b9ae817d2195389aac92a73ea4104a4fbf2b12faf446e3a837"
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/platform/process.rs",
+      "sha256": "93566193fc26bfe97cd0f71fed095499b1a276e4f4091ad91b76c714aeee25f8"
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/platform/filesystem.rs",
+      "sha256": "ea3e8ecdac463b3af9be5572c484a4c91e1a2b98ee623da29dcda89214408964"
+    },
+    {
+      "path": "scripts/ci/build-unica-tools.py",
+      "sha256": "418cacea45cc5d23d1a1b79cd0b693ee653a0a582dda6800a9050a1177fbaf12"
+    },
+    {
+      "path": "scripts/ci/unica_runtime_archive.py",
+      "sha256": "fec0b20995080d490463e3c39e4b7de0864ef0971fdbfe0b257e2ab62b6f2b54"
+    },
+    {
+      "path": "plugins/unica/third-party/tools.lock.json",
+      "sha256": "dc447d2896c7cc5c8bd0f896f3351997ebf064ffedd43289eb8f7413c686712f"
+    },
+    {
+      "path": "tests/fixtures/mcp/host-workspace-context.json",
+      "sha256": "addfd5ffae105db397e4e68569f816db61ec4a59e10339661cae401abecceeb3"
+    },
+    {
+      "path": "tests/fixtures/acceptance/workspace-symbol/src/Configuration.xml",
+      "sha256": "112e3bf2cdd0b0d3807a7f5a0d0e1d26d8e420b5f433ce4055ac33d0f6c4fd2c"
+    },
+    {
+      "path": "tests/fixtures/acceptance/workspace-symbol/src/CommonModules/SearchProbe.xml",
+      "sha256": "595f1b1af4c4eef8ed6473405aaffe9cae1068f08dec5c0178210a9fc293229e"
+    },
+    {
+      "path": "tests/fixtures/acceptance/workspace-symbol/src/CommonModules/SearchProbe/Ext/Module.bsl",
+      "sha256": "f918dcb8067667f408fe1d9886aa18e9828cb44aef355a0f30320540be805b09"
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "kind": "e961-missing-platform-witness-payload",
+  "members": [
+    {
+      "path": "pinned_compat.rs",
+      "sha256": "271e573cfcb676775b9a62f18197d0745225b15780ea3d12721b76142a2af9e0",
+      "bytes": 24510
+    },
+    {
+      "path": "run_probe.py",
+      "sha256": "fbd3adc3650fad0cac6e902d2768366b0ff9f10d0dd480697ae8f24267305296",
+      "bytes": 14284
+    },
+    {
+      "path": "source-pins.json",
+      "sha256": "c8531605f1016ba4b5729acd48478f3db33675f74b8ff46dbe5548ff5fbcb9b7",
+      "bytes": 2673
+    }
+  ]
+}
