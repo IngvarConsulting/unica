@@ -6,7 +6,7 @@ on:
         type: choice
         options: [main, large]
         default: main
-        description: "Ignored by this isolated S978 diagnostic"
+        description: "Ignored by this paired S978 diagnostic"
 permissions:
   contents: read
 concurrency:
@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   diagnostic-s978:
-    name: S978 trace (${{ matrix.arm }})
+    name: S978 ordered delivery (${{ matrix.arm }})
     runs-on: ubuntu-latest
     timeout-minutes: 240
     strategy:
@@ -72,7 +72,7 @@ jobs:
         run: |
           python -m pip install -r tests/ci/requirements.txt
           python -m tests.ci.acceptance_profiles --stage-analyzer "$GITHUB_WORKSPACE/staged-plugin"
-      - name: Observe ten fresh S978 scenarios
+      - name: Observe one original ordered delivery testcase
         working-directory: case
         run: |
           core_sha=$(sha256sum "$CARGO_TARGET_DIR/debug/unica" | cut -d ' ' -f 1)

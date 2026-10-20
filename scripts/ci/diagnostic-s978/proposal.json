@@ -13,16 +13,18 @@
     "crates/unica-coder/src/infrastructure/code_intelligence.rs": "fce0485864ccae7285b8a470f671c66d582980130c20c3f8d3a7cb7a028468ac"
   },
   "patchSha256": "c2370aac92bf75c9312c200722a68b9be84c44a68045a990a92fe383f1d43062",
-  "controllerSha256": "89dd2dfbd5d40dccc7b39078e442c76b09b2af14088a87f5502df228094bba3e",
-  "observationsPerSource": 10,
+  "controllerSha256": "07ec6319d47ac34ba06840377bae6ae9aef4991ca09b55d49b7631df3415fec9",
+  "observationsPerSource": 1,
   "samePatchAppliesToBothSourceRefs": true,
   "newEnvironment": "UNICA_S978_TRACE_DIR points to own absolute ignored observation/producer root",
   "noProtocolOrOutcomeChanges": "The original Command, call arguments, deadlines/cancellation, Result and corpus assertions are forwarded unchanged; only private file observation is added. Logging failure is separately detectable and not converted into provider error.",
   "limits": [
-    "S978-only isolation differs from original ordered full delivery testcase",
-    "stderr is existing bounded64KiB snapshot/error tail; this is not full lifetime stderr",
-    "instrumented sources are sourceRef+trace-only patch; not byte-identical original executable",
-    "controller only validates hashes/source delta; root must supply fresh:false build/artifact-origin+retained executable evidence before dispatch"
+    "Source-derived order; original CI did not retain per-step public/provider raw",
+    "Observer IO consumes original unchanged deadlines; same probe/controller on both source arms",
+    "stderr remains original bounded64KiB tail, not full lifetime capture",
+    "setUpClass Cargo build is replaced by root externally built artifact; corpus load/control validation are preserved",
+    "No neighbouring testcase prefix; no proven protocol dependency on another testcase",
+    "Not a product acceptance run or automatic flake/causality classification"
   ],
   "v2Changes": [
     "automatic trace-write marker scan",
@@ -38,5 +40,161 @@
     "collector file IO caught per observation; remaining fixed observations continue",
     "preflight/early abort retains observationsActual and incomplete classification; existing output directory is not overwritten",
     "unchanged source Rust probe from v2"
+  ],
+  "scope": "Original ordered delivery testcase exactly once per source arm, not isolated S978 and not product acceptance",
+  "testcase": "test_acceptance_scenarios.AcceptanceDeliveryCorpusRunTests.test_analyzer_delivery_wires_have_terminal_content",
+  "orderProofSha256": "6013f4256526fd6ebdade1e3ad3aa459dd3aa683c45a134cf5d2b5811bb20ece",
+  "expectedCorpusFileSha256": "c31712baeab29218c59fb52411b15b58fdbf9b83e2f777107d36f67c8f881812",
+  "expectedSelectedCanonicalSha256": "772a72901163d92692eed9073762abbf758c0de5b8f190e43ff1dc254e155ce0",
+  "plannedScenarioCount": 8,
+  "plannedFrozenCallCount": 19,
+  "previousIsolatedResults": "Existing twenty isolated observations and original packets remain untouched. New independent output paths only.",
+  "v4Changes": [
+    "Original test method invoked directly, including stage(timeout90)/select_profile(delivery)/ExitStack/run_corpus",
+    "Full original selected order and 19 frozen calls bound to exact base/candidate inputs before execution",
+    "Original final assert forwarded unchanged; mismatch array and scenario execution prefix retained",
+    "One observation per source arm only; no retry or new timeout",
+    "--plugin is only a preflight pinned seed; original testcase stages its own fresh plugin and actual bytes are observed"
+  ],
+  "orderProof": {
+    "sourceRefs": [
+      "80ad95b3fe8e46bd8d9964387c10af19566d68ea",
+      "47cdae67e8248432ff539c554bc7023065ebed79"
+    ],
+    "sameRelevantInputs": true,
+    "sourcePins": {
+      "plugins/unica/third-party/tools.lock.json": "dc447d2896c7cc5c8bd0f896f3351997ebf064ffedd43289eb8f7413c686712f",
+      "scripts/ci/acceptance_corpus.py": "eb9e8f81c552734f5d80517de542b13e680906d3c13bcb197b96077df6f1de6e",
+      "scripts/ci/build-unica-tools.py": "418cacea45cc5d23d1a1b79cd0b693ee653a0a582dda6800a9050a1177fbaf12",
+      "tests/ci/acceptance_controls.py": "fdc5d469a5756731544a9385484724630cf507106be2d4462addf0b57f0f98da",
+      "tests/ci/acceptance_diagnostics.py": "6c663bafeaf6e08bbdbb53d1ced35485832ad9053e0065f521c13bd4a4844de1",
+      "tests/ci/acceptance_profiles.py": "ea998e5274ef0dd170a6cd566bb6067481f350f168a1681dc09f237c62a36b05",
+      "tests/ci/test_acceptance_scenarios.py": "2e420920144c2dc88ff4b104b4ad1ffefce2c93cd251b71ccd2e45417181038d",
+      "tests/fixtures/acceptance/scenario-corpus.json": "f8dbbad3cef99cfeb9b3c97e61165556f47ece97476d76db521ce779f93de22d",
+      "tests/fixtures/acceptance/scenario-manifest/S-978-helper-invalidation.steps": "ac7222891ffe720a90a4f6cb4244f42822780dd2177dda498f31c78589d73081",
+      "tests/fixtures/acceptance/scenario-manifest/S324.steps": "e24e9a976e646132bb7184518103c6c0c2d69367f5c69a4210f4c1d9037c80a0",
+      "tests/fixtures/acceptance/scenario-manifest/S339.steps": "899673345311b11ebb2a121b95d2fc15074ed0184016ecbce815052d4a680d44",
+      "tests/fixtures/acceptance/scenario-manifest/S340.steps": "899673345311b11ebb2a121b95d2fc15074ed0184016ecbce815052d4a680d44",
+      "tests/fixtures/acceptance/scenario-manifest/S341.steps": "899673345311b11ebb2a121b95d2fc15074ed0184016ecbce815052d4a680d44",
+      "tests/fixtures/acceptance/scenario-manifest/S342.steps": "899673345311b11ebb2a121b95d2fc15074ed0184016ecbce815052d4a680d44",
+      "tests/fixtures/acceptance/scenario-manifest/S343.steps": "899673345311b11ebb2a121b95d2fc15074ed0184016ecbce815052d4a680d44",
+      "tests/fixtures/acceptance/scenario-manifest/S359.steps": "ddf5a79651c78b3b6bac5ff039ee6866cf93b2e3d67d31c66fa447640da2e161",
+      "tests/fixtures/acceptance/scenarios/S-978-helper-invalidation.json": "bed3de222a87b8f6402646aa94d9eaef281499aa3a9403b15c92c5737d334ee8",
+      "tests/fixtures/acceptance/workspace-diagnostics/README.md": "015cd9b769b7b4f17f1bcff7a1608e34d3807a5f1a0cd760a7e6d4f76f286071",
+      "tests/fixtures/acceptance/workspace-diagnostics/src/CommonModules/Пример.xml": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453",
+      "tests/fixtures/acceptance/workspace-diagnostics/src/CommonModules/Пример/Ext/Module.bsl": "da18d3716215544b1e445b278655aa80ab824ae1c3c14e45bdd582fc11a941a6",
+      "tests/fixtures/acceptance/workspace-diagnostics/src/Configuration.xml": "204a6fb52d776b9bfad625cb1960346b45aec1caaba9bada50a16fcfaae057f2",
+      "tests/fixtures/acceptance/workspace-diagnostics/src/Languages/Русский.xml": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d",
+      "tests/fixtures/acceptance/workspace-diagnostics/v8project.yaml": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4",
+      "tests/fixtures/acceptance/workspace-external/.gitattributes": "af317586df0e4bcaf46c1f5c9e2bb0edc3d730b3d29de1b26fa637aa5e7e0c23",
+      "tests/fixtures/acceptance/workspace-external/.gitignore": "99921edb369e12a35a87d768ae481f8c944573626abd4b8f3a1fe78846f30ba7",
+      "tests/fixtures/acceptance/workspace-external/README.md": "5145cd846195c565b5cffea44d54538fe1b1617193d2b389929e9424bf53c55f",
+      "tests/fixtures/acceptance/workspace-external/epf/Import.xml": "737f80c93c8008690326301b0bdc01522243c7b4fa04bdf8204e4df7dca78ef6",
+      "tests/fixtures/acceptance/workspace-external/epf/Import/Ext/ObjectModule.bsl": "f1b7425b5791d9202de242f0c82c8bbac1a1792b09645e4ed0b2ee9e7a766b58",
+      "tests/fixtures/acceptance/workspace-external/epf/Import/Forms/Main.xml": "095935ef4941f7f6febc5c3f53d8c8c8ce7b4f87be8ba1992e52dd5c1271dc7b",
+      "tests/fixtures/acceptance/workspace-external/epf/Import/Forms/Main/Ext/Form.xml": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f",
+      "tests/fixtures/acceptance/workspace-external/epf/Import/Forms/Main/Ext/Form/Module.bsl": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819",
+      "tests/fixtures/acceptance/workspace-external/epf/Import/Forms/Orphan.xml": "d3c7c1f4f34133849ea550fa3ab2ec0c35f0f5a88a9caa760746968402cb6f2c",
+      "tests/fixtures/acceptance/workspace-external/epf/Import/Forms/Orphan/Ext/Form.xml": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82",
+      "tests/fixtures/acceptance/workspace-external/epf/Import/Templates/Orphan.xml": "45c165fd3809e3b8f06e487faf0807f06873736a56960b61612f373e8e9aedb3",
+      "tests/fixtures/acceptance/workspace-external/epf/Import/Templates/Orphan/Ext/Template.xml": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82",
+      "tests/fixtures/acceptance/workspace-external/epf/Import/Templates/Print.xml": "f97b2180ee69015867cbbaf023a513c4939fa3f6b8ff73bd2d34e4bdc63cfb8e",
+      "tests/fixtures/acceptance/workspace-external/epf/Import/Templates/Print/Ext/Template.xml": "0011badfe537312fb636a58211f147cd039acd0634d0aca3e83eed958023aa74",
+      "tests/fixtures/acceptance/workspace-external/epf/Other.xml": "af8a1a124a377ef3ab73ad276a38abbc3dfbc92be0bf24b6a556464e62f77b20",
+      "tests/fixtures/acceptance/workspace-external/epf/Other/Ext/ObjectModule.bsl": "579dfd1c8f9fddb28e702132627a50e7c159dbb8f6493998b0f01a82c5ea5ed7",
+      "tests/fixtures/acceptance/workspace-external/epf/Other/Forms/Main.xml": "b3ad12f8747f92e4f7b142f5cff393831d42dd6589251570ada0254373b309a6",
+      "tests/fixtures/acceptance/workspace-external/epf/Other/Forms/Main/Ext/Form.xml": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f",
+      "tests/fixtures/acceptance/workspace-external/epf/Other/Forms/Main/Ext/Form/Module.bsl": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819",
+      "tests/fixtures/acceptance/workspace-external/erf/Sales.xml": "77f602d36888d062828083f13be264cb2f38f925a2ce6a0db71b0a6be574f70c",
+      "tests/fixtures/acceptance/workspace-external/erf/Sales/Ext/ObjectModule.bsl": "eca4dd79c0fd4cf30930bcb3ca7698fb9d1434925e42e8700ceb4780b0771b5a",
+      "tests/fixtures/acceptance/workspace-external/erf/Sales/Forms/Main.xml": "594a6876b6eca926613939b2a7c9e9bae45b4f4f959695c556f2075ff514dc9e",
+      "tests/fixtures/acceptance/workspace-external/erf/Sales/Forms/Main/Ext/Form.xml": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f",
+      "tests/fixtures/acceptance/workspace-external/erf/Sales/Forms/Main/Ext/Form/Module.bsl": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819",
+      "tests/fixtures/acceptance/workspace-external/v8project.yaml": "ca8edbba2c4a535bae2cc252964ff009d597c1bff118cd2ad7a4e5ddc64ecea6",
+      "tests/fixtures/acceptance/workspace-symbol/src/CommonModules/SearchProbe.xml": "595f1b1af4c4eef8ed6473405aaffe9cae1068f08dec5c0178210a9fc293229e",
+      "tests/fixtures/acceptance/workspace-symbol/src/CommonModules/SearchProbe/Ext/Module.bsl": "f918dcb8067667f408fe1d9886aa18e9828cb44aef355a0f30320540be805b09",
+      "tests/fixtures/acceptance/workspace-symbol/src/Configuration.xml": "112e3bf2cdd0b0d3807a7f5a0d0e1d26d8e420b5f433ce4055ac33d0f6c4fd2c",
+      "tests/fixtures/acceptance/workspace-symbol/v8project.yaml": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4",
+      "tests/fixtures/mcp/host-workspace-context.json": "addfd5ffae105db397e4e68569f816db61ec4a59e10339661cae401abecceeb3"
+    },
+    "testcase": "test_acceptance_scenarios.AcceptanceDeliveryCorpusRunTests.test_analyzer_delivery_wires_have_terminal_content",
+    "method": "test_analyzer_delivery_wires_have_terminal_content",
+    "originalRun": 39342383016,
+    "originalJob": 118366896924,
+    "originalRawSha256": "969d01ebd279d71f7a84229f43b4170cfb6641eda05951eceb9dc28286dfa59d",
+    "failedAllureSha256": "34ad31c753d9f26a3160734980b94ad682b05988143f85e7fa2ac922c97fd63e",
+    "orderEvidence": "Raw identifies failed testcase and S978 step5. Per-scenario original raw was not retained; order is source-derived from exact loader legacy file order, stable added scenario sort, and select_profile preserving relative order.",
+    "expectedScenarioOrder": [
+      {
+        "id": "S324",
+        "workspace": "tests/fixtures/acceptance/workspace-symbol",
+        "driver": "bsl-analyzer",
+        "evaluation": null,
+        "steps": 3
+      },
+      {
+        "id": "S339",
+        "workspace": "tests/fixtures/acceptance/workspace-diagnostics",
+        "driver": "bsl-analyzer-diagnostics",
+        "evaluation": "plain",
+        "steps": 1
+      },
+      {
+        "id": "S340",
+        "workspace": "tests/fixtures/acceptance/workspace-diagnostics",
+        "driver": "bsl-analyzer-diagnostics",
+        "evaluation": "authors-toml",
+        "steps": 1
+      },
+      {
+        "id": "S341",
+        "workspace": "tests/fixtures/acceptance/workspace-diagnostics",
+        "driver": "bsl-analyzer-diagnostics",
+        "evaluation": "authors-json",
+        "steps": 1
+      },
+      {
+        "id": "S342",
+        "workspace": "tests/fixtures/acceptance/workspace-diagnostics",
+        "driver": "bsl-analyzer-diagnostics",
+        "evaluation": "diff-base",
+        "steps": 1
+      },
+      {
+        "id": "S343",
+        "workspace": "tests/fixtures/acceptance/workspace-diagnostics",
+        "driver": "bsl-analyzer-diagnostics",
+        "evaluation": "precedence",
+        "steps": 1
+      },
+      {
+        "id": "S359",
+        "workspace": "tests/fixtures/acceptance/workspace-external",
+        "driver": "bsl-analyzer-external",
+        "evaluation": null,
+        "steps": 4
+      },
+      {
+        "id": "S-978-helper-invalidation",
+        "workspace": "tests/fixtures/acceptance/workspace-symbol",
+        "driver": "bsl-analyzer-invalidation",
+        "evaluation": null,
+        "steps": 7
+      }
+    ],
+    "plannedScenarioCount": 8,
+    "plannedFrozenCallCount": 19,
+    "selectedCorpusCanonicalSha256": "772a72901163d92692eed9073762abbf758c0de5b8f190e43ff1dc254e155ce0",
+    "predecessorTestcases": "None added. No protocol dependency on another testcase is present: this method owns fresh plugin/ExitStack/run_corpus; setUpClass supplies loaded corpus/validate_controls and a build whose verified artifact root supplies separately.",
+    "originalEnvironment": "Use unmodified isolated_environment and source_fixture_environment from original run_corpus. Only extra env is reviewed UNICA_S978_TRACE_DIR observer; actual inherited/effective paths are captured. No imposed UNICA_CACHE_DIR or extended timeout."
+  },
+  "orderProofCanonicalSha256": "b3a7ea141931864229b8e7da10a51d099bac55d6b8441fa25af564793386bda4",
+  "runtimePayloads": [
+    "capture-s978-linux.py",
+    "proposal.json",
+    "trace-only.patch"
+  ],
+  "v5Changes": [
+    "Only safe_main exception-handler progress emits become best-effort try/except Exception. Capture gate/collector failures unconditionally return2 even if progress stdout is broken; KeyboardInterrupt retains130; normal main return1 remains unchanged."
   ]
 }

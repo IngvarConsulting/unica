@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Ignored S978-only diagnostic capture; fixed ten fresh observations, no retries."""
+"""Ignored exact ordered delivery testcase diagnostic; one observation, no retries."""
 import argparse
 from contextlib import ExitStack
 import hashlib
@@ -23,7 +23,7 @@ NAMES = ("UNICA_CACHE_DIR", "UNICA_PROVIDER_STATE_DIR", "UNICA_ARTIFACT_CACHE",
 def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
-CAPTURE_STATE = {"output":None,"observationsPlanned":10,"results":[],"captureErrors":[],"stage":"arguments"}
+CAPTURE_STATE = {"output":None,"observationsPlanned":1,"results":[],"captureErrors":[],"stage":"arguments"}
 
 def progress(status="inProgress"):
     report = {"captureStatus":status,"stage":CAPTURE_STATE["stage"],
@@ -32,7 +32,7 @@ def progress(status="inProgress"):
               "observationsActual":len(CAPTURE_STATE["results"]),
               "currentObservation":CAPTURE_STATE.get("currentObservation"),
               "results":CAPTURE_STATE["results"],"captureErrors":CAPTURE_STATE["captureErrors"],
-              "scope":"S978-only fixed-count diagnostic; all observed failures retained"}
+              "scope":"Original ordered delivery testcase once per source arm; all observed failures retained"}
     output=CAPTURE_STATE["output"]
     if output is not None:
         try:
@@ -50,17 +50,29 @@ def safe_main():
         return main()
     except KeyboardInterrupt as error:
         CAPTURE_STATE["captureErrors"].append({"operation":"interrupted","error":repr(error)})
-        progress("captureIncomplete")
+        try:
+            progress("captureIncomplete")
+        except Exception:
+            # A broken progress/output sink cannot replace the capture status.
+            pass
         return 130
     except SystemExit as error:
         # argparse --help remains successful; explicit/argument gates are incomplete captures.
         if error.code==0:return 0
         CAPTURE_STATE["captureErrors"].append({"operation":"preflight-exit","error":str(error.code)})
-        progress("captureIncomplete")
+        try:
+            progress("captureIncomplete")
+        except Exception:
+            # A broken progress/output sink cannot replace the capture status.
+            pass
         return 2
     except Exception as error:
         CAPTURE_STATE["captureErrors"].append({"operation":"unhandled-capture","error":repr(error),"traceback":traceback.format_exc()})
-        progress("captureIncomplete")
+        try:
+            progress("captureIncomplete")
+        except Exception:
+            # A broken progress/output sink cannot replace the capture status.
+            pass
         return 2
 
 def main():
@@ -134,20 +146,42 @@ def main():
         "controllerSha256":sha(__file__),"proposalPatchSha256":meta["patchSha256"],
         "sourceBefore":source_before,"operationalManifest":operational,
         "operationalManifestSha256":sha(args.operational_manifest) if args.operational_manifest else None,
-        "environment":{k:os.environ.get(k) for k in NAMES},"observationsPlanned":10,
-        "scope":"S978 only; not the original ordered full delivery testcase; sourceRef plus explicit trace-only patch",
+        "environment":{k:os.environ.get(k) for k in NAMES},"observationsPlanned":1,
+        "scope":"Exact ordered delivery testcase method once; sourceRef plus unchanged reviewed Rust trace-only patch",
     },ensure_ascii=False,indent=2)+"\n")
     sys.path.insert(0,str(repo))
     from tests.ci import test_acceptance_scenarios as ac
     from tests.ci import acceptance_diagnostics as ad
     ac.BINARY = binary
     original_call, original_close, original_popen = ac.AcceptanceServer.call, ac.DeliveredAcceptanceServer.close, subprocess.Popen
-    corpus = ac.load_acceptance_corpus()
-    scenario = next(s for s in corpus["scenarios"] if s["id"] == "S-978-helper-invalidation")
-    corpus = {**corpus,"scenarios":[scenario]}
+    proof = meta["orderProof"]
+    proof_sha=hashlib.sha256(json.dumps(proof,ensure_ascii=False,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+    if proof_sha != meta["orderProofCanonicalSha256"]:
+        raise ValueError("reviewed source/order proof changed")
+    for name, expected in proof["sourcePins"].items():
+        if sha(repo/name) != expected:
+            raise ValueError("ordered testcase source/fixture mismatch: "+name)
+    corpus_all = ac.load_acceptance_corpus()
+    # Preserve the original setUpClass control validation without rebuilding
+    # over the separately verified retained executable supplied by root.
+    for scenario in corpus_all["scenarios"]:
+        declared=set()
+        for step in scenario["wire"]:
+            ac.validate_controls(step,declared)
+    corpus = ac.select_profile(corpus_all,"delivery")
+    selected_sha=hashlib.sha256(json.dumps(corpus,ensure_ascii=False,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+    if selected_sha != proof["selectedCorpusCanonicalSha256"]:
+        raise ValueError("actual select_profile(delivery) differs from reviewed exact ordered corpus")
+    (out/"actual-delivery-plan.json").write_text(json.dumps({
+        "testcase":proof["testcase"],"sourceRef":args.source_ref,
+        "scenarioOrder":proof["expectedScenarioOrder"],"plannedScenarioCount":8,
+        "plannedFrozenCallCount":19,"selectedCorpusCanonicalSha256":selected_sha,
+        "corpus":corpus,
+    },ensure_ascii=False,indent=2)+"\n")
+    original_prepare=ad.prepare_diagnostic_case
     summary = []
     CAPTURE_STATE["results"]=summary
-    for observation in range(1,11):
+    for observation in range(1,2):
         CAPTURE_STATE.update(currentObservation=observation,stage="observation-setup")
         progress()
         run = out / f"observation-{observation:02d}"
@@ -157,6 +191,9 @@ def main():
         errors, known_logs, known_caches = [], set(), set()
         sequence = [0]
         snapshots = [0]
+        scenario_order=[]
+        final_assertions=[]
+        actual_plugins=set()
         def append(name, value):
             try:
                 with (run/name).open("a",encoding="utf-8") as stream:
@@ -236,7 +273,7 @@ def main():
                 argv=pos[0] if pos else kw.get("args")
                 if isinstance(argv,(list,tuple)) and argv:
                     argv=[os.fsdecode(x) for x in argv]
-                    if Path(argv[0]).resolve()==binary or Path(argv[0]).name=="bsl-analyzer":
+                    if Path(argv[0]).resolve()==binary or Path(argv[0]).name=="bsl-analyzer" or "--stage-analyzer" in argv:
                         environment=kw.get("env") if kw.get("env") is not None else os.environ
                         stderr=kw.get("stderr")
                         name=getattr(stderr,"name",None)
@@ -245,21 +282,78 @@ def main():
                         append("python-spawns.jsonl",{"pid":process.pid,"argv":argv,"cwd":str(kw.get("cwd")) if kw.get("cwd") is not None else None,"inheritedCwd":inherited_cwd,"effectiveCwd":{"path":str(kw["cwd"])} if kw.get("cwd") is not None else inherited_cwd,"environment":{k:environment.get(k) for k in NAMES},"stderrPath":os.fsdecode(name) if isinstance(name,(str,os.PathLike)) else None})
             except Exception as error: errors.append({"operation":"spawn-observer","error":repr(error)})
             return process
+        def observed_prepare(server,scenario,**options):
+            scenario_order.append(scenario["id"])
+            append("scenario-lifecycle.jsonl",{"kind":"prepareStart","scenario":scenario["id"],"workspace":str(server.workspace),"frontendPid":server.process.pid})
+            actual_plugin=Path(options["plugin"])
+            if str(actual_plugin) not in actual_plugins:
+                try:
+                    actual_binary=actual_plugin/"bin/linux-x64/bsl-analyzer"
+                    actual_lock=actual_plugin/"third-party/tools.lock.json"
+                    metadata={"plugin":str(actual_plugin),"binary":str(actual_binary),"binarySha256":sha(actual_binary),"lockSha256":sha(actual_lock)}
+                    if metadata["binarySha256"] != tool["assets"]["linux-x64"]["sha256"] or actual_lock.read_bytes()!=(repo/"plugins/unica/third-party/tools.lock.json").read_bytes():
+                        errors.append({"operation":"actual-testcase-plugin","error":"fresh original testcase stage differs from pinned seed"})
+                    append("actual-testcase-plugins.jsonl",metadata)
+                    actual_plugins.add(str(actual_plugin))
+                except Exception as error:
+                    errors.append({"operation":"actual-testcase-plugin","error":repr(error)})
+            try:
+                finish=original_prepare(server,scenario,**options)
+            except BaseException as error:
+                append("scenario-lifecycle.jsonl",{"kind":"prepareError","scenario":scenario["id"],"error":repr(error)})
+                raise
+            append("scenario-lifecycle.jsonl",{"kind":"prepareEnd","scenario":scenario["id"],"hasFinish":finish is not None})
+            if finish is None:return None
+            def observed_finish(verification):
+                append("scenario-lifecycle.jsonl",{"kind":"finishStart","scenario":scenario["id"],"verification":verification})
+                try:
+                    result=finish(verification)
+                except BaseException as error:
+                    append("scenario-lifecycle.jsonl",{"kind":"finishError","scenario":scenario["id"],"error":repr(error)})
+                    raise
+                append("scenario-lifecycle.jsonl",{"kind":"finishEnd","scenario":scenario["id"]})
+                return result
+            return observed_finish
+        class ObservedOriginalCase(ac.AcceptanceDeliveryCorpusRunTests):
+            def assertEqual(self,first,second,msg=None):
+                if isinstance(msg,str) and msg.startswith("the surface answered outside the frozen acceptance classes:"):
+                    record={"actualMismatches":first,"expected":second,"message":msg}
+                    final_assertions.append(record)
+                    append("final-original-assertion.jsonl",record)
+                return super().assertEqual(first,second,msg)
+        original_case=ObservedOriginalCase("test_analyzer_delivery_wires_have_terminal_content")
+        original_case.corpus=corpus_all
         started=time.monotonic()
-        outcome={"observation":observation,"binarySha256Before":sha(binary)}
+        outcome={"observation":observation,"testcase":proof["testcase"],"binarySha256Before":sha(binary)}
         if outcome["binarySha256Before"]!=args.binary_sha256:raise SystemExit("binary changed before observation")
         CAPTURE_STATE["stage"]="scenario"
         try:
-            with patch.dict(os.environ,{"UNICA_S978_TRACE_DIR":str(rust)}), patch.object(ac.AcceptanceServer,"call",observed_call), patch.object(ac.DeliveredAcceptanceServer,"close",observed_close), patch.object(subprocess,"Popen",observed_popen):
-                with ExitStack() as fixtures:
-                    def prepare(server, selected):
-                        return ad.prepare_diagnostic_case(server,selected,plugin=plugin,fixtures=fixtures)
-                    ac.run_corpus(unittest.TestCase(),corpus,plugin,scenario_driver=prepare,fixture_cleanup=fixtures.close)
+            with patch.dict(os.environ,{"UNICA_S978_TRACE_DIR":str(rust)}), patch.object(ac.AcceptanceServer,"call",observed_call), patch.object(ac.DeliveredAcceptanceServer,"close",observed_close), patch.object(subprocess,"Popen",observed_popen), patch.object(ad,"prepare_diagnostic_case",observed_prepare):
+                # Invoke the original method, including its fresh analyzer stage,
+                # select_profile, ExitStack and run_corpus. No copied testcase body.
+                original_case.test_analyzer_delivery_wires_have_terminal_content()
             outcome["status"]="PASS"
         except Exception as error:
             outcome.update(status="FAIL",exception={"type":type(error).__name__,"message":str(error),"traceback":traceback.format_exc()})
         outcome.update(elapsedSeconds=time.monotonic()-started,binarySha256After=sha(binary),captureErrors=errors)
         if outcome["binarySha256After"]!=args.binary_sha256:outcome["captureErrors"].append({"operation":"binary-origin","error":"binary changed during observation"})
+        outcome["scenarioOrderActual"]=scenario_order
+        outcome["plannedScenarioCount"]=len(proof["expectedScenarioOrder"])
+        outcome["originalFinalAssertionObserved"]=len(final_assertions)==1
+        mismatches=final_assertions[0]["actualMismatches"] if len(final_assertions)==1 else None
+        outcome["originalMismatches"]=mismatches
+        outcome["scenarioOutcomes"]=[]
+        for entry in proof["expectedScenarioOrder"]:
+            identifier=entry["id"]
+            failures=[value for value in mismatches if value.startswith(identifier+" step ")] if mismatches is not None else []
+            status=("NOT_EXECUTED" if identifier not in scenario_order else
+                    "ABORTED_OR_UNRESOLVED" if mismatches is None else
+                    "FAIL" if failures else "PASS")
+            outcome["scenarioOutcomes"].append({**entry,"status":status,"mismatches":failures})
+        if scenario_order != [entry["id"] for entry in proof["expectedScenarioOrder"]][:len(scenario_order)]:
+            errors.append({"operation":"actual-scenario-order","error":"original method did not follow the reviewed ordered prefix"})
+        if outcome["status"]=="PASS" and (len(final_assertions)!=1 or scenario_order!=[entry["id"] for entry in proof["expectedScenarioOrder"]]):
+            errors.append({"operation":"actual-coverage","error":"PASS without full original order/final assertion"})
         summary.append(outcome)
         CAPTURE_STATE["stage"]="observation-collector"
         progress()
@@ -310,7 +404,7 @@ def main():
         CAPTURE_STATE["captureErrors"].append({"operation":"source-after","error":source_after_error})
     if source_after is not None and source_after!=source_before:
         CAPTURE_STATE["captureErrors"].append({"operation":"source-after","error":"source state changed during observations"})
-    incomplete = bool(CAPTURE_STATE["captureErrors"] or any(o["captureErrors"] for o in summary) or len(summary)!=10)
+    incomplete = bool(CAPTURE_STATE["captureErrors"] or any(o["captureErrors"] for o in summary) or len(summary)!=1)
     CAPTURE_STATE["stage"]="terminal"
     progress("captureIncomplete" if incomplete else "complete")
     if incomplete or CAPTURE_STATE["captureErrors"]:return 2
