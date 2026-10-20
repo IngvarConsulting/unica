@@ -218,6 +218,53 @@ fn native_bsl_cwd_is_external_while_same_warm_process_survives_workspace_rename(
 
 #[cfg(windows)]
 #[test]
+fn windows_factories_start_live_providers_at_an_external_anchor_when_other_candidates_are_excluded()
+{
+    let mut fixture = CwdFixture::new(true);
+    let binary = compile_probe(&fixture);
+    let temp = canonical_path(&env::temp_dir());
+    let executable = canonical_path(env::current_exe().unwrap().parent().unwrap());
+    fixture.context.workspace_root = temp.clone();
+    let identity = WorkspaceServiceIdentity::new(&fixture.context, &executable).unwrap();
+    let commands = [
+        rlm_transport_command_for_build(
+            binary.clone(),
+            &fixture.context,
+            &executable,
+            &fixture.build,
+        )
+        .unwrap(),
+        bsl_analyzer_command(&binary, &fixture.context, &executable).unwrap(),
+        workspace_service_command(
+            &binary,
+            &identity,
+            WorkspaceServiceConfig { idle_secs: 321 },
+            "anchor-test-token",
+            &CoreIdentity::production(),
+        )
+        .unwrap(),
+    ];
+    let anchor = temp.ancestors().last().unwrap();
+    for command in commands {
+        let expected_args = command
+            .get_args()
+            .map(OsStr::to_os_string)
+            .collect::<Vec<_>>();
+        assert_eq!(canonical_path(command.get_current_dir().unwrap()), anchor);
+        let mut session =
+            PersistentMcpSession::start_with_command(command, &CancellationToken::new()).unwrap();
+        let before = probe(&mut session);
+        assert_eq!(before.pid, session.child.id());
+        assert_eq!(before.args, expected_args);
+        assert_outside(&before, &temp, &executable);
+        assert_actual_cwd(&before, anchor);
+        assert_eq!(probe(&mut session).pid, before.pid);
+        stop_session(&mut session);
+    }
+}
+
+#[cfg(windows)]
+#[test]
 fn windows_live_cwd_inside_outside_pair_isolates_workspace_rename() {
     let fixture = CwdFixture::new(false);
     let binary = compile_probe(&fixture);

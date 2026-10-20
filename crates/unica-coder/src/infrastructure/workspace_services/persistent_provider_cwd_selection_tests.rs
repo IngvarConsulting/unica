@@ -7,6 +7,34 @@ use crate::infrastructure::platform::testing::{
 use crate::test_support::canonical_path;
 
 #[test]
+fn working_directory_selection_falls_back_when_workspace_contains_the_preferred_runtime() {
+    let fixture = CwdFixture::new(true);
+    let preferred =
+        persistent_provider_working_directory(&fixture.context.workspace_root, &fixture.source)
+            .unwrap();
+    let fallback = persistent_provider_working_directory(&preferred, &fixture.source)
+        .expect("an available external directory keeps providers usable");
+    assert!(fallback.is_absolute() && fallback.is_dir());
+    for excluded in [&preferred, &fixture.source] {
+        assert!(!path_starts_with_host_root(
+            &fallback,
+            &canonical_path(excluded)
+        ));
+    }
+}
+
+#[test]
+fn working_directory_selection_stays_external_when_temp_and_executable_are_excluded() {
+    let temp = canonical_path(&env::temp_dir());
+    let executable = canonical_path(env::current_exe().unwrap().parent().unwrap());
+    let fallback = persistent_provider_working_directory(&temp, &executable)
+        .expect("opening a user profile must not exclude every available cwd");
+    assert!(fallback.is_absolute() && fallback.is_dir());
+    assert!(!path_starts_with_host_root(&fallback, &temp));
+    assert!(!path_starts_with_host_root(&fallback, &executable));
+}
+
+#[test]
 fn working_directory_selection_accepts_canonical_external_directories() {
     let fixture = CwdFixture::new(true);
     let child = fixture.external.join("child");
@@ -144,76 +172,63 @@ fn working_directory_selection_uses_physical_candidate_and_root_identity() {
 }
 
 #[test]
-fn persistent_commands_reject_selected_runtime_inside_workspace_or_source() {
+fn persistent_commands_reject_when_every_candidate_is_inside_workspace_or_source() {
     let fixture = CwdFixture::new(true);
-    let runtime =
-        persistent_provider_working_directory(&fixture.context.workspace_root, &fixture.source)
-            .expect("the normal fixture first obtains the actual production-selected runtime");
-    // This path is only calculated, never created or passed to a spawned process.
-    // On Windows the OS temp root also contains this TempDir, so using its cache
-    // would make the source=temp case fail at the cache guard before the cwd guard.
+    let physical_temp = canonical_path(&env::temp_dir());
+    let anchor = physical_temp.ancestors().last().unwrap().to_path_buf();
+    let executable = canonical_path(env::current_exe().unwrap().parent().unwrap());
+    // On Windows the executable may live on another drive. Exclude its own
+    // directory separately while leaving the calculated cache outside source.
+    let source = executable.as_path();
     let calculated_cache = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join(".session-temp")
         .join(format!("uncreated-cwd-selection-cache-{}", Uuid::new_v4()));
     assert!(!calculated_cache.exists());
-    assert!(
-        !path_starts_with_host_root(
-            &normalize_path_identity(&calculated_cache).unwrap(),
-            &runtime,
+    let context = WorkspaceContext {
+        cwd: fixture.context.cwd.clone(),
+        workspace_root: anchor,
+        cache_root: calculated_cache.clone(),
+        workspace_epoch: 1,
+    };
+    let cache = bsl_analyzer_cache_dir(&context, source)
+        .expect("the cache remains valid so it cannot mask a cwd refusal");
+    assert!(!path_starts_with_host_root(
+        &cache,
+        &normalize_path_identity(source).unwrap()
+    ));
+    let identity = WorkspaceServiceIdentity::new(&context, source).unwrap();
+    let commands = [
+        (
+            "RLM",
+            rlm_transport_command_for_build(
+                PathBuf::from("never-spawned-rlm"),
+                &context,
+                source,
+                &fixture.build,
+            ),
         ),
-        "calculated cache fixture must be outside the selected runtime"
-    );
-
-    for (workspace, source) in [
-        (runtime.as_path(), fixture.source.as_path()),
-        (fixture.context.workspace_root.as_path(), runtime.as_path()),
-    ] {
-        let context = WorkspaceContext {
-            cwd: fixture.context.cwd.clone(),
-            workspace_root: workspace.to_path_buf(),
-            cache_root: calculated_cache.clone(),
-            workspace_epoch: 1,
-        };
-        let cache = bsl_analyzer_cache_dir(&context, source)
-            .expect("the cache remains valid so it cannot mask a cwd refusal");
-        assert!(!path_starts_with_host_root(
-            &cache,
-            &normalize_path_identity(source).unwrap(),
-        ));
-        let identity = WorkspaceServiceIdentity::new(&context, source).unwrap();
-        let commands = [
-            (
-                "RLM",
-                rlm_transport_command_for_build(
-                    PathBuf::from("never-spawned-rlm"),
-                    &context,
-                    source,
-                    &fixture.build,
-                ),
+        (
+            "BSL",
+            bsl_analyzer_command(Path::new("never-spawned-bsl"), &context, source),
+        ),
+        (
+            "helper",
+            workspace_service_command(
+                Path::new("never-spawned-helper"),
+                &identity,
+                WorkspaceServiceConfig { idle_secs: 321 },
+                "selection-test-token",
+                &CoreIdentity::production(),
             ),
-            (
-                "BSL",
-                bsl_analyzer_command(Path::new("never-spawned-bsl"), &context, source),
-            ),
-            (
-                "helper",
-                workspace_service_command(
-                    Path::new("never-spawned-helper"),
-                    &identity,
-                    WorkspaceServiceConfig { idle_secs: 321 },
-                    "selection-test-token",
-                    &CoreIdentity::production(),
-                ),
-            ),
-        ];
-        for (provider, result) in commands {
-            let error = result.expect_err("a contained selected cwd must prevent Command delivery");
-            assert!(
-                error.contains("persistent provider working directory")
-                    && error.contains("outside the workspace and source tree"),
-                "{provider} must refuse at the cwd owner, not at an unrelated guard: {error}"
-            );
-        }
+        ),
+    ];
+    for (provider, result) in commands {
+        let error = result.expect_err("every contained candidate must prevent Command delivery");
+        assert!(
+            error.contains("persistent provider working directory")
+                && error.contains("outside the workspace and source tree"),
+            "{provider} must refuse at the cwd owner, not at an unrelated guard: {error}"
+        );
     }
     assert!(!calculated_cache.exists());
 }

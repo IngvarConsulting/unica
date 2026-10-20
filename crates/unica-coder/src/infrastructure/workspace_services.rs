@@ -3408,10 +3408,30 @@ fn persistent_provider_working_directory(
     workspace_root: &Path,
     source_root: &Path,
 ) -> Result<PathBuf, String> {
-    let candidate = short_private_runtime_dir()
-        .map_err(|error| format!("failed to prepare persistent provider directory: {error}"))?
-        .unwrap_or_else(env::temp_dir);
-    checked_persistent_provider_working_directory(&candidate, workspace_root, source_root)
+    let runtime = short_private_runtime_dir()
+        .map_err(|error| format!("failed to prepare persistent provider directory: {error}"))?;
+    let temp = env::temp_dir();
+    let executable_directory = env::current_exe()
+        .ok()
+        .and_then(|executable| executable.parent().map(Path::to_path_buf));
+    let temp_anchor = normalize_path_identity(&temp)
+        .ok()
+        .and_then(|physical| physical.ancestors().last().map(Path::to_path_buf));
+    let mut last_error = None;
+    for candidate in [runtime, Some(temp), executable_directory, temp_anchor]
+        .into_iter()
+        .flatten()
+    {
+        match checked_persistent_provider_working_directory(&candidate, workspace_root, source_root)
+        {
+            Ok(directory) => return Ok(directory),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        "persistent provider working directory must be outside the workspace and source tree"
+            .to_string()
+    }))
 }
 
 fn checked_persistent_provider_working_directory(
