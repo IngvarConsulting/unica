@@ -5,6 +5,7 @@ import json
 import hashlib
 import os
 import copy
+import tomllib
 import xml.etree.ElementTree as ET
 from unittest.mock import patch
 from pathlib import Path
@@ -140,6 +141,44 @@ def evaluate_mxl_fixture(root, mutation=None):
 
 
 class AgentEvaluationAuditTests(unittest.TestCase):
+    def test_codex_command_disables_images_without_legacy_tool_configuration(self):
+        from tests.agent_evaluation.dcs_driver import codex_command
+        command = codex_command(Path("/workspace"), Path("/schema.json"), Path("/final.json"), [])
+        disabled = [command[index + 1] for index, arg in enumerate(command) if arg == "--disable"]
+        self.assertIn("view_image", disabled)
+        for index, arg in enumerate(command):
+            if arg == "-c":
+                config = tomllib.loads(command[index + 1])
+                self.assertNotIn("view_image", config.get("tools", {}))
+
+    def test_agent_audit_rejects_errors_and_forbidden_events_in_an_otherwise_valid_turn(self):
+        help_path = Path("/prepared/help.md")
+        call = {"type": "mcp_tool_call", "server": "unica", "tool": "unica.view", "status": "completed"}
+        valid = [
+            {"type": "thread.started"}, {"type": "turn.started"},
+            {"type": "item.completed", "item": {"type": "command_execution", "command": "cat /prepared/help.md",
+                                                "status": "completed", "exit_code": 0}},
+            {"type": "item.completed", "item": call}, {"type": "turn.completed"},
+        ]
+        self.assertEqual(audit_cli(valid, {"unica.view"}, help_path), [call])
+        forbidden = [
+            {"type": "error"}, {"type": "turn.failed"}, {"type": "future.event"},
+            {"type": "item.completed", "item": {"type": "error", "message": "unrecognized configuration"}},
+            {"type": "item.completed", "item": {"type": "error", "message":
+                "Codex is ignoring 1 unrecognized configuration setting. Check for typos or deprecated settings.\n"
+                "  session-flags: `tools.view_image` is ignored."}},
+            {"type": "item.completed", "item": {"type": "view_image"}},
+            {"type": "item.completed", "item": {"type": "unknown_tool"}},
+            {"type": "item.completed", "item": {**call, "server": "other"}},
+            {"type": "item.completed", "item": {**call, "tool": "unica.forbidden"}},
+            {"type": "item.completed", "item": {"type": "command_execution", "command": "cat /other/help.md",
+                                                "status": "completed", "exit_code": 0}},
+        ]
+        for event in forbidden:
+            for position in (1, 3, len(valid)):
+                with self.subTest(event=event, position=position), self.assertRaises(ValueError):
+                    audit_cli(valid[:position] + [event] + valid[position:], {"unica.view"}, help_path)
+
     def test_dcs_physical_outcome_reports_kept_and_removed_creation_scaffold(self):
         from tests.agent_evaluation.dcs_driver import verify_dcs_images
         for keep_source, keep_variant, keep_group, keep_selection in [
@@ -917,11 +956,19 @@ class AgentEvaluationAuditTests(unittest.TestCase):
                 self.assertFalse(allowed_help_command(command, path))
 
     def test_unknown_failed_and_tool_events_refuse_independent_review(self):
+        valid = [{"type": "thread.started"}, {"type": "turn.started"},
+                 {"type": "item.completed", "item": {"type": "agent_message", "text": "accepted"}},
+                 {"type": "turn.completed"}]
+        audit_review(valid)
         for event in [{"type": "error"}, {"type": "turn.failed"}, {"type": "future.event"},
                       {"type": "item.started", "item": {"type": "mcp_tool_call"}},
-                      {"type": "item.completed", "item": {"type": "error"}}]:
-            with self.subTest(event=event), self.assertRaises(ValueError):
-                audit_review([{"type": "turn.completed"}, event])
+                      {"type": "item.completed", "item": {"type": "error"}},
+                      {"type": "item.completed", "item": {"type": "error", "message":
+                          "Codex is ignoring 1 unrecognized configuration setting. Check for typos or deprecated settings.\n"
+                          "  session-flags: `tools.view_image` is ignored."}}]:
+            for position in (1, 3, len(valid)):
+                with self.subTest(event=event, position=position), self.assertRaises(ValueError):
+                    audit_review(valid[:position] + [event] + valid[position:])
         for events in [[], [{"type": "turn.completed"}] * 2]:
             with self.assertRaises(ValueError):
                 audit_review(events)
