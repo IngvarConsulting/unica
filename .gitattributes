@@ -58,3 +58,6 @@ tests/fixtures/acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates/Platf
 
 # Keep the native-validated whole-template-removal fixture bytes on every host.
 tests/fixtures/acceptance/workspace-whole-template-removal/** -text -whitespace
+
+# Exact native BinaryData Type fragment.
+/tests/fixtures/platform_8_3_27/binary-data/native-type.xml -text
