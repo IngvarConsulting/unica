@@ -734,8 +734,8 @@ mod tests {
                     }
                 }
             }
-            if !stopped
-                && !(published && matches!(&self.fault, Some(PublicationFault::MissingTerminal)))
+            if !(stopped
+                || (published && matches!(&self.fault, Some(PublicationFault::MissingTerminal))))
             {
                 if published && matches!(&self.fault, Some(PublicationFault::MalformedTerminal)) {
                     stopped = on_line(3, b"not a JSON frame") == ProcessLineReply::Stop;

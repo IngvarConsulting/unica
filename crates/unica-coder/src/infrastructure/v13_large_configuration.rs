@@ -1111,16 +1111,14 @@ impl RootState {
                     *last_content = content;
                 }
             }
-            FrameRole::RegistrationName => {
-                if self.stack.len() >= 2 {
-                    let parent_index = self.stack.len() - 2;
-                    if let FrameRole::Registration { fallback_name, .. } =
-                        &mut self.stack[parent_index].role
-                    {
-                        let value = frame.first_text.unwrap_or_default();
-                        if fallback_name.is_none() && !value.trim().is_empty() {
-                            *fallback_name = Some(value.trim().to_string());
-                        }
+            FrameRole::RegistrationName if self.stack.len() >= 2 => {
+                let parent_index = self.stack.len() - 2;
+                if let FrameRole::Registration { fallback_name, .. } =
+                    &mut self.stack[parent_index].role
+                {
+                    let value = frame.first_text.unwrap_or_default();
+                    if fallback_name.is_none() && !value.trim().is_empty() {
+                        *fallback_name = Some(value.trim().to_string());
                     }
                 }
             }

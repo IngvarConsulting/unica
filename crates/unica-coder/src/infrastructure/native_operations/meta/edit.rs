@@ -2563,12 +2563,12 @@ fn new_template_descriptor_image(child_xml: &str) -> Result<Vec<u8>, MetaFailure
         // Only emitter-owned whitespace may be replaced. Authored leaf text
         // never takes this branch, and unexpected markup is not discarded.
         if node.children().any(|child| {
-            !child.is_element()
-                && !(child.is_text()
+            !(child.is_element()
+                || (child.is_text()
                     && child.text().is_some_and(|text| {
                         text.bytes()
                             .all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
-                    }))
+                    })))
         }) {
             return None;
         }
