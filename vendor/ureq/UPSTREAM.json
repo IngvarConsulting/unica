@@ -66,6 +66,7 @@
     "Cargo.toml",
     "Cargo.lock",
     "src/lib.rs",
+    "src/middleware.rs",
     "src/response.rs",
     "src/stream.rs"
   ],

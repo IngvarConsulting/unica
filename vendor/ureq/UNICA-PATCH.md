@@ -5,6 +5,8 @@ archive checksum, upstream commit and all original file hashes. Local modified
 and added files are listed separately. The upstream MIT and Apache notices,
 including the separate chunk decoder notices, are retained.
 
+`middleware.rs` removes redundant type parentheses reported by Clippy.
+
 `response.rs` preserves a fully received Content-Length response when preparing
 its connection for reuse fails. The consumed stream is dropped before pool
 insertion. Read, framing and deadline errors before completion keep their prior

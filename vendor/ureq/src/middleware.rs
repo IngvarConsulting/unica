@@ -133,7 +133,7 @@ pub trait Middleware: Send + Sync + 'static {
 
 /// Continuation of a [`Middleware`] chain.
 pub struct MiddlewareNext<'a> {
-    pub(crate) chain: &'a mut (dyn Iterator<Item = &'a dyn Middleware>),
+    pub(crate) chain: &'a mut dyn Iterator<Item = &'a dyn Middleware>,
     // Since request_fn consumes the Payload<'a>, we must have an FnOnce.
     //
     // It's possible to get rid of this Box if we make MiddlewareNext generic
