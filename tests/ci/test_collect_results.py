@@ -161,6 +161,40 @@ class CollectResultsTests(unittest.TestCase):
         signature = json.loads((line / "run.json").read_text(encoding="utf-8"))
         self.assertEqual((signature["ref"], signature["profile"]), ("release-v0.12", "all"))
 
+    def test_java_properties_escape_reserved_characters_and_utf16_code_units(self) -> None:
+        # Protocol fixtures, not Python unicode_escape: that decoder does not
+        # parse Java property keys and missed the whitespace-key collision.
+        cases = [
+            (" =:#!\\", "  leading", r"\ \=\:\#\!\\=\  leading" + "\n"),
+            ("tab\tform\fline\nreturn\r", "tab\tform\fline\nreturn\rslash\\",
+             r"tab\tform\fline\nreturn\r=tab\tform\fline\nreturn\rslash\\" + "\n"),
+            ("path", r"C:\temp\new\uface", r"path=C:\\temp\\new\\uface" + "\n"),
+            ("Ключ🙂", " Значение😀",
+             r"\u041a\u043b\u044e\u0447\ud83d\ude42=\ \u0417\u043d\u0430\u0447\u0435\u043d\u0438\u0435\ud83d\ude00" + "\n"),
+            ("controls", "\x00\x7f", r"controls=\u0000\u007f" + "\n"),
+            ("", "", "=\n"),
+        ]
+        for key, value, expected in cases:
+            with self.subTest(key=key, value=value):
+                actual = self.collect.properties_line(key, value)
+                self.assertEqual(actual, expected)
+                self.assertTrue(actual.isascii())
+
+    def test_scope_skip_environment_has_distinct_escaped_keys_for_both_runners(self) -> None:
+        output = self.root / "metadata"
+        output.mkdir()
+        self.collect.write_metadata(output, {**self.run, "routing_skips": [
+            {"runner": "macos-14", "inventory_count": 6296},
+            {"runner": "ubuntu-latest", "inventory_count": 6302},
+        ]}, "main", ["macos-14", "ubuntu-latest"], "")
+
+        lines = (output / "environment.properties").read_text(encoding="ascii").splitlines()
+        self.assertEqual([line.split("=", 1)[0] for line in lines if line.startswith("Rust")], [
+            r"Rust\ (macos-14)", r"Rust\ (ubuntu-latest)",
+        ])
+        self.assertIn(" 6296", next(line for line in lines if line.startswith(r"Rust\ (macos-14)=")))
+        self.assertIn(" 6302", next(line for line in lines if line.startswith(r"Rust\ (ubuntu-latest)=")))
+
     def test_no_result_artifacts_is_a_refusal(self) -> None:
         self.artifacts.mkdir(parents=True)
 
@@ -346,7 +380,7 @@ class CollectResultsTests(unittest.TestCase):
         self.assertEqual(skip["scope_skip"], self.scope_skip())
         self.assertEqual(skip["inventory_count"], 0)
         self.assertEqual(skip["inventory_sources"], [])
-        environment = (output / "main/environment.properties").read_text().encode("ascii").decode("unicode_escape")
+        environment = (output / "main/environment.properties").read_text(encoding="ascii")
         self.assertIn("docs-only", environment)
         self.assertIn("ubuntu-latest", environment)
 

@@ -3181,6 +3181,25 @@ fn stage_template_set(
     Ok(())
 }
 
+/// Include indentation and its newline only when the confirmed registration
+/// is the sole token on that line; compact XML and comments keep their bytes.
+fn template_removal_registration_span(
+    source: &str,
+    range: std::ops::Range<usize>,
+) -> std::ops::Range<usize> {
+    let line_start = source[..range.start].rfind('\n').map_or(0, |at| at + 1);
+    let only_indent = source[line_start..range.start]
+        .chars()
+        .all(|character| matches!(character, ' ' | '\t' | '\r'));
+    if only_indent && source[range.end..].starts_with("\r\n") {
+        line_start..range.end + 2
+    } else if only_indent && source[range.end..].starts_with('\n') {
+        line_start..range.end + 1
+    } else {
+        range
+    }
+}
+
 fn stage_template_remove(
     staged: &mut ApplyStagedState,
     authority: &MetadataApplyAuthority<'_>,
@@ -3193,43 +3212,93 @@ fn stage_template_remove(
     require_untouched_staged_state(staged, "template.remove", &at_path)?;
     let (owner_relative, owner_preimage, owner_source) =
         owner_descriptor_and_text(staged, authority, owner, op_index)?;
-    let (deregistered, removed) =
-        crate::infrastructure::native_operations::meta::remove::remove_metadata_child_text_with_flag(
-            &owner_source,
-            "Template",
-            name,
-        );
-    if !removed {
-        return Err(ApplyPlanError::new(
-            ApplyPlanErrorKind::NotFound,
-            format!("`{}` has no template `{name}`", owner.as_str()),
-        )
-        .at_path(at_path));
-    }
-    let reference = format!("{}.Template.{name}", owner.as_str());
-    let mut owner_text = deregistered;
-    for property in ["MainDataCompositionSchema", "DefaultTemplate"] {
-        let filled = format!("<{property}>{reference}</{property}>");
-        if owner_text.contains(&filled) {
-            owner_text = owner_text.replace(&filled, &format!("<{property}/>"));
-        }
-    }
-    let mut touched = Vec::new();
+    let owner_source = owner_source.trim_start_matches('\u{feff}').to_string();
     let templates_dir = owner_relative.with_extension("").join("Templates");
     let descriptor_relative = templates_dir.join(format!("{name}.xml"));
-    if let Some(preimage) = staged
+    let descriptor_preimage = staged
         .read(&descriptor_relative)
         .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
-    {
-        staged
-            .remove(&descriptor_relative, &preimage)
-            .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
-        touched.push(descriptor_relative);
-    }
+        .ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidSource,
+                "registered template descriptor is missing",
+            )
+            .at_path(at_path.clone())
+        })?;
     let payload_relative = templates_dir.join(name);
-    let files = staged
-        .enumerate_tree(&payload_relative)
+    let (files, payload_absent) = staged
+        .enumerate_tree_with_root_absence(&payload_relative)
         .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+    let inherited = if payload_absent && authority.source_kind() == SourceSetKind::Extension {
+        let configuration = staged
+            .read(Path::new("Configuration.xml"))
+            .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+            .ok_or_else(|| {
+                ApplyPlanError::new(
+                    ApplyPlanErrorKind::InvalidSource,
+                    "extension root descriptor is missing",
+                )
+                .at_path(at_path.clone())
+            })?;
+        crate::infrastructure::native_operations::meta::template_removal_has_inherited_owners(
+            &configuration,
+            &owner_preimage,
+            &descriptor_preimage,
+        )
+        .map_err(|message| {
+            ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path(at_path.clone())
+        })?
+    } else {
+        false
+    };
+    let identity =
+        crate::infrastructure::native_operations::meta::validate_template_removal_identity(
+            &owner_source,
+            &descriptor_preimage,
+            owner,
+            name,
+            inherited,
+        )
+        .map_err(|message| {
+            ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path(at_path.clone())
+        })?;
+    if !inherited && files.is_empty() {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidSource,
+            "template content is missing",
+        )
+        .at_path(at_path.clone()));
+    }
+    if let Some(kind) = identity.template_type.as_deref() {
+        if let Some(primary) =
+            crate::infrastructure::native_operations::meta::template_removal_primary_path(kind)
+        {
+            let bytes = staged
+                .read(&payload_relative.join(primary))
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+            match bytes {
+                Some(bytes) => crate::infrastructure::native_operations::meta::validate_template_removal_primary_image(kind, &bytes)
+                    .map_err(|message| ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path(at_path.clone()))?,
+                None if inherited => {},
+                None => return Err(ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, "template primary resource is missing")
+                    .at_path(at_path.clone())),
+            }
+        }
+    }
+    let reference = format!("{}.Template.{name}", owner.as_str());
+    let registration = template_removal_registration_span(&owner_source, identity.registration);
+    let mut owner_edits = identity.reference_edits;
+    owner_edits.push((registration, String::new()));
+    owner_edits.sort_by_key(|edit| std::cmp::Reverse(edit.0.start));
+    let mut owner_text = owner_source.clone();
+    for (range, replacement) in owner_edits {
+        owner_text.replace_range(range, &replacement);
+    }
+    let mut touched = Vec::new();
+    staged
+        .remove(&descriptor_relative, &descriptor_preimage)
+        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+    touched.push(descriptor_relative);
     for relative in files {
         if let Some(preimage) = staged
             .read(&relative)

@@ -316,16 +316,28 @@ def fill_from_site(site: str, line: str, run: dict, seen: set[str], out: Path, c
 
 
 def properties_line(key: str, value: str) -> str:
-    """Строка Java Properties: файл читается как ISO-8859-1, всё вне ASCII — `\\uXXXX`.
+    """Java Properties в ASCII: экранирование синтаксиса и UTF-16 `\\uXXXX`."""
 
-    Иначе кириллица в виджете окружения превращается в кракозябры — так и
-    вышло на первом отчёте.
-    """
+    def escape(text: str, *, is_key: bool = False) -> str:
+        controls = {"\\": "\\\\", "\t": "\\t", "\n": "\\n", "\r": "\\r", "\f": "\\f"}
+        escaped = []
+        for index, character in enumerate(text):
+            if character in controls:
+                escaped.append(controls[character])
+            elif (is_key and character in " =:#!") or (index == 0 and character == " "):
+                # Пробел завершает ключ; перед значением начальные пробелы
+                # отбрасываются до первого непробельного символа/escape.
+                escaped.append("\\" + character)
+            elif " " <= character <= "~":
+                escaped.append(character)
+            else:
+                # Properties читает ISO-8859-1, а Unicode escape — ровно
+                # четыре hex-цифры: non-BMP требует пары UTF-16 surrogates.
+                units = character.encode("utf-16-be", errors="surrogatepass").hex()
+                escaped.extend("\\u" + units[offset:offset + 4] for offset in range(0, len(units), 4))
+        return "".join(escaped)
 
-    def escape(text: str) -> str:
-        return "".join(c if ord(c) < 128 else f"\\u{ord(c):04x}" for c in text)
-
-    return f"{escape(key)}={escape(value)}\n"
+    return f"{escape(key, is_key=True)}={escape(value)}\n"
 
 
 def write_metadata(out: Path, run: dict, line: str, runners: list[str], site: str) -> None:
