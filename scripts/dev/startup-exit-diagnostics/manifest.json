@@ -1,7 +1,7 @@
 {
   "caseCommit": "06e2bbec0ee34281211a09b81083d5a04ed0c54f",
   "sourceSnapshotBase": "e2b2d02f3a90d336bb464507749073f00ca256e5",
-  "runnerSha256": "2213aecf84876ee35b54e328764765aff68d12eb946695756731fc0b76ff1956",
+  "runnerSha256": "c001b6ea50297509bf888a1ec6eead24da5538caaa566fc482cc49e7f5ed46f6",
   "sourcePins": {
     "crates/unica-coder/src/infrastructure/daemon/client_v5.rs": "6272b8bab207dfca123da685e1bfc8d7b7906440d5028e2f277c777af8b0dde9",
     "crates/unica-coder/src/infrastructure/daemon/client_v5/startup_observation.rs": "b3bba1d6163670a393eb814b7b6051eb6ebf049a9411cdd24190bf061b6fca63",

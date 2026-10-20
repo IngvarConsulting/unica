@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import time
+import tomllib
 import xml.etree.ElementTree as ET
 
 PREFIX = "infrastructure::daemon::client_v5::"
@@ -34,6 +35,16 @@ def write(path, value):
 def require(condition, message):
     if not condition:
         raise ValueError(message)
+
+
+def junit_path(case):
+    """Nextest 0.9.148 resolves its default store from the workspace root."""
+    config = tomllib.loads((case / ".config/nextest.toml").read_text(encoding="utf-8"))
+    require("store" not in config, "unreviewed nextest store override")
+    require(config["profile"]["default"]["junit"]["path"] == "junit.xml",
+            "unreviewed default JUnit path")
+    require("junit" not in config["profile"]["queue"], "unreviewed queue JUnit override")
+    return case / "target/nextest/queue/junit.xml"
 
 
 def execution_outcomes(cases):
@@ -136,6 +147,8 @@ def execute(args, receipt):
     binaries = json.loads((output / "binaries-metadata.stdout").read_text())["rust-binaries"]
     require(len(binaries) == 1 and Path(next(iter(binaries.values()))["binary-path"]).resolve() == binary, "nextest artifact differs from Cargo artifact")
     reuse = ["--cargo-metadata", str(output / "cargo-metadata.stdout"), "--binaries-metadata", str(output / "binaries-metadata.stdout"), "--profile", "queue", "--user-config-file", "none"]
+    junit = junit_path(case)
+    receipt["junitPath"] = str(junit)
     results = []
     try:
         for label, names in [("original", ORIGINAL), ("controls", CONTROLS)]:
@@ -149,15 +162,17 @@ def execute(args, receipt):
                 require(Path(suite["binary-path"]).resolve() == binary, "listed test binary differs")
                 selected.extend(name for name, entry in suite["testcases"].items() if not entry["ignored"] and entry["filter-match"]["status"] == "matches")
             require(sorted(selected) == sorted(names), "exact selection is missing, duplicated or includes another test")
+            require(not junit.exists() and not junit.is_symlink(), "stale JUnit before observation")
             result = run(["cargo", "nextest", "run", *reuse, "--retries", "0", "--test-threads", "1", "--success-output", "immediate", "--failure-output", "immediate", "-E", selector], case, output, label, env, 180 if label == "original" else 300, check=False)
             output_text = (output / (label + ".stdout")).read_text(encoding="utf-8", errors="replace") + (output / (label + ".stderr")).read_text(encoding="utf-8", errors="replace")
             result["nonFirstPassMarkers"] = re.findall(r"(?m)^\s*(?:TRY [0-9]+|FLAKY|(?:FAIL|SLOW)\s+\+\s+LEAK|(?:\S*LEAK\S*)|TIMEOUT|ABORT)\b.*$", output_text)
             observation = {"label": label, "selected": selected, **result}
             results.append(observation)
-            junit = target / "nextest/queue/junit.xml"
             if junit.exists():
+                require(junit.is_file() and not junit.is_symlink(), "unsafe JUnit report")
                 destination = output / (label + ".junit.xml")
                 shutil.copy2(junit, destination)
+                observation["junitSha256"] = sha(destination)
                 cases = [node for node in ET.parse(destination).iter("testcase") if node.find("skipped") is None]
                 require(sorted(node.attrib["name"] for node in cases) == sorted(names), "JUnit does not prove the selected executions")
                 observation["outcomes"] = execution_outcomes(cases)
