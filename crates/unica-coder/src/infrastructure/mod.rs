@@ -22,6 +22,7 @@ pub(crate) mod format_guard;
 pub mod internal_adapters;
 pub(crate) mod kb_1ci;
 // Hidden v0.13 routing remains unreachable from the package-selected v0.12 surface.
+pub(crate) mod execution_store;
 #[allow(dead_code)]
 pub(crate) mod logical_event_source;
 #[allow(dead_code)]

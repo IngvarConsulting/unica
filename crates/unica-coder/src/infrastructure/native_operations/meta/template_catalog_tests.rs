@@ -187,7 +187,7 @@ fn document_journal_template_registers_its_mandatory_document() {
         minimal_metadata_xml(MetadataKind::DocumentJournal, "Evidence", "2.20", &context).unwrap();
     assert!(
         xml.contains(
-            "<RegisteredDocuments>\n\t\t\t\t<xr:Item xsi:type=\"xr:MDObjectRef\">Document.CorpusDocument</xr:Item>\n\t\t\t</RegisteredDocuments>"
+            "<RegisteredDocuments>\r\n\t\t\t\t<xr:Item xsi:type=\"xr:MDObjectRef\">Document.CorpusDocument</xr:Item>\r\n\t\t\t</RegisteredDocuments>"
         ),
         "journal template must register the document: {xml}"
     );

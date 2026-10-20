@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "result": {"type": "string"},
+    "checks": {"type": "string"},
+    "inputContract": {"type": "string"},
+    "configurationSupport": {"type": "string"}
+  },
+  "required": ["result", "checks", "inputContract", "configurationSupport"]
+}

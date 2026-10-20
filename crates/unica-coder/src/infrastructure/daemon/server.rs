@@ -1298,6 +1298,19 @@ mod form_move_tests;
 #[cfg(test)]
 #[path = "metadata_can_tests.rs"]
 mod metadata_can_tests;
+#[cfg(test)]
+mod retained_directory_removal_tests;
+
+#[cfg(test)]
+mod html_template_tests;
+#[cfg(test)]
+mod new_xml_tests;
+
+#[cfg(test)]
+mod form_add_owner_bytes_tests;
+
+#[cfg(test)]
+mod legacy_inline_check_tests;
 
 #[cfg(test)]
 pub(crate) mod actor_capacity_tests {
@@ -15883,6 +15896,1258 @@ fn main() {
         crate::infrastructure::workspace_actor::tests::warm_actor_whose_named_root_was_replaced_is_rebuilt();
         crate::infrastructure::workspace_actor::tests::warm_actors_do_not_block_a_distinct_identity(
         );
+    }
+    const OWN_REMOVAL_AT: &str = "main:Report.OwnRemovalReport.Template.OwnDiagram";
+    const OWN_REMOVAL_OWNER_AT: &str = "main:Report.OwnRemovalReport";
+    const OWN_REMOVAL_OWNER: &str = "Reports/OwnRemovalReport.xml";
+    const OWN_REMOVAL_BASE: &str = "Reports/OwnRemovalReport/Templates/OwnDiagram";
+    const OWN_REMOVAL_BODY: &str = "Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template.xml";
+    const OWN_REMOVAL_DESCRIPTOR: &str = "Reports/OwnRemovalReport/Templates/OwnDiagram.xml";
+    const OWN_REMOVAL_RED: &str =
+        "Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template/Items/RedSquare/Picture.png";
+    const OWN_REMOVAL_FILES: &[&str] = &[
+        "v8project.yaml",
+        "src/Configuration.xml",
+        "src/Languages/English.xml",
+        "src/Reports/OwnRemovalReport.xml",
+        "src/Reports/OwnRemovalReport/Templates/OwnDiagram.xml",
+        "src/Reports/OwnRemovalReport/Templates/KeepDiagram.xml",
+        "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template.xml",
+        "src/Reports/OwnRemovalReport/Templates/KeepDiagram/Ext/Template.xml",
+        "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template/Items/RedSquare/Picture.png",
+        "src/Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template/Items/BlueSquare/Picture.png",
+    ];
+
+    fn own_removal_workspace() -> tempfile::TempDir {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/acceptance/workspace-whole-template-removal");
+        let workspace = tempfile::tempdir().unwrap();
+        for relative in OWN_REMOVAL_FILES {
+            let source = fixture.join(relative);
+            assert!(std::fs::symlink_metadata(&source)
+                .unwrap()
+                .file_type()
+                .is_file());
+            let target = workspace.path().join(relative);
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            std::fs::write(target, std::fs::read(source).unwrap()).unwrap();
+        }
+        workspace
+    }
+
+    // Includes empty directories and links without following them. This helper is
+    // only an oracle for write-free preview/refusal, never the public preview.
+    #[derive(Debug, PartialEq, Eq)]
+    enum OwnRemovalEntry {
+        Directory,
+        File(Vec<u8>),
+        Link(std::path::PathBuf),
+    }
+
+    fn own_removal_snapshot(
+        root: &std::path::Path,
+    ) -> std::collections::BTreeMap<std::path::PathBuf, OwnRemovalEntry> {
+        fn visit(
+            root: &std::path::Path,
+            current: &std::path::Path,
+            entries: &mut std::collections::BTreeMap<std::path::PathBuf, OwnRemovalEntry>,
+        ) {
+            let root_metadata = match std::fs::symlink_metadata(current) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+                Err(error) => panic!("snapshot root metadata: {error}"),
+            };
+            assert!(root_metadata.is_dir());
+            assert!(
+                !crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point(
+                    &root_metadata
+                )
+            );
+            for entry in std::fs::read_dir(current).unwrap() {
+                let path = entry.unwrap().path();
+                let metadata = std::fs::symlink_metadata(&path).unwrap();
+                let kind = metadata.file_type();
+                let relative = path.strip_prefix(root).unwrap().to_path_buf();
+                if crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point(
+                    &metadata,
+                ) {
+                    entries.insert(
+                        relative,
+                        OwnRemovalEntry::Link(std::fs::read_link(path).unwrap()),
+                    );
+                } else if kind.is_dir() {
+                    entries.insert(relative, OwnRemovalEntry::Directory);
+                    visit(root, &path, entries);
+                } else {
+                    assert!(
+                        kind.is_file(),
+                        "unhandled fixture entry: {}",
+                        path.display()
+                    );
+                    entries.insert(
+                        relative,
+                        OwnRemovalEntry::File(std::fs::read(path).unwrap()),
+                    );
+                }
+            }
+        }
+        let mut entries = std::collections::BTreeMap::new();
+        visit(root, root, &mut entries);
+        entries
+    }
+
+    fn own_removal_file_bytes(
+        entries: &std::collections::BTreeMap<std::path::PathBuf, OwnRemovalEntry>,
+    ) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
+        entries
+            .iter()
+            .filter_map(|(path, entry)| match entry {
+                OwnRemovalEntry::File(bytes) => Some((path.clone(), bytes.clone())),
+                OwnRemovalEntry::Directory | OwnRemovalEntry::Link(_) => None,
+            })
+            .collect()
+    }
+
+    fn own_removal_plan(top_at: &str) -> serde_json::Value {
+        serde_json::json!({
+            "at": top_at,
+            "ops": [{"op": "template.remove", "args": {"at": OWN_REMOVAL_AT}}],
+        })
+    }
+
+    fn own_removal_assert_refused(result: &DomainResult) {
+        assert!(!result.ok, "damaged/changed selection admitted: {result:?}");
+        assert!(
+            result.changed.is_empty(),
+            "refusal reports committed changes: {result:?}"
+        );
+        assert!(result
+            .data
+            .as_ref()
+            .and_then(|data| data.get("executionToken"))
+            .is_none());
+    }
+
+    #[test]
+    fn canonical_whole_graphical_template_removal_preserves_the_exact_neighbor_and_replays() {
+        // Both are existing canonical address forms. This also detects an owner-top
+        // request whose operation target would receive weaker guards.
+        for top_at in [OWN_REMOVAL_AT, OWN_REMOVAL_OWNER_AT] {
+            let workspace = own_removal_workspace();
+            let source = workspace.path().join("src");
+            let before = own_removal_snapshot(&source);
+            let mut expected = own_removal_file_bytes(&before);
+            let original_owner =
+                String::from_utf8(expected[std::path::Path::new(OWN_REMOVAL_OWNER)].clone())
+                    .unwrap();
+            let selected_line = "      <Template>OwnDiagram</Template>\n";
+            assert_eq!(original_owner.matches(selected_line).count(), 1);
+            let expected_owner = original_owner.replace(selected_line, "").into_bytes();
+            expected.insert(OWN_REMOVAL_OWNER.into(), expected_owner);
+            for relative in [
+                OWN_REMOVAL_DESCRIPTOR,
+                OWN_REMOVAL_BODY,
+                OWN_REMOVAL_RED,
+                "Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template/Items/BlueSquare/Picture.png",
+            ] {
+                assert!(expected.remove(std::path::Path::new(relative)).is_some());
+            }
+            let runtime = bootstrap_runtime();
+            let preview = submit_canonical(
+                &runtime,
+                workspace.path(),
+                ToolIdentity::Apply,
+                own_removal_plan(top_at),
+            );
+            assert!(preview.ok, "{top_at}: {preview:?}");
+            assert_eq!(preview.data.as_ref().unwrap()["mode"], "preview");
+            assert!(preview
+                .changed
+                .iter()
+                .any(|change| change["at"] == OWN_REMOVAL_AT));
+            assert_eq!(
+                own_removal_snapshot(&source),
+                before,
+                "preview changed source entries"
+            );
+            let token = preview.data.as_ref().unwrap()["executionToken"].clone();
+            assert!(!token.as_str().unwrap().is_empty());
+            let applied = submit_canonical(
+                &runtime,
+                workspace.path(),
+                ToolIdentity::Apply,
+                serde_json::json!({"executionToken": token}),
+            );
+            assert!(applied.ok, "{top_at}: {applied:?}");
+            assert_eq!(applied.data.as_ref().unwrap()["mode"], "published");
+            let post = own_removal_snapshot(&source);
+            assert_eq!(own_removal_file_bytes(&post), expected);
+            for (path, entry) in &post {
+                assert!(before.contains_key(path), "new postimage entry: {path:?}");
+                match entry {
+                    OwnRemovalEntry::Directory => assert_eq!(before.get(path), Some(entry)),
+                    OwnRemovalEntry::Link(_) => panic!("new link/reparse point: {path:?}"),
+                    OwnRemovalEntry::File(_) => {}
+                }
+                if !path.starts_with(OWN_REMOVAL_BASE)
+                    && path != std::path::Path::new(OWN_REMOVAL_OWNER)
+                {
+                    assert_eq!(before.get(path), Some(entry));
+                }
+            }
+            for (path, entry) in &before {
+                if !path.starts_with(OWN_REMOVAL_BASE)
+                    && path != std::path::Path::new(OWN_REMOVAL_DESCRIPTOR)
+                    && path != std::path::Path::new(OWN_REMOVAL_OWNER)
+                {
+                    assert_eq!(
+                        post.get(path),
+                        Some(entry),
+                        "lost unrelated entry: {path:?}"
+                    );
+                }
+            }
+            let replay = submit_canonical(
+                &runtime,
+                workspace.path(),
+                ToolIdentity::Apply,
+                serde_json::json!({"executionToken": token}),
+            );
+            assert_eq!(
+                serde_json::to_value(&replay).unwrap(),
+                serde_json::to_value(&applied).unwrap()
+            );
+            assert_eq!(own_removal_snapshot(&source), post);
+        }
+    }
+
+    fn own_removal_assert_damaged_selection_refused(top_at: &str, case: &str) {
+        let workspace = own_removal_workspace();
+        let source = workspace.path().join("src");
+        match case {
+            "missing-wrapper" => std::fs::remove_file(source.join(OWN_REMOVAL_DESCRIPTOR)).unwrap(),
+            "malformed-wrapper" => {
+                std::fs::write(source.join(OWN_REMOVAL_DESCRIPTOR), "<MetaDataObject").unwrap()
+            }
+            "wrong-name" => {
+                let path = source.join(OWN_REMOVAL_DESCRIPTOR);
+                let text = std::fs::read_to_string(&path).unwrap();
+                std::fs::write(
+                    path,
+                    text.replace("<Name>OwnDiagram</Name>", "<Name>OtherDiagram</Name>"),
+                )
+                .unwrap();
+            }
+            "duplicate-registration" => {
+                let path = source.join(OWN_REMOVAL_OWNER);
+                let text = std::fs::read_to_string(&path).unwrap();
+                std::fs::write(
+                    path,
+                    text.replace(
+                        "<Template>OwnDiagram</Template>",
+                        "<Template>OwnDiagram</Template><Template>OwnDiagram</Template>",
+                    ),
+                )
+                .unwrap();
+            }
+            "missing-primary" => {
+                std::fs::remove_file(source.join(OWN_REMOVAL_BODY)).unwrap();
+            }
+            "wrong-wrapper-kind" => {
+                let path = source.join(OWN_REMOVAL_DESCRIPTOR);
+                let text = std::fs::read_to_string(&path).unwrap();
+                assert_eq!(text.matches("<Template uuid=").count(), 1);
+                std::fs::write(
+                    path,
+                    text.replace("<Template uuid=", "<Form uuid=")
+                        .replace("</Template>", "</Form>"),
+                )
+                .unwrap();
+            }
+            "wrong-wrapper-namespace" => {
+                let path = source.join(OWN_REMOVAL_DESCRIPTOR);
+                let text = std::fs::read_to_string(&path).unwrap();
+                let namespace = "xmlns=\"http://v8.1c.ru/8.3/MDClasses\"";
+                assert_eq!(text.matches(namespace).count(), 1);
+                std::fs::write(
+                    path,
+                    text.replace(namespace, "xmlns=\"urn:foreign-template-wrapper\""),
+                )
+                .unwrap();
+            }
+            "invalid-wrapper-uuid" => {
+                let path = source.join(OWN_REMOVAL_DESCRIPTOR);
+                let text = std::fs::read_to_string(&path).unwrap();
+                assert_eq!(text.matches("uuid=\"").count(), 1);
+                std::fs::write(path, text.replacen("uuid=\"", "uuid=\"invalid-", 1)).unwrap();
+            }
+            "malformed-body" => {
+                std::fs::write(source.join(OWN_REMOVAL_BODY), "<GraphicalSchema").unwrap()
+            }
+            "old-body-version" => {
+                let path = source.join(OWN_REMOVAL_BODY);
+                let text = std::fs::read_to_string(&path).unwrap();
+                std::fs::write(path, text.replace("version=\"2.20\"", "version=\"2.19\"")).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let before = own_removal_snapshot(&source);
+        let runtime = bootstrap_runtime();
+        let result = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Apply,
+            own_removal_plan(top_at),
+        );
+        own_removal_assert_refused(&result);
+        assert!(
+            ["invalid_source", "not_found", "bad_value"].iter().any(|code| result.diagnostics[0]["code"] == *code),
+            "{top_at}: {case}: unrelated/transient refusal does not prove source validation: {result:?}"
+        );
+        if case == "old-body-version" {
+            assert_eq!(
+                result.diagnostics[0]["code"], "invalid_source",
+                "{top_at}: {result:?}"
+            );
+            assert_eq!(
+                result.diagnostics[0]["outcome"], "fixSource",
+                "{top_at}: {result:?}"
+            );
+        }
+        assert_eq!(own_removal_snapshot(&source), before, "{top_at}: {case}");
+    }
+
+    macro_rules! own_removal_refusal_case {
+        ($name:ident, $top_at:expr, $case:literal) => {
+            #[test]
+            fn $name() {
+                own_removal_assert_damaged_selection_refused($top_at, $case);
+            }
+        };
+    }
+
+    own_removal_refusal_case!(
+        canonical_whole_graphical_template_removal_refuses_missing_wrapper_at_template,
+        OWN_REMOVAL_AT,
+        "missing-wrapper"
+    );
+    own_removal_refusal_case!(
+        canonical_whole_graphical_template_removal_refuses_missing_wrapper_at_owner,
+        OWN_REMOVAL_OWNER_AT,
+        "missing-wrapper"
+    );
+    own_removal_refusal_case!(
+        canonical_whole_graphical_template_removal_refuses_malformed_wrapper_at_template,
+        OWN_REMOVAL_AT,
+        "malformed-wrapper"
+    );
+    own_removal_refusal_case!(
+        canonical_whole_graphical_template_removal_refuses_malformed_wrapper_at_owner,
+        OWN_REMOVAL_OWNER_AT,
+        "malformed-wrapper"
+    );
+    own_removal_refusal_case!(
+        canonical_whole_graphical_template_removal_refuses_wrong_name_at_template,
+        OWN_REMOVAL_AT,
+        "wrong-name"
+    );
+    own_removal_refusal_case!(
+        canonical_whole_graphical_template_removal_refuses_wrong_name_at_owner,
+        OWN_REMOVAL_OWNER_AT,
+        "wrong-name"
+    );
+    own_removal_refusal_case!(
+        canonical_whole_graphical_template_removal_refuses_duplicate_registration_at_template,
+        OWN_REMOVAL_AT,
+        "duplicate-registration"
+    );
+    own_removal_refusal_case!(
+        canonical_whole_graphical_template_removal_refuses_duplicate_registration_at_owner,
+        OWN_REMOVAL_OWNER_AT,
+        "duplicate-registration"
+    );
+    own_removal_refusal_case!(
+        canonical_whole_graphical_template_removal_refuses_malformed_body_at_template,
+        OWN_REMOVAL_AT,
+        "malformed-body"
+    );
+    own_removal_refusal_case!(
+        canonical_whole_graphical_template_removal_refuses_malformed_body_at_owner,
+        OWN_REMOVAL_OWNER_AT,
+        "malformed-body"
+    );
+    own_removal_refusal_case!(
+        canonical_whole_graphical_template_removal_refuses_old_body_version_at_template,
+        OWN_REMOVAL_AT,
+        "old-body-version"
+    );
+    own_removal_refusal_case!(
+        canonical_whole_graphical_template_removal_refuses_old_body_version_at_owner,
+        OWN_REMOVAL_OWNER_AT,
+        "old-body-version"
+    );
+
+    own_removal_refusal_case!(
+        canonical_whole_graphical_template_removal_refuses_missing_primary_at_template,
+        OWN_REMOVAL_AT,
+        "missing-primary"
+    );
+
+    own_removal_refusal_case!(
+        canonical_whole_graphical_template_removal_refuses_missing_primary_at_owner,
+        OWN_REMOVAL_OWNER_AT,
+        "missing-primary"
+    );
+
+    own_removal_refusal_case!(
+        canonical_whole_graphical_template_removal_refuses_wrong_wrapper_kind_at_template,
+        OWN_REMOVAL_AT,
+        "wrong-wrapper-kind"
+    );
+
+    own_removal_refusal_case!(
+        canonical_whole_graphical_template_removal_refuses_wrong_wrapper_kind_at_owner,
+        OWN_REMOVAL_OWNER_AT,
+        "wrong-wrapper-kind"
+    );
+
+    own_removal_refusal_case!(
+        canonical_whole_graphical_template_removal_refuses_wrong_wrapper_namespace_at_template,
+        OWN_REMOVAL_AT,
+        "wrong-wrapper-namespace"
+    );
+
+    own_removal_refusal_case!(
+        canonical_whole_graphical_template_removal_refuses_wrong_wrapper_namespace_at_owner,
+        OWN_REMOVAL_OWNER_AT,
+        "wrong-wrapper-namespace"
+    );
+
+    own_removal_refusal_case!(
+        canonical_whole_graphical_template_removal_refuses_invalid_wrapper_uuid_at_template,
+        OWN_REMOVAL_AT,
+        "invalid-wrapper-uuid"
+    );
+
+    own_removal_refusal_case!(
+        canonical_whole_graphical_template_removal_refuses_invalid_wrapper_uuid_at_owner,
+        OWN_REMOVAL_OWNER_AT,
+        "invalid-wrapper-uuid"
+    );
+
+    #[test]
+    fn canonical_whole_graphical_template_removal_refuses_changed_payload_membership_and_owner() {
+        for case in [
+            "picture-bytes",
+            "new-payload-file",
+            "new-empty-directory",
+            "owner-registration",
+        ] {
+            let workspace = own_removal_workspace();
+            let source = workspace.path().join("src");
+            let runtime = bootstrap_runtime();
+            let preview = submit_canonical(
+                &runtime,
+                workspace.path(),
+                ToolIdentity::Apply,
+                own_removal_plan(OWN_REMOVAL_AT),
+            );
+            assert!(preview.ok, "{preview:?}");
+            let token = preview.data.as_ref().unwrap()["executionToken"].clone();
+            match case {
+                "picture-bytes" => {
+                    let path = source.join(OWN_REMOVAL_RED);
+                    // Hold the original object alive so an identity comparison cannot
+                    // pass through inode reuse after a replacement.
+                    let held = std::fs::File::open(&path).unwrap();
+                    let identity_before =
+                        crate::infrastructure::platform::filesystem::file_identity(&held).unwrap();
+                    let original = std::fs::read(&path).unwrap();
+                    let mut bytes = original.clone();
+                    // External concurrent bytes: same length, same inode, different content.
+                    let last = bytes.len() - 1;
+                    bytes[last] ^= 1;
+                    std::fs::write(&path, &bytes).unwrap();
+                    let named_after = std::fs::File::open(&path).unwrap();
+                    let identity_after =
+                        crate::infrastructure::platform::filesystem::file_identity(&named_after)
+                            .unwrap();
+                    assert_eq!(identity_before, identity_after);
+                    assert_eq!(bytes.len(), original.len());
+                    assert_ne!(bytes, original);
+                    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+                }
+                "new-payload-file" => std::fs::write(
+                    source.join(OWN_REMOVAL_BASE).join("Ext/foreign.txt"),
+                    "concurrent own sentinel",
+                )
+                .unwrap(),
+                "new-empty-directory" => {
+                    std::fs::create_dir(source.join(OWN_REMOVAL_BASE).join("Ext/foreign-empty"))
+                        .unwrap()
+                }
+                "owner-registration" => {
+                    let path = source.join(OWN_REMOVAL_OWNER);
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    std::fs::write(
+                        path,
+                        text.replace(
+                            "<Template>OwnDiagram</Template>",
+                            "<Template>OtherDiagram</Template>",
+                        ),
+                    )
+                    .unwrap();
+                }
+                _ => unreachable!(),
+            }
+            // Refusal must preserve the concurrent image, not restore pre-preview bytes.
+            let concurrent = own_removal_snapshot(&source);
+            let result = submit_canonical(
+                &runtime,
+                workspace.path(),
+                ToolIdentity::Apply,
+                serde_json::json!({"executionToken": token}),
+            );
+            own_removal_assert_refused(&result);
+            assert_eq!(
+                result.diagnostics[0]["code"], "stale_revision",
+                "{case}: {result:?}"
+            );
+            assert_eq!(
+                own_removal_snapshot(&source),
+                concurrent,
+                "{case}: overwrote foreign change"
+            );
+        }
+    }
+    fn template_removal_assert_active_document_payload_absence_refused(
+        top_at: &str,
+        keep_empty_root: bool,
+    ) {
+        let workspace = own_removal_workspace();
+        let source = workspace.path().join("src");
+        let descriptor = source.join(OWN_REMOVAL_DESCRIPTOR);
+        let image = std::fs::read_to_string(&descriptor).unwrap();
+        let original_kind = "<TemplateType>GraphicalSchema</TemplateType>";
+        assert_eq!(image.matches(original_kind).count(), 1);
+        // An explicitly damaged input variation. This does not claim a valid
+        // ActiveDocument body, a primary filename, or native acceptance.
+        std::fs::write(
+            descriptor,
+            image.replacen(
+                original_kind,
+                "<TemplateType>ActiveDocument</TemplateType>",
+                1,
+            ),
+        )
+        .unwrap();
+        let payload = source.join(OWN_REMOVAL_BASE);
+        std::fs::remove_dir_all(&payload).unwrap();
+        if keep_empty_root {
+            std::fs::create_dir(&payload).unwrap();
+            assert_eq!(std::fs::read_dir(&payload).unwrap().count(), 0);
+        } else {
+            assert_eq!(
+                std::fs::symlink_metadata(&payload).unwrap_err().kind(),
+                std::io::ErrorKind::NotFound
+            );
+        }
+        let before = own_removal_snapshot(&source);
+        let runtime = bootstrap_runtime();
+        let result = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Apply,
+            own_removal_plan(top_at),
+        );
+        own_removal_assert_refused(&result);
+        assert_eq!(
+            result.diagnostics[0]["code"], "invalid_source",
+            "{top_at}: empty root={keep_empty_root}: {result:?}"
+        );
+        assert_eq!(
+            result.diagnostics[0]["outcome"], "fixSource",
+            "{top_at}: empty root={keep_empty_root}: {result:?}"
+        );
+        assert_eq!(
+            own_removal_snapshot(&source),
+            before,
+            "{top_at}: empty root={keep_empty_root}"
+        );
+    }
+
+    macro_rules! active_document_payload_absence_case {
+        ($name:ident, $top_at:expr, $keep_empty_root:expr) => {
+            #[test]
+            fn $name() {
+                template_removal_assert_active_document_payload_absence_refused(
+                    $top_at,
+                    $keep_empty_root,
+                );
+            }
+        };
+    }
+
+    active_document_payload_absence_case!(
+        canonical_template_removal_active_document_absent_payload_root_at_template,
+        OWN_REMOVAL_AT,
+        false
+    );
+    active_document_payload_absence_case!(
+        canonical_template_removal_active_document_absent_payload_root_at_owner,
+        OWN_REMOVAL_OWNER_AT,
+        false
+    );
+    active_document_payload_absence_case!(
+        canonical_template_removal_active_document_empty_payload_root_at_template,
+        OWN_REMOVAL_AT,
+        true
+    );
+    active_document_payload_absence_case!(
+        canonical_template_removal_active_document_empty_payload_root_at_owner,
+        OWN_REMOVAL_OWNER_AT,
+        true
+    );
+
+    const BORROWED_REMOVAL_AT: &str = "ext:DataProcessor.Обработка.Template.Макет";
+    const BORROWED_REMOVAL_OWNER_AT: &str = "ext:DataProcessor.Обработка";
+    const BORROWED_REMOVAL_OWNER: &str = "ext/DataProcessors/Обработка.xml";
+    const BORROWED_REMOVAL_DESCRIPTOR: &str = "ext/DataProcessors/Обработка/Templates/Макет.xml";
+    const BORROWED_REMOVAL_PAYLOAD: &str = "ext/DataProcessors/Обработка/Templates/Макет";
+
+    fn borrowed_removal_workspace_without_local_type() -> tempfile::TempDir {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/acceptance/workspace-borrowed");
+        let fixture_entries = own_removal_snapshot(&fixture);
+        let workspace = tempfile::tempdir().unwrap();
+        // Copy the complete two-source fixture, including empty directories,
+        // without following links or silently omitting registered neighbors.
+        for (relative, entry) in &fixture_entries {
+            let destination = workspace.path().join(relative);
+            match entry {
+                OwnRemovalEntry::Directory => std::fs::create_dir_all(destination).unwrap(),
+                OwnRemovalEntry::File(bytes) => {
+                    std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+                    std::fs::write(destination, bytes).unwrap();
+                }
+                OwnRemovalEntry::Link(_) => {
+                    panic!("borrowed fixture must be a closed regular tree")
+                }
+            }
+        }
+        assert_eq!(own_removal_snapshot(workspace.path()), fixture_entries);
+        let descriptor = workspace
+            .path()
+            .join("src")
+            .join(BORROWED_REMOVAL_DESCRIPTOR);
+        let original = std::fs::read_to_string(&descriptor).unwrap();
+        let type_line = "\t\t\t<TemplateType>SpreadsheetDocument</TemplateType>\r\n";
+        assert_eq!(original.matches(type_line).count(), 1);
+        // Deliberate input variation under borrowed-object-inherited-content.md.
+        // The stored native export has an explicit default TemplateType. The
+        // platform accepts an omitted input property and adds its default on
+        // export; this edited copy is not claimed to be another native export.
+        std::fs::write(descriptor, original.replacen(type_line, "", 1)).unwrap();
+        let source = workspace.path().join("src");
+        assert!(!own_removal_snapshot(&source)
+            .contains_key(std::path::Path::new(BORROWED_REMOVAL_PAYLOAD)));
+        workspace
+    }
+
+    fn borrowed_removal_plan(top_at: &str) -> serde_json::Value {
+        serde_json::json!({
+            "at": top_at,
+            "ops": [{"op": "template.remove", "args": {"at": BORROWED_REMOVAL_AT}}],
+        })
+    }
+
+    fn borrowed_removal_assert_source_refused(result: &DomainResult) {
+        own_removal_assert_refused(result);
+        assert_eq!(result.diagnostics[0]["code"], "invalid_source");
+        assert_eq!(result.diagnostics[0]["outcome"], "fixSource");
+    }
+
+    #[test]
+    fn canonical_borrowed_template_without_type_removes_only_local_registration_and_descriptor() {
+        for top_at in [BORROWED_REMOVAL_AT, BORROWED_REMOVAL_OWNER_AT] {
+            let workspace = borrowed_removal_workspace_without_local_type();
+            let source = workspace.path().join("src");
+            let before = own_removal_snapshot(&source);
+            let mut expected = own_removal_snapshot(&source);
+            let before_files = own_removal_file_bytes(&before);
+            let owner_before = String::from_utf8(
+                before_files[std::path::Path::new(BORROWED_REMOVAL_OWNER)].clone(),
+            )
+            .unwrap();
+            let selected_line = "\t\t\t<Template>Макет</Template>\r\n";
+            assert_eq!(owner_before.matches(selected_line).count(), 1);
+            assert!(owner_before.starts_with('\u{feff}'));
+            let expected_owner = owner_before.replacen(selected_line, "", 1).into_bytes();
+            expected.insert(
+                BORROWED_REMOVAL_OWNER.into(),
+                OwnRemovalEntry::File(expected_owner),
+            );
+            assert!(matches!(
+                expected.remove(std::path::Path::new(BORROWED_REMOVAL_DESCRIPTOR)),
+                Some(OwnRemovalEntry::File(_))
+            ));
+            let runtime = bootstrap_runtime();
+            let preview = submit_canonical(
+                &runtime,
+                workspace.path(),
+                ToolIdentity::Apply,
+                borrowed_removal_plan(top_at),
+            );
+            assert!(preview.ok, "borrowed descriptor-only preview succeeds");
+            assert_eq!(preview.data.as_ref().unwrap()["mode"], "preview");
+            assert_eq!(own_removal_snapshot(&source), before);
+            let token = preview.data.as_ref().unwrap()["executionToken"].clone();
+            assert!(!token.as_str().unwrap().is_empty());
+            let applied = submit_canonical(
+                &runtime,
+                workspace.path(),
+                ToolIdentity::Apply,
+                serde_json::json!({"executionToken": token.clone()}),
+            );
+            assert!(applied.ok, "borrowed descriptor-only publication succeeds");
+            assert_eq!(applied.data.as_ref().unwrap()["mode"], "published");
+            let after = own_removal_snapshot(&source);
+            // Full entry equality keeps all parent sources, neighbor bytes and
+            // directory membership; no local payload directory may be created.
+            assert_eq!(after, expected);
+            let replay = submit_canonical(
+                &runtime,
+                workspace.path(),
+                ToolIdentity::Apply,
+                serde_json::json!({"executionToken": token}),
+            );
+            assert_eq!(
+                serde_json::to_value(&replay).unwrap(),
+                serde_json::to_value(&applied).unwrap()
+            );
+            assert_eq!(own_removal_snapshot(&source), after);
+        }
+    }
+
+    #[test]
+    fn canonical_borrowed_template_empty_payload_root_is_not_inherited_absence() {
+        for top_at in [BORROWED_REMOVAL_AT, BORROWED_REMOVAL_OWNER_AT] {
+            let workspace = borrowed_removal_workspace_without_local_type();
+            let source = workspace.path().join("src");
+            std::fs::create_dir(source.join(BORROWED_REMOVAL_PAYLOAD)).unwrap();
+            let before = own_removal_snapshot(&source);
+            let runtime = bootstrap_runtime();
+            let refused = submit_canonical(
+                &runtime,
+                workspace.path(),
+                ToolIdentity::Apply,
+                borrowed_removal_plan(top_at),
+            );
+            borrowed_removal_assert_source_refused(&refused);
+            assert_eq!(own_removal_snapshot(&source), before);
+        }
+    }
+
+    #[test]
+    fn canonical_borrowed_template_saved_absence_refuses_new_empty_payload_root() {
+        for top_at in [BORROWED_REMOVAL_AT, BORROWED_REMOVAL_OWNER_AT] {
+            let workspace = borrowed_removal_workspace_without_local_type();
+            let source = workspace.path().join("src");
+            let before = own_removal_snapshot(&source);
+            let runtime = bootstrap_runtime();
+            let preview = submit_canonical(
+                &runtime,
+                workspace.path(),
+                ToolIdentity::Apply,
+                borrowed_removal_plan(top_at),
+            );
+            assert!(preview.ok, "absent inherited payload admits a saved plan");
+            assert_eq!(preview.data.as_ref().unwrap()["mode"], "preview");
+            assert_eq!(own_removal_snapshot(&source), before);
+            let token = preview.data.as_ref().unwrap()["executionToken"].clone();
+            std::fs::create_dir(source.join(BORROWED_REMOVAL_PAYLOAD)).unwrap();
+            let concurrent = own_removal_snapshot(&source);
+            let refused = submit_canonical(
+                &runtime,
+                workspace.path(),
+                ToolIdentity::Apply,
+                serde_json::json!({"executionToken": token}),
+            );
+            own_removal_assert_refused(&refused);
+            assert_eq!(refused.diagnostics[0]["code"], "stale_revision");
+            assert_eq!(refused.diagnostics[0]["outcome"], "fixCall");
+            assert_eq!(own_removal_snapshot(&source), concurrent);
+        }
+    }
+
+    fn borrowed_removal_corrupt_marker(
+        relative: &str,
+        property: &str,
+        value: &str,
+        duplicate: bool,
+        top_at: &str,
+    ) {
+        let workspace = borrowed_removal_workspace_without_local_type();
+        let source = workspace.path().join("src");
+        let path = source.join(relative);
+        let original = std::fs::read_to_string(&path).unwrap();
+        let marker = format!("<{property}>{value}</{property}>");
+        assert_eq!(original.matches(marker.as_str()).count(), 1);
+        let replacement = if duplicate {
+            format!("{marker}{marker}")
+        } else {
+            format!("<foreign:{property} xmlns:foreign=\"urn:unica-borrowed-removal-test\">{value}</foreign:{property}>")
+        };
+        std::fs::write(
+            path,
+            original.replacen(marker.as_str(), replacement.as_str(), 1),
+        )
+        .unwrap();
+        let before = own_removal_snapshot(&source);
+        let runtime = bootstrap_runtime();
+        let refused = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Apply,
+            borrowed_removal_plan(top_at),
+        );
+        borrowed_removal_assert_source_refused(&refused);
+        assert_eq!(own_removal_snapshot(&source), before);
+    }
+
+    macro_rules! borrowed_removal_marker_case {
+        ($test:ident, $relative:expr, $property:literal, $value:literal, $duplicate:literal, $top_at:expr) => {
+            #[test]
+            fn $test() {
+                borrowed_removal_corrupt_marker($relative, $property, $value, $duplicate, $top_at);
+            }
+        };
+    }
+
+    borrowed_removal_marker_case!(
+        canonical_borrowed_template_foreign_owner_parent_at_template,
+        BORROWED_REMOVAL_OWNER,
+        "ExtendedConfigurationObject",
+        "1f0e0000-0000-4000-8000-000000000103",
+        false,
+        BORROWED_REMOVAL_AT
+    );
+    borrowed_removal_marker_case!(
+        canonical_borrowed_template_foreign_owner_parent_at_owner,
+        BORROWED_REMOVAL_OWNER,
+        "ExtendedConfigurationObject",
+        "1f0e0000-0000-4000-8000-000000000103",
+        false,
+        BORROWED_REMOVAL_OWNER_AT
+    );
+    borrowed_removal_marker_case!(
+        canonical_borrowed_template_duplicate_owner_parent_at_template,
+        BORROWED_REMOVAL_OWNER,
+        "ExtendedConfigurationObject",
+        "1f0e0000-0000-4000-8000-000000000103",
+        true,
+        BORROWED_REMOVAL_AT
+    );
+    borrowed_removal_marker_case!(
+        canonical_borrowed_template_duplicate_owner_parent_at_owner,
+        BORROWED_REMOVAL_OWNER,
+        "ExtendedConfigurationObject",
+        "1f0e0000-0000-4000-8000-000000000103",
+        true,
+        BORROWED_REMOVAL_OWNER_AT
+    );
+    borrowed_removal_marker_case!(
+        canonical_borrowed_template_foreign_child_parent_at_template,
+        BORROWED_REMOVAL_DESCRIPTOR,
+        "ExtendedConfigurationObject",
+        "1f0e0000-0000-4000-8000-000000000105",
+        false,
+        BORROWED_REMOVAL_AT
+    );
+    borrowed_removal_marker_case!(
+        canonical_borrowed_template_foreign_child_parent_at_owner,
+        BORROWED_REMOVAL_DESCRIPTOR,
+        "ExtendedConfigurationObject",
+        "1f0e0000-0000-4000-8000-000000000105",
+        false,
+        BORROWED_REMOVAL_OWNER_AT
+    );
+    borrowed_removal_marker_case!(
+        canonical_borrowed_template_duplicate_child_parent_at_template,
+        BORROWED_REMOVAL_DESCRIPTOR,
+        "ExtendedConfigurationObject",
+        "1f0e0000-0000-4000-8000-000000000105",
+        true,
+        BORROWED_REMOVAL_AT
+    );
+    borrowed_removal_marker_case!(
+        canonical_borrowed_template_duplicate_child_parent_at_owner,
+        BORROWED_REMOVAL_DESCRIPTOR,
+        "ExtendedConfigurationObject",
+        "1f0e0000-0000-4000-8000-000000000105",
+        true,
+        BORROWED_REMOVAL_OWNER_AT
+    );
+    borrowed_removal_marker_case!(
+        canonical_borrowed_template_foreign_extension_purpose_at_template,
+        "ext/Configuration.xml",
+        "ConfigurationExtensionPurpose",
+        "Customization",
+        false,
+        BORROWED_REMOVAL_AT
+    );
+    borrowed_removal_marker_case!(
+        canonical_borrowed_template_foreign_extension_purpose_at_owner,
+        "ext/Configuration.xml",
+        "ConfigurationExtensionPurpose",
+        "Customization",
+        false,
+        BORROWED_REMOVAL_OWNER_AT
+    );
+    borrowed_removal_marker_case!(
+        canonical_borrowed_template_duplicate_extension_purpose_at_template,
+        "ext/Configuration.xml",
+        "ConfigurationExtensionPurpose",
+        "Customization",
+        true,
+        BORROWED_REMOVAL_AT
+    );
+    borrowed_removal_marker_case!(
+        canonical_borrowed_template_duplicate_extension_purpose_at_owner,
+        "ext/Configuration.xml",
+        "ConfigurationExtensionPurpose",
+        "Customization",
+        true,
+        BORROWED_REMOVAL_OWNER_AT
+    );
+    fn template_removal_workspace_from_fixture(relative: &str) -> tempfile::TempDir {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures")
+            .join(relative);
+        let entries = own_removal_snapshot(&fixture);
+        let workspace = tempfile::tempdir().unwrap();
+        for (relative, entry) in &entries {
+            let destination = workspace.path().join(relative);
+            match entry {
+                OwnRemovalEntry::Directory => std::fs::create_dir_all(destination).unwrap(),
+                OwnRemovalEntry::File(bytes) => {
+                    std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+                    std::fs::write(destination, bytes).unwrap();
+                }
+                OwnRemovalEntry::Link(_) => panic!("test fixture must be a closed regular tree"),
+            }
+        }
+        assert_eq!(own_removal_snapshot(workspace.path()), entries);
+        workspace
+    }
+
+    fn template_removal_assert_postimage(
+        before: &std::collections::BTreeMap<std::path::PathBuf, OwnRemovalEntry>,
+        post: &std::collections::BTreeMap<std::path::PathBuf, OwnRemovalEntry>,
+        expected: &std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>,
+        payload_root: &std::path::Path,
+        descriptor: &std::path::Path,
+        owner: &std::path::Path,
+    ) {
+        assert_eq!(&own_removal_file_bytes(post), expected);
+        for (path, entry) in post {
+            assert!(before.contains_key(path), "new postimage entry: {path:?}");
+            match entry {
+                OwnRemovalEntry::Directory => assert_eq!(before.get(path), Some(entry)),
+                OwnRemovalEntry::Link(_) => panic!("postimage contains link/reparse: {path:?}"),
+                OwnRemovalEntry::File(_) => {}
+            }
+        }
+        for (path, entry) in before {
+            if !path.starts_with(payload_root) && path != descriptor && path != owner {
+                assert_eq!(
+                    post.get(path),
+                    Some(entry),
+                    "lost unrelated entry: {path:?}"
+                );
+            }
+        }
+    }
+
+    fn template_removal_owner_representation(case: &str, top_at: &str) {
+        let workspace = own_removal_workspace();
+        let source = workspace.path().join("src");
+        let owner_path = source.join(OWN_REMOVAL_OWNER);
+        let original = std::fs::read_to_string(&owner_path).unwrap();
+        let selected_line = "      <Template>OwnDiagram</Template>\n";
+        let marker = "__OWN_REMOVAL_SELECTED_REGISTRATION__";
+        assert_eq!(original.matches(selected_line).count(), 1);
+        assert!(!original.contains(marker));
+        let template = original.replacen(selected_line, marker, 1);
+        let (owner, expected_owner) = match case {
+            "compact-shadow-comment" => {
+                let compact = template.replace('\n', "");
+                let shadow = "<!--До:<Template>OwnDiagram</Template>--><!--сохранить-->";
+                (
+                    compact.replacen(
+                        marker,
+                        &format!("{shadow}<Template>OwnDiagram</Template>"),
+                        1,
+                    ),
+                    compact.replacen(marker, shadow, 1),
+                )
+            }
+            "alternate-prefix" => {
+                let selected = "      <owned:Template xmlns:owned=\"http://v8.1c.ru/8.3/MDClasses\">OwnDiagram</owned:Template>\n";
+                (
+                    template.replacen(marker, selected, 1),
+                    template.replacen(marker, "", 1),
+                )
+            }
+            "encoded-name" => {
+                let descriptor = source.join(OWN_REMOVAL_DESCRIPTOR);
+                let bytes = std::fs::read_to_string(&descriptor).unwrap();
+                let name = "<Name>OwnDiagram</Name>";
+                assert_eq!(bytes.matches(name).count(), 1);
+                std::fs::write(
+                    descriptor,
+                    bytes.replacen(name, "<Name>OwnDiag&#114;am</Name>", 1),
+                )
+                .unwrap();
+                let selected = "      <Template>OwnDiag&#114;am</Template>\n";
+                (
+                    template.replacen(marker, selected, 1),
+                    template.replacen(marker, "", 1),
+                )
+            }
+            "comment-shadow-reference" => {
+                let empty = "      <MainDataCompositionSchema/>\n";
+                let comment = concat!(
+                    "      <!--<DefaultTemplate>Report.OwnRemovalReport.Template.OwnDiagram</DefaultTemplate>-->\n",
+                    "      <!--<MainDataCompositionSchema>Report.OwnRemovalReport.Template.OwnDiagram</MainDataCompositionSchema>-->\n",
+                );
+                assert_eq!(template.matches(empty).count(), 1);
+                let template = template.replacen(empty, &format!("{comment}{empty}"), 1);
+                (
+                    template.replacen(marker, selected_line, 1),
+                    template.replacen(marker, "", 1),
+                )
+            }
+            _ => unreachable!(),
+        };
+        std::fs::write(&owner_path, &owner).unwrap();
+        let before = own_removal_snapshot(&source);
+        let mut expected = own_removal_file_bytes(&before);
+        expected.insert(OWN_REMOVAL_OWNER.into(), expected_owner.into_bytes());
+        for path in [
+            OWN_REMOVAL_DESCRIPTOR, OWN_REMOVAL_BODY, OWN_REMOVAL_RED,
+            "Reports/OwnRemovalReport/Templates/OwnDiagram/Ext/Template/Items/BlueSquare/Picture.png",
+        ] {
+            assert!(expected.remove(std::path::Path::new(path)).is_some());
+        }
+        let runtime = bootstrap_runtime();
+        let preview = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Apply,
+            own_removal_plan(top_at),
+        );
+        assert!(preview.ok, "{case}: {top_at}: {preview:?}");
+        assert_eq!(preview.data.as_ref().unwrap()["mode"], "preview");
+        assert_eq!(
+            own_removal_snapshot(&source),
+            before,
+            "preview source writes: {case}"
+        );
+        let token = preview.data.as_ref().unwrap()["executionToken"].clone();
+        assert!(!token.as_str().unwrap().is_empty());
+        let applied = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Apply,
+            serde_json::json!({"executionToken":token.clone()}),
+        );
+        assert!(applied.ok, "{case}: {top_at}: {applied:?}");
+        assert_eq!(applied.data.as_ref().unwrap()["mode"], "published");
+        let post = own_removal_snapshot(&source);
+        template_removal_assert_postimage(
+            &before,
+            &post,
+            &expected,
+            std::path::Path::new(OWN_REMOVAL_BASE),
+            std::path::Path::new(OWN_REMOVAL_DESCRIPTOR),
+            std::path::Path::new(OWN_REMOVAL_OWNER),
+        );
+        let replay = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Apply,
+            serde_json::json!({"executionToken":token}),
+        );
+        assert_eq!(
+            serde_json::to_value(replay).unwrap(),
+            serde_json::to_value(applied).unwrap()
+        );
+        assert_eq!(own_removal_snapshot(&source), post);
+    }
+
+    macro_rules! template_removal_owner_case {
+        ($name:ident, $case:literal, $top_at:expr) => {
+            #[test]
+            fn $name() {
+                template_removal_owner_representation($case, $top_at);
+            }
+        };
+    }
+
+    template_removal_owner_case!(
+        canonical_template_removal_owner_compact_shadow_comment_at_template,
+        "compact-shadow-comment",
+        OWN_REMOVAL_AT
+    );
+    template_removal_owner_case!(
+        canonical_template_removal_owner_compact_shadow_comment_at_owner,
+        "compact-shadow-comment",
+        OWN_REMOVAL_OWNER_AT
+    );
+    template_removal_owner_case!(
+        canonical_template_removal_owner_alternate_prefix_at_template,
+        "alternate-prefix",
+        OWN_REMOVAL_AT
+    );
+    template_removal_owner_case!(
+        canonical_template_removal_owner_alternate_prefix_at_owner,
+        "alternate-prefix",
+        OWN_REMOVAL_OWNER_AT
+    );
+    template_removal_owner_case!(
+        canonical_template_removal_owner_encoded_name_at_template,
+        "encoded-name",
+        OWN_REMOVAL_AT
+    );
+    template_removal_owner_case!(
+        canonical_template_removal_owner_encoded_name_at_owner,
+        "encoded-name",
+        OWN_REMOVAL_OWNER_AT
+    );
+    template_removal_owner_case!(
+        canonical_template_removal_owner_comment_shadow_reference_at_template,
+        "comment-shadow-reference",
+        OWN_REMOVAL_AT
+    );
+    template_removal_owner_case!(
+        canonical_template_removal_owner_comment_shadow_reference_at_owner,
+        "comment-shadow-reference",
+        OWN_REMOVAL_OWNER_AT
+    );
+
+    #[test]
+    fn canonical_dcs_template_removal_clears_only_the_real_reference_and_replays() {
+        const TEMPLATE_AT: &str = "cf:Report.F05Report.Template.F05Schema";
+        const OWNER_AT: &str = "cf:Report.F05Report";
+        const OWNER: &str = "cf/Reports/F05Report.xml";
+        const DESCRIPTOR: &str = "cf/Reports/F05Report/Templates/F05Schema.xml";
+        const PAYLOAD: &str = "cf/Reports/F05Report/Templates/F05Schema";
+        const BODY: &str = "cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml";
+        const PROPERTIES_START: &str = "<Properties><Name>F05Report</Name>";
+        const REGISTRATION: &str = "<Template>F05Schema</Template>";
+        const FILLED_REFERENCE: &str = "<MainDataCompositionSchema>Report.F05Report.Template.F05Schema</MainDataCompositionSchema>";
+
+        for top_at in [TEMPLATE_AT, OWNER_AT] {
+            let workspace = template_removal_workspace_from_fixture("acceptance/workspace-dcs");
+            let source = workspace.path().join("src");
+            let owner_path = source.join(OWNER);
+            let original_owner = std::fs::read_to_string(&owner_path).unwrap();
+            assert_eq!(original_owner.matches(PROPERTIES_START).count(), 1);
+            assert_eq!(original_owner.matches(REGISTRATION).count(), 1);
+            assert_eq!(original_owner.matches(FILLED_REFERENCE).count(), 0);
+
+            // The complete synthetic DCS fixture already owns this real DCS
+            // wrapper and payload. Adding a matching owner reference is a
+            // deliberate test-input variation, not a native-export claim.
+            // The preceding comment carries the same spelling and must survive.
+            let comment_shadow = format!("<!-- preserve-reference-shadow {FILLED_REFERENCE} -->");
+            let prepared_properties =
+                format!("{PROPERTIES_START}{comment_shadow}{FILLED_REFERENCE}");
+            let expected_properties =
+                format!("{PROPERTIES_START}{comment_shadow}<MainDataCompositionSchema/>");
+            let prepared_owner =
+                original_owner.replacen(PROPERTIES_START, prepared_properties.as_str(), 1);
+            let expected_owner = original_owner
+                .replacen(PROPERTIES_START, expected_properties.as_str(), 1)
+                .replacen(REGISTRATION, "", 1)
+                .into_bytes();
+            std::fs::write(&owner_path, prepared_owner.as_bytes()).unwrap();
+
+            let before = own_removal_snapshot(&source);
+            let mut expected_files = own_removal_file_bytes(&before);
+            expected_files.insert(OWNER.into(), expected_owner);
+            assert!(expected_files
+                .remove(std::path::Path::new(DESCRIPTOR))
+                .is_some());
+            assert!(expected_files.remove(std::path::Path::new(BODY)).is_some());
+
+            let runtime = bootstrap_runtime();
+            let preview = submit_canonical(
+                &runtime,
+                workspace.path(),
+                ToolIdentity::Apply,
+                serde_json::json!({
+                    "at": top_at,
+                    "ops": [{"op": "template.remove", "args": {"at": TEMPLATE_AT}}],
+                }),
+            );
+            assert!(preview.ok, "{top_at}: {preview:?}");
+            assert_eq!(preview.data.as_ref().unwrap()["mode"], "preview");
+            assert_eq!(own_removal_snapshot(&source), before);
+            let token = preview.data.as_ref().unwrap()["executionToken"].clone();
+            assert!(!token.as_str().unwrap().is_empty());
+
+            let applied = submit_canonical(
+                &runtime,
+                workspace.path(),
+                ToolIdentity::Apply,
+                serde_json::json!({"executionToken": token.clone()}),
+            );
+            assert!(applied.ok, "{top_at}: {applied:?}");
+            assert_eq!(applied.data.as_ref().unwrap()["mode"], "published");
+            let after = own_removal_snapshot(&source);
+            assert_eq!(own_removal_file_bytes(&after), expected_files);
+            // Every surviving directory must be an existing directory. Empty
+            // directories under the removed payload may remain or disappear;
+            // every entry outside that payload and the two edited paths stays.
+            for (path, entry) in &after {
+                assert!(before.contains_key(path), "new postimage entry: {path:?}");
+                match entry {
+                    OwnRemovalEntry::Directory => {
+                        assert_eq!(before.get(path), Some(entry));
+                    }
+                    OwnRemovalEntry::Link(_) => {
+                        panic!("unexpected link/reparse point: {path:?}");
+                    }
+                    OwnRemovalEntry::File(_) => {}
+                }
+            }
+            for (path, entry) in &before {
+                if !path.starts_with(PAYLOAD)
+                    && path != std::path::Path::new(DESCRIPTOR)
+                    && path != std::path::Path::new(OWNER)
+                {
+                    assert_eq!(
+                        after.get(path),
+                        Some(entry),
+                        "changed unrelated source entry: {path:?}"
+                    );
+                }
+            }
+
+            let replay = submit_canonical(
+                &runtime,
+                workspace.path(),
+                ToolIdentity::Apply,
+                serde_json::json!({"executionToken": token}),
+            );
+            assert_eq!(
+                serde_json::to_value(&replay).unwrap(),
+                serde_json::to_value(&applied).unwrap()
+            );
+            assert_eq!(own_removal_snapshot(&source), after);
+        }
     }
 }
 

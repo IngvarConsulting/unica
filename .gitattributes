@@ -20,6 +20,9 @@ tests/fixtures/unica_mcp_script_parity/cfe-patch-method/base-common-module.bsl -
 # Staged-dump root fixtures keep the BOM and CRLF an 8.3.27 dump writes.
 tests/fixtures/platform_8_3_27/staged_dump_roots/** -text -whitespace
 
+# The native HTML oracle retains its exact BOM and internal line ending.
+tests/fixtures/platform_8_3_27/html-template/native-ru.html -text
+
 # XDTO platform-export fixtures assert BOM and CRLF as part of their byte contract.
 tests/fixtures/xdto/** -text -whitespace
 
@@ -33,6 +36,7 @@ plugins/unica/skills/form-patterns/SKILL.md whitespace=cr-at-eol
 tests/fixtures/acceptance/workspace-code/** -text whitespace=cr-at-eol
 tests/fixtures/acceptance/workspace-diagnostics/** -text whitespace=cr-at-eol
 tests/fixtures/acceptance/workspace-metadata-warning/** -text whitespace=cr-at-eol
+tests/fixtures/acceptance/workspace-legacy-inline/** -text whitespace=cr-at-eol
 tests/fixtures/acceptance/workspace-external/** -text whitespace=cr-at-eol
 tests/fixtures/acceptance/workspace-external-missing/** -text whitespace=cr-at-eol
 tests/fixtures/acceptance/workspace-external-invalid/** -text whitespace=cr-at-eol
@@ -52,3 +56,19 @@ tests/fixtures/acceptance/workspace-invalid-borrowing/** -text whitespace=cr-at-
 # Spreadsheet edit fixtures are 8.3.27 exports; BOM and CRLF are asserted.
 tests/fixtures/platform_8_3_27/mxl_edit/** -text -whitespace
 tests/fixtures/acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates/PlatformExport/** -text -whitespace
+
+# Keep the native-validated whole-template-removal fixture bytes on every host.
+tests/fixtures/acceptance/workspace-whole-template-removal/** -text -whitespace
+
+# Exact native BinaryData Type fragment.
+/tests/fixtures/platform_8_3_27/binary-data/native-type.xml -text whitespace=cr-at-eol
+# Native new-XML oracles retain BOM, CRLF and absence of a terminal newline.
+tests/fixtures/platform_8_3_27/new-xml/native-form-descriptor.xml -text whitespace=cr-at-eol
+tests/fixtures/platform_8_3_27/new-xml/native-form-content.xml -text whitespace=cr-at-eol
+tests/fixtures/platform_8_3_27/new-xml/native-catalog-descriptor.xml -text whitespace=cr-at-eol
+tests/fixtures/platform_8_3_27/new-xml/native-form-module.bsl -text whitespace=cr-at-eol
+tests/fixtures/platform_8_3_27/new-xml/native-chart-of-accounts-descriptor.xml -text whitespace=cr-at-eol
+
+# Vendored archive and delivered license hashes describe the original bytes.
+/vendor/ureq/** -text
+/plugins/unica/third-party/licenses/ureq/** -text

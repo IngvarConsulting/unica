@@ -247,8 +247,12 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("cargo clippy --workspace --all-targets --all-features --message-format=json -- -D warnings", text)
         # Наборы гоняет шов; сами команды закреплены тестом `test_run_tests`.
         self.assertIn('python3 scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --results', text)
-        self.assertIn('python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$SUITE" --only-size "$LANE" --results', text)
-        self.assertNotIn("cargo test --workspace", text)
+        self.assertIn('python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$SUITE" --only-size "$LANE" --docs-only "$DOCS_ONLY" --results', text)
+        # Исполнение тестов остаётся у runner. Прогрев имеет отдельный
+        # контракт compile-only, проверенный ниже для каждого его шага.
+        for job_id, found in jobs(self.release).items():
+            if job_id != "warm-rust-cache":
+                self.assertNotIn("cargo test", script(found))
         self.assertNotIn("unittest discover", text)
         self.assertIn("python -m py_compile scripts/dev/*.py tests/dev/*.py", text)
         self.assertIn("python scripts/ci/check-version-contract.py", text)
@@ -279,6 +283,8 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             "guards",
             "test-python",
             "test-rust-platforms",
+            "lint-rust-platforms",
+            "warm-rust-cache",
             "build-tools",
             "package-thin",
             "probe-thin-bootstrap",
@@ -337,7 +343,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             with self.subTest(step=name):
                 self.assertIn('--target "$TARGET"', step_text(step_named(build, name)))
 
-    def test_classifier_exposes_typed_contours_and_ci_full_override(self) -> None:
+    def test_classifier_exposes_typed_contours_and_event_routing(self) -> None:
         classifier = job(self.release, "classify-changes")
 
         for output in (
@@ -350,26 +356,42 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             "ci_changed",
             "release_required",
             "assessment_required",
+            "docs_only",
+            "rust_required",
+            "cache_required",
         ):
             with self.subTest(output=output):
-                self.assertIn(output, classifier["outputs"])
+                self.assertEqual(classifier["outputs"][output], "${{ steps.scope.outputs." + output + " }}")
         scope = step_by_id(classifier, "scope")
-        # Выражение увидит `ci:full` в снимке pull request на следующем
-        # `synchronize`; контракт триггеров закреплён отдельным тестом.
-        self.assertIn("contains(github.event.pull_request.labels.*.name, 'ci:full')", scope["env"]["FORCE_FULL"])
-        self.assertIn("--force-full", script(classifier))
+        # Payload события, включая ci:full и неизменяемые SHA, читает Python.
+        # Workflow передаёт только уже выбранную матрицу и линию отчёта.
+        self.assertEqual(scope["env"], {
+            "RUNNERS": "${{ steps.runners.outputs.runners }}",
+            "RUN_LINE": "${{ steps.line.outputs.line }}",
+        })
+        self.assertEqual(
+            normalized(scope["run"]),
+            'python scripts/ci/classify-workflow-changes.py --github-event --runner-matrix "$RUNNERS" --line "$RUN_LINE" --results .build/ci-routing >> "$GITHUB_OUTPUT"',
+        )
+        routing = steps_using(classifier, "actions/upload-artifact")
+        self.assertEqual(len(routing), 1)
+        self.assertEqual(condition(routing[0]), "steps.scope.outputs.docs_only == 'true'")
+        self.assertEqual(routing[0]["with"], {
+            "name": "results-ci-routing", "path": ".build/ci-routing", "retention-days": 7,
+            "if-no-files-found": "error",
+        })
 
-    def test_classifier_preserves_merge_base_for_triple_dot_diff(self) -> None:
+    def test_classifier_keeps_history_and_does_not_fetch_a_mutable_base(self) -> None:
         classifier = job(self.release, "classify-changes")
         checkout = steps_using(classifier, "actions/checkout")[0]
         scope = step_by_id(classifier, "scope")
 
         self.assertEqual(checkout["with"]["fetch-depth"], 0)
-        self.assertEqual(scope["env"]["BASE_REF"], "${{ github.base_ref }}")
-        self.assertIn('git fetch --no-tags origin "$BASE_REF"', scope["run"])
-        self.assertNotIn("--depth", scope["run"])
-        self.assertIn("FORCE_FULL", scope["run"])
-        self.assertIn("git diff --name-only FETCH_HEAD...HEAD", scope["run"])
+        self.assertNotIn("BASE_REF", scope.get("env", {}))
+        self.assertNotIn("FORCE_FULL", scope.get("env", {}))
+        self.assertNotIn("git fetch", scope["run"])
+        self.assertNotIn("FETCH_HEAD", scope["run"])
+        self.assertIn("--github-event", scope["run"])
 
     def test_a_ref_name_never_reaches_the_shell_as_script_text(self) -> None:
         """A ref name is data, so it crosses into `run:` through `env:`.
@@ -418,36 +440,42 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
     def test_rust_jobs_run_the_full_matrix_for_any_rust_change(self) -> None:
         source = job(self.release, "test-python")
         platforms = job(self.release, "test-rust-platforms")
+        lint = job(self.release, "lint-rust-platforms")
 
         self.assertNotIn("cargo test", script(source))
         self.assertEqual(steps_using(source, "dtolnay/rust-toolchain"), [])
         # Список раннеров считает classify-changes: Windows — только в ночном ярусе large.
-        self.assertEqual(platforms["strategy"]["matrix"]["runner"], "${{ fromJSON(needs.classify-changes.outputs.runners) }}")
-        for flag in ("rust_changed", "platform_changed", "toolchain_changed", "ci_changed"):
-            with self.subTest(flag=flag):
-                self.assertIn(f"needs.classify-changes.outputs.{flag} == 'true'", condition(platforms))
+        for found in (platforms, lint):
+            self.assertEqual(found["strategy"]["matrix"]["runner"], "${{ fromJSON(needs.classify-changes.outputs.runners) }}")
+            self.assertEqual(condition(found), "${{ needs.classify-changes.outputs.rust_required == 'true' }}")
         # Форматирование от цели не зависит — оно в `guards`. Линт зависит:
         # `#[cfg]` решает, какие элементы существуют, поэтому clippy идёт на
         # каждом раннере матрицы, а его находки — в Code Scanning.
         self.assertNotIn("cargo fmt", script(platforms))
         self.assertIn("cargo fmt --all -- --check", script(job(self.release, "guards")))
-        sarif = steps_using(platforms, "github/codeql-action/upload-sarif")[0]
+        sarif = steps_using(lint, "github/codeql-action/upload-sarif")[0]
         self.assertEqual(sarif["with"]["category"], "clippy-${{ matrix.runner }}")
-        self.assertEqual(needs(platforms), ["classify-changes", "guards"])
-        # Подпись и план выгружаются раньше clippy: раннер, упавший на линте,
-        # оставляет подпись, и его тесты не исчезают из отчёта.
-        order = [index for index, step in enumerate(steps(platforms)) if "--plan-only" in step.get("run", "") or "cargo clippy" in step.get("run", "")]
+        self.assertIn("always()", condition(sarif))
+        self.assertIn("hashFiles('clippy.sarif') != ''", condition(sarif))
+        self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", condition(sarif))
+        self.assertEqual(lint["permissions"], {"contents": "read", "security-events": "write"})
+        # План публикуется до исполнения независимо от результата линта.
+        order = [index for index, step in enumerate(steps(platforms)) if "run-tests.py" in step.get("run", "")]
         self.assertEqual(len(order), 2)
-        plan_index, clippy_index = order
+        plan_index, run_index = order
         self.assertIn("--plan-only", steps(platforms)[plan_index]["run"])
-        self.assertLess(plan_index, clippy_index)
-        # Любая правка Rust гоняет Rust-джобу; отдельной джобы на одном раннере нет.
+        self.assertNotIn("--plan-only", steps(platforms)[run_index]["run"])
+        plan_upload = next(step for step in steps_using(platforms, "actions/upload-artifact") if step["with"]["name"].startswith("plan-"))
+        self.assertLess(plan_index, steps(platforms).index(plan_upload))
+        self.assertLess(steps(platforms).index(plan_upload), run_index)
+        # Ни одна ОС не заменена отдельной сокращённой primary job.
         self.assertNotIn("test-rust-primary", jobs(self.release))
         # Команда линта закреплена дословно: `-D warnings` красит джобу, JSON
         # идёт в SARIF, и убрать одно из двух молча не выйдет.
-        clippy = next(text for text in scripts(platforms) if "cargo clippy" in text)
+        clippy_step = next(step for step in steps(lint) if "cargo clippy" in step.get("run", ""))
+        self.assertNotIn("continue-on-error", clippy_step)
         self.assertEqual(
-            normalized(clippy),
+            normalized(clippy_step["run"]),
             "set -o pipefail cargo clippy --workspace --all-targets --all-features"
             " --message-format=json -- -D warnings \\ | clippy-sarif | tee clippy.sarif | sarif-fmt",
         )
@@ -478,11 +506,8 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
     def test_main_push_after_the_queue_only_refreshes_the_dependency_cache(self) -> None:
         """Дерево `main` проверила очередь: push в него тестов не гоняет.
 
-        Rust-джоба на нём поднимается только ради кэша зависимостей, который
-        pull request читают лишь с ветки по умолчанию, и только когда сменился
-        его ключ (toolchain) или сам конвейер. Наборы Python кэша не пишут и
-        на push в `main` не идут. Диапазон push классифицируется по прежней
-        вершине, а не силой полного контура.
+        Классификатор отдельно выбирает тесты и прогрев зависимостей.
+        Workflow не должен снова объединить исполнение с прогревом.
         """
         main_push = "(github.event_name == 'push' && github.ref == 'refs/heads/main')"
         python = job(self.release, "test-python")
@@ -498,17 +523,86 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("needs.test-python.result == 'success'", condition(build))
         self.assertIn("needs.test-python.result == 'skipped'", condition(build))
         self.assertIn("needs.classify-changes.outputs.python_matrix == '[]'", condition(build))
-        rust = normalized(condition(platforms))
-        self.assertIn(main_push + " && ( needs.classify-changes.outputs.toolchain_changed == 'true' || needs.classify-changes.outputs.ci_changed == 'true' )", rust)
-        self.assertIn("!" + main_push + " && ( needs.classify-changes.outputs.rust_changed == 'true'", rust)
+        self.assertEqual(condition(platforms), "${{ needs.classify-changes.outputs.rust_required == 'true' }}")
+        warm = job(self.release, "warm-rust-cache")
+        self.assertEqual(condition(warm), "${{ needs.classify-changes.outputs.cache_required == 'true' }}")
+        self.assertNotIn("run-tests.py", script(warm))
+        self.assertEqual(classify["outputs"]["cache_required"], "${{ steps.scope.outputs.cache_required }}")
 
-        scope = next(step for step in steps(classify) if step.get("id") == "scope")
-        self.assertEqual(normalized(scope["env"]["MAIN_PUSH"]), "${{ " + main_push.strip("()") + " }}")
-        self.assertEqual(scope["env"]["PUSH_BEFORE"], "${{ github.event.before }}")
-        self.assertIn("!" + main_push, scope["env"]["FORCE_FULL"])
-        self.assertIn('git diff --name-only "$PUSH_BEFORE" "$GITHUB_SHA"', scope["run"])
-        # Прежней вершины может не быть: тогда полный контур, а не пустой диапазон.
-        self.assertIn('git cat-file -e "$PUSH_BEFORE^{commit}"', scope["run"])
+    def test_cache_warm_compiles_without_executing_validation(self) -> None:
+        warm = job(self.release, "warm-rust-cache")
+
+        self.assertEqual(condition(warm), "${{ needs.classify-changes.outputs.cache_required == 'true' }}")
+        self.assertEqual(needs(warm), ["classify-changes"])
+        self.assertEqual(warm["strategy"]["matrix"]["runner"], "${{ fromJSON(needs.classify-changes.outputs.runners) }}")
+        compile_steps = [step for step in steps(warm) if "run" in step]
+        self.assertEqual(
+            [normalized(step["run"]) for step in compile_steps],
+            [
+                "cargo test --workspace --no-run --locked",
+                "cargo test -p unica-coder --features receipt-ledger-test-support --lib --test daemon_receipt_ledger --no-run --locked",
+                "cargo check --workspace --all-targets --all-features --locked",
+            ],
+        )
+        for step in compile_steps:
+            self.assertEqual(condition(step), "steps.rust-cache.outputs.cache-hit != 'true'")
+        self.assertNotIn("clippy", script(warm))
+        self.assertNotIn("nextest", script(warm))
+        self.assertNotIn("run-tests.py", script(warm))
+        self.assertEqual(uploads(warm), [])
+        self.assertEqual(steps_using(warm, "taiki-e/install-action"), [])
+
+    def test_lint_and_test_failures_cannot_cancel_other_validation_jobs(self) -> None:
+        for job_id in ("test-python", "test-rust-platforms", "lint-rust-platforms"):
+            with self.subTest(job=job_id):
+                found = job(self.release, job_id)
+                self.assertEqual(needs(found), ["classify-changes"])
+                self.assertIs(found["strategy"]["fail-fast"], False)
+        rust = job(self.release, "test-rust-platforms")
+        lint = job(self.release, "lint-rust-platforms")
+        self.assertNotIn("cargo clippy", script(rust))
+        self.assertEqual(steps_using(rust, "github/codeql-action/upload-sarif"), [])
+        self.assertNotIn("run-tests.py", script(lint))
+        self.assertNotIn("security-events", rust.get("permissions", {}))
+        build = job(self.release, "build-tools")
+        self.assertIn("guards", needs(build))
+        self.assertIn("lint-rust-platforms", needs(build))
+        self.assertIn("needs.lint-rust-platforms.result == 'success'", condition(build))
+        for upstream in ("guards", "lint-rust-platforms", "warm-rust-cache", "test-python", "test-rust-platforms"):
+            self.assertIn(upstream, needs(job(self.release, "unica-ci")))
+
+    def test_rust_cache_is_shared_without_a_lint_only_writer(self) -> None:
+        cache_envs = []
+        for job_id in ("test-rust-platforms", "lint-rust-platforms", "warm-rust-cache"):
+            with self.subTest(job=job_id):
+                found = job(self.release, job_id)
+                cache = steps_using(found, "Swatinem/rust-cache")
+                self.assertEqual(len(cache), 1)
+                assert_pinned(self, RELEASE_WORKFLOW, cache[0], "v2")
+                inputs = cache[0]["with"]
+                # shared-key заменяет GITHUB_JOB в закреплённом action;
+                # прежний namespace остаётся доступен всем трём jobs.
+                self.assertEqual(inputs["shared-key"], "test-rust-platforms")
+                for option in ("key", "prefix-key", "workspaces", "cache-workspace-crates", "add-rust-environment-hash-key"):
+                    self.assertNotIn(option, inputs)
+                self.assertEqual(found["env"]["CARGO_PROFILE_DEV_DEBUG"], "line-tables-only")
+                prefixes = ("CARGO", "CC", "CFLAGS", "CXX", "CMAKE", "RUST")
+                cache_envs.append({key: value for key, value in found["env"].items() if key.startswith(prefixes)})
+                for step in steps(found):
+                    self.assertFalse(any(key.startswith(prefixes) for key in (step.get("env") or {})))
+                toolchain = steps_using(found, "dtolnay/rust-toolchain")[0]
+                self.assertEqual(toolchain["with"]["toolchain"], "stable")
+                self.assertEqual(found["defaults"]["run"]["shell"], "bash")
+        self.assertEqual(cache_envs, [cache_envs[0]] * 3)
+        lint = job(self.release, "lint-rust-platforms")
+        self.assertIs(steps_using(lint, "Swatinem/rust-cache")[0]["with"]["save-if"], False)
+        self.assertEqual(normalized(lint["continue-on-error"]), "${{ matrix.runner == 'windows-latest' }}")
+        self.assertEqual(steps_using(lint, "taiki-e/install-action")[0]["with"]["tool"], "clippy-sarif@0.8.0,sarif-fmt@0.8.0")
+        warm_cache = step_by_id(job(self.release, "warm-rust-cache"), "rust-cache")
+        self.assertIs(warm_cache["with"]["save-if"], True)
+        self.assertIs(warm_cache["with"]["cache-on-failure"], False)
+        tests = job(self.release, "test-rust-platforms")
+        self.assertEqual(steps_using(tests, "taiki-e/install-action")[0]["with"]["tool"], "cargo-nextest@0.9.148")
 
     def test_release_assessment_uses_affected_mechanism_contour(self) -> None:
         assessment = job(self.release, "release-assessment")
@@ -600,6 +694,8 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             # Час всем воротам, три — ночному `large`: там Windows гоняет весь
             # набор вместе с контрактом ReceiptLedger.
             "test-rust-platforms": "${{ github.event_name == 'workflow_dispatch' && inputs.profile == 'large' && 180 || 60 }}",
+            "lint-rust-platforms": 60,
+            "warm-rust-cache": 60,
             "build-tools": 90,
             "package-thin": 30,
             "probe-thin-bootstrap": 30,
@@ -624,22 +720,27 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             with self.subTest(job_id=job_id):
                 self.assertEqual(job(self.publish, job_id).get("timeout-minutes"), minutes)
 
-    def test_python_suites_run_after_guards_with_the_runner_matrix(self) -> None:
-        """Наборы Python следуют за guards и используют матрицу штатного runner."""
+    def test_python_suites_use_the_runner_matrix_without_waiting_for_guards(self) -> None:
+        """Наборы Python используют матрицу штатного runner независимо от guards."""
         python = job(self.release, "test-python")
 
-        self.assertIn('python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$SUITE" --only-size "$LANE" --results', script(python))
-        self.assertEqual(needs(python), ["classify-changes", "guards"])
+        self.assertIn('python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$SUITE" --only-size "$LANE" --docs-only "$DOCS_ONLY" --results', script(python))
+        self.assertEqual(needs(python), ["classify-changes"])
         # Матрицу джоб Python считает шов по воротам; джоба знает набор и полосу.
         self.assertEqual(python["strategy"]["matrix"]["include"], "${{ fromJSON(needs.classify-changes.outputs.python_matrix) }}")
         self.assertEqual(python["env"]["SUITE"], "${{ matrix.suite }}")
         self.assertEqual(python["env"]["LANE"], "${{ matrix.lane }}")
+        self.assertEqual(python["env"]["DOCS_ONLY"], "${{ needs.classify-changes.outputs.docs_only }}")
         self.assertEqual(python["name"], "Python tests (${{ matrix.slug }})")
         classify = job(self.release, "classify-changes")
         self.assertEqual(classify["outputs"]["python_matrix"], "${{ steps.python-matrix.outputs.python_matrix }}")
         self.assertIn('run-tests.py --profile "$GATE_PROFILE" --python-matrix', step_by_id(classify, "python-matrix")["run"])
+        self.assertEqual(step_by_id(classify, "python-matrix")["env"]["DOCS_ONLY"], "${{ steps.scope.outputs.docs_only }}")
+        ids = [step.get("id") for step in steps(classify)]
+        self.assertLess(ids.index("scope"), ids.index("python-matrix"))
         for run_line in [step["run"] for step in steps(python) if "run-tests.py" in step.get("run", "")]:
             self.assertIn('--suite "$SUITE" --only-size "$LANE"', run_line)
+            self.assertIn('--docs-only "$DOCS_ONLY"', run_line)
         self.assertEqual([upload["name"] for upload in uploads(python)], ["plan-python-${{ matrix.slug }}", "results-python-${{ matrix.slug }}"])
         # План выгружается до тестов, как у Rust.
         plan_index = next(index for index, step in enumerate(steps(python)) if "--plan-only" in step.get("run", ""))
@@ -675,7 +776,9 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         )
         self.assertEqual(classify["outputs"]["line"], "${{ steps.line.outputs.line }}")
         # Подпись линии: план и прогон Rust, план и прогон Python.
-        self.assertEqual(4, all_scripts(self.release).count('--line "$RUN_LINE"'))
+        for job_id in ("test-python", "test-rust-platforms"):
+            self.assertEqual(2, script(job(self.release, job_id)).count('--line "$RUN_LINE"'))
+        self.assertEqual(1, script(classify).count('--line "$RUN_LINE"'))
         signed_jobs = [
             job_id
             for job_id, found in jobs(self.release).items()

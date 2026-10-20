@@ -9,6 +9,8 @@ use crate::domain::operation_deadline::OperationDeadline;
 use crate::infrastructure::daemon::protocol_v5::V5DaemonTaskSnapshot;
 use crate::infrastructure::daemon::v13_workspace_bootstrap::test_control::RootInspectionPause;
 
+mod idle_observation;
+
 #[test]
 fn losing_daemon_does_not_rewrite_capacity_snapshot_before_receipt_authority() {
     use crate::infrastructure::capacity_observation::{start_background_writer, CapacityObserver};
@@ -4618,6 +4620,7 @@ struct PromisedWorkIdleDaemon {
     state_root: std::path::PathBuf,
     record: V5EndpointRecord,
     observations: mpsc::Receiver<(Instant, bool)>,
+    exited: mpsc::Receiver<()>,
 }
 
 impl PromisedWorkIdleDaemon {
@@ -4632,21 +4635,34 @@ impl PromisedWorkIdleDaemon {
         idle_grace: Duration,
         service: Arc<dyn super::super::server::CanonicalInvocationService>,
     ) -> Self {
+        Self::with_service_and_hooks(idle_grace, service, |observations| {
+            Arc::new(PromisedWorkIdleHooks { observations })
+        })
+    }
+
+    fn with_service_and_hooks(
+        idle_grace: Duration,
+        service: Arc<dyn super::super::server::CanonicalInvocationService>,
+        hooks: impl FnOnce(mpsc::Sender<(Instant, bool)>) -> Arc<dyn V5RuntimeHooks>,
+    ) -> Self {
         let state = tempfile::tempdir().unwrap();
         let state_root = std::fs::canonicalize(state.path()).unwrap();
         let identity = CoreIdentity::production_v5();
         let (observations, observed) = mpsc::channel();
+        let (exit, exited) = mpsc::channel();
         let config = DaemonServerConfig::new(state_root.clone(), identity.clone(), idle_grace)
             .with_invocation_service(service)
-            .with_runtime_hooks_for_test(Arc::new(PromisedWorkIdleHooks { observations }));
+            .with_runtime_hooks_for_test(hooks(observations));
         let stop = Arc::new(AtomicBool::new(false));
         let server_stop = Arc::clone(&stop);
         let server = thread::spawn(move || {
-            run_daemon_configured_until(
+            let result = run_daemon_configured_until(
                 config,
                 |runtime| runtime,
                 || server_stop.load(Ordering::SeqCst),
-            )
+            );
+            let _ = exit.send(());
+            result
         });
         let guard = HandlerSpawnDaemon {
             stop,
@@ -4660,6 +4676,7 @@ impl PromisedWorkIdleDaemon {
             state_root,
             record,
             observations: observed,
+            exited,
         }
     }
 
@@ -4727,6 +4744,22 @@ impl PromisedWorkIdleDaemon {
                 }
             }
         }
+    }
+
+    fn await_idle_exit(&self) {
+        self.await_idle_exit_before(Instant::now() + Duration::from_secs(3));
+    }
+
+    /// Lease observations precede the idle decision, and visible terminal
+    /// results can precede the last Task guard drop. Await the runtime itself.
+    fn await_idle_exit_before(&self, watchdog: Instant) {
+        self.exited
+            .recv_timeout(watchdog.saturating_duration_since(Instant::now()))
+            .expect("promised-work daemon did not return within the idle watchdog");
+        assert!(
+            !self.guard.stop.load(Ordering::SeqCst),
+            "idle exit must not require an explicit stop"
+        );
     }
 
     fn join(&mut self) {
@@ -4809,8 +4842,8 @@ fn release_promised_work_owner(mut owner: (TcpStream, BufReader<TcpStream>)) {
         decode_v5_server_response(&released),
         Ok(V5ServerResponse::Released)
     );
-    // Released precedes the server lease guard drop. The idle oracle below
-    // observes the actual empty registry; socket shutdown is best-effort cleanup.
+    // Released precedes the server lease guard drop. Tests must still observe
+    // retained work or actual runtime exit; socket shutdown is best-effort cleanup.
     let _ = owner.0.shutdown(std::net::Shutdown::Both);
 }
 
@@ -4877,10 +4910,7 @@ fn daemon_idle_empty_runtime_still_exits_after_owner_release() {
     let mut daemon = PromisedWorkIdleDaemon::start(idle);
     let owner = daemon.owner();
     release_promised_work_owner(owner);
-    assert!(
-        !daemon.observe_idle_interval(idle * 3),
-        "an empty daemon must still idle out"
-    );
+    daemon.await_idle_exit();
     daemon.join();
     assert!(daemon.endpoint().is_none());
 }
@@ -4895,10 +4925,11 @@ fn daemon_idle_saved_apply_plan_does_not_prevent_explicit_stop() {
     assert!(token.as_str().is_some_and(|value| !value.is_empty()));
     release_promised_work_owner(owner);
     daemon.guard.stop.store(true, Ordering::SeqCst);
-    assert!(
-        !daemon.observe_until(Instant::now() + Duration::from_secs(1)),
-        "explicit stop must exit despite a pending apply plan"
-    );
+    daemon
+        .exited
+        .recv_timeout(Duration::from_secs(1))
+        .expect("explicit stop must exit despite a pending apply plan");
+    assert!(daemon.guard.stop.load(Ordering::SeqCst));
     daemon.join();
     assert!(daemon.endpoint().is_none());
 }
@@ -5062,10 +5093,7 @@ fn daemon_idle_running_index_producer_without_rpc_or_lease_preserves_instance_th
         "producer must actually settle before its last lease is released"
     );
     drop(lease);
-    assert!(
-        !daemon.observe_idle_interval(idle * 3),
-        "completed index work with no leases must allow empty daemon idle cleanup"
-    );
+    daemon.await_idle_exit();
     daemon.join();
     assert!(daemon.endpoint().is_none());
 }
@@ -5218,7 +5246,7 @@ fn daemon_idle_live_task_after_client_release_preserves_attempt_then_retires() {
     assert_eq!(service.prepares.load(Ordering::SeqCst), 1);
     assert_eq!(service.executions.load(Ordering::SeqCst), 1);
     release_promised_work_owner(successor);
-    assert!(!daemon.observe_idle_interval(idle * 3));
+    daemon.await_idle_exit();
     daemon.join();
     assert!(daemon.endpoint().is_none());
 }
@@ -5298,7 +5326,7 @@ fn daemon_idle_disconnected_inline_invocation_preserves_attempt_then_retires() {
     assert_eq!(service.prepares.load(Ordering::SeqCst), 1);
     assert_eq!(service.executions.load(Ordering::SeqCst), 1);
     release_promised_work_owner(successor);
-    assert!(!daemon.observe_idle_interval(idle * 3));
+    daemon.await_idle_exit();
     daemon.join();
     assert!(daemon.endpoint().is_none());
 }
@@ -5362,7 +5390,7 @@ fn daemon_idle_completed_index_lease_preserves_same_result_then_retires() {
     drop(follower);
     assert!(daemon.observe_idle_interval(idle * 3));
     drop(lease);
-    assert!(!daemon.observe_idle_interval(idle * 3));
+    daemon.await_idle_exit();
     daemon.join();
     assert!(daemon.endpoint().is_none());
 }

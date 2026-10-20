@@ -88,3 +88,7 @@ cap-fs-ext = "4.0.2"
 # on a debug binary.
 [profile.dev.package.sha2]
 opt-level = 3
+
+[patch.crates-io]
+# Preserve completed HTTP responses when connection reuse preparation fails.
+ureq = { path = "vendor/ureq" }

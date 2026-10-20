@@ -44,6 +44,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
+#[path = "workspace_services/private_failure.rs"]
+mod private_failure;
+use private_failure::{FailureCause, FailurePhase, PrivateFailureSnapshot, TransportFailure};
+
 macro_rules! assert_not_impl_production {
     ($type:ty: $trait:path) => {
         const _: fn() = || {
@@ -1284,6 +1288,38 @@ fn write_control_with_deadline(
     Ok(())
 }
 
+fn workspace_service_command(
+    exe: &Path,
+    identity: &WorkspaceServiceIdentity,
+    config: WorkspaceServiceConfig,
+    token: &str,
+    build: &CoreIdentity,
+) -> Result<Command, String> {
+    let mut command = Command::new(exe);
+    command
+        .current_dir(persistent_provider_working_directory(
+            Path::new(&identity.workspace_root),
+            Path::new(&identity.source_root),
+        )?)
+        .arg("--workspace-service")
+        .arg("--core-identity")
+        .arg(build.as_str())
+        .arg("--workspace-root")
+        .arg(&identity.workspace_root)
+        .arg("--source-root")
+        .arg(&identity.source_root)
+        .arg("--service-dir")
+        .arg(identity.service_dir.display().to_string())
+        .arg("--token")
+        .arg(token)
+        .arg("--idle-secs")
+        .arg(config.idle_secs.to_string());
+    if let Some(plugin_root) = find_plugin_root(Path::new(&identity.workspace_root)) {
+        command.env("UNICA_PLUGIN_ROOT", plugin_root);
+    }
+    Ok(command)
+}
+
 impl ServiceSpawner for SystemServiceSpawner {
     fn spawn(
         &self,
@@ -1320,26 +1356,10 @@ impl ServiceSpawner for SystemServiceSpawner {
         // a test service binary is not the test process's build.
         let build = CoreIdentity::production();
         crate::infrastructure::daemon::identity::verify_executable_build(&exe, &build)?;
-        let mut command = Command::new(exe);
+        let mut command = workspace_service_command(&exe, identity, config, token, &build)?;
         command
-            .arg("--workspace-service")
-            .arg("--core-identity")
-            .arg(build.as_str())
-            .arg("--workspace-root")
-            .arg(&identity.workspace_root)
-            .arg("--source-root")
-            .arg(&identity.source_root)
-            .arg("--service-dir")
-            .arg(identity.service_dir.display().to_string())
-            .arg("--token")
-            .arg(token)
-            .arg("--idle-secs")
-            .arg(config.idle_secs.to_string())
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr));
-        if let Some(plugin_root) = find_plugin_root(Path::new(&identity.workspace_root)) {
-            command.env("UNICA_PLUGIN_ROOT", plugin_root);
-        }
         let mut child = ManagedStartupChild::spawn_configured(command)
             .map_err(|err| format!("failed to spawn workspace service: {err}"))?;
         let child_pid = child.id();
@@ -2178,7 +2198,7 @@ impl WorkspaceServiceRuntime {
             analyzer
                 .as_mut()
                 .expect("bsl session must exist after start")
-                .call(tool_name, tool_args, remaining, cancellation)
+                .call_with_failure_capture(tool_name, tool_args, remaining, cancellation)
         });
         match result {
             Ok(output) => ServiceResponse {
@@ -2188,10 +2208,17 @@ impl WorkspaceServiceRuntime {
                 ..ServiceResponse::default()
             },
             Err(error) => {
+                let failure_snapshot = analyzer
+                    .as_mut()
+                    .and_then(|session| session.failure_snapshot.take());
                 let stale_session = analyzer.take();
                 drop(analyzer);
                 if let Some(stale_session) = stale_session {
                     self.retire_session(stale_session);
+                }
+                if let Some(snapshot) = failure_snapshot {
+                    let stderr = io::stderr();
+                    let _ = private_failure::write_record_to(&mut stderr.lock(), snapshot);
                 }
                 ServiceResponse::error(error)
             }
@@ -2982,6 +3009,10 @@ struct PersistentMcpSession {
     reader_terminal: Arc<AtomicBool>,
     next_id: i64,
     valid: bool,
+    active_failure_request: Option<i64>,
+    failure_snapshot: Option<PrivateFailureSnapshot>,
+    #[cfg(test)]
+    before_invalidate_hook: Option<fn(&mut PersistentMcpSession)>,
 }
 
 struct BoundedByteTail {
@@ -3028,12 +3059,12 @@ impl BoundedByteTail {
 
 struct BslWriteRequest {
     payload: Value,
-    result: mpsc::SyncSender<Result<(), String>>,
+    result: mpsc::SyncSender<Result<(), TransportFailure>>,
 }
 
 enum BslReaderEvent {
     Message(Value),
-    ProtocolError(String),
+    ProtocolError(TransportFailure),
     Closed,
 }
 
@@ -3066,7 +3097,7 @@ impl PersistentMcpSession {
 
     fn start_rlm_transport_pinned(
         context: &WorkspaceContext,
-        _source_root: &Path,
+        source_root: &Path,
         build_directory: &Path,
         cancellation: &CancellationToken,
     ) -> Result<Self, String> {
@@ -3077,7 +3108,8 @@ impl PersistentMcpSession {
             "could not locate Unica plugin root for workspace RLM service".to_string()
         })?;
         let program = resolve_bundled_tool(&plugin_root, "rlm-bsl-mcp", true)?.program;
-        let command = rlm_transport_command_for_build(program, context, build_directory)?;
+        let command =
+            rlm_transport_command_for_build(program, context, source_root, build_directory)?;
         Self::start_with_command(command, cancellation)
     }
 
@@ -3118,6 +3150,10 @@ impl PersistentMcpSession {
             reader_terminal,
             next_id: 2,
             valid: true,
+            active_failure_request: None,
+            failure_snapshot: None,
+            #[cfg(test)]
+            before_invalidate_hook: None,
         };
         session.initialize(cancellation)?;
         Ok(session)
@@ -3163,6 +3199,20 @@ impl PersistentMcpSession {
         Ok(())
     }
 
+    fn call_with_failure_capture(
+        &mut self,
+        tool_name: &str,
+        tool_args: Value,
+        timeout: Duration,
+        cancellation: &CancellationToken,
+    ) -> Result<WorkspaceServiceBslOutput, String> {
+        self.failure_snapshot = None;
+        self.active_failure_request = Some(self.next_id);
+        let result = self.call(tool_name, tool_args, timeout, cancellation);
+        self.active_failure_request = None;
+        result
+    }
+
     fn call(
         &mut self,
         tool_name: &str,
@@ -3196,19 +3246,37 @@ impl PersistentMcpSession {
             }
         };
         if cancellation.is_cancelled() {
-            return self.fail(cancelled_error("persistent MCP request stopped"));
+            return self.fail(
+                FailurePhase::DecodeToolResult,
+                TransportFailure::new(
+                    FailureCause::Cancelled,
+                    cancelled_error("persistent MCP request stopped"),
+                ),
+            );
         }
-        let result_text = match mcp_tool_text(&response) {
+        let result_text = match mcp_tool_text_typed(&response) {
             Ok(text) => text,
             Err(error) => {
                 if cancellation.is_cancelled() {
-                    return self.fail(cancelled_error("persistent MCP request stopped"));
+                    return self.fail(
+                        FailurePhase::DecodeToolResult,
+                        TransportFailure::new(
+                            FailureCause::Cancelled,
+                            cancelled_error("persistent MCP request stopped"),
+                        ),
+                    );
                 }
-                return self.fail(error);
+                return self.fail(FailurePhase::DecodeToolResult, error);
             }
         };
         if cancellation.is_cancelled() {
-            return self.fail(cancelled_error("persistent MCP request stopped"));
+            return self.fail(
+                FailurePhase::DecodeToolResult,
+                TransportFailure::new(
+                    FailureCause::Cancelled,
+                    cancelled_error("persistent MCP request stopped"),
+                ),
+            );
         }
         let stderr = self
             .stderr_tail
@@ -3277,47 +3345,101 @@ impl PersistentMcpSession {
         let mut request = BslWriteRequest { payload, result };
         loop {
             if cancellation.is_cancelled() {
-                return self.fail(cancelled_error("persistent MCP write stopped"));
+                return self.fail(
+                    FailurePhase::WriteRequest,
+                    TransportFailure::new(
+                        FailureCause::Cancelled,
+                        cancelled_error("persistent MCP write stopped"),
+                    ),
+                );
             }
             if deadline.remaining().is_none() {
-                return self.fail("timeout: persistent MCP write timed out".to_string());
+                return self.fail(
+                    FailurePhase::WriteRequest,
+                    TransportFailure::new(
+                        FailureCause::DeadlineElapsed,
+                        "timeout: persistent MCP write timed out".to_string(),
+                    ),
+                );
             }
             let Some(writer) = &self.writer else {
-                return self.fail("persistent MCP stdin writer stopped".to_string());
+                return self.fail(
+                    FailurePhase::WriteRequest,
+                    TransportFailure::new(
+                        FailureCause::WriterUnavailable,
+                        "persistent MCP stdin writer stopped".to_string(),
+                    ),
+                );
             };
             match writer.try_send(request) {
                 Ok(()) => break,
                 Err(mpsc::TrySendError::Full(returned)) => request = returned,
                 Err(mpsc::TrySendError::Disconnected(_)) => {
-                    return self.fail("persistent MCP stdin writer stopped".to_string());
+                    return self.fail(
+                        FailurePhase::WriteRequest,
+                        TransportFailure::new(
+                            FailureCause::WriterUnavailable,
+                            "persistent MCP stdin writer stopped".to_string(),
+                        ),
+                    );
                 }
             }
             thread::sleep(Duration::from_millis(10));
         }
         loop {
             if cancellation.is_cancelled() {
-                return self.fail(cancelled_error("persistent MCP write stopped"));
+                return self.fail(
+                    FailurePhase::WriteRequest,
+                    TransportFailure::new(
+                        FailureCause::Cancelled,
+                        cancelled_error("persistent MCP write stopped"),
+                    ),
+                );
             }
             let Some(remaining) = deadline.remaining() else {
-                return self.fail("timeout: persistent MCP write timed out".to_string());
+                return self.fail(
+                    FailurePhase::WriteRequest,
+                    TransportFailure::new(
+                        FailureCause::DeadlineElapsed,
+                        "timeout: persistent MCP write timed out".to_string(),
+                    ),
+                );
             };
             let received = result_rx.recv_timeout(remaining.min(Duration::from_millis(25)));
             if cancellation.is_cancelled() {
-                return self.fail(cancelled_error("persistent MCP write stopped"));
+                return self.fail(
+                    FailurePhase::WriteRequest,
+                    TransportFailure::new(
+                        FailureCause::Cancelled,
+                        cancelled_error("persistent MCP write stopped"),
+                    ),
+                );
             }
             if deadline.remaining().is_none() {
-                return self.fail("timeout: persistent MCP write timed out".to_string());
+                return self.fail(
+                    FailurePhase::WriteRequest,
+                    TransportFailure::new(
+                        FailureCause::DeadlineElapsed,
+                        "timeout: persistent MCP write timed out".to_string(),
+                    ),
+                );
             }
             match received {
                 Ok(Ok(())) => {
                     return Ok(());
                 }
                 Ok(Err(error)) => {
-                    return self.fail(error);
+                    return self.fail(FailurePhase::WriteRequest, error);
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    return self.fail("persistent MCP stdin writer stopped".to_string());
+                    return self.fail(
+                        FailurePhase::WriteRequest,
+                        TransportFailure::new(
+                            FailureCause::WriterUnavailable,
+                            "persistent MCP stdin writer stopped".to_string(),
+                        ),
+                    );
                 }
             }
         }
@@ -3329,19 +3451,33 @@ impl PersistentMcpSession {
         deadline: &ElapsedBudgetDeadline,
         cancellation: &CancellationToken,
     ) -> Result<Value, String> {
-        match read_json_response_cancellable(&self.rx, id, deadline, cancellation) {
+        match read_json_response_typed(&self.rx, id, deadline, cancellation) {
             Ok(value) => Ok(value),
-            Err(error) => self.fail(error),
+            Err(error) => self.fail(FailurePhase::WaitResponse, error),
         }
     }
 
-    fn fail<T>(&mut self, error: String) -> Result<T, String> {
+    fn fail<T>(&mut self, phase: FailurePhase, error: TransportFailure) -> Result<T, String> {
+        // This slot owns only finite, source-typed metadata before the first
+        // termination. Raw error/stderr text is never part of the snapshot.
+        if self.failure_snapshot.is_none() {
+            if let Some(request_id) = self.active_failure_request {
+                self.failure_snapshot = Some(PrivateFailureSnapshot {
+                    phase,
+                    cause: error.cause,
+                    service_pid: std::process::id(),
+                    helper_pid: self.child.id(),
+                    request_id,
+                });
+            }
+        }
         let stderr = self
             .stderr_tail
             .lock()
             .map(|tail| tail.snapshot())
             .unwrap_or_default();
         self.invalidate();
+        let error = error.message;
         if stderr.is_empty() {
             Err(error)
         } else {
@@ -3351,6 +3487,10 @@ impl PersistentMcpSession {
 
     fn invalidate(&mut self) {
         if self.valid {
+            #[cfg(test)]
+            if let Some(hook) = self.before_invalidate_hook.take() {
+                hook(self);
+            }
             self.valid = false;
             let _ = self.child.terminate();
         }
@@ -3366,6 +3506,7 @@ fn rlm_transport_command(
     rlm_transport_command_for_build(
         program,
         context,
+        source_root,
         &rlm_generation_root(context, source_root)?,
     )
 }
@@ -3373,13 +3514,72 @@ fn rlm_transport_command(
 fn rlm_transport_command_for_build(
     program: PathBuf,
     context: &WorkspaceContext,
+    source_root: &Path,
     build_directory: &Path,
 ) -> Result<Command, String> {
     let mut command = Command::new(program);
     command
-        .current_dir(&context.cwd)
+        .current_dir(persistent_provider_working_directory(
+            &context.workspace_root,
+            source_root,
+        )?)
         .envs(rlm_process_environment(build_directory.to_path_buf()));
     Ok(command)
+}
+
+fn persistent_provider_working_directory(
+    workspace_root: &Path,
+    source_root: &Path,
+) -> Result<PathBuf, String> {
+    let runtime = short_private_runtime_dir()
+        .map_err(|error| format!("failed to prepare persistent provider directory: {error}"))?;
+    let temp = env::temp_dir();
+    let executable_directory = env::current_exe()
+        .ok()
+        .and_then(|executable| executable.parent().map(Path::to_path_buf));
+    let temp_anchor = normalize_path_identity(&temp)
+        .ok()
+        .and_then(|physical| physical.ancestors().last().map(Path::to_path_buf));
+    let mut last_error = None;
+    for candidate in [runtime, Some(temp), executable_directory, temp_anchor]
+        .into_iter()
+        .flatten()
+    {
+        match checked_persistent_provider_working_directory(&candidate, workspace_root, source_root)
+        {
+            Ok(directory) => return Ok(directory),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        "persistent provider working directory must be outside the workspace and source tree"
+            .to_string()
+    }))
+}
+
+fn checked_persistent_provider_working_directory(
+    candidate: &Path,
+    workspace_root: &Path,
+    source_root: &Path,
+) -> Result<PathBuf, String> {
+    let directory = normalize_path_identity(candidate)?;
+    let metadata = fs::metadata(&directory)
+        .map_err(|error| format!("failed to inspect persistent provider directory: {error}"))?;
+    if !metadata.is_dir() {
+        return Err("persistent provider working directory must be a directory".to_string());
+    }
+    for root in [workspace_root, source_root] {
+        let root = normalize_path_identity(root)?;
+        if crate::infrastructure::platform::filesystem::path_starts_with_host_root(
+            &directory, &root,
+        ) {
+            return Err(
+                "persistent provider working directory must be outside the workspace and source tree"
+                    .to_string(),
+            );
+        }
+    }
+    Ok(directory)
 }
 
 impl Drop for PersistentMcpSession {
@@ -3388,20 +3588,12 @@ impl Drop for PersistentMcpSession {
     }
 }
 
-/// A persistent session outlives the tool call that started it.
-/// While its working directory sits inside the source tree, the
-/// process holds that tree open, and `git worktree remove` fails long after the
-/// call returned (#204). The tree is addressed by `--source-dir` as an absolute
-/// path, so the working directory carries no information — it only holds.
-///
-/// The child therefore runs from the short private runtime directory it already
-/// uses for its socket, outside any workspace.
+/// Keep the analyzer's Unix socket names within the platform path budget.
 fn configure_bsl_analyzer_runtime_dir(command: &mut Command) -> Result<(), String> {
     if let Some(runtime_dir) = short_private_runtime_dir().map_err(|error| {
         format!("failed to prepare short runtime directory for bsl-analyzer: {error}")
     })? {
         command.env("XDG_RUNTIME_DIR", &runtime_dir);
-        command.current_dir(&runtime_dir);
     }
     Ok(())
 }
@@ -4441,25 +4633,35 @@ fn optional_u64_arg(args: &[String], name: &str, default: u64) -> u64 {
 
 fn bsl_writer(mut stdin: ChildStdin, requests: mpsc::Receiver<BslWriteRequest>) {
     while let Ok(request) = requests.recv() {
-        let result = serde_json::to_vec(&request.payload)
-            .map_err(|error| format!("failed to encode persistent MCP request: {error}"))
-            .and_then(|mut bytes| {
-                bytes.push(b'\n');
-                stdin
-                    .write_all(&bytes)
-                    .map_err(|error| format!("failed to write persistent MCP request: {error}"))
-            })
-            .and_then(|_| {
-                stdin
-                    .flush()
-                    .map_err(|error| format!("failed to flush persistent MCP request: {error}"))
-            });
+        let result = write_bsl_request(&mut stdin, &request.payload);
         let failed = result.is_err();
         let _ = request.result.send(result);
         if failed {
             break;
         }
     }
+}
+
+fn write_bsl_request(writer: &mut impl Write, payload: &Value) -> Result<(), TransportFailure> {
+    let mut bytes = serde_json::to_vec(payload).map_err(|error| {
+        TransportFailure::new(
+            FailureCause::EncodeRequest,
+            format!("failed to encode persistent MCP request: {error}"),
+        )
+    })?;
+    bytes.push(b'\n');
+    writer.write_all(&bytes).map_err(|error| {
+        TransportFailure::new(
+            FailureCause::WriteIo(error.kind().into()),
+            format!("failed to write persistent MCP request: {error}"),
+        )
+    })?;
+    writer.flush().map_err(|error| {
+        TransportFailure::new(
+            FailureCause::FlushIo(error.kind().into()),
+            format!("failed to flush persistent MCP request: {error}"),
+        )
+    })
 }
 
 fn bsl_stderr_reader(mut stderr: impl Read, tail: Arc<Mutex<BoundedByteTail>>) {
@@ -4497,9 +4699,10 @@ fn bsl_reader_with_state(
                 let event = if pending.is_empty() {
                     BslReaderEvent::Closed
                 } else {
-                    BslReaderEvent::ProtocolError(
+                    BslReaderEvent::ProtocolError(TransportFailure::new(
+                        FailureCause::IncompleteFrame,
                         "persistent MCP stdout closed with an incomplete JSON line".to_string(),
-                    )
+                    ))
                 };
                 let _ = events.send(event);
                 return;
@@ -4512,8 +4715,9 @@ fn bsl_reader_with_state(
                         }
                         let event = match serde_json::from_slice::<Value>(&pending) {
                             Ok(value) => BslReaderEvent::Message(value),
-                            Err(error) => BslReaderEvent::ProtocolError(format!(
-                                "persistent MCP emitted malformed JSON: {error}"
+                            Err(error) => BslReaderEvent::ProtocolError(TransportFailure::new(
+                                FailureCause::InvalidJson,
+                                format!("persistent MCP emitted malformed JSON: {error}"),
                             )),
                         };
                         let malformed = matches!(event, BslReaderEvent::ProtocolError(_));
@@ -4524,8 +4728,9 @@ fn bsl_reader_with_state(
                     } else {
                         pending.push(byte);
                         if pending.len() > SERVICE_RESPONSE_LINE_LIMIT {
-                            let _ = events.send(BslReaderEvent::ProtocolError(format!(
-                                "persistent MCP response exceeds {SERVICE_RESPONSE_LINE_LIMIT} bytes"
+                            let _ = events.send(BslReaderEvent::ProtocolError(TransportFailure::new(
+                                FailureCause::ResponseTooLarge,
+                                format!("persistent MCP response exceeds {SERVICE_RESPONSE_LINE_LIMIT} bytes"),
                             )));
                             return;
                         }
@@ -4533,8 +4738,9 @@ fn bsl_reader_with_state(
                 }
             }
             Err(error) => {
-                let _ = events.send(BslReaderEvent::ProtocolError(format!(
-                    "failed to read persistent MCP stdout: {error}"
+                let _ = events.send(BslReaderEvent::ProtocolError(TransportFailure::new(
+                    FailureCause::ReadIo(error.kind().into()),
+                    format!("failed to read persistent MCP stdout: {error}"),
                 )));
                 return;
             }
@@ -4550,26 +4756,41 @@ impl Drop for BslReaderTerminalGuard {
     }
 }
 
+#[cfg(test)]
 fn read_json_response_cancellable(
     rx: &mpsc::Receiver<BslReaderEvent>,
     id: i64,
     deadline: &ElapsedBudgetDeadline,
     cancellation: &CancellationToken,
 ) -> Result<Value, String> {
+    read_json_response_typed(rx, id, deadline, cancellation).map_err(|error| error.message)
+}
+
+fn read_json_response_typed(
+    rx: &mpsc::Receiver<BslReaderEvent>,
+    id: i64,
+    deadline: &ElapsedBudgetDeadline,
+    cancellation: &CancellationToken,
+) -> Result<Value, TransportFailure> {
     while let Some(remaining) = deadline.remaining() {
         if cancellation.is_cancelled() {
-            return Err(cancelled_error(format!(
-                "persistent MCP request {id} stopped"
-            )));
+            return Err(TransportFailure::new(
+                FailureCause::Cancelled,
+                cancelled_error(format!("persistent MCP request {id} stopped")),
+            ));
         }
         let received = rx.recv_timeout(remaining.min(Duration::from_millis(50)));
         if cancellation.is_cancelled() {
-            return Err(cancelled_error(format!(
-                "persistent MCP request {id} stopped"
-            )));
+            return Err(TransportFailure::new(
+                FailureCause::Cancelled,
+                cancelled_error(format!("persistent MCP request {id} stopped")),
+            ));
         }
         if deadline.remaining().is_none() {
-            return Err(format!("timeout: persistent MCP request {id} timed out"));
+            return Err(TransportFailure::new(
+                FailureCause::DeadlineElapsed,
+                format!("timeout: persistent MCP request {id} timed out"),
+            ));
         }
         match received {
             Ok(BslReaderEvent::Message(value)) => {
@@ -4581,33 +4802,54 @@ fn read_json_response_cancellable(
                 return Err(error);
             }
             Ok(BslReaderEvent::Closed) => {
-                return Err("persistent MCP stdout closed before response".to_string());
+                return Err(TransportFailure::new(
+                    FailureCause::StdoutEof,
+                    "persistent MCP stdout closed before response".to_string(),
+                ));
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                return Err("persistent MCP stdout closed before response".to_string());
+                return Err(TransportFailure::new(
+                    FailureCause::ReaderDisconnected,
+                    "persistent MCP stdout closed before response".to_string(),
+                ));
             }
         }
     }
     if cancellation.is_cancelled() {
-        return Err(cancelled_error(format!(
-            "persistent MCP request {id} stopped"
-        )));
+        return Err(TransportFailure::new(
+            FailureCause::Cancelled,
+            cancelled_error(format!("persistent MCP request {id} stopped")),
+        ));
     }
-    Err(format!("timeout: persistent MCP request {id} timed out"))
+    Err(TransportFailure::new(
+        FailureCause::DeadlineElapsed,
+        format!("timeout: persistent MCP request {id} timed out"),
+    ))
 }
 
+#[cfg(test)]
 fn mcp_tool_text(response: &Value) -> Result<String, String> {
+    mcp_tool_text_typed(response).map_err(|error| error.message)
+}
+
+fn mcp_tool_text_typed(response: &Value) -> Result<String, TransportFailure> {
     if let Some(error) = response.get("error") {
         let message = error
             .get("message")
             .and_then(Value::as_str)
             .unwrap_or("bsl-analyzer MCP JSON-RPC error");
-        return Err(message.to_string());
+        return Err(TransportFailure::new(
+            FailureCause::RemoteRpcError,
+            message.to_string(),
+        ));
     }
-    let result = response
-        .get("result")
-        .ok_or_else(|| "bsl-analyzer MCP response is missing result".to_string())?;
+    let result = response.get("result").ok_or_else(|| {
+        TransportFailure::new(
+            FailureCause::MissingResult,
+            "bsl-analyzer MCP response is missing result".to_string(),
+        )
+    })?;
     if result
         .get("isError")
         .and_then(Value::as_bool)
@@ -4623,7 +4865,10 @@ fn mcp_tool_text(response: &Value) -> Result<String, String> {
                     .next()
             })
             .unwrap_or("bsl-analyzer MCP tool returned an error");
-        return Err(message.to_string());
+        return Err(TransportFailure::new(
+            FailureCause::RemoteToolError,
+            message.to_string(),
+        ));
     }
     if let Some(content) = result.get("content").and_then(Value::as_array) {
         let parts = content
@@ -4666,7 +4911,10 @@ fn bsl_analyzer_command(
         // Workspace profile otherwise promotes stdio to a persistent broker.
         // The helper must own the analyzer it retires after invalidation.
         .env("BSL_MCP_BROKER", "0")
-        .current_dir(&context.cwd);
+        .current_dir(persistent_provider_working_directory(
+            &context.workspace_root,
+            &source_root,
+        )?);
     configure_bsl_analyzer_runtime_dir(&mut command)?;
     Ok(command)
 }
@@ -4732,6 +4980,20 @@ fn bsl_analyzer_cache_dir(
     }
     Ok(external)
 }
+
+#[cfg(test)]
+mod persistent_provider_cwd_command_tests;
+
+#[cfg(test)]
+#[path = "../../tests/platform/persistent_provider_cwd.rs"]
+mod persistent_provider_cwd_native_tests;
+
+#[cfg(test)]
+mod persistent_provider_cwd_selection_tests;
+
+#[cfg(test)]
+#[path = "workspace_services/private_failure_tests.rs"]
+mod private_failure_tests;
 
 #[cfg(test)]
 mod tests {
@@ -6250,22 +6512,23 @@ mod tests {
         cleanup(&context);
     }
 
-    /// #204. A persistent session outlives its tool call, so a working
-    /// directory inside the source tree keeps that tree open and
-    /// `git worktree remove` fails long after the call returned. The tree is
-    /// addressed by `--source-dir`, so the working directory only holds.
     #[test]
     fn bsl_analyzer_child_does_not_run_from_inside_the_workspace() {
-        let Some(runtime_dir) = short_private_runtime_dir().unwrap() else {
-            return;
-        };
-        let mut command = Command::new("bsl-analyzer");
-        command.current_dir(std::env::temp_dir().join("unica-worktree-under-test"));
-
-        configure_bsl_analyzer_runtime_dir(&mut command).unwrap();
-
-        assert_eq!(command.get_current_dir(), Some(runtime_dir.as_path()));
-        assert_eq!(runtime_dir.parent(), Some(Path::new("/tmp")));
+        let context = test_context("bsl-analyzer-external-cwd");
+        let source_root = context.workspace_root.join("src");
+        let command =
+            bsl_analyzer_command(Path::new("bsl-analyzer"), &context, &source_root).unwrap();
+        let directory = command.get_current_dir().expect("explicit analyzer cwd");
+        assert!(directory.is_dir());
+        for root in [&context.workspace_root, &source_root] {
+            assert!(
+                !crate::infrastructure::platform::filesystem::path_starts_with_host_root(
+                    &normalize_path_identity(directory).unwrap(),
+                    &normalize_path_identity(root).unwrap(),
+                )
+            );
+        }
+        cleanup(&context);
     }
 
     #[test]
@@ -9113,7 +9376,7 @@ mod tests {
         bsl_reader(std::io::Cursor::new(b"not-json\n"), tx);
         assert!(matches!(
             rx.recv().unwrap(),
-            BslReaderEvent::ProtocolError(error) if error.contains("malformed JSON")
+            BslReaderEvent::ProtocolError(error) if error.message.contains("malformed JSON")
         ));
 
         let (tx, rx) = mpsc::sync_channel(8);
@@ -9125,7 +9388,7 @@ mod tests {
         );
         assert!(matches!(
             rx.recv().unwrap(),
-            BslReaderEvent::ProtocolError(error) if error.contains("exceeds")
+            BslReaderEvent::ProtocolError(error) if error.message.contains("exceeds")
         ));
         assert!(terminal.load(Ordering::Acquire));
     }
@@ -9159,7 +9422,10 @@ mod tests {
     #[test]
     fn bsl_session_cancellation_wins_over_protocol_and_eof_races() {
         for event in [
-            BslReaderEvent::ProtocolError("bad response".to_string()),
+            BslReaderEvent::ProtocolError(TransportFailure::new(
+                FailureCause::InvalidJson,
+                "bad response".to_string(),
+            )),
             BslReaderEvent::Closed,
         ] {
             let (tx, rx) = mpsc::channel();
@@ -12770,7 +13036,7 @@ fn main() {
         ));
     }
 
-    fn test_context(name: &str) -> WorkspaceContext {
+    pub(super) fn test_context(name: &str) -> WorkspaceContext {
         let root = std::env::temp_dir().join(format!(
             "unica-workspace-service-{name}-{}",
             std::process::id()
@@ -12786,7 +13052,7 @@ fn main() {
         }
     }
 
-    fn cleanup(context: &WorkspaceContext) {
+    pub(super) fn cleanup(context: &WorkspaceContext) {
         let _ = fs::remove_dir_all(context.cache_root.parent().unwrap_or(&context.cache_root));
     }
 
@@ -12801,7 +13067,7 @@ fn main() {
         super::write_record(identity, &record).unwrap();
     }
 
-    fn test_record(
+    pub(super) fn test_record(
         identity: &WorkspaceServiceIdentity,
         port: u16,
         build: &str,

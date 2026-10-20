@@ -947,6 +947,29 @@ fn validate_child_footprints(
             }
         };
 
+        if child.has_inline_descriptor
+            && matches!(
+                child.kind,
+                ClosedChildKind::Form | ClosedChildKind::Template
+            )
+        {
+            let registration = child
+                .child
+                .segments()
+                .skip(subject.target.segments().count())
+                .collect::<Vec<_>>()
+                .join(".");
+            diagnostics.push(validation_warning(
+                subject,
+                &format!("childObjects.{registration}"),
+                format!(
+                    "Legacy inline registration {} exists alongside its separate descriptor; \
+                     platform 8.3.27 may hang while importing this owner",
+                    child.child
+                ),
+            ));
+        }
+
         let footprints = subject
             .child_footprints
             .iter()
@@ -1096,6 +1119,7 @@ impl ClosedChildKind {
 struct ClosedOwnerChild {
     child: MetadataAddress,
     kind: ClosedChildKind,
+    has_inline_descriptor: bool,
 }
 
 fn final_owner_child_graph(
@@ -1293,7 +1317,11 @@ fn parse_owner_child_artifact(
         &format!("{owner}.{child_kind}.{name}"),
     )
     .map_err(|_| "owner child identity is not representable".to_string())?;
-    Ok(ClosedOwnerChild { child, kind })
+    Ok(ClosedOwnerChild {
+        child,
+        kind,
+        has_inline_descriptor: !properties.is_empty(),
+    })
 }
 
 fn parse_child_descriptor(
@@ -1307,6 +1335,239 @@ fn parse_child_descriptor(
         return Ok(None);
     }
     parse_child_artifact(artifact, owner).map(Some)
+}
+
+/// The ranges use the exact owner_source string supplied by the planner.
+/// Any BOM removed by the metadata parser is translated back into that basis.
+pub(crate) struct TemplateRemovalIdentity {
+    pub(crate) registration: std::ops::Range<usize>,
+    pub(crate) reference_edits: Vec<(std::ops::Range<usize>, String)>,
+    pub(crate) template_type: Option<String>,
+}
+
+/// Identity for whole-template removal. The content kind stays opaque: the
+/// editable-template enum deliberately does not include every platform kind.
+pub(crate) fn validate_template_removal_identity(
+    owner_source: &str,
+    descriptor_bytes: &[u8],
+    owner: &MetadataAddress,
+    name: &str,
+    allow_inherited: bool,
+) -> Result<TemplateRemovalIdentity, String> {
+    let expected = format!("{owner}.Template.{name}");
+    let (parsed_owner, owner_document) = parse_metadata_image(owner_source.as_bytes())?;
+    let owner_offset = owner_source.len() - parsed_owner.len();
+    let owner_artifact = exact_metadata_artifact(&owner_document, MetadataAdmission::Writable)?;
+    validate_exact_owner_identity(owner_artifact, owner)?;
+    let containers = exact_mdclasses_children(owner_artifact, "ChildObjects", "owner descriptor")?;
+    let [children] = containers.as_slice() else {
+        return Err("template removal requires one immediate owner ChildObjects".into());
+    };
+    let mut registration = None;
+    for node in children.children().filter(|node| {
+        node.is_element() && matches!(node.tag_name().name(), "Form" | "Template" | "Command")
+    }) {
+        let entry = parse_owner_child_artifact(node, owner)?;
+        if entry.child.as_str() == expected {
+            if registration.is_some() {
+                return Err(
+                    "template removal requires exactly one immediate owner registration".into(),
+                );
+            }
+            let range = node.range();
+            registration = Some(range.start + owner_offset..range.end + owner_offset);
+        }
+    }
+    let registration =
+        registration.ok_or_else(|| "template owner registration is missing".to_string())?;
+    let properties = template_removal_exact_properties(owner_artifact)?;
+    let mut reference_edits = Vec::new();
+    for property in ["MainDataCompositionSchema", "DefaultTemplate"] {
+        // Foreign namesakes are not metadata references and remain unchanged.
+        let references = properties
+            .children()
+            .filter(|node| node.has_tag_name((MD_CLASSES_NS, property)))
+            .collect::<Vec<_>>();
+        if references.len() > 1 {
+            return Err(format!("owner descriptor has duplicate {property}"));
+        }
+        for node in references {
+            if node.children().any(|child| child.is_element()) {
+                return Err(format!("owner {property} reference must be a scalar"));
+            }
+            if meta_info_inner_text(node).trim() != expected {
+                continue;
+            }
+            let range = node.range();
+            let range = range.start + owner_offset..range.end + owner_offset;
+            let canonical = format!("<{property}>{expected}</{property}>");
+            if owner_source[range.clone()] == canonical {
+                // Preserve the existing writer's empty spelling for its exact
+                // simple representation, only inside this confirmed node.
+                reference_edits.push((range, format!("<{property}/>")));
+            } else {
+                // Keep prefixes, attributes, comments and surrounding tokens;
+                // remove only the text nodes that form this scalar reference.
+                for text in node.children().filter(roxmltree::Node::is_text) {
+                    let range = text.range();
+                    reference_edits.push((
+                        range.start + owner_offset..range.end + owner_offset,
+                        String::new(),
+                    ));
+                }
+            }
+        }
+    }
+    let (_, document) = parse_metadata_image(descriptor_bytes)?;
+    let artifact = exact_metadata_artifact(&document, MetadataAdmission::Writable)?;
+    if artifact.tag_name().name() != "Template" {
+        return Err("template removal descriptor is not a Template".into());
+    }
+    if !artifact.attribute("uuid").is_some_and(is_guid) {
+        return Err("template removal descriptor has a missing or invalid uuid".into());
+    }
+    let properties = exact_mdclasses_children(artifact, "Properties", "Template descriptor")?;
+    let [properties] = properties.as_slice() else {
+        return Err("Template descriptor must contain exactly one Properties".into());
+    };
+    let names = exact_mdclasses_children(*properties, "Name", "Template descriptor")?;
+    let [name_node] = names.as_slice() else {
+        return Err("Template descriptor must contain exactly one Name".into());
+    };
+    if name_node.children().any(|child| child.is_element())
+        || exact_child_name(*properties, "Template")? != name
+    {
+        return Err("Template descriptor Name does not match the selected target".into());
+    }
+    let types = exact_mdclasses_children(*properties, "TemplateType", "Template descriptor")?;
+    let template_type = match types.as_slice() {
+        [] if allow_inherited => None,
+        [template_type] => {
+            if template_type.children().any(|child| child.is_element()) {
+                return Err("TemplateType must be a scalar".into());
+            }
+            let kind = meta_info_inner_text(*template_type).trim().to_string();
+            if kind.is_empty() {
+                return Err("TemplateType is empty".into());
+            }
+            Some(kind)
+        }
+        _ => {
+            return Err(
+                "Template descriptor must contain exactly one TemplateType unless inherited".into(),
+            )
+        }
+    };
+    Ok(TemplateRemovalIdentity {
+        registration,
+        reference_edits,
+        template_type,
+    })
+}
+
+fn template_removal_exact_properties<'a, 'input>(
+    artifact: roxmltree::Node<'a, 'input>,
+) -> Result<roxmltree::Node<'a, 'input>, String> {
+    let properties =
+        exact_mdclasses_children(artifact, "Properties", "template removal descriptor")?;
+    let [properties] = properties.as_slice() else {
+        return Err("template removal descriptor must contain exactly one Properties".into());
+    };
+    Ok(*properties)
+}
+
+fn template_removal_has_exact_parent(bytes: &[u8]) -> Result<bool, String> {
+    let (_, document) = parse_metadata_image(bytes)?;
+    let artifact = exact_metadata_artifact(&document, MetadataAdmission::Writable)?;
+    let properties = template_removal_exact_properties(artifact)?;
+    let parents = exact_mdclasses_children(
+        properties,
+        "ExtendedConfigurationObject",
+        "template removal descriptor",
+    )?;
+    let parent = match parents.as_slice() {
+        [] => return Ok(false),
+        [parent] => *parent,
+        _ => {
+            return Err(
+                "template removal descriptor has duplicate ExtendedConfigurationObject".into(),
+            )
+        }
+    };
+    if parent.children().any(|child| child.is_element())
+        || !is_guid(meta_info_inner_text(parent).trim())
+    {
+        return Err("template removal descriptor parent must be a scalar UUID".into());
+    }
+    Ok(true)
+}
+
+/// Exact write admission for the no-payload inherited exception. The caller
+/// separately proves Extension source kind and retained payload-root absence.
+pub(crate) fn template_removal_has_inherited_owners(
+    configuration_bytes: &[u8],
+    owner_bytes: &[u8],
+    descriptor_bytes: &[u8],
+) -> Result<bool, String> {
+    let (_, document) = parse_metadata_image(configuration_bytes)?;
+    let configuration = exact_metadata_artifact(&document, MetadataAdmission::Writable)?;
+    if configuration.tag_name().name() != "Configuration" {
+        return Err("template removal extension root is not Configuration".into());
+    }
+    let properties = template_removal_exact_properties(configuration)?;
+    let purposes = exact_mdclasses_children(
+        properties,
+        "ConfigurationExtensionPurpose",
+        "template removal extension root",
+    )?;
+    let purpose = match purposes.as_slice() {
+        [] => return Ok(false),
+        [purpose] => *purpose,
+        _ => {
+            return Err(
+                "template removal extension root has duplicate ConfigurationExtensionPurpose"
+                    .into(),
+            )
+        }
+    };
+    if purpose.children().any(|child| child.is_element())
+        || meta_info_inner_text(purpose).trim().is_empty()
+    {
+        return Err("ConfigurationExtensionPurpose must be a nonempty scalar".into());
+    }
+    let owner_parent = template_removal_has_exact_parent(owner_bytes)?;
+    let child_parent = template_removal_has_exact_parent(descriptor_bytes)?;
+    Ok(owner_parent && child_parent)
+}
+
+/// The primary path of a platform kind whose footprint Unica knows. A truly
+/// unknown kind remains opaque; a filename alone cannot establish XML semantics.
+pub(crate) fn template_removal_primary_path(template_type: &str) -> Option<&'static str> {
+    if template_type == "GraphicalSchema" {
+        Some("Ext/Template.xml")
+    } else {
+        MetadataTemplateType::from_descriptor_value(template_type)
+            .map(super::edit::typed_template_primary_path)
+    }
+}
+
+/// Validate only the known primary resource, not unknown opaque members.
+pub(crate) fn validate_template_removal_primary_image(
+    template_type: &str,
+    bytes: &[u8],
+) -> Result<(), String> {
+    if template_type == "GraphicalSchema" {
+        return validate_exact_version_xml(
+            bytes,
+            PlatformXmlRootExpectation::new("http://v8.1c.ru/8.3/xcf/scheme", "GraphicalSchema"),
+            "graphical template",
+        );
+    }
+    if let Some(kind) = MetadataTemplateType::from_descriptor_value(template_type) {
+        validate_template_resource(kind, MetadataTemplateResourcePart::Primary, bytes)
+    } else {
+        Ok(())
+    }
 }
 
 /// Parse one already-retained physical child descriptor through the same
@@ -4835,6 +5096,7 @@ mod tests {
             ],
             vec![(MetadataChildResourceKind::OrdinaryFormContent, 0)],
         );
+        subject.resources[0].bytes = typed_owner_descriptor(&["<Form>Main</Form>".into()]);
         subject.child_footprints[0].profile = MetadataChildProfile::OrdinaryForm;
         subject.resources.last_mut().unwrap().bytes = vec![0xff, 0, 0x81];
         assert!(closed_child_diagnostics(&subject).is_empty());
@@ -4967,6 +5229,10 @@ mod tests {
             directories,
             kinds,
         );
+        // Payload checks use the platform's by-name registration; legacy inline
+        // diagnostics have their own canonical fixtures and descriptor guards.
+        subject.resources[0].bytes =
+            typed_owner_descriptor(&[format!("<Template>{name}</Template>")]);
         for (ordinal, (_, _, bytes)) in resources.into_iter().enumerate() {
             if let Some(resource) = subject.resources.iter_mut().find(|resource| {
                 matches!(
@@ -5413,7 +5679,12 @@ mod tests {
                 // Either the existing owner or an adopted child's descriptor can
                 // carry the incompatible profile. Reading is not a write grant.
                 for resource_index in [0, 1] {
-                    let mut subject = closed_validator_subject(kind, template_type, &child, &child);
+                    let mut subject = closed_validator_subject(
+                        kind,
+                        template_type,
+                        &format!("<{kind}>Main</{kind}>"),
+                        &child,
+                    );
                     let original =
                         String::from_utf8(subject.resources[resource_index].bytes.clone()).unwrap();
                     subject.resources[resource_index].bytes = original
@@ -5626,6 +5897,14 @@ mod tests {
                     .any(|diagnostic| diagnostic.message.contains(expected_message)),
                 "{label}: {diagnostics:?}"
             );
+            if label != "template-type" {
+                assert!(
+                    diagnostics
+                        .iter()
+                        .all(|diagnostic| diagnostic.severity == MetaDiagnosticSeverity::Error),
+                    "a descriptor for another identity/kind must not produce a legacy warning: {label}: {diagnostics:?}"
+                );
+            }
         }
 
         let form = typed_child_xml("Form", "Main", None);
@@ -5671,6 +5950,12 @@ mod tests {
                     .message
                     .contains("no descriptor among the read resources")),
                 "{label}: {diagnostics:?}"
+            );
+            assert!(
+                diagnostics
+                    .iter()
+                    .all(|diagnostic| diagnostic.severity == MetaDiagnosticSeverity::Error),
+                "an invalid descriptor namespace/profile must not produce a legacy warning: {label}: {diagnostics:?}"
             );
         }
     }
@@ -5732,6 +6017,12 @@ mod tests {
                     .any(|diagnostic| diagnostic.message.starts_with(expected)),
                 "{label}: {diagnostics:?}"
             );
+            assert!(
+                diagnostics
+                    .iter()
+                    .all(|diagnostic| diagnostic.severity == MetaDiagnosticSeverity::Error),
+                "missing, duplicate or misfiled descriptor evidence must not produce a legacy warning: {label}: {diagnostics:?}"
+            );
         }
     }
 
@@ -5778,6 +6069,8 @@ mod tests {
             ],
             vec![(page, 1), (primary, 0)],
         );
+        reordered.resources[0].bytes =
+            typed_owner_descriptor(&["<Template>Main</Template>".into()]);
         set_html_descriptor(&mut reordered);
         reordered.resources.reverse();
         let mut diagnostics = Vec::new();
@@ -7292,5 +7585,47 @@ mod tests {
                 .unwrap();
             assert_eq!(actual, expected, "{enum_name}");
         }
+    }
+}
+
+#[cfg(test)]
+mod template_removal_owner_range_tests {
+    use super::*;
+
+    #[test]
+    fn owner_ranges_use_exact_utf8_basis_and_ignore_foreign_reference_shadows() {
+        let original = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/acceptance/workspace-dcs/src/cf/Reports/F05Report.xml"
+        ));
+        let descriptor = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/acceptance/workspace-dcs/src/cf/Reports/F05Report/Templates/F05Schema.xml"));
+        let start = "<Properties><Name>F05Report</Name>";
+        let reference = "Report.F05Report.Template.F05Schema";
+        let encoded = "Report.F05Report.Template.F05Sch&#101;ma";
+        assert_eq!(original.matches(start).count(), 1);
+        let properties = format!(
+            "{start}<!--До: {reference}--><foreign:MainDataCompositionSchema xmlns:foreign=\"urn:foreign\">{reference}</foreign:MainDataCompositionSchema><actual:MainDataCompositionSchema xmlns:actual=\"http://v8.1c.ru/8.3/MDClasses\"><!--сохранить-->{encoded}</actual:MainDataCompositionSchema>"
+        );
+        let source = format!(
+            "\u{feff}\u{feff}{}",
+            original.replacen(start, &properties, 1)
+        );
+        let owner =
+            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Report.F05Report").unwrap();
+        let identity =
+            validate_template_removal_identity(&source, descriptor, &owner, "F05Schema", false)
+                .unwrap();
+        assert_eq!(
+            &source[identity.registration],
+            "<Template>F05Schema</Template>"
+        );
+        assert_eq!(
+            identity.template_type.as_deref(),
+            Some("DataCompositionSchema")
+        );
+        assert_eq!(identity.reference_edits.len(), 1);
+        let (range, replacement) = &identity.reference_edits[0];
+        assert_eq!(&source[range.clone()], encoded);
+        assert!(replacement.is_empty());
     }
 }

@@ -333,6 +333,7 @@ class AcceptanceServer:
         # четверть часа, а сценариев в корпусе десятки — к концу набора их
         # столько же, и подключение начинает отказывать.
         env["UNICA_DAEMON_IDLE_GRACE_MS"] = "5000"
+        self.provider_failure_cache_is_default = "UNICA_CACHE_DIR" not in env
         self.stderr_path = state / "unica-stderr.log"
         self.stderr_file = open(self.stderr_path, "wb")  # noqa: SIM115 - lives as long as the process
         self.process = subprocess.Popen(
@@ -828,6 +829,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         ("query.set", "Dcs", "DcsQuery", "Values"),
         ("dataSet.remove", "Dcs", "DcsData", "Target"),
     ]
+    PROPERTIES_ROWS = [("props.set", "Properties", "MetadataOrRoleOrSubsystem", "Values")]
 
     def renderer(self):
         module_path = REPO_ROOT / "scripts" / "ci" / "render-acceptance-registry.py"
@@ -867,11 +869,11 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             self.assertIn(operation, implemented)
             self.assertIn(f"| `{operation}` | `{args}` | да | ", rendered)
 
-    def registration_fixture(self, table, metadata, additional_metadata=None, *, complete_support=True, complete_context=True, complete_mxl_event=True, complete_dcs=True):
+    def registration_fixture(self, table, metadata, additional_metadata=None, *, complete_support=True, complete_context=True, complete_mxl_event=True, complete_dcs=True, complete_properties=True):
         # A family-focused fixture keeps unrelated typed families complete.
         sources = dict(additional_metadata or {})
         sources.setdefault("dcs_operation.rs", self.DCS_FIXTURE_METADATA)
-        for family in ["support", "metadata", "form", "mxl", "event"]:
+        for family in ["support", "metadata", "form", "mxl", "event", "properties"]:
             filename = f"{family}_operation.rs"
             if filename not in sources:
                 sources[filename] = (REPO_ROOT / "crates/unica-coder/src/domain" / filename).read_text(encoding="utf-8")
@@ -883,6 +885,8 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             table += "\n" + self.MXL_EVENT_REGISTRATIONS
         if complete_dcs:
             table += "\n" + self.DCS_FIXTURE_REGISTRATIONS
+        if complete_properties:
+            table += "\n(PropertiesOperation::Set),"
         module = self.renderer()
         with tempfile.TemporaryDirectory(prefix="typed-registry-") as raw:
             root = Path(raw)
@@ -899,6 +903,42 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
                     (root / filename).write_text(source, encoding="utf-8")
             with patch.object(module, "APPLY_REGISTRY", registry):
                 return module.load_apply_registry()
+
+    def test_properties_rows_use_complete_typed_metadata_and_fail_closed(self) -> None:
+        role_source = (REPO_ROOT / "crates/unica-coder/src/domain/role_operation.rs").read_text(encoding="utf-8")
+        metadata = (REPO_ROOT / "crates/unica-coder/src/domain/properties_operation.rs").read_text(encoding="utf-8")
+        roles = "(RoleOperation::Create), (RoleOperation::RightAdd), (RoleOperation::RightSet),"
+        registration = "(PropertiesOperation::Set),"
+        table = roles + registration
+        row = 'Set => ("props.set", MetadataOrRoleOrSubsystem, Values)'
+        raw = '("props.set", Properties, MetadataOrRoleOrSubsystem, Values),'
+        actual, _ = self.registration_fixture(table, role_source, complete_properties=False)
+        self.assertEqual([entry for entry in actual if entry[1] == "Properties"],
+                         [("props.set", "Properties", "MetadataOrRoleOrSubsystem", "Values")])
+        cases = {
+            "missing registration": (roles, metadata),
+            "duplicate registration": (table + registration, metadata),
+            "unknown variant": (table.replace("PropertiesOperation::Set", "PropertiesOperation::Unknown"), metadata),
+            "wrong family": (table.replace("PropertiesOperation::Set", "RoleOperation::Set"), metadata),
+            "raw replacement": (roles + raw, metadata),
+            "raw beside complete typed": (table + raw, metadata),
+            "raw unknown name": (table + '("future.operation", Properties, Form, Items),', metadata),
+            "raw after literal rename": (table + raw, metadata.replace('"props.set"', '"props.probe"')),
+            "raw renamed name": (table + '("props.probe", Properties, Form, Items),', metadata.replace('"props.set"', '"props.probe"')),
+            "missing metadata": (table, None),
+            "empty metadata": (table, "properties_operations!();"),
+            "missing metadata row": (table, metadata.replace(row + ",", "")),
+            "incomplete metadata": (table, metadata.replace(row, 'Set => ("props.set", MetadataOrRoleOrSubsystem)')),
+            "nonliteral name": (table, metadata.replace(row, 'Set => (NAME, MetadataOrRoleOrSubsystem, Values)')),
+            "duplicate metadata": (table, metadata + '\nproperties_operations!(Probe => ("props.probe", Form, Items),);'),
+        }
+        for label, (source, changed_metadata) in cases.items():
+            with self.subTest(label=label), self.assertRaises(RuntimeError):
+                self.registration_fixture(source, role_source, {"properties_operation.rs": changed_metadata}, complete_properties=False)
+        registry, implemented = self.renderer().load_apply_registry()
+        self.assertEqual([entry for entry in registry if entry[1] == "Properties"],
+                         [("props.set", "Properties", "MetadataOrRoleOrSubsystem", "Values")])
+        self.assertIn("props.set", implemented)
 
     def test_typed_support_rows_keep_their_metadata_and_registry_order(self) -> None:
         metadata = (REPO_ROOT / "crates/unica-coder/src/domain/role_operation.rs").read_text(encoding="utf-8")
@@ -922,7 +962,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("supportCapability.set", "Support", "Configuration", "Values"),
             ("valueType.add", "Xdto", "XdtoPackage", "Values"),
             ("supportRule.set", "Support", "SupportRule", "Values"),
-        ] + self.CONTEXT_ROWS + self.MXL_EVENT_ROWS + self.DCS_FIXTURE_ROWS)
+        ] + self.CONTEXT_ROWS + self.MXL_EVENT_ROWS + self.DCS_FIXTURE_ROWS + self.PROPERTIES_ROWS)
 
     def test_support_rows_keep_their_arguments_order_and_implemented_status(self) -> None:
         module = self.renderer()
@@ -992,7 +1032,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("event.bind", "Form", "FormEvent", "Values"),
             ("supportCapability.set", "Support", "Configuration", "Values"),
             ("supportRule.set", "Support", "SupportRule", "Values"),
-        ] + self.MXL_EVENT_ROWS + self.DCS_FIXTURE_ROWS)
+        ] + self.MXL_EVENT_ROWS + self.DCS_FIXTURE_ROWS + self.PROPERTIES_ROWS)
 
     def test_fully_typed_metadata_and_form_keep_registry_rows(self) -> None:
         module = self.renderer()
@@ -1097,7 +1137,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("dataSource.add", "Dcs", "DcsSchema", "Items"),
             ("supportCapability.set", "Support", "Configuration", "Values"),
             ("supportRule.set", "Support", "SupportRule", "Values"),
-        ] + self.CONTEXT_ROWS + self.MXL_EVENT_ROWS)
+        ] + self.CONTEXT_ROWS + self.MXL_EVENT_ROWS + self.PROPERTIES_ROWS)
 
     def test_dcs_metadata_and_registrations_are_complete_and_fail_closed(self) -> None:
         role_source = (REPO_ROOT / "crates/unica-coder/src/domain/role_operation.rs").read_text(encoding="utf-8")
@@ -1288,7 +1328,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("code.replace", "Code", "Code", "Text"),
             ("supportCapability.set", "Support", "Configuration", "Values"),
             ("supportRule.set", "Support", "SupportRule", "Values"),
-        ] + self.CONTEXT_ROWS + self.MXL_EVENT_ROWS + self.DCS_FIXTURE_ROWS)
+        ] + self.CONTEXT_ROWS + self.MXL_EVENT_ROWS + self.DCS_FIXTURE_ROWS + self.PROPERTIES_ROWS)
 
     def test_role_metadata_survives_split_impls_and_unrelated_helpers(self) -> None:
         metadata = (REPO_ROOT / "crates/unica-coder/src/domain/role_operation.rs").read_text(encoding="utf-8")
@@ -1312,7 +1352,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("right.set", "Role", "RoleRight", "Values"),
             ("supportCapability.set", "Support", "Configuration", "Values"),
             ("supportRule.set", "Support", "SupportRule", "Values"),
-        ] + self.CONTEXT_ROWS + self.MXL_EVENT_ROWS + self.DCS_FIXTURE_ROWS)
+        ] + self.CONTEXT_ROWS + self.MXL_EVENT_ROWS + self.DCS_FIXTURE_ROWS + self.PROPERTIES_ROWS)
 
     def test_unknown_or_incomplete_typed_metadata_cannot_silently_drop_a_role(self) -> None:
         metadata = (REPO_ROOT / "crates/unica-coder/src/domain/role_operation.rs").read_text(encoding="utf-8")
@@ -1575,6 +1615,8 @@ class DeliveredAcceptanceServer(AcceptanceServer):
 
 
 def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cleanup=None):
+    from tests.ci.private_provider_failure_evidence import before_call, emit_failure_evidence
+
     default_workspace = corpus["workspace"]
     mismatches = []
     with tempfile.TemporaryDirectory(
@@ -1608,7 +1650,7 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cle
         current_workspace = corpus["scenarios"][0].get("workspace", default_workspace)
         server = fresh_server(current_workspace)
         try:
-            for scenario in corpus["scenarios"]:
+            for case_ordinal, scenario in enumerate(corpus["scenarios"]):
                 wanted = scenario.get("workspace", default_workspace)
                 if wanted != current_workspace:
                     # A scenario may address another fixture workspace;
@@ -1622,6 +1664,8 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cle
                 verification = []
                 for index, step in enumerate(scenario["wire"]):
                     label = f"{scenario['id']} step {index} {step['tool']}"
+                    cache_is_default = getattr(server, "provider_failure_cache_is_default", False)
+                    failure_baseline = before_call(server.workspace, cache_is_default=cache_is_default)
                     try:
                         arguments = substitute(step["args"], context)
                         if step.get("form"):
@@ -1672,6 +1716,11 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cle
                             for descriptor in step["fileAssertions"]
                         ]
                     context = candidate
+                if broken:
+                    emit_failure_evidence(
+                        server.workspace, failure_baseline, cache_is_default=cache_is_default,
+                        case_ordinal=case_ordinal, step_ordinal=index,
+                    )
                 if finish is not None and not broken:
                     finish(verification)
                 # A scenario that published changes leaves its mark on the

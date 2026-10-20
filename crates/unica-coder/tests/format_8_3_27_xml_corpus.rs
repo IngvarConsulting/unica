@@ -12,6 +12,10 @@ use unica_coder::application::{ToolHandler, UnicaApplication};
 
 #[path = "platform/daemon_teardown.rs"]
 mod daemon_teardown;
+#[path = "format_8_3_27_xml_corpus/empty_child_objects.rs"]
+mod empty_child_objects;
+#[path = "format_8_3_27_xml_corpus/new_xml.rs"]
+mod new_xml;
 #[path = "platform/format_8_3_27_xml_corpus.rs"]
 mod platform_support;
 
@@ -5657,6 +5661,17 @@ fn html_template_case_inventories_the_platform_page_set_layout() {
         .expect("HTML page must be captured as exact non-XML evidence");
     assert_eq!(page["seed"], false);
     assert_eq!(page["delta"], "created");
+    let published_page = root
+        .join("cases/template-add-html-document/workspace")
+        .join(page_suffix);
+    assert_eq!(
+        fs::read(published_page).unwrap(),
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/platform_8_3_27/html-template/native-ru.html"
+        )),
+        "published HTML must match the retained native 8.3.27.2074 page bytes",
+    );
 
     remove_temp_tree(&root);
 }

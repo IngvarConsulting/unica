@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -160,6 +161,40 @@ class CollectResultsTests(unittest.TestCase):
         signature = json.loads((line / "run.json").read_text(encoding="utf-8"))
         self.assertEqual((signature["ref"], signature["profile"]), ("release-v0.12", "all"))
 
+    def test_java_properties_escape_reserved_characters_and_utf16_code_units(self) -> None:
+        # Protocol fixtures, not Python unicode_escape: that decoder does not
+        # parse Java property keys and missed the whitespace-key collision.
+        cases = [
+            (" =:#!\\", "  leading", r"\ \=\:\#\!\\=\  leading" + "\n"),
+            ("tab\tform\fline\nreturn\r", "tab\tform\fline\nreturn\rslash\\",
+             r"tab\tform\fline\nreturn\r=tab\tform\fline\nreturn\rslash\\" + "\n"),
+            ("path", r"C:\temp\new\uface", r"path=C:\\temp\\new\\uface" + "\n"),
+            ("Ключ🙂", " Значение😀",
+             r"\u041a\u043b\u044e\u0447\ud83d\ude42=\ \u0417\u043d\u0430\u0447\u0435\u043d\u0438\u0435\ud83d\ude00" + "\n"),
+            ("controls", "\x00\x7f", r"controls=\u0000\u007f" + "\n"),
+            ("", "", "=\n"),
+        ]
+        for key, value, expected in cases:
+            with self.subTest(key=key, value=value):
+                actual = self.collect.properties_line(key, value)
+                self.assertEqual(actual, expected)
+                self.assertTrue(actual.isascii())
+
+    def test_scope_skip_environment_has_distinct_escaped_keys_for_both_runners(self) -> None:
+        output = self.root / "metadata"
+        output.mkdir()
+        self.collect.write_metadata(output, {**self.run, "routing_skips": [
+            {"runner": "macos-14", "inventory_count": 6296},
+            {"runner": "ubuntu-latest", "inventory_count": 6302},
+        ]}, "main", ["macos-14", "ubuntu-latest"], "")
+
+        lines = (output / "environment.properties").read_text(encoding="ascii").splitlines()
+        self.assertEqual([line.split("=", 1)[0] for line in lines if line.startswith("Rust")], [
+            r"Rust\ (macos-14)", r"Rust\ (ubuntu-latest)",
+        ])
+        self.assertIn(" 6296", next(line for line in lines if line.startswith(r"Rust\ (macos-14)=")))
+        self.assertIn(" 6302", next(line for line in lines if line.startswith(r"Rust\ (ubuntu-latest)=")))
+
     def test_no_result_artifacts_is_a_refusal(self) -> None:
         self.artifacts.mkdir(parents=True)
 
@@ -248,6 +283,154 @@ class CollectResultsTests(unittest.TestCase):
         self.assertEqual(gap["historyId"], self.allure.history_id("unica-coder::daemon::never_built", "ubuntu-latest"))
         # Чужой раннер и Python из хранимого прогона в состав не попадают.
         self.assertFalse(any(g["fullName"] == "unica-coder::other_runner::test" for g in gaps))
+
+    def scope_skip(self, **changes) -> dict:
+        return {"reason": "docs_only", "base_sha": "a" * 40, "head_sha": "b" * 40, **changes}
+
+    def routing_artifacts(self, marker: dict | None = None, **run) -> Path:
+        self.run = {**self.run, "ref": "main", "profile": "queue", "sha": "b" * 40, **run}
+        # Python читается первым: причина Rust skip не должна зависеть от порядка.
+        self.signed("results-aaa-python", "ubuntu-latest", "python", [self.python("ubuntu-latest")])
+        return self.signed(
+            "results-ci-routing/results-rust-ubuntu-latest", "ubuntu-latest", "rust", [],
+            scope_skip=self.scope_skip() if marker is None else marker,
+        )
+
+    def jobs_file(self, jobs: dict[str, str]) -> Path:
+        path = self.root / "jobs.json"
+        path.write_text(json.dumps({"jobs": [{"name": name, "conclusion": conclusion} for name, conclusion in jobs.items()]}))
+        return path
+
+    def archive_results(self, results: Path, name: str) -> Path:
+        archive = self.root / name
+        with tarfile.open(archive, "w:gz") as bundle:
+            for item in sorted(results.iterdir()):
+                bundle.add(item, arcname=item.name)
+        return archive
+
+    def test_consecutive_scope_skips_keep_original_inventory_provenance_and_never_pass(self) -> None:
+        origin = {"sha": "a" * 40, "run_url": "https://github.com/IngvarConsulting/unica/actions/runs/10"}
+        stored = self.root / "stored"
+        stored.mkdir()
+        self.allure.write(stored, self.rust("address::resolves", "ubuntu-latest"))
+        self.allure.write(stored, self.rust("address::resolves", "ubuntu-latest", "failed"))
+        self.allure.write(stored, self.rust("other_runner::test", "macos-14"))
+        self.allure.write(stored, self.python("ubuntu-latest"))
+        (stored / "run.json").write_text(json.dumps({**origin, "profile": "queue"}))
+        archive = self.archive_results(stored, "initial.tar.gz")
+        fetched = []
+
+        def fetch(url: str, target: Path) -> bool:
+            fetched.append(url)
+            if url != "https://site/data/main/results/queue.tar.gz":
+                return False
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(archive.read_bytes())
+            return True
+
+        self.collect.fetch = fetch
+        for index, (base, head, job) in enumerate((
+            ("a", "b", "Rust tests (ubuntu-latest)"),
+            ("b", "c", "Rust tests (${{ matrix.runner }})"),
+        )):
+            with self.subTest(skip=index + 1):
+                self.artifacts = self.root / f"artifacts-{index}"
+                marker = self.scope_skip(base_sha=base * 40, head_sha=head * 40)
+                self.routing_artifacts(marker, sha=head * 40)
+                jobs = self.jobs_file({job: "skipped"})
+                output = self.root / f"fresh-{index}"
+
+                stats = self.collect.collect(self.artifacts, output, jobs, "", "https://site")
+
+                self.assertEqual((stats["main"]["copied"], stats["main"]["filled"]), (1, 1))
+                results = [json.loads(path.read_text()) for path in (output / "main").glob("*-result.json")]
+                rust = [entry for entry in results if self.collect.label(entry, "language") == "rust"]
+                self.assertEqual(len(rust), 1)
+                entry = rust[0]
+                self.assertEqual(entry["status"], "skipped")
+                self.assertEqual(entry["historyId"], self.allure.history_id("unica-coder::address::resolves", "ubuntu-latest"))
+                self.assertEqual(self.collect.label(entry, "inventory_sha"), origin["sha"])
+                self.assertEqual(self.collect.label(entry, "inventory_run_url"), origin["run_url"])
+                self.assertEqual(self.collect.label(entry, "profile"), "queue")
+                self.assertIn("docs-only", entry["statusDetails"]["message"])
+                self.assertIn(origin["run_url"], entry["statusDetails"]["message"])
+                self.assertNotIn("раннер не дошёл", entry["statusDetails"]["message"])
+                signature = json.loads((output / "main/run.json").read_text())
+                self.assertEqual(signature["sha"], head * 40)
+                skip = signature["routing_skips"][0]
+                self.assertEqual(skip["scope_skip"], marker)
+                self.assertEqual(skip["inventory_sources"], [origin])
+                self.assertEqual(skip["inventory_count"], 1)
+                archive = self.archive_results(output / "main", f"skip-{index}.tar.gz")
+        self.assertEqual(fetched, ["https://site/data/main/results/queue.tar.gz"] * 2)
+
+    def test_scope_skip_without_inventory_is_metadata_without_invented_cases(self) -> None:
+        self.routing_artifacts()
+        self.collect.fetch = lambda _url, _target: False
+        jobs = self.jobs_file({"Rust tests (ubuntu-latest)": "skipped"})
+        output = self.root / "fresh"
+
+        stats = self.collect.collect(self.artifacts, output, jobs, "", "https://site")
+
+        self.assertEqual((stats["main"]["copied"], stats["main"]["filled"]), (1, 0))
+        entries = [json.loads(path.read_text()) for path in (output / "main").glob("*-result.json")]
+        self.assertEqual([self.collect.label(entry, "language") for entry in entries], ["python"])
+        signature = json.loads((output / "main/run.json").read_text())
+        skip = signature["routing_skips"][0]
+        self.assertEqual(skip["scope_skip"], self.scope_skip())
+        self.assertEqual(skip["inventory_count"], 0)
+        self.assertEqual(skip["inventory_sources"], [])
+        environment = (output / "main/environment.properties").read_text(encoding="ascii")
+        self.assertIn("docs-only", environment)
+        self.assertIn("ubuntu-latest", environment)
+
+    def test_scope_skip_requires_a_skipped_job_and_rejects_conflicting_runner_outcomes(self) -> None:
+        self.routing_artifacts()
+        for conclusions in ({}, {"Rust tests (ubuntu-latest)": "success"}, {
+            "Rust tests (ubuntu-latest)": "failure", "Rust tests (${{ matrix.runner }})": "skipped",
+        }, {"Rust tests (${{ matrix.runner }})": "cancelled"}):
+            with self.subTest(conclusions=conclusions):
+                with self.assertRaisesRegex(ValueError, "scope_skip"):
+                    self.collect.collect(self.artifacts, self.root / "fresh", self.jobs_file(conclusions), "", "")
+
+    def test_scope_skip_rejects_malformed_identity_and_unsupported_scope(self) -> None:
+        path = self.routing_artifacts()
+        signature = json.loads((path / "run.json").read_text())
+        jobs = self.jobs_file({"Rust tests (ubuntu-latest)": "skipped"})
+        invalid = [
+            {"scope_skip": None}, {"scope_skip": []}, {"scope_skip": "docs_only"},
+            {"scope_skip": self.scope_skip(reason="unknown")},
+            {"scope_skip": {"reason": "docs_only", "head_sha": "b" * 40}},
+            {"scope_skip": self.scope_skip(base_sha="short")},
+            {"scope_skip": self.scope_skip(base_sha="0" * 40)},
+            {"scope_skip": self.scope_skip(extra=True)},
+            {"scope_skip": self.scope_skip(head_sha="c" * 40)},
+            {"scope_skip": self.scope_skip(base_sha="b" * 40)},
+            {"profile": "large"}, {"profile": []}, {"ecosystem": "python"}, {"runner": ""},
+            {"run_id": "another-run"},
+        ]
+        for changes in invalid:
+            with self.subTest(changes=changes):
+                (path / "run.json").write_text(json.dumps({**signature, **changes}))
+                with self.assertRaisesRegex(ValueError, "scope_skip"):
+                    self.collect.collect(self.artifacts, self.root / "fresh", jobs, "", "")
+
+    def test_scope_skip_rejects_actual_rust_results_or_a_plan(self) -> None:
+        path = self.routing_artifacts()
+        jobs = self.jobs_file({"Rust tests (ubuntu-latest)": "skipped"})
+        result = self.allure.write(path, self.rust("actually::ran", "ubuntu-latest"))
+        with self.assertRaisesRegex(ValueError, "scope_skip"):
+            self.collect.collect(self.artifacts, self.root / "fresh", jobs, "", "")
+        result.unlink()
+        # Смотрим на реальные записи, даже если artifact ошибочно назван Python.
+        actual = self.signed("results-python-mislabeled", "ubuntu-latest", "python", [self.rust("actually::ran", "ubuntu-latest")])
+        with self.assertRaisesRegex(ValueError, "scope_skip"):
+            self.collect.collect(self.artifacts, self.root / "fresh", jobs, "", "")
+        for record in actual.glob("*-result.json"):
+            record.unlink()
+        self.plan("plan-rust-ubuntu-latest", "ubuntu-latest", ["actually::planned"])
+        with self.assertRaisesRegex(ValueError, "scope_skip"):
+            self.collect.collect(self.artifacts, self.root / "fresh", jobs, "", "")
 
     def test_job_name_and_artifact_prefixes_match_the_workflows(self) -> None:
         """Имя Rust-джобы и шаблоны артефактов — строковая связь; переименование красит тест."""

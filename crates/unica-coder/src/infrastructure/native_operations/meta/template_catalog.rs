@@ -696,7 +696,7 @@ fn emit_meta_catalog_xml(
 
     lines.push("\t</Catalog>".to_string());
     lines.push("</MetaDataObject>".to_string());
-    Ok((format!("{}\n", lines.join("\n")), obj_uuid))
+    Ok((lines.join("\r\n"), obj_uuid))
 }
 
 pub(super) fn minimal_metadata_xml(
@@ -823,7 +823,7 @@ pub(super) fn minimal_metadata_xml(
     }
     lines.push(format!("\t</{object_type}>"));
     lines.push("</MetaDataObject>".to_string());
-    Ok((format!("{}\n", lines.join("\n")), obj_uuid))
+    Ok((lines.join("\r\n"), obj_uuid))
 }
 
 #[cfg(test)]
