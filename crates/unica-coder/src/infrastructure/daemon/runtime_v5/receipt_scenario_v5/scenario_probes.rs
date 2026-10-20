@@ -203,11 +203,21 @@ impl V5ReceiptRuntime {
         key: &ReceiptKey,
         deadline: Instant,
     ) -> Result<V5ServerResponse, String> {
+        super::super::observation::mark(
+            "handoff.recover",
+            "enter_original_deadline",
+            Some(deadline.saturating_duration_since(Instant::now())),
+        );
         let epoch_ms = self.epoch_clock.now_epoch_millis();
         let state = self
             .receipt_ledger
             .recover(key.clone(), deadline)
             .map_err(|error| format!("recover Task handoff: {error}"))?;
+        super::super::observation::mark(
+            state.kind().diagnostic_name(),
+            "handoff_recovered_seed_branch",
+            Some(deadline.saturating_duration_since(Instant::now())),
+        );
         let handoff = match state {
             ReceiptState::TaskPromisedActorBound(promised) => self
                 .receipt_ledger

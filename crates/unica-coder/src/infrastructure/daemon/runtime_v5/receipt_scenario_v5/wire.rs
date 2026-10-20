@@ -168,6 +168,8 @@ pub(super) enum ReceiptScenarioAction {
         count: u32,
     },
     FillTaskLinks,
+    /// Full physical read after a completed Restart and before listener publication.
+    InspectTaskProjectionFromDisk,
     FillTaskLinksLeavingOneReservationSlot,
     FillTombstones,
     SeedTombstoneCatalog {

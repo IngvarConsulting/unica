@@ -10,6 +10,7 @@ use crate::application::invocation_store_v5::{
     V5TaskStatus, V5TaskStoreError, V5TerminalPublication,
 };
 use crate::application::receipt_ledger::{canonical_v5_terminal, ReceiptTerminalOutcome};
+use crate::application::receipt_ledger_actor::observation;
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::invocation::TaskId;
 use crate::infrastructure::platform::filesystem::{
@@ -498,10 +499,12 @@ impl FileInvocationStoreV5 {
             task_id: record.task_id,
             operation,
         })?;
-        sync_directory(&self.root_file).map_err(|_| V5TaskStoreError::CommitUncertain {
-            task_id: record.task_id,
-            operation,
-        })?;
+        sync_directory(&self.root_file)
+            .inspect_err(|error| observation::io_failure("task.publish.parent_sync", error))
+            .map_err(|_| V5TaskStoreError::CommitUncertain {
+                task_id: record.task_id,
+                operation,
+            })?;
         self.verify_root_authority()
             .map_err(|_| V5TaskStoreError::CommitUncertain {
                 task_id: record.task_id,
@@ -548,10 +551,12 @@ impl FileInvocationStoreV5 {
             task_id,
             operation: V5CommitOperation::DeleteTerminal,
         })?;
-        sync_directory(&self.root_file).map_err(|_| V5TaskStoreError::CommitUncertain {
-            task_id,
-            operation: V5CommitOperation::DeleteTerminal,
-        })?;
+        sync_directory(&self.root_file)
+            .inspect_err(|error| observation::io_failure("task.delete.parent_sync", error))
+            .map_err(|_| V5TaskStoreError::CommitUncertain {
+                task_id,
+                operation: V5CommitOperation::DeleteTerminal,
+            })?;
         self.verify_root_authority()
             .map_err(|_| V5TaskStoreError::CommitUncertain {
                 task_id,
@@ -1043,12 +1048,17 @@ impl Write for BoundedRecordWriter<'_> {
                 self.bytes += written;
                 Ok(written)
             }
-            Err(error) => Err(error),
+            Err(error) => {
+                observation::io_failure("task.record.write", &error);
+                Err(error)
+            }
         }
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.file.flush()
+        self.file
+            .flush()
+            .inspect_err(|error| observation::io_failure("task.record.flush", error))
     }
 }
 
@@ -1080,6 +1090,11 @@ fn serialize_record_bounded(
 
 fn check_deadline(deadline: ProviderDeadline) -> Result<(), V5TaskStoreError> {
     if deadline.is_elapsed() {
+        observation::failure(
+            "task.check_deadline",
+            "DeadlineExceeded",
+            Some(Duration::ZERO),
+        );
         Err(V5TaskStoreError::DeadlineExceeded)
     } else {
         Ok(())
@@ -1102,6 +1117,7 @@ impl From<io::Error> for V5TaskStoreError {
 }
 
 fn storage_error(operation: &'static str, error: io::Error) -> V5TaskStoreError {
+    observation::io_failure(operation, &error);
     V5TaskStoreError::Storage {
         operation,
         message: error.to_string(),

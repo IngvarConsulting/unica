@@ -33,7 +33,7 @@ use crate::application::receipt_ledger::{
     TaskPromisedUnboundReceipt, TaskRetirementPendingReceipt, TaskTerminalBoundReceipt,
     TerminalDigest, DIRECT_TERMINAL_RETENTION_MS,
 };
-use crate::application::receipt_ledger_actor::ReceiptLedgerActor;
+use crate::application::receipt_ledger_actor::{observation, ReceiptLedgerActor};
 use crate::domain::cancellation::{CancellationToken, FactualOutcomeAuthority};
 use crate::domain::refusal::RefusalCode;
 use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
@@ -1418,10 +1418,20 @@ impl V5TaskProjection {
         hooks: &dyn V5RuntimeHooks,
     ) -> Result<(V5StoredInvocationRecord, TaskBoundReceipt), V5TaskProjectionFailure> {
         let provider_deadline = crate::domain::code_intelligence::ProviderDeadline::new(deadline);
+        observation::mark(
+            "materialize.reserve_link",
+            "enter",
+            Some(deadline.saturating_duration_since(Instant::now())),
+        );
         let reservation = self
             .lifecycle_links
             .reserve_task_link(key.clone(), link.clone(), provider_deadline)
             .map_err(V5TaskProjectionFailure::from_link_store)?;
+        observation::mark(
+            "materialize.reserve_link",
+            "complete",
+            Some(deadline.saturating_duration_since(Instant::now())),
+        );
         hooks.event(
             V5ReceiptRuntimeEventKind::TaskLinkCapacityReserved,
             bind_epoch_ms,
@@ -1485,6 +1495,11 @@ impl V5TaskProjection {
             self.task_store
                 .inject_next_publication_failure(PublicationFailure::AfterRenameBeforeSync);
         }
+        observation::mark(
+            "materialize.task_create",
+            "enter",
+            Some(deadline.saturating_duration_since(Instant::now())),
+        );
         let created = self
             .task_store
             .create_exact(new_record, provider_deadline)
@@ -1495,6 +1510,16 @@ impl V5TaskProjection {
                     true,
                 )
             })?;
+        observation::mark(
+            "materialize.task_create",
+            "complete",
+            Some(deadline.saturating_duration_since(Instant::now())),
+        );
+        observation::mark(
+            "materialize.task_readback",
+            "enter",
+            Some(deadline.saturating_duration_since(Instant::now())),
+        );
         let mut readback = self
             .task_store
             .get(created.task_id, provider_deadline)
@@ -1512,6 +1537,11 @@ impl V5TaskProjection {
                 },
             ));
         }
+        observation::mark(
+            "materialize.task_readback",
+            "complete",
+            Some(deadline.saturating_duration_since(Instant::now())),
+        );
         hooks.event(V5ReceiptRuntimeEventKind::TaskStoreCreated, bind_epoch_ms);
         if cancel_requested && !readback.cancel_requested {
             readback = self
@@ -1526,6 +1556,11 @@ impl V5TaskProjection {
                 })?;
         }
         let task = receipt_task_projection_from_store(&readback)?;
+        observation::mark(
+            "materialize.bind_link",
+            "enter",
+            Some(deadline.saturating_duration_since(Instant::now())),
+        );
         let bound = self
             .lifecycle_links
             .materialize_task_bound(
@@ -1537,6 +1572,11 @@ impl V5TaskProjection {
                 provider_deadline,
             )
             .map_err(V5TaskProjectionFailure::from_link_store)?;
+        observation::mark(
+            "materialize.bind_link",
+            "complete",
+            Some(deadline.saturating_duration_since(Instant::now())),
+        );
         if record_reservation_conversion {
             hooks.event(
                 V5ReceiptRuntimeEventKind::TaskLinkReservationConverted,
@@ -2493,6 +2533,24 @@ impl V5TaskProjectionFailure {
     }
 
     fn from_link_store(error: TaskLifecycleLinkStoreError) -> Self {
+        observation::failure(
+            "projection.from_link_store",
+            match &error {
+                TaskLifecycleLinkStoreError::AlreadyOwned => "AlreadyOwned",
+                TaskLifecycleLinkStoreError::DeadlineExceeded => "DeadlineExceeded",
+                TaskLifecycleLinkStoreError::NotFound { .. } => "NotFound",
+                TaskLifecycleLinkStoreError::AlreadyMaterialized { .. } => "AlreadyMaterialized",
+                TaskLifecycleLinkStoreError::IdentityMismatch => "IdentityMismatch",
+                TaskLifecycleLinkStoreError::ReservationMismatch => "ReservationMismatch",
+                TaskLifecycleLinkStoreError::StateMismatch => "StateMismatch",
+                TaskLifecycleLinkStoreError::VersionMismatch { .. } => "VersionMismatch",
+                TaskLifecycleLinkStoreError::RecordTooLarge { .. } => "RecordTooLarge",
+                TaskLifecycleLinkStoreError::CommitUncertain { .. } => "CommitUncertain",
+                TaskLifecycleLinkStoreError::Corrupt(_) => "Corrupt",
+                TaskLifecycleLinkStoreError::Storage { .. } => "Storage",
+            },
+            None,
+        );
         match error {
             TaskLifecycleLinkStoreError::DeadlineExceeded => Self {
                 error: ReceiptLedgerError::DeadlineExceeded,
@@ -2525,6 +2583,21 @@ impl V5TaskProjectionFailure {
         receipt_key_digest: ReceiptKeyDigest,
         capacity_is_invariant: bool,
     ) -> Self {
+        observation::failure(
+            "projection.from_task_store",
+            match &error {
+                V5TaskStoreError::DeadlineExceeded => "DeadlineExceeded",
+                V5TaskStoreError::Capacity { .. } => "Capacity",
+                V5TaskStoreError::RecordTooLarge { .. } => "RecordTooLarge",
+                V5TaskStoreError::NotFound { .. } => "NotFound",
+                V5TaskStoreError::CommitUncertain { .. } => "CommitUncertain",
+                V5TaskStoreError::Mismatch { .. } => "Mismatch",
+                V5TaskStoreError::AlreadyOwned => "AlreadyOwned",
+                V5TaskStoreError::Corrupt(_) => "Corrupt",
+                V5TaskStoreError::Storage { .. } => "Storage",
+            },
+            None,
+        );
         match error {
             V5TaskStoreError::DeadlineExceeded => Self {
                 error: ReceiptLedgerError::DeadlineExceeded,
@@ -3662,12 +3735,32 @@ impl V5ReceiptRuntime {
         // lookup and the reservation. The lock is one of 64 stripes: while it
         // is held — here one link read and one ledger write, by a handoff the
         // materialization of its Task — any key on the same stripe waits.
+        observation::mark(
+            "submit.exact_bound_lookup",
+            "enter",
+            Some(deadline.saturating_duration_since(Instant::now())),
+        );
         if let Some(reply) = self.exact_bound_task_reply(&key, deadline)? {
             return Ok(reply);
         }
+        observation::mark(
+            "submit.exact_bound_lookup",
+            "complete_no_bound_task",
+            Some(deadline.saturating_duration_since(Instant::now())),
+        );
         self.hooks
             .pause(V5PausePoint::BeforeSubmitReservation, deadline)?;
+        observation::mark(
+            "submit.reserve",
+            "enter",
+            Some(deadline.saturating_duration_since(Instant::now())),
+        );
         let outcome = self.receipt_ledger.reserve(key.clone(), cutoff, deadline)?;
+        observation::mark(
+            "submit.reserve",
+            "complete",
+            Some(deadline.saturating_duration_since(Instant::now())),
+        );
         drop(stripe);
         let created = matches!(&outcome, ReserveOutcome::Created(_));
         if created {

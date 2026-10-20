@@ -1498,3 +1498,208 @@ fn fail_stop_request_without_exit_belongs_only_to_its_captured_process_life() {
     assert!(!fresh.process_exited(), "a stop request is not actual exit");
     assert_eq!(control.process_exit_elapsed_ms(), None);
 }
+
+#[test]
+fn fresh_post_restart_projection_detects_missing_old_non_exact_task() {
+    let identity = CoreIdentity::production_v5();
+    let state_root = ScenarioStateRoot::new().expect("state fixture");
+    let workspace = ScenarioWorkspace::new().expect("workspace fixture");
+    let clock = Arc::new(ScenarioEpochClock::new(SCENARIO_INITIAL_EPOCH_MS, false));
+    let arguments = Map::new();
+    let (mut keys, mut cached) = fill_linked_task_pool(
+        state_root.path(),
+        &identity,
+        Arc::clone(&clock),
+        &arguments,
+        workspace.hint(),
+        3,
+    )
+    .expect("three historical terminal Tasks");
+    let old_key = keys[0].clone();
+    let old_rows = cached.tasks.clone();
+    let old_links = cached.task_links.clone();
+    assert_eq!(old_rows.len(), 3);
+    let exact = fresh_key_for_workspace(&identity, &arguments, workspace.hint()).unwrap();
+    assert_ne!(old_key.reserved_task_id(), exact.reserved_task_id());
+    seed_receipt_state(
+        state_root.path(),
+        &identity,
+        &clock,
+        exact.clone(),
+        ScenarioSeedReceiptState::TaskPromisedActorBound,
+        false,
+        None,
+    )
+    .unwrap();
+    keys.push(exact.clone());
+    let state = DaemonStateDirectory::open(state_root.path(), &identity).unwrap();
+    let config =
+        scenario_server_config_with_clock(state_root.path(), &identity, None, &clock).unwrap();
+    // This is the actual successful successor startup/reconciliation used by
+    // Restart. The corruption is injected only after its writer is dropped.
+    let runtime = V5ReceiptRuntime::open_with_epoch_clock(&state, &config, clock.clone()).unwrap();
+    merge_exact_runtime_task_projection(
+        &mut cached,
+        &runtime,
+        &exact,
+        state_root.path(),
+        &identity,
+    )
+    .unwrap();
+    drop(runtime);
+    assert_eq!(cached.tasks.len(), 4);
+    refresh_task_projection_from_disk(
+        &mut cached,
+        state_root.path(),
+        &identity,
+        Arc::clone(&clock),
+        &keys,
+        &HashMap::new(),
+    )
+    .expect("healthy full physical control");
+    for row in &old_rows {
+        assert!(cached.tasks.contains(row));
+    }
+    for link in &old_links {
+        assert!(cached.task_links.contains(link));
+    }
+    let removed = state
+        .path()
+        .join("tasks")
+        .join(format!("{}.json", old_key.reserved_task_id()));
+    std::fs::remove_file(&removed).expect("external removal after successful restart/drop");
+    assert!(
+        state
+            .path()
+            .join("tasks")
+            .join(format!("{}.json", exact.reserved_task_id()))
+            .is_file(),
+        "new exact Task is untouched"
+    );
+    let result = refresh_task_projection_from_disk(
+        &mut cached,
+        state_root.path(),
+        &identity,
+        clock,
+        &keys,
+        &HashMap::new(),
+    );
+    assert!(
+        result.is_err(),
+        "a cached-only refresh wrongly accepts missing old Task: {result:?}"
+    );
+    // A failed scan does not replace the prior observation with partial data.
+    assert_eq!(cached.tasks.len(), 4);
+}
+
+#[test]
+fn late_exact_submit_keeps_original_lazy_cancel_deadline_and_all_durable_winners() {
+    let identity = CoreIdentity::production_v5();
+    let state_root = ScenarioStateRoot::new().unwrap();
+    let workspace = ScenarioWorkspace::new().unwrap();
+    let clock = Arc::new(ScenarioEpochClock::new(SCENARIO_INITIAL_EPOCH_MS, false));
+    let arguments = Map::new();
+    let state = DaemonStateDirectory::open(state_root.path(), &identity).unwrap();
+    let telemetry = Arc::new(V5ReceiptRuntimeTelemetry::new());
+    let config = scenario_server_config_with_clock(state_root.path(), &identity, None, &clock)
+        .unwrap()
+        .with_runtime_hooks_for_test(ScenarioHooks::install(telemetry.clone(), None));
+    let runtime =
+        Arc::new(V5ReceiptRuntime::open_with_epoch_clock(&state, &config, clock.clone()).unwrap());
+    let keys: Vec<_> = (0..32)
+        .map(|_| fresh_key_for_workspace(&identity, &arguments, workspace.hint()).unwrap())
+        .collect();
+    let causal = super::super::observation::Context::new_for_test();
+    let causal_scope = causal.install();
+    let original = Instant::now() + Duration::from_millis(125);
+    let winners = runtime
+        .receipt_ledger
+        .publish_cancelled_direct_batch(
+            keys.iter()
+                .map(|key| {
+                    (
+                        key.clone(),
+                        OriginalCutoffDescriptor::new(1, 7_000).unwrap(),
+                    )
+                })
+                .collect(),
+            1,
+            canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled).unwrap(),
+            original,
+        )
+        .expect("actual batch is confirmed before delayed submit");
+    // A controlled wait for this exact existing deadline, not a fresh budget
+    // or a fitted arbitrary delay. Spurious park wakeups cannot skip expiry.
+    while let Some(remaining) = original.checked_duration_since(Instant::now()) {
+        std::thread::park_timeout(remaining);
+    }
+    let invocation = V5InvocationRequest::new(
+        keys[0].invocation_id(),
+        keys[0].reserved_task_id(),
+        V5ToolIdentity::View,
+        arguments,
+        unica_bootstrap::ResolvedWorkspace::launch_cwd(workspace.hint().to_owned()),
+        7_000,
+    )
+    .unwrap();
+    let mut frame = serde_json::to_vec(&V5ClientRequest::SubmitInvocation { invocation }).unwrap();
+    frame.push(b'\n');
+    let response = runtime.submit_invocation(decode_v5_request_frame(frame).unwrap(), 1, original);
+    let error = response
+        .err()
+        .expect("late exact Submit must not become a successful quick cancellation");
+    assert_eq!(error, ReceiptLedgerError::DeadlineExceeded);
+    let callbacks = telemetry.snapshot().callbacks;
+    assert_eq!(
+        (
+            callbacks.validation,
+            callbacks.admission,
+            callbacks.prepare,
+            callbacks.execute
+        ),
+        (0, 0, 0, 0),
+        "late submit may not enter a domain callback"
+    );
+    assert!(
+        original <= Instant::now(),
+        "original 125ms oracle is deliberately RED"
+    );
+    // Stop the measured operation's scope before independent recovery I/O.
+    // Overflow/first-cause preservation is checked separately at the buffer.
+    drop(causal_scope);
+    drop(runtime);
+    let successor =
+        V5ReceiptRuntime::open_with_epoch_clock(&state, &config, clock.clone()).unwrap();
+    for (key, winner) in keys.iter().zip(&winners) {
+        assert_eq!(
+            successor
+                .receipt_ledger
+                .recover(key.clone(), Instant::now() + SCENARIO_OPERATION_TIMEOUT)
+                .unwrap(),
+            ReceiptState::DirectTerminalUnacked(winner.clone())
+        );
+        assert!(matches!(
+            winner.terminal().outcome(),
+            ReceiptTerminalOutcome::Cancelled
+        ));
+    }
+    drop(successor);
+    let projection =
+        inspect_task_projection(state_root.path(), &identity, clock, &keys, &HashMap::new())
+            .unwrap();
+    assert!(projection.tasks.is_empty());
+    assert!(projection.task_links.is_empty());
+    let trace = causal.snapshot_for_test();
+    assert_eq!(trace["overflow"], 0);
+    let events = trace["events"].as_array().unwrap();
+    assert!(events
+        .iter()
+        .any(|event| event["point"] == "started_original_deadline"));
+    assert!(events
+        .iter()
+        .any(|event| event["point"] == "started_effective_deadline"));
+    assert!(
+        trace["firstError"].is_object(),
+        "source failure was not captured before the projection mapping: {trace}"
+    );
+}

@@ -228,6 +228,7 @@ enum Action {
         count: u32,
     },
     FillTaskLinks,
+    InspectTaskProjectionFromDisk,
     FillTaskLinksLeavingOneReservationSlot,
     FillTombstones,
     SeedTombstoneCatalog {
@@ -12527,6 +12528,7 @@ fn task_store_4097_materialization_preserves_existing_tasks_listener_and_recover
             V5SafeFailureReason::OutcomeUncertain,
         ),
     ] {
+        eprintln!("TASK4097_BRANCH {state:?}");
         let report = execute(Scenario::fake(vec![
             Action::FillTaskLinks,
             Action::PublishListener,
@@ -12544,6 +12546,7 @@ fn task_store_4097_materialization_preserves_existing_tasks_listener_and_recover
             },
             checkpoint_action("materialized"),
             Action::Restart,
+            Action::InspectTaskProjectionFromDisk,
             Action::PublishListener,
             Action::Recover {
                 key: KeyCase::Exact,

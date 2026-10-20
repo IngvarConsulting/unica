@@ -1,3 +1,5 @@
+pub(crate) mod observation;
+
 use crate::application::receipt_ledger::{
     receipt_key_digest, AcknowledgedTombstoneReceipt, CancelResolution, CommittedDirectPublication,
     DirectTerminalUnackedReceipt, OriginalCutoffDescriptor, ProvenTaskLinkCapacity, ReceiptKey,
@@ -409,6 +411,40 @@ enum Command {
     },
 }
 
+impl Command {
+    fn observation(&self) -> observation::Context {
+        match self {
+            Self::SnapshotCatalog { ticket, .. } => ticket.observation.clone(),
+            Self::Generation { ticket, .. } => ticket.observation.clone(),
+            Self::RotateGenerationForTest { ticket, .. } => ticket.observation.clone(),
+            Self::Reserve { ticket, .. } => ticket.observation.clone(),
+            Self::BindReservedActor { ticket, .. } => ticket.observation.clone(),
+            Self::MarkReservedBegun { ticket, .. } => ticket.observation.clone(),
+            Self::PromiseTaskUnbound { ticket, .. } => ticket.observation.clone(),
+            Self::BindPromisedTaskActor { ticket, .. } => ticket.observation.clone(),
+            Self::BeginBoundTaskHandoff { ticket, .. } => ticket.observation.clone(),
+            Self::StageBoundTaskHandoffTerminal { ticket, .. } => ticket.observation.clone(),
+            Self::RetainBegunTaskAfterLinkCapacity { ticket, .. } => ticket.observation.clone(),
+            Self::CompleteBoundTaskHandoff { ticket, .. } => ticket.observation.clone(),
+            Self::CompleteStagedTaskHandoff { ticket, .. } => ticket.observation.clone(),
+            Self::RequestTaskCancel { ticket, .. } => ticket.observation.clone(),
+            Self::PublishReceiptBackedTaskTerminal { ticket, .. } => ticket.observation.clone(),
+            Self::RequestCancelOrReserve { ticket, .. } => ticket.observation.clone(),
+            Self::PublishCancelledDirectBatch { ticket, .. } => ticket.observation.clone(),
+            Self::ReserveBatch { ticket, .. } => ticket.observation.clone(),
+            Self::BindReservedActorBatch { ticket, .. } => ticket.observation.clone(),
+            Self::MarkReservedBegunBatch { ticket, .. } => ticket.observation.clone(),
+            Self::PublishDirectTerminalBatch { ticket, .. } => ticket.observation.clone(),
+            Self::AcknowledgeDirectBatch { ticket, .. } => ticket.observation.clone(),
+            Self::PublishDirectTerminal { ticket, .. } => ticket.observation.clone(),
+            Self::AcknowledgeDirect { ticket, .. } => ticket.observation.clone(),
+            Self::ReclaimExpiredTombstones { ticket, .. } => ticket.observation.clone(),
+            Self::Recover { ticket, .. } => ticket.observation.clone(),
+            Self::ResolveTask { ticket, .. } => ticket.observation.clone(),
+        }
+    }
+}
+
 enum TicketState<R> {
     Queued,
     /// Begun, with the deadline the running port call is held to.
@@ -418,6 +454,7 @@ enum TicketState<R> {
 }
 
 struct Ticket<R> {
+    observation: observation::Context,
     deadline: OperationDeadline,
     running_timeout_error: ReceiptLedgerError,
     _heavy_result_permit: Option<HeavyResultPermit>,
@@ -427,7 +464,13 @@ struct Ticket<R> {
 impl<R> Ticket<R> {
     fn queued(deadline: impl Into<OperationDeadline>, timeout_class: TimeoutClass) -> Self {
         let deadline = deadline.into();
+        observation::mark(
+            "actor.ticket",
+            "queued_original_deadline",
+            deadline.remaining_at(Instant::now()),
+        );
         Self {
+            observation: observation::capture(),
             deadline,
             running_timeout_error: timeout_class.running_error(),
             _heavy_result_permit: None,
@@ -441,7 +484,13 @@ impl<R> Ticket<R> {
         heavy_result_permit: HeavyResultPermit,
     ) -> Self {
         let deadline = deadline.into();
+        observation::mark(
+            "actor.ticket",
+            "queued_original_deadline",
+            deadline.remaining_at(Instant::now()),
+        );
         Self {
+            observation: observation::capture(),
             deadline,
             running_timeout_error: timeout_class.running_error(),
             _heavy_result_permit: Some(heavy_result_permit),
@@ -471,6 +520,16 @@ impl<R> Ticket<R> {
                             .map_or(deadline, |floor| deadline.max(floor)),
                     ),
                 };
+                observation::mark(
+                    "actor.ticket",
+                    "started_original_deadline",
+                    self.deadline.remaining_at(now),
+                );
+                observation::mark(
+                    "actor.ticket",
+                    "started_effective_deadline",
+                    running.remaining_at(now),
+                );
                 *state = TicketState::Running(running);
                 Some(running)
             }
@@ -480,6 +539,15 @@ impl<R> Ticket<R> {
                 } else {
                     ReceiptLedgerError::StoreUnavailable
                 };
+                observation::failure(
+                    "actor.ticket.before_port",
+                    if health.is_ready() {
+                        "DeadlineExceeded"
+                    } else {
+                        "StoreUnavailable"
+                    },
+                    self.deadline.remaining_at(now),
+                );
                 *state = TicketState::Finished(Some(Err(error)));
                 None
             }
@@ -508,6 +576,15 @@ impl<R> Ticket<R> {
         completed_at: Instant,
         health: &ActorHealth,
     ) {
+        observation::mark(
+            "actor.ticket",
+            if result.is_ok() {
+                "port_returned_ok"
+            } else {
+                "port_returned_error"
+            },
+            self.deadline.remaining_at(completed_at),
+        );
         let mut state = self.state.lock().expect("receipt ticket mutex poisoned");
         let should_latch = match &*state {
             TicketState::Running(running) if running.is_elapsed_at(completed_at) => {
@@ -562,11 +639,21 @@ impl<R> Ticket<R> {
                     return Err(ReceiptLedgerError::StoreUnavailable);
                 }
                 TicketState::Queued if self.deadline.is_elapsed_at(Instant::now()) => {
+                    observation::failure(
+                        "actor.wait.queued",
+                        "DeadlineExceeded",
+                        Some(Duration::ZERO),
+                    );
                     *state = TicketState::TimedOut(None);
                     drop(state);
                     return Err(ReceiptLedgerError::DeadlineExceeded);
                 }
                 TicketState::Running(running) if running.is_elapsed_at(Instant::now()) => {
+                    observation::failure(
+                        "actor.wait.running",
+                        "RunningDeadlineExceeded",
+                        Some(Duration::ZERO),
+                    );
                     *state = TicketState::TimedOut(None);
                     drop(state);
                     health.latch_recovery_required();
@@ -776,6 +863,11 @@ impl ReceiptLedgerActor {
     ) -> Result<ReserveOutcome, ReceiptLedgerError> {
         let deadline = deadline.into();
         if deadline.is_elapsed_at(Instant::now()) {
+            observation::failure(
+                "actor.reserve.before_enqueue",
+                "DeadlineExceeded",
+                Some(Duration::ZERO),
+            );
             return Err(ReceiptLedgerError::DeadlineExceeded);
         }
         if !self.health.is_ready() {
@@ -1597,6 +1689,7 @@ fn run_worker(
     health: Arc<ActorHealth>,
 ) {
     while let Ok(command) = receiver.recv() {
+        let _observation = command.observation().install();
         match command {
             Command::SnapshotCatalog {
                 deadline: _,

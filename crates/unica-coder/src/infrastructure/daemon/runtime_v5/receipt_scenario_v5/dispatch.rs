@@ -2266,6 +2266,33 @@ fn run_receipt_scenario_with_control_observer(
                     push_known_key(&mut known_keys, key);
                 }
             }
+            ReceiptScenarioAction::InspectTaskProjectionFromDisk => {
+                if !startup_listener_override
+                    || startup_failed
+                    || listener_published
+                    || live_daemon.is_some()
+                    || live_actor.is_some()
+                    || operation_runtime.is_some()
+                    || !operations.is_empty()
+                    || pending_submit.is_some()
+                    || live_task_projection.is_some()
+                {
+                    return Err(unsupported_shape("physical Task inspection requires completed Restart before listener publication"));
+                }
+                let projection = bulk_task_projection.as_mut().ok_or_else(|| {
+                    unsupported_shape(
+                        "physical Task inspection requires an existing bulk projection",
+                    )
+                })?;
+                refresh_task_projection_from_disk(
+                    projection,
+                    state.path(),
+                    &identity,
+                    Arc::clone(&clock),
+                    &known_keys,
+                    &seeded_task_versions,
+                )?;
+            }
             ReceiptScenarioAction::FillTaskLinks => {
                 let (keys, projection) = fill_linked_task_pool(
                     state.path(),
@@ -2380,10 +2407,16 @@ fn run_receipt_scenario_with_control_observer(
                     live_task_projection = None;
                     continue;
                 }
-                let response = runtime.materialize_task_handoff_for_test(
-                    &exact_key,
-                    Instant::now() + SCENARIO_OPERATION_TIMEOUT,
-                )?;
+                let causal = super::super::observation::Context::from_environment_for_test();
+                let result = {
+                    let _causal = causal.install();
+                    runtime.materialize_task_handoff_for_test(
+                        &exact_key,
+                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                    )
+                };
+                causal.emit_for_test(&label, result.is_ok());
+                let response = result?;
                 control.record_operation_event(&label, "spawned");
                 control.record_operation_event(&label, "completed");
                 operations.insert(

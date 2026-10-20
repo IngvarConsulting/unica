@@ -20,6 +20,7 @@ use crate::application::receipt_ledger::{
     ReceiptLedgerCatalogSnapshot, ReceiptLedgerCatalogSnapshotAuthority,
     ReceiptLedgerCatalogSnapshotParts,
 };
+use crate::application::receipt_ledger_actor::observation;
 use crate::domain::invocation::{InvocationId, SafeIdentityHash, TaskId};
 use crate::domain::operation_deadline::OperationDeadline;
 use crate::infrastructure::daemon::terminal_codec_v5::{
@@ -2296,6 +2297,11 @@ impl ReceiptLedgerStore {
         deadline: impl Into<OperationDeadline>,
     ) -> Result<Vec<DirectTerminalUnackedReceipt>, ReceiptLedgerError> {
         let deadline = deadline.into();
+        observation::mark(
+            "receipt.cancel_batch",
+            "build_enter",
+            deadline.remaining_at(Instant::now()),
+        );
         if requests.is_empty() || requests.len() > 32 {
             return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported);
         }
@@ -2449,6 +2455,11 @@ impl ReceiptLedgerStore {
                 // account for every logical transition.
             });
         }
+        observation::mark(
+            "receipt.cancel_batch",
+            "build_complete",
+            deadline.remaining_at(Instant::now()),
+        );
         self.publish_record_batch(&mut catalog, &rows, generation, deadline, move |catalog| {
             *catalog = shadow;
         })?;
@@ -6588,14 +6599,30 @@ impl ReceiptLedgerStore {
         for row in rows {
             catalog_entry_from_batch_record(row.record.clone(), &row.encoded)?;
         }
+        observation::mark(
+            "receipt.batch.encode",
+            "enter",
+            deadline.remaining_at(Instant::now()),
+        );
         let encoded = encode_receipt_batch_envelope(rows)?;
+        observation::mark(
+            "receipt.batch.encode",
+            "complete",
+            deadline.remaining_at(Instant::now()),
+        );
         let batch_id = Uuid::new_v4();
         let temporary_name = format!(".receipt.{batch_id}.tmp");
         let final_name = format!("receipt-batch.{batch_id}.json");
         let mut file = create_owner_only_file_child(&self.active_file, OsStr::new(&temporary_name))
             .map_err(|error| storage_error("create receipt batch staging file", error))?;
         let identity = file_identity(&file).map_err(|_| ReceiptLedgerError::StoreUnavailable)?;
+        observation::mark(
+            "receipt.batch.stage_write_sync",
+            "enter",
+            deadline.remaining_at(Instant::now()),
+        );
         if let Err(error) = file.write_all(&encoded).and_then(|()| file.sync_all()) {
+            observation::io_failure("receipt.batch.stage_write_sync", &error);
             let _ = cleanup_staged_file(
                 &self.active_file,
                 OsStr::new(&temporary_name),
@@ -6604,6 +6631,11 @@ impl ReceiptLedgerStore {
             );
             return Err(storage_error("persist receipt batch staging file", error));
         }
+        observation::mark(
+            "receipt.batch.stage_write_sync",
+            "complete",
+            deadline.remaining_at(Instant::now()),
+        );
         if check_deadline(deadline).is_err() {
             let _ = cleanup_staged_file(
                 &self.active_file,
@@ -6613,6 +6645,11 @@ impl ReceiptLedgerStore {
             );
             return Err(ReceiptLedgerError::DeadlineExceeded);
         }
+        observation::mark(
+            "receipt.batch.rename",
+            "enter",
+            deadline.remaining_at(Instant::now()),
+        );
         if let Err(error) = rename_identity_bound_regular_child_no_replace(
             &self.active_file,
             OsStr::new(&temporary_name),
@@ -6621,6 +6658,7 @@ impl ReceiptLedgerStore {
             &self.active_file,
             OsStr::new(&final_name),
         ) {
+            observation::io_failure("receipt.batch.rename", &error);
             let _ = cleanup_staged_file(
                 &self.active_file,
                 OsStr::new(&temporary_name),
@@ -6629,8 +6667,20 @@ impl ReceiptLedgerStore {
             );
             return Err(storage_error("publish receipt batch", error));
         }
+        observation::mark(
+            "receipt.batch.rename",
+            "complete",
+            deadline.remaining_at(Instant::now()),
+        );
         let first_digest = rows[0].record.key_digest.clone();
-        if sync_receipt_row_directory(&self.active_file).is_err()
+        observation::mark(
+            "receipt.batch.parent_sync",
+            "enter",
+            deadline.remaining_at(Instant::now()),
+        );
+        if sync_receipt_row_directory(&self.active_file)
+            .inspect_err(|error| observation::io_failure("receipt.batch.parent_sync", error))
+            .is_err()
             || check_deadline(deadline).is_err()
         {
             catalog.unavailable = true;
@@ -6638,6 +6688,11 @@ impl ReceiptLedgerStore {
                 receipt_key_digest: first_digest,
             });
         }
+        observation::mark(
+            "receipt.batch.parent_sync",
+            "complete",
+            deadline.remaining_at(Instant::now()),
+        );
         let backing = ReceiptBatchBacking::from_encoded(final_name, identity, &encoded);
         commit(catalog);
         for row in rows {
@@ -6656,12 +6711,32 @@ impl ReceiptLedgerStore {
         }
         self.generation_highwater
             .fetch_max(final_generation, Ordering::AcqRel);
-        if self.verify_receipt_batch_backing(&backing).is_err() {
+        observation::mark(
+            "receipt.batch.readback",
+            "enter",
+            deadline.remaining_at(Instant::now()),
+        );
+        if self
+            .verify_receipt_batch_backing(&backing)
+            .inspect_err(|_| {
+                observation::failure(
+                    "receipt.batch.readback",
+                    "ReceiptBackingVerificationFailed",
+                    deadline.remaining_at(Instant::now()),
+                )
+            })
+            .is_err()
+        {
             catalog.unavailable = true;
             return Err(ReceiptLedgerError::CommitUncertain {
                 receipt_key_digest: first_digest,
             });
         }
+        observation::mark(
+            "receipt.batch.readback",
+            "complete",
+            deadline.remaining_at(Instant::now()),
+        );
         if check_deadline(deadline).is_err() || self.verify_named_authority().is_err() {
             catalog.unavailable = true;
             return Err(ReceiptLedgerError::CommitUncertain {
@@ -7501,6 +7576,11 @@ fn parse_generation(bytes: &[u8]) -> Result<u64, ReceiptLedgerError> {
 fn check_deadline(deadline: impl Into<OperationDeadline>) -> Result<(), ReceiptLedgerError> {
     let deadline = deadline.into();
     if deadline.is_elapsed_at(Instant::now()) {
+        observation::failure(
+            "receipt.check_deadline",
+            "DeadlineExceeded",
+            Some(Duration::ZERO),
+        );
         Err(ReceiptLedgerError::DeadlineExceeded)
     } else {
         Ok(())
@@ -7571,6 +7651,7 @@ fn generation_deadline_error(receipt_key_digest: Option<&ReceiptKeyDigest>) -> R
 }
 
 fn storage_error(operation: &'static str, error: io::Error) -> ReceiptLedgerError {
+    observation::io_failure(operation, &error);
     ReceiptLedgerError::Storage {
         operation,
         message: error.to_string(),
