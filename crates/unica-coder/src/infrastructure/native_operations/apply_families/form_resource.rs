@@ -2059,13 +2059,13 @@ fn form_add_owner_image(
         ));
     }
     let object = form_owner_child(root, object_type)
-        .map_err(&invalid)?
+        .map_err(invalid)?
         .ok_or_else(|| invalid(format!("the form owner is missing direct {object_type}")))?;
     let properties = form_owner_child(object, "Properties")
-        .map_err(&invalid)?
+        .map_err(invalid)?
         .ok_or_else(|| invalid("the form owner is missing direct Properties".into()))?;
     let name = form_owner_child(properties, "Name")
-        .map_err(&invalid)?
+        .map_err(invalid)?
         .map(form_owner_text)
         .filter(|name| !name.is_empty())
         .ok_or_else(|| invalid("the form owner is missing its direct Name".into()))?;
@@ -2080,7 +2080,7 @@ fn form_add_owner_image(
     // A missing or ambiguous registration container cannot yield a successful
     // publication of orphan form files. No replacement container is invented.
     let children = form_owner_child(object, "ChildObjects")
-        .map_err(&invalid)?
+        .map_err(invalid)?
         .ok_or_else(|| invalid("the form owner is missing direct ChildObjects".into()))?;
     for registration in children
         .children()
@@ -2088,10 +2088,10 @@ fn form_add_owner_image(
     {
         let existing = if registration.children().any(|node| node.is_element()) {
             form_owner_child(registration, "Properties")
-                .map_err(&invalid)?
+                .map_err(invalid)?
                 .map(|properties| form_owner_child(properties, "Name"))
                 .transpose()
-                .map_err(&invalid)?
+                .map_err(invalid)?
                 .flatten()
                 .map(form_owner_text)
         } else {
@@ -2172,7 +2172,7 @@ fn form_add_owner_image(
         }
     }
 
-    if let Some(default) = form_owner_child(properties, default_property).map_err(&invalid)? {
+    if let Some(default) = form_owner_child(properties, default_property).map_err(invalid)? {
         let range = default.range();
         let raw = &text[range.clone()];
         let value = xml_escape(&format!("{object_type}.{name}.Form.{form_name}"));
