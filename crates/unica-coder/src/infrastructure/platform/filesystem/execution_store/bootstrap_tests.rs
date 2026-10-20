@@ -69,7 +69,7 @@ impl Fixture {
         else {
             panic!("explicit new fixture must resolve Fresh")
         };
-        let opening = OpeningStore::create_new(ticket, AuthorityEpoch::new(identity())).unwrap();
+        let opening = OpeningStore::create_new(*ticket, AuthorityEpoch::new(identity())).unwrap();
         PrototypeStoreOwner::finish_opening(opening).unwrap()
     }
     fn reopen(&self) -> Result<PrototypeStoreOwner, OwnerError> {
@@ -80,7 +80,7 @@ impl Fixture {
         else {
             panic!("previously initialized namespace must never resolve Fresh")
         };
-        let opening = OpeningStore::open_existing(registration, AuthorityEpoch::new(identity()))
+        let opening = OpeningStore::open_existing(*registration, AuthorityEpoch::new(identity()))
             .map_err(OwnerError::Open)?;
         PrototypeStoreOwner::finish_opening(opening)
     }
@@ -325,7 +325,7 @@ fn registration_child(config: Configuration) {
         }
         Ok(())
     });
-    let _opening = OpeningStore::create_new(ticket, AuthorityEpoch::new(identity())).unwrap();
+    let _opening = OpeningStore::create_new(*ticket, AuthorityEpoch::new(identity())).unwrap();
     panic!("registration barrier was not reached");
 }
 

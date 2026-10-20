@@ -174,8 +174,8 @@ pub(crate) struct NamespaceRegistration {
     _gate: RegistryGate,
 }
 pub(crate) enum ResolvedNamespace {
-    Fresh(FreshNamespaceTicket),
-    Existing(NamespaceRegistration),
+    Fresh(Box<FreshNamespaceTicket>),
+    Existing(Box<NamespaceRegistration>),
 }
 
 impl AuthorityRoot {
@@ -294,12 +294,12 @@ impl AuthorityRoot {
                 if optional_file(&self.ownership, &name)?.is_some() {
                     return Err(OpenError::IncompleteBootstrap);
                 }
-                Ok(ResolvedNamespace::Fresh(FreshNamespaceTicket {
+                Ok(ResolvedNamespace::Fresh(Box::new(FreshNamespaceTicket {
                     root: self.clone(),
                     spec,
                     key,
                     _gate: gate,
-                }))
+                })))
             }
             (Some(registration), Some(child)) => {
                 let manifest: Manifest = read_json(&registration)?;
@@ -310,14 +310,16 @@ impl AuthorityRoot {
                 {
                     return Err(invalid());
                 }
-                Ok(ResolvedNamespace::Existing(NamespaceRegistration {
-                    root: self.clone(),
-                    manifest,
-                    registration,
-                    child,
-                    key,
-                    _gate: gate,
-                }))
+                Ok(ResolvedNamespace::Existing(Box::new(
+                    NamespaceRegistration {
+                        root: self.clone(),
+                        manifest,
+                        registration,
+                        child,
+                        key,
+                        _gate: gate,
+                    },
+                )))
             }
             _ => Err(OpenError::IncompleteBootstrap),
         }

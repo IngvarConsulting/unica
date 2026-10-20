@@ -57,9 +57,9 @@ fn complete(
 }
 fn opening(root: &AuthorityRoot, spec: NamespaceSpec, epoch: AuthorityEpoch) -> OpeningStore {
     match root.resolve(spec).unwrap() {
-        ResolvedNamespace::Fresh(ticket) => OpeningStore::create_new(ticket, epoch).unwrap(),
+        ResolvedNamespace::Fresh(ticket) => OpeningStore::create_new(*ticket, epoch).unwrap(),
         ResolvedNamespace::Existing(registration) => {
-            OpeningStore::open_existing(registration, epoch).unwrap()
+            OpeningStore::open_existing(*registration, epoch).unwrap()
         }
     }
 }
@@ -450,7 +450,7 @@ fn copied_namespace_seals_cannot_adopt_replacement_directories() {
             panic!("registered namespace became fresh");
         };
         assert!(matches!(
-            OpeningStore::open_existing(registration, epoch(2)),
+            OpeningStore::open_existing(*registration, epoch(2)),
             Err(OpenError::InvalidInventory)
         ));
         assert!(retained.exists());

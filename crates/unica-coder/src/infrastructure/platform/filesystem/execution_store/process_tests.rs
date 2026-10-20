@@ -120,10 +120,10 @@ fn open_owner(
     let opening = match root.resolve(spec).map_err(OwnerError::Open)? {
         ResolvedNamespace::Fresh(ticket) => {
             assert!(allow_fresh, "a previously admitted namespace became fresh");
-            OpeningStore::create_new(ticket, epoch).map_err(OwnerError::Open)?
+            OpeningStore::create_new(*ticket, epoch).map_err(OwnerError::Open)?
         }
         ResolvedNamespace::Existing(registration) => {
-            OpeningStore::open_existing(registration, epoch).map_err(OwnerError::Open)?
+            OpeningStore::open_existing(*registration, epoch).map_err(OwnerError::Open)?
         }
     };
     // The public factory owns scan, restore, and recovery commits. A caller

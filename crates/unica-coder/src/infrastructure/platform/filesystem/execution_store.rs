@@ -202,12 +202,12 @@ fn copy_error(error: &io::Error) -> io::Error {
     )
 }
 
-#[cfg(not(test))]
+#[cfg(not(all(test, unix)))]
 fn write_stage(file: &mut File, bytes: &[u8]) -> io::Result<usize> {
     file.write(bytes)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn write_stage(file: &mut File, bytes: &[u8]) -> io::Result<usize> {
     TEST_WRITE_LIMIT.with(|slot| {
         let mut slot = slot.borrow_mut();
@@ -620,13 +620,17 @@ type TestHook = Box<dyn FnMut(PublicationPoint) -> io::Result<()>>;
 #[cfg(test)]
 thread_local! {
     static TEST_HOOK: std::cell::RefCell<Option<TestHook>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(all(test, unix))]
+thread_local! {
     static TEST_WRITE_LIMIT: std::cell::RefCell<Option<usize>> = const { std::cell::RefCell::new(None) };
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) struct StageWriteLimitGuard(std::marker::PhantomData<std::rc::Rc<()>>);
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 impl Drop for StageWriteLimitGuard {
     fn drop(&mut self) {
         TEST_WRITE_LIMIT.with(|slot| *slot.borrow_mut() = None);
@@ -635,7 +639,7 @@ impl Drop for StageWriteLimitGuard {
 
 /// Real writes consume this byte budget before the next write reports a full
 /// device. This is explicit fault injection, not an actual filesystem quota.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn install_stage_write_limit(bytes: usize) -> StageWriteLimitGuard {
     TEST_WRITE_LIMIT.with(|slot| {
         assert!(

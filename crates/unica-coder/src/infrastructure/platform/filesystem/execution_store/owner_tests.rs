@@ -53,9 +53,9 @@ impl Fixture {
         epoch: AuthorityEpoch,
     ) -> PrototypeStoreOwner {
         let opening = match root.resolve(spec).unwrap() {
-            ResolvedNamespace::Fresh(ticket) => OpeningStore::create_new(ticket, epoch).unwrap(),
+            ResolvedNamespace::Fresh(ticket) => OpeningStore::create_new(*ticket, epoch).unwrap(),
             ResolvedNamespace::Existing(registration) => {
-                OpeningStore::open_existing(registration, epoch).unwrap()
+                OpeningStore::open_existing(*registration, epoch).unwrap()
             }
         };
         PrototypeStoreOwner::finish_opening(opening).unwrap()
