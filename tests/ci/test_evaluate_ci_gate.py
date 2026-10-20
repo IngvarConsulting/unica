@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import unittest
 from pathlib import Path
 
@@ -61,19 +62,69 @@ def source_results() -> dict[str, str]:
     }
 
 
+DOCS_MATRIX = [
+    {"suite": "tests/ci", "lane": "small", "slug": "ci-small"},
+    {"suite": "tests/dev", "lane": "small", "slug": "dev-small"},
+]
+CODE_MATRIX = [
+    {"suite": "tests/ci", "lane": "small", "slug": "ci-small"},
+    {"suite": "tests/ci", "lane": "medium", "slug": "ci-medium"},
+    {"suite": "tests/dev", "lane": "", "slug": "dev"},
+]
+
+
+def evaluate(module, event, ref, outputs, results, **kwargs):
+    """Supply the workflow's unchanged fixture inputs to job-result tests."""
+    profile = ("pr" if event == "pull_request" else "queue" if event == "merge_group"
+               else "release" if event == "push" and ref.startswith("refs/tags/") else "main")
+    kwargs.setdefault("gate_profile", profile)
+    if outputs.get("docs_only") == "true":
+        matrix = DOCS_MATRIX
+    elif kwargs["gate_profile"] == "pr":
+        matrix = [CODE_MATRIX[0], CODE_MATRIX[-1]]
+    elif kwargs["gate_profile"] == "large":
+        matrix = []
+    elif kwargs["gate_profile"] == "release":
+        matrix = [*CODE_MATRIX[:2], {"suite": "tests/ci", "lane": "large", "slug": "ci-large"}, CODE_MATRIX[-1]]
+    else:
+        matrix = CODE_MATRIX
+    kwargs.setdefault("python_matrix", json.dumps(matrix))
+    return module.evaluate_gate(event, ref, outputs, results, **kwargs)
+
+
 class EvaluateCiGateTests(unittest.TestCase):
+    def test_code_queue_requires_the_complete_python_matrix(self) -> None:
+        module = load_gate_module()
+        outputs = classification(**{name: True for name in OUTPUT_NAMES})
+        results = {**source_results(), "test-rust-platforms": "success", "lint-rust-platforms": "success"}
+        self.assertTrue(evaluate(module, "merge_group", "refs/heads/queue", outputs, results).ok)
+        for matrix in (
+            DOCS_MATRIX, CODE_MATRIX[:1], CODE_MATRIX[1:], CODE_MATRIX + CODE_MATRIX[:1],
+            [{**CODE_MATRIX[0], "lane": "medium"}, *CODE_MATRIX[1:]], [], None,
+        ):
+            with self.subTest(matrix=matrix):
+                result = evaluate(module, "merge_group", "refs/heads/queue", outputs, results,
+                                  python_matrix=json.dumps(matrix) if matrix is not None else None)
+                self.assertIn("python_matrix", result.unexpected)
+
+    def test_gate_rejects_missing_profile_and_matrix(self) -> None:
+        module = load_gate_module()
+        result = module.evaluate_gate("pull_request", "refs/pull/1/merge", classification(), source_results())
+        self.assertIn("gate_profile", result.unexpected)
+        self.assertIn("python_matrix", result.unexpected)
+
     def test_docs_only_queue_accepts_explicit_rust_skips_but_keeps_python_and_guards(self) -> None:
         module = load_gate_module()
         outputs = classification(docs_only=True)
-        result = module.evaluate_gate(
+        result = evaluate(module,
             "merge_group", "refs/heads/gh-readonly-queue/main/pr-1", outputs,
-            source_results(), gate_profile="queue", python_matrix='[{"suite":"tests/ci"}]',
+            source_results(), gate_profile="queue", python_matrix=json.dumps(DOCS_MATRIX),
         )
         self.assertTrue(result.ok, result.unexpected)
         for job in ("test-rust-platforms", "lint-rust-platforms", "warm-rust-cache"):
             self.assertEqual("skipped", result.expected[job])
         for job in ("guards", "test-python"):
-            failed = module.evaluate_gate(
+            failed = evaluate(module,
                 "merge_group", "refs/heads/gh-readonly-queue/main/pr-1", outputs,
                 {**source_results(), job: "skipped"},
             )
@@ -89,9 +140,9 @@ class EvaluateCiGateTests(unittest.TestCase):
             classification(docs_only=True, rust_changed=True, release_required=True),
         ):
             with self.subTest(outputs=outputs):
-                self.assertFalse(module.evaluate_gate("merge_group", "refs/heads/queue", outputs, source_results()).ok)
+                self.assertFalse(evaluate(module, "merge_group", "refs/heads/queue", outputs, source_results()).ok)
         for event, ref in (("push", "refs/heads/main"), ("push", "refs/tags/v1.0.0"), ("workflow_dispatch", "refs/heads/main")):
-            result = module.evaluate_gate(event, ref, classification(docs_only=True), source_results())
+            result = evaluate(module, event, ref, classification(docs_only=True), source_results())
             self.assertFalse(result.ok)
             self.assertIn("docs_only", result.unexpected)
 
@@ -112,14 +163,14 @@ class EvaluateCiGateTests(unittest.TestCase):
                     actual = {**results, "lint-rust-platforms": outcome}
                     if outcome == "missing":
                         del actual["lint-rust-platforms"]
-                    result = module.evaluate_gate(event, ref, outputs, actual)
+                    result = evaluate(module, event, ref, outputs, actual)
                     self.assertFalse(result.ok)
                     self.assertEqual((outcome, "success"), result.unexpected["lint-rust-platforms"])
 
     def test_queue_cannot_be_checked_with_pr_profile(self) -> None:
         module = load_gate_module()
         outputs = classification(**{name: True for name in OUTPUT_NAMES})
-        result = module.evaluate_gate("merge_group", "refs/heads/queue", outputs,
+        result = evaluate(module, "merge_group", "refs/heads/queue", outputs,
             {**source_results(), "test-rust-platforms": "success", "lint-rust-platforms": "success"},
             gate_profile="pr")
         self.assertFalse(result.ok)
@@ -151,7 +202,7 @@ class EvaluateCiGateTests(unittest.TestCase):
             "probe-thin-bootstrap": "success",
         }
 
-        large = module.evaluate_gate(
+        large = evaluate(module,
             "workflow_dispatch", "refs/heads/main", outputs, results,
             gate_profile="large", python_matrix="[]",
         )
@@ -167,7 +218,7 @@ class EvaluateCiGateTests(unittest.TestCase):
             ("merge_group", "refs/heads/gh-readonly-queue/main/pr-1007", "queue", "[]"),
         ):
             with self.subTest(event=event, profile=profile, matrix=matrix):
-                candidate = module.evaluate_gate(
+                candidate = evaluate(module,
                     event, ref, outputs, results,
                     gate_profile=profile, python_matrix=matrix,
                 )
@@ -176,7 +227,7 @@ class EvaluateCiGateTests(unittest.TestCase):
                 if matrix == "[]" and profile != "large":
                     self.assertIn("python_matrix", candidate.unexpected)
 
-        failed_python = module.evaluate_gate(
+        failed_python = evaluate(module,
             "workflow_dispatch", "refs/heads/main", outputs,
             {**results, "test-python": "failure"},
             gate_profile="large", python_matrix="[]",
@@ -184,7 +235,7 @@ class EvaluateCiGateTests(unittest.TestCase):
         self.assertFalse(failed_python.ok)
         self.assertEqual(("failure", "skipped"), failed_python.unexpected["test-python"])
 
-        skipped_build = module.evaluate_gate(
+        skipped_build = evaluate(module,
             "workflow_dispatch", "refs/heads/main", outputs,
             {**results, "build-tools": "skipped"},
             gate_profile="large", python_matrix="[]",
@@ -206,7 +257,7 @@ class EvaluateCiGateTests(unittest.TestCase):
             assessment_required=True,
         )
 
-        evaluation = module.evaluate_gate(
+        evaluation = evaluate(module,
             "pull_request", "refs/pull/581/merge", outputs, source_results()
         )
 
@@ -221,7 +272,7 @@ class EvaluateCiGateTests(unittest.TestCase):
         outputs = classification(plugin_content_changed=True)
         results = source_results()
 
-        evaluation = module.evaluate_gate("pull_request", "refs/pull/155/merge", outputs, results)
+        evaluation = evaluate(module, "pull_request", "refs/pull/155/merge", outputs, results)
 
         self.assertTrue(evaluation.ok)
         self.assertEqual("source", evaluation.contour)
@@ -237,7 +288,7 @@ class EvaluateCiGateTests(unittest.TestCase):
             "lint-rust-platforms": "success",
         }
 
-        evaluation = module.evaluate_gate("pull_request", "refs/pull/155/merge", outputs, results)
+        evaluation = evaluate(module, "pull_request", "refs/pull/155/merge", outputs, results)
 
         self.assertTrue(evaluation.ok)
         self.assertEqual("rust", evaluation.contour)
@@ -252,7 +303,7 @@ class EvaluateCiGateTests(unittest.TestCase):
             "lint-rust-platforms": "success",
         }
 
-        evaluation = module.evaluate_gate("pull_request", "refs/pull/155/merge", outputs, results)
+        evaluation = evaluate(module, "pull_request", "refs/pull/155/merge", outputs, results)
 
         self.assertTrue(evaluation.ok)
         self.assertEqual("platform", evaluation.contour)
@@ -275,10 +326,10 @@ class EvaluateCiGateTests(unittest.TestCase):
             "probe-thin-bootstrap": "success",
         }
 
-        manual = module.evaluate_gate(
+        manual = evaluate(module,
             "workflow_dispatch", "refs/heads/main", outputs, manual_results
         )
-        request = module.evaluate_gate(
+        request = evaluate(module,
             "pull_request",
             "refs/pull/155/merge",
             outputs,
@@ -303,7 +354,7 @@ class EvaluateCiGateTests(unittest.TestCase):
             "lint-rust-platforms": "success",
         }
 
-        evaluation = module.evaluate_gate("pull_request", "refs/pull/155/merge", outputs, results)
+        evaluation = evaluate(module, "pull_request", "refs/pull/155/merge", outputs, results)
 
         self.assertTrue(evaluation.ok)
         self.assertEqual("full", evaluation.contour)
@@ -341,8 +392,8 @@ class EvaluateCiGateTests(unittest.TestCase):
             "p0-release-proof": "skipped",
         }
 
-        manual_evaluation = module.evaluate_gate("workflow_dispatch", "refs/heads/main", outputs, manual)
-        tag_evaluation = module.evaluate_gate("push", "refs/tags/v0.9.1", outputs, tag)
+        manual_evaluation = evaluate(module, "workflow_dispatch", "refs/heads/main", outputs, manual)
+        tag_evaluation = evaluate(module, "push", "refs/tags/v0.9.1", outputs, tag)
 
         self.assertTrue(manual_evaluation.ok)
         self.assertEqual("full", manual_evaluation.contour)
@@ -362,7 +413,7 @@ class EvaluateCiGateTests(unittest.TestCase):
             "probe-thin-bootstrap": "success",
         }
 
-        evaluation = module.evaluate_gate(
+        evaluation = evaluate(module,
             "workflow_dispatch",
             "refs/tags/v0.9.1",
             outputs,
@@ -384,7 +435,7 @@ class EvaluateCiGateTests(unittest.TestCase):
         )
         for outputs in invalid_cases:
             with self.subTest(outputs=outputs):
-                evaluation = module.evaluate_gate(
+                evaluation = evaluate(module,
                     "pull_request", "refs/pull/155/merge", outputs, source_results()
                 )
                 self.assertFalse(evaluation.ok)
@@ -403,7 +454,7 @@ class EvaluateCiGateTests(unittest.TestCase):
             "build-tools": "success",
         }
 
-        evaluation = module.evaluate_gate("pull_request", "refs/pull/155/merge", outputs, results)
+        evaluation = evaluate(module, "pull_request", "refs/pull/155/merge", outputs, results)
 
         self.assertFalse(evaluation.ok)
         self.assertEqual(
@@ -420,11 +471,11 @@ class EvaluateCiGateTests(unittest.TestCase):
         gate = load_gate_module()
         results = {**source_results(), "brand-new-job": "failure"}
 
-        evaluation = gate.evaluate_gate("pull_request", "refs/pull/1/merge", classification(), results)
+        evaluation = evaluate(gate, "pull_request", "refs/pull/1/merge", classification(), results)
 
         self.assertFalse(evaluation.ok)
         self.assertEqual(evaluation.unexpected["brand-new-job"], ("failure", "джоба не в таблице ворот"))
-        green = gate.evaluate_gate("pull_request", "refs/pull/1/merge", classification(), {**source_results(), "brand-new-job": "success"})
+        green = evaluate(gate, "pull_request", "refs/pull/1/merge", classification(), {**source_results(), "brand-new-job": "success"})
         self.assertFalse(green.ok)
 
     def test_summary_reports_classification_results_and_skipped_jobs(self) -> None:
@@ -437,7 +488,7 @@ class EvaluateCiGateTests(unittest.TestCase):
             **PACKAGE_SUCCESS,
             "probe-thin-bootstrap": "success",
         }
-        evaluation = module.evaluate_gate("pull_request", "refs/pull/155/merge", outputs, results)
+        evaluation = evaluate(module, "pull_request", "refs/pull/155/merge", outputs, results)
 
         summary = module.render_summary(evaluation)
 
@@ -461,7 +512,7 @@ class BranchPushGateTests(unittest.TestCase):
             "lint-rust-platforms": "success",
         }
 
-        evaluation = module.evaluate_gate("push", "refs/heads/release-v0.13", outputs, results)
+        evaluation = evaluate(module, "push", "refs/heads/release-v0.13", outputs, results)
 
         self.assertTrue(evaluation.ok)
         self.assertEqual("branch", evaluation.contour)
@@ -474,14 +525,14 @@ class BranchPushGateTests(unittest.TestCase):
         outputs = classification(rust_changed=True, release_required=True)
         results = {**source_results(), "test-python": "skipped"}
 
-        evaluation = module.evaluate_gate("push", "refs/heads/main", outputs, results)
+        evaluation = evaluate(module, "push", "refs/heads/main", outputs, results)
 
         self.assertTrue(evaluation.ok, evaluation.unexpected)
         self.assertEqual("cache", evaluation.contour)
         self.assertEqual("skipped", evaluation.expected["test-python"])
         self.assertEqual("skipped", evaluation.expected["test-rust-platforms"])
         # Тесты, всё же прошедшие на push в `main`, — расхождение с воротами, а не бонус.
-        ran_anyway = module.evaluate_gate("push", "refs/heads/main", outputs, source_results())
+        ran_anyway = evaluate(module, "push", "refs/heads/main", outputs, source_results())
         self.assertFalse(ran_anyway.ok)
         self.assertIn("test-python", ran_anyway.unexpected)
 
@@ -496,7 +547,7 @@ class BranchPushGateTests(unittest.TestCase):
                 outputs = classification(**enabled)
                 results = {**source_results(), "test-python": "skipped", "warm-rust-cache": "success"}
 
-                evaluation = module.evaluate_gate("push", "refs/heads/main", outputs, results)
+                evaluation = evaluate(module, "push", "refs/heads/main", outputs, results)
 
                 self.assertTrue(evaluation.ok, evaluation.unexpected)
                 self.assertEqual("cache", evaluation.contour)
@@ -515,7 +566,7 @@ class BranchPushGateTests(unittest.TestCase):
             "lint-rust-platforms": "success",
         }
 
-        evaluation = module.evaluate_gate("merge_group", "refs/heads/gh-readonly-queue/main/pr-738-abc", outputs, results)
+        evaluation = evaluate(module, "merge_group", "refs/heads/gh-readonly-queue/main/pr-738-abc", outputs, results)
 
         self.assertTrue(evaluation.ok)
         self.assertEqual("queue", evaluation.contour)
@@ -527,7 +578,7 @@ class BranchPushGateTests(unittest.TestCase):
         module = load_gate_module()
         outputs = classification(rust_changed=True)
 
-        evaluation = module.evaluate_gate("push", "refs/heads/release-v0.12", outputs, source_results())
+        evaluation = evaluate(module, "push", "refs/heads/release-v0.12", outputs, source_results())
 
         self.assertFalse(evaluation.ok)
 

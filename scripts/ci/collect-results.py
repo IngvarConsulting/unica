@@ -21,6 +21,8 @@
 Он принимается только вместе с исходом джобы `skipped`. Прежний состав даёт
 имена тестов, но не их старые исходы; происхождение состава сохраняется даже
 через несколько таких пропусков. Без состава остаётся только метадата пропуска.
+Python сохраняет точный состав текущей ревизии в плане: `scope_skip` у medium
+отличает намеренный пропуск от сбоя оставшихся small в той же джобе.
 """
 
 from __future__ import annotations
@@ -155,6 +157,84 @@ def scope_skips(results: list[tuple[Path, dict]], plans: list[tuple[Path, dict]]
     return skips
 
 
+def python_scope_skips(results: list[tuple[Path, dict]], plans: list[tuple[Path, dict]], fallback: str) -> dict[tuple[str, str, str], dict]:
+    """Пропуск medium относится к точному плану suite, а не ко всей Python-job."""
+    scoped = {}
+    ordinary = set()
+    signatures = {}
+    routing = {}
+    # results может содержать копию плана, уже загруженного как plan-*.
+    # Совпадающая копия допустима; другой отбор того же случая — противоречие.
+    for path, run in [*plans, *results]:
+        if not (path / "plan.json").is_file():
+            continue
+        line = line_of(run, fallback)
+        runner = run.get("runner", "")
+        for case in load_json(path / "plan.json"):
+            if "scope_skip" not in case:
+                if case.get("ecosystem") == "python":
+                    ordinary.add((line, runner, case.get("suite"), case.get("id")))
+                continue
+            if (
+                case["scope_skip"] != {"reason": "docs_only"}
+                or case.get("ecosystem") != "python"
+                or case.get("size") != "medium" or case.get("lane") != "small"
+                or case.get("suite") not in ("tests/ci", "tests/dev")
+                or not isinstance(case.get("id"), str) or not case["id"]
+                or "_FailedTest." in case["id"]
+                or run.get("ecosystem") != "python" or run.get("profile") != "queue"
+                or not isinstance(runner, str) or not runner
+                or not isinstance(run.get("sha"), str)
+                or re.fullmatch(r"[0-9a-f]{40}", run["sha"]) is None
+                or run["sha"] == "0" * 40
+            ):
+                raise ValueError(f"scope_skip: malformed Python plan in {path}")
+            key = (line, runner, case["suite"], case["id"])
+            if key in scoped:
+                if scoped[key] != case:
+                    raise ValueError(f"scope_skip: inconsistent Python plan for {key}")
+                continue
+            scoped[key] = case
+            signatures[line] = run
+            group = (line, runner, case["suite"])
+            if group not in routing:
+                routing[group] = {
+                    "ecosystem": "python", "runner": runner, "suite": case["suite"], "size": "medium",
+                    "scope_skip": case["scope_skip"], "inventory_count": 0,
+                    "inventory_sources": [{"sha": run["sha"], "run_url": run.get("run_url", "")}],
+                }
+            routing[group]["inventory_count"] += 1
+    if ordinary.intersection(scoped):
+        raise ValueError("scope_skip: Python case is also planned for execution")
+    for path, run in [*plans, *results]:
+        line = line_of(run, fallback)
+        if line in signatures and any(
+            run.get(field) != signatures[line].get(field)
+            for field in ("sha", "profile", "run_id", "run_attempt", "run_url")
+        ):
+            raise ValueError(f"scope_skip: inconsistent Python run identity in {path}")
+    for path, run in results:
+        for record_path in path.glob("*-result.json"):
+            entry = load_json(record_path)
+            key = (line_of(run, fallback), run.get("runner", ""), label(entry, "suite"), entry.get("fullName"))
+            marked = label(entry, "scope_skip")
+            if key not in scoped and marked is None:
+                continue
+            if (
+                key not in scoped or marked != "docs_only"
+                or entry.get("status") != "skipped"
+                or run.get("ecosystem") != "python"
+                or label(entry, "language") != "python"
+                or label(entry, "size") != "medium" or label(entry, "profile") != "queue"
+                or label(entry, "host") != run.get("runner")
+                or {"name": "runner", "value": run.get("runner")} not in entry.get("parameters", [])
+                or not entry.get("statusDetails", {}).get("message", "").startswith("docs-only:")
+                or not any(item == {"name": "tag", "value": "docs-only"} for item in entry.get("labels", []))
+            ):
+                raise ValueError(f"scope_skip: conflicting Python execution in {record_path}")
+    return routing
+
+
 def copy_results(path: Path, out: Path) -> tuple[int, dict[str, set[str]]]:
     """Скопировать записи; вернуть счёт и полные имена тестов по языку."""
     seen = empty_seen()
@@ -221,7 +301,9 @@ def fill_python_gaps(plan_dir: Path, run: dict, seen: set[str], out: Path, concl
             continue
         job = PYTHON_JOB.format(slug=python_slug(case["suite"], case.get("lane", "")))
         conclusion = conclusions.get(job) or "unknown"
-        message = f"раннер не дошёл: {job} · {conclusion}"
+        scoped = "scope_skip" in case
+        message = (f"docs-only: Python medium пропущен по области изменения · {job}" if scoped
+                   else f"раннер не дошёл: {job} · {conclusion}")
         if run.get("run_url"):
             message += f" · {run['run_url']}"
         allure_results.write(
@@ -239,8 +321,9 @@ def fill_python_gaps(plan_dir: Path, run: dict, seen: set[str], out: Path, concl
                     "subSuite": case.get("subSuite", ""),
                     "profile": profile,
                     "size": case.get("size", "small"),
+                    **({"scope_skip": "docs_only"} if scoped else {}),
                 },
-                tags=(profile, "infrastructure"),
+                tags=(profile, "docs-only" if scoped else "infrastructure"),
                 message=message,
             ),
         )
@@ -351,7 +434,9 @@ def write_metadata(out: Path, run: dict, line: str, runners: list[str], site: st
         "Раннеры": ", ".join(runners),
     }
     for skipped in run.get("routing_skips", []):
-        environment[f"Rust ({skipped['runner']})"] = (
+        key = (f"Python ({skipped['suite']}, {skipped['size']}, {skipped['runner']})"
+               if skipped.get("ecosystem") == "python" else f"Rust ({skipped['runner']})")
+        environment[key] = (
             f"docs-only: пропущен; известных тестов {skipped['inventory_count']}"
         )
     (out / "environment.properties").write_text(
@@ -380,6 +465,7 @@ def collect(artifacts: Path, out_root: Path, jobs: Path | None, fallback_line: s
     conclusions = job_conclusions(jobs)
     plans = signed_dirs(artifacts, PLAN_PREFIX)
     skips = scope_skips(results, plans, conclusions, fallback_line)
+    python_skips = python_scope_skips(results, plans, fallback_line)
     by_line: dict[str, dict] = {}
     seen: dict[tuple[str, str], dict[str, set[str]]] = {}
     for path, run in results:
@@ -423,6 +509,7 @@ def collect(artifacts: Path, out_root: Path, jobs: Path | None, fallback_line: s
         stats["runners"] = sorted(stats["runners"])
         run = dict(stats.pop("run"))
         routing = [skip for key, skip in sorted(skips.items()) if key[0] == line]
+        routing.extend(skip for key, skip in sorted(python_skips.items()) if key[0] == line)
         if routing:
             run["routing_skips"] = routing
             run.pop("scope_skip", None)
