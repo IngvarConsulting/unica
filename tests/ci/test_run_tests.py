@@ -11,6 +11,14 @@ from pathlib import Path
 
 MODULE_PATH = Path(__file__).resolve().parents[2] / "scripts" / "ci" / "run-tests.py"
 
+# Expected command is independent of the runner's production constant.
+UREQ_SELECTION = (
+    "--manifest-path", "vendor/ureq/Cargo.toml", "--locked", "--lib",
+    "--features", "json,serde_json/preserve_order,serde_json/float_roundtrip",
+    "--config-file", "vendor/ureq/.config/nextest.toml", "--target-dir", "target",
+    "-E", "test(/^completed_response_recycling::/)",
+)
+
 
 def load_module():
     spec = importlib.util.spec_from_file_location("run_tests", MODULE_PATH)
@@ -45,6 +53,7 @@ class RunTestsSeamTests(unittest.TestCase):
                     "test(/^infrastructure::daemon::runtime_v5::receipt_scenario_v5::tests::/)",
                     "--profile", "default",
                 ],
+                ["cargo", "nextest", "run", *UREQ_SELECTION, "--profile", "ureq-recycling"],
             ],
         )
         runner_script = str(MODULE_PATH.with_name("run-unittest.py"))
@@ -62,12 +71,11 @@ class RunTestsSeamTests(unittest.TestCase):
 
         planned = module.commands("all", "all", interpreter="python")
 
-        # Workspace и один вызов с признаком (контракт и библиотечные
-        # сценарии) идут до Python.
-        self.assertEqual([command[0] for command in planned[:2]], ["cargo"] * 2)
-        self.assertTrue(all(command[0] == "python" for command in planned[2:]))
-        self.assertTrue(all(command[1].endswith("run-unittest.py") for command in planned[2:]))
-        self.assertEqual(len(planned), 4)
+        # Workspace, ReceiptLedger и dependency-local регрессии идут до Python.
+        self.assertEqual([command[0] for command in planned[:3]], ["cargo"] * 3)
+        self.assertTrue(all(command[0] == "python" for command in planned[3:]))
+        self.assertTrue(all(command[1].endswith("run-unittest.py") for command in planned[3:]))
+        self.assertEqual(len(planned), 5)
 
     def test_results_directory_turns_emission_on_for_python_suites(self) -> None:
         """Без `--results` набор идёт как раньше; с ним пишет результаты и знает раннер."""
@@ -115,9 +123,9 @@ class RunTestsSeamTests(unittest.TestCase):
                               junit=out / "no-such-junit.xml")
 
         self.assertEqual(code, 0)
-        # Каждый из двух вызовов nextest снимает свой JUnit; затем список Python.
-        self.assertEqual(len(calls), 3)
-        self.assertEqual([len(planned) for planned in calls[:2]], [1, 1])
+        # Три вызова nextest снимают JUnit; затем один список Python.
+        self.assertEqual(len(calls), 4)
+        self.assertEqual([len(planned) for planned in calls[:3]], [1, 1, 1])
         signature = json.loads((out / "run.json").read_text(encoding="utf-8"))
         self.assertEqual(signature["ecosystem"], "all")
         self.assertEqual(signature["runner"], "ubuntu-latest")
@@ -188,6 +196,10 @@ class RunTestsSeamTests(unittest.TestCase):
                 " -E binary(daemon_receipt_ledger) |"
                 " test(/^infrastructure::daemon::runtime_v5::receipt_scenario_v5::tests::/)"
                 " --profile default",
+                "cargo nextest run --manifest-path vendor/ureq/Cargo.toml --locked --lib"
+                " --features json,serde_json/preserve_order,serde_json/float_roundtrip"
+                " --config-file vendor/ureq/.config/nextest.toml --target-dir target"
+                " -E test(/^completed_response_recycling::/) --profile ureq-recycling",
             ],
         )
 
@@ -215,7 +227,12 @@ class GateProfileTests(unittest.TestCase):
                 else:
                     # Контракт и сценарии — один вызов: одна сборка с признаком.
                     self.assertEqual(commands[1], ["cargo", "nextest", "run", *ledger, "--profile", gate])
-                    self.assertEqual(len(commands), 2)
+                    self.assertEqual(commands[2], ["cargo", "nextest", "run", *UREQ_SELECTION, "--profile", "ureq-recycling"])
+                    self.assertEqual(len(commands), 3)
+                    self.assertEqual(
+                        module.nextest_junit(gate, UREQ_SELECTION).parts[-3:],
+                        ("nextest", "ureq-recycling", "junit.xml"),
+                    )
                 self.assertEqual(module.nextest_junit(gate).parts[-3:], ("nextest", gate, "junit.xml"))
         self.assertEqual(module.nextest_junit("all").parts[-3:], ("nextest", "default", "junit.xml"))
 
@@ -248,7 +265,7 @@ class GateProfileTests(unittest.TestCase):
         ]
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            with patch.object(module.allure_results, "nextest_list", side_effect=lambda _, command: [dict(case) for case in cases] if "--features" in command else []):
+            with patch.object(module.allure_results, "nextest_list", side_effect=lambda _, command: [dict(case) for case in cases] if "receipt-ledger-test-support" in command else []):
                 self.assertEqual(module.write_rust_plan(root, "queue"), 4)
             planned = json.loads((root / "plan.json").read_text())
             self.assertEqual(planned[0]["size"], "medium")
@@ -294,9 +311,16 @@ class GateProfileTests(unittest.TestCase):
 
         def run_commands(planned):
             command = planned[0]
-            featured = "--features" in command
-            seen.append("--features" if featured else "--workspace")
-            if featured:
+            vendor = "--manifest-path" in command
+            featured = "receipt-ledger-test-support" in command
+            seen.append("--manifest-path" if vendor else "--features" if featured else "--workspace")
+            if vendor:
+                suites = (
+                    '<testsuite name="ureq">'
+                    '<testcase name="completed_response_recycling::case" time="0.1"/>'
+                    '</testsuite>'
+                )
+            elif featured:
                 # Один вызов с признаком пишет обе цели: сценарии библиотеки
                 # и контракт.
                 suites = (
@@ -312,22 +336,24 @@ class GateProfileTests(unittest.TestCase):
                     '<failure message="assertion failed: first invocation"/></testcase></testsuite>'
                 )
             junit.write_text('<testsuites name="unica">' + suites + "</testsuites>", encoding="utf-8")
-            return 0 if featured else 1
+            return 0 if featured or vendor else 1
 
         code = module.execute("queue", "rust", out, "ubuntu-latest", run_commands=run_commands, junit=junit)
 
         self.assertEqual(code, 1, "later successful JUnit must not hide the first failure")
-        self.assertEqual(seen, ["--workspace", "--features"])
+        self.assertEqual(seen, ["--workspace", "--features", "--manifest-path"])
         names = sorted(json.loads(path.read_text(encoding="utf-8"))["fullName"] for path in out.glob("*-result.json"))
         self.assertEqual(names, sorted([
             "unica-coder::case", "unica-coder::daemon_receipt_ledger::case",
             "unica-coder::" + module.SCENARIO_TEST_PREFIX + "case",
+            "ureq::completed_response_recycling::case",
         ]))
         entries = [json.loads(path.read_text(encoding="utf-8")) for path in out.glob("*-result.json")]
         statuses = {entry["fullName"]: entry["status"] for entry in entries}
         self.assertEqual(statuses["unica-coder::case"], "failed")
         self.assertEqual(statuses["unica-coder::daemon_receipt_ledger::case"], "passed")
         self.assertEqual(statuses["unica-coder::" + module.SCENARIO_TEST_PREFIX + "case"], "passed")
+        self.assertEqual(statuses["ureq::completed_response_recycling::case"], "passed")
         library_entry = next(entry for entry in entries if entry["fullName"].endswith(module.SCENARIO_TEST_PREFIX + "case"))
         self.assertIn({"name": "size", "value": "medium"}, library_entry["labels"])
 
@@ -339,7 +365,8 @@ class GateProfileTests(unittest.TestCase):
 
         def run_commands(planned):
             command = planned[0]
-            events.append("--features" if "--features" in command else "--workspace")
+            events.append("--manifest-path" if "--manifest-path" in command else
+                          "--features" if "receipt-ledger-test-support" in command else "--workspace")
             return 0
 
         code = module.execute(
@@ -348,7 +375,95 @@ class GateProfileTests(unittest.TestCase):
         )
 
         self.assertEqual(code, 0)
-        self.assertEqual(events, ["--workspace", "report", "--features"])
+        self.assertEqual(events, ["--workspace", "report", "--features", "--manifest-path"])
+
+    def test_vendor_plan_and_results_use_medium_and_the_gate_identity_only_for_owned_cases(self) -> None:
+        from unittest.mock import patch
+
+        module = load_module()
+        owned = "completed_response_recycling::complete_empty_response_survives_read_reset_failure"
+        cases = [
+            {"binary": "ureq", "name": owned, "ignored": False},
+            {"binary": "ureq", "name": "fixture::unrelated", "ignored": False},
+            {"binary": "other", "name": owned, "ignored": False},
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            def list_cases(_, command):
+                return [dict(case) for case in cases] if "--manifest-path" in command else []
+            with patch.object(module.allure_results, "nextest_list", side_effect=list_cases):
+                self.assertEqual(module.write_rust_plan(root, "queue"), 3)
+            self.assertEqual(json.loads((root / "plan.json").read_text()), [
+                {"binary": "ureq", "name": owned, "ignored": False, "size": "medium"},
+                {"binary": "ureq", "name": "fixture::unrelated", "ignored": False},
+                {"binary": "other", "name": owned, "ignored": False},
+            ])
+            junit = root / "junit.xml"
+            junit.write_text(
+                '<testsuites><testsuite name="ureq">'
+                f'<testcase name="{owned}" time="0.1"/>'
+                '<testcase name="fixture::unrelated" time="0.1"/>'
+                '</testsuite><testsuite name="other">'
+                f'<testcase name="{owned}" time="0.1"/>'
+                '</testsuite></testsuites>', encoding="utf-8",
+            )
+            output = root / "results"
+            self.assertEqual(module.emit_rust(output, "queue", "linux", junit, selection=UREQ_SELECTION), 3)
+            results = [json.loads(path.read_text()) for path in output.glob("*-result.json")]
+            sizes = {entry["fullName"]: next(label["value"] for label in entry["labels"] if label["name"] == "size") for entry in results}
+            self.assertEqual(sizes, {
+                "ureq::" + owned: "medium",
+                "ureq::fixture::unrelated": "small",
+                "other::" + owned: "small",
+            })
+            for entry in results:
+                self.assertIn({"name": "profile", "value": "queue"}, entry["labels"])
+                self.assertIn({"name": "tag", "value": "queue"}, entry["labels"])
+                self.assertNotIn({"name": "profile", "value": "ureq-recycling"}, entry["labels"])
+                self.assertEqual(entry["parameters"], [{"name": "runner", "value": "linux"}])
+
+    def test_vendor_junit_is_own_and_empty_selection_cannot_reuse_an_old_success(self) -> None:
+        from unittest.mock import patch
+
+        # The executor's nonzero case models nextest refusing an empty selection.
+        # It does not stand in for root's actual nextest selection check.
+        for vendor_code in (0, 4):
+            with self.subTest(vendor_code=vendor_code), tempfile.TemporaryDirectory() as temporary:
+                module = load_module()
+                root = Path(temporary)
+                shared = root / "target/nextest/queue/junit.xml"
+                vendor = root / "vendor/ureq/target/nextest/ureq-recycling/junit.xml"
+                for path in (shared, vendor):
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text('<testsuites><testsuite name="ureq"><testcase name="stale::success"/></testsuite></testsuites>')
+                seen = []
+                def execute(planned):
+                    command = planned[0]
+                    if "--manifest-path" in command:
+                        seen.append("vendor")
+                        self.assertFalse(vendor.exists(), "the vendor's stale JUnit must be removed before its run")
+                        self.assertNotIn("--no-tests=pass", command)
+                        if vendor_code:
+                            return vendor_code
+                        path, binary, name = vendor, "ureq", "completed_response_recycling::fresh"
+                    else:
+                        self.assertFalse(shared.exists())
+                        featured = "receipt-ledger-test-support" in command
+                        seen.append("ledger" if featured else "workspace")
+                        path, binary, name = shared, "unica-coder", "ledger::fresh" if featured else "workspace::fresh"
+                    path.write_text(f'<testsuites><testsuite name="{binary}"><testcase name="{name}" time="0.1"/></testsuite></testsuites>')
+                    return 0
+                with patch.object(module, "REPO_ROOT", root):
+                    self.assertEqual(module.nextest_junit("queue", UREQ_SELECTION), vendor)
+                    code = module.execute("queue", "rust", root / "results", "linux", run_commands=execute)
+                self.assertEqual(code, vendor_code)
+                self.assertEqual(seen, ["workspace", "ledger", "vendor"])
+                names = sorted(json.loads(path.read_text())["fullName"] for path in (root / "results").glob("*-result.json"))
+                expected = ["unica-coder::workspace::fresh", "unica-coder::ledger::fresh"]
+                if not vendor_code:
+                    expected.append("ureq::completed_response_recycling::fresh")
+                self.assertEqual(names, sorted(expected))
+                self.assertEqual(vendor.exists(), vendor_code == 0)
 
     def test_surviving_product_report_is_windows_only_and_never_fails_the_run(self) -> None:
         module = load_module()

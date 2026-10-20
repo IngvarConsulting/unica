@@ -68,3 +68,7 @@ tests/fixtures/platform_8_3_27/new-xml/native-form-content.xml -text whitespace=
 tests/fixtures/platform_8_3_27/new-xml/native-catalog-descriptor.xml -text whitespace=cr-at-eol
 tests/fixtures/platform_8_3_27/new-xml/native-form-module.bsl -text whitespace=cr-at-eol
 tests/fixtures/platform_8_3_27/new-xml/native-chart-of-accounts-descriptor.xml -text whitespace=cr-at-eol
+
+# Vendored archive and delivered license hashes describe the original bytes.
+/vendor/ureq/** -text
+/plugins/unica/third-party/licenses/ureq/** -text
