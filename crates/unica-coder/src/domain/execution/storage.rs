@@ -2,6 +2,7 @@
 //! deliberately not deserializable durable evidence.
 use super::*;
 use std::collections::HashSet;
+pub(crate) mod codec;
 
 #[derive(Clone, Debug)]
 pub(crate) enum PayloadChange {

@@ -7,7 +7,9 @@ use crate::domain::execution::{
 };
 use crate::domain::invocation::{InvocationId, TaskId};
 use std::collections::{HashMap, VecDeque};
+pub(crate) mod authority;
 pub(crate) mod hydration;
+pub(crate) use authority::{AcceptedStoreAuthority, AuthorityFailure, AuthorityFailureCause};
 
 /// A frontend secret. Debug and durable projections never expose its bytes.
 pub(crate) struct OwnerCapability([u8; 32]);
@@ -142,6 +144,7 @@ pub(crate) enum WriteFailureCause {
     NoSpace,
     AccessDenied,
     IoFailure,
+    CandidateTooLarge,
 }
 
 /// The first validated no-publication failure of this authority. This is
@@ -286,6 +289,7 @@ pub(crate) struct ExecutionCoordinator {
     next_commit: u64,
     unavailable: bool,
     first_known_write_failure: Option<KnownWriteFailure>,
+    first_authority_failure: Option<AuthorityFailure>,
     recovering: bool,
     groups: HashMap<InvocationId, Slot>,
     // Both indexes claim the complete key, including pending and cancel-only
@@ -303,6 +307,7 @@ impl ExecutionCoordinator {
             next_commit: 0,
             unavailable: false,
             first_known_write_failure: None,
+            first_authority_failure: None,
             recovering: false,
             groups: HashMap::new(),
             invocations: HashMap::new(),
@@ -834,3 +839,6 @@ mod compact_tests;
 
 #[cfg(test)]
 mod commit_failure_tests;
+
+#[cfg(test)]
+mod authority_tests;

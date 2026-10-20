@@ -36,6 +36,7 @@ plugins/unica/skills/form-patterns/SKILL.md whitespace=cr-at-eol
 tests/fixtures/acceptance/workspace-code/** -text whitespace=cr-at-eol
 tests/fixtures/acceptance/workspace-diagnostics/** -text whitespace=cr-at-eol
 tests/fixtures/acceptance/workspace-metadata-warning/** -text whitespace=cr-at-eol
+tests/fixtures/acceptance/workspace-legacy-inline/** -text whitespace=cr-at-eol
 tests/fixtures/acceptance/workspace-external/** -text whitespace=cr-at-eol
 tests/fixtures/acceptance/workspace-external-missing/** -text whitespace=cr-at-eol
 tests/fixtures/acceptance/workspace-external-invalid/** -text whitespace=cr-at-eol
@@ -58,3 +59,6 @@ tests/fixtures/acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates/Platf
 
 # Keep the native-validated whole-template-removal fixture bytes on every host.
 tests/fixtures/acceptance/workspace-whole-template-removal/** -text -whitespace
+
+# Exact native BinaryData Type fragment.
+/tests/fixtures/platform_8_3_27/binary-data/native-type.xml -text whitespace=cr-at-eol

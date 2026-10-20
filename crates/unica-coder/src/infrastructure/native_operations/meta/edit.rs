@@ -5577,7 +5577,12 @@ fn remove_typed_element(
 ) -> Result<(), MetaDiagnostic> {
     let tag = collection_tag(collection);
     let range = find_typed_element_range(xml_text, tag, scope, name)?;
-    meta_edit_remove_xml_node_range(xml_text, range);
+    if let Some(updated) = super::remove::empty_child_objects_after_removal(xml_text, range.clone())
+    {
+        *xml_text = updated;
+    } else {
+        meta_edit_remove_xml_node_range(xml_text, range);
+    }
     Ok(())
 }
 
@@ -5858,6 +5863,10 @@ fn apply_typed_event_subscription_source(
     xml_text.replace_range(range, &replacement);
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "edit_empty_child_objects_tests.rs"]
+mod empty_child_objects_tests;
 
 #[cfg(test)]
 pub(crate) mod tests {
