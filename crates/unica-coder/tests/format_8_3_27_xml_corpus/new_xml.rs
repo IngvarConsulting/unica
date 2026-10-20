@@ -136,6 +136,176 @@ fn typed_catalog_creation_with_comment_preserves_native_descriptor_profile() {
     assert_eq!(*published, bind_native_identities(with_comment.as_bytes(), published, "Catalog"), "actual typed setProperties must inherit the new descriptor's native byte profile while publishing the requested Comment");
 }
 
+fn user_value_workspace_image(root: &Path) -> (BTreeMap<PathBuf, Vec<u8>>, BTreeSet<PathBuf>) {
+    fn visit(
+        root: &Path,
+        directory: &Path,
+        files: &mut BTreeMap<PathBuf, Vec<u8>>,
+        directories: &mut BTreeSet<PathBuf>,
+    ) {
+        for entry in fs::read_dir(directory).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            let relative = path.strip_prefix(root).unwrap().to_path_buf();
+            if entry.file_type().unwrap().is_dir() {
+                directories.insert(relative);
+                visit(root, &path, files, directories);
+            } else {
+                files.insert(relative, fs::read(path).unwrap());
+            }
+        }
+    }
+    let mut files = BTreeMap::new();
+    let mut directories = BTreeSet::new();
+    visit(root, root, &mut files, &mut directories);
+    (files, directories)
+}
+
+fn publish_typed_user_value(
+    workspace: &Path,
+    tool: &str,
+    args: &Map<String, Value>,
+    effect_operations: &[&str],
+) {
+    let before = user_value_workspace_image(workspace);
+    let mut preview_args = args.clone();
+    preview_args.insert("dryRun".to_owned(), json!(true));
+    let preview = call_public_tool_result(tool, &preview_args).unwrap();
+    let plan = preview.data.as_ref().unwrap();
+    assert_eq!(plan["changed"], true);
+    assert_eq!(plan["validation"]["status"], "passed");
+    let effects = plan["effects"].as_array().unwrap();
+    assert!(!effects.is_empty());
+    assert_eq!(
+        effects
+            .iter()
+            .map(|effect| effect["operation"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        effect_operations
+    );
+    assert!(!plan["changedPaths"].as_array().unwrap().is_empty());
+    assert_eq!(
+        user_value_workspace_image(workspace),
+        before,
+        "retained preview changed source, project or cache bytes/directories"
+    );
+    let mut apply_args = args.clone();
+    apply_args.insert("dryRun".to_owned(), json!(false));
+    let published = call_public_tool_result(tool, &apply_args).unwrap();
+    let data = published.data.as_ref().unwrap();
+    assert_eq!(data["changed"], true);
+    assert_eq!(data["validation"]["status"], "passed");
+    for field in ["metadataPath", "effects", "changedPaths", "publicationPlan"] {
+        assert_eq!(
+            data[field], plan[field],
+            "retained receipt differs: {field}"
+        );
+    }
+    assert!(!preview.changes.is_empty());
+    assert!(!published.changes.is_empty());
+}
+
+#[test]
+fn typed_catalog_comment_preserves_its_value_across_a_later_property_edit() {
+    const COMMENT: &str = "first\nsecond\t<&>";
+    const DESCRIPTOR: &str = "Catalogs/CorpusCatalog.xml";
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path();
+    let case = EXECUTABLE_CASES
+        .iter()
+        .find(|case| case.id == "meta-compile-catalog")
+        .unwrap();
+    let mut args = prepare_target(case, workspace).unwrap();
+    args.insert(
+        "operations".to_owned(),
+        json!([{"op":"setProperties","values":{"Comment":COMMENT}}]),
+    );
+    let source = workspace.join("src");
+    let cache = workspace.join(".build/unica");
+    fs::create_dir_all(&cache).unwrap();
+    fs::write(cache.join("user-value-sentinel"), b"cache\r\n").unwrap();
+    let before = user_value_workspace_image(&source).0;
+    publish_typed_user_value(
+        workspace,
+        case.tool,
+        &args,
+        &["createTemplate", "setProperties"],
+    );
+    let after = user_value_workspace_image(&source).0;
+    let added = after
+        .keys()
+        .filter(|path| !before.contains_key(*path))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        added,
+        BTreeSet::from([
+            PathBuf::from(DESCRIPTOR),
+            PathBuf::from("Catalogs/CorpusCatalog/Ext/ObjectModule.bsl"),
+        ])
+    );
+    for (path, bytes) in &before {
+        if path == Path::new("Configuration.xml") {
+            assert_ne!(after.get(path), Some(bytes));
+        } else {
+            assert_eq!(after.get(path), Some(bytes), "changed adjacent {path:?}");
+        }
+    }
+    assert_eq!(
+        after[Path::new("Catalogs/CorpusCatalog/Ext/ObjectModule.bsl")],
+        b"\xef\xbb\xbf"
+    );
+    let published = &after[Path::new(DESCRIPTOR)];
+    let published_text = std::str::from_utf8(published).unwrap();
+    let xml = published_text
+        .strip_prefix('\u{feff}')
+        .unwrap_or(published_text);
+    let document = roxmltree::Document::parse(xml).unwrap();
+    let owner = document
+        .root_element()
+        .children()
+        .find(|node| node.has_tag_name((MD, "Catalog")))
+        .unwrap();
+    let properties = owner
+        .children()
+        .find(|node| node.has_tag_name((MD, "Properties")))
+        .unwrap();
+    let comments = properties
+        .children()
+        .filter(|node| node.has_tag_name((MD, "Comment")))
+        .collect::<Vec<_>>();
+    assert_eq!(comments.len(), 1);
+    assert_eq!(comments[0].text(), Some(COMMENT));
+    let code_lengths = properties
+        .children()
+        .filter(|node| node.has_tag_name((MD, "CodeLength")))
+        .collect::<Vec<_>>();
+    assert_eq!(code_lengths.len(), 1);
+    assert_eq!(code_lengths[0].text(), Some("9"));
+    let offset = published_text.len() - xml.len();
+    let range = code_lengths[0].range();
+    let range = range.start + offset..range.end + offset;
+    assert_eq!(&published[range.clone()], b"<CodeLength>9</CodeLength>");
+    let mut expected_second = published.clone();
+    expected_second.splice(range, b"<CodeLength>12</CodeLength>".iter().copied());
+
+    // Re-enter through the real retained editor without reseeding or
+    // normalizing the just-published descriptor.
+    let edit = Map::from_iter([
+        ("cwd".to_owned(), json!(workspace.display().to_string())),
+        ("sourceSet".to_owned(), json!("main")),
+        ("metadataPath".to_owned(), json!("Catalog.CorpusCatalog")),
+        (
+            "operations".to_owned(),
+            json!([{"op":"setProperties","values":{"CodeLength":12}}]),
+        ),
+    ]);
+    publish_typed_user_value(workspace, "unica.meta.edit", &edit, &["setProperties"]);
+    let mut expected_tree = after;
+    expected_tree.insert(PathBuf::from(DESCRIPTOR), expected_second);
+    assert_eq!(user_value_workspace_image(&source).0, expected_tree);
+}
+
 const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
 const XR: &str = "http://v8.1c.ru/8.3/xcf/readable";
 

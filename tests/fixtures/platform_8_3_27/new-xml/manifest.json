@@ -164,7 +164,7 @@
           "caseContractSha256": "d25fbc7acd95f9e460b31f8895ae9f134cc933da512c23b9d4c063ea624aa9bb",
           "preparedProvenanceSha256": "850834570091939495044f8b9ecc76f1e359c1b4ff54304e4171102734c222f5"
         },
-        "retainedObservation": "/Users/ingvarvilkman/.codex/worktrees/v014-new-xml-profile/unica/.session-temp/v014-new-xml-profile/noncatalog-native-observation/observation.json",
+        "retainedObservation": ".session-temp/v014-new-xml-profile/noncatalog-native-observation/observation.json",
         "retainedObservationSha256": "9ee0733eed2a9dadbe9c4831203d96832878fbacb3c6f7c4b382d2ddc6574f8f"
       }
     }

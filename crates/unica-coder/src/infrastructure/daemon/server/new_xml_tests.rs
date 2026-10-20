@@ -257,6 +257,134 @@ fn canonical_object_create_publishes_native_catalog_descriptor_bytes() {
     assert_eq!(published, bind_native_identities(NATIVE_CATALOG, &published, "Catalog"), "new Catalog must match raw native export apart from its 11 declared generated identity slots");
 }
 
+fn publish_catalog_user_value(
+    runtime: &V5CanonicalInvocationRuntime,
+    root: &Path,
+    at: &str,
+    ops: serde_json::Value,
+) {
+    let root = std::fs::canonicalize(root).unwrap();
+    let before = (tree_snapshot(&root), tree_directories(&root));
+    let call = |arguments| {
+        direct_v5(
+            runtime,
+            InvocationRequest::new(
+                ToolIdentity::Apply,
+                arguments,
+                root.to_string_lossy(),
+                7_000,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    };
+    let preview = call(json!({"at":at,"ops":ops}));
+    assert!(preview.ok, "user-value preview failed: {preview:?}");
+    let plan = preview.data.as_ref().unwrap();
+    assert_eq!(plan["mode"], "preview");
+    assert_eq!(plan["validated"], true);
+    assert_eq!(plan["executable"], true);
+    for field in ["planHash", "executionToken"] {
+        assert!(plan[field].as_str().is_some_and(|value| !value.is_empty()));
+    }
+    assert_eq!(
+        preview.changed,
+        vec![json!({"at":"main:Catalog.CorpusCatalog","event":"MetadataChanged"})]
+    );
+    assert_eq!(plan["effects"], 1);
+    assert_eq!(
+        (tree_snapshot(&root), tree_directories(&root)),
+        before,
+        "preview changed source, project or cache bytes/directories"
+    );
+    let published = call(json!({"executionToken":plan["executionToken"]}));
+    assert!(published.ok, "user-value publication failed: {published:?}");
+    let publication = published.data.as_ref().unwrap();
+    assert_eq!(publication["mode"], "published");
+    for field in ["planHash", "operations", "effects"] {
+        assert_eq!(publication[field], plan[field]);
+    }
+    assert_eq!(published.changed, preview.changed);
+}
+
+#[test]
+fn canonical_catalog_comment_preserves_its_value_across_a_later_property_edit() {
+    const COMMENT: &str = "first\nsecond\t<&>";
+    let root = workspace(false);
+    let source = root.path().join("src");
+    let cache = root.path().join(".build/unica");
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::write(cache.join("user-value-sentinel"), b"cache\r\n").unwrap();
+    let before = tree_snapshot(&source);
+    let runtime = runtime();
+    publish_catalog_user_value(
+        &runtime,
+        root.path(),
+        "main:Configuration",
+        json!([
+            {"op":"object.create","args":{"values":{"kind":"Catalog","name":"CorpusCatalog"}}},
+            {"op":"props.set","args":{"at":"main:Catalog.CorpusCatalog","values":{"Comment":COMMENT}}}
+        ]),
+    );
+    assert_effects(
+        &source,
+        &before,
+        &[CATALOG, "Catalogs/CorpusCatalog/Ext/ObjectModule.bsl"],
+        &["Configuration.xml"],
+    );
+    assert_eq!(
+        std::fs::read(source.join("Catalogs/CorpusCatalog/Ext/ObjectModule.bsl")).unwrap(),
+        b"\xef\xbb\xbf"
+    );
+    let published = std::fs::read(source.join(CATALOG)).unwrap();
+    let published_text = std::str::from_utf8(&published).unwrap();
+    let xml = published_text
+        .strip_prefix('\u{feff}')
+        .unwrap_or(published_text);
+    let document = roxmltree::Document::parse(xml).unwrap();
+    let md = "http://v8.1c.ru/8.3/MDClasses";
+    let owner = document
+        .root_element()
+        .children()
+        .find(|node| node.has_tag_name((md, "Catalog")))
+        .unwrap();
+    let properties = owner
+        .children()
+        .find(|node| node.has_tag_name((md, "Properties")))
+        .unwrap();
+    let comments = properties
+        .children()
+        .filter(|node| node.has_tag_name((md, "Comment")))
+        .collect::<Vec<_>>();
+    assert_eq!(comments.len(), 1);
+    assert_eq!(comments[0].text(), Some(COMMENT));
+    let code_lengths = properties
+        .children()
+        .filter(|node| node.has_tag_name((md, "CodeLength")))
+        .collect::<Vec<_>>();
+    assert_eq!(code_lengths.len(), 1);
+    assert_eq!(code_lengths[0].text(), Some("9"));
+    let offset = published_text.len() - xml.len();
+    let range = code_lengths[0].range();
+    let range = range.start + offset..range.end + offset;
+    assert_eq!(&published[range.clone()], b"<CodeLength>9</CodeLength>");
+    let mut expected_second = published.clone();
+    expected_second.splice(range, b"<CodeLength>12</CodeLength>".iter().copied());
+
+    // The serialized LF spelling is not prescribed. A subsequent request
+    // must preserve those actually published bytes outside CodeLength.
+    let before_second = tree_snapshot(&source);
+    publish_catalog_user_value(
+        &runtime,
+        root.path(),
+        "main:Catalog.CorpusCatalog",
+        json!([{"op":"props.set","args":{"values":{"CodeLength":12}}}]),
+    );
+    let mut expected_tree = before_second;
+    expected_tree.insert(PathBuf::from(CATALOG), expected_second);
+    assert_eq!(tree_snapshot(&source), expected_tree);
+}
+
 #[test]
 fn canonical_object_create_publishes_native_chart_of_accounts_descriptor_bytes() {
     let root = workspace(false);
