@@ -33,7 +33,7 @@ pub(crate) fn typed_mxl_reader_target(
 
 pub(crate) fn empty_spreadsheet_document_xml() -> String {
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<document xmlns=\"{MXL_DOCUMENT_NS}\" xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n\t<languageSettings>\n\t\t<currentLanguage>ru</currentLanguage>\n\t\t<defaultLanguage>ru</defaultLanguage>\n\t\t<languageInfo>\n\t\t\t<id>ru</id>\n\t\t\t<code>Русский</code>\n\t\t\t<description>Русский</description>\n\t\t</languageInfo>\n\t</languageSettings>\n\t<columns>\n\t\t<size>0</size>\n\t</columns>\n\t<rowsItem>\n\t\t<index>0</index>\n\t\t<row>\n\t\t\t<empty>true</empty>\n\t\t</row>\n\t</rowsItem>\n\t<templateMode>true</templateMode>\n\t<vgRows>0</vgRows>\n</document>\n"
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<document xmlns=\"{MXL_DOCUMENT_NS}\" xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\r\n\t<languageSettings>\r\n\t\t<currentLanguage>ru</currentLanguage>\r\n\t\t<defaultLanguage>ru</defaultLanguage>\r\n\t\t<languageInfo>\r\n\t\t\t<id>ru</id>\r\n\t\t\t<code>Русский</code>\r\n\t\t\t<description>Русский</description>\r\n\t\t</languageInfo>\r\n\t</languageSettings>\r\n\t<columns>\r\n\t\t<size>0</size>\r\n\t</columns>\r\n\t<rowsItem>\r\n\t\t<index>0</index>\r\n\t\t<row>\r\n\t\t\t<empty>true</empty>\r\n\t\t</row>\r\n\t</rowsItem>\r\n\t<templateMode>true</templateMode>\r\n\t<vgRows>0</vgRows>\r\n</document>"
     )
 }
 
@@ -3394,10 +3394,18 @@ pub(crate) mod tests {
         );
         assert_eq!(decompiled_height(&lookalike_xml), 1);
 
-        let missing_row_xml = empty_spreadsheet_document_xml().replace(
-            "\t<rowsItem>\n\t\t<index>0</index>\n\t\t<row>\n\t\t\t<empty>true</empty>\n\t\t</row>\n\t</rowsItem>\n",
-            "",
-        );
+        let mut missing_row_xml = empty_spreadsheet_document_xml();
+        let row_range = {
+            let document = Document::parse(&missing_row_xml).unwrap();
+            let rows = document
+                .root_element()
+                .children()
+                .filter(|node| node.has_tag_name((MXL_DOCUMENT_NS, "rowsItem")))
+                .collect::<Vec<_>>();
+            assert_eq!(rows.len(), 1, "the sentinel must have exactly one rowsItem");
+            rows[0].range()
+        };
+        missing_row_xml.replace_range(row_range, "");
         assert_eq!(decompiled_height(&missing_row_xml), 1);
     }
 

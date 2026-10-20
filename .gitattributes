@@ -72,3 +72,7 @@ tests/fixtures/platform_8_3_27/new-xml/native-chart-of-accounts-descriptor.xml -
 # Vendored archive and delivered license hashes describe the original bytes.
 /vendor/ureq/** -text
 /plugins/unica/third-party/licenses/ureq/** -text
+
+# Raw template XML exports and the complete native Report seed retain their bytes.
+/tests/fixtures/platform_8_3_27/template-new-xml/*.xml -text whitespace=cr-at-eol
+/tests/fixtures/platform_8_3_27/template-new-xml/seed/** -text whitespace=cr-at-eol

@@ -139,15 +139,15 @@ pub(crate) fn template_metadata_xml(
     )
 }
 
-fn html_template_descriptor(format_version: &str) -> String {
+pub(crate) fn html_template_descriptor(format_version: &str) -> String {
     format!(
         concat!(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n",
             "<Help xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" ",
             "xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" ",
             "xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" ",
-            "version=\"{}\">\n",
-            "\t<Page>ru</Page>\n",
+            "version=\"{}\">\r\n",
+            "\t<Page>ru</Page>\r\n",
             "</Help>"
         ),
         escape_xml(format_version)
@@ -187,24 +187,24 @@ pub(crate) fn template_content_xml(
         "Text" => Ok(String::new()),
         "SpreadsheetDocument" => Ok(super::mxl::empty_spreadsheet_document_xml()),
         "DataCompositionSchema" => Ok(concat!(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
-            "<DataCompositionSchema xmlns=\"http://v8.1c.ru/8.1/data-composition-system/schema\"\n",
-            "\t\txmlns:dcscom=\"http://v8.1c.ru/8.1/data-composition-system/common\"\n",
-            "\t\txmlns:dcscor=\"http://v8.1c.ru/8.1/data-composition-system/core\"\n",
-            "\t\txmlns:dcsset=\"http://v8.1c.ru/8.1/data-composition-system/settings\"\n",
-            "\t\txmlns:v8=\"http://v8.1c.ru/8.1/data/core\"\n",
-            "\t\txmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\"\n",
-            "\t\txmlns:xs=\"http://www.w3.org/2001/XMLSchema\"\n",
-            "\t\txmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n",
-            "\t<dataSource>\n",
-            "\t\t<name>ИсточникДанных1</name>\n",
-            "\t\t<dataSourceType>Local</dataSourceType>\n",
-            "\t</dataSource>\n",
-            "\t<settingsVariant>\n",
-            "\t\t<dcsset:name>Основной</dcsset:name>\n",
-            "\t\t<dcsset:presentation xsi:type=\"xs:string\">Основной</dcsset:presentation>\n",
-            "\t\t<dcsset:settings xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:sys=\"http://v8.1c.ru/8.1/data/ui/fonts/system\" xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\" xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\"/>\n",
-            "\t</settingsVariant>\n",
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n",
+            "<DataCompositionSchema xmlns=\"http://v8.1c.ru/8.1/data-composition-system/schema\"",
+            " xmlns:dcscom=\"http://v8.1c.ru/8.1/data-composition-system/common\"",
+            " xmlns:dcscor=\"http://v8.1c.ru/8.1/data-composition-system/core\"",
+            " xmlns:dcsset=\"http://v8.1c.ru/8.1/data-composition-system/settings\"",
+            " xmlns:v8=\"http://v8.1c.ru/8.1/data/core\"",
+            " xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\"",
+            " xmlns:xs=\"http://www.w3.org/2001/XMLSchema\"",
+            " xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\r\n",
+            "\t<dataSource>\r\n",
+            "\t\t<name>ИсточникДанных1</name>\r\n",
+            "\t\t<dataSourceType>Local</dataSourceType>\r\n",
+            "\t</dataSource>\r\n",
+            "\t<settingsVariant>\r\n",
+            "\t\t<dcsset:name>Основной</dcsset:name>\r\n",
+            "\t\t<dcsset:presentation xsi:type=\"xs:string\">Основной</dcsset:presentation>\r\n",
+            "\t\t<dcsset:settings xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:sys=\"http://v8.1c.ru/8.1/data/ui/fonts/system\" xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\" xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\"/>\r\n",
+            "\t</settingsVariant>\r\n",
             "</DataCompositionSchema>"
         )
         .to_string()),

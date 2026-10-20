@@ -2861,26 +2861,31 @@ fn template_descriptor_xml(
     uuid: &str,
     lang: &str,
 ) -> String {
+    let synonym = crate::infrastructure::native_operations::common::split_camel_case(name)
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+    let synonym_xml = if synonym.is_empty() {
+        "\t\t\t<Synonym/>".to_owned()
+    } else {
+        format!(
+            "\t\t\t<Synonym>\r\n\t\t\t\t<v8:item>\r\n\t\t\t\t\t<v8:lang>{lang}</v8:lang>\r\n\t\t\t\t\t<v8:content>{synonym}</v8:content>\r\n\t\t\t\t</v8:item>\r\n\t\t\t</Synonym>"
+        )
+    };
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject {} version=\"{format_version}\">\n\t<Template uuid=\"{uuid}\">\n\t\t<Properties>\n\t\t\t<Name>{name}</Name>\n{}\n\t\t\t<Comment/>\n\t\t\t<TemplateType>{}</TemplateType>\n\t\t</Properties>\n\t</Template>\n</MetaDataObject>\n",
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<MetaDataObject {} version=\"{format_version}\">\r\n\t<Template uuid=\"{uuid}\">\r\n\t\t<Properties>\r\n\t\t\t<Name>{name}</Name>\r\n{synonym_xml}\r\n\t\t\t<Comment/>\r\n\t\t\t<TemplateType>{}</TemplateType>\r\n\t\t</Properties>\r\n\t</Template>\r\n</MetaDataObject>",
         crate::infrastructure::native_operations::template::full_md_namespace_declarations(),
-        ml_text_block(
-            "\t\t\t",
-            "Synonym",
-            lang,
-            &crate::infrastructure::native_operations::common::split_camel_case(name)
-        ),
         kind.as_str()
     )
 }
 
 fn empty_data_composition_schema_xml() -> String {
     concat!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
-        "<DataCompositionSchema xmlns=\"http://v8.1c.ru/8.1/data-composition-system/schema\" xmlns:dcscom=\"http://v8.1c.ru/8.1/data-composition-system/common\" xmlns:dcscor=\"http://v8.1c.ru/8.1/data-composition-system/core\" xmlns:dcsset=\"http://v8.1c.ru/8.1/data-composition-system/settings\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n",
-        "\t<dataSource>\n\t\t<name>ИсточникДанных1</name>\n\t\t<dataSourceType>Local</dataSourceType>\n\t</dataSource>\n",
-        "\t<settingsVariant>\n\t\t<dcsset:name>Основной</dcsset:name>\n\t\t<dcsset:presentation xsi:type=\"xs:string\">Основной</dcsset:presentation>\n\t\t<dcsset:settings xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:sys=\"http://v8.1c.ru/8.1/data/ui/fonts/system\" xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\" xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\">\n\t\t\t<dcsset:selection/>\n\t\t\t<dcsset:item xsi:type=\"dcsset:StructureItemGroup\">\n\t\t\t\t<dcsset:order/>\n\t\t\t\t<dcsset:selection>\n\t\t\t\t\t<dcsset:item xsi:type=\"dcsset:SelectedItemAuto\"/>\n\t\t\t\t</dcsset:selection>\n\t\t\t</dcsset:item>\n\t\t</dcsset:settings>\n\t</settingsVariant>\n",
-        "</DataCompositionSchema>\n",
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n",
+        "<DataCompositionSchema xmlns=\"http://v8.1c.ru/8.1/data-composition-system/schema\" xmlns:dcscom=\"http://v8.1c.ru/8.1/data-composition-system/common\" xmlns:dcscor=\"http://v8.1c.ru/8.1/data-composition-system/core\" xmlns:dcsset=\"http://v8.1c.ru/8.1/data-composition-system/settings\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\r\n",
+        "\t<dataSource>\r\n\t\t<name>ИсточникДанных1</name>\r\n\t\t<dataSourceType>Local</dataSourceType>\r\n\t</dataSource>\r\n",
+        "\t<settingsVariant>\r\n\t\t<dcsset:name>Основной</dcsset:name>\r\n\t\t<dcsset:presentation xsi:type=\"xs:string\">Основной</dcsset:presentation>\r\n\t\t<dcsset:settings xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:sys=\"http://v8.1c.ru/8.1/data/ui/fonts/system\" xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\" xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\">\r\n\t\t\t<dcsset:item xsi:type=\"dcsset:StructureItemGroup\">\r\n\t\t\t\t<dcsset:selection>\r\n\t\t\t\t\t<dcsset:item xsi:type=\"dcsset:SelectedItemAuto\"/>\r\n\t\t\t\t</dcsset:selection>\r\n\t\t\t</dcsset:item>\r\n\t\t</dcsset:settings>\r\n\t</settingsVariant>\r\n",
+        "</DataCompositionSchema>",
     )
     .to_string()
 }

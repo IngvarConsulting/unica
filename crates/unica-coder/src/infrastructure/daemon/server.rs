@@ -1305,6 +1305,9 @@ mod html_template_tests;
 mod new_xml_tests;
 
 #[cfg(test)]
+mod template_new_xml_tests;
+
+#[cfg(test)]
 mod form_add_owner_bytes_tests;
 
 #[cfg(test)]

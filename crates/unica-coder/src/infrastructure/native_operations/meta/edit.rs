@@ -1336,11 +1336,16 @@ pub(super) fn plan_typed_child_resources(
         let final_descriptor = if let Some(final_name) = &state.current_name {
             let tag = collection_tag(state.collection);
             let bytes = typed_child_element_xml(post_image, tag, final_name)
-                .map(|child_xml| {
-                    initial_descriptor
+                .and_then(|child_xml| {
+                    if matches!(&state.origin, Origin::Added)
+                        && state.collection == MetaCollection::Templates
+                    {
+                        return new_template_descriptor_image(&child_xml);
+                    }
+                    Ok(initial_descriptor
                         .as_deref()
                         .and_then(|initial| splice_standalone_descriptor(initial, tag, &child_xml))
-                        .unwrap_or_else(|| wrap_standalone_descriptor(&child_xml))
+                        .unwrap_or_else(|| wrap_standalone_descriptor(&child_xml)))
                 })
                 .or_else(|failure| match &state.origin {
                     Origin::Existing(initial_name) if initial_name == final_name => {
@@ -1945,35 +1950,32 @@ pub(super) fn typed_template_primary_path(template_type: MetadataTemplateType) -
     }
 }
 
-/// ADR-0072: начальное содержимое нового макета по виду — то, что порождал
-/// снимаемый `template.add`; байты канала сохраняют прежнее typed-поведение
-/// (без BOM), текстовый и бинарный виды пусты.
+/// New XML payloads have the native BOM and structural profile. Existing
+/// payloads are retained separately; text and binary initial payloads are empty.
 pub(super) fn typed_template_initial_content(template_type: MetadataTemplateType) -> Vec<u8> {
-    match template_type {
+    let xml = match template_type {
         MetadataTemplateType::SpreadsheetDocument => {
-            super::super::mxl::empty_spreadsheet_document_xml().into_bytes()
+            super::super::mxl::empty_spreadsheet_document_xml()
         }
         // Платформенная форма HTMLDocument: primary — дескриптор страниц
         // `<Help>` (extrnprops), сами страницы лежат в Ext/Template/*.html.
         // Снимаемый template.add писал сюда сырой HTML — typed-канал пишет
         // форму, которую закрепил валидатор по реальным дампам 8.3.27.
-        MetadataTemplateType::HtmlDocument => {
-            crate::infrastructure::native_operations::help::help_metadata_xml(
-                "ru",
-                crate::domain::format_profile::ACTIVE_FORMAT_PROFILE.export_format,
-            )
-            .into_bytes()
-        }
+        MetadataTemplateType::HtmlDocument => super::super::template::html_template_descriptor(
+            crate::domain::format_profile::ACTIVE_FORMAT_PROFILE.export_format,
+        ),
         MetadataTemplateType::DataCompositionSchema => {
             super::super::template::template_content_xml("DataCompositionSchema", "")
                 .expect("closed template kind")
-                .into_bytes()
         }
         MetadataTemplateType::TextDocument
         | MetadataTemplateType::BinaryData
         | MetadataTemplateType::AddIn
-        | MetadataTemplateType::DataCompositionAppearanceTemplate => Vec::new(),
-    }
+        | MetadataTemplateType::DataCompositionAppearanceTemplate => return Vec::new(),
+    };
+    let mut bytes = b"\xef\xbb\xbf".to_vec();
+    bytes.extend_from_slice(xml.as_bytes());
+    bytes
 }
 
 pub(super) fn typed_template_page_path(page: &str) -> PathBuf {
@@ -2531,6 +2533,81 @@ fn wrap_standalone_descriptor(child_xml: &str) -> Vec<u8> {
         child_xml
     )
     .into_bytes()
+}
+
+/// Format only the structural gaps of a newly added Template, after all
+/// operations have supplied its final fields. Leaf markup is copied verbatim,
+/// including literal LF/TAB in comments and multilingual text.
+fn new_template_descriptor_image(child_xml: &str) -> Result<Vec<u8>, MetaFailure> {
+    fn append(
+        source: &str,
+        node: roxmltree::Node<'_, '_>,
+        depth: usize,
+        output: &mut String,
+    ) -> Option<()> {
+        const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
+        const V8: &str = "http://v8.1c.ru/8.1/data/core";
+        output.push_str(&"\t".repeat(depth));
+        let structural = node.has_tag_name((MD, "Template"))
+            || node.has_tag_name((MD, "Properties"))
+            || node.has_tag_name((MD, "Synonym"))
+            || node.has_tag_name((V8, "item"));
+        let children = node
+            .children()
+            .filter(|child| child.is_element())
+            .collect::<Vec<_>>();
+        if !structural || children.is_empty() {
+            output.push_str(&source[node.range()]);
+            return Some(());
+        }
+        // Only emitter-owned whitespace may be replaced. Authored leaf text
+        // never takes this branch, and unexpected markup is not discarded.
+        if node.children().any(|child| {
+            !child.is_element()
+                && !(child.is_text()
+                    && child.text().is_some_and(|text| {
+                        text.bytes()
+                            .all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
+                    }))
+        }) {
+            return None;
+        }
+        let first = children.first()?.range().start;
+        let last = children.last()?.range().end;
+        output
+            .push_str(source[node.range().start..first].trim_end_matches([' ', '\t', '\r', '\n']));
+        for child in children {
+            output.push_str("\r\n");
+            append(source, child, depth + 1, output)?;
+        }
+        output.push_str("\r\n");
+        output.push_str(&"\t".repeat(depth));
+        output.push_str(source[last..node.range().end].trim_start_matches([' ', '\t', '\r', '\n']));
+        Some(())
+    }
+
+    let invalid = || {
+        MetaFailure::from(typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "new template descriptor has unexpected structural content",
+            Some("elements"),
+        ))
+    };
+    let wrapped = wrap_standalone_descriptor(child_xml);
+    let source = std::str::from_utf8(&wrapped).map_err(|_| invalid())?;
+    let document = Document::parse(source).map_err(|_| invalid())?;
+    let template = document
+        .root_element()
+        .children()
+        .find(|node| node.has_tag_name(("http://v8.1c.ru/8.3/MDClasses", "Template")))
+        .ok_or_else(invalid)?;
+    let mut output = format!(
+        "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<MetaDataObject {} version=\"2.20\">\r\n",
+        super::template_catalog::meta_xmlns_decl()
+    );
+    append(source, template, 1, &mut output).ok_or_else(invalid)?;
+    output.push_str("\r\n</MetaDataObject>");
+    Ok(output.into_bytes())
 }
 
 /// Replace the child element of an existing standalone descriptor and keep

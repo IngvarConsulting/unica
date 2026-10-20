@@ -18,6 +18,8 @@ mod empty_child_objects;
 mod new_xml;
 #[path = "platform/format_8_3_27_xml_corpus.rs"]
 mod platform_support;
+#[path = "format_8_3_27_xml_corpus/template_new_xml.rs"]
+mod template_new_xml;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum XmlImpactClass {

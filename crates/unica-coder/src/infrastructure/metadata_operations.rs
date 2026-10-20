@@ -3854,8 +3854,11 @@ pub(crate) mod tests {
         let child_descriptor = fixture
             .root
             .join("src/Catalogs/Editable/Templates/Print.xml");
+        let emitted = fs::read(&child_descriptor).unwrap();
+        let content = emitted.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&emitted);
         let mut platform_child = b"\xef\xbb\xbf".to_vec();
-        platform_child.extend_from_slice(&fs::read(&child_descriptor).unwrap());
+        platform_child.extend_from_slice(content);
+        assert!(platform_child.starts_with(b"\xef\xbb\xbf<?xml"));
         fs::write(&child_descriptor, &platform_child).unwrap();
         let owner_before = fs::read_to_string(&fixture.descriptor).unwrap();
         assert!(owner_before.contains("<Template>Print</Template>"));
