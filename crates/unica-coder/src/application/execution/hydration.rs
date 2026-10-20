@@ -23,13 +23,41 @@ impl ReadRequest {
     pub(crate) fn revision(&self) -> u64 {
         self.record.revision()
     }
+    pub(crate) fn expected_record_fingerprint(&self) -> [u8; 32] {
+        self.record.fingerprint()
+    }
     pub(crate) fn authority_epoch(&self) -> AuthorityEpoch {
         self.epoch
     }
     pub(crate) fn descriptor(&self) -> &OutcomeDescriptor {
         &self.descriptor
     }
+    pub(crate) fn authority_failed(self, cause: AuthorityFailureCause) -> AuthorityFailure {
+        AuthorityFailure::for_read(
+            self.epoch,
+            cause,
+            self.record.key().clone(),
+            self.revision(),
+        )
+    }
     pub(crate) fn loaded(self, stored: &StoredRecord) -> Result<ReadCompletion, Error> {
+        self.loaded_or_return(stored).map_err(|(_, error)| error)
+    }
+    /// Keep the consuming request available for a typed authority failure if
+    /// a physical adapter cannot validate its loaded aggregate.
+    pub(crate) fn loaded_or_return(
+        self,
+        stored: &StoredRecord,
+    ) -> Result<ReadCompletion, (Box<Self>, Error)> {
+        match self.loaded_body(stored) {
+            Ok(outcome) => Ok(ReadCompletion {
+                request: self,
+                outcome,
+            }),
+            Err(error) => Err((Box::new(self), error)),
+        }
+    }
+    fn loaded_body(&self, stored: &StoredRecord) -> Result<CanonicalOutcome, Error> {
         if stored.record() != &self.record {
             return Err(Error::StaleCompletion);
         }
@@ -41,10 +69,7 @@ impl ReadRequest {
         if outcome.descriptor() != self.descriptor {
             return Err(Error::InvalidRecord);
         }
-        Ok(ReadCompletion {
-            request: self,
-            outcome: outcome.clone(),
-        })
+        Ok(outcome.clone())
     }
 }
 #[derive(Debug)]
