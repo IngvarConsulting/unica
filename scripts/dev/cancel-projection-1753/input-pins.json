@@ -1,0 +1,186 @@
+{
+  "ready": true,
+  "caseCommit": "341c49d88887c26445cf7081d843f05baa60c44a",
+  "pins": [
+    {
+      "path": "Cargo.toml",
+      "sha256": "7b23679c9b01ac042240b4cbc44644b02f28095cc72de914e74fd5980b0822d9",
+      "bytes": 4708,
+      "gitBlob": "426ed85b54f33ad1a660975b4f57b2e73f6647d7"
+    },
+    {
+      "path": "Cargo.lock",
+      "sha256": "e73847db9bb8770fa76484341bad98f748c6af41fbf70540d100b5c27d3d3cad",
+      "bytes": 74003,
+      "gitBlob": "6e617be369e1fce9a36846da107cbc532f6d5efa"
+    },
+    {
+      "path": "crates/unica-coder/Cargo.toml",
+      "sha256": "fdab93a2fdf0ad6970f5e8910411b02584ca99b22debb3a5f2b5fa2b12d906e1",
+      "bytes": 2797,
+      "gitBlob": "f834692a6aab0a7a5dec327c62dae21e43826b6f"
+    },
+    {
+      "path": ".config/nextest.toml",
+      "sha256": "5e1036390906560c29ba3da8190ad4a994f4337d18272c2adbd55d981e900779",
+      "bytes": 27909,
+      "gitBlob": "251e3ecd1b1daa86a3341447714adc80653c8cfb"
+    },
+    {
+      "path": "crates/unica-coder/src/lib.rs",
+      "sha256": "c6f991acc1ce52b5a2ed9d76e5e6e5204bcc3a86f48b0122fa3a3c1c6e58106a",
+      "bytes": 406,
+      "gitBlob": "5371938aa486264bb975ca18ac663c0423517405"
+    },
+    {
+      "path": "crates/unica-coder/src/receipt_ledger_test_support.rs",
+      "sha256": "c084ca97f2d55ec80960a37c7a5a8edbea3ad1f9fa75ad24bf797c9c11f5067c",
+      "bytes": 44115,
+      "gitBlob": "b3cbac150954c001233451c59911e16ce4dc72b1"
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/daemon/runtime_v5.rs",
+      "sha256": "89a4ce15cb07cdcf296c60b859a527121566e3e11b4e3986b305c036d5f5d97d",
+      "bytes": 354776,
+      "gitBlob": "a02629f2d5481866156b7c39581e50f7a6a36714"
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/daemon/runtime_v5/hooks.rs",
+      "sha256": "b5599ac2a231e82a9f50f615c7f2942a90b3e2ca5886b27e156ca4c19e128e12",
+      "bytes": 12572,
+      "gitBlob": "3e599cac4e913985922d04ea2ecd6774b86c206c"
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/daemon/client_v5.rs",
+      "sha256": "cfff7f5e839eae0d52d2b89f521d66f5d273e6badded3d7b763103b853e9475d",
+      "bytes": 65833,
+      "gitBlob": "7b16e3343c511ae8807d831b1176459909526523"
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/daemon/identity.rs",
+      "sha256": "95097e490de11b516abd2ce2cfba8a019eeda97b51d8e2dc331ffe83fa7d6746",
+      "bytes": 41944,
+      "gitBlob": "4bd4fbac5675bd9d29bfd629254ac3f887b28446"
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/daemon/runtime_v5/receipt_scenario_v5.rs",
+      "sha256": "af522a533e432547fda42cdfc4ec812a735067a7dd78a1b4357f70ac5c2a2772",
+      "bytes": 304590,
+      "gitBlob": "3f84b9d9278046ef3eb3a8b75fd3b6fcad718489"
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/daemon/runtime_v5/receipt_scenario_v5/control.rs",
+      "sha256": "92929e16c84dd49afe803a28f13180165226d60008a8f04d5888c2ca5d4e6b8d",
+      "bytes": 70807,
+      "gitBlob": "f7bad50537e8c76ef8d8339cca3d8c2d6a156e0c"
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/daemon/runtime_v5/receipt_scenario_v5/dispatch.rs",
+      "sha256": "ea01234950930d828d21d490b2b8cf7ea542a940e3cfc71451ed3efda6a0cda7",
+      "bytes": 143566,
+      "gitBlob": "8f120d91c0dcedcb1afa22078c65697922c93ea1"
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/daemon/runtime_v5/receipt_scenario_v5/wire.rs",
+      "sha256": "036d7f700400609749fe6f5aa7f9137556e94184566476d3e3a0c1b6ad553bb1",
+      "bytes": 19188,
+      "gitBlob": "3b07dc6d538e8f531e219f6f8017dbb399e08f82"
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/daemon/runtime_v5/receipt_scenario_v5/tests.rs",
+      "sha256": "e181f7436517560f01811a8038321e16b87c0b06964070aad5469ddd9821bf85",
+      "bytes": 73587,
+      "gitBlob": "c501bc93d8407c1c28f38f93395ae071abe4053c"
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/daemon/runtime_v5/receipt_scenario_v5/scenario_hooks.rs",
+      "sha256": "ee592ebaf3f7a100160c8af63785d89a326169f0e00785ffa6b75ff5f6ea0238",
+      "bytes": 39095,
+      "gitBlob": "823e1a16bcf88214cf2c0e518c6e4d513514985d"
+    },
+    {
+      "path": "crates/unica-coder/tests/daemon_receipt_ledger.rs",
+      "sha256": "6bbd9d054c131f1f8040b22de8582322bb5e15e5096bdda6bd81674ffc73d46c",
+      "bytes": 505504,
+      "gitBlob": "a2d8c276e070c4e86e00ba4b7c8d75a5a9fd8cfe"
+    },
+    {
+      "path": "scripts/ci/probe-unica-wire.py",
+      "sha256": "b126d1905a80ec5f062d79206a9f1e3ddd8ce8ce94715d8f02b45e9c789810ad",
+      "bytes": 51853,
+      "gitBlob": "8edd54bb842c207ed707a403137203ce9c561568"
+    },
+    {
+      "path": "tests/fixtures/mcp/host-workspace-context.json",
+      "sha256": "addfd5ffae105db397e4e68569f816db61ec4a59e10339661cae401abecceeb3",
+      "bytes": 149,
+      "gitBlob": "8bcded3d9b877a8be8fbd36a9be95e4b7e4a87bf"
+    }
+  ],
+  "environmentContractSource": {
+    "path": "tests/fixtures/mcp/host-workspace-context.json",
+    "sha256": "addfd5ffae105db397e4e68569f816db61ec4a59e10339661cae401abecceeb3"
+  },
+  "observedCandidate": {
+    "schemaVersion": 1,
+    "status": "APPLIED_SOURCE_ONLY_AWAITING_INDEPENDENT_REVIEW_AND_CPU_GRANT",
+    "head": "2883f0849f3db79ddfcceaaae00c5e7dc808ca9b",
+    "worktree": "/Users/ingvarvilkman/.codex/worktrees/v014-cancel-observation-recovered/unica",
+    "originalBaseline": "0c6cdb288325e935e0a92473cb0f593ced3b0c64",
+    "originalRedSnapshot": "f674f83792831fe358b712e1354ddbd3df973195",
+    "scope": "Receipt scenario observation and tests only; runtime/stores unchanged.",
+    "sourcePins": {
+      "crates/unica-coder/src/infrastructure/daemon/runtime_v5/receipt_scenario_v5/control.rs": "92929e16c84dd49afe803a28f13180165226d60008a8f04d5888c2ca5d4e6b8d",
+      "crates/unica-coder/src/infrastructure/daemon/runtime_v5/receipt_scenario_v5/dispatch.rs": "ea01234950930d828d21d490b2b8cf7ea542a940e3cfc71451ed3efda6a0cda7",
+      "crates/unica-coder/src/infrastructure/daemon/runtime_v5/receipt_scenario_v5/wire.rs": "036d7f700400609749fe6f5aa7f9137556e94184566476d3e3a0c1b6ad553bb1",
+      "crates/unica-coder/src/infrastructure/daemon/runtime_v5/receipt_scenario_v5/tests.rs": "d99a81243d130f21969e41b52daf1eb42cb1645e9d5645a63358a8e5d9a767a5",
+      "crates/unica-coder/tests/daemon_receipt_ledger.rs": "6bbd9d054c131f1f8040b22de8582322bb5e15e5096bdda6bd81674ffc73d46c"
+    },
+    "diff": {
+      "path": "/Users/ingvarvilkman/.codex/worktrees/v014-cancel-observation-recovered/unica/.session-temp/1753/applied-source-v1/change.patch",
+      "sha256": "91adef5efd94f0c459cb2c5ef6aecb3cc87b528b46bb3c7a7b2be71d0d22425a"
+    },
+    "originalIntegrationAssertionsPreserved": true,
+    "allPreExistingUnitTestsUnchanged": true,
+    "protectedScopeZeroDiffFromOriginalBaseline": true,
+    "cachedDiffEmpty": true,
+    "diffCheckExitCode": 0,
+    "sourceDiffNumstat": "40\t0\tcrates/unica-coder/src/infrastructure/daemon/runtime_v5/receipt_scenario_v5/control.rs\n9\t0\tcrates/unica-coder/src/infrastructure/daemon/runtime_v5/receipt_scenario_v5/dispatch.rs\n311\t0\tcrates/unica-coder/src/infrastructure/daemon/runtime_v5/receipt_scenario_v5/tests.rs\n4\t0\tcrates/unica-coder/src/infrastructure/daemon/runtime_v5/receipt_scenario_v5/wire.rs\n2\t0\tcrates/unica-coder/tests/daemon_receipt_ledger.rs\n",
+    "libTests": [
+      "infrastructure::daemon::runtime_v5::receipt_scenario_v5::tests::terminal_projection_wait_covers_cancel_sender_join_before_real_cancel_write",
+      "infrastructure::daemon::runtime_v5::receipt_scenario_v5::tests::terminal_projection_wait_covers_cancel_flag_before_terminal_lifecycle_link",
+      "infrastructure::daemon::runtime_v5::receipt_scenario_v5::tests::sender_completion_without_a_terminal_hook_cannot_satisfy_the_projection_wait",
+      "infrastructure::daemon::runtime_v5::receipt_scenario_v5::tests::terminal_projection_action_without_a_terminal_hook_cannot_report_success"
+    ],
+    "integrationTest": "cancel_after_working_before_receipt_begun_waits_and_is_post_begun",
+    "requiredFeatures": [
+      "receipt-ledger-test-support"
+    ],
+    "notExecuted": [
+      "Cargo",
+      "rustfmt",
+      "tests",
+      "native",
+      "GitHub",
+      "commit"
+    ],
+    "mutationStatus": "PLANNED_NOT_EXECUTED",
+    "plannedMutations": [
+      {
+        "path": "/Users/ingvarvilkman/.codex/worktrees/v014-cancel-observation-recovered/unica/.session-temp/1753/applied-source-v1/M1-action-bypass.patch",
+        "sha256": "a89c3eefc76a11548e3bf74c1194dc9fb7cba6140b03c89d79c2a7e46f899da0",
+        "test": "infrastructure::daemon::runtime_v5::receipt_scenario_v5::tests::terminal_projection_action_without_a_terminal_hook_cannot_report_success",
+        "guarantee": "Absence of actual terminal hook cannot return success.",
+        "executed": false
+      },
+      {
+        "path": "/Users/ingvarvilkman/.codex/worktrees/v014-cancel-observation-recovered/unica/.session-temp/1753/applied-source-v1/M2-task-ids-only.patch",
+        "sha256": "0c223c798d9de9bd3668361bff28367788e596678e34ac6d6e74b8d2461829dc",
+        "test": "infrastructure::daemon::runtime_v5::receipt_scenario_v5::tests::terminal_projection_wait_covers_cancel_sender_join_before_real_cancel_write",
+        "guarantee": "Same TaskId/InvocationId with another request scope cannot borrow the observed terminal.",
+        "executed": false
+      }
+    ]
+  },
+  "bindingSource": "Exact committed CASE blobs; local gate acceptance remains root-owned."
+}

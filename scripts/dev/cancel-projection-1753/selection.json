@@ -1,0 +1,35 @@
+{
+  "tests": [
+    {
+      "name": "infrastructure::daemon::runtime_v5::receipt_scenario_v5::tests::terminal_projection_wait_covers_cancel_sender_join_before_real_cancel_write",
+      "target": "lib"
+    },
+    {
+      "name": "infrastructure::daemon::runtime_v5::receipt_scenario_v5::tests::terminal_projection_wait_covers_cancel_flag_before_terminal_lifecycle_link",
+      "target": "lib"
+    },
+    {
+      "name": "infrastructure::daemon::runtime_v5::receipt_scenario_v5::tests::sender_completion_without_a_terminal_hook_cannot_satisfy_the_projection_wait",
+      "target": "lib"
+    },
+    {
+      "name": "infrastructure::daemon::runtime_v5::receipt_scenario_v5::tests::terminal_projection_action_without_a_terminal_hook_cannot_report_success",
+      "target": "lib"
+    },
+    {
+      "name": "cancel_after_working_before_receipt_begun_waits_and_is_post_begun",
+      "target": "daemon_receipt_ledger"
+    }
+  ],
+  "passesPerTest": 3,
+  "retries": 0,
+  "features": [
+    "default",
+    "receipt-ledger-test-support"
+  ],
+  "inventoryProfile": "queue",
+  "execution": "direct retained binary --exact --nocapture --test-threads=1",
+  "stopFirstFailure": true,
+  "libNamesSource": "/Users/ingvarvilkman/.codex/worktrees/v014-cancel-observation-recovered/unica/.session-temp/1753/applied-source-v1/source-pins.json",
+  "libNamesSourceSha256": "27ebd9e2afa9709f6d4e7f76a4f4064cfaf320667de45523cf6b707d4ea0e7f9"
+}

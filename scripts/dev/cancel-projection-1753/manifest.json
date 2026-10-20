@@ -1,0 +1,77 @@
+{
+  "schema": 1,
+  "kind": "1753-linux-windows-fixed-fresh-process-source-draft",
+  "ready": true,
+  "caseCommit": "341c49d88887c26445cf7081d843f05baa60c44a",
+  "sourcePinsCount": 19,
+  "members": [
+    {
+      "path": ".github/workflows/unica-plugin-release.yml",
+      "draftPath": "workflow.yml",
+      "sha256": "962beb772fed47d552a78d553eb80157f8ad61a63186f6061574fb7e2b7de3e3",
+      "bytes": 3069
+    },
+    {
+      "path": "scripts/dev/cancel-projection-1753/input-pins.json",
+      "draftPath": "payload/input-pins.json",
+      "sha256": "739b7b41ec2fe0355895ea47a46c55c3988c9b6ba60e7ebb301ccfbf08ac9e2e",
+      "bytes": 9426
+    },
+    {
+      "path": "scripts/dev/cancel-projection-1753/owned_commands.py",
+      "draftPath": "payload/owned_commands.py",
+      "sha256": "f995b2608359753120b1658dd0b831819ed35a3eb15f99717eda19fdcfa01fe4",
+      "bytes": 33516
+    },
+    {
+      "path": "scripts/dev/cancel-projection-1753/run_linux.py",
+      "draftPath": "payload/run_linux.py",
+      "sha256": "8d6e47d90ade7deb3d131bfd2abaa39fc8711dffaf9e51439307abc73da9607c",
+      "bytes": 30422
+    },
+    {
+      "path": "scripts/dev/cancel-projection-1753/run_windows.py",
+      "draftPath": "payload/run_windows.py",
+      "sha256": "da564748814003028675029627f3df9cc6f7e06de469cba0ac7e220e883f4f92",
+      "bytes": 25080
+    },
+    {
+      "path": "scripts/dev/cancel-projection-1753/selection.json",
+      "draftPath": "payload/selection.json",
+      "sha256": "f573e39f8200b329afa359bc056e69d9aa532f085a399c442f3e9b81cea112a7",
+      "bytes": 1415
+    }
+  ],
+  "environmentContractSource": {
+    "path": "tests/fixtures/mcp/host-workspace-context.json",
+    "sha256": "addfd5ffae105db397e4e68569f816db61ec4a59e10339661cae401abecceeb3"
+  },
+  "clearEnvironment": [
+    "CARGO_BUILD_TARGET",
+    "CARGO_ENCODED_RUSTFLAGS",
+    "CLAUDE_PROJECT_DIR",
+    "EMBEDDING_API_KEY",
+    "EMBEDDING_URL",
+    "RUSTC_BOOTSTRAP",
+    "RUSTC_WORKSPACE_WRAPPER",
+    "RUSTC_WRAPPER",
+    "RUSTFLAGS",
+    "UNICA_ARTIFACT_CACHE",
+    "UNICA_HOST_CONTEXT_REQUIRED",
+    "UNICA_RUNTIME_MANIFEST",
+    "UNICA_TEST_WORKSPACE_SERVICE_EXE",
+    "ZCODE_PROJECT_DIR"
+  ],
+  "commandBudgetSeconds": 5400,
+  "cleanupFinalizationSeconds": 60,
+  "workflowCeilingMinutes": 100,
+  "featureSet": [
+    "default",
+    "receipt-ledger-test-support"
+  ],
+  "passesPerTest": 3,
+  "retries": 0,
+  "selectedTestsPerOS": 5,
+  "plannedProcessesPerOS": 15,
+  "executionAuthorized": false
+}
