@@ -1835,9 +1835,13 @@ fn reader_node_props(reader: LogicalReader, kind: NodeKind, value: &Value) -> Ma
     let keys: &[&str] = match (reader, kind) {
         (LogicalReader::Dcs, NodeKind::DataSet) => &["kind", "objectName", "dataSource"],
         (LogicalReader::Dcs, NodeKind::Field) => &["field", "title"],
-        (LogicalReader::Dcs, NodeKind::Parameter) => {
-            &["type", "value", "restricted", "availableAsField"]
-        }
+        (LogicalReader::Dcs, NodeKind::Parameter) => &[
+            "type",
+            "value",
+            "expression",
+            "restricted",
+            "availableAsField",
+        ],
         (LogicalReader::Dcs, NodeKind::Setting) => &["presentation", "filters"],
         (LogicalReader::Dcs, NodeKind::DataSource) => &["kind"],
         (LogicalReader::Dcs, NodeKind::CalculatedField) => &["expression", "title"],
