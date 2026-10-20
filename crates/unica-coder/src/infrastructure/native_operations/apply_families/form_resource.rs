@@ -2000,6 +2000,227 @@ fn clear_default_form_slots(owner_text: &str, reference: &str) -> String {
     text
 }
 
+const FORM_OWNER_MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
+
+fn form_owner_child<'a, 'input>(
+    parent: roxmltree::Node<'a, 'input>,
+    name: &str,
+) -> Result<Option<roxmltree::Node<'a, 'input>>, String> {
+    let mut children = parent
+        .children()
+        .filter(|child| child.has_tag_name((FORM_OWNER_MD_NS, name)));
+    let child = children.next();
+    if children.next().is_some() {
+        return Err(format!(
+            "the form owner has ambiguous direct {name} elements"
+        ));
+    }
+    Ok(child)
+}
+
+fn form_owner_qname<'t>(text: &'t str, node: roxmltree::Node<'_, '_>) -> &'t str {
+    text[node.range()]
+        .trim_start_matches('<')
+        .split([' ', '\t', '\r', '\n', '/', '>'])
+        .next()
+        .unwrap_or("")
+}
+
+fn form_owner_text(node: roxmltree::Node<'_, '_>) -> String {
+    node.children()
+        .filter(roxmltree::Node::is_text)
+        .filter_map(|node| node.text())
+        .collect()
+}
+
+/// Byte ranges come from the parsed preimage, but the emitted image consists
+/// of its original slices. In particular, two separate edits must not turn
+/// the mixed-EOL bytes between them into a serialization envelope.
+fn form_add_owner_image(
+    text: &str,
+    owner: &MetadataAddress,
+    detected_owner: (&str, &str),
+    form_name: &str,
+    default_property: &str,
+    at_path: &str,
+    name_path: &str,
+) -> Result<String, ApplyPlanError> {
+    use crate::domain::metadata::metadata_name_eq;
+    use crate::infrastructure::native_operations::meta::platform_child_object_order;
+    let (object_type, object_name) = detected_owner;
+    let invalid =
+        |message| ApplyPlanError::new(ApplyPlanErrorKind::InvalidState, message).at_path(at_path);
+    let document = roxmltree::Document::parse(text)
+        .map_err(|error| invalid(format!("XML parse error in form owner: {error}")))?;
+    let root = document.root_element();
+    if !root.has_tag_name((FORM_OWNER_MD_NS, "MetaDataObject")) {
+        return Err(invalid(
+            "the form owner must be an MDClasses MetaDataObject".into(),
+        ));
+    }
+    let object = form_owner_child(root, object_type)
+        .map_err(&invalid)?
+        .ok_or_else(|| invalid(format!("the form owner is missing direct {object_type}")))?;
+    let properties = form_owner_child(object, "Properties")
+        .map_err(&invalid)?
+        .ok_or_else(|| invalid("the form owner is missing direct Properties".into()))?;
+    let name = form_owner_child(properties, "Name")
+        .map_err(&invalid)?
+        .map(form_owner_text)
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| invalid("the form owner is missing its direct Name".into()))?;
+    if !metadata_name_eq(&format!("{object_type}.{name}"), owner.as_str())
+        || !metadata_name_eq(&name, object_name)
+    {
+        return Err(invalid(format!(
+            "the form owner identity does not match `{}`",
+            owner.as_str()
+        )));
+    }
+    // A missing or ambiguous registration container cannot yield a successful
+    // publication of orphan form files. No replacement container is invented.
+    let children = form_owner_child(object, "ChildObjects")
+        .map_err(&invalid)?
+        .ok_or_else(|| invalid("the form owner is missing direct ChildObjects".into()))?;
+    for registration in children
+        .children()
+        .filter(|node| node.has_tag_name((FORM_OWNER_MD_NS, "Form")))
+    {
+        let existing = if registration.children().any(|node| node.is_element()) {
+            form_owner_child(registration, "Properties")
+                .map_err(&invalid)?
+                .map(|properties| form_owner_child(properties, "Name"))
+                .transpose()
+                .map_err(&invalid)?
+                .flatten()
+                .map(form_owner_text)
+        } else {
+            Some(form_owner_text(registration))
+        };
+        let Some(existing) = existing.filter(|name| !name.trim().is_empty()) else {
+            return Err(invalid(
+                "the form owner has an unidentified Form registration".into(),
+            ));
+        };
+        if metadata_name_eq(existing.trim(), form_name) {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidState,
+                format!("form `{form_name}` already exists on `{}`", owner.as_str()),
+            )
+            .at_path(name_path));
+        }
+    }
+
+    let qname = form_owner_qname(text, children);
+    let form_qname = qname
+        .rsplit_once(':')
+        .map_or_else(|| "Form".to_owned(), |(prefix, _)| format!("{prefix}:Form"));
+    let entry = format!("<{form_qname}>{}</{form_qname}>", xml_escape(form_name));
+    let child_range = children.range();
+    let child_text = &text[child_range.clone()];
+    let mut edits = Vec::new();
+    if child_text.ends_with("/>") {
+        edits.push((
+            child_range.end - 2..child_range.end,
+            format!(">{entry}</{qname}>"),
+        ));
+    } else {
+        let order = platform_child_object_order(object_type);
+        let form_slot = order.and_then(|order| order.iter().position(|kind| *kind == "Form"));
+        let successor = children
+            .children()
+            .filter(|node| {
+                node.is_element() && node.tag_name().namespace() == Some(FORM_OWNER_MD_NS)
+            })
+            .find(|node| match (order, form_slot) {
+                (Some(order), Some(form_slot)) => order
+                    .iter()
+                    .position(|kind| *kind == node.tag_name().name())
+                    .is_some_and(|slot| slot > form_slot),
+                _ => node.tag_name().name() == "Template",
+            });
+        let anchor = successor.map_or_else(
+            || {
+                child_range.start
+                    + child_text
+                        .rfind("</")
+                        .expect("parsed expanded ChildObjects has a closing tag")
+            },
+            |node| node.range().start,
+        );
+        let line_start = text[..anchor]
+            .rfind(['\r', '\n'])
+            .map_or(0, |index| index + 1);
+        let indentation = &text[line_start..anchor];
+        if line_start > 0 && indentation.bytes().all(|byte| matches!(byte, b' ' | b'\t')) {
+            let ending = if text[..line_start].ends_with("\r\n") {
+                "\r\n"
+            } else if text[..line_start].ends_with('\r') {
+                "\r"
+            } else {
+                "\n"
+            };
+            let extra_indent = if successor.is_some() { "" } else { "\t" };
+            edits.push((
+                line_start..line_start,
+                format!("{indentation}{extra_indent}{entry}{ending}"),
+            ));
+        } else {
+            // Compact XML has no local line boundary. An inline fragment
+            // preserves both its original layout and the shared kind order.
+            edits.push((anchor..anchor, entry));
+        }
+    }
+
+    if let Some(default) = form_owner_child(properties, default_property).map_err(&invalid)? {
+        let range = default.range();
+        let raw = &text[range.clone()];
+        let value = xml_escape(&format!("{object_type}.{name}.Form.{form_name}"));
+        if raw.ends_with("/>") {
+            edits.push((
+                range.end - 2..range.end,
+                format!(">{value}</{}>", form_owner_qname(text, default)),
+            ));
+        } else {
+            // XML permits `>` inside quoted attributes. Locate the content
+            // boundary without mistaking such a byte for the tag delimiter.
+            let mut quote = None;
+            let open_end = raw
+                .bytes()
+                .position(|byte| match (quote, byte) {
+                    (Some(active), byte) if active == byte => {
+                        quote = None;
+                        false
+                    }
+                    (Some(_), _) => false,
+                    (None, b'\'' | b'"') => {
+                        quote = Some(byte);
+                        false
+                    }
+                    (None, b'>') => true,
+                    _ => false,
+                })
+                .expect("parsed default element has an opening tag end")
+                + 1;
+            let close_start = raw
+                .rfind("</")
+                .expect("parsed expanded default has a closing tag");
+            if raw[open_end..close_start]
+                .bytes()
+                .all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
+            {
+                edits.push((range.start + open_end..range.start + close_start, value));
+            }
+        }
+    }
+    edits.sort_by_key(|edit| std::cmp::Reverse(edit.0.start));
+    let mut updated = text.to_owned();
+    for (range, replacement) in edits {
+        updated.replace_range(range, &replacement);
+    }
+    Ok(updated)
+}
+
 fn stage_form_add(
     staged: &mut ApplyStagedState,
     authority: &FormResourceApplyAuthority<'_>,
@@ -2010,7 +2231,6 @@ fn stage_form_add(
 ) -> Result<(), ApplyPlanError> {
     use crate::infrastructure::native_operations::form::{
         form_add_content_xml, form_add_metadata_xml, form_add_module_bsl, form_default_property,
-        replace_form_default_property,
     };
     let at_path = format!("ops[{op_index}].args.at");
     let owner_relative = owner_descriptor_relative(owner, authority, op_index)?;
@@ -2044,13 +2264,15 @@ fn stage_form_add(
             purpose,
         )
         .map_err(|message| bad(op_index, &format!("items[{index}].type"), message))?;
-        if owner_text.contains(&format!("<Form>{form_name}</Form>")) {
-            return Err(ApplyPlanError::new(
-                ApplyPlanErrorKind::InvalidState,
-                format!("form `{form_name}` already exists on `{}`", owner.as_str()),
-            )
-            .at_path(name_path));
-        }
+        owner_text = form_add_owner_image(
+            &owner_text,
+            owner,
+            (&object_type, &object_name),
+            form_name,
+            form_default_property(&object_type, purpose),
+            &at_path,
+            &name_path,
+        )?;
         let uuid = seeded_uuid(&format!(
             "{}\0{}.Form.{form_name}",
             authority.source_set_name(),
@@ -2087,25 +2309,12 @@ fn stage_form_add(
         touched.push(descriptor_relative);
         touched.push(content_relative);
         touched.push(module_relative);
-        owner_text = crate::infrastructure::native_operations::common::register_form_in_object_text(
-            &owner_text,
-            form_name,
-        );
-        let property = form_default_property(&object_type, purpose);
-        let (updated, _) = replace_form_default_property(
-            &owner_text,
-            property,
-            &format!("{object_type}.{object_name}.Form.{form_name}"),
-            false,
-        );
-        owner_text = updated;
     }
-    let owner_postimage = with_bom(
-        &crate::infrastructure::native_operations::common::lxml_tree_serialized_text_like_source_preserving_final_newline(
-            &owner_text,
-            &owner_source,
-        ),
-    );
+    let mut owner_postimage = Vec::with_capacity(UTF8_BOM.len() + owner_text.len());
+    if owner_preimage.starts_with(UTF8_BOM) {
+        owner_postimage.extend_from_slice(UTF8_BOM);
+    }
+    owner_postimage.extend_from_slice(owner_text.as_bytes());
     if owner_postimage != owner_preimage {
         staged
             .replace(&owner_relative, &owner_preimage, owner_postimage)

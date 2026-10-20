@@ -1301,6 +1301,9 @@ mod metadata_can_tests;
 mod html_template_tests;
 
 #[cfg(test)]
+mod form_add_owner_bytes_tests;
+
+#[cfg(test)]
 pub(crate) mod actor_capacity_tests {
     use super::super::client_v5::V5DaemonProcessOwner;
     use super::super::identity::DaemonStateDirectory;
