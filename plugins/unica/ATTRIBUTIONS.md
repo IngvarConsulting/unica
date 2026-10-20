@@ -18,6 +18,25 @@
 объединяет их через один типизированный MCP-сервер `unica`; это объединение не
 заменяет и не отменяет лицензии отдельных компонентов.
 
+## Библиотеки с локальными исправлениями
+
+### ureq
+
+<!-- unica-attribution: library ureq -->
+
+- Репозиторий: [algesten/ureq](https://github.com/algesten/ureq)
+- Автор: [Martin Algesten и участники ureq](https://github.com/algesten/ureq/graphs/contributors)
+- Исходная версия: `2.12.1`, commit `ba4555d54fd72e16fc737f7e8fcc812efb131260`
+- Лицензия: [MIT OR Apache-2.0](third-party/licenses/ureq/LICENSE-MIT);
+  [Apache-2.0](third-party/licenses/ureq/LICENSE-APACHE)
+- Отдельные лицензии декодера chunked:
+  [MIT](third-party/licenses/ureq/src/chunked/LICENSE-MIT),
+  [Apache-2.0](third-party/licenses/ureq/src/chunked/LICENSE-APACHE)
+
+Библиотека входит в бинарники Unica. Локальное исправление сохраняет полностью
+полученный ответ при ошибке подготовки соединения к повторному использованию.
+Исходники и сведения об исправлении доступны в `vendor/ureq` репозитория Unica.
+
 ## Встроенные инструменты
 
 ### BSL Analyzer

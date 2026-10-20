@@ -279,6 +279,8 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
         for path in (
             "crates/unica-coder/src/domain/cache.rs",
             "crates/unica-coder/src/application/metadata.rs",
+            "vendor/ureq/src/response.rs",
+            "vendor/ureq/src/completed_response_recycling.rs",
         ):
             with self.subTest(path=path):
                 self.assert_classification([path], rust_changed=True, release_required=True)
@@ -321,6 +323,9 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             "rust-toolchain.toml",
             ".config/nextest.toml",
             ".config/python-sizes.toml",
+            "vendor/ureq/Cargo.toml",
+            "vendor/ureq/Cargo.lock",
+            "vendor/ureq/.config/nextest.toml",
         ):
             with self.subTest(path=path):
                 self.assert_classification(
@@ -332,6 +337,11 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
                     release_required=True,
                     assessment_required=True,
                 )
+
+    def test_vendor_routing_is_scoped_to_the_patched_dependency_build_inputs(self) -> None:
+        for path in ("vendor/other/src/response.rs", "vendor/ureq/README.md", "vendor/ureq/Cargo.toml.orig"):
+            with self.subTest(path=path):
+                self.assert_classification([path])
 
     def test_search_and_rlm_mechanism_changes_route_the_long_integration_test(self) -> None:
         for path in (

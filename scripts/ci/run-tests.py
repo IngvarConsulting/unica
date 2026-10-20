@@ -59,16 +59,19 @@ NEXTEST_PROFILES = {
 }
 
 
-def nextest_profile(profile: str) -> str:
+def nextest_profile(profile: str, selection: tuple[str, ...] | None = None) -> str:
+    if selection == UREQ_RECYCLING_SELECTION:
+        return "ureq-recycling"
     try:
         return NEXTEST_PROFILES[profile]
     except KeyError:
         raise ValueError(f"профиль {profile!r} для Rust не описан") from None
 
 
-def nextest_junit(profile: str) -> Path:
-    """JUnit лежит в каталоге профиля nextest: `target/nextest/<профиль>/`."""
-    return REPO_ROOT / "target" / "nextest" / nextest_profile(profile) / "junit.xml"
+def nextest_junit(profile: str, selection: tuple[str, ...] | None = None) -> Path:
+    """Nextest хранит JUnit относительно корня выбранного workspace."""
+    workspace = REPO_ROOT / "vendor" / "ureq" if selection == UREQ_RECYCLING_SELECTION else REPO_ROOT
+    return workspace / "target" / "nextest" / nextest_profile(profile, selection) / "junit.xml"
 
 
 # Контракт ReceiptLedger (`tests/daemon_receipt_ledger.rs`) собирается только с
@@ -92,6 +95,16 @@ LEDGER_FEATURE_SELECTION = (
     "-E", f"binary(daemon_receipt_ledger) | test(/^{SCENARIO_TEST_PREFIX}/)",
 )
 
+# A dependency's cfg(test) is not compiled by workspace tests. Its pinned
+# Content-Length fault regressions use the same plan/result path, with no retry.
+UREQ_RECYCLING_PREFIX = "completed_response_recycling::"
+UREQ_RECYCLING_SELECTION = (
+    "--manifest-path", "vendor/ureq/Cargo.toml", "--locked", "--lib",
+    "--features", "json,serde_json/preserve_order,serde_json/float_roundtrip",
+    "--config-file", "vendor/ureq/.config/nextest.toml", "--target-dir", "target",
+    "-E", f"test(/^{UREQ_RECYCLING_PREFIX}/)",
+)
+
 
 # Вызов с признаком пересобирает `target/debug/unica` с другим набором
 # признаков. Windows не даёт заменить файл, пока его исполняет живой процесс,
@@ -108,7 +121,7 @@ SURVIVING_PRODUCT_QUERY = (
 
 
 def rebuilds_product_with_features(selection: tuple[str, ...]) -> bool:
-    return "--features" in selection
+    return selection == LEDGER_FEATURE_SELECTION
 
 
 def report_surviving_product_processes(run_query=subprocess.run) -> None:
@@ -132,6 +145,7 @@ def rust_selections(profile: str) -> list[tuple[str, ...]]:
     selections = [("--workspace",)]
     if set(ADMITTED[profile]) & {"medium", "large"}:
         selections.append(LEDGER_FEATURE_SELECTION)
+        selections.append(UREQ_RECYCLING_SELECTION)
     return selections
 
 
@@ -139,8 +153,8 @@ def rust_command(profile: str, selection: tuple[str, ...]) -> list[str]:
     # nextest: процесс на тест и JUnit из коробки. Число потоков, повторы
     # и отчёт описаны в `.config/nextest.toml`, а не здесь: конвейер и
     # локальный прогон обязаны идти одной настройкой.
-    command = ["cargo", "nextest", "run", *selection, "--profile", nextest_profile(profile)]
-    if profile == "large":
+    command = ["cargo", "nextest", "run", *selection, "--profile", nextest_profile(profile, selection)]
+    if profile == "large" and selection != UREQ_RECYCLING_SELECTION:
         # Ночной ярус на ubuntu и macOS — только large-подмножество контракта:
         # для workspace-вызова ноль тестов — честный результат, а не ошибка
         # выбора. У остальных ворот пустой набор — ошибка.
@@ -156,7 +170,7 @@ def rust_commands(profile: str) -> list[list[str]]:
 def rust_list_commands(profile: str) -> list[list[str]]:
     """Состав тех же отборов: план обязан перечислять то, что прогон гоняет."""
     return [
-        ["cargo", "nextest", "list", *selection, "--profile", nextest_profile(profile),
+        ["cargo", "nextest", "list", *selection, "--profile", nextest_profile(profile, selection),
          "--run-ignored", "all", "--message-format", "json"]
         for selection in rust_selections(profile)
     ]
@@ -277,7 +291,7 @@ def write_rust_plan(results: Path, profile: str) -> int:
     for selection, command in zip(rust_selections(profile), rust_list_commands(profile), strict=True):
         cases = allure_results.nextest_list(REPO_ROOT, command)
         for case in cases:
-            if scenario_library_medium(selection, case["binary"], case["name"]):
+            if rust_case_medium(selection, case["binary"], case["name"]):
                 case["size"] = "medium"
         entries.extend(cases)
     allure_results.write_plan(results, entries)
@@ -299,17 +313,23 @@ def scenario_library_medium(selection: tuple[str, ...] | None, binary: str, name
     return selection == LEDGER_FEATURE_SELECTION and binary == "unica-coder" and name.startswith(SCENARIO_TEST_PREFIX)
 
 
+def rust_case_medium(selection: tuple[str, ...] | None, binary: str, name: str) -> bool:
+    return scenario_library_medium(selection, binary, name) or (
+        selection == UREQ_RECYCLING_SELECTION and binary == "ureq" and name.startswith(UREQ_RECYCLING_PREFIX)
+    )
+
+
 def emit_rust(
     results: Path, profile: str, runner: str, junit: Path | None = None,
     *, selection: tuple[str, ...] | None = None,
 ) -> int:
     """JUnit от nextest + причины `#[ignore]` из атрибутов → allure-results."""
-    junit = nextest_junit(profile) if junit is None else junit
+    junit = nextest_junit(profile, selection) if junit is None else junit
     reasons = allure_results.ignore_reasons(REPO_ROOT)
     entries = allure_results.junit_records(junit, runner=runner, profile=profile, reasons=reasons)
     for entry in entries:
         binary, _, name = entry["fullName"].partition("::")
-        if scenario_library_medium(selection, binary, name):
+        if rust_case_medium(selection, binary, name):
             for label in entry["labels"]:
                 if label["name"] == "size":
                     label["value"] = "medium"
@@ -400,7 +420,6 @@ def execute(
     run_commands = run if run_commands is None else run_commands
     if before_feature_build is None and run_commands is run:
         before_feature_build = surviving_product_report()
-    junit = nextest_junit(profile) if junit is None else junit
     if results is not None:
         allure_results.write_run(results, profile=profile, runner=runner, ecosystem=ecosystem, line=line, sha=sha)
     code = 0
@@ -412,13 +431,14 @@ def execute(
         # не отменяет — упавший тест не прячет остальных, — но Python после
         # красного Rust не идёт, как не шёл следующий шаг workflow.
         for selection, command in zip(rust_selections(profile), rust_commands(profile), strict=True):
-            if junit.is_file():
-                junit.unlink()
+            current_junit = nextest_junit(profile, selection) if junit is None else junit
+            if current_junit.is_file():
+                current_junit.unlink()
             if before_feature_build is not None and rebuilds_product_with_features(selection):
                 before_feature_build()
             rust_code = run_commands([command])
-            if results is not None and junit.is_file():
-                print(f"результаты Rust: {emit_rust(results, profile, runner, junit, selection=selection)} записей")
+            if results is not None and current_junit.is_file():
+                print(f"результаты Rust: {emit_rust(results, profile, runner, current_junit, selection=selection)} записей")
             code = code or rust_code
         if code != 0:
             return code

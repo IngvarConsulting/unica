@@ -58,3 +58,7 @@ tests/fixtures/acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates/Platf
 
 # Keep the native-validated whole-template-removal fixture bytes on every host.
 tests/fixtures/acceptance/workspace-whole-template-removal/** -text -whitespace
+
+# Vendored archive and delivered license hashes describe the original bytes.
+/vendor/ureq/** -text
+/plugins/unica/third-party/licenses/ureq/** -text
