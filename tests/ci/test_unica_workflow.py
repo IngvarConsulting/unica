@@ -602,7 +602,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIs(warm_cache["with"]["save-if"], True)
         self.assertIs(warm_cache["with"]["cache-on-failure"], False)
         tests = job(self.release, "test-rust-platforms")
-        self.assertEqual(steps_using(tests, "taiki-e/install-action")[0]["with"]["tool"], "cargo-nextest@0.9.143")
+        self.assertEqual(steps_using(tests, "taiki-e/install-action")[0]["with"]["tool"], "cargo-nextest@0.9.148")
 
     def test_release_assessment_uses_affected_mechanism_contour(self) -> None:
         assessment = job(self.release, "release-assessment")
