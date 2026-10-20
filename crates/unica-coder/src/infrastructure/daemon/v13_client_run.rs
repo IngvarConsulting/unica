@@ -19,21 +19,19 @@ use super::v13_infobase_exports::{
     missing_runner_rejection, resolve_bundled_runner, runner_rejection, runner_start_rejection,
     RunnerAbsence, CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
 };
-use crate::application::invocation_store::ToolIdentity;
-use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
-use crate::domain::invocation::{DomainResult, SafeIdentityHash};
-use crate::domain::refusal::RefusalCode;
-use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::bundled_tools::BundledTool;
-use crate::infrastructure::internal_adapters::{
-    ProcessCommand, ProcessOutput, ProcessRunner, ProcessStreamFailure,
-};
-use crate::infrastructure::platform::PendingProcessHandoff;
 use crate::infrastructure::workspace::discover_workspace;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use unica_artifact_delivery::engine::BundledTool;
+use unica_execution::invocation_store::ToolIdentity;
+use unica_execution_contract::invocation::{DomainResult, SafeIdentityHash};
+use unica_process::runner::{ProcessCommand, ProcessOutput, ProcessRunner, ProcessStreamFailure};
+use unica_process::PendingProcessHandoff;
+use unica_refusal::RefusalCode;
+use unica_source_contract::workspace::WorkspaceContext;
+use unica_work_control::cancellation::{CancellationToken, CANCELLED_PREFIX};
 
 pub(super) const OPERATION: &str = "launch";
 /// Имя команды в конверте раннера: у `launch` оно не совпадает с именем
@@ -618,16 +616,14 @@ fn invoke_runner(
             .prefix("unica-launch-")
             .tempdir()
             .and_then(|directory| {
-                let parent = crate::infrastructure::platform::filesystem::open_directory_nofollow(
-                    directory.path(),
+                let parent =
+                    unica_workspace::state_fs::open_state_directory_nofollow(directory.path())?;
+                let logs = unica_workspace::state_fs::create_state_directory_child(
+                    &parent,
+                    std::ffi::OsStr::new("logs"),
                 )?;
-                let logs =
-                    crate::infrastructure::platform::filesystem::create_owner_only_directory_child(
-                        &parent,
-                        std::ffi::OsStr::new("logs"),
-                    )?;
                 for name in ["output.log", "stderr.log"] {
-                    crate::infrastructure::platform::filesystem::create_owner_only_file_child(
+                    unica_workspace::state_fs::create_state_file_child(
                         &logs,
                         std::ffi::OsStr::new(name),
                     )?;
@@ -1019,10 +1015,8 @@ mod tests {
     fn fake_launch_executable() -> (tempfile::TempDir, BundledTool) {
         let directory = tempfile::tempdir().unwrap();
         let source = directory.path().join("fake_launch.rs");
-        let program = crate::infrastructure::platform::testing::fixture_executable_path(
-            directory.path(),
-            "fake-launch",
-        );
+        let program =
+            unica_process::test_support::fixture_executable_path(directory.path(), "fake-launch");
         fs::write(
             &source,
             r#"
@@ -1128,10 +1122,13 @@ fn main() {
                 let file =
                     fs::File::open(path).expect("private log must exist before runner starts");
                 assert_eq!(file.metadata().unwrap().len(), 0);
-                crate::infrastructure::platform::filesystem::verify_owner_only_acl(&file).unwrap();
+                unica_workspace::state_fs::verify_state_owner_only(
+                    &unica_workspace::state_fs::test_support::state_handle_from_fixture_file(file),
+                )
+                .unwrap();
             }
             if let Some(mode) =
-                crate::infrastructure::platform::testing::unix_mode_for_test(directory).unwrap()
+                unica_workspace::test_support::unix_mode_for_test(directory).unwrap()
             {
                 assert_eq!(mode & 0o077, 0, "launch output directory must be private");
             }
@@ -1167,7 +1164,7 @@ fn main() {
                         command.cancellation.cancel();
                     });
                 }
-                crate::infrastructure::internal_adapters::SystemProcessRunner.run_staged(&command)
+                unica_process::runner::SystemProcessRunner.run_staged(&command)
             });
             if let Ok(result) = &result {
                 let suffix = if result.timed_out || result.cancelled {
@@ -1185,8 +1182,12 @@ fn main() {
                 );
                 for path in [&output, &stderr] {
                     let file = fs::File::open(path).unwrap();
-                    crate::infrastructure::platform::filesystem::verify_owner_only_acl(&file)
-                        .unwrap();
+                    unica_workspace::state_fs::verify_state_owner_only(
+                        &unica_workspace::state_fs::test_support::state_handle_from_fixture_file(
+                            file,
+                        ),
+                    )
+                    .unwrap();
                 }
             }
             result
@@ -1368,7 +1369,7 @@ fn main() {
 
         let result = execute_with_resolved_runner(
             &prepared,
-            &crate::infrastructure::internal_adapters::SystemProcessRunner,
+            &unica_process::runner::SystemProcessRunner,
             CancellationToken::new(),
             &missing,
         );

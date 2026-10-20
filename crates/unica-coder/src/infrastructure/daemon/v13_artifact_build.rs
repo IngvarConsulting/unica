@@ -26,21 +26,21 @@ use super::v13_infobase_exports::{
     LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
 };
 use super::v13_source_set_name::{source_set_name_guidance, valid_source_set_name};
-use crate::application::invocation_store::ToolIdentity;
-use crate::domain::cancellation::CancellationToken;
-use crate::domain::invocation::{DomainResult, SafeIdentityHash};
-use crate::domain::refusal::RefusalCode;
-use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::bundled_tools::BundledTool;
-use crate::infrastructure::internal_adapters::{ProcessCommand, ProcessOutput, ProcessRunner};
-use crate::infrastructure::path_policy::WorkspacePathPolicy;
-use crate::infrastructure::redaction::redactor;
-use crate::infrastructure::source_roots::normalize_path_identity;
 use crate::infrastructure::workspace::discover_workspace;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use unica_artifact_delivery::engine::BundledTool;
+use unica_execution::invocation_store::ToolIdentity;
+use unica_execution_contract::invocation::{DomainResult, SafeIdentityHash};
+use unica_process::runner::{ProcessCommand, ProcessOutput, ProcessRunner};
+use unica_redaction::redactor;
+use unica_refusal::RefusalCode;
+use unica_source_contract::workspace::WorkspaceContext;
+use unica_work_control::cancellation::CancellationToken;
+use unica_workspace::path_policy::WorkspacePathPolicy;
+use unica_workspace::paths::normalize_path_identity;
 
 pub(super) const OPERATION: &str = "make";
 /// Имя команды в конверте раннера: словарь читается как слой и направление,
@@ -728,9 +728,9 @@ fn reject_absent_runner(absence: RunnerAbsence) -> DomainResult {
 mod tests {
     use super::super::v13_infobase_exports::map_runner_code;
     use super::*;
-    use crate::domain::refusal::Outcome;
     use std::fs;
     use std::sync::Mutex;
+    use unica_refusal::Outcome;
 
     struct SequenceRunner {
         outputs: Mutex<Vec<ProcessOutput>>,

@@ -1,0 +1,1706 @@
+mod connections;
+pub use connections::V5DaemonClient;
+
+use super::identity::{CoreIdentity, DaemonStateDirectory};
+use super::protocol_v5::{
+    decode_v5_server_response, read_bounded_v5_probe_response_frame_before, V5ClientRequest,
+    V5DaemonErrorCode, V5EndpointRecord, V5HandshakeServerResponse, V5InvocationRequest,
+    V5ProbeResponseKind, V5ProbeServerResponse, V5ServerResponse,
+};
+use std::fmt;
+#[cfg(any(test, feature = "receipt-ledger-test-support"))]
+use std::io::Write;
+use std::io::{self, BufReader};
+use std::net::TcpStream;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use unica_execution::invocation::{RESPONSE_SERIALIZATION_MARGIN, TASK_RECONCILIATION_BUDGET};
+use unica_execution::receipt_ledger::{ReceiptKey, TerminalDigest};
+use unica_execution::receipt_runtime::response::V5DaemonTaskSnapshot;
+use unica_execution_contract::invocation::TaskId;
+use unica_process::ManagedStartupChild;
+use uuid::Uuid;
+
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Longest socket wait of an interruptible observation read between checks
+/// of its stop flag.
+const OBSERVATION_INTERRUPT_POLL: Duration = Duration::from_millis(25);
+const OWNER_RESPONSE_SAFETY_TIMEOUT: Duration = Duration::from_secs(10);
+const SPAWN_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
+const EXISTING_ENDPOINT_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
+const STARTUP_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
+const RETRY_INTERVAL: Duration = Duration::from_millis(20);
+
+/// Protocol-v5 process client: one authenticated owner session over the
+/// loopback endpoint of the exact production-v5 daemon.
+///
+/// The frontend keeps one anchor session for its lifetime and opens a peer
+/// session per invocation or Task operation; every exchange carries one
+/// absolute deadline and a malformed or truncated response poisons the session
+/// it arrived on.
+pub struct V5DaemonProcessOwner {
+    writer: TcpStream,
+    reader: BufReader<TcpStream>,
+    record: V5EndpointRecord,
+    poisoned: bool,
+    /// Present once an observation interrupt handle exists: reads then poll
+    /// this flag between short socket waits.
+    observation_stop: Option<Arc<AtomicBool>>,
+}
+
+/// Stops the blocked observation read of one peer connection and nothing
+/// else: no cancellation reaches the task or the producer being observed.
+///
+/// Shutting the socket down wakes a blocked read on Linux and macOS, but
+/// Windows leaves a pending `recv` blocked until data arrives. The flag
+/// covers that case: the owner rechecks it after every bounded socket wait.
+pub struct V5ObservationInterrupt {
+    stream: TcpStream,
+    stop: Arc<AtomicBool>,
+}
+
+impl V5ObservationInterrupt {
+    pub fn interrupt(&self) -> io::Result<()> {
+        self.stop.store(true, Ordering::Release);
+        match self.stream.shutdown(std::net::Shutdown::Both) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotConnected => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+/// Why an exchange produced no strict response, phrased by its consequence for
+/// the durable receipt: a request that was never written cannot have been
+/// reserved by the daemon, a lost response may hide a reserved receipt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum V5TransportError {
+    SessionPoisoned,
+    RequestNotSent(String),
+    /// The serialized frame, newline included, exceeds the daemon request
+    /// bound. Like `RequestNotSent`, no byte was written; unlike it, the same
+    /// call will never fit.
+    RequestTooLarge {
+        frame_bytes: usize,
+        limit_bytes: usize,
+    },
+    ResponseLost(String),
+}
+
+impl fmt::Display for V5TransportError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SessionPoisoned => formatter.write_str("protocol-v5 owner session is poisoned"),
+            Self::RequestNotSent(error) | Self::ResponseLost(error) => formatter.write_str(error),
+            Self::RequestTooLarge {
+                frame_bytes,
+                limit_bytes,
+            } => write!(
+                formatter,
+                "protocol-v5 request frame is {frame_bytes} bytes, above the \
+                 {limit_bytes}-byte daemon request limit"
+            ),
+        }
+    }
+}
+
+/// Outcome classes of one Task operation, closed the same way as the v3
+/// exchange so the interface keeps one refusal mapping.
+///
+/// `Transport` covers a connection that never formed, broke before a complete
+/// frame arrived, or crossed the operation cutoff: an expired cutoff wins over
+/// whatever the frame contained. `MalformedResponse` is a complete frame read
+/// within the cutoff that does not decode under the strict protocol, for
+/// example a `completed` status without its result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum V5TaskExchangeError {
+    Protocol(V5DaemonErrorCode),
+    Transport,
+    SessionPoisoned,
+    UnexpectedResponse,
+    MalformedResponse,
+}
+
+/// Why one exchange produced no response, before the caller folds it into its
+/// own consequence: a receipt exchange treats a malformed frame as a lost
+/// response, a Task exchange reports it as a protocol violation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum V5ExchangeFailure {
+    Transport(V5TransportError),
+    MalformedResponse,
+}
+
+impl From<V5TransportError> for V5TaskExchangeError {
+    fn from(error: V5TransportError) -> Self {
+        match error {
+            V5TransportError::SessionPoisoned => Self::SessionPoisoned,
+            V5TransportError::RequestNotSent(_)
+            | V5TransportError::RequestTooLarge { .. }
+            | V5TransportError::ResponseLost(_) => Self::Transport,
+        }
+    }
+}
+
+#[cfg(feature = "receipt-ledger-test-support")]
+pub enum V5RawHandshake {
+    Ready {
+        owner: V5DaemonProcessOwner,
+        client_hello_frame: Vec<u8>,
+        server_ready_frame: Vec<u8>,
+    },
+    Rejected {
+        client_hello_frame: Vec<u8>,
+        server_response_frame: Vec<u8>,
+        code: V5DaemonErrorCode,
+    },
+}
+
+struct StartupEndpointObservation {
+    expected_pid: u32,
+    record: Option<V5EndpointRecord>,
+}
+
+impl StartupEndpointObservation {
+    fn new(expected_pid: u32) -> Self {
+        Self {
+            expected_pid,
+            record: None,
+        }
+    }
+
+    fn observe(&mut self, record: &V5EndpointRecord) -> bool {
+        if record.pid() != self.expected_pid {
+            return false;
+        }
+        if let Some(observed) = self.record.as_ref() {
+            return observed == record;
+        }
+        self.record = Some(record.clone());
+        true
+    }
+
+    fn cleanup(&self, state: &DaemonStateDirectory) -> Result<bool, String> {
+        let Some(record) = self.record.as_ref() else {
+            return Ok(false);
+        };
+        state.remove_matching_v5_endpoint_record(record)
+    }
+}
+
+trait V5StartupChildControl {
+    fn detach(&mut self, deadline: Instant) -> Result<(), String>;
+    fn terminate_bounded(&mut self, wait_limit: Duration) -> Result<(), String>;
+}
+
+impl V5StartupChildControl for ManagedStartupChild {
+    fn detach(&mut self, deadline: Instant) -> Result<(), String> {
+        ManagedStartupChild::detach_before(self, deadline)
+    }
+
+    fn terminate_bounded(&mut self, wait_limit: Duration) -> Result<(), String> {
+        ManagedStartupChild::terminate_bounded(self, wait_limit)
+    }
+}
+
+fn finish_ready_startup<C: V5StartupChildControl>(
+    owner: V5DaemonProcessOwner,
+    child: &mut C,
+    state: &DaemonStateDirectory,
+    endpoint: &StartupEndpointObservation,
+    deadline: Instant,
+) -> Result<V5DaemonProcessOwner, String> {
+    match child.detach(deadline) {
+        Ok(()) => Ok(owner),
+        Err(error) => {
+            let termination = child.terminate_bounded(
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(STARTUP_CLEANUP_TIMEOUT),
+            );
+            let endpoint_cleanup = endpoint.cleanup(state);
+            let mut diagnostic =
+                format!("protocol-v5 daemon became ready but ownership detach failed: {error}");
+            if let Err(cleanup) = termination {
+                diagnostic.push_str(&format!(
+                    "; protocol-v5 daemon startup cleanup failed: {cleanup}"
+                ));
+            }
+            if let Err(cleanup) = endpoint_cleanup {
+                diagnostic.push_str(&format!("; protocol-v5 endpoint cleanup failed: {cleanup}"));
+            }
+            Err(diagnostic)
+        }
+    }
+}
+
+enum ConnectionFailure {
+    Unavailable(String),
+    Rejected(String),
+}
+
+impl ConnectionFailure {
+    fn io(stage: &str, error: io::Error) -> Self {
+        let message = format!("{stage}: {error}");
+        match error.kind() {
+            io::ErrorKind::ConnectionRefused
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::UnexpectedEof
+            | io::ErrorKind::TimedOut
+            | io::ErrorKind::WouldBlock
+            | io::ErrorKind::BrokenPipe
+            | io::ErrorKind::NotConnected => Self::Unavailable(message),
+            _ => Self::Rejected(message),
+        }
+    }
+    fn message(self) -> String {
+        match self {
+            Self::Unavailable(message) | Self::Rejected(message) => message,
+        }
+    }
+}
+
+impl From<String> for ConnectionFailure {
+    fn from(message: String) -> Self {
+        Self::Rejected(message)
+    }
+}
+
+/// The exit of a spawned daemon before readiness, with the reason it
+/// recorded for the persisted state it refused and that state's directory.
+fn exited_before_readiness(
+    state: &DaemonStateDirectory,
+    pid: u32,
+    status: impl std::fmt::Display,
+) -> String {
+    let exited = format!("spawned protocol-v5 daemon {pid} exited before readiness with {status}");
+    match state.read_startup_failure(pid) {
+        Some(reason) => format!(
+            "{exited}; daemon refused to start: {reason}; state directory: {}",
+            state.path().display()
+        ),
+        None => exited,
+    }
+}
+
+impl V5DaemonProcessOwner {
+    /// Connect to the exact production-v5 daemon under `state_root`, spawning
+    /// the same binary in `--daemon` mode when no live endpoint answers.
+    pub fn connect_or_spawn(
+        state_root: &Path,
+        core_identity: CoreIdentity,
+        executable: PathBuf,
+        idle_grace: Duration,
+    ) -> Result<Self, String> {
+        let deadline = Instant::now() + CONNECT_TIMEOUT;
+        Self::connect_or_spawn_before(state_root, core_identity, executable, idle_grace, deadline)
+    }
+
+    pub fn connect_or_spawn_before(
+        state_root: &Path,
+        core_identity: CoreIdentity,
+        executable: PathBuf,
+        idle_grace: Duration,
+        deadline: Instant,
+    ) -> Result<Self, String> {
+        remaining(deadline, "discovery")?;
+        if core_identity != CoreIdentity::production_v5() {
+            return Err("protocol-v5 client requires the exact production-v5 identity".to_string());
+        }
+        let state = DaemonStateDirectory::open(state_root, &core_identity)?;
+        if let Some(record) = state.read_v5_endpoint_record()? {
+            if record.core_identity() != &core_identity {
+                return Err("protocol-v5 endpoint belongs to a foreign core identity".to_string());
+            }
+            let probe_deadline = existing_endpoint_probe_deadline(deadline)?;
+            match Self::connect_classified_before(record, probe_deadline) {
+                Ok(owner) => return Ok(owner),
+                Err(ConnectionFailure::Rejected(message)) => return Err(message),
+                Err(ConnectionFailure::Unavailable(_)) => {}
+            }
+        }
+
+        remaining(deadline, "spawn lock")?;
+        let lock_deadline = deadline.min(Instant::now() + SPAWN_LOCK_TIMEOUT);
+        let _spawn_lock = state.acquire_spawn_lock_before(lock_deadline)?;
+        if let Some(record) = state.read_v5_endpoint_record()? {
+            if record.core_identity() != &core_identity {
+                return Err("protocol-v5 endpoint belongs to a foreign core identity".to_string());
+            }
+            let probe_deadline = existing_endpoint_probe_deadline(deadline)?;
+            match Self::connect_classified_before(record, probe_deadline) {
+                Ok(owner) => return Ok(owner),
+                Err(ConnectionFailure::Rejected(message)) => return Err(message),
+                Err(ConnectionFailure::Unavailable(_)) => {}
+            }
+        }
+
+        // Proving the build reads the executable; spend that before the
+        // readiness window is measured, not out of it.
+        super::identity::verify_executable_build(&executable, &core_identity)?;
+        // Readiness and failure cleanup share the caller's deadline. Reserve
+        // part of even a short recovery window instead of adding a new grace.
+        let startup_budget = remaining(deadline, "spawn")?;
+        let cleanup_reserve = (startup_budget / 3).min(STARTUP_CLEANUP_TIMEOUT);
+        let readiness_deadline = deadline - cleanup_reserve;
+        // Under the spawn lock no other frontend starts a daemon here: a reason
+        // left by an earlier process must not be reported for this child.
+        let _ = state.remove_startup_failure();
+        let command = crate::process_command::daemon_process_command(
+            &executable,
+            state_root,
+            &core_identity,
+            idle_grace,
+        );
+        let mut child = ManagedStartupChild::spawn_configured_before(command, deadline)
+            .map_err(|error| format!("failed to spawn protocol-v5 daemon: {error}"))?;
+        Self::await_startup_before(
+            &mut child,
+            &state,
+            &core_identity,
+            readiness_deadline,
+            deadline,
+        )
+    }
+
+    fn await_startup_before(
+        child: &mut ManagedStartupChild,
+        state: &DaemonStateDirectory,
+        core_identity: &CoreIdentity,
+        readiness_deadline: Instant,
+        deadline: Instant,
+    ) -> Result<Self, String> {
+        let expected_pid = child.id();
+        let mut endpoint = StartupEndpointObservation::new(expected_pid);
+
+        let readiness = loop {
+            if let Err(error) = remaining(readiness_deadline, "spawn readiness") {
+                break Err(error);
+            }
+            let child_status = match child.try_wait_status() {
+                Ok(status) => status,
+                Err(error) => break Err(error),
+            };
+            if let Some(status) = child_status {
+                break Err(exited_before_readiness(state, expected_pid, status));
+            }
+            let record = match state.read_v5_endpoint_record() {
+                Ok(record) => record,
+                Err(error) => break Err(error),
+            };
+            if let Some(record) = record {
+                if record.core_identity() != core_identity {
+                    break Err(
+                        "protocol-v5 endpoint belongs to a foreign core identity".to_string()
+                    );
+                }
+                if record.pid() == expected_pid {
+                    let child_status = match child.try_wait_status() {
+                        Ok(status) => status,
+                        Err(error) => break Err(error),
+                    };
+                    if let Some(status) = child_status {
+                        break Err(exited_before_readiness(state, expected_pid, status));
+                    }
+                    if endpoint.observe(&record) {
+                        match Self::connect_classified_before(record, readiness_deadline) {
+                            Ok(owner) => break Ok(owner),
+                            Err(ConnectionFailure::Rejected(message)) => break Err(message),
+                            Err(ConnectionFailure::Unavailable(_)) => {}
+                        }
+                    }
+                }
+            }
+            let retry_budget = match remaining(readiness_deadline, "spawn readiness") {
+                Ok(remaining) => remaining,
+                Err(error) => break Err(error),
+            };
+            std::thread::sleep(RETRY_INTERVAL.min(retry_budget));
+        };
+
+        match readiness {
+            Ok(owner) => finish_ready_startup(owner, child, state, &endpoint, deadline),
+            Err(error) => {
+                let cleanup = child.terminate_bounded(
+                    deadline
+                        .saturating_duration_since(Instant::now())
+                        .min(STARTUP_CLEANUP_TIMEOUT),
+                );
+                let endpoint_cleanup = endpoint.cleanup(state);
+                let mut diagnostic = error;
+                if let Err(cleanup) = cleanup {
+                    diagnostic.push_str(&format!(
+                        "; protocol-v5 daemon startup cleanup failed: {cleanup}"
+                    ));
+                }
+                if let Err(cleanup) = endpoint_cleanup {
+                    diagnostic
+                        .push_str(&format!("; protocol-v5 endpoint cleanup failed: {cleanup}"));
+                }
+                Err(diagnostic)
+            }
+        }
+    }
+
+    /// Open one more authenticated session on an already published endpoint.
+    /// Each session carries its own owner lease, so a slow direct response on
+    /// one peer never serializes another call behind it.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn connect_peer_before(&self, deadline: Instant) -> Result<Self, V5TransportError> {
+        Self::connect_before(self.record.clone(), deadline)
+            .map_err(V5TransportError::RequestNotSent)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn core_identity(&self) -> &CoreIdentity {
+        self.record.core_identity()
+    }
+
+    pub fn connect_before(record: V5EndpointRecord, deadline: Instant) -> Result<Self, String> {
+        Self::connect_classified_before(record, deadline).map_err(ConnectionFailure::message)
+    }
+
+    fn connect_classified_before(
+        record: V5EndpointRecord,
+        deadline: Instant,
+    ) -> Result<Self, ConnectionFailure> {
+        Self::connect_classified(record, Some(deadline))
+    }
+
+    fn connect_classified(
+        record: V5EndpointRecord,
+        deadline: Option<Instant>,
+    ) -> Result<Self, ConnectionFailure> {
+        let address = record.loopback_addr()?;
+        let stream = match deadline {
+            Some(deadline) => {
+                TcpStream::connect_timeout(&address.into(), remaining(deadline, "connect")?)
+            }
+            None => TcpStream::connect(address),
+        }
+        .map_err(|error| ConnectionFailure::io("connect protocol-v5 daemon", error))?;
+        stream
+            .set_nonblocking(false)
+            .map_err(|error| format!("configure protocol-v5 client stream: {error}"))?;
+        let reader_stream = stream
+            .try_clone()
+            .map_err(|error| format!("clone protocol-v5 client stream: {error}"))?;
+        let mut owner = Self {
+            writer: stream,
+            reader: BufReader::new(reader_stream),
+            record,
+            poisoned: false,
+            observation_stop: None,
+        };
+        let hello = V5ClientRequest::Hello {
+            protocol_version: super::protocol_v5::DAEMON_PROTOCOL_VERSION,
+            token: owner.record.token().to_string(),
+            core_identity: owner.record.core_identity().clone(),
+            owner_lease: Uuid::new_v4().to_string(),
+        };
+        owner
+            .write_typed_with_deadline(&hello, deadline, "handshake request")
+            .map_err(|error| error.to_string())
+            .map_err(ConnectionFailure::Unavailable)?;
+        let frame = read_bounded_v5_probe_response_frame_before(&mut owner.reader, |reader| {
+            let budget = deadline
+                .map(|deadline| remaining(deadline, "handshake response"))
+                .transpose()
+                .map_err(|error| io::Error::new(io::ErrorKind::TimedOut, error))?;
+            reader.get_ref().set_read_timeout(budget)
+        })
+        .map_err(|error| ConnectionFailure::io("read protocol-v5 handshake", error))?;
+        if let Some(deadline) = deadline {
+            remaining(deadline, "handshake response")?;
+        }
+        let ready: V5HandshakeServerResponse = serde_json::from_slice(&frame)
+            .map_err(|_| "protocol-v5 handshake response is not strict JSON".to_string())?;
+        if !ready.matches_record(&owner.record) {
+            return Err("protocol-v5 handshake response does not match endpoint"
+                .to_string()
+                .into());
+        }
+        if let Some(deadline) = deadline {
+            remaining(deadline, "handshake decode")?;
+        }
+        Ok(owner)
+    }
+
+    pub fn control_endpoint(&self) -> V5EndpointRecord {
+        self.record.clone()
+    }
+
+    /// Manual control follows the original endpoint and exact key. It never
+    /// starts a replacement daemon or borrows an invocation's spent cutoff.
+    pub fn cancel_at_endpoint(
+        record: V5EndpointRecord,
+        receipt_key: ReceiptKey,
+    ) -> Result<V5ServerResponse, V5TransportError> {
+        let mut owner = Self::connect_classified(record, None)
+            .map_err(|error| V5TransportError::RequestNotSent(error.message()))?;
+        owner.exchange_typed_with_deadline(
+            V5ClientRequest::CancelInvocation { receipt_key },
+            "manual cancel invocation",
+            None,
+        )
+    }
+
+    #[cfg(feature = "receipt-ledger-test-support")]
+    pub fn connect_existing_raw_for_test(
+        record: V5EndpointRecord,
+        protocol_version: u32,
+        core_identity: CoreIdentity,
+        owner_lease: String,
+        deadline: Instant,
+    ) -> Result<V5RawHandshake, String> {
+        let address = record.loopback_addr()?;
+        let stream = TcpStream::connect_timeout(&address.into(), remaining(deadline, "connect")?)
+            .map_err(|error| format!("connect protocol-v5 daemon: {error}"))?;
+        stream
+            .set_nonblocking(false)
+            .map_err(|error| format!("configure protocol-v5 client stream: {error}"))?;
+        let reader_stream = stream
+            .try_clone()
+            .map_err(|error| format!("clone protocol-v5 client stream: {error}"))?;
+        let mut owner = Self {
+            writer: stream,
+            reader: BufReader::new(reader_stream),
+            record,
+            poisoned: false,
+            observation_stop: None,
+        };
+        let hello = V5ClientRequest::Hello {
+            protocol_version,
+            token: owner.record.token().to_string(),
+            core_identity,
+            owner_lease,
+        };
+        let mut client_hello_frame =
+            serde_json::to_vec(&hello).map_err(|_| "serialize protocol-v5 handshake request")?;
+        client_hello_frame.push(b'\n');
+        owner.write_raw_before(&client_hello_frame, true, deadline, "handshake request")?;
+        let server_response_frame = owner.read_before(deadline, "handshake response")?;
+        match serde_json::from_slice::<V5HandshakeServerResponse>(&server_response_frame) {
+            Ok(ready) => {
+                if !ready.matches_record(&owner.record) {
+                    return Err(
+                        "protocol-v5 handshake response does not match endpoint".to_string()
+                    );
+                }
+                Ok(V5RawHandshake::Ready {
+                    owner,
+                    client_hello_frame,
+                    server_ready_frame: server_response_frame,
+                })
+            }
+            Err(_) => {
+                let response: V5ProbeServerResponse =
+                    serde_json::from_slice(&server_response_frame).map_err(|_| {
+                        "protocol-v5 handshake response is not strict JSON".to_string()
+                    })?;
+                let Some(code) = response.error_code() else {
+                    return Err(
+                        "protocol-v5 handshake rejection returned a non-error response".to_string(),
+                    );
+                };
+                drop(owner);
+                Ok(V5RawHandshake::Rejected {
+                    client_hello_frame,
+                    server_response_frame,
+                    code,
+                })
+            }
+        }
+    }
+
+    pub fn daemon_pid(&self) -> u32 {
+        self.record.pid()
+    }
+
+    pub fn ping(&mut self) -> Result<(), String> {
+        if self.poisoned {
+            return Err("protocol-v5 owner session is poisoned".to_string());
+        }
+        let deadline = Instant::now()
+            .checked_add(CONNECT_TIMEOUT)
+            .ok_or_else(|| "protocol-v5 ping deadline overflow".to_string())?;
+        if let Err(error) = self.write_before(&V5ClientRequest::Ping {}, deadline, "ping request") {
+            self.poison();
+            return Err(error);
+        }
+        let frame = match self.read_before(deadline, "ping response") {
+            Ok(frame) => frame,
+            Err(error) => {
+                self.poison();
+                return Err(error);
+            }
+        };
+        let response: V5ProbeServerResponse = match serde_json::from_slice(&frame) {
+            Ok(response) => response,
+            Err(_) => {
+                self.poison();
+                return Err("protocol-v5 ping response is not strict JSON".to_string());
+            }
+        };
+        if response.kind() != V5ProbeResponseKind::Pong {
+            self.poison();
+            return Err("protocol-v5 ping returned an unexpected response".to_string());
+        }
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub fn submit_invocation(
+        &mut self,
+        invocation: V5InvocationRequest,
+    ) -> Result<V5ServerResponse, String> {
+        self.exchange(
+            V5ClientRequest::SubmitInvocation { invocation },
+            "submit invocation",
+        )
+    }
+
+    pub fn submit_invocation_before(
+        &mut self,
+        invocation: V5InvocationRequest,
+        deadline: Instant,
+    ) -> Result<V5ServerResponse, V5TransportError> {
+        self.exchange_typed_before(
+            V5ClientRequest::SubmitInvocation { invocation },
+            "submit invocation",
+            deadline,
+        )
+    }
+
+    pub fn recover_invocation_receipt_before(
+        &mut self,
+        receipt_key: ReceiptKey,
+        deadline: Instant,
+    ) -> Result<V5ServerResponse, V5TransportError> {
+        self.exchange_typed_before(
+            V5ClientRequest::RecoverInvocationReceipt { receipt_key },
+            "recover invocation receipt",
+            deadline,
+        )
+    }
+
+    /// Fence one exact receipt key within `deadline`: a submission of it the
+    /// daemon has not reserved yet will never run in this daemon process.
+    pub fn fence_invocation_receipt_before(
+        &mut self,
+        receipt_key: ReceiptKey,
+        deadline: Instant,
+    ) -> Result<V5ServerResponse, V5TransportError> {
+        self.exchange_typed_before(
+            V5ClientRequest::FenceInvocationReceipt { receipt_key },
+            "fence invocation receipt",
+            deadline,
+        )
+    }
+
+    pub fn acknowledge_invocation_receipt_before(
+        &mut self,
+        receipt_key: ReceiptKey,
+        terminal_digest: TerminalDigest,
+        deadline: Instant,
+    ) -> Result<V5ServerResponse, V5TransportError> {
+        self.exchange_typed_before(
+            V5ClientRequest::AcknowledgeInvocationReceipt {
+                receipt_key,
+                terminal_digest,
+            },
+            "acknowledge invocation receipt",
+            deadline,
+        )
+    }
+
+    pub fn get_task_before(
+        &mut self,
+        task_id: TaskId,
+        deadline: Instant,
+    ) -> Result<V5DaemonTaskSnapshot, V5TaskExchangeError> {
+        self.task_exchange_before(V5ClientRequest::GetTask { task_id }, "get task", deadline)
+    }
+
+    /// An owned handle can interrupt this observation connection only; it
+    /// sends no cancellation of the task or the producer being observed.
+    pub fn observation_interrupt_handle(&mut self) -> io::Result<V5ObservationInterrupt> {
+        let stream = self.writer.try_clone()?;
+        let stop = Arc::clone(
+            self.observation_stop
+                .get_or_insert_with(|| Arc::new(AtomicBool::new(false))),
+        );
+        Ok(V5ObservationInterrupt { stream, stop })
+    }
+
+    pub fn wait_task_before(
+        &mut self,
+        task_id: TaskId,
+        wait_ms: u64,
+        deadline: Instant,
+    ) -> Result<V5DaemonTaskSnapshot, V5TaskExchangeError> {
+        self.task_exchange_before(
+            V5ClientRequest::WaitTask { task_id, wait_ms },
+            "wait task",
+            deadline,
+        )
+    }
+
+    pub fn cancel_task_before(
+        &mut self,
+        task_id: TaskId,
+        deadline: Instant,
+    ) -> Result<V5DaemonTaskSnapshot, V5TaskExchangeError> {
+        self.task_exchange_before(
+            V5ClientRequest::CancelTask { task_id },
+            "cancel task",
+            deadline,
+        )
+    }
+
+    fn task_exchange_before(
+        &mut self,
+        request: V5ClientRequest,
+        stage: &'static str,
+        deadline: Instant,
+    ) -> Result<V5DaemonTaskSnapshot, V5TaskExchangeError> {
+        self.task_exchange_observed(request, stage, deadline, Instant::now)
+    }
+
+    /// `after_decode` reads the clock once the complete frame has been
+    /// decoded; production passes `Instant::now`, tests move it past the
+    /// cutoff to expire the operation while the frame was being parsed.
+    fn task_exchange_observed(
+        &mut self,
+        request: V5ClientRequest,
+        stage: &'static str,
+        deadline: Instant,
+        after_decode: impl FnOnce() -> Instant,
+    ) -> Result<V5DaemonTaskSnapshot, V5TaskExchangeError> {
+        match self.exchange_classified(request, stage, Some(deadline), after_decode) {
+            Ok(V5ServerResponse::Task { snapshot }) => Ok(snapshot),
+            Ok(V5ServerResponse::Error { code }) => Err(V5TaskExchangeError::Protocol(code)),
+            Ok(_) => {
+                self.poison();
+                Err(V5TaskExchangeError::UnexpectedResponse)
+            }
+            Err(V5ExchangeFailure::MalformedResponse) => {
+                Err(V5TaskExchangeError::MalformedResponse)
+            }
+            Err(V5ExchangeFailure::Transport(error)) => Err(error.into()),
+        }
+    }
+
+    #[cfg(feature = "receipt-ledger-test-support")]
+    pub fn submit_invocation_with_timeout_for_test(
+        &mut self,
+        invocation: V5InvocationRequest,
+        timeout: Duration,
+    ) -> Result<V5ServerResponse, String> {
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .ok_or_else(|| "protocol-v5 scenario submit deadline overflow".to_owned())?;
+        self.exchange_before(
+            V5ClientRequest::SubmitInvocation { invocation },
+            "scenario submit invocation",
+            deadline,
+        )
+    }
+
+    #[allow(dead_code)]
+    pub fn cancel_invocation(
+        &mut self,
+        receipt_key: ReceiptKey,
+    ) -> Result<V5ServerResponse, String> {
+        self.exchange(
+            V5ClientRequest::CancelInvocation { receipt_key },
+            "cancel invocation",
+        )
+    }
+
+    #[allow(dead_code)]
+    pub fn recover_invocation_receipt(
+        &mut self,
+        receipt_key: ReceiptKey,
+    ) -> Result<V5ServerResponse, String> {
+        self.exchange(
+            V5ClientRequest::RecoverInvocationReceipt { receipt_key },
+            "recover invocation receipt",
+        )
+    }
+
+    #[allow(dead_code)]
+    pub fn acknowledge_invocation_receipt(
+        &mut self,
+        receipt_key: ReceiptKey,
+        terminal_digest: TerminalDigest,
+    ) -> Result<V5ServerResponse, String> {
+        self.exchange(
+            V5ClientRequest::AcknowledgeInvocationReceipt {
+                receipt_key,
+                terminal_digest,
+            },
+            "acknowledge invocation receipt",
+        )
+    }
+
+    #[cfg(any(
+        test,
+        feature = "test-support",
+        feature = "receipt-ledger-test-support"
+    ))]
+    #[cfg_attr(test, allow(dead_code))]
+    pub fn get_task(&mut self, task_id: TaskId) -> Result<V5ServerResponse, String> {
+        self.exchange(V5ClientRequest::GetTask { task_id }, "get task")
+    }
+
+    #[cfg(any(
+        test,
+        feature = "test-support",
+        feature = "receipt-ledger-test-support"
+    ))]
+    #[cfg_attr(test, allow(dead_code))]
+    pub fn wait_task(&mut self, task_id: TaskId, wait_ms: u64) -> Result<V5ServerResponse, String> {
+        self.exchange(V5ClientRequest::WaitTask { task_id, wait_ms }, "wait task")
+    }
+
+    #[cfg(any(
+        test,
+        feature = "test-support",
+        feature = "receipt-ledger-test-support"
+    ))]
+    #[cfg_attr(test, allow(dead_code))]
+    pub fn cancel_task(&mut self, task_id: TaskId) -> Result<V5ServerResponse, String> {
+        self.exchange(V5ClientRequest::CancelTask { task_id }, "cancel task")
+    }
+
+    #[allow(dead_code)]
+    fn exchange(
+        &mut self,
+        request: V5ClientRequest,
+        stage: &'static str,
+    ) -> Result<V5ServerResponse, String> {
+        let response_timeout = response_timeout_for_request(&request);
+        let deadline = Instant::now()
+            .checked_add(response_timeout)
+            .ok_or_else(|| format!("protocol-v5 {stage} deadline overflow"))?;
+        self.exchange_before(request, stage, deadline)
+    }
+
+    fn exchange_before(
+        &mut self,
+        request: V5ClientRequest,
+        stage: &'static str,
+        deadline: Instant,
+    ) -> Result<V5ServerResponse, String> {
+        self.exchange_typed_before(request, stage, deadline)
+            .map_err(|error| error.to_string())
+    }
+
+    fn exchange_typed_before(
+        &mut self,
+        request: V5ClientRequest,
+        stage: &'static str,
+        deadline: Instant,
+    ) -> Result<V5ServerResponse, V5TransportError> {
+        self.exchange_typed_with_deadline(request, stage, Some(deadline))
+    }
+
+    fn exchange_typed_with_deadline(
+        &mut self,
+        request: V5ClientRequest,
+        stage: &'static str,
+        deadline: Option<Instant>,
+    ) -> Result<V5ServerResponse, V5TransportError> {
+        // A receipt exchange cannot tell a malformed answer from a lost one:
+        // either may hide a receipt the daemon already reserved.
+        self.exchange_classified(request, stage, deadline, Instant::now)
+            .map_err(|failure| match failure {
+                V5ExchangeFailure::Transport(error) => error,
+                V5ExchangeFailure::MalformedResponse => V5TransportError::ResponseLost(format!(
+                    "protocol-v5 {stage} response is not strict"
+                )),
+            })
+    }
+
+    fn exchange_classified(
+        &mut self,
+        request: V5ClientRequest,
+        stage: &'static str,
+        deadline: Option<Instant>,
+        after_decode: impl FnOnce() -> Instant,
+    ) -> Result<V5ServerResponse, V5ExchangeFailure> {
+        if self.poisoned {
+            return Err(V5ExchangeFailure::Transport(
+                V5TransportError::SessionPoisoned,
+            ));
+        }
+        if let Err(error) = self.write_typed_with_deadline(&request, deadline, stage) {
+            self.poison();
+            return Err(V5ExchangeFailure::Transport(error));
+        }
+        let frame = match self.read_with_deadline(deadline, stage) {
+            Ok(frame) => frame,
+            Err(error) => {
+                self.poison();
+                return Err(V5ExchangeFailure::Transport(
+                    V5TransportError::ResponseLost(error),
+                ));
+            }
+        };
+        let decoded = decode_v5_server_response(&frame);
+        // The checkpoint after parse wins over a payload that crossed the
+        // cutoff while it was being read or decoded, valid or not: it is not
+        // published and the session does not survive it.
+        if let Some(deadline) = deadline {
+            if let Err(error) = remaining_at(deadline, after_decode(), stage) {
+                self.poison();
+                return Err(V5ExchangeFailure::Transport(
+                    V5TransportError::ResponseLost(error),
+                ));
+            }
+        }
+        match decoded {
+            Ok(response) => Ok(response),
+            Err(_) => {
+                self.poison();
+                Err(V5ExchangeFailure::MalformedResponse)
+            }
+        }
+    }
+
+    #[cfg(feature = "receipt-ledger-test-support")]
+    pub fn exchange_raw_frame(
+        &mut self,
+        frame: &[u8],
+        stage: &'static str,
+    ) -> Result<Vec<u8>, String> {
+        if self.poisoned {
+            return Err("protocol-v5 owner session is poisoned".to_string());
+        }
+        let deadline = Instant::now()
+            .checked_add(OWNER_RESPONSE_SAFETY_TIMEOUT.min(CONNECT_TIMEOUT))
+            .ok_or_else(|| format!("protocol-v5 {stage} deadline overflow"))?;
+        if let Err(error) = self.write_raw_before(frame, true, deadline, stage) {
+            self.poison();
+            return Err(error);
+        }
+        match self.read_before(deadline, stage) {
+            Ok(frame) => Ok(frame),
+            Err(error) => {
+                self.poison();
+                Err(error)
+            }
+        }
+    }
+
+    #[cfg(feature = "receipt-ledger-test-support")]
+    pub fn write_raw_frame_and_disconnect(
+        mut self,
+        frame: &[u8],
+        stage: &'static str,
+    ) -> Result<(), String> {
+        let deadline = Instant::now()
+            .checked_add(CONNECT_TIMEOUT)
+            .ok_or_else(|| "protocol-v5 raw write deadline overflow".to_string())?;
+        self.write_raw_before(frame, true, deadline, stage)?;
+        self.poison();
+        Ok(())
+    }
+
+    fn write_before<T: serde::Serialize>(
+        &mut self,
+        value: &T,
+        deadline: Instant,
+        stage: &'static str,
+    ) -> Result<(), String> {
+        self.write_typed_before(value, deadline, stage)
+            .map_err(|error| error.to_string())
+    }
+
+    fn write_typed_before<T: serde::Serialize>(
+        &mut self,
+        value: &T,
+        deadline: Instant,
+        stage: &'static str,
+    ) -> Result<(), V5TransportError> {
+        self.write_typed_with_deadline(value, Some(deadline), stage)
+    }
+
+    fn write_typed_with_deadline<T: serde::Serialize>(
+        &mut self,
+        value: &T,
+        deadline: Option<Instant>,
+        stage: &'static str,
+    ) -> Result<(), V5TransportError> {
+        request_write::write_request(
+            &mut self.writer,
+            value,
+            stage,
+            |writer| {
+                writer
+                    .set_write_timeout(
+                        deadline
+                            .map(|deadline| remaining(deadline, stage))
+                            .transpose()?,
+                    )
+                    .map_err(|error| format!("configure protocol-v5 {stage} timeout: {error}"))
+            },
+            || {
+                deadline
+                    .map(|deadline| remaining(deadline, stage))
+                    .transpose()
+                    .map(|_| ())
+            },
+        )
+    }
+
+    #[cfg(feature = "receipt-ledger-test-support")]
+    fn write_raw_before(
+        &mut self,
+        bytes: &[u8],
+        ensure_newline: bool,
+        deadline: Instant,
+        stage: &'static str,
+    ) -> Result<(), String> {
+        self.writer
+            .set_write_timeout(Some(remaining(deadline, stage)?))
+            .map_err(|error| format!("configure protocol-v5 {stage} timeout: {error}"))?;
+        let mut frame = Vec::with_capacity(bytes.len().saturating_add(1));
+        frame.extend_from_slice(bytes);
+        if ensure_newline && frame.last() != Some(&b'\n') {
+            frame.push(b'\n');
+        }
+        self.writer
+            .write_all(&frame)
+            .map_err(|error| format!("write protocol-v5 {stage}: {error}"))?;
+        remaining(deadline, stage).map(|_| ())
+    }
+
+    fn read_before(&mut self, deadline: Instant, stage: &'static str) -> Result<Vec<u8>, String> {
+        self.read_with_deadline(Some(deadline), stage)
+    }
+
+    fn read_with_deadline(
+        &mut self,
+        deadline: Option<Instant>,
+        stage: &'static str,
+    ) -> Result<Vec<u8>, String> {
+        let stop = self.observation_stop.clone();
+        let frame = read_bounded_v5_probe_response_frame_before(&mut self.reader, |reader| {
+            let budget = deadline
+                .map(|deadline| remaining(deadline, stage))
+                .transpose()
+                .map_err(|error| io::Error::new(io::ErrorKind::TimedOut, error))?;
+            let budget = match &stop {
+                None => budget,
+                Some(stop) if stop.load(Ordering::Acquire) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::ConnectionAborted,
+                        "observation interrupted",
+                    ));
+                }
+                Some(_) => Some(budget.map_or(OBSERVATION_INTERRUPT_POLL, |budget| {
+                    budget.min(OBSERVATION_INTERRUPT_POLL)
+                })),
+            };
+            reader.get_ref().set_read_timeout(budget)
+        })
+        .map_err(|error| format!("read protocol-v5 {stage}: {error}"))?;
+        if let Some(deadline) = deadline {
+            remaining(deadline, stage)?;
+        }
+        Ok(frame)
+    }
+
+    fn poison(&mut self) {
+        self.poisoned = true;
+        let _ = self.writer.shutdown(std::net::Shutdown::Both);
+        let _ = self.reader.get_ref().shutdown(std::net::Shutdown::Both);
+    }
+}
+
+mod request_write;
+
+fn response_timeout_for_request(request: &V5ClientRequest) -> Duration {
+    match request {
+        V5ClientRequest::SubmitInvocation { invocation } => {
+            Duration::from_millis(invocation.response_budget_ms())
+                .saturating_add(RESPONSE_SERIALIZATION_MARGIN)
+        }
+        V5ClientRequest::WaitTask { wait_ms, .. } => Duration::from_millis(*wait_ms)
+            .saturating_add(TASK_RECONCILIATION_BUDGET)
+            .saturating_add(RESPONSE_SERIALIZATION_MARGIN),
+        _ => CONNECT_TIMEOUT,
+    }
+    .min(OWNER_RESPONSE_SAFETY_TIMEOUT)
+}
+
+fn remaining(deadline: Instant, stage: &'static str) -> Result<Duration, String> {
+    remaining_at(deadline, Instant::now(), stage)
+}
+
+fn remaining_at(deadline: Instant, now: Instant, stage: &'static str) -> Result<Duration, String> {
+    deadline
+        .checked_duration_since(now)
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| format!("protocol-v5 deadline expired during {stage}"))
+}
+
+fn existing_endpoint_probe_deadline(outer_deadline: Instant) -> Result<Instant, String> {
+    let now = Instant::now();
+    let outer_budget = outer_deadline
+        .checked_duration_since(now)
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| "protocol-v5 deadline expired during existing endpoint probe".to_string())?;
+    now.checked_add(outer_budget.min(EXISTING_ENDPOINT_PROBE_TIMEOUT))
+        .ok_or_else(|| "protocol-v5 existing endpoint probe deadline overflow".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{BufRead, Read};
+    use std::net::{Ipv4Addr, Shutdown, TcpListener};
+    use std::thread;
+
+    #[derive(Default)]
+    struct DetachFailingChild {
+        termination_attempted: bool,
+        cleanup_budget: Option<Duration>,
+    }
+
+    impl V5StartupChildControl for DetachFailingChild {
+        fn detach(&mut self, _deadline: Instant) -> Result<(), String> {
+            Err("injected detach failure".to_string())
+        }
+
+        fn terminate_bounded(&mut self, wait_limit: Duration) -> Result<(), String> {
+            self.termination_attempted = true;
+            self.cleanup_budget = Some(wait_limit);
+            Ok(())
+        }
+    }
+
+    fn connected_owner() -> (V5DaemonProcessOwner, TcpStream) {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let client = TcpStream::connect(address).unwrap();
+        client.set_nodelay(true).unwrap();
+        let (peer, _) = listener.accept().unwrap();
+        peer.set_nodelay(true).unwrap();
+        let reader = BufReader::new(client.try_clone().unwrap());
+        let record = V5EndpointRecord::new(CoreIdentity::production_v5(), address.port()).unwrap();
+        (
+            V5DaemonProcessOwner {
+                writer: client,
+                reader,
+                record,
+                poisoned: false,
+                observation_stop: None,
+            },
+            peer,
+        )
+    }
+
+    fn state_directory() -> (tempfile::TempDir, DaemonStateDirectory) {
+        let root = tempfile::tempdir().unwrap();
+        let physical_root = std::fs::canonicalize(root.path()).unwrap();
+        let state =
+            DaemonStateDirectory::open(&physical_root, &CoreIdentity::production_v5()).unwrap();
+        (root, state)
+    }
+
+    /// Windows does not wake a blocked `recv` when another handle shuts the
+    /// socket down. Raising only the stop flag reproduces that platform on
+    /// every OS: the read must still end promptly and leave the peer
+    /// connection without any further request.
+    #[test]
+    fn observation_interrupt_ends_a_blocked_read_without_socket_shutdown() {
+        let (mut owner, mut peer) = connected_owner();
+        let interrupt = owner.observation_interrupt_handle().unwrap();
+        let stop = Arc::clone(&interrupt.stop);
+        let raiser = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(100));
+            stop.store(true, Ordering::Release);
+        });
+
+        let started = Instant::now();
+        let result = owner.read_before(Instant::now() + Duration::from_secs(10), "wait task");
+        let elapsed = started.elapsed();
+        raiser.join().unwrap();
+
+        let error = result.unwrap_err();
+        assert!(error.contains("observation interrupted"), "{error}");
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "the stop flag was not observed for {elapsed:?}"
+        );
+        drop(owner);
+        drop(interrupt);
+        let mut sent = Vec::new();
+        peer.read_to_end(&mut sent).unwrap();
+        assert!(sent.is_empty(), "interrupt wrote to the daemon: {sent:?}");
+    }
+
+    #[test]
+    fn interruptible_observation_keeps_waiting_across_poll_intervals_until_the_answer() {
+        let (mut owner, mut peer) = connected_owner();
+        let _interrupt = owner.observation_interrupt_handle().unwrap();
+        let answer = thread::spawn(move || {
+            peer.write_all(b"{\"kind\"").unwrap();
+            thread::sleep(OBSERVATION_INTERRUPT_POLL * 6);
+            peer.write_all(b":\"pong\"}\n").unwrap();
+            peer
+        });
+
+        let frame = owner
+            .read_before(Instant::now() + Duration::from_secs(10), "wait task")
+            .unwrap();
+        drop(answer.join().unwrap());
+
+        assert_eq!(frame, b"{\"kind\":\"pong\"}");
+    }
+
+    #[test]
+    fn partial_v5_response_bytes_cannot_replenish_client_deadline() {
+        let (mut owner, mut peer) = connected_owner();
+        let peer_thread = thread::spawn(move || {
+            for byte in b"{\"kind\":\"pong\"}\n" {
+                thread::sleep(Duration::from_millis(50));
+                if peer.write_all(&[*byte]).is_err() {
+                    break;
+                }
+            }
+        });
+        let deadline = Instant::now() + Duration::from_millis(200);
+
+        let started = Instant::now();
+        let result = owner.read_before(deadline, "slow response");
+        let elapsed = started.elapsed();
+        drop(owner);
+        peer_thread.join().unwrap();
+
+        assert!(result.is_err(), "slow-drip response crossed the cutoff");
+        assert!(
+            elapsed < Duration::from_millis(600),
+            "partial response reads replenished the deadline for {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn owned_v5_frames_preserve_real_tcp_prefixes_across_a_socket_poll() {
+        use crate::protocol_v5::{
+            read_bounded_v5_probe_response_frame_before, read_bounded_v5_request_frame_before,
+        };
+        use unica_work_control::operation_deadline::OperationDeadline;
+
+        for response in [false, true] {
+            for complete in [false, true] {
+                let (mut owner, mut peer) = connected_owner();
+                let wire = if response {
+                    b"{\"kind\":\"pong\"}".to_vec()
+                } else {
+                    serde_json::to_vec(&V5ClientRequest::GetTask {
+                        task_id: TaskId::new(),
+                    })
+                    .unwrap()
+                };
+                let split = 1;
+                peer.write_all(&wire[..split]).unwrap();
+                // Establish the first real TCP fragment without consuming it.
+                // The peer withholds the suffix until a socket poll has returned.
+                assert_eq!(owner.reader.fill_buf().unwrap(), &wire[..split]);
+                let deadline: OperationDeadline = OperationDeadline::NoDeadline;
+                let mut fills = 0;
+                let checkpoint = |reader: &mut BufReader<TcpStream>| {
+                    fills += 1;
+                    assert!(!deadline.is_elapsed_at(Instant::now()));
+                    match fills {
+                        1 | 2 => reader
+                            .get_ref()
+                            .set_read_timeout(Some(Duration::from_millis(1))),
+                        3 => {
+                            if complete {
+                                let mut suffix = wire[split..].to_vec();
+                                suffix.push(b'\n');
+                                peer.write_all(&suffix)?;
+                            } else {
+                                peer.shutdown(Shutdown::Write)?;
+                            }
+                            reader.get_ref().set_read_timeout(None)
+                        }
+                        _ => reader.get_ref().set_read_timeout(None),
+                    }
+                };
+                let result = if response {
+                    read_bounded_v5_probe_response_frame_before(&mut owner.reader, checkpoint)
+                } else {
+                    read_bounded_v5_request_frame_before(&mut owner.reader, checkpoint)
+                };
+                assert!(fills >= 3, "the real socket poll lost the original frame");
+                if complete {
+                    assert_eq!(result.unwrap(), wire);
+                } else {
+                    let error = result.unwrap_err();
+                    assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+                    assert_eq!(error.to_string(), "v5 JSON line is missing its terminator");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_v5_response_permanently_poisons_owner_session() {
+        let (mut owner, mut peer) = connected_owner();
+        let peer_thread = thread::spawn(move || {
+            let mut request = Vec::new();
+            BufReader::new(&peer)
+                .read_until(b'\n', &mut request)
+                .unwrap();
+            peer.write_all(b"{malformed}\n").unwrap();
+            peer.shutdown(Shutdown::Write).unwrap();
+            let mut trailing = Vec::new();
+            let _ = peer.read_to_end(&mut trailing);
+            trailing
+        });
+
+        assert_eq!(
+            owner.ping().unwrap_err(),
+            "protocol-v5 ping response is not strict JSON"
+        );
+        assert_eq!(
+            owner.ping().unwrap_err(),
+            "protocol-v5 owner session is poisoned"
+        );
+        drop(owner);
+        let trailing = peer_thread.join().unwrap();
+        assert!(
+            trailing.is_empty(),
+            "poisoned owner wrote another request after malformed response"
+        );
+    }
+
+    #[test]
+    fn seven_second_wait_task_does_not_use_the_five_second_default_timeout() {
+        let (mut owner, mut peer) = connected_owner();
+        let task_id = TaskId::new();
+        let peer_thread = thread::spawn(move || {
+            let mut request = Vec::new();
+            BufReader::new(&peer)
+                .read_until(b'\n', &mut request)
+                .expect("read wait_task request");
+            thread::sleep(Duration::from_millis(5_200));
+            let _ = peer.write_all(b"{\"kind\":\"error\",\"code\":\"task_not_found\"}\n");
+        });
+
+        let response = owner.wait_task(task_id, 7_000);
+        drop(owner);
+        peer_thread.join().expect("join delayed wait_task peer");
+
+        assert!(
+            matches!(response, Ok(V5ServerResponse::Error { .. })),
+            "seven-second wait used the shorter default timeout: {response:?}"
+        );
+    }
+
+    #[test]
+    fn failed_startup_cleanup_never_adopts_successor_with_reused_pid() {
+        let (_root, state) = state_directory();
+        let observed = V5EndpointRecord::new(CoreIdentity::production_v5(), 41_001).unwrap();
+        drop(state.publish_v5_endpoint_record(&observed).unwrap());
+        let observed = state.read_v5_endpoint_record().unwrap().unwrap();
+        let mut endpoint = StartupEndpointObservation::new(observed.pid());
+        assert!(endpoint.observe(&observed));
+
+        let successor = V5EndpointRecord::new(CoreIdentity::production_v5(), 41_002).unwrap();
+        assert_eq!(successor.pid(), observed.pid(), "PID-reuse fixture drift");
+        assert_ne!(successor, observed, "full endpoint identity must change");
+        assert!(
+            !endpoint.observe(&successor),
+            "startup observation adopted a different same-PID record"
+        );
+        drop(state.publish_v5_endpoint_record(&successor).unwrap());
+
+        assert!(!endpoint.cleanup(&state).unwrap());
+        assert_eq!(
+            state.read_v5_endpoint_record().unwrap(),
+            Some(successor),
+            "cleanup adopted and removed the same-PID successor"
+        );
+    }
+
+    #[test]
+    fn exit_before_readiness_reports_only_the_childs_own_startup_failure() {
+        use unica_process::test_support::line_printing_command;
+        let reason = "preexisting handoff Task has no exact prior link reservation";
+        for own_record in [true, false] {
+            let (_root, state) = state_directory();
+            let fixture = line_printing_command(false, &[]);
+            let mut command = std::process::Command::new(fixture.program);
+            command.args(fixture.args);
+            let deadline = Instant::now() + Duration::from_secs(20);
+            let mut child =
+                ManagedStartupChild::spawn_configured_before(command, deadline).unwrap();
+            let pid = child.id();
+            // A record of another process is what a stale file looks like.
+            let recorded_pid = if own_record { pid } else { pid.wrapping_add(1) };
+            state.publish_startup_failure(recorded_pid, reason).unwrap();
+            let message = match V5DaemonProcessOwner::await_startup_before(
+                &mut child,
+                &state,
+                &CoreIdentity::production_v5(),
+                deadline - Duration::from_secs(5),
+                deadline,
+            ) {
+                Ok(_) => panic!("an exiting child cannot become ready"),
+                Err(message) => message,
+            };
+            assert!(message.contains("exited before readiness"), "{message}");
+            let state_path = state.path().display().to_string();
+            assert_eq!(message.contains(reason), own_record, "{message}");
+            assert_eq!(message.contains(&state_path), own_record, "{message}");
+        }
+    }
+
+    #[test]
+    fn failed_readiness_kills_the_child_within_the_original_budget() {
+        use unica_process::test_support::{long_running_command, wait_for_process_exit};
+        let (_root, state) = state_directory();
+        let fixture = long_running_command();
+        let mut command = std::process::Command::new(fixture.program);
+        command.args(fixture.args);
+        let started = Instant::now();
+        let deadline = started + Duration::from_millis(900);
+        let mut child = ManagedStartupChild::spawn_configured_before(command, deadline).unwrap();
+        let pid = child.id();
+        let outcome = V5DaemonProcessOwner::await_startup_before(
+            &mut child,
+            &state,
+            &CoreIdentity::production_v5(),
+            started + Duration::from_millis(300),
+            deadline,
+        );
+        assert!(
+            matches!(outcome, Err(message) if message.contains("deadline expired during spawn readiness")),
+            "unexpected startup outcome"
+        );
+        assert!(
+            Instant::now() < deadline,
+            "startup cleanup replenished the deadline"
+        );
+        assert!(
+            wait_for_process_exit(pid, Duration::from_millis(1)),
+            "failed startup left its child alive"
+        );
+        assert!(state.read_v5_endpoint_record().unwrap().is_none());
+    }
+
+    #[test]
+    fn failed_detach_cleanup_never_replenishes_the_request_deadline() {
+        let (_root, state) = state_directory();
+        for budget in [Duration::ZERO, Duration::from_millis(40)] {
+            let (owner, _peer) = connected_owner();
+            let mut endpoint = StartupEndpointObservation::new(owner.record.pid());
+            endpoint.observe(&owner.record);
+            let mut child = DetachFailingChild::default();
+            let result = finish_ready_startup(
+                owner,
+                &mut child,
+                &state,
+                &endpoint,
+                Instant::now() + budget,
+            );
+            assert!(result.is_err());
+            assert!(child.termination_attempted);
+            assert!(child.cleanup_budget.unwrap() <= budget);
+        }
+    }
+
+    #[test]
+    fn detach_failure_cleanup_is_identity_bound_to_observed_ready_record() {
+        let (_root, state) = state_directory();
+        let (owner, peer) = connected_owner();
+        let observed = owner.record.clone();
+        drop(state.publish_v5_endpoint_record(&observed).unwrap());
+        let mut endpoint = StartupEndpointObservation::new(observed.pid());
+        assert!(endpoint.observe(&observed));
+        let mut child = DetachFailingChild::default();
+
+        let error = match finish_ready_startup(
+            owner,
+            &mut child,
+            &state,
+            &endpoint,
+            Instant::now() + CONNECT_TIMEOUT,
+        ) {
+            Ok(_) => panic!("injected detach failure unexpectedly succeeded"),
+            Err(error) => error,
+        };
+        drop(peer);
+
+        assert!(error.contains("ownership detach failed"));
+        assert!(child.termination_attempted);
+        assert_eq!(
+            state.read_v5_endpoint_record().unwrap(),
+            None,
+            "detach failure left the observed ready endpoint published"
+        );
+    }
+
+    use crate::protocol_v5::task_frame_fixtures::{
+        completed_task_response as completed_snapshot_value, frame as frame_of,
+        malformed_task_frames,
+    };
+
+    /// The daemon side answers the first request with `frame`, then reports
+    /// whether the client sent anything more before closing the connection.
+    fn answer_once(mut peer: TcpStream, frame: Vec<u8>) -> thread::JoinHandle<Vec<u8>> {
+        thread::spawn(move || {
+            peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut request = Vec::new();
+            let mut reader = BufReader::new(peer.try_clone().unwrap());
+            reader.read_until(b'\n', &mut request).unwrap();
+            peer.write_all(&frame).unwrap();
+            peer.flush().unwrap();
+            let mut trailing = Vec::new();
+            let _ = reader.read_to_end(&mut trailing);
+            trailing
+        })
+    }
+
+    #[test]
+    fn task_exchange_reports_complete_malformed_frame_as_protocol_and_closes_the_session() {
+        let task_id = TaskId::new();
+        // Positive control: the same exchange accepts a strict snapshot.
+        let (mut owner, peer) = connected_owner();
+        let daemon = answer_once(peer, frame_of(&completed_snapshot_value(task_id)));
+        let accepted = owner
+            .get_task_before(task_id, Instant::now() + Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(accepted.task_id(), task_id);
+        drop(owner);
+        assert!(daemon.join().unwrap().is_empty());
+
+        for (case, frame) in malformed_task_frames(task_id) {
+            for operation in ["get", "wait", "cancel"] {
+                let (mut owner, peer) = connected_owner();
+                let daemon = answer_once(peer, frame.clone());
+                let deadline = Instant::now() + Duration::from_secs(5);
+                let first = match operation {
+                    "get" => owner.get_task_before(task_id, deadline),
+                    "wait" => owner.wait_task_before(task_id, 0, deadline),
+                    _ => owner.cancel_task_before(task_id, deadline),
+                };
+                let reuse = owner.get_task_before(task_id, deadline);
+
+                assert_eq!(
+                    first,
+                    Err(V5TaskExchangeError::MalformedResponse),
+                    "{case} via {operation}"
+                );
+                assert_eq!(
+                    reuse,
+                    Err(V5TaskExchangeError::SessionPoisoned),
+                    "{case} via {operation}: the session survived a malformed frame"
+                );
+                // The client keeps its handle, yet the daemon side already sees
+                // the connection closed and no second request on it.
+                let trailing = daemon.join().unwrap();
+                assert!(
+                    trailing.is_empty(),
+                    "{case} via {operation}: poisoned session wrote {trailing:?}"
+                );
+                drop(owner);
+            }
+        }
+    }
+
+    #[test]
+    fn task_exchange_reports_connection_lost_before_a_complete_frame_as_transport() {
+        let task_id = TaskId::new();
+        let complete = frame_of(&completed_snapshot_value(task_id));
+        for cut in [0, complete.len() / 2, complete.len() - 1] {
+            let (mut owner, mut peer) = connected_owner();
+            let prefix = complete[..cut].to_vec();
+            let daemon = thread::spawn(move || {
+                let mut request = Vec::new();
+                BufReader::new(&peer)
+                    .read_until(b'\n', &mut request)
+                    .unwrap();
+                peer.write_all(&prefix).unwrap();
+                peer.shutdown(Shutdown::Both).unwrap();
+            });
+
+            let first = owner.get_task_before(task_id, Instant::now() + Duration::from_secs(5));
+            daemon.join().unwrap();
+            let reuse = owner.get_task_before(task_id, Instant::now() + Duration::from_secs(5));
+
+            assert_eq!(
+                first,
+                Err(V5TaskExchangeError::Transport),
+                "connection closed after {cut} response bytes"
+            );
+            assert_eq!(reuse, Err(V5TaskExchangeError::SessionPoisoned));
+        }
+    }
+
+    /// The controlled clock reports the cutoff as passed once the complete
+    /// frame has been decoded: the read itself finished well inside it.
+    #[test]
+    fn task_exchange_post_parse_expiry_wins_for_valid_and_malformed_frames() {
+        let task_id = TaskId::new();
+        let valid = frame_of(&completed_snapshot_value(task_id));
+        let mut cases = vec![("valid", valid)];
+        cases.extend(malformed_task_frames(task_id));
+        for (case, frame) in cases {
+            for expired in [false, true] {
+                let (mut owner, peer) = connected_owner();
+                let daemon = answer_once(peer, frame.clone());
+                let deadline = Instant::now() + Duration::from_secs(5);
+                let mut clock_reads = 0;
+                let first = owner.task_exchange_observed(
+                    V5ClientRequest::GetTask { task_id },
+                    "get task",
+                    deadline,
+                    || {
+                        clock_reads += 1;
+                        if expired {
+                            deadline + Duration::from_millis(1)
+                        } else {
+                            Instant::now()
+                        }
+                    },
+                );
+
+                assert_eq!(clock_reads, 1, "{case}: one checkpoint after parse");
+                if !expired && case == "valid" {
+                    assert_eq!(first.unwrap().task_id(), task_id);
+                    drop(owner);
+                    assert!(daemon.join().unwrap().is_empty());
+                    continue;
+                }
+                let expected = if expired {
+                    // An expired cutoff wins over the frame, valid or not.
+                    V5TaskExchangeError::Transport
+                } else {
+                    V5TaskExchangeError::MalformedResponse
+                };
+                assert_eq!(first, Err(expected), "{case}, expired={expired}");
+                assert_eq!(
+                    owner.get_task_before(task_id, deadline),
+                    Err(V5TaskExchangeError::SessionPoisoned),
+                    "{case}, expired={expired}: the session survived"
+                );
+                let trailing = daemon.join().unwrap();
+                assert!(
+                    trailing.is_empty(),
+                    "{case}, expired={expired}: the connection was reused"
+                );
+                drop(owner);
+            }
+        }
+    }
+}

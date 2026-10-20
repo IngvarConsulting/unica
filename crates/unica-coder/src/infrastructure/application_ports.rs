@@ -1,48 +1,50 @@
-use crate::application::metadata::{MetaFailure, MetaInfoRequest, MetadataRequest};
 use crate::application::ports::{
-    ApplicationPorts, FormatGuardCheck, FormatGuardError, HandlerOutcome, MetaLocalInfo,
-    MetaRelatedData, MetadataRead, MetadataValidationResult, MetadataValidationSubject,
-    PreparedMetadataMutation, PreparedToolInvocation, SupportGuardCheck,
+    ApplicationPorts, FormatGuardCheck, FormatGuardError, HandlerOutcome, PreparedMetadataMutation,
+    PreparedToolInvocation, SupportGuardCheck,
 };
-use crate::application::{AdapterOutcome, InvocationMode, ToolExecution, ToolHandler, ToolSpec};
-use crate::domain::cache::{CacheAccess, CacheReport};
-use crate::domain::cancellation::CancellationToken;
-use crate::domain::code_intelligence::{
-    CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceReadRequest,
-    CodeIntelligenceRegistry, CodeSearchScope, ProviderDeadline,
-};
-use crate::domain::diagnostics::{
-    DiagnosticContext, DiagnosticItem, DiagnosticMapError, DiagnosticObservation,
-    DiagnosticProvider, DiagnosticProviderRegistry, DiagnosticRequest, DiagnosticRequestError,
-};
-use crate::domain::events::DomainEvent;
-use crate::domain::operational_config::{OperationalConfig, OperationalConfigDiagnostic};
-use crate::domain::progress::ProgressSink;
-use crate::domain::refusal::RefusalCode;
-use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::code_intelligence::{BslAnalyzerProvider, GitGrepProvider, RlmProvider};
-use crate::infrastructure::diagnostics::BslAnalyzerDiagnosticProvider;
-use crate::infrastructure::internal_adapters::{
-    BslAnalyzerMcpAdapter, CliAdapter, RuntimeAdapter, RuntimeInvocation, RuntimeJobAdapter,
-};
+use crate::application::{InvocationMode, ToolExecution, ToolHandler, ToolSpec};
+use crate::infrastructure::analysis_composition;
+use crate::infrastructure::internal_adapters::{CliAdapter, RuntimeJobAdapter};
 use crate::infrastructure::metadata_operations::MetadataOperations;
-use crate::infrastructure::native_operations::subsystem;
 use crate::infrastructure::native_operations::typed_result::NativeInvocationContext;
 use crate::infrastructure::native_operations::NativeOperationAdapter;
-use crate::infrastructure::platform::full_dump_publication::{
-    FullDumpInvocation, VerifiedFullDumpAdapter,
-};
 use crate::infrastructure::plugin_runtime::find_plugin_root;
 use crate::infrastructure::support_state::{
     SupportStateReaderFactory, WorkspaceSupportStateReaderFactory,
 };
-use crate::infrastructure::workspace_services::WorkspaceServiceManager;
-use crate::infrastructure::workspace_state::WorkspaceStateRepository;
+use unica_adapter_bsl_analyzer::adapter::BslAnalyzerMcpAdapter;
+
 use serde_json::{json, Map, Value};
 use std::borrow::Cow;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use unica_adapter_v8_runner::adapter::{RuntimeAdapter, RuntimeInvocation};
+use unica_adapter_v8_runner::full_dump::{FullDumpInvocation, VerifiedFullDumpAdapter};
+use unica_code_intelligence::model::CodeIntelligenceContext;
+use unica_code_intelligence::model::CodeIntelligenceProvider;
+use unica_code_intelligence::model::CodeIntelligenceReadRequest;
+use unica_code_intelligence::model::CodeIntelligenceRegistry;
+use unica_code_intelligence::model::CodeSearchScope;
+use unica_configuration::operational::OperationalConfig;
+use unica_configuration::operational::OperationalConfigDiagnostic;
+use unica_diagnostics::model::DiagnosticContext;
+use unica_diagnostics::model::DiagnosticItem;
+use unica_diagnostics::model::DiagnosticMapError;
+use unica_diagnostics::model::DiagnosticObservation;
+use unica_diagnostics::model::DiagnosticProvider;
+use unica_diagnostics::model::DiagnosticProviderRegistry;
+use unica_diagnostics::model::DiagnosticRequest;
+use unica_diagnostics::model::DiagnosticRequestError;
+use unica_execution_contract::adapter_outcome::AdapterOutcome;
+use unica_refusal::RefusalCode;
+use unica_source_contract::events::DomainEvent;
+use unica_source_contract::workspace::WorkspaceContext;
+use unica_work_control::cancellation::CancellationToken;
+use unica_work_control::progress::ProgressSink;
+use unica_work_control::provider_deadline::ProviderDeadline;
+use unica_workspace::cache::{CacheAccess, CacheReport};
+use unica_workspace::state::WorkspaceStateRepository;
 
 #[cfg(test)]
 thread_local! {
@@ -96,7 +98,7 @@ pub(crate) struct InfrastructureApplicationPorts {
     support_state_readers: Arc<dyn SupportStateReaderFactory>,
     /// Идущие доставки. Стол принадлежит серверу: доставка переживает вызов,
     /// который её начал, и достаётся следующему.
-    deliveries: crate::infrastructure::engine_delivery::DeliveryDesk,
+    deliveries: unica_artifact_delivery::desk::DeliveryDesk,
 }
 
 impl InfrastructureApplicationPorts {
@@ -146,48 +148,51 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
 
     fn read_metadata_local(
         &self,
-        request: &MetaInfoRequest,
+        request: &unica_metadata::request::MetaInfoRequest,
         context: &WorkspaceContext,
         cancellation: &CancellationToken,
-    ) -> Result<MetadataRead, MetaFailure> {
+    ) -> Result<
+        unica_metadata::validation_subject::MetadataRead,
+        unica_metadata::request::MetaFailure,
+    > {
         let support_reader = self.support_state_readers.create(context);
         MetadataOperations::read_local(request, context, cancellation, support_reader.as_ref())
     }
 
     fn read_metadata_related(
         &self,
-        request: &MetaInfoRequest,
-        local: &MetaLocalInfo,
+        request: &unica_metadata::request::MetaInfoRequest,
+        local: &unica_metadata::validation_subject::MetaLocalInfo,
         context: &WorkspaceContext,
         cancellation: &CancellationToken,
-    ) -> MetaRelatedData {
+    ) -> unica_metadata::validation_subject::MetaRelatedData {
         MetadataOperations::read_related(request, local, context, cancellation)
     }
 
     fn validate_metadata(
         &self,
-        subject: &MetadataValidationSubject,
+        subject: &unica_metadata::validation_subject::MetadataValidationSubject,
         context: &WorkspaceContext,
         cancellation: &CancellationToken,
-    ) -> MetadataValidationResult {
+    ) -> unica_metadata::validation_subject::MetadataValidationResult {
         MetadataOperations::validate(subject, context, cancellation)
     }
 
     fn validate_metadata_read(
         &self,
-        subject: &MetadataValidationSubject,
+        subject: &unica_metadata::validation_subject::MetadataValidationSubject,
         context: &WorkspaceContext,
         cancellation: &CancellationToken,
-    ) -> MetadataValidationResult {
+    ) -> unica_metadata::validation_subject::MetadataValidationResult {
         MetadataOperations::validate_read(subject, context, cancellation)
     }
 
     fn prepare_metadata_mutation(
         &self,
-        request: &MetadataRequest,
+        request: &unica_metadata::request::MetadataRequest,
         context: &WorkspaceContext,
         cancellation: &CancellationToken,
-    ) -> Result<Box<dyn PreparedMetadataMutation>, MetaFailure> {
+    ) -> Result<Box<dyn PreparedMetadataMutation>, unica_metadata::request::MetaFailure> {
         MetadataOperations::prepare_mutation(request, context, cancellation)
     }
 
@@ -207,11 +212,9 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         // three into the same identity class before the application layer folds
         // them lexically.
         let mut workspace = context.clone();
-        workspace.workspace_root = crate::infrastructure::source_roots::normalize_path_identity(
-            &workspace.workspace_root,
-        )?;
-        workspace.cwd =
-            crate::infrastructure::source_roots::normalize_path_identity(&workspace.cwd)?;
+        workspace.workspace_root =
+            unica_workspace::paths::normalize_path_identity(&workspace.workspace_root)?;
+        workspace.cwd = unica_workspace::paths::normalize_path_identity(&workspace.cwd)?;
         Ok(CodeIntelligenceContext::new(workspace, source_root))
     }
 
@@ -237,25 +240,22 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     .map_err(|error| {
                         format!("sourceSet `{source_set}` could not be resolved: {error}")
                     })?;
-            let source_root = crate::domain::source_roots::ResolvedSourceRoot {
+            let source_root = unica_source_contract::workspace::ResolvedSourceRoot {
                 source_set: Some(source_set.to_string()),
                 path: selected.path,
             };
             let mut workspace = context.clone();
             workspace.workspace_root =
-                crate::infrastructure::source_roots::normalize_path_identity(
-                    &workspace.workspace_root,
-                )?;
-            workspace.cwd =
-                crate::infrastructure::source_roots::normalize_path_identity(&workspace.cwd)?;
+                unica_workspace::paths::normalize_path_identity(&workspace.workspace_root)?;
+            workspace.cwd = unica_workspace::paths::normalize_path_identity(&workspace.cwd)?;
             let filters = metadata_path
                 .map(|raw| {
-                    let address = crate::domain::source_target::MetadataAddress::parse(
-                        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                    let address = unica_address::source_target::MetadataAddress::parse(
+                        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
                         raw,
                     )
                     .map_err(|error| error.to_string())?;
-                    let target = crate::domain::source_target::SourceTarget {
+                    let target = unica_address::source_target::SourceTarget {
                         source_set: source_set.to_string(),
                         metadata_path: Some(address),
                     };
@@ -264,7 +264,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     // still proves the owner and refuses links and containment
                     // violations before returning the exact file filter.
                     let policy = if target.metadata_path.as_ref().is_some_and(|address| {
-                        address.target_kind() == crate::domain::source_target::TargetKind::Module
+                        address.target_kind() == unica_address::source_target::TargetKind::Module
                     }) {
                         crate::infrastructure::platform_xml_source_targets::TargetKindPolicy::ModuleOnlyAllowingAbsent
                     } else {
@@ -323,9 +323,9 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
             return CodeIntelligenceRegistry::new(providers);
         }
         let providers: Vec<Arc<dyn CodeIntelligenceProvider>> = vec![
-            Arc::new(RlmProvider::new()),
-            Arc::new(BslAnalyzerProvider::new()),
-            Arc::new(GitGrepProvider::new()),
+            Arc::new(analysis_composition::rlm_provider()),
+            Arc::new(analysis_composition::bsl_provider()),
+            Arc::new(analysis_composition::lexical_provider()),
         ];
         CodeIntelligenceRegistry::new(providers)
     }
@@ -337,7 +337,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                 .map_err(|error| error.to_string());
         }
         let providers: Vec<Arc<dyn DiagnosticProvider>> =
-            vec![Arc::new(BslAnalyzerDiagnosticProvider::new())];
+            vec![Arc::new(analysis_composition::diagnostic_provider())];
         DiagnosticProviderRegistry::new(providers).map_err(|error| error.to_string())
     }
 
@@ -418,11 +418,16 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
             return Ok(PreparedToolInvocation::empty());
         };
 
-        if let Err(error) = subsystem::ensure_subsystem_info_control(cancellation, deadline) {
+        if let Err(error) =
+            crate::infrastructure::subsystem_composition::ensure_subsystem_info_control(
+                cancellation,
+                deadline,
+            )
+        {
             return prepared_subsystem_info_failure(error.to_string(), false);
         }
         let support_reader = self.support_state_readers.create(context);
-        let prepared = match subsystem::prepare_subsystem_info(
+        let prepared = match crate::infrastructure::subsystem_composition::prepare_subsystem_info(
             args,
             context,
             cancellation,
@@ -441,7 +446,12 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                 &prepared.format_documents,
             )
             .map_err(|error| error.to_string())?;
-        if let Err(error) = subsystem::ensure_subsystem_info_control(cancellation, deadline) {
+        if let Err(error) =
+            crate::infrastructure::subsystem_composition::ensure_subsystem_info_control(
+                cancellation,
+                deadline,
+            )
+        {
             let mut failure = prepared_subsystem_info_failure(error.to_string(), false)?;
             failure.format_guard = Some(format_guard);
             return Ok(failure);
@@ -457,7 +467,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         &self,
         spec: ToolSpec,
         cwd: Option<&std::path::Path>,
-    ) -> Option<crate::domain::engine::MissingEngine> {
+    ) -> Option<unica_artifact_delivery::engine::MissingEngine> {
         let engine = engine_for(spec)?;
         let plugin_root = find_plugin_root(cwd.unwrap_or_else(|| std::path::Path::new(".")))?;
         crate::infrastructure::bundled_tools::missing_engine(&plugin_root, engine)
@@ -469,12 +479,12 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         context: &WorkspaceContext,
         cancellation: &CancellationToken,
         progress: &dyn ProgressSink,
-    ) -> crate::application::shared_work::EngineDeliveryState {
+    ) -> unica_artifact_delivery::shared::EngineDeliveryState {
         let Some(engine) = engine_for(spec) else {
-            return crate::application::shared_work::EngineDeliveryState::NotRequired;
+            return unica_artifact_delivery::shared::EngineDeliveryState::NotRequired;
         };
         let Some(plugin_root) = find_plugin_root(&context.cwd) else {
-            return crate::application::shared_work::EngineDeliveryState::NotRequired;
+            return unica_artifact_delivery::shared::EngineDeliveryState::NotRequired;
         };
         crate::infrastructure::engine_delivery::deliver_if_missing(
             &self.deliveries,
@@ -513,9 +523,12 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
             ))));
         }
         if let Some(invocation) = verified_full_dump_invocation(spec, args, dry_run) {
-            return VerifiedFullDumpAdapter::new()
-                .invoke(spec.name, invocation, args, context, cancellation)
-                .map(HandlerOutcome::plain);
+            return VerifiedFullDumpAdapter::new(
+                crate::infrastructure::runtime_composition::runtime_environment(),
+                crate::infrastructure::runtime_composition::full_dump_semantics(),
+            )
+            .invoke(spec.name, invocation, args, context, cancellation)
+            .map(HandlerOutcome::plain);
         }
         match spec.handler {
             ToolHandler::Metadata { .. } => Err(format!(
@@ -583,12 +596,11 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                 let registry = documentation_registry(context, cancellation, false)?;
                 let requested_version = args.get("platformVersion").and_then(Value::as_str);
                 let context = documentation_context(
-                    &crate::infrastructure::platform::full_dump_publication::default_platform_roots(
-                    ),
+                    &unica_adapter_v8_runner::full_dump::default_platform_roots(),
                     requested_version,
                     context,
                 );
-                let data = crate::application::documentation::get(
+                let data = unica_documentation::projection::get(
                     &registry,
                     document_id,
                     &language,
@@ -602,21 +614,23 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
             ToolHandler::Documentation { operation } => {
                 Err(format!("unknown documentation operation: {operation}"))
             }
-            ToolHandler::RuntimeAdapter => RuntimeAdapter::new()
-                .invoke_cancellable(
-                    RuntimeInvocation {
-                        tool_name: spec.name,
-                        args,
-                        context,
-                        dry_run,
-                        mutating: spec.execution.is_mutating(),
-                    },
-                    cancellation,
-                )
-                .map(|outcome| match outcome.data {
-                    Some(data) => HandlerOutcome::with_data(outcome.outcome, data),
-                    None => HandlerOutcome::plain(outcome.outcome),
-                }),
+            ToolHandler::RuntimeAdapter => RuntimeAdapter::new(
+                crate::infrastructure::runtime_composition::runtime_environment(),
+            )
+            .invoke_cancellable(
+                RuntimeInvocation {
+                    tool_name: spec.name,
+                    args,
+                    context,
+                    dry_run,
+                    mutating: spec.execution.is_mutating(),
+                },
+                cancellation,
+            )
+            .map(|outcome| match outcome.data {
+                Some(data) => HandlerOutcome::with_data(outcome.outcome, data),
+                None => HandlerOutcome::plain(outcome.outcome),
+            }),
             ToolHandler::RuntimeJob { action } => RuntimeJobAdapter::invoke_cancellable(
                 action,
                 spec.name,
@@ -642,19 +656,21 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                 "{} must be dispatched through the provider-neutral diagnostics coordinator",
                 spec.name
             )),
-            ToolHandler::CodeAdapter { command: ["graph"] } => BslAnalyzerMcpAdapter::new()
-                .invoke_cancellable_with_operational_config(
-                    spec.name,
-                    args,
-                    context,
-                    dry_run,
-                    operational_config,
-                    cancellation,
-                )
-                .map(|analyzer| match analyzer.data {
-                    Some(data) => HandlerOutcome::with_data(analyzer.outcome, data),
-                    None => HandlerOutcome::plain(analyzer.outcome),
-                }),
+            ToolHandler::CodeAdapter { command: ["graph"] } => {
+                BslAnalyzerMcpAdapter::new(analysis_composition::environment())
+                    .invoke_cancellable_with_operational_config(
+                        spec.name,
+                        args,
+                        context,
+                        dry_run,
+                        operational_config,
+                        cancellation,
+                    )
+                    .map(|analyzer| match analyzer.data {
+                        Some(data) => HandlerOutcome::with_data(analyzer.outcome, data),
+                        None => HandlerOutcome::plain(analyzer.outcome),
+                    })
+            }
             ToolHandler::CodeAdapter { command } => {
                 CliAdapter::new("bsl-analyzer", command, "code analysis")
                     .invoke_cancellable(
@@ -677,16 +693,13 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         mode: InvocationMode,
         cache_access: CacheAccess,
     ) -> Result<CacheReport, String> {
-        WorkspaceStateRepository::new(context).report(
-            context,
-            events,
-            mode.is_preview(),
-            cache_access,
-        )
+        WorkspaceStateRepository::new(context)
+            .with_index_readiness(analysis_composition::index_is_ready)
+            .report(context, events, mode.is_preview(), cache_access)
     }
 
     fn notify_invalidation(&self, context: &WorkspaceContext, events: &[DomainEvent]) {
-        WorkspaceServiceManager::new().notify_invalidation(context, events);
+        analysis_composition::service_manager().notify_invalidation(context, events);
     }
 
     fn notify_committed_changes(
@@ -694,9 +707,9 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         context: &WorkspaceContext,
         events: &[DomainEvent],
         cancellation: &CancellationToken,
-        deadline: crate::domain::operation_deadline::OperationDeadline,
+        deadline: unica_work_control::operation_deadline::OperationDeadline,
     ) {
-        WorkspaceServiceManager::new().notify_committed_changes(
+        analysis_composition::service_manager().notify_committed_changes(
             context,
             events,
             cancellation,
@@ -731,12 +744,10 @@ fn normalize_code_intelligence_path(
     raw: &str,
     context: &CodeIntelligenceContext,
 ) -> Result<String, String> {
-    let source_root =
-        crate::infrastructure::source_roots::normalize_path_identity(&context.source_root.path)?;
-    let workspace_root = crate::infrastructure::source_roots::normalize_path_identity(
-        &context.workspace.workspace_root,
-    )?;
-    let cwd = crate::infrastructure::source_roots::normalize_path_identity(&context.workspace.cwd)?;
+    let source_root = unica_workspace::paths::normalize_path_identity(&context.source_root.path)?;
+    let workspace_root =
+        unica_workspace::paths::normalize_path_identity(&context.workspace.workspace_root)?;
+    let cwd = unica_workspace::paths::normalize_path_identity(&context.workspace.cwd)?;
 
     // Callers address 1C sources with either separator regardless of the host, so
     // the argument has to become host-neutral components before candidate
@@ -763,7 +774,7 @@ fn normalize_code_intelligence_path(
             normalize_lexical_path(&source_root.join(raw_path))
         }
     };
-    let resolved = crate::infrastructure::source_roots::normalize_path_identity(&candidate)
+    let resolved = unica_workspace::paths::normalize_path_identity(&candidate)
         .map_err(|error| format!("failed to normalize code intelligence path `{raw}`: {error}"))?;
     if !resolved.starts_with(&workspace_root) || !resolved.starts_with(&source_root) {
         return Err(format!(
@@ -846,7 +857,7 @@ fn prepared_subsystem_info_failure(
     provider_unavailable: bool,
 ) -> Result<PreparedToolInvocation, String> {
     let native = NativeOperationAdapter::prepared_subsystem_info_with_data(
-        subsystem::subsystem_info_failure(error),
+        crate::infrastructure::subsystem_composition::subsystem_info_failure(error),
     )?;
     let mut handler = native_handler_outcome(native);
     if provider_unavailable {
@@ -878,24 +889,24 @@ const DOCUMENTATION_PROVIDER_IDS: &[&str] = &[
 /// подмены; политика читается на каждый вызов — она из файлов проекта.
 fn documentation_registry(
     context: &WorkspaceContext,
-    cancellation: &crate::domain::cancellation::CancellationToken,
+    cancellation: &unica_work_control::cancellation::CancellationToken,
     revalidate_search: bool,
-) -> Result<crate::domain::documentation::DocumentationRegistry, String> {
+) -> Result<unica_documentation::model::DocumentationRegistry, String> {
     use std::sync::Arc;
 
     #[cfg(test)]
     {
         let _ = cancellation;
         if let Some(stand_in) = documentation_registry_stand_in() {
-            return crate::domain::documentation::DocumentationRegistry::new(vec![stand_in]);
+            return unica_documentation::model::DocumentationRegistry::new(vec![stand_in]);
         }
     }
-    let policy = crate::infrastructure::documentation_policy::DocumentationPolicy::load(
+    let policy = unica_documentation_sources::documentation_policy::DocumentationPolicy::load(
         &context.workspace_root,
         DOCUMENTATION_PROVIDER_IDS,
     )?;
     let endpoint =
-        crate::infrastructure::standards_documentation::resolve_standards_endpoint(&policy);
+        unica_documentation_sources::standards_documentation::resolve_standards_endpoint(&policy);
     // Справка конфигурации читает source-set'ы рабочего пространства; битая
     // настройка проекта — отказ вызова, как и битая политика: неясность — отказ.
     let source_map = crate::infrastructure::project_sources::discover_project_source_map(
@@ -911,29 +922,33 @@ fn documentation_registry(
             )
         })
         .collect();
-    crate::domain::documentation::DocumentationRegistry::new(vec![
+    unica_documentation::model::DocumentationRegistry::new(vec![
         Arc::new(
-            crate::infrastructure::configuration_help::ConfigurationHelpProvider { source_sets },
-        ) as Arc<dyn crate::domain::documentation::DocumentationProvider>,
-        Arc::new(crate::infrastructure::platform_help::provider::PlatformSyntaxHelpProvider::new()),
-        Arc::new(crate::infrastructure::kb_1ci::Kb1ciProvider {
-            base: crate::infrastructure::kb_1ci::KB_BASE.to_string(),
+            unica_documentation_sources::configuration_help::ConfigurationHelpProvider {
+                source_sets,
+            },
+        ) as Arc<dyn unica_documentation::model::DocumentationProvider>,
+        Arc::new(
+            unica_documentation_sources::platform_help::provider::PlatformSyntaxHelpProvider::new(),
+        ),
+        Arc::new(unica_documentation_sources::kb_1ci::Kb1ciProvider {
+            base: unica_documentation_sources::kb_1ci::KB_BASE.to_string(),
             network: policy.network("kb-1ci"),
-            transport: Arc::new(crate::infrastructure::kb_1ci::NetworkKbTransport::default()),
+            transport: Arc::new(unica_documentation_sources::kb_1ci::NetworkKbTransport::default()),
             // Токен вызова: сетевой обход обязан отменяться вместе с вызовом
             // MCP, поэтому реестр собирается на вызов, а не на процесс.
             cancellation: cancellation.clone(),
-            cache_ttl: crate::infrastructure::kb_1ci::KB_CACHE_TTL,
-            lexicon: Arc::new(crate::infrastructure::kb_1ci::InstallationLexiconSource),
+            cache_ttl: unica_documentation_sources::kb_1ci::KB_CACHE_TTL,
+            lexicon: Arc::new(unica_documentation_sources::kb_1ci::InstallationLexiconSource),
         }),
         Arc::new(
-            crate::infrastructure::standards_documentation::V8StdDocumentationProvider {
+            unica_documentation_sources::standards_documentation::V8StdDocumentationProvider {
                 search_cache_ttl:
-                    crate::infrastructure::standards_documentation::V8STD_SEARCH_CACHE_TTL,
+                    unica_documentation_sources::standards_documentation::V8STD_SEARCH_CACHE_TTL,
                 revalidate_search,
                 endpoint,
                 network: policy.network("v8std"),
-                http: crate::infrastructure::internal_adapters::shared_http_client(),
+                http: unica_documentation_sources::standards_transport::shared_http_client(),
                 cancellation: cancellation.clone(),
             },
         ),
@@ -982,29 +997,31 @@ fn open_documentation_page(
     workspace: &WorkspaceContext,
     document_id: &str,
     cancellation: &CancellationToken,
-) -> crate::domain::invocation::DomainResult {
+) -> unica_execution_contract::invocation::DomainResult {
     let opened = (|| {
         let registry = documentation_registry(workspace, cancellation, false)?;
         let context = documentation_context(
-            &crate::infrastructure::platform::full_dump_publication::default_platform_roots(),
+            &unica_adapter_v8_runner::full_dump::default_platform_roots(),
             None,
             workspace,
         );
-        crate::application::documentation::get(&registry, document_id, "ru", &context)
+        unica_documentation::projection::get(&registry, document_id, "ru", &context)
     })();
     match opened {
         Ok(data) => {
-            let mut result =
-                crate::domain::invocation::DomainResult::success("unica.docs opened the page");
+            let mut result = unica_execution_contract::invocation::DomainResult::success(
+                "unica.docs opened the page",
+            );
             result.data = Some(data);
             result
         }
         Err(error) => {
-            let mut refusal = crate::domain::invocation::DomainResult::canonical_rejection(
-                None,
-                RefusalCode::NotFound,
-                format!("documentation page `{document_id}` was not found: {error}"),
-            );
+            let mut refusal =
+                unica_execution_contract::invocation::DomainResult::canonical_rejection(
+                    None,
+                    RefusalCode::NotFound,
+                    format!("documentation page `{document_id}` was not found: {error}"),
+                );
             refusal.next.push(serde_json::json!({
                 "tool": "unica.docs",
                 "args": {"query": "<формулировка вопроса>"},
@@ -1021,7 +1038,7 @@ pub(crate) fn canonical_v13_docs_search(
     query: &str,
     source: Option<&str>,
     cancellation: &CancellationToken,
-) -> crate::domain::invocation::DomainResult {
+) -> unica_execution_contract::invocation::DomainResult {
     canonical_v13_docs_search_with_limit(workspace, query, source, 20, false, cancellation)
 }
 
@@ -1032,15 +1049,15 @@ pub(crate) fn canonical_v13_docs_search_with_limit(
     fetch_limit: usize,
     revalidate_search: bool,
     cancellation: &CancellationToken,
-) -> crate::domain::invocation::DomainResult {
+) -> unica_execution_contract::invocation::DomainResult {
     let source_kinds = match source {
         None => vec![
-            crate::domain::documentation::SourceKind::PlatformHelp,
-            crate::domain::documentation::SourceKind::DevelopmentStandard,
+            unica_documentation::model::SourceKind::PlatformHelp,
+            unica_documentation::model::SourceKind::DevelopmentStandard,
         ],
-        Some(source) => match crate::domain::documentation::SourceKind::parse(source) {
-            Some(crate::domain::documentation::SourceKind::ConfigurationDocumentation) => {
-                return crate::domain::invocation::DomainResult::canonical_rejection(
+        Some(source) => match unica_documentation::model::SourceKind::parse(source) {
+            Some(unica_documentation::model::SourceKind::ConfigurationDocumentation) => {
+                return unica_execution_contract::invocation::DomainResult::canonical_rejection(
                     None,
                     RefusalCode::UnsupportedSource,
                     "docs source `configuration-documentation` is not available until its workspace reader uses the actor-owned nofollow and cancellation boundary",
@@ -1048,7 +1065,7 @@ pub(crate) fn canonical_v13_docs_search_with_limit(
             }
             Some(source_kind) => vec![source_kind],
             None => {
-                return crate::domain::invocation::DomainResult::canonical_rejection(
+                return unica_execution_contract::invocation::DomainResult::canonical_rejection(
                     None,
                     RefusalCode::UnsupportedSource,
                     format!(
@@ -1059,7 +1076,7 @@ pub(crate) fn canonical_v13_docs_search_with_limit(
         },
     };
     if query.trim().is_empty() {
-        return crate::domain::invocation::DomainResult::canonical_rejection(
+        return unica_execution_contract::invocation::DomainResult::canonical_rejection(
             None,
             RefusalCode::BadValue,
             "docs query must be non-blank",
@@ -1072,7 +1089,7 @@ pub(crate) fn canonical_v13_docs_search_with_limit(
     if let Some(document_id) = documentation_locator(query) {
         return open_documentation_page(workspace, document_id, cancellation);
     }
-    let request = crate::domain::documentation::DocumentationSearchRequest {
+    let request = unica_documentation::model::DocumentationSearchRequest {
         query: query.to_string(),
         source_kinds,
         limit: fetch_limit,
@@ -1081,16 +1098,16 @@ pub(crate) fn canonical_v13_docs_search_with_limit(
     let result = (|| {
         let registry = documentation_registry(workspace, cancellation, revalidate_search)?;
         let context = documentation_context(
-            &crate::infrastructure::platform::full_dump_publication::default_platform_roots(),
+            &unica_adapter_v8_runner::full_dump::default_platform_roots(),
             None,
             workspace,
         );
-        crate::application::documentation::search(&registry, &request, &context)
+        unica_documentation::projection::search(&registry, &request, &context)
     })();
     match result {
         Ok(data) => {
             let mut result =
-                crate::domain::invocation::DomainResult::success("unica.docs completed");
+                unica_execution_contract::invocation::DomainResult::success("unica.docs completed");
             result.data = Some(data);
             result
         }
@@ -1098,11 +1115,13 @@ pub(crate) fn canonical_v13_docs_search_with_limit(
         // new failure vocabulary: it answers with the closed provider code so
         // the caller's recovery (install help, restore network) stays the same
         // as for every other unavailable engine.
-        Err(error) => crate::domain::invocation::DomainResult::canonical_rejection_detailed(
-            None,
-            crate::domain::refusal::RefusalDetail::ProviderAbsent,
-            error,
-        ),
+        Err(error) => {
+            unica_execution_contract::invocation::DomainResult::canonical_rejection_detailed(
+                None,
+                unica_refusal::RefusalDetail::ProviderAbsent,
+                error,
+            )
+        }
     }
 }
 
@@ -1113,7 +1132,7 @@ pub(crate) fn canonical_v13_docs_search_with_limit(
 /// аргументы вызова дошли до запроса и контекста, нельзя.
 #[cfg(test)]
 static DOCUMENTATION_REGISTRY_STAND_IN: std::sync::Mutex<
-    Option<std::sync::Arc<dyn crate::domain::documentation::DocumentationProvider>>,
+    Option<std::sync::Arc<dyn unica_documentation::model::DocumentationProvider>>,
 > = std::sync::Mutex::new(None);
 
 #[cfg(test)]
@@ -1135,7 +1154,7 @@ impl Drop for DocumentationRegistryStandInGuard {
 
 #[cfg(test)]
 pub(crate) fn install_documentation_registry_stand_in(
-    provider: std::sync::Arc<dyn crate::domain::documentation::DocumentationProvider>,
+    provider: std::sync::Arc<dyn unica_documentation::model::DocumentationProvider>,
 ) -> DocumentationRegistryStandInGuard {
     let serial = DOCUMENTATION_REGISTRY_STAND_IN_SERIAL
         .lock()
@@ -1148,7 +1167,7 @@ pub(crate) fn install_documentation_registry_stand_in(
 
 #[cfg(test)]
 fn documentation_registry_stand_in(
-) -> Option<std::sync::Arc<dyn crate::domain::documentation::DocumentationProvider>> {
+) -> Option<std::sync::Arc<dyn unica_documentation::model::DocumentationProvider>> {
     DOCUMENTATION_REGISTRY_STAND_IN
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1263,13 +1282,13 @@ fn documentation_context(
     roots: &[std::path::PathBuf],
     requested: Option<&str>,
     workspace: &WorkspaceContext,
-) -> crate::domain::documentation::DocumentationContext {
+) -> unica_documentation::model::DocumentationContext {
     let project_version = project_platform_version(workspace);
     let installation_root = match project_platform_path(workspace) {
         Some(pin) => pinned_installation_root(&pin, requested, project_version.as_deref()),
         None => select_installation_root(roots, requested, project_version.as_deref()),
     };
-    crate::domain::documentation::DocumentationContext {
+    unica_documentation::model::DocumentationContext {
         installation_root,
         // Ограничение, по которому установку искали: поставщик называет его в
         // отказе, когда установки не нашлось.
@@ -1407,25 +1426,26 @@ mod tests {
         normalize_code_intelligence_read_request, project_platform_version,
         select_installation_root, select_platform_version, verified_full_dump_invocation,
     };
-    use crate::application::metadata::MetaInfoRequest;
+
     use crate::application::ports::ApplicationPorts;
     use crate::application::{
         preview_strategy, tools, InvocationMode, PreviewStrategy, RuntimeJobAction, ToolHandler,
         ToolSpec, UnicaApplication,
     };
-    use crate::domain::cancellation::CancellationToken;
-    use crate::domain::code_intelligence::{CodeIntelligenceContext, CodeIntelligenceReadRequest};
-    use crate::domain::source_roots::ResolvedSourceRoot;
-    use crate::domain::source_target::{
+    use unica_address::source_target::{
         MetadataAddress, ResolvedTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
     };
-    use crate::domain::support_state::{
+    use unica_code_intelligence::model::CodeIntelligenceContext;
+    use unica_code_intelligence::model::CodeIntelligenceReadRequest;
+    use unica_metadata::support_state::{
         ConfigurationSupportData, ConfigurationSupportState, ObjectSupportData, ObjectSupportState,
         ResolvedSubsystemTarget, SupportReadError, SupportStateReader,
     };
-    use crate::domain::workspace::WorkspaceContext;
+    use unica_source_contract::workspace::ResolvedSourceRoot;
+    use unica_source_contract::workspace::WorkspaceContext;
+    use unica_work_control::cancellation::CancellationToken;
 
-    use crate::infrastructure::platform::full_dump_publication::FullDumpInvocation;
+    use unica_adapter_v8_runner::full_dump::FullDumpInvocation;
 
     use crate::infrastructure::support_state::SupportStateReaderFactory;
     use serde_json::{json, Map};
@@ -1461,7 +1481,7 @@ mod tests {
             let identity = if file_type.is_symlink() {
                 None
             } else {
-                crate::infrastructure::platform::testing::path_identity_for_test(path)
+                unica_workspace::test_support::path_identity_for_test(path)
                     .expect("snapshot identity")
             };
             let bytes = if file_type.is_file() {
@@ -1668,7 +1688,7 @@ mod tests {
     #[test]
     fn production_diagnostic_registry_matches_the_canonical_live_composition() {
         use crate::application::ports::ApplicationPorts;
-        use crate::domain::diagnostics::LIVE_DIAGNOSTIC_PROVIDERS;
+        use unica_diagnostics::model::LIVE_DIAGNOSTIC_PROVIDERS;
 
         let ports = super::InfrastructureApplicationPorts::new();
         let registry = ApplicationPorts::diagnostic_provider_registry(&ports).unwrap();
@@ -1766,7 +1786,7 @@ mod tests {
             _target: &ResolvedTarget,
         ) -> Result<ConfigurationSupportData, SupportReadError> {
             Err(SupportReadError::new(
-                crate::domain::support_state::SupportReadErrorCode::ProviderUnavailable,
+                unica_metadata::support_state::SupportReadErrorCode::ProviderUnavailable,
                 "support-state provider is unavailable",
             ))
         }
@@ -1776,17 +1796,17 @@ mod tests {
             _target: &ResolvedTarget,
         ) -> Result<ObjectSupportData, SupportReadError> {
             Err(SupportReadError::new(
-                crate::domain::support_state::SupportReadErrorCode::ProviderUnavailable,
+                unica_metadata::support_state::SupportReadErrorCode::ProviderUnavailable,
                 "support-state provider is unavailable",
             ))
         }
 
         fn subsystem_support(
             &self,
-            _target: &crate::domain::support_state::ResolvedSubsystemTarget,
+            _target: &unica_metadata::support_state::ResolvedSubsystemTarget,
         ) -> Result<ObjectSupportData, SupportReadError> {
             Err(SupportReadError::new(
-                crate::domain::support_state::SupportReadErrorCode::ProviderUnavailable,
+                unica_metadata::support_state::SupportReadErrorCode::ProviderUnavailable,
                 "support-state provider is unavailable",
             ))
         }
@@ -2002,7 +2022,7 @@ mod tests {
             assert_eq!(command[2], "--config");
             assert_eq!(
                 Path::new(&command[3]),
-                crate::infrastructure::platform::filesystem::strip_windows_extended_length_prefix(
+                unica_workspace::paths::strip_windows_extended_length_prefix(
                     &workspace.join("v8project.yaml").canonicalize().unwrap(),
                 ),
                 "{name} must bind the command to the selected config"
@@ -2017,8 +2037,8 @@ mod tests {
         assert!(!context.cache_root.join("jobs").exists());
     }
 
-    fn meta_info_request() -> MetaInfoRequest {
-        MetaInfoRequest {
+    fn meta_info_request() -> unica_metadata::request::MetaInfoRequest {
+        unica_metadata::request::MetaInfoRequest {
             source_set: "main".to_string(),
             metadata_path: metadata_address("Catalog.Items"),
             sections: Vec::new(),
@@ -2045,7 +2065,7 @@ mod tests {
 
         assert_eq!(
             read.local.support,
-            crate::domain::metadata::MetaSupportStatus::Locked
+            unica_metadata::MetaSupportStatus::Locked
         );
         assert_eq!(
             *calls.lock().unwrap(),
@@ -2082,7 +2102,7 @@ mod tests {
         let diagnostic = &failure.diagnostics[0];
         assert_eq!(
             diagnostic.code,
-            crate::domain::metadata::MetaDiagnosticCode::ProviderUnavailable
+            unica_metadata::MetaDiagnosticCode::ProviderUnavailable
         );
         assert_eq!(
             diagnostic.metadata_path.as_ref(),
@@ -2099,7 +2119,7 @@ mod tests {
     #[test]
     fn meta_info_preserves_the_existing_support_projection() {
         use crate::application::ports::ApplicationPorts;
-        use crate::domain::metadata::MetaSupportStatus;
+        use unica_metadata::MetaSupportStatus;
 
         let (_root, context) = support_reader_fixture();
         for (state, expected) in [
@@ -2146,8 +2166,23 @@ mod tests {
             ),
             (
                 "mxl",
-                include_str!("native_operations/mxl.rs"),
+                include_str!("native_operations/mxl_composition.rs"),
                 &[".object_support("],
+            ),
+            (
+                "mxl-codec",
+                include_str!("../../../unica-templates-designer/src/mxl_codec.rs"),
+                &[],
+            ),
+            (
+                "mxl-root",
+                include_str!("../../../unica-templates-designer/src/mxl_root.rs"),
+                &[],
+            ),
+            (
+                "mxl-cells",
+                include_str!("../../../unica-templates-designer/src/mxl_cells.rs"),
+                &[],
             ),
             (
                 "dcs",
@@ -2156,13 +2191,23 @@ mod tests {
             ),
             (
                 "form",
-                include_str!("native_operations/form.rs"),
+                include_str!("form_composition.rs"),
                 &[".object_support("],
             ),
             (
+                "form-codec",
+                include_str!("../../../unica-forms-designer/src/codec.rs"),
+                &[],
+            ),
+            (
                 "subsystem",
-                include_str!("native_operations/subsystem.rs"),
+                include_str!("subsystem_composition.rs"),
                 &[".object_support(", ".subsystem_support("],
+            ),
+            (
+                "subsystem-codec",
+                include_str!("../../../unica-metadata-designer/src/subsystem.rs"),
+                &[],
             ),
             (
                 "meta",
@@ -2198,7 +2243,7 @@ mod tests {
             );
         }
 
-        let domain_port = include_str!("../domain/support_state.rs");
+        let domain_port = include_str!("../../../unica-metadata/src/support_state.rs");
         assert!(!domain_port.contains("std::path"));
         assert!(!domain_port.contains("&Path"));
         assert!(!domain_port.contains("PathBuf"));
@@ -2402,7 +2447,7 @@ mod tests {
         };
         let registry = documentation_registry(
             &context,
-            &crate::domain::cancellation::CancellationToken::default(),
+            &unica_work_control::cancellation::CancellationToken::default(),
             false,
         )
         .expect("registry constructs");
@@ -2424,7 +2469,7 @@ mod tests {
         assert_eq!(providers[0].corpora().len(), 1, "configuration-help");
         assert_eq!(
             providers[0].corpora()[0].source_kind,
-            crate::domain::documentation::SourceKind::ConfigurationDocumentation
+            unica_documentation::model::SourceKind::ConfigurationDocumentation
         );
         assert_eq!(
             providers[1].corpora().len(),
@@ -2439,7 +2484,7 @@ mod tests {
         assert_eq!(providers[3].corpora().len(), 1, "public-standards");
         assert_eq!(
             providers[3].corpora()[0].source_kind,
-            crate::domain::documentation::SourceKind::DevelopmentStandard
+            unica_documentation::model::SourceKind::DevelopmentStandard
         );
     }
 
@@ -2472,19 +2517,19 @@ mod tests {
         };
         let registry = documentation_registry(
             &context,
-            &crate::domain::cancellation::CancellationToken::default(),
+            &unica_work_control::cancellation::CancellationToken::default(),
             false,
         )
         .expect("registry constructs");
         let provider = registry.providers().next().expect("первый поставщик");
         let sections = provider.search(
-            &crate::domain::documentation::DocumentationSearchRequest {
+            &unica_documentation::model::DocumentationSearchRequest {
                 query: "Товары".to_string(),
                 source_kinds: Vec::new(),
                 limit: 5,
                 language: "ru".to_string(),
             },
-            &crate::domain::documentation::DocumentationContext {
+            &unica_documentation::model::DocumentationContext {
                 platform_version: None,
                 installation_root: None,
             },
@@ -2725,30 +2770,30 @@ mod tests {
     struct RecordingProvider {
         seen: std::sync::Mutex<
             Vec<(
-                crate::domain::documentation::DocumentationSearchRequest,
-                crate::domain::documentation::DocumentationContext,
+                unica_documentation::model::DocumentationSearchRequest,
+                unica_documentation::model::DocumentationContext,
             )>,
         >,
         seen_gets: std::sync::Mutex<
             Vec<(
                 String,
                 String,
-                crate::domain::documentation::DocumentationContext,
+                unica_documentation::model::DocumentationContext,
             )>,
         >,
     }
 
-    impl crate::domain::documentation::DocumentationProvider for RecordingProvider {
-        fn id(&self) -> crate::domain::documentation::DocumentationProviderId {
-            crate::domain::documentation::DocumentationProviderId::new("recording")
+    impl unica_documentation::model::DocumentationProvider for RecordingProvider {
+        fn id(&self) -> unica_documentation::model::DocumentationProviderId {
+            unica_documentation::model::DocumentationProviderId::new("recording")
         }
-        fn corpora(&self) -> Vec<crate::domain::documentation::DocumentationCorpus> {
+        fn corpora(&self) -> Vec<unica_documentation::model::DocumentationCorpus> {
             // Смысл корпуса объявлен, чтобы фильтр sourceKinds считал стенд
             // применимым и его опрос был наблюдаем.
-            vec![crate::domain::documentation::DocumentationCorpus {
+            vec![unica_documentation::model::DocumentationCorpus {
                 id: "syntax-context".to_string(),
-                source_kind: crate::domain::documentation::SourceKind::PlatformHelp,
-                authority: crate::domain::documentation::Authority::Vendor,
+                source_kind: unica_documentation::model::SourceKind::PlatformHelp,
+                authority: unica_documentation::model::Authority::Vendor,
             }]
         }
         fn needs_network(&self) -> bool {
@@ -2756,18 +2801,18 @@ mod tests {
         }
         fn search(
             &self,
-            request: &crate::domain::documentation::DocumentationSearchRequest,
-            context: &crate::domain::documentation::DocumentationContext,
-        ) -> Vec<crate::domain::documentation::DocumentationSection> {
+            request: &unica_documentation::model::DocumentationSearchRequest,
+            context: &unica_documentation::model::DocumentationContext,
+        ) -> Vec<unica_documentation::model::DocumentationSection> {
             self.seen
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .push((request.clone(), context.clone()));
-            vec![crate::domain::documentation::DocumentationSection::empty(
+            vec![unica_documentation::model::DocumentationSection::empty(
                 self.id(),
                 "syntax-context",
-                crate::domain::documentation::SourceKind::PlatformHelp,
-                crate::domain::documentation::Authority::Vendor,
+                unica_documentation::model::SourceKind::PlatformHelp,
+                unica_documentation::model::Authority::Vendor,
                 &request.language,
             )]
         }
@@ -2776,8 +2821,8 @@ mod tests {
             &self,
             document_id: &str,
             language: &str,
-            context: &crate::domain::documentation::DocumentationContext,
-        ) -> Option<Result<crate::domain::documentation::DocumentationDocument, String>> {
+            context: &unica_documentation::model::DocumentationContext,
+        ) -> Option<Result<unica_documentation::model::DocumentationDocument, String>> {
             self.seen_gets
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -2786,11 +2831,11 @@ mod tests {
                     language.to_string(),
                     context.clone(),
                 ));
-            Some(Ok(crate::domain::documentation::DocumentationDocument {
+            Some(Ok(unica_documentation::model::DocumentationDocument {
                 provider: self.id(),
                 corpus: "syntax-context".to_string(),
-                source_kind: crate::domain::documentation::SourceKind::PlatformHelp,
-                authority: crate::domain::documentation::Authority::Vendor,
+                source_kind: unica_documentation::model::SourceKind::PlatformHelp,
+                authority: unica_documentation::model::Authority::Vendor,
                 language: language.to_string(),
                 document_id: document_id.to_string(),
                 title: "Заголовок".to_string(),
@@ -2805,7 +2850,7 @@ mod tests {
         provider: std::sync::Arc<RecordingProvider>,
     ) -> super::DocumentationRegistryStandInGuard {
         super::install_documentation_registry_stand_in(
-            provider as std::sync::Arc<dyn crate::domain::documentation::DocumentationProvider>,
+            provider as std::sync::Arc<dyn unica_documentation::model::DocumentationProvider>,
         )
     }
 
@@ -2902,7 +2947,7 @@ mod tests {
         assert_eq!(seen.len(), 1);
         assert_eq!(
             seen[0].0.source_kinds,
-            vec![crate::domain::documentation::SourceKind::PlatformHelp]
+            vec![unica_documentation::model::SourceKind::PlatformHelp]
         );
     }
 
@@ -3019,8 +3064,8 @@ mod tests {
         assert_eq!(
             seen[0].0.source_kinds,
             vec![
-                crate::domain::documentation::SourceKind::PlatformHelp,
-                crate::domain::documentation::SourceKind::DevelopmentStandard,
+                unica_documentation::model::SourceKind::PlatformHelp,
+                unica_documentation::model::SourceKind::DevelopmentStandard,
             ]
         );
     }

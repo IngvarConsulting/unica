@@ -1,7 +1,7 @@
 ---
 id: INV.APP.CONFIG-SNAPSHOT
 check:
-  - crates/unica-coder/src/domain/operational_config.rs::explicit_diagnostics_timeout_is_validated_and_overlaid_immutably
+  - crates/unica-configuration/src/operational.rs::explicit_diagnostics_timeout_is_validated_and_overlaid_immutably
 ---
 
 # Явный таймаут диагностики не меняет общую конфигурацию

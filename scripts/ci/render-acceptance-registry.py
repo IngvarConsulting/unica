@@ -33,6 +33,31 @@ APPLY_REGISTRY = REPO_ROOT / "crates/unica-coder/src/domain/apply.rs"
 CHECK_PROFILES = REPO_ROOT / "crates/unica-coder/src/application/v13/check.rs"
 PAGE_NAME = "acceptance-scenarios.html"
 
+# Composition fixes registration order; each physical family owns the literal
+# table from which its enum and descriptor bindings are generated.
+TYPED_FAMILIES = {
+    "Role": "RoleOperation", "Support": "SupportOperation",
+    "Metadata": "MetadataOperation", "Form": "FormOperation",
+    "Mxl": "MxlOperation", "Event": "EventOperation", "Dcs": "Primitive",
+    "Properties": "PropertiesOperation", "Xdto": "XdtoOperation",
+    "Code": "CodeOperation", "Subsystem": "SubsystemOperation",
+    "Interface": "InterfaceOperation",
+}
+FAMILY_SOURCES = {
+    "Role": REPO_ROOT / "crates/unica-roles/src/operations.rs",
+    "Support": REPO_ROOT / "crates/unica-metadata/src/support.rs",
+    "Metadata": REPO_ROOT / "crates/unica-metadata/src/apply_operations.rs",
+    "Form": REPO_ROOT / "crates/unica-forms/src/operations.rs",
+    "Mxl": REPO_ROOT / "crates/unica-templates/src/operations.rs",
+    "Event": REPO_ROOT / "crates/unica-metadata/src/event.rs",
+    "Dcs": REPO_ROOT / "crates/unica-dcs/src/operations.rs",
+    "Properties": REPO_ROOT / "crates/unica-metadata/src/descriptor_operations.rs",
+    "Xdto": REPO_ROOT / "crates/unica-xdto/src/operations.rs",
+    "Code": REPO_ROOT / "crates/unica-bsl/src/operations.rs",
+    "Subsystem": REPO_ROOT / "crates/unica-metadata/src/subsystem_operations.rs",
+    "Interface": REPO_ROOT / "crates/unica-metadata/src/interface_operations.rs",
+}
+
 CLASS_TITLES = {
     "ok": "результат",
     "task": "длинная задача",
@@ -125,7 +150,7 @@ def _literal_table(source: str, name: str) -> str:
 
 def _registration_metadata(family: str) -> dict[str, tuple[str, str, str, str]]:
     stem = family.lower()
-    path = APPLY_REGISTRY.with_name(f"{stem}_operation.rs")
+    path = FAMILY_SOURCES[family]
     try:
         source = path.read_text(encoding="utf-8")
     except OSError as error:
@@ -168,13 +193,7 @@ def load_apply_registry() -> tuple[list[tuple[str, str, str, str]], set[str]]:
         r'|([A-Za-z_]\w*)::([A-Za-z_]\w*))\s*\)'
     )
     entries = []
-    typed_families = {
-        "Role": "RoleOperation", "Support": "SupportOperation",
-        "Metadata": "MetadataOperation", "Form": "FormOperation",
-        "Mxl": "MxlOperation", "Event": "EventOperation", "Dcs": "Primitive",
-        "Properties": "PropertiesOperation", "Xdto": "XdtoOperation",
-    }
-    typed = {operation_type: _registration_metadata(family) for family, operation_type in typed_families.items()}
+    typed = {operation_type: _registration_metadata(family) for family, operation_type in TYPED_FAMILIES.items()}
     typed_names = {(entry[1], entry[0]) for metadata in typed.values() for entry in metadata.values()}
     registered = {operation_type: [] for operation_type in typed}
     position = 0
@@ -189,7 +208,7 @@ def load_apply_registry() -> tuple[list[tuple[str, str, str, str]], set[str]]:
             entries.append(typed[operation_type][variant])
         else:
             entry = match.group(1, 2, 3, 4)
-            if entry[1] in typed_families or (entry[1], entry[0]) in typed_names:
+            if entry[1] in TYPED_FAMILIES or (entry[1], entry[0]) in typed_names:
                 raise RuntimeError(f"{entry[1]} registrations must use their typed operation")
             entries.append(entry)
         position = match.end()
@@ -197,7 +216,7 @@ def load_apply_registry() -> tuple[list[tuple[str, str, str, str]], set[str]]:
         raise RuntimeError("unsupported apply registration; no entry may be skipped")
     if not entries:
         raise RuntimeError("the apply registry table was not found in domain/apply.rs")
-    for family, operation_type in typed_families.items():
+    for family, operation_type in TYPED_FAMILIES.items():
         if (
             len(registered[operation_type]) != len(typed[operation_type])
             or set(registered[operation_type]) != set(typed[operation_type])

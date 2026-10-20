@@ -1,0 +1,16 @@
+[package]
+name = "unica-operations"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+unica-source-contract = { path = "../unica-source-contract" }
+unica-address = { path = "../unica-address" }
+unica-operation-contract = { path = "../unica-operation-contract" }
+serde.workspace = true
+serde_json.workspace = true

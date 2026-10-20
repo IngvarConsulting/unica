@@ -31,6 +31,7 @@ ALWAYS_JOBS = (
     "guards",
     "test-python",
 )
+PYTHON_PRODUCT_JOB = "build-python-product"
 PACKAGE_JOBS = (
     "build-tools",
     "package-thin",
@@ -165,8 +166,9 @@ def expected_results(
     route = rust_route(event_name, ref, values, docs_only=docs_only)
     if is_main_push:
         expected["test-python"] = "skipped"
-    elif is_manual and gate_profile == "large" and python_matrix == "[]":
-        expected["test-python"] = "skipped"
+    expected[PYTHON_PRODUCT_JOB] = (
+        "success" if not (is_main_push or is_pr or docs_only) else "skipped"
+    )
     # Сборка пакета и холодные старты сняты с pull request до пересборки системы
     # тестирования: прослеживаемости они не давали, а гейт красили. Тег и ручной
     # запуск их сохраняют — выпуск обязан собираться. Push в ветку упаковку тоже

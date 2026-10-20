@@ -21,6 +21,64 @@ def load_checker_module():
 
 
 class RustPlatformBoundaryTests(unittest.TestCase):
+    def test_moved_semantic_packages_keep_domain_io_and_dependency_guards(self) -> None:
+        checker = load_checker_module()
+        for owner in (
+            "unica-address", "unica-source-contract", "unica-operation-contract",
+            "unica-metadata", "unica-forms", "unica-roles", "unica-dcs",
+            "unica-xdto", "unica-templates", "unica-bsl", "unica-bindings", "unica-documentation",
+        ):
+            with self.subTest(owner=owner):
+                path = f"crates/{owner}/src/lib.rs"
+                diagnostics = checker.check_source(path, "use std::fs;\nuse crate::infrastructure::writer;\n")
+                self.assertEqual(len(diagnostics), 2, diagnostics)
+                self.assertIn("domain must not access std::fs directly", diagnostics[0])
+                self.assertIn("domain must not reference crate::infrastructure", diagnostics[1])
+                self.assertEqual(checker.check_source(path, "use std::path::Path;\n// std::fs::read(path)\n"), [])
+        for owner in ("unica-code-intelligence", "unica-diagnostics"):
+            model = f"crates/{owner}/src/model/mod.rs"
+            self.assertEqual(len(checker.check_source(model, "use std::fs;")), 1)
+            # Coordinators retain their former application role; test fixtures
+            # may obtain a temporary path without becoming a domain IO escape.
+            application = f"crates/{owner}/src/coordinator.rs"
+            self.assertEqual(checker.check_source(application, "let root = std::env::temp_dir();"), [])
+        # Source representation and retained-workspace implementations do IO.
+        for owner in ("unica-source-designer", "unica-workspace", "unica-process"):
+            self.assertEqual(checker.check_source(f"crates/{owner}/src/lib.rs", "use std::fs;"), [])
+
+    def test_platform_implementation_module_is_private_even_for_an_authorized_owner(self) -> None:
+        checker = load_checker_module()
+        for declaration in ("pub mod platform;", "pub mod platform {}"):
+            with self.subTest(declaration=declaration):
+                self.assertEqual(
+                    checker.check_source("crates/unica-process/src/lib.rs", declaration),
+                    ["crates/unica-process/src/lib.rs:1: platform implementation module must be private"],
+                )
+        self.assertEqual(checker.check_source("crates/unica-process/src/lib.rs", "mod platform;"), [])
+        self.assertEqual(checker.check_source("crates/unica-process/src/lib.rs", "pub(crate) mod platform;"), [])
+        self.assertEqual(checker.check_source("crates/unica-process/src/lib.rs", '// pub mod platform;\nconst S: &str = "pub mod platform;";'), [])
+
+    def test_component_platform_facades_have_closed_owners_and_no_path_exemptions(self) -> None:
+        checker = load_checker_module()
+        source = '#[cfg(unix)]\nuse std::os::unix::fs::PermissionsExt;\n'
+        for owner in (
+            "unica-bootstrap", "unica-process", "unica-workspace",
+            "unica-artifact-delivery",
+        ):
+            with self.subTest(owner=owner):
+                self.assertEqual(checker.check_source(f"crates/{owner}/src/platform/unix.rs", source), [])
+        self.assertEqual(checker.check_source("crates/unica-coder/src/infrastructure/platform/unix.rs", source), [])
+        for path in (
+            "crates/unica-coder/src/platform/unix.rs",
+            "crates/unica-forms/src/platform/unix.rs",
+            "crates/unica-process-extra/src/platform/unix.rs",
+            "crates/unica-process/src/platform.rs",
+            "crates/unica-process/src/handler/unix.rs",
+            "crates/unica-process/src/handler/platform/unix.rs",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(len(checker.check_source(path, source)), 2)
+
     def test_rejects_platform_constructs_outside_facade_with_stable_lines(self) -> None:
         checker = load_checker_module()
 

@@ -1,23 +1,25 @@
-use crate::application::result_store::ViewCursorStore;
 use crate::application::v13::find::{FindRequest, FindResult};
 use crate::application::v13::view::{ViewReadAuthority, ViewService};
-use crate::domain::address::QualifiedAddress;
-use crate::domain::cancellation::CancellationToken;
-use crate::domain::code_intelligence::ProviderDeadline;
-use crate::domain::platform_profile::PlatformProfile;
-use crate::domain::project_sources::SourceSetKind;
-use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
+use unica_bsl::profile::PlatformProfile;
+use unica_navigation::result_store::ViewCursorStore;
+use unica_source_contract::workspace::WorkspaceContext;
+
 use crate::infrastructure::v13_read::LogicalViewReadAuthority;
 use crate::infrastructure::v13_read_port::ProviderReadAuthority;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use unica_address::address::QualifiedAddress;
+use unica_source_contract::SourceSetKind;
+use unica_work_control::cancellation::CancellationToken;
+use unica_work_control::provider_deadline::ProviderDeadline;
 
 /// Коды отказов из ответа. Сообщение провала несёт только их: разбор в панике
 /// затягивает в текст всю нагрузку вместе с идентификаторами фикстуры, и
 /// сканер справедливо не отличает такой текст от записи в журнал.
-pub(super) fn refusal_codes(result: &crate::domain::invocation::DomainResult) -> Vec<&str> {
+pub(super) fn refusal_codes(
+    result: &unica_execution_contract::invocation::DomainResult,
+) -> Vec<&str> {
     result
         .diagnostics
         .iter()
@@ -89,7 +91,7 @@ impl RealExternalReaderFixture {
         } else {
             &self.report
         };
-        let root = Arc::new(RetainedDirectoryCapability::open(source).unwrap());
+        let root = Arc::new(unica_workspace::read::open_source_directory(source).unwrap());
         LogicalViewReadAuthority::new(
             &self.cancellation,
             source_set,
@@ -110,7 +112,7 @@ impl RealExternalReaderFixture {
         } else {
             &self.report
         };
-        let root = Arc::new(RetainedDirectoryCapability::open(source).unwrap());
+        let root = Arc::new(unica_workspace::read::open_source_directory(source).unwrap());
         let deadline = ProviderDeadline::no_deadline();
         LogicalViewReadAuthority::with_read_authority(
             &self.cancellation,
@@ -203,7 +205,7 @@ impl<'a> ReaderReach<'a> {
                                 error.code().as_str() == "provider_unavailable"
                                     && address.segments().first().is_some_and(|segment| {
                                         segment.kind()
-                                            == crate::domain::address::NodeKind::WebSocketClient
+                                            == unica_address::address::NodeKind::WebSocketClient
                                     })
                             }
                         }
@@ -566,7 +568,8 @@ impl RealReaderFixture {
     }
 
     pub(super) fn read_authority(&self) -> LogicalViewReadAuthority<'_> {
-        let source_root = Arc::new(RetainedDirectoryCapability::open(&self.source).unwrap());
+        let source_root =
+            Arc::new(unica_workspace::read::open_source_directory(&self.source).unwrap());
         LogicalViewReadAuthority::new(
             &self.cancellation,
             "main",
@@ -578,7 +581,7 @@ impl RealReaderFixture {
     }
 
     pub(super) fn operation_read_authority(&self) -> LogicalViewReadAuthority<'_> {
-        let root = Arc::new(RetainedDirectoryCapability::open(&self.source).unwrap());
+        let root = Arc::new(unica_workspace::read::open_source_directory(&self.source).unwrap());
         let deadline = ProviderDeadline::no_deadline();
         LogicalViewReadAuthority::with_read_authority(
             &self.cancellation,
@@ -599,7 +602,8 @@ impl RealReaderFixture {
 
     /// Тот же набор, объявленный расширением: заимствование живёт только здесь.
     pub(super) fn extension_read_authority(&self) -> LogicalViewReadAuthority<'_> {
-        let source_root = Arc::new(RetainedDirectoryCapability::open(&self.source).unwrap());
+        let source_root =
+            Arc::new(unica_workspace::read::open_source_directory(&self.source).unwrap());
         LogicalViewReadAuthority::new(
             &self.cancellation,
             "main",

@@ -1,10 +1,10 @@
 ---
 id: INV.APP.RUNTIME-JOB-DIRECTORY-AUTHORITY
 check:
-  - crates/unica-coder/src/infrastructure/runtime_jobs.rs::ordinary_poll_and_finish_never_follow_a_replaced_job_directory
-  - crates/unica-coder/src/infrastructure/runtime_jobs.rs::attached_process_poll_and_finish_never_follow_a_replaced_job_directory
-  - crates/unica-coder/src/infrastructure/runtime_jobs.rs::full_rebuild_fallback_never_follows_a_replaced_job_directory
-  - crates/unica-coder/src/infrastructure/runtime_jobs.rs::record_publication_and_lock_release_never_follow_a_replaced_job_directory
+  - crates/unica-coder/src/infrastructure/runtime_jobs_integration.rs::ordinary_poll_and_finish_never_follow_a_replaced_job_directory
+  - crates/unica-coder/src/infrastructure/runtime_jobs_integration.rs::attached_process_poll_and_finish_never_follow_a_replaced_job_directory
+  - crates/unica-coder/src/infrastructure/runtime_jobs_integration.rs::full_rebuild_fallback_never_follows_a_replaced_job_directory
+  - crates/unica-coder/src/infrastructure/runtime_jobs_integration.rs::record_publication_and_lock_release_never_follow_a_replaced_job_directory
 ---
 
 # Запущенное задание остаётся связано со своим исходным каталогом

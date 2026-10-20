@@ -26,17 +26,60 @@ Guards, Clippy и тесты работают на отдельных ранне
 поставки также ждёт успешные guards, lint и тесты. Линтеры публикуют SARIF
 в Code Scanning, тесты — планы и результаты Allure.
 
+`build-rust-ordinary`, `build-rust-receipt` и `build-rust-vendor` независимо
+создают nextest archive, полный план и разбиение на shards для каждой ОС.
+`run-rust-*` зависят только от своего producer и теневого selector, получают
+архив и выполняют его через `run-tests.py --phase run`. Cargo cache им
+не передаётся. Ordinary в очереди имеет две части; остальные конфигурации —
+по одной. `test-rust-platforms` сверяет точное непустое объединение планов,
+результаты каждой части, SHA, archive hash, ОС/features/profile и попытку
+workflow. Повторы nextest остаются в Allure, а не считаются новыми случаями.
+Неожиданно пустой план, потерянная часть и обязательный skip блокируют gate.
+
+Архивы сохраняют встроенные абсолютные пути `CARGO_MANIFEST_DIR` и
+`CARGO_BIN_EXE_*`: producer и executor должны иметь одинаковый путь workspace,
+ОС, target, toolchain и cfg. Произвольная релокация этим механизмом не обещана.
+Фактическую работу process/FS-тестов из архива проверяй отдельно от полноты
+разбиения. `ci_rust_lanes.py` сохраняет build/list/execution durations,
+размер архива и identity; download/runner wait доступны в jobs того же run.
+
+`build-python-product` создаёт ordinary binary до завершения Rust suites.
+Python получает его архив с manifest и проверяет его через `prepared_binary.py`:
+исходное дерево/SHA, host target/toolchain/cfg, ordinary features, hash, размер,
+режим и состав архива. Только после проверки извлечённые bytes становятся
+доступны по `UNICA_PREPARED_BINARY_MANIFEST`, вне изменяемого Cargo target.
+Test-support и stale binary отвергаются; при заданном manifest возврата
+к локальной сборке нет. Без него локальные consumers сохраняют Cargo fallback.
+
+`ci_shadow_selector.py` строит кандидата по union base/head Cargo graphs и
+обратным consumers. Общие/неизвестные входы, locks/features, fixtures/specs
+и изменения composition оставляют full. Для известного кандидата executor
+сравнивает inventory с полным планом и дополнительно исполняет выбранную часть
+тех же архивных bytes. Обязательный набор всегда полный; shadow failure
+не разрешает affected admission. Отчёт полного fallback не выдавай за
+доказательство полезного сокращения или репрезентативный benchmark.
+
 Push в `main` не повторяет Python-тесты, Rust-тесты и Clippy. При изменении
 CI/toolchain или неизвестном диапазоне push `warm-rust-cache` прогревает
 зависимости на Ubuntu и macOS. На промахе кеша она компилирует обычный workspace
 и отдельный вариант ReceiptLedger с `cargo test --no-run`, затем выполняет
 `cargo check --workspace --all-targets --all-features`. Точный cache hit
 пропускает компиляцию. Прогрев не запускает тесты и не публикует их результаты.
-Lint, tests и warm используют один `shared-key` и одинаковое значение
-`CARGO_PROFILE_DEV_DEBUG`; lint только читает кеш. Кеш зависимостей не передаёт
+Lint и warm используют прежний `shared-key`; producers ordinary/Receipt/vendor
+имеют отдельные ключи и то же значение `CARGO_PROFILE_DEV_DEBUG`.
+Lint только читает кеш. Кеш зависимостей не передаёт
 готовые бинарные файлы workspace другой job. Релизная ветка, тег и ручной запуск,
 включая ночной `large`,
 сохраняют свои полные контуры без исключения для прозы.
+
+Ночной gate profile `large` теперь допускает все размеры, оба Python suites
+и ordinary/Receipt/vendor. Он выбирает nextest `nightly-full`, сохраняя
+существующие сроки и повторы. Nextest `large` остаётся точным каталогом
+нагрузочных тестов для size guards. `run.json` архивных конфигураций помечает
+новый объём как `full-nightly-v1`; старые large-only прогоны этим объёмом
+не становятся. Итоговый `verification.json` различает `mandatoryComplete`
+и `fullMatrixPassed`: Windows advisory сохраняет видимую причину и не даёт
+утверждать прохождение полной матрицы или готовность affected admission.
 
 При правках CI сверяй отбор с событием и профилем запуска. Результат должен
 сохранять коммит, линию, профиль, раннер и попытку прогона. Разные раннеры —

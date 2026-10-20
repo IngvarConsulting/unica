@@ -16,20 +16,20 @@ impl Default for UnicaApplication {
 
 #[cfg(test)]
 pub(crate) mod testing {
-    pub(crate) use crate::infrastructure::native_operations::compile_transaction::CompileTransaction;
+
     pub(crate) use crate::infrastructure::native_operations::meta::{
         with_meta_add_after_authorization_hook, with_meta_edit_before_reauthorization_hook,
         with_meta_info_descriptor_image_hook, with_registrar_processing_hook,
-        with_subsystem_evidence_processing_hook, RegistrarProcessingPhase,
-        SubsystemEvidenceProcessingPhase,
+        with_subsystem_evidence_processing_hook,
     };
-    pub(crate) use crate::infrastructure::native_operations::single_file_publisher::{
+    pub(crate) use unica_workspace::compile_transaction::CompileTransaction;
+    pub(crate) use unica_workspace::single_file_publisher::{
         with_publication_lock_contention_signal, with_publication_lock_pause,
     };
 
-    pub(crate) use crate::infrastructure::platform::filesystem::prepare_file_for_removal;
+    pub(crate) use unica_workspace::test_support::prepare_file_for_removal;
 
-    pub(crate) use crate::infrastructure::platform::testing::{
+    pub(crate) use unica_workspace::test_support::{
         create_file_link_fixture_for_test, file_identity_for_test, set_unix_mode_for_test,
         unix_mode_for_test, FileLinkFixtureOutcome,
     };

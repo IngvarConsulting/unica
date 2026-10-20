@@ -1,12 +1,4 @@
-use crate::application::invocation_store::{
-    canonical_result_size, CanonicalResultSizeError, MAX_CANONICAL_RESULT_BYTES,
-    MAX_TASK_RECORD_ENVELOPE_BYTES,
-};
-use crate::application::invocation_store_v5::V5SafeFailureReason;
-use crate::application::receipt_ledger::ReceiptTerminalOutcome;
 use crate::application::v13::source_text::apply_response_budget;
-use crate::domain::invocation::{DomainResult, InvocationStatus};
-use crate::infrastructure::daemon::protocol_v5::V5DaemonTaskSnapshot;
 use chrono::{SecondsFormat, Utc};
 use rmcp::model::{
     CallToolResult, ContentBlock, CreateTaskResult, DetailedTask, ErrorCode, ErrorData, JsonObject,
@@ -15,6 +7,14 @@ use rmcp::model::{
 use serde::Serialize;
 use std::io::{self, Write};
 use unica_bootstrap::ResponseBudget;
+use unica_execution::invocation_store::{
+    canonical_result_size, CanonicalResultSizeError, MAX_CANONICAL_RESULT_BYTES,
+    MAX_TASK_RECORD_ENVELOPE_BYTES,
+};
+use unica_execution::invocation_store_v5::V5SafeFailureReason;
+use unica_execution::receipt_ledger::ReceiptTerminalOutcome;
+use unica_execution::receipt_runtime::response::V5DaemonTaskSnapshot;
+use unica_execution_contract::invocation::{DomainResult, InvocationStatus};
 
 const MAX_MCP_TASK_PROJECTION_BYTES: usize =
     MAX_CANONICAL_RESULT_BYTES + MAX_TASK_RECORD_ENVELOPE_BYTES;
@@ -288,15 +288,15 @@ pub(super) fn projection_error(error: TaskProjectionError) -> ErrorData {
 
 #[cfg(test)]
 mod tests {
-    use crate::domain::invocation::{DomainResult, InvocationId, TaskId};
-    use crate::infrastructure::daemon::protocol_v5::V5DaemonTaskSnapshot;
     use serde_json::{json, Value};
     use unica_bootstrap::ResponseBudget;
+    use unica_execution::receipt_runtime::response::V5DaemonTaskSnapshot;
+    use unica_execution_contract::invocation::{DomainResult, InvocationId, TaskId};
 
     fn v5_common() -> (
         TaskId,
         InvocationId,
-        crate::application::receipt_ledger::ReceiptKeyDigest,
+        unica_execution::receipt_ledger::ReceiptKeyDigest,
     ) {
         (
             "f741d562-9d42-4a4f-a626-fcd5c3fb9bc4".parse().unwrap(),
@@ -320,7 +320,7 @@ mod tests {
         }
     }
 
-    fn v5_terminal_digest() -> crate::application::receipt_ledger::TerminalDigest {
+    fn v5_terminal_digest() -> unica_execution::receipt_ledger::TerminalDigest {
         "09".repeat(32).parse().unwrap()
     }
 
@@ -402,7 +402,7 @@ mod tests {
             source_text_read_hint: None,
         };
         let direct = match super::project_direct_terminal(
-            &crate::application::receipt_ledger::ReceiptTerminalOutcome::Completed {
+            &unica_execution::receipt_ledger::ReceiptTerminalOutcome::Completed {
                 result: Box::new(result.clone()),
             },
             ResponseBudget::default(),
@@ -455,7 +455,7 @@ mod tests {
 
     #[test]
     fn error_fallback_is_bounded_without_losing_structured_diagnostics() {
-        use crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES;
+        use unica_execution::invocation_store::MAX_CANONICAL_RESULT_BYTES;
 
         for message in ["\"\\\n\u{0000}".repeat(4_096), "Ошибка🙂".repeat(4_096)] {
             let mut result = DomainResult::success("provider failed");
@@ -530,7 +530,7 @@ mod tests {
 
     #[test]
     fn terminal_digest_covers_the_source_text() {
-        use crate::application::receipt_ledger::{canonical_v5_terminal, ReceiptTerminalOutcome};
+        use unica_execution::receipt_ledger::{canonical_v5_terminal, ReceiptTerminalOutcome};
         let terminal = |text: &str| {
             let mut result = DomainResult::success("logical node text resolved");
             result.source_text = Some(text.to_string());
@@ -555,12 +555,13 @@ mod tests {
             json!({"at":result.at,"kind":"Body","title":"Body","can":[{"op":"code.replace"}]}),
         );
         result.rev = Some("revision".into());
-        result.source_text_read_hint =
-            Some(Box::new(crate::domain::invocation::SourceTextReadHint {
+        result.source_text_read_hint = Some(Box::new(
+            unica_execution_contract::invocation::SourceTextReadHint {
                 from_line: 97,
                 to_line: 196,
                 prefix: None,
-            }));
+            },
+        ));
         let canonical_before = serde_json::to_vec(&result).unwrap();
         let (task_id, invocation_id, receipt_key_digest) = v5_common();
         let completed = V5DaemonTaskSnapshot::Completed {
@@ -587,7 +588,7 @@ mod tests {
         };
         let compatibility = crate::application::v13::task_tools::CompatibilityTaskSnapshot::new(
             task_id,
-            crate::domain::invocation::InvocationStatus::Completed,
+            unica_execution_contract::invocation::InvocationStatus::Completed,
             Some(result.clone()),
             None,
             false,
@@ -603,7 +604,7 @@ mod tests {
         .unwrap();
         for budget in [16_384, 4_096, 3_000] {
             let direct = match super::project_direct_terminal(
-                &crate::application::receipt_ledger::ReceiptTerminalOutcome::Completed {
+                &unica_execution::receipt_ledger::ReceiptTerminalOutcome::Completed {
                     result: Box::new(result.clone()),
                 },
                 ResponseBudget::from_bytes(budget),
@@ -656,14 +657,15 @@ mod tests {
         result.at = Some("main:CommonModule.Пример.Method.А.Body".into());
         result.data = Some(json!({"at": "main:CommonModule.Пример.Method.А.Body", "kind": "Body"}));
         result.source_text = Some(text.to_string());
-        result.source_text_read_hint =
-            Some(Box::new(crate::domain::invocation::SourceTextReadHint {
+        result.source_text_read_hint = Some(Box::new(
+            unica_execution_contract::invocation::SourceTextReadHint {
                 from_line: 1,
                 to_line: 5,
                 prefix: None,
-            }));
+            },
+        ));
         let direct = match super::project_direct_terminal(
-            &crate::application::receipt_ledger::ReceiptTerminalOutcome::Completed {
+            &unica_execution::receipt_ledger::ReceiptTerminalOutcome::Completed {
                 result: Box::new(result.clone()),
             },
             ResponseBudget::default(),
@@ -725,7 +727,7 @@ mod tests {
 
     #[test]
     fn v5_failed_and_cancelled_terminals_answer_only_the_closed_vocabulary() {
-        use crate::application::invocation_store_v5::V5SafeFailureReason;
+        use unica_execution::invocation_store_v5::V5SafeFailureReason;
 
         for reason in V5SafeFailureReason::ALL {
             let (code, message) = super::closed_failure(reason);
@@ -759,7 +761,7 @@ mod tests {
             assert_eq!(error["message"], message);
             assert_eq!(error["data"], json!({"code": code}));
             let direct = super::project_direct_terminal(
-                &crate::application::receipt_ledger::ReceiptTerminalOutcome::Failed { reason },
+                &unica_execution::receipt_ledger::ReceiptTerminalOutcome::Failed { reason },
                 ResponseBudget::default(),
             )
             .expect("project failed direct terminal");
@@ -771,7 +773,7 @@ mod tests {
         }
 
         let cancelled = super::project_direct_terminal(
-            &crate::application::receipt_ledger::ReceiptTerminalOutcome::Cancelled,
+            &unica_execution::receipt_ledger::ReceiptTerminalOutcome::Cancelled,
             ResponseBudget::default(),
         )
         .expect("project cancelled direct terminal");
@@ -811,7 +813,7 @@ mod tests {
 
     #[test]
     fn v5_projection_rejects_reverse_timestamps_and_oversized_results() {
-        use crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES;
+        use unica_execution::invocation_store::MAX_CANONICAL_RESULT_BYTES;
 
         let mut reversed = v5_working();
         if let V5DaemonTaskSnapshot::Working {
@@ -828,7 +830,7 @@ mod tests {
         let oversized = DomainResult::success("x".repeat(MAX_CANONICAL_RESULT_BYTES + 1));
         assert!(matches!(
             super::project_direct_terminal(
-                &crate::application::receipt_ledger::ReceiptTerminalOutcome::Completed {
+                &unica_execution::receipt_ledger::ReceiptTerminalOutcome::Completed {
                     result: Box::new(oversized),
                 },
                 ResponseBudget::default(),

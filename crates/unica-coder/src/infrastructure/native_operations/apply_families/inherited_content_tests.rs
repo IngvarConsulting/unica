@@ -3,18 +3,17 @@
 
 use super::plan_hidden_v13_apply;
 use crate::domain::apply::ApplyRequest;
-use crate::domain::cancellation::CancellationToken;
-use crate::domain::code_intelligence::ProviderDeadline;
-use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
-use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::native_operations::apply::ApplyPlanErrorKind;
-use crate::infrastructure::workspace_actor::{
-    ProviderRootBinding, WorkspaceActor, WorkspaceIdentity, WorkspaceSourceSetInput,
-};
-use crate::test_support::tree_snapshot;
+use unica_source_contract::{SourceFormat, SourceProfile, SourceSetKind};
+use unica_work_control::cancellation::CancellationToken;
+use unica_work_control::provider_deadline::ProviderDeadline;
+
 use serde_json::{json, Value};
 use std::path::Path;
 use std::time::Duration;
+use unica_source_contract::proposal::ApplyPlanErrorKind;
+use unica_source_contract::workspace::WorkspaceContext;
+use unica_workspace::actor::{ProviderRootBinding, WorkspaceIdentity, WorkspaceSourceSetInput};
+use unica_workspace::test_support::tree_snapshot;
 
 fn copy_tree(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).unwrap();
@@ -77,7 +76,7 @@ fn plan(prepare: &dyn Fn(&Path), at: &str, op: Value) -> (Result<(), super::Appl
         "inherited-content-refusal",
     )
     .unwrap();
-    let actor = WorkspaceActor::new(identity, context).unwrap();
+    let actor = crate::infrastructure::source_workspace::new_actor(identity, context).unwrap();
     let binding: ProviderRootBinding = actor.bind_provider_root("ext", &ext).unwrap();
     let admission = actor
         .admit_apply(
@@ -242,7 +241,7 @@ fn plan_single(
         "predefined-code-type",
     )
     .unwrap();
-    let actor = WorkspaceActor::new(identity, context).unwrap();
+    let actor = crate::infrastructure::source_workspace::new_actor(identity, context).unwrap();
     let binding: ProviderRootBinding = actor.bind_provider_root(set, &source).unwrap();
     let admission = actor
         .admit_apply(
@@ -278,7 +277,7 @@ fn predefined_writes_refuse_an_owner_without_code_type() {
         .expect_err("an unknown CodeType must not be defaulted");
         assert_eq!(
             error.to_string(),
-            crate::infrastructure::native_operations::meta::MISSING_PREDEFINED_CODE_TYPE
+            unica_metadata_designer::predefined::MISSING_PREDEFINED_CODE_TYPE
         );
     }
     if let Err(error) = plan_single(
@@ -290,7 +289,7 @@ fn predefined_writes_refuse_an_owner_without_code_type() {
     ) {
         assert_ne!(
             error.to_string(),
-            crate::infrastructure::native_operations::meta::MISSING_PREDEFINED_CODE_TYPE,
+            unica_metadata_designer::predefined::MISSING_PREDEFINED_CODE_TYPE,
             "an owner with CodeType is not refused for its absence"
         );
     }

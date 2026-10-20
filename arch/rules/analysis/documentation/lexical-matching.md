@@ -1,13 +1,13 @@
 ---
 id: INV.APP.DOCUMENTATION-LEXICAL-MATCHING
 check:
-  - crates/unica-coder/src/infrastructure/documentation_retrieval.rs::word_order_and_morphology_do_not_matter
-  - crates/unica-coder/src/infrastructure/documentation_retrieval.rs::typo_falls_back_to_fuzzy_with_discount
-  - crates/unica-coder/src/infrastructure/documentation_retrieval.rs::title_match_outranks_body_match
-  - crates/unica-coder/src/infrastructure/documentation_retrieval.rs::shorter_page_outranks_long_enumeration_for_equal_field
-  - crates/unica-coder/src/infrastructure/documentation_retrieval.rs::lexicon_maps_ru_tokens_to_en_segment_tokens
-  - crates/unica-coder/src/infrastructure/kb_1ci.rs::kb_an_english_query_matches_title_tokens_not_the_whole_substring
-  - crates/unica-coder/src/infrastructure/kb_1ci.rs::kb_a_russian_query_expands_through_the_installation_lexicon
+  - crates/unica-documentation-sources/src/documentation_retrieval.rs::word_order_and_morphology_do_not_matter
+  - crates/unica-documentation-sources/src/documentation_retrieval.rs::typo_falls_back_to_fuzzy_with_discount
+  - crates/unica-documentation-sources/src/documentation_retrieval.rs::title_match_outranks_body_match
+  - crates/unica-documentation-sources/src/documentation_retrieval.rs::shorter_page_outranks_long_enumeration_for_equal_field
+  - crates/unica-documentation-sources/src/documentation_retrieval.rs::lexicon_maps_ru_tokens_to_en_segment_tokens
+  - crates/unica-documentation-sources/src/kb_1ci.rs::kb_an_english_query_matches_title_tokens_not_the_whole_substring
+  - crates/unica-documentation-sources/src/kb_1ci.rs::kb_a_russian_query_expands_through_the_installation_lexicon
 gap: https://github.com/IngvarConsulting/unica/issues/953
 ---
 

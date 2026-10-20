@@ -1,11 +1,11 @@
 use super::*;
-use crate::domain::address::QualifiedAddress;
-use crate::domain::apply::{OperationFamily, OperationRegistry, OperationSite, SourceSetTraits};
-use crate::domain::platform_profile::PlatformProfile;
-use crate::infrastructure::native_operations::apply::ApplyPlanError;
-use crate::test_support::tree_snapshot;
+use unica_bsl::profile::PlatformProfile;
+use unica_workspace::test_support::tree_snapshot;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
+use unica_address::address::QualifiedAddress;
+use unica_operations::OperationFamily;
+use unica_source_contract::proposal::ApplyPlanError;
 
 const OP_INDEX: usize = 7;
 
@@ -18,9 +18,12 @@ fn compare_schema_and_parser(
 ) {
     args["at"] = json!(target);
     let address = QualifiedAddress::parse(target).unwrap();
-    let traits = SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
-    let site = OperationSite::new(&address, traits).unwrap();
-    let descriptor = OperationRegistry::closed()
+    let traits = crate::domain::apply::source_set_traits_for_read(
+        SourceSetKind::Configuration,
+        PlatformProfile::v8_3_27(),
+    );
+    let site = crate::domain::apply::operation_site(&address, traits).unwrap();
+    let descriptor = crate::domain::apply::operation_registry()
         .lookup_at(operation, &site)
         .unwrap();
     assert_eq!(descriptor.family(), OperationFamily::Metadata);
@@ -427,11 +430,7 @@ fn fill_shape_uses_the_same_owner_and_tabular_context_as_the_productive_reader()
 
 #[test]
 fn hidden_host_envelope_consumes_the_same_member_field_shapes() {
-    use crate::application::metadata::{
-        metadata_input_schema, parse_metadata_request, MetadataOperation as HostOperation,
-    };
-
-    let schema = metadata_input_schema(HostOperation::Edit);
+    let schema = unica_metadata::request::metadata_input_schema(unica_metadata::request::MetadataOperation::Edit);
     let oracle = jsonschema::validator_for(&schema).unwrap();
     for verb in ["add", "update"] {
         for (field, value, expected) in [
@@ -456,7 +455,7 @@ fn hidden_host_envelope_consumes_the_same_member_field_shapes() {
                 "operations":[{"op":verb,"collection":"resources","elements":[element]}],
                 "dryRun":true,
             });
-            let parsed = parse_metadata_request(HostOperation::Edit, args.as_object().unwrap());
+            let parsed = unica_metadata::request::parse_metadata_request(unica_metadata::request::MetadataOperation::Edit, args.as_object().unwrap());
             assert_eq!(oracle.is_valid(&args), expected, "host schema: {args}");
             assert_eq!(parsed.is_ok(), expected, "host parser: {args}: {parsed:?}");
         }
@@ -479,7 +478,7 @@ fn hidden_host_envelope_consumes_the_same_member_field_shapes() {
                 "the host envelope stays open: {args}"
             );
             assert!(
-                parse_metadata_request(HostOperation::Edit, args.as_object().unwrap()).is_err(),
+                unica_metadata::request::parse_metadata_request(unica_metadata::request::MetadataOperation::Edit, args.as_object().unwrap()).is_err(),
                 "the decoder refuses malformed or unknown fields: {args}"
             );
         }

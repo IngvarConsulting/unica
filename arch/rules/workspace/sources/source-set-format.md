@@ -1,12 +1,12 @@
 ---
 id: INV.SOURCE.MULTI-FORMAT-WORKSPACE
 check:
-  - crates/unica-coder/src/infrastructure/project_sources.rs::a_declared_but_empty_source_set_is_declared_not_observed
-  - crates/unica-coder/src/infrastructure/project_sources.rs::a_filled_source_set_is_supported_and_its_evidence_points_at_a_file
+  - crates/unica-source-integration-tests/tests/project_sources.rs::a_declared_but_empty_source_set_is_declared_not_observed
+  - crates/unica-source-integration-tests/tests/project_sources.rs::a_filled_source_set_is_supported_and_its_evidence_points_at_a_file
   - crates/unica-coder/src/infrastructure/tool_context.rs::native_platform_xml_source_format_public_gate_is_closed_over_public_operations
-  - crates/unica-coder/src/infrastructure/project_sources.rs::detects_edt_configuration_and_platform_external_processor_source_sets
-  - crates/unica-coder/src/infrastructure/project_sources.rs::controlled_discovery_accepts_uppercase_external_xml_extension
-  - crates/unica-coder/src/infrastructure/project_sources.rs::conflicting_markers_inside_one_source_set_are_invalid_not_mixed
+  - crates/unica-source-integration-tests/tests/project_sources.rs::detects_edt_configuration_and_platform_external_processor_source_sets
+  - crates/unica-source-integration-tests/tests/project_sources.rs::controlled_discovery_accepts_uppercase_external_xml_extension
+  - crates/unica-source-integration-tests/tests/project_sources.rs::conflicting_markers_inside_one_source_set_are_invalid_not_mixed
 ---
 
 # У каждого набора исходников свой однозначный формат

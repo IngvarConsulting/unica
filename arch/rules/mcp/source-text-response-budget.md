@@ -2,8 +2,8 @@
 id: INV.WIRE.SOURCE-TEXT-RESPONSE-BUDGET
 check:
   - crates/unica-coder/src/application/v13/source_text.rs::continuation_fits_the_real_ranged_envelope_at_each_host_budget
-  - crates/unica-coder/src/infrastructure/receipt_ledger/tests.rs::body_read_hint_survives_receipt_reopen_and_tampering_is_rejected
-  - crates/unica-coder/src/infrastructure/task_store_v5.rs::body_read_hint_survives_completed_task_reopen_without_rewriting
+  - crates/unica-execution/src/receipt_store/tests.rs::body_read_hint_survives_receipt_reopen_and_tampering_is_rejected
+  - crates/unica-execution/src/task_store.rs::body_read_hint_survives_completed_task_reopen_without_rewriting
   - crates/unica-coder/src/application/v13/view.rs::module_text_over_the_limit_is_refused_whole_with_structural_next
   - crates/unica-coder/src/application/v13/view.rs::oversized_module_text_does_not_refuse_a_projection_that_returns_no_text
   - crates/unica-coder/src/application/v13/source_text.rs::source_text_limit_is_the_largest_known_host_budget

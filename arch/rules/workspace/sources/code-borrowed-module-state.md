@@ -1,13 +1,13 @@
 ---
 id: INV.SOURCE.CODE-BORROWED-MODULE-STATE
 check:
-  - crates/unica-coder/src/infrastructure/native_operations/code_module_state_tests.rs::borrowed_code_insert_and_replace_stage_module_state_atomically
-  - crates/unica-coder/src/infrastructure/native_operations/code_module_state_tests.rs::borrowed_code_direct_roles_and_common_command_use_their_property
-  - crates/unica-coder/src/infrastructure/native_operations/code_module_state_tests.rs::borrowed_code_nested_form_and_command_mark_the_child_descriptor
-  - crates/unica-coder/src/infrastructure/native_operations/code_module_state_tests.rs::borrowed_code_root_modules_publish_configuration_state_and_events
-  - crates/unica-coder/src/infrastructure/native_operations/code_module_state_tests.rs::borrowed_code_preserves_existing_state_across_xml_layouts_and_repeat
-  - crates/unica-coder/src/infrastructure/native_operations/code_module_state_tests.rs::borrowed_code_publication_failure_restores_bsl_descriptor_cache_and_revision
-  - crates/unica-coder/src/infrastructure/native_operations/code_module_state_tests.rs::borrowed_code_rejects_malformed_property_state_children_before_staging
+  - crates/unica-coder/tests/platform/code_module_state.rs::borrowed_code_insert_and_replace_stage_module_state_atomically
+  - crates/unica-coder/tests/platform/code_module_state.rs::borrowed_code_direct_roles_and_common_command_use_their_property
+  - crates/unica-coder/tests/platform/code_module_state.rs::borrowed_code_nested_form_and_command_mark_the_child_descriptor
+  - crates/unica-coder/tests/platform/code_module_state.rs::borrowed_code_root_modules_publish_configuration_state_and_events
+  - crates/unica-coder/tests/platform/code_module_state.rs::borrowed_code_preserves_existing_state_across_xml_layouts_and_repeat
+  - crates/unica-coder/tests/platform/code_module_state.rs::borrowed_code_publication_failure_restores_bsl_descriptor_cache_and_revision
+  - crates/unica-coder/tests/platform/code_module_state.rs::borrowed_code_rejects_malformed_property_state_children_before_staging
   - crates/unica-coder/tests/support/code_module_state.rs::canonical_stdio_code_insert_publishes_borrowed_module_and_state
 ---
 

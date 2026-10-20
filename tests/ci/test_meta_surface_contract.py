@@ -16,15 +16,15 @@ OPERATION_DESCRIPTORS = (
     REPO_ROOT / "crates/unica-coder/src/application/operation_descriptors.rs"
 )
 META_RUNTIME = REPO_ROOT / "crates/unica-coder/src/infrastructure/native_operations/meta"
-META_DOMAIN = REPO_ROOT / "crates/unica-coder/src/domain/metadata"
+META_DOMAIN = REPO_ROOT / "crates/unica-metadata/src"
 FORMAT_GUARD = REPO_ROOT / "crates/unica-coder/src/infrastructure/format_guard.rs"
 CF_RUNTIME = REPO_ROOT / "crates/unica-coder/src/infrastructure/native_operations/cf.rs"
 TOOL_CONTEXT = REPO_ROOT / "crates/unica-coder/src/infrastructure/tool_context.rs"
 META_PROPERTY_REGISTRY = (
-    REPO_ROOT / "crates/unica-coder/src/domain/metadata/properties.rs"
+    REPO_ROOT / "crates/unica-metadata/src/properties.rs"
 )
 META_OPERATION_REGISTRY = (
-    REPO_ROOT / "crates/unica-coder/src/domain/metadata/operations.rs"
+    REPO_ROOT / "crates/unica-metadata/src/operations.rs"
 )
 META_CAPABILITY_LEDGER = REPO_ROOT / "tests/fixtures/migration/meta-capability-parity.json"
 META_INFO_FIXTURE_MANIFEST = (
@@ -219,7 +219,7 @@ class MetaSurfaceContractTests(unittest.TestCase):
             encoding="utf-8"
         )
         results = (
-            REPO_ROOT / "crates/unica-coder/src/domain/metadata/results.rs"
+            REPO_ROOT / "crates/unica-metadata/src/results.rs"
         ).read_text(encoding="utf-8")
 
         self.assertIn("enum MetadataSubsystemEvidence", ports)

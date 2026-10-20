@@ -5,16 +5,16 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::body_line_ranges_refuse_file_eof_and_method_boundary_crossings
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::body_line_apply_refuses_before_staging_and_can_has_no_writes
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::body_line_read_validates_the_tail_and_continuation_reopens_exact_bytes
-  - crates/unica-coder/src/infrastructure/bsl_module_projection.rs::method_text_spans_doc_comment_directive_declaration_and_end_without_preprocessor
-  - crates/unica-coder/src/infrastructure/bsl_module_projection.rs::crlf_method_text_keeps_the_source_line_endings
+  - crates/unica-bindings-integration-tests/tests/projection.rs::method_text_spans_doc_comment_directive_declaration_and_end_without_preprocessor
+  - crates/unica-bindings-integration-tests/tests/projection.rs::crlf_method_text_keeps_the_source_line_endings
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::module_body_returns_the_source_text_byte_for_byte
   - crates/unica-coder/src/application/v13/view.rs::module_text_is_returned_whole_beside_the_projected_node_without_pages
   - crates/unica-coder/src/application/v13/source_text.rs::streamed_module_text_keeps_memory_bounded_and_counts_the_whole_size
   - crates/unica-coder/src/application/v13/source_text.rs::streamed_module_text_strips_repeated_bom_across_chunks_and_keeps_a_partial_one
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::module_body_beyond_the_limit_is_still_checked_as_utf8_in_full
-  - crates/unica-coder/src/infrastructure/native_operations/code.rs::method_body_text_read_by_view_replaces_the_same_span_and_repeats_as_noop
-  - crates/unica-coder/src/infrastructure/native_operations/code.rs::method_text_that_does_not_parse_is_refused_as_the_input_text
-  - crates/unica-coder/src/infrastructure/native_operations/code.rs::method_body_text_with_a_preprocessor_wrapper_is_refused_in_wrapped_and_plain_modules
+  - crates/unica-coder/tests/platform/code_patch_composition.rs::method_body_text_read_by_view_replaces_the_same_span_and_repeats_as_noop
+  - crates/unica-coder/tests/platform/code_patch_composition.rs::method_text_that_does_not_parse_is_refused_as_the_input_text
+  - crates/unica-coder/tests/platform/code_patch_composition.rs::method_body_text_with_a_preprocessor_wrapper_is_refused_in_wrapped_and_plain_modules
 gap: https://github.com/IngvarConsulting/unica/issues/1119
 ---
 

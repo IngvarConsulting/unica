@@ -3,7 +3,7 @@ id: INV.SOURCE.CALL-GRAPH-STATE-IS-NAMED
 check:
   - crates/unica-coder/src/infrastructure/daemon/v13_call_graph.rs::the_branch_points_outward_and_names_what_it_could_not_address
   - crates/unica-coder/src/infrastructure/daemon/server.rs::method_view_names_call_graph_branches_without_asking_the_analyzer
-  - crates/unica-coder/src/infrastructure/code_intelligence.rs::call_graph_distinguishes_a_recursive_call_from_a_capped_answer
+  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::call_graph_distinguishes_a_recursive_call_from_a_capped_answer
   - crates/unica-coder/src/infrastructure/daemon/v13_call_graph.rs::a_capped_graph_requires_a_complete_same_revision_snapshot_before_paging
   - crates/unica-coder/src/infrastructure/daemon/v13_call_graph.rs::capped_graph_refetches_exact_total_before_publishing_a_branch
   - crates/unica-coder/src/application/v13/view.rs::supplied_graph_collection_uses_stable_pages_bound_to_its_owner

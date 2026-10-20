@@ -1,9 +1,9 @@
 ---
 id: INV.SOURCE.MODULE-EVENT-STATE
 check:
-  - crates/unica-coder/src/infrastructure/bsl_module_projection.rs::form_binding_owners_and_all_four_event_states_are_projected
-  - crates/unica-coder/src/infrastructure/bsl_module_projection.rs::platform_event_state_requires_exact_kind_parameter_shape_and_effective_contexts
-  - crates/unica-coder/src/infrastructure/bsl_module_projection.rs::form_handler_parameters_are_compared_with_the_item_and_the_form_check_rule
+  - crates/unica-bindings-integration-tests/tests/projection.rs::form_binding_owners_and_all_four_event_states_are_projected
+  - crates/unica-bindings-integration-tests/tests/projection.rs::platform_event_state_requires_exact_kind_parameter_shape_and_effective_contexts
+  - crates/unica-bindings-integration-tests/tests/projection.rs::form_handler_parameters_are_compared_with_the_item_and_the_form_check_rule
   - tests/ci/test_acceptance_scenarios.py::AcceptanceCorpusRunTests.test_every_wire_answers_its_frozen_classes
 gap: https://github.com/IngvarConsulting/unica/issues/973
 ---

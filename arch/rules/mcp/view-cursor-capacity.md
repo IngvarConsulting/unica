@@ -1,12 +1,12 @@
 ---
 id: INV.APP.VIEW-CURSOR-CAPACITY
 check:
-  - crates/unica-coder/src/application/result_store.rs::every_promised_page_survives_a_chain_longer_than_128_pages
-  - crates/unica-coder/src/application/result_store.rs::new_snapshot_pressure_preserves_every_promised_chain
-  - crates/unica-coder/src/application/result_store.rs::concurrent_new_admissions_reserve_one_atomic_cumulative_budget
+  - crates/unica-navigation/src/result_store.rs::every_promised_page_survives_a_chain_longer_than_128_pages
+  - crates/unica-navigation/src/result_store.rs::new_snapshot_pressure_preserves_every_promised_chain
+  - crates/unica-navigation/src/result_store.rs::concurrent_new_admissions_reserve_one_atomic_cumulative_budget
   - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_130_fresh_leases_share_one_payload_without_skipping_full_reads
-  - crates/unica-coder/src/application/result_store.rs::snapshot_admission_reserves_room_for_the_next_cursor
-  - crates/unica-coder/src/application/result_store.rs::many_small_items_are_charged_for_retained_heap_not_only_json
+  - crates/unica-navigation/src/result_store.rs::snapshot_admission_reserves_room_for_the_next_cursor
+  - crates/unica-navigation/src/result_store.rs::many_small_items_are_charged_for_retained_heap_not_only_json
   - crates/unica-coder/src/application/v13/view.rs::snapshot_over_byte_quota_refuses_before_promising_a_continuation
   - crates/unica-coder/src/application/v13/view.rs::a_collection_longer_than_the_cursor_entry_limit_still_has_a_first_page
 ---

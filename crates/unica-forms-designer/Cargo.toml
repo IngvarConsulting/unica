@@ -1,0 +1,26 @@
+[package]
+name = "unica-forms-designer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+test-support = []
+
+[dependencies]
+unica-address = { path = "../unica-address" }
+unica-operations = { path = "../unica-operations" }
+serde_json.workspace = true
+unica-operation-contract = { path = "../unica-operation-contract" }
+unica-bsl-parser = { path = "../unica-bsl-parser" }
+unica-xml-format = { path = "../unica-xml-format" }
+unica-source-designer = { path = "../unica-source-designer" }
+unica-source-contract = { path = "../unica-source-contract" }
+unica-metadata = { path = "../unica-metadata" }
+unica-forms = { path = "../unica-forms" }
+roxmltree.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

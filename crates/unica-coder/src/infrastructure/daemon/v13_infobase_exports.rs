@@ -4,32 +4,28 @@
 
 use super::protocol::InvocationRequest;
 use super::runner_015::Runner015ProcessRunner;
-use crate::application::invocation_store::ToolIdentity;
-use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
-use crate::domain::engine::MissingEngine;
-use crate::domain::invocation::{DomainResult, SafeIdentityHash};
-use crate::domain::refusal::{RefusalCode, RefusalDetail};
-use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::bundled_tools::{
-    bundled_tool_version, resolve_bundled_tool, BundledTool, BundledToolError,
-};
-use crate::infrastructure::internal_adapters::{
-    ProcessCommand, ProcessOutput, ProcessRunner, ProcessStreamFailure,
-};
-use crate::infrastructure::path_policy::WorkspacePathPolicy;
-use crate::infrastructure::platform::filesystem::{
-    open_absolute_directory_path_nofollow, open_directory_child_nofollow,
-    open_regular_child_nofollow,
-};
+use crate::domain::engine::MissingEngineRefusal;
+use crate::infrastructure::bundled_tools::{bundled_tool_version, resolve_bundled_tool};
 use crate::infrastructure::plugin_runtime::find_plugin_root;
-use crate::infrastructure::redaction::redactor;
-use crate::infrastructure::source_roots::normalize_path_identity;
 use crate::infrastructure::workspace::discover_workspace;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
+use unica_artifact_delivery::engine::BundledTool;
+use unica_artifact_delivery::engine::BundledToolError;
+use unica_artifact_delivery::engine::MissingEngine;
+use unica_execution::invocation_store::ToolIdentity;
+use unica_execution_contract::invocation::{DomainResult, SafeIdentityHash};
+use unica_process::runner::{ProcessCommand, ProcessOutput, ProcessRunner, ProcessStreamFailure};
+use unica_redaction::redactor;
+use unica_refusal::{RefusalCode, RefusalDetail};
+use unica_source_contract::workspace::WorkspaceContext;
+use unica_work_control::cancellation::{CancellationToken, CANCELLED_PREFIX};
+use unica_workspace::path_policy::WorkspacePathPolicy;
+use unica_workspace::paths::normalize_path_identity;
+use unica_workspace::read::open_directory_reader;
 
 pub(super) const CONFIG_NAME: &str = "v8project.yaml";
 pub(super) const LOCAL_CONFIG_NAME: &str = "v8project.local.yaml";
@@ -517,7 +513,7 @@ pub(super) fn digest_optional_workspace_file(
     })?;
     let display = root.join(relative);
     let mut components = relative.components().peekable();
-    let mut directory = open_absolute_directory_path_nofollow(&root)
+    let mut directory = open_directory_reader(&root)
         .map_err(|error| format!("failed to open workspace root {}: {error}", root.display()))?;
     let mut file = None;
     while let Some(component) = components.next() {
@@ -528,9 +524,9 @@ pub(super) fn digest_optional_workspace_file(
             ));
         };
         let opened = if components.peek().is_none() {
-            open_regular_child_nofollow(&directory, name)
+            directory.open_regular_child(name)
         } else {
-            match open_directory_child_nofollow(&directory, name) {
+            match directory.open_directory_child(name) {
                 Ok(child) => {
                     directory = child;
                     continue;
@@ -1617,10 +1613,10 @@ fn reject(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::refusal::Outcome;
-    use crate::infrastructure::internal_adapters::ProcessOutput;
     use std::fs;
     use std::sync::Mutex;
+    use unica_process::runner::ProcessOutput;
+    use unica_refusal::Outcome;
 
     /// Страж отображения кодов раннера.
     ///
@@ -2698,7 +2694,7 @@ mod tests {
     /// сохранена.
     #[test]
     fn only_a_failed_launch_of_the_runner_is_a_missing_engine() {
-        use crate::infrastructure::internal_adapters::SystemProcessRunner;
+        use unica_process::runner::SystemProcessRunner;
         let root = tempfile::tempdir().unwrap();
         let program = root.path().join("private-dir/v8-runner-that-is-not-there");
         let failure = SystemProcessRunner

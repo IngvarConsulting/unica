@@ -524,7 +524,7 @@ class GateProfileTests(unittest.TestCase):
                 suites = [command[3] for command in module.python_commands(gate, "python3")]
                 self.assertEqual(suites, [suite for suite, size, _ in module.PYTHON_SUITES
                                          if size in module.ADMITTED[gate]])
-        self.assertEqual(module.python_commands("large", "python3"), [])
+        self.assertEqual(module.python_commands("large", "python3"), module.python_commands("release", "python3"))
         with self.assertRaises(ValueError):
             module.python_commands("all", "python3", suite="tests/agent_evaluation")
 

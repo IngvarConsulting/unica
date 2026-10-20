@@ -1,13 +1,13 @@
 ---
 id: INV.CACHE.RLM-GENERATION-COLLECTION
 check:
-  - crates/unica-coder/src/infrastructure/workspace_index.rs::active_build_collects_an_idle_previous_generation_but_not_the_current_one
-  - crates/unica-coder/src/infrastructure/rlm_generation_collection.rs::only_an_idle_previous_generation_is_removed_in_every_location
-  - crates/unica-coder/src/infrastructure/rlm_generation_collection.rs::a_recent_file_deep_in_a_generation_keeps_it
-  - crates/unica-coder/src/infrastructure/rlm_generation_collection.rs::content_below_the_walk_limit_keeps_the_generation
-  - crates/unica-coder/src/infrastructure/rlm_generation_collection.rs::a_generation_whose_lock_is_held_is_kept_until_released
-  - crates/unica-coder/src/infrastructure/rlm_generation_collection.rs::a_link_named_like_a_generation_is_neither_followed_nor_removed
-  - crates/unica-coder/src/infrastructure/rlm_generation_collection.rs::a_linked_generation_parent_is_not_walked
+  - crates/unica-adapter-rlm/tests/platform/index.rs::active_build_collects_an_idle_previous_generation_but_not_the_current_one
+  - crates/unica-adapter-rlm/src/generation_collection.rs::only_an_idle_previous_generation_is_removed_in_every_location
+  - crates/unica-adapter-rlm/src/generation_collection.rs::a_recent_file_deep_in_a_generation_keeps_it
+  - crates/unica-adapter-rlm/src/generation_collection.rs::content_below_the_walk_limit_keeps_the_generation
+  - crates/unica-adapter-rlm/src/generation_collection.rs::a_generation_whose_lock_is_held_is_kept_until_released
+  - crates/unica-adapter-rlm/src/generation_collection.rs::a_link_named_like_a_generation_is_neither_followed_nor_removed
+  - crates/unica-adapter-rlm/src/generation_collection.rs::a_linked_generation_parent_is_not_walked
 ---
 
 # Уборка удаляет только простаивающие прежние поколения RLM

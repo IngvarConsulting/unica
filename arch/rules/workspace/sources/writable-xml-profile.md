@@ -7,7 +7,7 @@ check:
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::canonical_dcs_validation_keeps_captured_owner_format_warnings
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::canonical_dcs_validation_keeps_large_configuration_owner_format_warning
   - crates/unica-coder/src/infrastructure/format_guard.rs::single_writable_platform_xml_profile_is_exact
-  - crates/unica-coder/src/domain/format_profile.rs::rejects_numeric_equivalents_of_the_exact_supported_literal
+  - crates/unica-source-designer/src/format_profile.rs::rejects_numeric_equivalents_of_the_exact_supported_literal
   - crates/unica-coder/src/application/mod.rs::entity_spelled_supported_format_is_invalid_at_the_public_boundary
   - crates/unica-coder/src/application/mod.rs::numeric_equivalent_noncanonical_format_warns_on_read_and_blocks_public_mutator
   - crates/unica-coder/src/infrastructure/native_operations/v13_analysis.rs::newer_configuration_root_leads_with_the_format_warning

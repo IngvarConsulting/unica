@@ -2,11 +2,11 @@
 //! и `Method.<имя>.Body`, и предел его объёма.
 
 use crate::application::v13::view::ViewError;
-use crate::domain::address::{BodyLineRange, NodeKind, QualifiedAddress};
-use crate::domain::invocation::DomainResult;
-use crate::domain::refusal::RefusalCode;
 use serde_json::{json, Value};
 use std::borrow::Cow;
+use unica_address::address::{BodyLineRange, NodeKind, QualifiedAddress};
+use unica_execution_contract::invocation::DomainResult;
+use unica_refusal::RefusalCode;
 
 /// Наибольший текст `Body` модуля и `Method.<имя>.Body`, который `view`
 /// вообще отдаёт: наибольший бюджет ответа среди известных хостов. Сколько
@@ -385,7 +385,7 @@ pub(crate) fn admit_text(text: &str) -> Result<(), u64> {
 #[cfg(test)]
 mod tests {
     use super::{text_too_large, OversizedText, MAX_SOURCE_TEXT_BYTES};
-    use crate::domain::refusal::RefusalCode;
+    use unica_refusal::RefusalCode;
 
     #[test]
     fn source_text_limit_is_the_largest_known_host_budget() {
@@ -402,8 +402,8 @@ mod tests {
 
     #[test]
     fn response_budget_refuses_text_with_its_envelope_and_marks_oversized_branches() {
-        use crate::domain::invocation::DomainResult;
         use serde_json::json;
+        use unica_execution_contract::invocation::DomainResult;
         let at = "main:CommonModule.Пример.Method.Большой.Body";
         let mut result = DomainResult::success("logical node text resolved");
         result.at = Some(at.into());
@@ -446,8 +446,8 @@ mod tests {
 
     #[test]
     fn overbudget_mark_and_refusal_share_one_boundary() {
-        use crate::domain::invocation::DomainResult;
         use serde_json::json;
+        use unica_execution_contract::invocation::DomainResult;
         let branch = |bytes: u64| {
             let mut summary = DomainResult::success("logical node resolved");
             summary.data =
@@ -481,7 +481,7 @@ mod tests {
         );
         // Без доказанного адреса маршрута нет.
         assert!(super::oversized_body("not an address", 1).next().is_empty());
-        let mut result = crate::domain::invocation::DomainResult::success("text");
+        let mut result = unica_execution_contract::invocation::DomainResult::success("text");
         result.source_text = Some("a".repeat(20_000));
         let refused = super::apply_response_budget(&result, 16_384).into_owned();
         assert_eq!(refused.diagnostics[0]["code"], "result_too_large");
@@ -577,7 +577,7 @@ mod tests {
 #[cfg(test)]
 mod body_chunks {
     use super::*;
-    use crate::domain::invocation::SourceTextReadHint;
+    use unica_execution_contract::invocation::SourceTextReadHint;
 
     fn body(text: &str, first: usize) -> DomainResult {
         let at = QualifiedAddress::parse("main:CommonModule.Probe.Method.Ping.Body").unwrap();

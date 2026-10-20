@@ -1,13 +1,15 @@
 use super::{OperationResult, UnicaApplication};
 use crate::composition::testing::{
     with_meta_info_descriptor_image_hook, with_registrar_processing_hook,
-    with_subsystem_evidence_processing_hook, RegistrarProcessingPhase,
-    SubsystemEvidenceProcessingPhase,
+    with_subsystem_evidence_processing_hook,
 };
-use crate::domain::cancellation::CancellationToken;
-use crate::test_support::ProcessCwdGuard;
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
+use unica_metadata_designer::info_read::{
+    RegistrarProcessingPhase, SubsystemEvidenceProcessingPhase,
+};
+use unica_work_control::cancellation::CancellationToken;
+use unica_workspace::test_support::ProcessCwdGuard;
 use uuid::Uuid;
 
 struct TempWorkspace(PathBuf);

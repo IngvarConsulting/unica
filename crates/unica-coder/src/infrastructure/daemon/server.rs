@@ -1,5 +1,6 @@
-use super::identity::CoreIdentity;
-use crate::domain::refusal::{RefusalCode, RefusalDetail};
+use unica_daemon::identity::CoreIdentity;
+use unica_execution::receipt_runtime::ports::V5CanonicalPrepareError;
+use unica_refusal::{RefusalCode, RefusalDetail};
 #[path = "invocation_service.rs"]
 mod invocation_service;
 #[cfg(test)]
@@ -20,19 +21,22 @@ pub(crate) use self::invocation_service::{
     ActorBoundExecution, ActorBoundInvocation, CanonicalInvocationService,
 };
 use super::protocol::InvocationRequest;
-use crate::application::invocation::InvocationResponseDeadline;
-use crate::application::operation_descriptors::{ExecutionClass, KnownLongReason};
-use crate::application::ports::{Clock, TokioClock};
-use crate::application::shared_work::ProviderHostOwner;
 use crate::application::tool_contracts::SurfaceRelease;
-use crate::domain::cancellation::CancellationToken;
-use crate::domain::invocation::{DomainResult, InvocationFailure};
+use unica_analysis_services::provider_host::ProviderHostOwner;
+use unica_execution::clock::TokioClock;
+use unica_execution::invocation::InvocationResponseDeadline;
+use unica_execution::receipt_runtime::ports::{ExecutionClass, KnownLongReason};
+use unica_work_control::clock::Clock;
 #[cfg(test)]
-use crate::infrastructure::runtime_jobs::RuntimeJobService;
-use crate::infrastructure::runtime_jobs::RuntimeResourceOwner;
-use crate::infrastructure::workspace_actor::WorkspaceActorRegistry;
+type RuntimeJobService = unica_execution::runtime_jobs::RuntimeJobService<
+    unica_adapter_v8_runner::request::RuntimeJobRequest,
+>;
+use crate::infrastructure::source_workspace::WorkspaceActorRegistry;
 use std::sync::Arc;
 use std::time::Duration;
+use unica_execution::runtime_jobs::RuntimeResourceOwner;
+use unica_execution_contract::invocation::{DomainResult, InvocationFailure};
+use unica_work_control::cancellation::CancellationToken;
 
 /// Безымянный неуспех — только для стенда.
 ///
@@ -231,7 +235,7 @@ fn reject_workspace_admission(
 /// что фильтр делал: словарь — в каждом ответе узла, контракт операции —
 /// по адресу `<узел>.Can.<op>`, сравнение части — по адресу этой части.
 fn retired_read_filter(request: &InvocationRequest) -> Option<DomainResult> {
-    use crate::application::invocation_store::ToolIdentity;
+    use unica_execution::invocation_store::ToolIdentity;
     let arguments = request.arguments();
     let filter = arguments.get("filter")?;
     let text = |name: &str| {
@@ -293,7 +297,7 @@ fn retired_read_filter(request: &InvocationRequest) -> Option<DomainResult> {
 /// что маршрутизация скажет о несуществующем узле. `diff` отказывает сам:
 /// у него свой код (`target_kind_unsupported`).
 fn operation_address_outside_view(request: &InvocationRequest) -> Option<DomainResult> {
-    use crate::application::invocation_store::ToolIdentity;
+    use unica_execution::invocation_store::ToolIdentity;
     let arguments = request.arguments();
     let text = |value: Option<&serde_json::Value>| {
         value
@@ -328,7 +332,7 @@ fn operation_address_outside_view(request: &InvocationRequest) -> Option<DomainR
     }
     let (location, address) = candidates.into_iter().find_map(|(location, raw)| {
         let raw = raw?;
-        let parsed = crate::domain::address::QualifiedAddress::parse(&raw).ok()?;
+        let parsed = unica_address::address::QualifiedAddress::parse(&raw).ok()?;
         parsed.operation_query()?;
         Some((location, raw))
     })?;
@@ -346,7 +350,7 @@ fn operation_address_outside_view(request: &InvocationRequest) -> Option<DomainR
 }
 
 fn validate_hidden_v13_request(request: &InvocationRequest) -> Result<(), String> {
-    if request.tool() == crate::application::invocation_store::ToolIdentity::Apply {
+    if request.tool() == unica_execution::invocation_store::ToolIdentity::Apply {
         let arguments = request.arguments();
         if arguments.contains_key("dryRun") || arguments.contains_key("ifRev") {
             return Err("unica.apply no longer accepts dryRun or ifRev. Call with at and ops to get a saved plan and data.executionToken, then call with executionToken only to execute that plan".to_string());
@@ -511,28 +515,158 @@ fn validate_canonical_value(
 pub(super) struct V5CanonicalInvocationRuntime {
     service: Arc<dyn CanonicalInvocationService>,
     clock: Arc<dyn Clock>,
-    documentation_cursors: Arc<crate::application::result_store::SearchCursorStore>,
+    documentation_cursors: Arc<unica_navigation::result_store::SearchCursorStore>,
     root_check_continuations:
-        Arc<crate::infrastructure::project_health::resources::RootCheckContinuationStore>,
+        Arc<unica_project_health::inspection::resources::RootCheckContinuationStore>,
     workspace_actors: WorkspaceActorRegistry,
-    deliveries: Arc<crate::infrastructure::engine_delivery::DeliveryDesk>,
+    deliveries: Arc<unica_artifact_delivery::desk::DeliveryDesk>,
     provider_hosts: Arc<ProviderHostOwner>,
     runtime_resources: Arc<RuntimeResourceOwner>,
     #[cfg(test)]
     runtime_service: Option<Arc<RuntimeJobService>>,
 }
 
-#[derive(Debug)]
-pub(super) enum V5CanonicalPrepareError {
-    Direct(Box<DomainResult>),
-    Rejected(Box<DomainResult>),
-    WorkspaceRegistryFailed,
+/// The single product binding for the durable receipt owner's typed phases.
+pub(crate) struct CanonicalInvocationHost {
+    invocation_runtime: Arc<V5CanonicalInvocationRuntime>,
+}
+
+impl CanonicalInvocationHost {
+    fn over(invocation_runtime: Arc<V5CanonicalInvocationRuntime>) -> Self {
+        Self { invocation_runtime }
+    }
+}
+
+impl unica_execution::receipt_runtime::ports::InvocationHost for CanonicalInvocationHost {
+    type Request = unica_daemon::protocol_v5::V5InvocationRequest;
+    type Bound = V5ActorBoundCanonicalInvocation;
+    type Prepared = V5PreparedCanonicalInvocation;
+
+    fn has_retained_workspace_work(&self) -> bool {
+        self.invocation_runtime.has_retained_workspace_work()
+    }
+
+    fn capture_response_deadline(&self, response_budget_ms: u64) -> InvocationResponseDeadline {
+        self.invocation_runtime
+            .capture_response_deadline(response_budget_ms)
+    }
+
+    fn bind(
+        &self,
+        invocation: Self::Request,
+        response_deadline: InvocationResponseDeadline,
+        admission_cancellation: &CancellationToken,
+    ) -> Result<Self::Bound, V5CanonicalPrepareError> {
+        let tool = match invocation.tool() {
+            unica_execution::receipt_ledger::V5ToolIdentity::View => {
+                unica_execution::invocation_store::ToolIdentity::View
+            }
+            unica_execution::receipt_ledger::V5ToolIdentity::Apply => {
+                unica_execution::invocation_store::ToolIdentity::Apply
+            }
+            unica_execution::receipt_ledger::V5ToolIdentity::Resolve => {
+                unica_execution::invocation_store::ToolIdentity::Resolve
+            }
+            unica_execution::receipt_ledger::V5ToolIdentity::Search => {
+                unica_execution::invocation_store::ToolIdentity::Search
+            }
+            unica_execution::receipt_ledger::V5ToolIdentity::Check => {
+                unica_execution::invocation_store::ToolIdentity::Check
+            }
+            unica_execution::receipt_ledger::V5ToolIdentity::Diff => {
+                unica_execution::invocation_store::ToolIdentity::Diff
+            }
+            unica_execution::receipt_ledger::V5ToolIdentity::Run => {
+                unica_execution::invocation_store::ToolIdentity::Run
+            }
+            unica_execution::receipt_ledger::V5ToolIdentity::Docs => {
+                unica_execution::invocation_store::ToolIdentity::Docs
+            }
+        };
+        let request = super::protocol::InvocationRequest::new(
+            tool,
+            serde_json::Value::Object(invocation.arguments().clone()),
+            invocation.workspace_hint().to_owned(),
+            invocation.response_budget_ms(),
+        )
+        .map(|request| request.with_workspace_origin(invocation.workspace_origin().clone()))
+        .map_err(|error| {
+            V5CanonicalPrepareError::Rejected(Box::new(
+                unica_execution_contract::invocation::DomainResult::canonical_rejection(
+                    None,
+                    RefusalCode::BadValue,
+                    error,
+                ),
+            ))
+        })?;
+        self.invocation_runtime.bind_with_deadline(
+            request,
+            response_deadline,
+            admission_cancellation,
+        )
+    }
+
+    fn discover_join_workspace_root(
+        &self,
+        workspace_hint: &str,
+    ) -> Result<std::path::PathBuf, String> {
+        discover_join_workspace_root(workspace_hint)
+    }
+
+    fn discover_join_source_set_paths(
+        &self,
+        root: &std::path::Path,
+    ) -> Result<Vec<String>, String> {
+        discover_join_source_set_paths(root)
+    }
+}
+
+pub(crate) fn discover_join_workspace_root(
+    workspace_hint: &str,
+) -> Result<std::path::PathBuf, String> {
+    crate::infrastructure::workspace::discover_workspace(Some(std::path::PathBuf::from(
+        workspace_hint,
+    )))
+    .map(|context| context.workspace_root)
+}
+
+pub(crate) fn discover_join_source_set_paths(
+    root: &std::path::Path,
+) -> Result<Vec<String>, String> {
+    crate::infrastructure::project_sources::discover_project_source_map(root).map(|map| {
+        map.source_sets
+            .into_iter()
+            .map(|source| source.path)
+            .collect()
+    })
+}
+
+impl unica_execution::receipt_runtime::ports::BoundInvocation for V5ActorBoundCanonicalInvocation {
+    type Prepared = V5PreparedCanonicalInvocation;
+    fn response_deadline(&self) -> Option<InvocationResponseDeadline> {
+        V5ActorBoundCanonicalInvocation::response_deadline(self)
+    }
+    fn workspace_identity_hash(&self) -> &unica_execution_contract::invocation::SafeIdentityHash {
+        V5ActorBoundCanonicalInvocation::workspace_identity_hash(self)
+    }
+    fn prepare(self) -> Result<Self::Prepared, Box<DomainResult>> {
+        V5ActorBoundCanonicalInvocation::prepare(self)
+    }
+}
+
+impl unica_execution::receipt_runtime::ports::PreparedInvocation for V5PreparedCanonicalInvocation {
+    fn execution_class(&self) -> &ExecutionClass {
+        V5PreparedCanonicalInvocation::execution_class(self)
+    }
+    fn execute(self, cancellation: CancellationToken) -> Result<DomainResult, InvocationFailure> {
+        V5PreparedCanonicalInvocation::execute(self, cancellation)
+    }
 }
 
 #[derive(Clone)]
 pub(super) struct RunEngineDelivery {
     workspace_hint: std::path::PathBuf,
-    desk: Arc<crate::infrastructure::engine_delivery::DeliveryDesk>,
+    desk: Arc<unica_artifact_delivery::desk::DeliveryDesk>,
 }
 
 impl RunEngineDelivery {
@@ -541,7 +675,7 @@ impl RunEngineDelivery {
         cancellation: CancellationToken,
         run: impl FnOnce(CancellationToken) -> DomainResult,
     ) -> DomainResult {
-        use crate::application::shared_work::EngineDeliveryState;
+        use unica_artifact_delivery::shared::EngineDeliveryState;
 
         if cancellation.is_cancelled() {
             return DomainResult::canonical_rejection(
@@ -550,7 +684,7 @@ impl RunEngineDelivery {
                 "run cancelled before engine delivery",
             );
         }
-        let progress = crate::infrastructure::engine_delivery::CanonicalDeliveryProgress::default();
+        let progress = unica_artifact_delivery::desk::CanonicalDeliveryProgress::default();
         let plugin_root =
             crate::infrastructure::plugin_runtime::find_plugin_root(&self.workspace_hint);
         let state = plugin_root
@@ -592,7 +726,9 @@ impl RunEngineDelivery {
     }
 }
 
-pub(super) enum V5ActorBoundCanonicalInvocation {
+pub(crate) struct V5ActorBoundCanonicalInvocation(ActorBoundCanonicalInvocationState);
+
+enum ActorBoundCanonicalInvocationState {
     WorkspaceInspection {
         inspection: Arc<super::v13_workspace_bootstrap::PreparedWorkspaceInspection>,
     },
@@ -602,57 +738,59 @@ pub(super) enum V5ActorBoundCanonicalInvocation {
     },
     Extensions {
         extensions: Arc<super::v13_extensions::PreparedExtensions>,
-        workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
+        workspace_identity_hash: unica_execution_contract::invocation::SafeIdentityHash,
         delivery: RunEngineDelivery,
     },
     InfobaseExport {
         export: Arc<super::v13_infobase_exports::PreparedInfobaseExport>,
-        workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
+        workspace_identity_hash: unica_execution_contract::invocation::SafeIdentityHash,
         delivery: RunEngineDelivery,
     },
     /// Терминальный запуск клиента: как выгрузка, готовится до admission
     /// PlatformXml и известен длинным по внешнему процессу.
     ClientRun {
         launch: Arc<super::v13_client_run::PreparedClientRun>,
-        workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
+        workspace_identity_hash: unica_execution_contract::invocation::SafeIdentityHash,
         delivery: RunEngineDelivery,
     },
     /// Создание базы: previewApply с забором, без аргументов, известно
     /// длинным по внешнему процессу.
     InfobaseCreate {
         create: Arc<super::v13_infobase_create::PreparedInfobaseCreate>,
-        workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
+        workspace_identity_hash: unica_execution_contract::invocation::SafeIdentityHash,
         delivery: RunEngineDelivery,
     },
     /// Импорт исходников в базу: previewApply с забором, известен длинным по
     /// внешнему процессу.
     SourceImport {
         import: Arc<super::v13_source_import::PreparedSourceImport>,
-        workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
+        workspace_identity_hash: unica_execution_contract::invocation::SafeIdentityHash,
         delivery: RunEngineDelivery,
     },
     /// Выгрузка базы в исходники: previewApply с забором, известна длинной
     /// по внешнему процессу.
     SourceExport {
         export: Arc<super::v13_source_export::PreparedSourceExport>,
-        workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
+        workspace_identity_hash: unica_execution_contract::invocation::SafeIdentityHash,
         delivery: RunEngineDelivery,
     },
     /// Сборка CF/CFE из исходников: previewApply с забором, известна длинной
     /// по внешнему процессу.
     ArtifactBuild {
         build: Arc<super::v13_artifact_build::PreparedArtifactBuild>,
-        workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
+        workspace_identity_hash: unica_execution_contract::invocation::SafeIdentityHash,
         delivery: RunEngineDelivery,
     },
     Documentation {
         search: Arc<super::v13_documentation::PreparedDocumentationSearch>,
-        workspace_identity_hash: crate::domain::invocation::SafeIdentityHash,
+        workspace_identity_hash: unica_execution_contract::invocation::SafeIdentityHash,
         response_deadline: InvocationResponseDeadline,
     },
 }
 
-pub(super) enum V5PreparedCanonicalInvocation {
+pub(crate) struct V5PreparedCanonicalInvocation(PreparedCanonicalInvocationState);
+
+enum PreparedCanonicalInvocationState {
     WorkspaceInspection {
         inspection: Arc<super::v13_workspace_bootstrap::PreparedWorkspaceInspection>,
     },
@@ -696,7 +834,11 @@ pub(super) enum V5PreparedCanonicalInvocation {
 
 impl V5CanonicalInvocationRuntime {
     pub(super) fn new(service: Arc<dyn CanonicalInvocationService>, clock: Arc<dyn Clock>) -> Self {
-        Self::with_workspace_actors(service, clock, WorkspaceActorRegistry::default())
+        Self::with_workspace_actors(
+            service,
+            clock,
+            crate::infrastructure::source_workspace::actor_registry(),
+        )
     }
 
     pub(super) fn has_retained_workspace_work(&self) -> bool {
@@ -712,13 +854,13 @@ impl V5CanonicalInvocationRuntime {
             service,
             clock,
             documentation_cursors: Arc::new(
-                crate::application::result_store::SearchCursorStore::default(),
+                unica_navigation::result_store::SearchCursorStore::default(),
             ),
             root_check_continuations: Arc::new(
-                crate::infrastructure::project_health::resources::RootCheckContinuationStore::default(),
+                unica_project_health::inspection::resources::RootCheckContinuationStore::default(),
             ),
             workspace_actors,
-            deliveries: Arc::new(crate::infrastructure::engine_delivery::DeliveryDesk::default()),
+            deliveries: Arc::new(unica_artifact_delivery::desk::DeliveryDesk::default()),
             provider_hosts: Arc::new(ProviderHostOwner::default()),
             runtime_resources: Arc::new(RuntimeResourceOwner::default()),
             #[cfg(test)]
@@ -746,12 +888,10 @@ impl V5CanonicalInvocationRuntime {
     #[cfg(test)]
     pub(super) fn with_delivery_downloader_for_test(
         mut self,
-        downloader: Arc<dyn unica_bootstrap::Downloader>,
+        downloader: Arc<dyn unica_artifact_delivery::Downloader>,
     ) -> Self {
         self.deliveries = Arc::new(
-            crate::infrastructure::engine_delivery::DeliveryDesk::with_downloader_for_test(
-                downloader,
-            ),
+            unica_artifact_delivery::desk::DeliveryDesk::with_downloader_for_test(downloader),
         );
         self
     }
@@ -814,7 +954,9 @@ impl V5CanonicalInvocationRuntime {
                 return Err(V5CanonicalPrepareError::Rejected(result))
             }
             super::v13_workspace_bootstrap::Preparation::Ready(inspection) => {
-                return Ok(V5ActorBoundCanonicalInvocation::WorkspaceInspection { inspection });
+                return Ok(V5ActorBoundCanonicalInvocation(
+                    ActorBoundCanonicalInvocationState::WorkspaceInspection { inspection },
+                ));
             }
         }
         if let Some(result) = super::v13_run_dictionary::execute_run_dictionary(&request) {
@@ -831,11 +973,13 @@ impl V5CanonicalInvocationRuntime {
             }
             super::v13_extensions::Preparation::Ready(extensions) => {
                 let workspace_identity_hash = extensions.workspace_identity_hash();
-                return Ok(V5ActorBoundCanonicalInvocation::Extensions {
-                    extensions,
-                    workspace_identity_hash,
-                    delivery: run_delivery.clone(),
-                });
+                return Ok(V5ActorBoundCanonicalInvocation(
+                    ActorBoundCanonicalInvocationState::Extensions {
+                        extensions,
+                        workspace_identity_hash,
+                        delivery: run_delivery.clone(),
+                    },
+                ));
             }
         }
         match super::v13_infobase_exports::prepare(&request) {
@@ -845,11 +989,13 @@ impl V5CanonicalInvocationRuntime {
             }
             super::v13_infobase_exports::Preparation::Ready(export) => {
                 let workspace_identity_hash = export.workspace_identity_hash();
-                return Ok(V5ActorBoundCanonicalInvocation::InfobaseExport {
-                    export,
-                    workspace_identity_hash,
-                    delivery: run_delivery.clone(),
-                });
+                return Ok(V5ActorBoundCanonicalInvocation(
+                    ActorBoundCanonicalInvocationState::InfobaseExport {
+                        export,
+                        workspace_identity_hash,
+                        delivery: run_delivery.clone(),
+                    },
+                ));
             }
         }
         match super::v13_client_run::prepare(&request) {
@@ -859,11 +1005,13 @@ impl V5CanonicalInvocationRuntime {
             }
             super::v13_client_run::Preparation::Ready(launch) => {
                 let workspace_identity_hash = launch.workspace_identity_hash();
-                return Ok(V5ActorBoundCanonicalInvocation::ClientRun {
-                    launch,
-                    workspace_identity_hash,
-                    delivery: run_delivery.clone(),
-                });
+                return Ok(V5ActorBoundCanonicalInvocation(
+                    ActorBoundCanonicalInvocationState::ClientRun {
+                        launch,
+                        workspace_identity_hash,
+                        delivery: run_delivery.clone(),
+                    },
+                ));
             }
         }
         match super::v13_infobase_create::prepare(&request) {
@@ -873,11 +1021,13 @@ impl V5CanonicalInvocationRuntime {
             }
             super::v13_infobase_create::Preparation::Ready(create) => {
                 let workspace_identity_hash = create.workspace_identity_hash();
-                return Ok(V5ActorBoundCanonicalInvocation::InfobaseCreate {
-                    create,
-                    workspace_identity_hash,
-                    delivery: run_delivery.clone(),
-                });
+                return Ok(V5ActorBoundCanonicalInvocation(
+                    ActorBoundCanonicalInvocationState::InfobaseCreate {
+                        create,
+                        workspace_identity_hash,
+                        delivery: run_delivery.clone(),
+                    },
+                ));
             }
         }
         match super::v13_source_import::prepare(&request) {
@@ -887,11 +1037,13 @@ impl V5CanonicalInvocationRuntime {
             }
             super::v13_source_import::Preparation::Ready(import) => {
                 let workspace_identity_hash = import.workspace_identity_hash();
-                return Ok(V5ActorBoundCanonicalInvocation::SourceImport {
-                    import,
-                    workspace_identity_hash,
-                    delivery: run_delivery.clone(),
-                });
+                return Ok(V5ActorBoundCanonicalInvocation(
+                    ActorBoundCanonicalInvocationState::SourceImport {
+                        import,
+                        workspace_identity_hash,
+                        delivery: run_delivery.clone(),
+                    },
+                ));
             }
         }
         match super::v13_source_export::prepare(&request) {
@@ -901,11 +1053,13 @@ impl V5CanonicalInvocationRuntime {
             }
             super::v13_source_export::Preparation::Ready(export) => {
                 let workspace_identity_hash = export.workspace_identity_hash();
-                return Ok(V5ActorBoundCanonicalInvocation::SourceExport {
-                    export,
-                    workspace_identity_hash,
-                    delivery: run_delivery.clone(),
-                });
+                return Ok(V5ActorBoundCanonicalInvocation(
+                    ActorBoundCanonicalInvocationState::SourceExport {
+                        export,
+                        workspace_identity_hash,
+                        delivery: run_delivery.clone(),
+                    },
+                ));
             }
         }
         match super::v13_artifact_build::prepare(&request) {
@@ -915,11 +1069,13 @@ impl V5CanonicalInvocationRuntime {
             }
             super::v13_artifact_build::Preparation::Ready(build) => {
                 let workspace_identity_hash = build.workspace_identity_hash();
-                return Ok(V5ActorBoundCanonicalInvocation::ArtifactBuild {
-                    build,
-                    workspace_identity_hash,
-                    delivery: run_delivery.clone(),
-                });
+                return Ok(V5ActorBoundCanonicalInvocation(
+                    ActorBoundCanonicalInvocationState::ArtifactBuild {
+                        build,
+                        workspace_identity_hash,
+                        delivery: run_delivery.clone(),
+                    },
+                ));
             }
         }
         match super::v13_documentation::prepare(&request, Arc::clone(&self.documentation_cursors)) {
@@ -929,11 +1085,13 @@ impl V5CanonicalInvocationRuntime {
             }
             super::v13_documentation::Preparation::Ready(search) => {
                 let workspace_identity_hash = search.workspace_identity_hash();
-                return Ok(V5ActorBoundCanonicalInvocation::Documentation {
-                    search,
-                    workspace_identity_hash,
-                    response_deadline,
-                });
+                return Ok(V5ActorBoundCanonicalInvocation(
+                    ActorBoundCanonicalInvocationState::Documentation {
+                        search,
+                        workspace_identity_hash,
+                        response_deadline,
+                    },
+                ));
             }
         }
         #[cfg(test)]
@@ -953,10 +1111,12 @@ impl V5CanonicalInvocationRuntime {
             admission_cancellation,
         )
         .map_err(|error| reject_workspace_admission(&request, error))?;
-        Ok(V5ActorBoundCanonicalInvocation::Workspace {
-            invocation: Box::new(invocation),
-            service: Arc::clone(&self.service),
-        })
+        Ok(V5ActorBoundCanonicalInvocation(
+            ActorBoundCanonicalInvocationState::Workspace {
+                invocation: Box::new(invocation),
+                service: Arc::clone(&self.service),
+            },
+        ))
     }
 }
 
@@ -965,60 +1125,68 @@ impl V5ActorBoundCanonicalInvocation {
     /// handoff moment of a workspace invocation. Infobase exports carry none;
     /// they are known-long by construction.
     pub(super) fn response_deadline(&self) -> Option<InvocationResponseDeadline> {
-        match self {
-            Self::WorkspaceInspection { inspection, .. } => {
+        match &self.0 {
+            ActorBoundCanonicalInvocationState::WorkspaceInspection { inspection, .. } => {
                 Some(inspection.response_deadline().clone())
             }
-            Self::Workspace { invocation, .. } => Some(invocation.response_deadline().clone()),
-            Self::Extensions { .. }
-            | Self::InfobaseExport { .. }
-            | Self::ClientRun { .. }
-            | Self::InfobaseCreate { .. }
-            | Self::SourceImport { .. }
-            | Self::SourceExport { .. }
-            | Self::ArtifactBuild { .. } => None,
+            ActorBoundCanonicalInvocationState::Workspace { invocation, .. } => {
+                Some(invocation.response_deadline().clone())
+            }
+            ActorBoundCanonicalInvocationState::Extensions { .. }
+            | ActorBoundCanonicalInvocationState::InfobaseExport { .. }
+            | ActorBoundCanonicalInvocationState::ClientRun { .. }
+            | ActorBoundCanonicalInvocationState::InfobaseCreate { .. }
+            | ActorBoundCanonicalInvocationState::SourceImport { .. }
+            | ActorBoundCanonicalInvocationState::SourceExport { .. }
+            | ActorBoundCanonicalInvocationState::ArtifactBuild { .. } => None,
             // Справка не известна длинной: локальное попадание отвечает
             // сразу, сетевое доходит до седьмой секунды. Значит у неё тот же
             // cutoff, что у чтений, — захваченный при bind.
-            Self::Documentation {
+            ActorBoundCanonicalInvocationState::Documentation {
                 response_deadline, ..
             } => Some(response_deadline.clone()),
         }
     }
 
-    pub(super) fn workspace_identity_hash(&self) -> &crate::domain::invocation::SafeIdentityHash {
-        match self {
-            Self::Workspace { invocation, .. } => invocation.workspace_identity_hash(),
-            Self::WorkspaceInspection { inspection } => inspection.workspace_identity_hash(),
-            Self::Extensions {
+    pub(super) fn workspace_identity_hash(
+        &self,
+    ) -> &unica_execution_contract::invocation::SafeIdentityHash {
+        match &self.0 {
+            ActorBoundCanonicalInvocationState::Workspace { invocation, .. } => {
+                invocation.workspace_identity_hash()
+            }
+            ActorBoundCanonicalInvocationState::WorkspaceInspection { inspection } => {
+                inspection.workspace_identity_hash()
+            }
+            ActorBoundCanonicalInvocationState::Extensions {
                 workspace_identity_hash,
                 ..
             }
-            | Self::InfobaseExport {
+            | ActorBoundCanonicalInvocationState::InfobaseExport {
                 workspace_identity_hash,
                 ..
             }
-            | Self::ClientRun {
+            | ActorBoundCanonicalInvocationState::ClientRun {
                 workspace_identity_hash,
                 ..
             }
-            | Self::InfobaseCreate {
+            | ActorBoundCanonicalInvocationState::InfobaseCreate {
                 workspace_identity_hash,
                 ..
             }
-            | Self::SourceImport {
+            | ActorBoundCanonicalInvocationState::SourceImport {
                 workspace_identity_hash,
                 ..
             }
-            | Self::SourceExport {
+            | ActorBoundCanonicalInvocationState::SourceExport {
                 workspace_identity_hash,
                 ..
             }
-            | Self::ArtifactBuild {
+            | ActorBoundCanonicalInvocationState::ArtifactBuild {
                 workspace_identity_hash,
                 ..
             }
-            | Self::Documentation {
+            | ActorBoundCanonicalInvocationState::Documentation {
                 workspace_identity_hash,
                 ..
             } => workspace_identity_hash,
@@ -1026,49 +1194,69 @@ impl V5ActorBoundCanonicalInvocation {
     }
 
     pub(super) fn prepare(self) -> Result<V5PreparedCanonicalInvocation, Box<DomainResult>> {
-        match self {
-            Self::WorkspaceInspection { inspection, .. } => {
-                Ok(V5PreparedCanonicalInvocation::WorkspaceInspection { inspection })
+        match self.0 {
+            ActorBoundCanonicalInvocationState::WorkspaceInspection { inspection, .. } => {
+                Ok(V5PreparedCanonicalInvocation(
+                    PreparedCanonicalInvocationState::WorkspaceInspection { inspection },
+                ))
             }
-            Self::Workspace {
+            ActorBoundCanonicalInvocationState::Workspace {
                 invocation,
                 service,
             } => {
                 let class = service.prepare(&invocation)?;
-                Ok(V5PreparedCanonicalInvocation::Workspace {
-                    invocation,
-                    class,
-                    service,
-                })
+                Ok(V5PreparedCanonicalInvocation(
+                    PreparedCanonicalInvocationState::Workspace {
+                        invocation,
+                        class,
+                        service,
+                    },
+                ))
             }
-            Self::Extensions {
+            ActorBoundCanonicalInvocationState::Extensions {
                 extensions,
                 delivery,
                 ..
-            } => Ok(V5PreparedCanonicalInvocation::Extensions {
-                extensions,
-                delivery,
-            }),
-            Self::InfobaseExport {
+            } => Ok(V5PreparedCanonicalInvocation(
+                PreparedCanonicalInvocationState::Extensions {
+                    extensions,
+                    delivery,
+                },
+            )),
+            ActorBoundCanonicalInvocationState::InfobaseExport {
                 export, delivery, ..
-            } => Ok(V5PreparedCanonicalInvocation::InfobaseExport { export, delivery }),
-            Self::ClientRun {
+            } => Ok(V5PreparedCanonicalInvocation(
+                PreparedCanonicalInvocationState::InfobaseExport { export, delivery },
+            )),
+            ActorBoundCanonicalInvocationState::ClientRun {
                 launch, delivery, ..
-            } => Ok(V5PreparedCanonicalInvocation::ClientRun { launch, delivery }),
-            Self::InfobaseCreate {
+            } => Ok(V5PreparedCanonicalInvocation(
+                PreparedCanonicalInvocationState::ClientRun { launch, delivery },
+            )),
+            ActorBoundCanonicalInvocationState::InfobaseCreate {
                 create, delivery, ..
-            } => Ok(V5PreparedCanonicalInvocation::InfobaseCreate { create, delivery }),
-            Self::SourceImport {
+            } => Ok(V5PreparedCanonicalInvocation(
+                PreparedCanonicalInvocationState::InfobaseCreate { create, delivery },
+            )),
+            ActorBoundCanonicalInvocationState::SourceImport {
                 import, delivery, ..
-            } => Ok(V5PreparedCanonicalInvocation::SourceImport { import, delivery }),
-            Self::SourceExport {
+            } => Ok(V5PreparedCanonicalInvocation(
+                PreparedCanonicalInvocationState::SourceImport { import, delivery },
+            )),
+            ActorBoundCanonicalInvocationState::SourceExport {
                 export, delivery, ..
-            } => Ok(V5PreparedCanonicalInvocation::SourceExport { export, delivery }),
-            Self::ArtifactBuild {
+            } => Ok(V5PreparedCanonicalInvocation(
+                PreparedCanonicalInvocationState::SourceExport { export, delivery },
+            )),
+            ActorBoundCanonicalInvocationState::ArtifactBuild {
                 build, delivery, ..
-            } => Ok(V5PreparedCanonicalInvocation::ArtifactBuild { build, delivery }),
-            Self::Documentation { search, .. } => {
-                Ok(V5PreparedCanonicalInvocation::Documentation { search })
+            } => Ok(V5PreparedCanonicalInvocation(
+                PreparedCanonicalInvocationState::ArtifactBuild { build, delivery },
+            )),
+            ActorBoundCanonicalInvocationState::Documentation { search, .. } => {
+                Ok(V5PreparedCanonicalInvocation(
+                    PreparedCanonicalInvocationState::Documentation { search },
+                ))
             }
         }
     }
@@ -1080,7 +1268,7 @@ impl V5ActorBoundCanonicalInvocation {
 fn boundary_failure(error: invocation_service::ExecutionBoundaryError) -> InvocationFailure {
     match error {
         invocation_service::ExecutionBoundaryError::BindingChanged(_) => InvocationFailure::new(
-            crate::domain::invocation::WORKSPACE_CHANGED_FAILURE,
+            unica_execution_contract::invocation::WORKSPACE_CHANGED_FAILURE,
             "workspace actor binding changed during execution",
         ),
         invocation_service::ExecutionBoundaryError::Internal(_) => InvocationFailure::new(
@@ -1094,16 +1282,17 @@ impl V5PreparedCanonicalInvocation {
     pub(super) const fn execution_class(&self) -> &ExecutionClass {
         const INFOBASE_EXPORT_CLASS: ExecutionClass =
             ExecutionClass::KnownLong(KnownLongReason::ExternalProcess);
-        match self {
-            Self::Workspace { class, .. } => class,
-            Self::Extensions { .. }
-            | Self::InfobaseExport { .. }
-            | Self::ClientRun { .. }
-            | Self::InfobaseCreate { .. }
-            | Self::SourceImport { .. }
-            | Self::SourceExport { .. }
-            | Self::ArtifactBuild { .. } => &INFOBASE_EXPORT_CLASS,
-            Self::WorkspaceInspection { .. } | Self::Documentation { .. } => {
+        match &self.0 {
+            PreparedCanonicalInvocationState::Workspace { class, .. } => class,
+            PreparedCanonicalInvocationState::Extensions { .. }
+            | PreparedCanonicalInvocationState::InfobaseExport { .. }
+            | PreparedCanonicalInvocationState::ClientRun { .. }
+            | PreparedCanonicalInvocationState::InfobaseCreate { .. }
+            | PreparedCanonicalInvocationState::SourceImport { .. }
+            | PreparedCanonicalInvocationState::SourceExport { .. }
+            | PreparedCanonicalInvocationState::ArtifactBuild { .. } => &INFOBASE_EXPORT_CLASS,
+            PreparedCanonicalInvocationState::WorkspaceInspection { .. }
+            | PreparedCanonicalInvocationState::Documentation { .. } => {
                 &ExecutionClass::InlineCandidate
             }
         }
@@ -1113,9 +1302,11 @@ impl V5PreparedCanonicalInvocation {
         self,
         cancellation: CancellationToken,
     ) -> Result<DomainResult, InvocationFailure> {
-        match self {
-            Self::WorkspaceInspection { inspection } => inspection.execute(cancellation),
-            Self::Workspace {
+        match self.0 {
+            PreparedCanonicalInvocationState::WorkspaceInspection { inspection } => {
+                inspection.execute(cancellation)
+            }
+            PreparedCanonicalInvocationState::Workspace {
                 invocation,
                 service,
                 ..
@@ -1128,31 +1319,33 @@ impl V5PreparedCanonicalInvocation {
                     .publish(outcome, &cancellation)
                     .map_err(boundary_failure)?
             }
-            Self::Extensions {
+            PreparedCanonicalInvocationState::Extensions {
                 extensions,
                 delivery,
             } => Ok(delivery.execute(cancellation, |cancellation| {
                 extensions.execute(cancellation)
             })),
-            Self::InfobaseExport { export, delivery } => {
+            PreparedCanonicalInvocationState::InfobaseExport { export, delivery } => {
                 Ok(delivery.execute(cancellation, |cancellation| export.execute(cancellation)))
             }
-            Self::ClientRun { launch, delivery } => {
+            PreparedCanonicalInvocationState::ClientRun { launch, delivery } => {
                 Ok(delivery.execute(cancellation, |cancellation| launch.execute(cancellation)))
             }
-            Self::InfobaseCreate { create, delivery } => {
+            PreparedCanonicalInvocationState::InfobaseCreate { create, delivery } => {
                 Ok(delivery.execute(cancellation, |cancellation| create.execute(cancellation)))
             }
-            Self::SourceImport { import, delivery } => {
+            PreparedCanonicalInvocationState::SourceImport { import, delivery } => {
                 Ok(delivery.execute(cancellation, |cancellation| import.execute(cancellation)))
             }
-            Self::SourceExport { export, delivery } => {
+            PreparedCanonicalInvocationState::SourceExport { export, delivery } => {
                 Ok(delivery.execute(cancellation, |cancellation| export.execute(cancellation)))
             }
-            Self::ArtifactBuild { build, delivery } => {
+            PreparedCanonicalInvocationState::ArtifactBuild { build, delivery } => {
                 Ok(delivery.execute(cancellation, |cancellation| build.execute(cancellation)))
             }
-            Self::Documentation { search } => Ok(search.execute(cancellation)),
+            PreparedCanonicalInvocationState::Documentation { search } => {
+                Ok(search.execute(cancellation))
+            }
         }
     }
 }
@@ -1169,9 +1362,11 @@ pub(crate) struct DaemonServerConfig {
     /// leaves every one of them empty; the fields exist unconditionally so
     /// the runtime reads one configuration whatever the build.
     invocation_clock: Option<Arc<dyn Clock>>,
-    v5_epoch_clock: Option<Arc<dyn crate::application::invocation_store::EpochMillisClock>>,
+    v5_epoch_clock: Option<Arc<dyn unica_execution::invocation_store::EpochMillisClock>>,
     skip_v5_startup_reconciliation: bool,
-    runtime_hooks: Option<Arc<dyn super::runtime_v5::V5RuntimeHooks>>,
+    runtime_hooks: Option<
+        Arc<dyn unica_execution::receipt_runtime::hooks::V5RuntimeHooks<CanonicalInvocationHost>>,
+    >,
     #[cfg(test)]
     canonical_runtime: Option<Arc<V5CanonicalInvocationRuntime>>,
 }
@@ -1233,7 +1428,7 @@ impl DaemonServerConfig {
 
     pub(super) fn epoch_clock_for_v5(
         &self,
-    ) -> Option<Arc<dyn crate::application::invocation_store::EpochMillisClock>> {
+    ) -> Option<Arc<dyn unica_execution::invocation_store::EpochMillisClock>> {
         self.v5_epoch_clock.clone()
     }
 
@@ -1243,14 +1438,18 @@ impl DaemonServerConfig {
 
     pub(super) fn runtime_hooks_for_v5(
         &self,
-    ) -> Option<Arc<dyn super::runtime_v5::V5RuntimeHooks>> {
+    ) -> Option<
+        Arc<dyn unica_execution::receipt_runtime::hooks::V5RuntimeHooks<CanonicalInvocationHost>>,
+    > {
         self.runtime_hooks.clone()
     }
 
     #[cfg(any(test, feature = "receipt-ledger-test-support"))]
     pub(crate) fn with_runtime_hooks_for_test(
         mut self,
-        hooks: Arc<dyn super::runtime_v5::V5RuntimeHooks>,
+        hooks: Arc<
+            dyn unica_execution::receipt_runtime::hooks::V5RuntimeHooks<CanonicalInvocationHost>,
+        >,
     ) -> Self {
         self.runtime_hooks = Some(hooks);
         self
@@ -1280,10 +1479,80 @@ impl DaemonServerConfig {
     #[cfg(any(test, feature = "receipt-ledger-test-support"))]
     pub(crate) fn with_v5_epoch_clock_for_test(
         mut self,
-        clock: Arc<dyn crate::application::invocation_store::EpochMillisClock>,
+        clock: Arc<dyn unica_execution::invocation_store::EpochMillisClock>,
     ) -> Self {
         self.v5_epoch_clock = Some(clock);
         self
+    }
+}
+
+impl DaemonServerConfig {
+    pub(crate) fn receipt_runtime_config(
+        &self,
+    ) -> unica_execution::receipt_runtime::ports::ReceiptRuntimeConfig<CanonicalInvocationHost>
+    {
+        let epoch_clock = self
+            .epoch_clock_for_v5()
+            .unwrap_or_else(|| Arc::new(unica_execution::invocation_store::SystemEpochMillisClock));
+        let hooks = self
+            .runtime_hooks_for_v5()
+            .unwrap_or_else(|| Arc::new(unica_execution::receipt_runtime::hooks::NoHooks));
+        let source = self.clone();
+        let factory: Arc<dyn Fn() -> Arc<CanonicalInvocationHost> + Send + Sync> =
+            Arc::new(move || {
+                #[cfg(test)]
+                let preset = source.canonical_runtime_for_v5();
+                #[cfg(not(test))]
+                let preset: Option<Arc<V5CanonicalInvocationRuntime>> = None;
+                let runtime = match preset {
+                    Some(runtime) => runtime,
+                    None => Arc::new(V5CanonicalInvocationRuntime::new(
+                        source.invocation_service_for_v5(),
+                        source.invocation_clock_for_v5(),
+                    )),
+                };
+                Arc::new(CanonicalInvocationHost::over(runtime))
+            });
+        unica_execution::receipt_runtime::ports::ReceiptRuntimeConfig::new(
+            self.core_identity.digest().clone(),
+            factory,
+            epoch_clock,
+            hooks,
+            !self.skips_v5_startup_reconciliation(),
+        )
+    }
+
+    pub(crate) fn into_transport_config(
+        self,
+    ) -> unica_daemon::transport::DaemonServerConfig<CanonicalInvocationHost, CapacityObservation>
+    {
+        let runtime = self.receipt_runtime_config();
+        unica_daemon::transport::DaemonServerConfig {
+            state_root: self.state_root,
+            core_identity: self.core_identity,
+            idle_grace: self.idle_grace,
+            runtime,
+            observation: CapacityObservation(self.capacity_observer),
+        }
+    }
+}
+
+pub(crate) struct CapacityObservation(
+    Arc<crate::infrastructure::capacity_observation::CapacityObserver>,
+);
+
+impl unica_daemon::transport::ObservationLifecycle for CapacityObservation {
+    type Guard = crate::infrastructure::capacity_observation::CapacityWriterGuard;
+    fn start(
+        &self,
+        state: &unica_daemon::identity::DaemonStateDirectory,
+        authority_valid: Arc<dyn Fn() -> bool + Send + Sync>,
+    ) -> std::io::Result<Self::Guard> {
+        crate::infrastructure::capacity_observation::start_background_writer(
+            state,
+            Arc::clone(&self.0),
+            authority_valid,
+        )
     }
 }
 
@@ -1320,38 +1589,33 @@ mod legacy_inline_check_tests;
 
 #[cfg(test)]
 pub(crate) mod actor_capacity_tests {
-    use super::super::client_v5::V5DaemonProcessOwner;
-    use super::super::identity::DaemonStateDirectory;
-    use super::super::protocol_v5::{
-        V5DaemonTaskSnapshot, V5InvocationRequest, V5InvocationResponse, V5ServerResponse,
-    };
     use super::super::runner_015::VERSION as RUNNER_VERSION;
     use super::*;
-    use crate::application::invocation::INVOCATION_HANDOFF_WINDOW;
-    use crate::application::invocation_store::ToolIdentity;
-    use crate::application::operation_descriptors::KnownLongReason;
-    use crate::application::receipt_ledger::{ReceiptTerminalOutcome, V5ToolIdentity};
-    use crate::application::shared_work::{
-        ArtifactReady, DeliveryFormIdentity, DeliveryWorkKey, ProviderHostKey,
-    };
-    use crate::domain::code_intelligence::ProviderDeadline;
-    use crate::domain::invocation::InvocationStatus;
-    use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
-    use crate::infrastructure::platform::filesystem::retained_read_probe::{
-        RetainedRead, RetainedReadProbe,
-    };
-    use crate::infrastructure::runtime_jobs::{
-        RuntimeJobOperation, RuntimeJobRequest, RuntimeJobService,
-    };
+    use unica_analysis_services::provider_host::ProviderHostKey;
+    use unica_artifact_delivery::shared::{ArtifactReady, DeliveryFormIdentity, DeliveryWorkKey};
+    use unica_daemon::client_v5::V5DaemonProcessOwner;
+    use unica_daemon::identity::DaemonStateDirectory;
+    use unica_daemon::protocol_v5::{V5InvocationRequest, V5ServerResponse};
+    use unica_execution::invocation::INVOCATION_HANDOFF_WINDOW;
+    use unica_execution::invocation_store::ToolIdentity;
+    use unica_execution::receipt_ledger::{ReceiptTerminalOutcome, V5ToolIdentity};
+    use unica_execution::receipt_runtime::ports::KnownLongReason;
+    use unica_execution::receipt_runtime::response::{V5DaemonTaskSnapshot, V5InvocationResponse};
+    use unica_source_contract::{SourceFormat, SourceProfile, SourceSetKind};
+
+    use crate::infrastructure::source_workspace::WorkspaceActor;
     use crate::infrastructure::workspace::discover_workspace;
-    use crate::infrastructure::workspace_actor::{
-        IndexWorkIdentity, WorkspaceActor, WorkspaceSourceSetInput,
-    };
     use std::cell::RefCell;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{mpsc, Barrier, Condvar, Mutex};
     use std::thread;
     use std::time::Instant;
+    use unica_adapter_v8_runner::request::RuntimeJobRequest;
+    use unica_execution_contract::invocation::InvocationStatus;
+    use unica_runner::operation::RuntimeJobOperation;
+    use unica_work_control::provider_deadline::ProviderDeadline;
+    use unica_workspace::actor::{IndexWorkIdentity, WorkspaceSourceSetInput};
+    use unica_workspace::test_support::retained_read_probe::{RetainedRead, RetainedReadProbe};
 
     thread_local! {
         static LOGICAL_READ_NOW: RefCell<Option<Instant>> = const { RefCell::new(None) };
@@ -1451,10 +1715,13 @@ pub(crate) mod actor_capacity_tests {
                     {"op": "content.remove", "args": {"items": [{"object": "Catalog.Old"}]}}
                 ]
             });
-            let before = crate::test_support::tree_snapshot(workspace.path());
+            let before = unica_workspace::test_support::tree_snapshot(workspace.path());
             let preview = call(arguments.clone());
             assert!(preview.ok, "{preview:?}");
-            assert_eq!(before, crate::test_support::tree_snapshot(workspace.path()));
+            assert_eq!(
+                before,
+                unica_workspace::test_support::tree_snapshot(workspace.path())
+            );
             let applied = call(
                 serde_json::json!({"executionToken": preview.data.as_ref().unwrap()["executionToken"]}),
             );
@@ -1485,10 +1752,13 @@ pub(crate) mod actor_capacity_tests {
                 "at": "main:Subsystem.Sales",
                 "ops": [{"op": "childSubsystem.add", "args": {"items": [{"name": "Orders"}]}}]
             });
-            let before = crate::test_support::tree_snapshot(workspace.path());
+            let before = unica_workspace::test_support::tree_snapshot(workspace.path());
             let preview = call(child.clone());
             assert!(preview.ok, "{preview:?}");
-            assert_eq!(before, crate::test_support::tree_snapshot(workspace.path()));
+            assert_eq!(
+                before,
+                unica_workspace::test_support::tree_snapshot(workspace.path())
+            );
             assert!(!workspace
                 .path()
                 .join("src/Subsystems/Sales/Subsystems")
@@ -1525,10 +1795,13 @@ pub(crate) mod actor_capacity_tests {
                 "at": "main:Subsystem.Sales.Subsystem.Orders",
                 "ops": [{"op": "childSubsystem.remove", "args": {}}]
             });
-            let before = crate::test_support::tree_snapshot(workspace.path());
+            let before = unica_workspace::test_support::tree_snapshot(workspace.path());
             let preview = call(removal.clone());
             assert!(preview.ok, "{preview:?}");
-            assert_eq!(before, crate::test_support::tree_snapshot(workspace.path()));
+            assert_eq!(
+                before,
+                unica_workspace::test_support::tree_snapshot(workspace.path())
+            );
             let applied = call(
                 serde_json::json!({"executionToken": preview.data.as_ref().unwrap()["executionToken"]}),
             );
@@ -1838,7 +2111,7 @@ pub(crate) mod actor_capacity_tests {
                 serde_json::Value::Object(values)
             };
             let reordered = swap(&case.stored);
-            let before = crate::test_support::tree_snapshot(workspace.path());
+            let before = unica_workspace::test_support::tree_snapshot(workspace.path());
             let preview = interface_apply_call(
                 &runtime,
                 workspace.path(),
@@ -1846,7 +2119,7 @@ pub(crate) mod actor_capacity_tests {
             );
             assert!(preview.ok, "{}: {preview:?}", case.op);
             assert_eq!(
-                crate::test_support::tree_snapshot(workspace.path()),
+                unica_workspace::test_support::tree_snapshot(workspace.path()),
                 before,
                 "{}: preview writes nothing",
                 case.op
@@ -1884,7 +2157,7 @@ pub(crate) mod actor_capacity_tests {
                     case.op
                 );
                 assert_eq!(
-                    crate::test_support::tree_snapshot(workspace.path()),
+                    unica_workspace::test_support::tree_snapshot(workspace.path()),
                     before,
                     "{} {label}: a refusal writes nothing",
                     case.op
@@ -2127,7 +2400,7 @@ pub(crate) mod actor_capacity_tests {
             ]
         );
 
-        let before = crate::test_support::tree_snapshot(workspace.path());
+        let before = unica_workspace::test_support::tree_snapshot(workspace.path());
         // Вложенной подсистемы с таким именем нет — одноимённая корневая
         // `Продажи` с годным для этой перестановки интерфейсом целью не
         // становится.
@@ -2211,7 +2484,7 @@ pub(crate) mod actor_capacity_tests {
             }
         }
         assert_eq!(
-            crate::test_support::tree_snapshot(workspace.path()),
+            unica_workspace::test_support::tree_snapshot(workspace.path()),
             before,
             "отказы ничего не пишут"
         );
@@ -2229,7 +2502,7 @@ pub(crate) mod actor_capacity_tests {
         let original = std::fs::read_to_string(&path).unwrap();
         let mut commands = group_commands(&original, "NavigationPanelOrdinary");
         commands.swap(0, 1);
-        let before = crate::test_support::tree_snapshot(workspace.path());
+        let before = unica_workspace::test_support::tree_snapshot(workspace.path());
         let preview = interface_apply_call(
             &runtime,
             workspace.path(),
@@ -2240,7 +2513,10 @@ pub(crate) mod actor_capacity_tests {
             ),
         );
         assert!(preview.ok, "{preview:?}");
-        assert_eq!(crate::test_support::tree_snapshot(workspace.path()), before);
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(workspace.path()),
+            before
+        );
 
         let extended = original.replace(
             "\t</CommandsOrder>",
@@ -2277,7 +2553,7 @@ pub(crate) mod actor_capacity_tests {
         let workspace = interface_order_workspace();
         let runtime =
             V5CanonicalInvocationRuntime::new(canonical_v13_service(), Arc::new(TokioClock));
-        let before = crate::test_support::tree_snapshot(workspace.path());
+        let before = unica_workspace::test_support::tree_snapshot(workspace.path());
         let refused = interface_apply_call(
             &runtime,
             workspace.path(),
@@ -2292,7 +2568,10 @@ pub(crate) mod actor_capacity_tests {
             "not_found",
             "declares no group `CommandGroup.НетТакой`",
         );
-        assert_eq!(crate::test_support::tree_snapshot(workspace.path()), before);
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(workspace.path()),
+            before
+        );
     }
 
     #[test]
@@ -2321,7 +2600,7 @@ pub(crate) mod actor_capacity_tests {
             "at": "main:Subsystem.Sales",
             "ops": [{"op": "childSubsystem.add", "args": {"items": [{"name": "Orders"}]}}]
         });
-        let before = crate::test_support::tree_snapshot(workspace.path());
+        let before = unica_workspace::test_support::tree_snapshot(workspace.path());
         let preview = call(arguments.clone());
         assert!(preview.ok, "{preview:?}");
         arguments["ops"]
@@ -2347,7 +2626,10 @@ pub(crate) mod actor_capacity_tests {
                 .is_none());
             assert_eq!(refused_apply.diagnostics[0]["code"], "bad_value");
             assert!(format!("{refused_preview:?}").contains(property));
-            assert_eq!(before, crate::test_support::tree_snapshot(workspace.path()));
+            assert_eq!(
+                before,
+                unica_workspace::test_support::tree_snapshot(workspace.path())
+            );
             assert!(!workspace
                 .path()
                 .join("src/Subsystems/Sales/Subsystems")
@@ -2460,7 +2742,8 @@ pub(crate) mod actor_capacity_tests {
     fn canonical_dcs_check_accepts_external_report_processor_and_configuration() {
         for kind in ["ExternalReport", "ExternalDataProcessor", "Report"] {
             let (workspace, at, _) = dcs_check_workspace(kind);
-            let before = crate::test_support::tree_snapshot(&workspace.path().join("src"));
+            let before =
+                unica_workspace::test_support::tree_snapshot(&workspace.path().join("src"));
             let viewed = call_dcs_check(workspace.path(), ToolIdentity::View, &at);
             assert!(viewed.ok, "{kind}: {viewed:?}");
             let checked = call_dcs_check(workspace.path(), ToolIdentity::Check, &at);
@@ -2471,7 +2754,7 @@ pub(crate) mod actor_capacity_tests {
             assert_eq!(data["diagnosticCount"], 0);
             assert_eq!(
                 before,
-                crate::test_support::tree_snapshot(&workspace.path().join("src"))
+                unica_workspace::test_support::tree_snapshot(&workspace.path().join("src"))
             );
         }
     }
@@ -2529,7 +2812,8 @@ pub(crate) mod actor_capacity_tests {
                     ),
                 )
                 .unwrap();
-                let before = crate::test_support::tree_snapshot(&workspace.path().join("src"));
+                let before =
+                    unica_workspace::test_support::tree_snapshot(&workspace.path().join("src"));
                 let viewed = call(ToolIdentity::View, serde_json::json!({"at": at}));
                 assert!(viewed.ok, "{kind} {version:?}: {viewed:?}");
                 let checked = call(ToolIdentity::Check, serde_json::json!({"at": at}));
@@ -2572,7 +2856,7 @@ pub(crate) mod actor_capacity_tests {
                 }
                 assert_eq!(
                     before,
-                    crate::test_support::tree_snapshot(&workspace.path().join("src"))
+                    unica_workspace::test_support::tree_snapshot(&workspace.path().join("src"))
                 );
             }
         }
@@ -2603,7 +2887,7 @@ pub(crate) mod actor_capacity_tests {
             )
             .unwrap();
             std::fs::write(source.join("Other/Templates/Dcs/Ext/Template.xml"), valid).unwrap();
-            let before = crate::test_support::tree_snapshot(&source);
+            let before = unica_workspace::test_support::tree_snapshot(&source);
             assert!(call_dcs_check(workspace.path(), ToolIdentity::View, &at).ok);
             let checked = call_dcs_check(workspace.path(), ToolIdentity::Check, &at);
             assert!(checked.ok, "{checked:?}");
@@ -2631,7 +2915,10 @@ pub(crate) mod actor_capacity_tests {
                 "passed",
                 "{sibling:?}"
             );
-            assert_eq!(before, crate::test_support::tree_snapshot(&source));
+            assert_eq!(
+                before,
+                unica_workspace::test_support::tree_snapshot(&source)
+            );
         }
     }
 
@@ -2670,7 +2957,7 @@ pub(crate) mod actor_capacity_tests {
                 "missing" => std::fs::remove_file(body).unwrap(),
                 _ => unreachable!(),
             }
-            let before = crate::test_support::tree_snapshot(&source);
+            let before = unica_workspace::test_support::tree_snapshot(&source);
             let checked = call_dcs_check(workspace.path(), ToolIdentity::Check, &at);
             assert!(!checked.ok, "{case}: {checked:?}");
             assert_eq!(
@@ -2682,13 +2969,16 @@ pub(crate) mod actor_capacity_tests {
                 },
                 "{case}: {checked:?}"
             );
-            assert_eq!(before, crate::test_support::tree_snapshot(&source));
+            assert_eq!(
+                before,
+                unica_workspace::test_support::tree_snapshot(&source)
+            );
         }
     }
 
     #[test]
     fn canonical_dcs_check_refuses_linked_external_payload() {
-        use crate::infrastructure::platform::testing::{
+        use unica_workspace::test_support::{
             create_file_link_fixture_for_test, FileLinkFixtureOutcome,
         };
 
@@ -2929,12 +3219,12 @@ pub(crate) mod actor_capacity_tests {
 
     #[test]
     fn canonical_130_fresh_leases_share_one_payload_without_skipping_full_reads() {
-        use crate::application::result_store::ViewCollectionSnapshot;
         use crate::infrastructure::daemon::v13_service::{
             CanonicalV13ReadService, ViewCapabilityProbeForTest,
         };
         use crate::infrastructure::v13_read::CompletedViewProjectionProbeForTest;
         use std::collections::BTreeSet;
+        use unica_navigation::result_store::ViewCollectionSnapshot;
 
         const ADMISSIONS: usize = 130;
         const AT: &str = "main:CommonModule";
@@ -3230,7 +3520,7 @@ pub(crate) mod actor_capacity_tests {
     #[derive(Debug)]
     pub(crate) enum V5Submission {
         Direct(Box<DomainResult>),
-        Task(crate::domain::invocation::TaskId),
+        Task(unica_execution_contract::invocation::TaskId),
     }
 
     /// A live v5 daemon in a thread over a canonical runtime the test holds:
@@ -3263,7 +3553,7 @@ pub(crate) mod actor_capacity_tests {
 
         pub(crate) fn start_with_delivery_downloader(
             service: Arc<dyn CanonicalInvocationService>,
-            downloader: Arc<dyn unica_bootstrap::Downloader>,
+            downloader: Arc<dyn unica_artifact_delivery::Downloader>,
         ) -> Self {
             let canonical = Arc::new(
                 V5CanonicalInvocationRuntime::new(Arc::clone(&service), Arc::new(TokioClock))
@@ -3308,8 +3598,11 @@ pub(crate) mod actor_capacity_tests {
             owned_stop: Option<Arc<AtomicBool>>,
         ) -> std::thread::JoinHandle<Result<(), String>> {
             std::thread::spawn(move || match owned_stop {
-                Some(stop) => super::super::runtime_v5::run_daemon_until_for_test(config, stop),
-                None => super::super::runtime_v5::run_daemon(config),
+                Some(stop) => unica_daemon::transport::run_daemon_until_for_test(
+                    config.into_transport_config(),
+                    stop,
+                ),
+                None => unica_daemon::transport::run_daemon(config.into_transport_config()),
             })
         }
 
@@ -3338,8 +3631,8 @@ pub(crate) mod actor_capacity_tests {
             request: &InvocationRequest,
         ) -> V5Submission {
             let invocation = V5InvocationRequest::new(
-                crate::domain::invocation::InvocationId::new(),
-                crate::domain::invocation::TaskId::new(),
+                unica_execution_contract::invocation::InvocationId::new(),
+                unica_execution_contract::invocation::TaskId::new(),
                 v5_tool(request.tool()),
                 request.arguments().clone(),
                 unica_bootstrap::ResolvedWorkspace {
@@ -3378,7 +3671,7 @@ pub(crate) mod actor_capacity_tests {
             &self,
             owner: &V5DaemonProcessOwner,
             request: &InvocationRequest,
-        ) -> crate::domain::invocation::TaskId {
+        ) -> unica_execution_contract::invocation::TaskId {
             match self.submit(owner, request) {
                 V5Submission::Task(task_id) => task_id,
                 other => panic!("expected durable task: {other:?}"),
@@ -3388,7 +3681,7 @@ pub(crate) mod actor_capacity_tests {
         pub(crate) fn get(
             &self,
             owner: &V5DaemonProcessOwner,
-            task_id: crate::domain::invocation::TaskId,
+            task_id: unica_execution_contract::invocation::TaskId,
         ) -> V5DaemonTaskSnapshot {
             let deadline = Instant::now() + LIVE_V5_OPERATION_TIMEOUT;
             let mut peer = owner.connect_peer_before(deadline).expect("peer session");
@@ -3398,7 +3691,7 @@ pub(crate) mod actor_capacity_tests {
         pub(crate) fn cancel(
             &self,
             owner: &V5DaemonProcessOwner,
-            task_id: crate::domain::invocation::TaskId,
+            task_id: unica_execution_contract::invocation::TaskId,
         ) -> V5DaemonTaskSnapshot {
             let deadline = Instant::now() + LIVE_V5_OPERATION_TIMEOUT;
             let mut peer = owner.connect_peer_before(deadline).expect("peer session");
@@ -3411,7 +3704,7 @@ pub(crate) mod actor_capacity_tests {
         pub(crate) fn wait_terminal(
             &self,
             owner: &V5DaemonProcessOwner,
-            task_id: crate::domain::invocation::TaskId,
+            task_id: unica_execution_contract::invocation::TaskId,
             total: Duration,
         ) -> V5DaemonTaskSnapshot {
             let settle_by = Instant::now() + total;
@@ -3504,8 +3797,8 @@ pub(crate) mod actor_capacity_tests {
 
         let bound = runtime.bind(request).expect("export admission");
         assert!(matches!(
-            bound,
-            V5ActorBoundCanonicalInvocation::InfobaseExport { .. }
+            bound.0,
+            ActorBoundCanonicalInvocationState::InfobaseExport { .. }
         ));
         let prepared = bound.prepare().expect("export preparation");
         assert!(matches!(
@@ -3824,7 +4117,7 @@ pub(crate) mod actor_capacity_tests {
                         std::fs::create_dir_all(plugin.join(format!("bin/{target}"))).unwrap();
                         for tool in ["v8-runner", "bsl-analyzer"] {
                             std::fs::write(binary(tool), unstartable).unwrap();
-                            crate::infrastructure::platform::testing::clear_execute_permission_for_test(
+                            unica_workspace::test_support::clear_execute_permission_for_test(
                                 &binary(tool),
                             )
                             .unwrap();
@@ -3943,7 +4236,9 @@ pub(crate) mod actor_capacity_tests {
         const ROOT: &str = "UNICA_CANONICAL_DELIVERY_SUCCESS_ROOT";
         if std::env::var_os(CHILD).is_some() {
             use sha2::{Digest, Sha256};
-            use unica_bootstrap::{BootstrapError, DownloadObserver, Downloader, HostTarget};
+            use unica_artifact_delivery::{
+                BootstrapError, DownloadObserver, Downloader, HostTarget,
+            };
 
             struct PublishedFixture(
                 std::collections::BTreeMap<String, Vec<u8>>,
@@ -4458,8 +4753,8 @@ fn main() {
                 .bind(request)
                 .expect("extension admission without a source set");
             assert!(matches!(
-                bound,
-                V5ActorBoundCanonicalInvocation::Extensions { .. }
+                bound.0,
+                ActorBoundCanonicalInvocationState::Extensions { .. }
             ));
             assert_eq!(
                 bound.prepare().unwrap().execution_class(),
@@ -4534,7 +4829,7 @@ fn main() {
     pub(crate) fn canonical_view_without_at_bootstraps_an_empty_workspace() {
         let workspace = tempfile::tempdir().unwrap();
         let runtime = bootstrap_runtime();
-        let before = crate::test_support::tree_snapshot(workspace.path());
+        let before = unica_workspace::test_support::tree_snapshot(workspace.path());
 
         let result = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
 
@@ -4593,7 +4888,10 @@ fn main() {
             verdict_data["diagnostics"][0]["code"],
             "source_roots_missing"
         );
-        assert_eq!(before, crate::test_support::tree_snapshot(workspace.path()));
+        assert_eq!(
+            before,
+            unica_workspace::test_support::tree_snapshot(workspace.path())
+        );
     }
 
     #[test]
@@ -4936,7 +5234,7 @@ fn main() {
 
     #[test]
     fn canonical_view_bootstrap_classifies_broken_project_config_link_as_invalid() {
-        use crate::infrastructure::platform::testing::{
+        use unica_workspace::test_support::{
             create_file_link_fixture_for_test, FileLinkFixtureOutcome,
         };
 
@@ -5022,8 +5320,8 @@ fn main() {
     /// `check {}` on the same workspace still computes the verdict (#1457).
     #[test]
     fn canonical_view_bootstrap_leaves_project_health_to_the_root_check() {
-        use crate::infrastructure::internal_adapters::process_launch_probe::launches_under_for_test;
-        use crate::infrastructure::project_health::health_inspection_probe::inspections_for_test;
+        use unica_process::runner::process_launch_probe::launches_under_for_test;
+        use unica_project_health::inspection::health_inspection_probe::inspections_for_test;
 
         let (workspace, source) = source_selection_read_fixture();
         add_unrelated_catalogs(&source, 3);
@@ -5265,17 +5563,15 @@ fn main() {
                     "platform profile must fail closed through exact `ok_or_else`".to_string(),
                 );
             }
-            let syn::Expr::MethodCall(from_profile) = to_result.receiver.as_ref() else {
-                return Err(
-                    "platform profile must be derived from the bound source profile".to_string(),
-                );
-            };
+            let from_profile = call_arguments(
+                to_result.receiver.as_ref(),
+                "crate::domain::source_capabilities::bsl_profile_for_source",
+            )?;
             let Some(error_closure) = to_result.args.first() else {
                 return Err("platform profile requires one exact error closure".to_string());
             };
-            if from_profile.method != "platform_profile"
-                || !from_profile.args.is_empty()
-                || !expression_is(from_profile.receiver.as_ref(), "source_profile")
+            if from_profile.len() != 1
+                || !expression_is(&from_profile[0], "source_profile")
                 || !expression_is(
                     error_closure,
                     r#"|| {
@@ -7639,8 +7935,8 @@ struct ActorLogicalReadLease {"#,
     fn actor_read_source_capability_ast_audit_rejects_hardcoded_platform_profile() {
         let source = include_str!("invocation_service.rs");
         let hardcoded_profile = source.replacen(
-            "source_profile.platform_profile()",
-            "SourceProfile::platform_xml_8_3_27_format_2_20().platform_profile()",
+            "crate::domain::source_capabilities::bsl_profile_for_source(source_profile)",
+            "crate::domain::source_capabilities::bsl_profile_for_source(SourceProfile::platform_xml_8_3_27_format_2_20())",
             1,
         );
         assert!(
@@ -7725,7 +8021,7 @@ struct ActorLogicalReadLease {"#,
         )
         .unwrap();
         let context = discover_workspace(Some(workspace.path().to_path_buf())).unwrap();
-        let actor = WorkspaceActorRegistry::default()
+        let actor = crate::infrastructure::source_workspace::actor_registry()
             .get_or_create(
                 &context,
                 [WorkspaceSourceSetInput::new(
@@ -7869,8 +8165,8 @@ struct ActorLogicalReadLease {"#,
         assert_eq!(source_format, binding.source_format());
         assert_eq!(source_profile, binding.source_profile());
         assert_eq!(
-            source_profile.platform_profile(),
-            binding.source_profile().platform_profile(),
+            crate::domain::source_capabilities::bsl_profile_for_source(source_profile),
+            crate::domain::source_capabilities::bsl_profile_for_source(binding.source_profile()),
             "reader profile must be derived from the actor-issued source profile"
         );
     }
@@ -7879,16 +8175,16 @@ struct ActorLogicalReadLease {"#,
     fn production_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools() {
         struct PlatformDocsStandIn;
 
-        impl crate::domain::documentation::DocumentationProvider for PlatformDocsStandIn {
-            fn id(&self) -> crate::domain::documentation::DocumentationProviderId {
-                crate::domain::documentation::DocumentationProviderId::new("platform-test")
+        impl unica_documentation::model::DocumentationProvider for PlatformDocsStandIn {
+            fn id(&self) -> unica_documentation::model::DocumentationProviderId {
+                unica_documentation::model::DocumentationProviderId::new("platform-test")
             }
 
-            fn corpora(&self) -> Vec<crate::domain::documentation::DocumentationCorpus> {
-                vec![crate::domain::documentation::DocumentationCorpus {
+            fn corpora(&self) -> Vec<unica_documentation::model::DocumentationCorpus> {
+                vec![unica_documentation::model::DocumentationCorpus {
                     id: "platform-test".to_string(),
-                    source_kind: crate::domain::documentation::SourceKind::PlatformHelp,
-                    authority: crate::domain::documentation::Authority::Vendor,
+                    source_kind: unica_documentation::model::SourceKind::PlatformHelp,
+                    authority: unica_documentation::model::Authority::Vendor,
                 }]
             }
 
@@ -7898,14 +8194,14 @@ struct ActorLogicalReadLease {"#,
 
             fn search(
                 &self,
-                request: &crate::domain::documentation::DocumentationSearchRequest,
-                _: &crate::domain::documentation::DocumentationContext,
-            ) -> Vec<crate::domain::documentation::DocumentationSection> {
-                vec![crate::domain::documentation::DocumentationSection::empty(
+                request: &unica_documentation::model::DocumentationSearchRequest,
+                _: &unica_documentation::model::DocumentationContext,
+            ) -> Vec<unica_documentation::model::DocumentationSection> {
+                vec![unica_documentation::model::DocumentationSection::empty(
                     self.id(),
                     "platform-test",
-                    crate::domain::documentation::SourceKind::PlatformHelp,
-                    crate::domain::documentation::Authority::Vendor,
+                    unica_documentation::model::SourceKind::PlatformHelp,
+                    unica_documentation::model::Authority::Vendor,
                     &request.language,
                 )]
             }
@@ -8363,16 +8659,16 @@ struct ActorLogicalReadLease {"#,
     fn empty_cursor_reads_the_first_page_of_every_tool_that_publishes_one() {
         struct PlatformDocsStandIn;
 
-        impl crate::domain::documentation::DocumentationProvider for PlatformDocsStandIn {
-            fn id(&self) -> crate::domain::documentation::DocumentationProviderId {
-                crate::domain::documentation::DocumentationProviderId::new("platform-test")
+        impl unica_documentation::model::DocumentationProvider for PlatformDocsStandIn {
+            fn id(&self) -> unica_documentation::model::DocumentationProviderId {
+                unica_documentation::model::DocumentationProviderId::new("platform-test")
             }
 
-            fn corpora(&self) -> Vec<crate::domain::documentation::DocumentationCorpus> {
-                vec![crate::domain::documentation::DocumentationCorpus {
+            fn corpora(&self) -> Vec<unica_documentation::model::DocumentationCorpus> {
+                vec![unica_documentation::model::DocumentationCorpus {
                     id: "platform-test".to_string(),
-                    source_kind: crate::domain::documentation::SourceKind::PlatformHelp,
-                    authority: crate::domain::documentation::Authority::Vendor,
+                    source_kind: unica_documentation::model::SourceKind::PlatformHelp,
+                    authority: unica_documentation::model::Authority::Vendor,
                 }]
             }
 
@@ -8382,14 +8678,14 @@ struct ActorLogicalReadLease {"#,
 
             fn search(
                 &self,
-                request: &crate::domain::documentation::DocumentationSearchRequest,
-                _: &crate::domain::documentation::DocumentationContext,
-            ) -> Vec<crate::domain::documentation::DocumentationSection> {
-                vec![crate::domain::documentation::DocumentationSection::empty(
+                request: &unica_documentation::model::DocumentationSearchRequest,
+                _: &unica_documentation::model::DocumentationContext,
+            ) -> Vec<unica_documentation::model::DocumentationSection> {
+                vec![unica_documentation::model::DocumentationSection::empty(
                     self.id(),
                     "platform-test",
-                    crate::domain::documentation::SourceKind::PlatformHelp,
-                    crate::domain::documentation::Authority::Vendor,
+                    unica_documentation::model::SourceKind::PlatformHelp,
+                    unica_documentation::model::Authority::Vendor,
                     &request.language,
                 )]
             }
@@ -8498,7 +8794,7 @@ struct ActorLogicalReadLease {"#,
     fn saved_plan_diff_default_limit_pages_twenty_chunks_and_replays() {
         let (_state, _workspace, runtime, workspace_hint) = empty_cursor_and_diff_fixture();
         let source = std::path::Path::new(&workspace_hint).join("src");
-        let before = crate::test_support::tree_snapshot(&source);
+        let before = unica_workspace::test_support::tree_snapshot(&source);
         let call = |tool, arguments| {
             let request =
                 InvocationRequest::new(tool, arguments, workspace_hint.as_str(), 7_000).unwrap();
@@ -8567,7 +8863,7 @@ struct ActorLogicalReadLease {"#,
             serde_json::to_value(&last).unwrap()
         );
         assert_eq!(
-            crate::test_support::tree_snapshot(&source),
+            unica_workspace::test_support::tree_snapshot(&source),
             before,
             "planning and all saved-source page reads stay write-free"
         );
@@ -8577,7 +8873,7 @@ struct ActorLogicalReadLease {"#,
     fn saved_plan_diff_projects_its_continuation_in_the_canonical_envelope() {
         let workspace = subsystem_picture_workspace("", true);
         let source = workspace.path().join("src");
-        let before = crate::test_support::tree_snapshot(&source);
+        let before = unica_workspace::test_support::tree_snapshot(&source);
         let runtime = bootstrap_runtime();
         let preview = submit_canonical(
             &runtime,
@@ -8641,7 +8937,7 @@ struct ActorLogicalReadLease {"#,
             serde_json::to_value(&terminal).unwrap()
         );
         assert_eq!(
-            crate::test_support::tree_snapshot(&source),
+            unica_workspace::test_support::tree_snapshot(&source),
             before,
             "planning and cursor reads must not publish source edits"
         );
@@ -8652,7 +8948,7 @@ struct ActorLogicalReadLease {"#,
             serde_json::json!({"executionToken": token.clone()}),
         );
         assert!(applied.ok, "{applied:?}");
-        let published = crate::test_support::tree_snapshot(&source);
+        let published = unica_workspace::test_support::tree_snapshot(&source);
         assert_ne!(published, before);
         let replay = submit_canonical(
             &runtime,
@@ -8665,7 +8961,7 @@ struct ActorLogicalReadLease {"#,
             serde_json::to_value(&applied).unwrap()
         );
         assert_eq!(
-            crate::test_support::tree_snapshot(&source),
+            unica_workspace::test_support::tree_snapshot(&source),
             published,
             "applying the retained token again must replay without another source write"
         );
@@ -9985,7 +10281,7 @@ struct ActorLogicalReadLease {"#,
 
         assert_eq!(
             error.kind(),
-            crate::infrastructure::workspace_actor::ApplyPublicationErrorKind::Invariant
+            unica_workspace::actor::ApplyPublicationErrorKind::Invariant
         );
         assert_eq!(std::fs::read_to_string(descriptor).unwrap(), preimage);
     }
@@ -10074,7 +10370,7 @@ struct ActorLogicalReadLease {"#,
     fn saved_apply_token_survives_eight_other_workspace_profiles_and_replays_exactly() {
         let workspace = subsystem_picture_workspace("", true);
         let source = workspace.path().join("src");
-        let before = crate::test_support::tree_snapshot(&source);
+        let before = unica_workspace::test_support::tree_snapshot(&source);
         let runtime = bootstrap_runtime();
         let arguments = serde_json::json!({
             "at": "main:Subsystem.Sales",
@@ -10105,7 +10401,10 @@ struct ActorLogicalReadLease {"#,
         // These are complete public plan calls, not held actor leases. Their
         // eight distinct profiles cross the production warm cache's LRU edge.
         admit_others();
-        assert_eq!(crate::test_support::tree_snapshot(&source), before);
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&source),
+            before
+        );
         let executed = submit_canonical(
             &runtime,
             workspace.path(),
@@ -10116,7 +10415,7 @@ struct ActorLogicalReadLease {"#,
             executed.ok,
             "an issued plan was lost after unrelated profiles: {executed:?}"
         );
-        let published = crate::test_support::tree_snapshot(&source);
+        let published = unica_workspace::test_support::tree_snapshot(&source);
         assert!(std::fs::read_to_string(source.join("Subsystems/Sales.xml"))
             .unwrap()
             .contains("retained exact plan"));
@@ -10133,7 +10432,7 @@ struct ActorLogicalReadLease {"#,
             serde_json::to_value(&executed).unwrap()
         );
         assert_eq!(
-            crate::test_support::tree_snapshot(&source),
+            unica_workspace::test_support::tree_snapshot(&source),
             published,
             "replay changed the published source"
         );
@@ -10143,7 +10442,7 @@ struct ActorLogicalReadLease {"#,
     fn saved_apply_token_survives_temporary_named_root_validation_failure() {
         let workspace = subsystem_picture_workspace("", true);
         let source = workspace.path().join("src");
-        let before = crate::test_support::tree_snapshot(&source);
+        let before = unica_workspace::test_support::tree_snapshot(&source);
         let runtime = bootstrap_runtime();
         let preview = submit_canonical(
             &runtime,
@@ -10179,7 +10478,7 @@ struct ActorLogicalReadLease {"#,
         assert_eq!(unavailable.next[0]["tool"], "unica.apply");
         assert_eq!(unavailable.next[0]["args"]["executionToken"], token);
         assert_eq!(
-            crate::test_support::tree_snapshot(&source),
+            unica_workspace::test_support::tree_snapshot(&source),
             before,
             "отказ допуска не должен публиковать сохранённый план"
         );
@@ -10200,11 +10499,11 @@ struct ActorLogicalReadLease {"#,
     }
 
     fn saved_apply_survives_retention_age(age: Duration) {
-        use crate::infrastructure::workspace_actor::with_actor_retention_time_for_test;
+        use unica_workspace::actor::with_actor_retention_time_for_test;
 
         let workspace = subsystem_picture_workspace("", true);
         let source = workspace.path().join("src");
-        let before = crate::test_support::tree_snapshot(&source);
+        let before = unica_workspace::test_support::tree_snapshot(&source);
         let runtime = bootstrap_runtime();
         let started = Instant::now();
         let preview = with_actor_retention_time_for_test(started, || {
@@ -10217,7 +10516,10 @@ struct ActorLogicalReadLease {"#,
         });
         assert!(preview.ok, "{preview:?}");
         let token = preview.data.as_ref().unwrap()["executionToken"].clone();
-        assert_eq!(crate::test_support::tree_snapshot(&source), before);
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&source),
+            before
+        );
         let executed = with_actor_retention_time_for_test(started + age, || {
             submit_canonical(
                 &runtime,
@@ -10230,7 +10532,7 @@ struct ActorLogicalReadLease {"#,
             executed.ok,
             "accepted plan was lost after {age:?}: {executed:?}"
         );
-        let published = crate::test_support::tree_snapshot(&source);
+        let published = unica_workspace::test_support::tree_snapshot(&source);
         assert!(std::fs::read_to_string(source.join("Subsystems/Sales.xml"))
             .unwrap()
             .contains("retained after former time limits"));
@@ -10247,7 +10549,10 @@ struct ActorLogicalReadLease {"#,
             serde_json::to_value(&replayed).unwrap(),
             serde_json::to_value(&executed).unwrap()
         );
-        assert_eq!(crate::test_support::tree_snapshot(&source), published);
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&source),
+            published
+        );
     }
 
     #[test]
@@ -10262,7 +10567,7 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn saved_apply_refusal_replays_after_former_actor_idle_window_without_replanning() {
-        use crate::infrastructure::workspace_actor::with_actor_retention_time_for_test;
+        use unica_workspace::actor::with_actor_retention_time_for_test;
         let workspace = subsystem_picture_workspace("", true);
         let source = workspace.path().join("src");
         let runtime = bootstrap_runtime();
@@ -10281,7 +10586,7 @@ struct ActorLogicalReadLease {"#,
         let mut changed = std::fs::read(&descriptor).unwrap();
         changed.extend_from_slice(b"\n");
         std::fs::write(&descriptor, changed).unwrap();
-        let before = crate::test_support::tree_snapshot(&source);
+        let before = unica_workspace::test_support::tree_snapshot(&source);
         let refusal = with_actor_retention_time_for_test(started + Duration::from_secs(1), || {
             submit_canonical(
                 &runtime,
@@ -10307,7 +10612,10 @@ struct ActorLogicalReadLease {"#,
             serde_json::to_value(&replay).unwrap(),
             serde_json::to_value(&refusal).unwrap()
         );
-        assert_eq!(crate::test_support::tree_snapshot(&source), before);
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&source),
+            before
+        );
     }
 
     #[derive(Clone, Copy)]
@@ -10321,7 +10629,7 @@ struct ActorLogicalReadLease {"#,
         started: Instant,
         cleanup: CleanupBeforePromise,
     ) {
-        use crate::infrastructure::workspace_actor::with_actor_retention_time_for_test;
+        use unica_workspace::actor::with_actor_retention_time_for_test;
         match cleanup {
             CleanupBeforePromise::Idle => {
                 with_actor_retention_time_for_test(started + Duration::from_secs(601), || {
@@ -10337,10 +10645,10 @@ struct ActorLogicalReadLease {"#,
     fn saved_apply_token_survives_cleanup_before_live_invocation_creates_plan(
         cleanup: CleanupBeforePromise,
     ) {
-        use crate::infrastructure::workspace_actor::with_actor_retention_time_for_test;
+        use unica_workspace::actor::with_actor_retention_time_for_test;
         let workspace = subsystem_picture_workspace("", true);
         let source = workspace.path().join("src");
-        let before = crate::test_support::tree_snapshot(&source);
+        let before = unica_workspace::test_support::tree_snapshot(&source);
         let runtime = bootstrap_runtime();
         let started = Instant::now();
         let request = InvocationRequest::new(
@@ -10352,8 +10660,8 @@ struct ActorLogicalReadLease {"#,
         // Admission holds the actual actor while its promise tables are still
         // empty. Cleanup occurs before the real canonical handler saves a plan.
         let bound = with_actor_retention_time_for_test(started, || runtime.bind(request)).unwrap();
-        let observed = match &bound {
-            V5ActorBoundCanonicalInvocation::Workspace { invocation, .. } => {
+        let observed = match &bound.0 {
+            ActorBoundCanonicalInvocationState::Workspace { invocation, .. } => {
                 Arc::downgrade(invocation.actor_for_test())
             }
             _ => panic!("apply must bind its workspace actor"),
@@ -10366,7 +10674,7 @@ struct ActorLogicalReadLease {"#,
             .unwrap();
         assert!(preview.ok, "{preview:?}");
         assert_eq!(
-            crate::test_support::tree_snapshot(&source),
+            unica_workspace::test_support::tree_snapshot(&source),
             before,
             "preview must not write"
         );
@@ -10387,7 +10695,7 @@ struct ActorLogicalReadLease {"#,
             observed.upgrade().is_some(),
             "the promised plan retains its original actor"
         );
-        let published = crate::test_support::tree_snapshot(&source);
+        let published = unica_workspace::test_support::tree_snapshot(&source);
         assert!(std::fs::read_to_string(source.join("Subsystems/Sales.xml"))
             .unwrap()
             .contains("plan created after cleanup"));
@@ -10402,7 +10710,7 @@ struct ActorLogicalReadLease {"#,
             serde_json::to_value(&executed).unwrap()
         );
         assert_eq!(
-            crate::test_support::tree_snapshot(&source),
+            unica_workspace::test_support::tree_snapshot(&source),
             published,
             "exact replay must not write again"
         );
@@ -10426,7 +10734,7 @@ struct ActorLogicalReadLease {"#,
         completed_leased: bool,
         cleanup_before_creation: Option<CleanupBeforePromise>,
     ) {
-        use crate::infrastructure::workspace_actor::with_actor_retention_time_for_test;
+        use unica_workspace::actor::with_actor_retention_time_for_test;
 
         struct ReleaseProducer(mpsc::Sender<()>);
         impl Drop for ReleaseProducer {
@@ -10448,7 +10756,7 @@ struct ActorLogicalReadLease {"#,
         };
         let bound =
             with_actor_retention_time_for_test(started, || runtime.bind(request())).unwrap();
-        let V5ActorBoundCanonicalInvocation::Workspace { invocation, .. } = &bound else {
+        let ActorBoundCanonicalInvocationState::Workspace { invocation, .. } = &bound.0 else {
             panic!("initial call did not bind its actor");
         };
         let actor = invocation.actor_for_test();
@@ -10485,7 +10793,7 @@ struct ActorLogicalReadLease {"#,
             release.0.send(()).unwrap();
             assert!(matches!(
                 first_lease.wait_timeout(Duration::from_secs(2)),
-                crate::application::shared_work::SharedWorkSnapshot::Ready(_)
+                unica_work_control::shared_work::SharedWorkSnapshot::Ready(_)
             ));
             Some(first_lease)
         } else {
@@ -10497,7 +10805,7 @@ struct ActorLogicalReadLease {"#,
             runtime.bind(request())
         })
         .unwrap();
-        let V5ActorBoundCanonicalInvocation::Workspace { invocation, .. } = &second else {
+        let ActorBoundCanonicalInvocationState::Workspace { invocation, .. } = &second.0 else {
             panic!("later call did not bind its actor");
         };
         let second_actor = invocation.actor_for_test();
@@ -10526,7 +10834,7 @@ struct ActorLogicalReadLease {"#,
         let outcome = second_lease.wait_timeout(Duration::from_secs(2));
         assert!(matches!(
             outcome,
-            crate::application::shared_work::SharedWorkSnapshot::Ready(_)
+            unica_work_control::shared_work::SharedWorkSnapshot::Ready(_)
         ));
         assert_eq!(
             first_key, second_key,
@@ -10571,7 +10879,7 @@ struct ActorLogicalReadLease {"#,
     fn saved_apply_more_than_256_plans_keep_earlier_tokens_without_writes() {
         let workspace = subsystem_picture_workspace("", true);
         let source = workspace.path().join("src");
-        let before = crate::test_support::tree_snapshot(&source);
+        let before = unica_workspace::test_support::tree_snapshot(&source);
         let runtime = bootstrap_runtime();
         let arguments = serde_json::json!({
             "at": "main:Subsystem.Sales",
@@ -10597,7 +10905,10 @@ struct ActorLogicalReadLease {"#,
             .as_ref()
             .and_then(|data| data.get("executionToken"))
             .is_some());
-        assert_eq!(crate::test_support::tree_snapshot(&source), before);
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&source),
+            before
+        );
         let executed = submit_canonical(
             &runtime,
             workspace.path(),
@@ -10728,13 +11039,16 @@ struct ActorLogicalReadLease {"#,
             .unwrap()
             .contains("от второго"));
 
-        let committed = crate::test_support::tree_snapshot(&source);
+        let committed = unica_workspace::test_support::tree_snapshot(&source);
         let replay = publish(&retry_fence.1);
         assert_eq!(
             serde_json::to_value(&retry).unwrap(),
             serde_json::to_value(&replay).unwrap()
         );
-        assert_eq!(crate::test_support::tree_snapshot(&source), committed);
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&source),
+            committed
+        );
 
         let pending = preview("после перезапуска");
         let restarted = V5CanonicalInvocationRuntime::new(
@@ -10753,7 +11067,10 @@ struct ActorLogicalReadLease {"#,
             !unavailable.ok,
             "another actor must not reconstruct a lost plan"
         );
-        assert_eq!(crate::test_support::tree_snapshot(&source), committed);
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&source),
+            committed
+        );
         let fresh = submit_canonical(
             &restarted,
             workspace.path(),
@@ -10831,11 +11148,11 @@ struct ActorLogicalReadLease {"#,
         ] {
             let workspace = scheduled_handler_workspace(source_kind, handler);
             let source = workspace.path().join("src");
-            let before = crate::test_support::tree_snapshot(&source);
+            let before = unica_workspace::test_support::tree_snapshot(&source);
             let runtime = bootstrap_runtime();
             let planned = submit_canonical(&runtime, workspace.path(), ToolIdentity::Apply, scheduled_job_create_plan());
             assert!(planned.ok, "{source_kind}: {planned:?}");
-            assert_eq!(crate::test_support::tree_snapshot(&source), before);
+            assert_eq!(unica_workspace::test_support::tree_snapshot(&source), before);
             let plan = planned.data.as_ref().unwrap();
             assert!(plan["executionToken"].as_str().is_some_and(|token| !token.is_empty()));
             let applied = submit_canonical(
@@ -10868,7 +11185,7 @@ struct ActorLogicalReadLease {"#,
                 "Procedure Run(Required, Optional = False) Export\nEndProcedure\n",
             );
             let source = workspace.path().join("src");
-            let before = crate::test_support::tree_snapshot(&source);
+            let before = unica_workspace::test_support::tree_snapshot(&source);
             let runtime = bootstrap_runtime();
             let refused = submit_canonical(
                 &runtime,
@@ -10884,7 +11201,10 @@ struct ActorLogicalReadLease {"#,
                 .and_then(|data| data.get("executionToken"))
                 .is_none());
             assert!(refused.changed.is_empty());
-            assert_eq!(crate::test_support::tree_snapshot(&source), before);
+            assert_eq!(
+                unica_workspace::test_support::tree_snapshot(&source),
+                before
+            );
             assert!(!source.join("ScheduledJobs/Nightly.xml").exists());
         }
     }
@@ -10910,7 +11230,7 @@ struct ActorLogicalReadLease {"#,
             let foreign = "Procedure Run(Manual = True) Export\nEndProcedure\n";
             let module = source.join("CommonModules/Handlers/Ext/Module.bsl");
             std::fs::write(&module, foreign).unwrap();
-            let before_execution = crate::test_support::tree_snapshot(&source);
+            let before_execution = unica_workspace::test_support::tree_snapshot(&source);
             let refused = submit_canonical(
                 &runtime,
                 workspace.path(),
@@ -10924,7 +11244,7 @@ struct ActorLogicalReadLease {"#,
             );
             assert!(refused.changed.is_empty());
             assert_eq!(
-                crate::test_support::tree_snapshot(&source),
+                unica_workspace::test_support::tree_snapshot(&source),
                 before_execution
             );
             assert_eq!(std::fs::read_to_string(module).unwrap(), foreign);
@@ -11100,13 +11420,16 @@ struct ActorLogicalReadLease {"#,
             direct_v5(&runtime, request).unwrap()
         };
         let apply_pair = |at: &str, ops: serde_json::Value| {
-            let before = crate::test_support::tree_snapshot(&source);
+            let before = unica_workspace::test_support::tree_snapshot(&source);
             let preview = call(
                 ToolIdentity::Apply,
                 serde_json::json!({"at": at, "ops": ops}),
             );
             assert!(preview.ok, "preview failed: {preview:?}");
-            assert_eq!(crate::test_support::tree_snapshot(&source), before);
+            assert_eq!(
+                unica_workspace::test_support::tree_snapshot(&source),
+                before
+            );
             let token = &preview.data.as_ref().unwrap()["executionToken"];
             assert!(token.is_string(), "{preview:?}");
             let published = call(
@@ -11270,7 +11593,7 @@ struct ActorLogicalReadLease {"#,
         );
 
         // Poison a batch after a valid addition: neither operation may leak to disk.
-        let before = crate::test_support::tree_snapshot(&source);
+        let before = unica_workspace::test_support::tree_snapshot(&source);
         {
             let refused = call(
                 ToolIdentity::Apply,
@@ -11294,7 +11617,10 @@ struct ActorLogicalReadLease {"#,
                     .any(|diagnostic| diagnostic.to_string().contains("FORM_EVENT_NOT_ALLOWED")),
                 "{refused:?}"
             );
-            assert_eq!(crate::test_support::tree_snapshot(&source), before);
+            assert_eq!(
+                unica_workspace::test_support::tree_snapshot(&source),
+                before
+            );
         }
         for invalid_item in [
             serde_json::json!({"name": "MixedInput", "type": "InputField", "html": "MixedInput", "path": "HtmlSource"}),
@@ -11325,7 +11651,10 @@ struct ActorLogicalReadLease {"#,
                     .data
                     .as_ref()
                     .is_none_or(|data| data.get("executionToken").is_none()));
-                assert_eq!(crate::test_support::tree_snapshot(&source), before);
+                assert_eq!(
+                    unica_workspace::test_support::tree_snapshot(&source),
+                    before
+                );
             }
         }
 
@@ -11342,7 +11671,7 @@ struct ActorLogicalReadLease {"#,
         for highest in [usize::MAX, usize::MAX - 1, usize::MAX - 2] {
             let exhausted = original.replace(&marker, &format!("name=\"Html\" id=\"{highest}\""));
             std::fs::write(&form_path, exhausted).unwrap();
-            let before = crate::test_support::tree_snapshot(&source);
+            let before = unica_workspace::test_support::tree_snapshot(&source);
             let refused = call(
                 ToolIdentity::Apply,
                 serde_json::json!({
@@ -11368,7 +11697,10 @@ struct ActorLogicalReadLease {"#,
                 "{refused:?}"
             );
             assert!(refused.changed.is_empty(), "{refused:?}");
-            assert_eq!(crate::test_support::tree_snapshot(&source), before);
+            assert_eq!(
+                unica_workspace::test_support::tree_snapshot(&source),
+                before
+            );
         }
     }
 
@@ -11405,7 +11737,7 @@ struct ActorLogicalReadLease {"#,
             direct_v5(&runtime, request).unwrap()
         };
         let publish = |ops: serde_json::Value| {
-            let before = crate::test_support::tree_snapshot(workspace.path());
+            let before = unica_workspace::test_support::tree_snapshot(workspace.path());
             let creates_object = ops[0]["op"] == "object.create";
             let at = if creates_object {
                 "main:Configuration"
@@ -11418,7 +11750,7 @@ struct ActorLogicalReadLease {"#,
             );
             assert!(preview.ok, "{preview:?}");
             assert_eq!(
-                crate::test_support::tree_snapshot(workspace.path()),
+                unica_workspace::test_support::tree_snapshot(workspace.path()),
                 before,
                 "planning writes nothing"
             );
@@ -11494,13 +11826,16 @@ struct ActorLogicalReadLease {"#,
         let observed = view_type();
         assert_eq!(observed["variants"][0]["kind"], "reference");
         assert_eq!(observed["variants"][0]["metadataPath"], "Catalog.Products");
-        let before_noop = crate::test_support::tree_snapshot(&source);
+        let before_noop = unica_workspace::test_support::tree_snapshot(&source);
         let noop = publish(reference);
         assert_eq!(noop.data.as_ref().unwrap()["effects"], 0);
-        assert_eq!(crate::test_support::tree_snapshot(&source), before_noop);
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&source),
+            before_noop
+        );
 
         for (name, invalid_arguments) in [("Enabled", false), ("NewInvalidConst", true)] {
-            let before = crate::test_support::tree_snapshot(workspace.path());
+            let before = unica_workspace::test_support::tree_snapshot(workspace.path());
             let mut create_args = serde_json::json!({"values": {"kind": "Constant", "name": name}});
             if invalid_arguments {
                 create_args["bogus"] = serde_json::json!(true);
@@ -11528,14 +11863,14 @@ struct ActorLogicalReadLease {"#,
                 "failed planning must not mint an executable token: {refused:?}"
             );
             assert_eq!(
-                crate::test_support::tree_snapshot(workspace.path()),
+                unica_workspace::test_support::tree_snapshot(workspace.path()),
                 before,
                 "{name}: failed create batch must not publish"
             );
         }
 
         // A valid first operation must not leak when a later type is invalid.
-        let before = crate::test_support::tree_snapshot(workspace.path());
+        let before = unica_workspace::test_support::tree_snapshot(workspace.path());
         let refused = call(
             ToolIdentity::Apply,
             serde_json::json!({
@@ -11557,7 +11892,7 @@ struct ActorLogicalReadLease {"#,
             "invalid batch must not mint an executable token: {refused:?}"
         );
         assert_eq!(
-            crate::test_support::tree_snapshot(workspace.path()),
+            unica_workspace::test_support::tree_snapshot(workspace.path()),
             before,
             "invalid batch must be atomic"
         );
@@ -11597,19 +11932,15 @@ struct ActorLogicalReadLease {"#,
             Arc::new(TokioClock),
         );
         let workspace_hint = std::fs::canonicalize(workspace.path()).unwrap();
-        let index_context = crate::domain::workspace::WorkspaceContext {
+        let index_context = unica_source_contract::workspace::WorkspaceContext {
             cwd: workspace_hint.clone(),
             workspace_root: workspace_hint.clone(),
             cache_root: workspace_hint.join(".build/unica"),
             workspace_epoch: 0,
         };
-        let index_state_root = crate::infrastructure::workspace_index::rlm_provider_state_root(
-            &index_context,
-            &source,
-        )
-        .unwrap();
-        let index_status =
-            crate::infrastructure::workspace_index::status_path(&index_context, &source).unwrap();
+        let index_state_root =
+            unica_adapter_rlm::index::rlm_provider_state_root(&index_context, &source).unwrap();
+        let index_status = unica_adapter_rlm::index::status_path(&index_context, &source).unwrap();
         let index_lock = index_state_root.join("locks/rlm-bsl/index-v17/bsl_index.lock");
         std::fs::create_dir_all(index_status.parent().unwrap()).unwrap();
         std::fs::create_dir_all(index_lock.parent().unwrap()).unwrap();
@@ -11646,14 +11977,12 @@ struct ActorLogicalReadLease {"#,
         .unwrap();
         // Эта ловушка изменилась бы при любой проверке готовности индекса:
         // устаревшая блокировка стала бы recovered, а состояние — failed.
-        let index_state_before = crate::test_support::tree_snapshot(&index_state_root);
+        let index_state_before = unica_workspace::test_support::tree_snapshot(&index_state_root);
 
         struct IndexBuildObserverReset;
         impl Drop for IndexBuildObserverReset {
             fn drop(&mut self) {
-                crate::infrastructure::workspace_index::set_isolated_build_start_observer_for_test(
-                    None,
-                );
+                unica_adapter_rlm::index::set_isolated_build_start_observer_for_test(None);
             }
         }
         let call = |arguments| {
@@ -11673,11 +12002,9 @@ struct ActorLogicalReadLease {"#,
             let (dry, repeated_dry) = {
                 // Наблюдатель стоит на первой строке start_isolated_build и
                 // видит вызов даже до раннего отказа доставки RLM или записи.
-                crate::infrastructure::workspace_index::set_isolated_build_start_observer_for_test(
-                    Some(Box::new(move |_| {
-                        observed_starts.set(observed_starts.get() + 1)
-                    })),
-                );
+                unica_adapter_rlm::index::set_isolated_build_start_observer_for_test(Some(
+                    Box::new(move |_| observed_starts.set(observed_starts.get() + 1)),
+                ));
                 let _reset = IndexBuildObserverReset;
                 (
                     call(serde_json::json!({
@@ -11694,7 +12021,7 @@ struct ActorLogicalReadLease {"#,
             assert_eq!(std::fs::read(&descriptor).unwrap(), before);
             assert_eq!(index_starts.get(), 0, "preview started RLM indexing");
             assert_eq!(
-                crate::test_support::tree_snapshot(&index_state_root),
+                unica_workspace::test_support::tree_snapshot(&index_state_root),
                 index_state_before,
                 "preview wrote RLM index state"
             );
@@ -11778,15 +12105,15 @@ struct ActorLogicalReadLease {"#,
     /// callback — apply is never re-executed to resume it.
     #[test]
     pub(crate) fn working_task_recovery_is_resume_unsupported_without_apply_reexecution() {
-        use crate::application::invocation_store::EpochMillisClock;
-        use crate::application::invocation_store_v5::{
+        use std::str::FromStr;
+        use unica_execution::invocation_store::EpochMillisClock;
+        use unica_execution::invocation_store_v5::{
             InvocationStoreV5, NewV5InvocationRecord, RecoveryTerminalReason, V5SafeFailureReason,
             V5StoredTask, V5TaskIdentity,
         };
-        use crate::application::receipt_ledger::ReceiptKeyDigest;
-        use crate::domain::code_intelligence::ProviderDeadline;
-        use crate::infrastructure::task_store_v5::FileInvocationStoreV5;
-        use std::str::FromStr;
+        use unica_execution::receipt_ledger::ReceiptKeyDigest;
+        use unica_execution::task_store::FileInvocationStoreV5;
+        use unica_work_control::provider_deadline::ProviderDeadline;
 
         struct FixedEpoch(u64);
         impl EpochMillisClock for FixedEpoch {
@@ -11812,13 +12139,15 @@ struct ActorLogicalReadLease {"#,
             .create_exact(
                 NewV5InvocationRecord::new(
                     V5TaskIdentity::new(
-                        crate::domain::invocation::TaskId::new(),
-                        crate::domain::invocation::InvocationId::new(),
+                        unica_execution_contract::invocation::TaskId::new(),
+                        unica_execution_contract::invocation::InvocationId::new(),
                         ReceiptKeyDigest::from_str(&"91".repeat(32)).unwrap(),
                     ),
                     V5ToolIdentity::Apply,
-                    crate::domain::invocation::NormalizedArgumentsHash::from_sha256([0x91; 32]),
-                    crate::domain::invocation::SafeIdentityHash::from_sha256([0x92; 32]),
+                    unica_execution_contract::invocation::NormalizedArgumentsHash::from_sha256(
+                        [0x91; 32],
+                    ),
+                    unica_execution_contract::invocation::SafeIdentityHash::from_sha256([0x92; 32]),
                     250,
                     60_000,
                 )
@@ -12230,7 +12559,7 @@ struct ActorLogicalReadLease {"#,
         assert!(viewed.ok, "{viewed:?}");
 
         let (provider, analyzer) =
-            crate::infrastructure::diagnostics::analyze_timeout_probe::recording_provider();
+            unica_adapter_bsl_analyzer::diagnostics::analyze_timeout_probe::recording_provider();
         crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
             .with(|slot| *slot.borrow_mut() = Some(provider));
         let check = admit(
@@ -12271,10 +12600,8 @@ struct ActorLogicalReadLease {"#,
     /// and an elapsed finite cutoff must not become absence or consume the plan.
     #[test]
     fn saved_apply_adapter_preserves_the_existing_cutoff_and_absence() {
-        use crate::domain::operation_deadline::OperationDeadline;
-        use crate::infrastructure::workspace_actor::{
-            ApplyPublicationErrorKind, SavedApplyExecutionError,
-        };
+        use unica_work_control::operation_deadline::OperationDeadline;
+        use unica_workspace::actor::{ApplyPublicationErrorKind, SavedApplyExecutionError};
 
         let now = Instant::now();
         for deadline in [
@@ -12284,7 +12611,7 @@ struct ActorLogicalReadLease {"#,
         ] {
             let workspace = subsystem_picture_workspace("", true);
             let source = workspace.path().join("src");
-            let before = crate::test_support::tree_snapshot(&source);
+            let before = unica_workspace::test_support::tree_snapshot(&source);
             let runtime = bootstrap_runtime();
             let preview = submit_canonical(
                 &runtime,
@@ -12296,7 +12623,10 @@ struct ActorLogicalReadLease {"#,
                 }),
             );
             assert!(preview.ok, "{preview:?}");
-            assert_eq!(crate::test_support::tree_snapshot(&source), before);
+            assert_eq!(
+                unica_workspace::test_support::tree_snapshot(&source),
+                before
+            );
             let token = preview.data.as_ref().unwrap()["executionToken"]
                 .as_str()
                 .unwrap();
@@ -12346,7 +12676,10 @@ struct ActorLogicalReadLease {"#,
                     Err(SavedApplyExecutionError::Publication(error))
                         if error.kind() == ApplyPublicationErrorKind::Deadline
                 ));
-                assert_eq!(crate::test_support::tree_snapshot(&source), before);
+                assert_eq!(
+                    unica_workspace::test_support::tree_snapshot(&source),
+                    before
+                );
                 let retried = execution
                     .execute_saved_apply(
                         token,
@@ -12384,7 +12717,7 @@ struct ActorLogicalReadLease {"#,
     #[test]
     fn execution_boundary_names_a_changed_workspace_only_for_a_lost_binding() {
         use super::invocation_service::ExecutionBoundaryError;
-        use crate::application::invocation_store_v5::V5SafeFailureReason;
+        use unica_execution::invocation_store_v5::V5SafeFailureReason;
         for (error, reason) in [
             (
                 ExecutionBoundaryError::binding_changed(
@@ -12416,7 +12749,7 @@ struct ActorLogicalReadLease {"#,
     /// `provider_absent`; the engine's own text never reaches the answer.
     #[test]
     fn module_check_names_why_the_analyzer_gave_no_result() {
-        use crate::infrastructure::internal_adapters::AnalyzerRunFailureKind;
+        use unica_adapter_bsl_analyzer::adapter::AnalyzerRunFailureKind;
         let workspace =
             scheduled_handler_workspace("CONFIGURATION", "Procedure Run() Export\nEndProcedure\n");
         let runtime = bootstrap_runtime();
@@ -12468,7 +12801,7 @@ struct ActorLogicalReadLease {"#,
             .unwrap();
             crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE.with(|slot| {
                 *slot.borrow_mut() =
-                    Some(crate::infrastructure::diagnostics::analyze_timeout_probe::failing_provider(kind))
+                    Some(unica_adapter_bsl_analyzer::diagnostics::analyze_timeout_probe::failing_provider(kind))
             });
             let checked = service.execute(&check, cancellation.clone()).unwrap();
             crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
@@ -12528,7 +12861,8 @@ struct ActorLogicalReadLease {"#,
             .begin_execution(&cancellation)
             .unwrap();
             let (provider, _analyzer) =
-                crate::infrastructure::diagnostics::analyze_timeout_probe::recording_provider();
+                unica_adapter_bsl_analyzer::diagnostics::analyze_timeout_probe::recording_provider(
+                );
             crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
                 .with(|slot| *slot.borrow_mut() = Some(provider));
             let checked = service.execute(&check, cancellation.clone());
@@ -12592,7 +12926,7 @@ struct ActorLogicalReadLease {"#,
     fn module_check_answers_working_while_the_analyzer_is_being_delivered() {
         const CHILD: &str = "UNICA_CHECK_DELIVERY_WORKING_CHILD";
         if std::env::var_os(CHILD).is_some() {
-            use unica_bootstrap::{BootstrapError, DownloadObserver, Downloader};
+            use unica_artifact_delivery::{BootstrapError, DownloadObserver, Downloader};
 
             /// Holds the only download until the test releases it, so the
             /// delivery stays in flight while `check` runs.
@@ -12633,7 +12967,7 @@ struct ActorLogicalReadLease {"#,
                         &plugin,
                         "bsl-analyzer",
                         &CancellationToken::new(),
-                        &crate::domain::progress::NoopProgressSink,
+                        &unica_work_control::progress::NoopProgressSink,
                     )
                 })
             };
@@ -12680,7 +13014,7 @@ struct ActorLogicalReadLease {"#,
             assert!(
                 !matches!(
                     owner.join().unwrap(),
-                    crate::application::shared_work::EngineDeliveryState::Ready(_)
+                    unica_artifact_delivery::shared::EngineDeliveryState::Ready(_)
                 ),
                 "the held download never produces the analyzer"
             );
@@ -12729,7 +13063,7 @@ struct ActorLogicalReadLease {"#,
         let version = env!("CARGO_PKG_VERSION");
         let mut core_targets = serde_json::Map::new();
         let mut analyzer_targets = serde_json::Map::new();
-        for host in unica_bootstrap::HostTarget::ALL {
+        for host in unica_artifact_delivery::HostTarget::ALL {
             let host = host.as_str();
             let suffix = if host == "win-x64" { ".exe" } else { "" };
             let core_asset = format!("unica-runtime-{host}.tar.gz");
@@ -12779,7 +13113,7 @@ struct ActorLogicalReadLease {"#,
         assert!(output.status.success(), "{stdout}\n{stderr}");
     }
 
-    fn checked_text_leaks(result: &crate::domain::invocation::DomainResult) -> bool {
+    fn checked_text_leaks(result: &unica_execution_contract::invocation::DomainResult) -> bool {
         let text = serde_json::to_string(result).unwrap();
         text.contains("private-token") || text.contains("/private/engine")
     }
@@ -12789,13 +13123,22 @@ struct ActorLogicalReadLease {"#,
     /// секции `callGraph` нет; чтение ветви спрашивает граф в обоих направлениях.
     #[test]
     fn method_view_names_call_graph_branches_without_asking_the_analyzer() {
-        use crate::domain::code_intelligence::{
-            CallEdgeProvenance, CallGraphDirection, CallGraphEdge, CallGraphResult, CallGraphState,
-            CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceReadData,
-            CodeIntelligenceReadRequest, ProviderCapability, ProviderDeadline, ProviderIdentity,
-            ProviderReadOutcome, ProviderRole, ProviderSearchSection, SearchRequest,
-        };
         use std::sync::atomic::{AtomicUsize, Ordering};
+        use unica_code_intelligence::model::CallEdgeProvenance;
+        use unica_code_intelligence::model::CallGraphDirection;
+        use unica_code_intelligence::model::CallGraphEdge;
+        use unica_code_intelligence::model::CallGraphResult;
+        use unica_code_intelligence::model::CallGraphState;
+        use unica_code_intelligence::model::CodeIntelligenceContext;
+        use unica_code_intelligence::model::CodeIntelligenceProvider;
+        use unica_code_intelligence::model::CodeIntelligenceReadData;
+        use unica_code_intelligence::model::CodeIntelligenceReadRequest;
+        use unica_code_intelligence::model::ProviderCapability;
+        use unica_code_intelligence::model::ProviderIdentity;
+        use unica_code_intelligence::model::ProviderReadOutcome;
+        use unica_code_intelligence::model::ProviderRole;
+        use unica_code_intelligence::model::ProviderSearchSection;
+        use unica_code_intelligence::model::SearchRequest;
 
         struct CountingCallGraph(AtomicUsize);
         impl CodeIntelligenceProvider for CountingCallGraph {
@@ -12950,13 +13293,21 @@ struct ActorLogicalReadLease {"#,
     }
     #[test]
     fn saved_call_graph_pages_survive_deleted_owner_without_analyzer_reads() {
-        use crate::domain::code_intelligence::{
-            CallEdgeProvenance, CallGraphEdge, CallGraphResult, CallGraphState,
-            CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceReadData,
-            CodeIntelligenceReadRequest, ProviderCapability, ProviderDeadline, ProviderIdentity,
-            ProviderReadOutcome, ProviderRole, ProviderSearchSection, SearchRequest,
-        };
         use std::sync::atomic::{AtomicUsize, Ordering};
+        use unica_code_intelligence::model::CallEdgeProvenance;
+        use unica_code_intelligence::model::CallGraphEdge;
+        use unica_code_intelligence::model::CallGraphResult;
+        use unica_code_intelligence::model::CallGraphState;
+        use unica_code_intelligence::model::CodeIntelligenceContext;
+        use unica_code_intelligence::model::CodeIntelligenceProvider;
+        use unica_code_intelligence::model::CodeIntelligenceReadData;
+        use unica_code_intelligence::model::CodeIntelligenceReadRequest;
+        use unica_code_intelligence::model::ProviderCapability;
+        use unica_code_intelligence::model::ProviderIdentity;
+        use unica_code_intelligence::model::ProviderReadOutcome;
+        use unica_code_intelligence::model::ProviderRole;
+        use unica_code_intelligence::model::ProviderSearchSection;
+        use unica_code_intelligence::model::SearchRequest;
 
         struct CountingCallGraph(AtomicUsize);
         impl CodeIntelligenceProvider for CountingCallGraph {
@@ -13119,7 +13470,7 @@ struct ActorLogicalReadLease {"#,
     fn call_graph_branch_answers_working_while_the_analyzer_is_being_delivered() {
         const CHILD: &str = "UNICA_CALL_GRAPH_DELIVERY_WORKING_CHILD";
         if std::env::var_os(CHILD).is_some() {
-            use unica_bootstrap::{BootstrapError, DownloadObserver, Downloader};
+            use unica_artifact_delivery::{BootstrapError, DownloadObserver, Downloader};
 
             /// Holds the only download until the test releases it, so the
             /// delivery stays in flight while the branch view runs.
@@ -13160,7 +13511,7 @@ struct ActorLogicalReadLease {"#,
                         &plugin,
                         "bsl-analyzer",
                         &CancellationToken::new(),
-                        &crate::domain::progress::NoopProgressSink,
+                        &unica_work_control::progress::NoopProgressSink,
                     )
                 })
             };
@@ -13208,7 +13559,7 @@ struct ActorLogicalReadLease {"#,
             assert!(
                 !matches!(
                     owner.join().unwrap(),
-                    crate::application::shared_work::EngineDeliveryState::Ready(_)
+                    unica_artifact_delivery::shared::EngineDeliveryState::Ready(_)
                 ),
                 "the held download never produces the analyzer"
             );
@@ -13258,7 +13609,7 @@ struct ActorLogicalReadLease {"#,
         let version = env!("CARGO_PKG_VERSION");
         let mut core_targets = serde_json::Map::new();
         let mut analyzer_targets = serde_json::Map::new();
-        for host in unica_bootstrap::HostTarget::ALL {
+        for host in unica_artifact_delivery::HostTarget::ALL {
             let host = host.as_str();
             let suffix = if host == "win-x64" { ".exe" } else { "" };
             let core_asset = format!("unica-runtime-{host}.tar.gz");
@@ -13678,7 +14029,7 @@ struct ActorLogicalReadLease {"#,
             .unwrap();
         assert!(!result.ok);
         assert_eq!(result.diagnostics[0]["code"], "cancelled");
-        if crate::infrastructure::platform::filesystem::supports_retained_root_replacement_test() {
+        if unica_workspace::test_support::supports_retained_root_replacement_test() {
             let remapped_execution = layout_execution();
             assert!(remapped_execution.layout_read_source("main").is_ok());
             std::fs::rename(&source, workspace.path().join("retained-src")).unwrap();
@@ -14167,8 +14518,8 @@ struct ActorLogicalReadLease {"#,
 
         let bound = runtime.bind(request).expect("prepare root inspection");
         assert!(matches!(
-            bound,
-            V5ActorBoundCanonicalInvocation::WorkspaceInspection { .. }
+            bound.0,
+            ActorBoundCanonicalInvocationState::WorkspaceInspection { .. }
         ));
         assert_eq!(runtime.workspace_actors.entry_len_for_test().unwrap(), 0);
         assert_eq!(preparations.load(Ordering::SeqCst), 0);
@@ -14405,8 +14756,8 @@ struct ActorLogicalReadLease {"#,
                 .bind(request(arguments))
                 .expect("launch binds without a PlatformXml source set");
             assert!(matches!(
-                bound,
-                V5ActorBoundCanonicalInvocation::ClientRun { .. }
+                bound.0,
+                ActorBoundCanonicalInvocationState::ClientRun { .. }
             ));
             let prepared = bound.prepare().expect("launch preparation");
             assert_eq!(
@@ -14574,8 +14925,8 @@ struct ActorLogicalReadLease {"#,
                 .bind(request(arguments))
                 .expect("make binds without a PlatformXml source set");
             assert!(matches!(
-                bound,
-                V5ActorBoundCanonicalInvocation::ArtifactBuild { .. }
+                bound.0,
+                ActorBoundCanonicalInvocationState::ArtifactBuild { .. }
             ));
             let prepared = bound.prepare().expect("make preparation");
             assert_eq!(
@@ -14685,7 +15036,7 @@ struct ActorLogicalReadLease {"#,
                 ArtifactReady::new(key, ready_root)
             });
             self.joined
-                .send(desk as *const crate::infrastructure::engine_delivery::DeliveryDesk as usize)
+                .send(desk as *const unica_artifact_delivery::desk::DeliveryDesk as usize)
                 .expect("join observation");
             lease
                 .wait()
@@ -14712,10 +15063,14 @@ struct ActorLogicalReadLease {"#,
             invocation: &ActorBoundExecution,
             _cancellation: CancellationToken,
         ) -> Result<DomainResult, InvocationFailure> {
-            let make_work = || {
-                let producers = Arc::clone(&self.producers);
-                let producer_entered = self.producer_entered.clone();
-                let release = Arc::clone(&self.release);
+            fn make_work<E>(
+                service: &SharedLongCapabilityService,
+            ) -> impl FnOnce(unica_work_control::shared_work::SharedWorkProducer) -> Result<(), E>
+                   + Send
+                   + 'static {
+                let producers = Arc::clone(&service.producers);
+                let producer_entered = service.producer_entered.clone();
+                let release = Arc::clone(&service.release);
                 move |_| {
                     producers.fetch_add(1, Ordering::SeqCst);
                     producer_entered.send(()).expect("producer observation");
@@ -14726,29 +15081,46 @@ struct ActorLogicalReadLease {"#,
                     }
                     Ok(())
                 }
-            };
-            let (key, lease) = match &self.kind {
-                LongCapabilityKind::Index => invocation
-                    .join_index_work("rlm", "bsl-1", "test-build-1", make_work())
-                    .map(|(key, lease)| (JoinedCapabilityIdentity::Index(key), lease))
-                    .map_err(|_| InvocationFailure::new("index_failed", "index unavailable"))?,
-                LongCapabilityKind::Provider(key) => (
-                    JoinedCapabilityIdentity::Provider(key.clone()),
-                    invocation.join_provider_host(key.clone(), make_work()),
-                ),
-                LongCapabilityKind::Runtime { lease_id } => (
-                    JoinedCapabilityIdentity::Runtime(lease_id.clone()),
-                    invocation
-                        .join_runtime_resource(lease_id, make_work())
+            }
+            fn settle<K: unica_work_control::shared_work::WorkKey, E>(
+                joined: &mpsc::Sender<JoinedCapabilityIdentity>,
+                key: JoinedCapabilityIdentity,
+                lease: unica_work_control::shared_work::SharedWorkLease<K, (), E>,
+            ) -> Result<(), InvocationFailure> {
+                joined.send(key).expect("join observation");
+                lease
+                    .wait()
+                    .map(|_| ())
+                    .map_err(|_| InvocationFailure::new("long_work_failed", "work unavailable"))
+            }
+            match &self.kind {
+                LongCapabilityKind::Index => {
+                    let (key, lease) = invocation
+                        .join_index_work("rlm", "bsl-1", "test-build-1", make_work(self))
+                        .map_err(|_| InvocationFailure::new("index_failed", "index unavailable"))?;
+                    settle(&self.joined, JoinedCapabilityIdentity::Index(key), lease)
+                }
+                LongCapabilityKind::Provider(key) => {
+                    let lease = invocation.join_provider_host(key.clone(), make_work(self));
+                    settle(
+                        &self.joined,
+                        JoinedCapabilityIdentity::Provider(key.clone()),
+                        lease,
+                    )
+                }
+                LongCapabilityKind::Runtime { lease_id } => {
+                    let lease = invocation
+                        .join_runtime_resource(lease_id, make_work(self))
                         .map_err(|_| {
                             InvocationFailure::new("runtime_failed", "runtime unavailable")
-                        })?,
-                ),
-            };
-            self.joined.send(key).expect("join observation");
-            lease
-                .wait()
-                .map_err(|_| InvocationFailure::new("long_work_failed", "work unavailable"))?;
+                        })?;
+                    settle(
+                        &self.joined,
+                        JoinedCapabilityIdentity::Runtime(lease_id.clone()),
+                        lease,
+                    )
+                }
+            }?;
             let marker = invocation
                 .read_relative_file(std::path::Path::new("marker.txt"), 64)
                 .map_err(|_| InvocationFailure::new("root_failed", "root unavailable"))?;
@@ -15190,8 +15562,9 @@ fn main() {
             ),
         )
         .unwrap();
-        let runtime_service = Arc::new(RuntimeJobService::coordination_only_for_test(
+        let runtime_service = Arc::new(RuntimeJobService::new(
             runtime_authority.path(),
+            Arc::new(unica_adapter_v8_runner::backend::CoordinationOnlyRunner),
         ));
 
         for kind in [
@@ -15530,7 +15903,7 @@ fn main() {
             "infrastructure::daemon::server::actor_capacity_tests::daemon_long_work_rejects_replaced_actor_root_before_reuse_or_publication",
         );
         run_long_work_contract_obligation(
-            "infrastructure::runtime_jobs::tests::runtime_resource_tree_lease_contract",
+            "infrastructure::runtime_jobs_integration::tests::runtime_resource_tree_lease_contract",
         );
     }
 
@@ -15569,7 +15942,8 @@ fn main() {
                     index + 1
                 )
             });
-            let V5ActorBoundCanonicalInvocation::Workspace { invocation, .. } = &admitted else {
+            let ActorBoundCanonicalInvocationState::Workspace { invocation, .. } = &admitted.0
+            else {
                 panic!("the supported profile did not bind its workspace actor");
             };
             observed.push(Arc::downgrade(invocation.actor_for_test()));
@@ -15582,7 +15956,7 @@ fn main() {
             "warm cleanup released an actor owned by an admitted invocation"
         );
         let alias = runtime.bind(request(&roots[0].join("."))).unwrap();
-        let V5ActorBoundCanonicalInvocation::Workspace { invocation, .. } = &alias else {
+        let ActorBoundCanonicalInvocationState::Workspace { invocation, .. } = &alias.0 else {
             panic!("the alias did not bind its workspace actor");
         };
         assert!(Arc::ptr_eq(
@@ -15648,17 +16022,17 @@ fn main() {
         let third = runtime
             .bind(request(&roots[2]))
             .expect("a distinct third root is admitted");
-        let V5ActorBoundCanonicalInvocation::Workspace {
+        let ActorBoundCanonicalInvocationState::Workspace {
             invocation: first_invocation,
             ..
-        } = &first
+        } = &first.0
         else {
             panic!("first root did not bind a workspace actor");
         };
-        let V5ActorBoundCanonicalInvocation::Workspace {
+        let ActorBoundCanonicalInvocationState::Workspace {
             invocation: alias_invocation,
             ..
-        } = &alias
+        } = &alias.0
         else {
             panic!("alias did not bind a workspace actor");
         };
@@ -15675,7 +16049,7 @@ fn main() {
         let workspace = tempfile::tempdir().unwrap();
         let root = std::fs::canonicalize(workspace.path()).unwrap();
         let context = discover_workspace(Some(root.clone())).unwrap();
-        let registry = Arc::new(WorkspaceActorRegistry::default());
+        let registry = Arc::new(crate::infrastructure::source_workspace::actor_registry());
         let barrier = Arc::new(Barrier::new(9));
         let mut admissions = Vec::new();
         for _ in 0..8 {
@@ -15897,10 +16271,10 @@ fn main() {
         concurrent_same_identity_admission_creates_one_actor();
         poisoned_registry_is_a_closed_internal_error_and_admits_nothing();
         sequential_direct_admissions_release_actor_capabilities_and_prune_dead_entries();
-        crate::infrastructure::workspace_actor::tests::warm_registry_reuses_the_same_actor_across_sequential_admissions();
-        crate::infrastructure::workspace_actor::tests::warm_actor_expires_after_the_idle_ttl_and_is_rebuilt();
-        crate::infrastructure::workspace_actor::tests::warm_actor_whose_named_root_was_replaced_is_rebuilt();
-        crate::infrastructure::workspace_actor::tests::warm_actors_do_not_block_a_distinct_identity(
+        unica_workspace::actor::retention_contract_tests::warm_registry_reuses_the_same_actor_across_sequential_admissions();
+        unica_workspace::actor::retention_contract_tests::warm_actor_expires_after_the_idle_ttl_and_is_rebuilt();
+        unica_workspace::actor::retention_contract_tests::warm_actor_whose_named_root_was_replaced_is_rebuilt();
+        unica_workspace::actor::retention_contract_tests::warm_actors_do_not_block_a_distinct_identity(
         );
     }
     const OWN_REMOVAL_AT: &str = "main:Report.OwnRemovalReport.Template.OwnDiagram";
@@ -15964,19 +16338,15 @@ fn main() {
                 Err(error) => panic!("snapshot root metadata: {error}"),
             };
             assert!(root_metadata.is_dir());
-            assert!(
-                !crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point(
-                    &root_metadata
-                )
-            );
+            assert!(!unica_workspace::paths::metadata_is_link_or_reparse_point(
+                &root_metadata
+            ));
             for entry in std::fs::read_dir(current).unwrap() {
                 let path = entry.unwrap().path();
                 let metadata = std::fs::symlink_metadata(&path).unwrap();
                 let kind = metadata.file_type();
                 let relative = path.strip_prefix(root).unwrap().to_path_buf();
-                if crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point(
-                    &metadata,
-                ) {
+                if unica_workspace::paths::metadata_is_link_or_reparse_point(&metadata) {
                     entries.insert(
                         relative,
                         OwnRemovalEntry::Link(std::fs::read_link(path).unwrap()),
@@ -16367,7 +16737,7 @@ fn main() {
                     // pass through inode reuse after a replacement.
                     let held = std::fs::File::open(&path).unwrap();
                     let identity_before =
-                        crate::infrastructure::platform::filesystem::file_identity(&held).unwrap();
+                        unica_workspace::state_fs::test_support::file_identity(&held).unwrap();
                     let original = std::fs::read(&path).unwrap();
                     let mut bytes = original.clone();
                     // External concurrent bytes: same length, same inode, different content.
@@ -16376,7 +16746,7 @@ fn main() {
                     std::fs::write(&path, &bytes).unwrap();
                     let named_after = std::fs::File::open(&path).unwrap();
                     let identity_after =
-                        crate::infrastructure::platform::filesystem::file_identity(&named_after)
+                        unica_workspace::state_fs::test_support::file_identity(&named_after)
                             .unwrap();
                     assert_eq!(identity_before, identity_after);
                     assert_eq!(bytes.len(), original.len());
@@ -17173,32 +17543,32 @@ mod finite_deadline_guard {
     /// A new constructor anywhere, or one more in a listed file, fails here.
     const FINITE_DEADLINE_ALLOW_LIST: &[(&str, usize, &str)] = &[
         (
-            "application/code_intelligence.rs",
+            "crates/unica-code-intelligence/src/coordinator.rs",
             2,
             "search and provider reads: #1254",
         ),
         (
-            "application/diagnostics.rs",
+            "crates/unica-diagnostics/src/coordinator.rs",
             2,
             "explicit analyze timeout; resident actions of the retired code.diagnostics",
         ),
         (
-            "application/mod.rs",
+            "crates/unica-coder/src/application/mod.rs",
             1,
             "PUBLIC_INVOCATION_DEADLINE: legacy v0.12 surface, unreachable from the v0.13 wire",
         ),
         (
-            "infrastructure/application_ports.rs",
+            "crates/unica-coder/src/infrastructure/application_ports.rs",
             1,
             "NATIVE_TYPED_INVOCATION_DEADLINE: legacy v0.12 surface",
         ),
         (
-            "infrastructure/daemon/invocation_service.rs",
+            "crates/unica-coder/src/infrastructure/daemon/invocation_service.rs",
             1,
             "saved apply adapts the existing caller cutoff; saved_apply_adapter_preserves_the_existing_cutoff_and_absence rejects rearming",
         ),
         (
-            "infrastructure/daemon/runtime_v5.rs",
+            "crates/unica-execution/src/receipt_runtime.rs",
             27,
             "per-step Task store and lifecycle-link I/O bounds",
         ),
@@ -17311,8 +17681,12 @@ mod finite_deadline_guard {
 
     #[test]
     fn production_operation_paths_start_no_new_finite_deadline() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut pending = vec![root.clone()];
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut pending = std::fs::read_dir(root.join("crates"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path().join("src"))
+            .filter(|path| path.is_dir())
+            .collect::<Vec<_>>();
         let mut found = std::collections::BTreeMap::new();
         while let Some(directory) = pending.pop() {
             for entry in std::fs::read_dir(&directory).unwrap() {
@@ -17340,7 +17714,7 @@ mod finite_deadline_guard {
         }
         let allowed = FINITE_DEADLINE_ALLOW_LIST
             .iter()
-            .map(|(file, calls, _)| ((*file).to_string(), *calls))
+            .map(|(file, calls, _)| (file.to_string(), *calls))
             .collect::<std::collections::BTreeMap<_, _>>();
         assert_eq!(
             found, allowed,
@@ -17358,13 +17732,13 @@ mod finite_deadline_guard {
         );
         assert_eq!(
             finite_deadline_calls(
-                "fn read() { let _ = crate::domain::code_intelligence::ProviderDeadline::new(Instant::now()); }"
+                "fn read() { let _ = unica_work_control::provider_deadline::ProviderDeadline::new(Instant::now()); }"
             ),
             1
         );
         assert_eq!(
             finite_deadline_calls(
-                "use crate::domain::code_intelligence::ProviderDeadline as Budget;\nfn read() { let _ = Budget::from_started_at(Instant::now(), BUDGET); }"
+                "use unica_work_control::provider_deadline::ProviderDeadline as Budget;\nfn read() { let _ = Budget::from_started_at(Instant::now(), BUDGET); }"
             ),
             1,
             "a renamed import must not hide a new deadline"

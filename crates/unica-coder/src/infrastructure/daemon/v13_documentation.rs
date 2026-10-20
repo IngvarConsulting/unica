@@ -15,17 +15,17 @@
 //! конвейером — со своим cutoff и Task, потому что поставщики ходят в сеть.
 
 use super::protocol::InvocationRequest;
-use crate::application::invocation_store::ToolIdentity;
-use crate::application::result_store::{SearchCursorBinding, SearchCursorStore};
-use crate::domain::cancellation::CancellationToken;
-use crate::domain::invocation::{DomainResult, SafeIdentityHash};
-use crate::domain::refusal::RefusalCode;
-use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::workspace::discover_workspace;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::sync::Arc;
+use unica_execution::invocation_store::ToolIdentity;
+use unica_execution_contract::invocation::{DomainResult, SafeIdentityHash};
+use unica_navigation::result_store::{SearchCursorBinding, SearchCursorStore};
+use unica_refusal::RefusalCode;
+use unica_source_contract::workspace::WorkspaceContext;
+use unica_work_control::cancellation::CancellationToken;
 
 #[derive(Clone)]
 pub(super) struct PreparedDocumentationSearch {
@@ -166,8 +166,8 @@ fn page_documentation(
     cursor_token: Option<&str>,
     cancellation: &CancellationToken,
 ) -> DomainResult {
-    use crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES;
     use crate::application::v13::view::PREFERRED_PAGE_BYTES;
+    use unica_execution::invocation_store::MAX_CANONICAL_RESULT_BYTES;
 
     if cancellation.is_cancelled() {
         return DomainResult::canonical_rejection(
@@ -374,8 +374,8 @@ fn page_document_text(
     cursor_token: Option<&str>,
     cancellation: &CancellationToken,
 ) -> DomainResult {
-    use crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES;
     use crate::application::v13::view::PREFERRED_PAGE_BYTES;
+    use unica_execution::invocation_store::MAX_CANONICAL_RESULT_BYTES;
 
     let refuse = |code, message| DomainResult::canonical_rejection(None, code, message);
     if cancellation.is_cancelled() {
@@ -603,6 +603,22 @@ fn document_text_page_result(
 mod tests {
     use super::*;
 
+    /// Integration fixture behind the public KB transport port.
+    struct FakeTransport {
+        responses: std::collections::BTreeMap<String, Result<String, String>>,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl unica_documentation_sources::kb_1ci::KbTransport for FakeTransport {
+        fn get(&self, url: &str) -> Result<String, String> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.responses
+                .get(url)
+                .cloned()
+                .unwrap_or_else(|| Err(format!("незапланированный запрос: {url}")))
+        }
+    }
+
     fn binding(limit: usize) -> SearchCursorBinding {
         SearchCursorBinding {
             workspace_identity: "workspace".into(),
@@ -763,7 +779,7 @@ mod tests {
     #[test]
     fn document_over_transport_size_on_one_line_starts_with_a_useful_page() {
         let text =
-            "🙂".repeat(crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES / 4 + 1);
+            "🙂".repeat(unica_execution::invocation_store::MAX_CANONICAL_RESULT_BYTES / 4 + 1);
         let page = page_document_text(
             &SearchCursorStore::default(),
             document_response(&text),
@@ -774,7 +790,7 @@ mod tests {
         assert!(page.ok, "{page:?}");
         assert!(
             serde_json::to_vec(&page).unwrap().len()
-                <= crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES
+                <= unica_execution::invocation_store::MAX_CANONICAL_RESULT_BYTES
         );
         assert_eq!(page.page.as_ref().unwrap()["startByte"], 0);
         assert!(page.page.as_ref().unwrap()["endByte"].as_u64().unwrap() > 0);
@@ -789,7 +805,7 @@ mod tests {
     fn oversized_document_metadata_refuses_before_issuing_a_cursor() {
         let mut result = document_response("текст");
         result.data.as_mut().unwrap()["document"]["title"] =
-            json!("x".repeat(crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES));
+            json!("x".repeat(unica_execution::invocation_store::MAX_CANONICAL_RESULT_BYTES));
         let page = page_document_text(
             &SearchCursorStore::default(),
             result,
@@ -862,9 +878,9 @@ mod tests {
                 );
                 assert_eq!(changed.diagnostics[0]["code"], "stale_cursor");
                 let mut oversized_change = response(9);
-                oversized_change.data.as_mut().unwrap()["sections"][2]["hits"][29]["snippet"] =
-                    json!("x"
-                        .repeat(crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES));
+                oversized_change.data.as_mut().unwrap()["sections"][2]["hits"][29]["snippet"] = json!(
+                    "x".repeat(unica_execution::invocation_store::MAX_CANONICAL_RESULT_BYTES)
+                );
                 let stale_before_size = page_documentation(
                     &store,
                     oversized_change,
@@ -892,7 +908,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         let mut result = response(8);
         result.data.as_mut().unwrap()["sections"][2]["hits"][29]["snippet"] =
-            json!("x".repeat(crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES));
+            json!("x".repeat(unica_execution::invocation_store::MAX_CANONICAL_RESULT_BYTES));
         let page = page_documentation(&store, result, binding(20), None, &cancellation);
         assert!(!page.ok);
         assert_eq!(page.diagnostics[0]["code"], "result_too_large");
@@ -929,7 +945,7 @@ mod tests {
 
     #[test]
     fn prepared_docs_search_continues_across_calls_before_source_admission() {
-        use crate::domain::documentation::{
+        use unica_documentation::model::{
             Authority, DocumentationContext, DocumentationCorpus, DocumentationHit,
             DocumentationProvider, DocumentationProviderId, DocumentationSearchRequest,
             DocumentationSection, DocumentationSectionStatus, SourceKind,
@@ -989,7 +1005,7 @@ mod tests {
                             signature: None,
                             snippet: if request.query == "oversize" && rank == 205 {
                                 "x".repeat(
-                                    crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES,
+                                    unica_execution::invocation_store::MAX_CANONICAL_RESULT_BYTES,
                                 )
                             } else {
                                 "found".into()
@@ -1104,11 +1120,11 @@ mod tests {
 
     #[test]
     fn docs_refuses_kb_locators_outside_the_complete_guide_roots_before_network() {
-        use crate::infrastructure::documentation_policy::NetworkAccess;
-        use crate::infrastructure::kb_1ci::{
-            tests_support::FakeTransport, InstallationLexiconSource, Kb1ciProvider, KbTransport,
-        };
         use std::sync::atomic::{AtomicUsize, Ordering};
+        use unica_documentation_sources::documentation_policy::NetworkAccess;
+        use unica_documentation_sources::kb_1ci::{
+            InstallationLexiconSource, Kb1ciProvider, KbTransport,
+        };
 
         let base = "https://kb.1ci.com";
         let paths = [
@@ -1179,11 +1195,11 @@ mod tests {
 
     #[test]
     fn docs_opens_both_kb_guide_roots_with_short_and_long_version_aliases() {
-        use crate::infrastructure::documentation_policy::NetworkAccess;
-        use crate::infrastructure::kb_1ci::{
-            tests_support::FakeTransport, InstallationLexiconSource, Kb1ciProvider, KbTransport,
-        };
         use std::sync::atomic::{AtomicUsize, Ordering};
+        use unica_documentation_sources::documentation_policy::NetworkAccess;
+        use unica_documentation_sources::kb_1ci::{
+            InstallationLexiconSource, Kb1ciProvider, KbTransport,
+        };
 
         let base = "https://kb.1ci.com";
         let cases = [
@@ -1270,12 +1286,12 @@ mod tests {
 
     #[test]
     fn prepared_document_locator_continues_across_calls_before_source_admission() {
-        use crate::domain::documentation::{
+        use std::sync::Mutex;
+        use unica_documentation::model::{
             Authority, DocumentationContext, DocumentationCorpus, DocumentationDocument,
             DocumentationProvider, DocumentationProviderId, DocumentationSearchRequest,
             DocumentationSection, SourceKind,
         };
-        use std::sync::Mutex;
 
         struct PageOwner {
             text: Arc<Mutex<String>>,

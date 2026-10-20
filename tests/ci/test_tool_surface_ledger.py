@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from scripts.ci.prepared_binary import binary_path, ensure_binary
+
 import collections
 import importlib.util
 import json
@@ -16,7 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 GENERATOR = REPO_ROOT / "scripts/ci/generate-tool-surface.py"
 LEDGER = REPO_ROOT / "docs/tool-surface.md"
 REVIEW = REPO_ROOT / "tests/fixtures/v013/tool-surface-review.json"
-BINARY = REPO_ROOT / "target/debug/unica"
+BINARY = binary_path(REPO_ROOT)
 
 NATIVE_V13 = [
     "unica.view",
@@ -63,11 +65,7 @@ def resolve_schema_base(root, schema):
 class ToolSurfaceLedgerTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        subprocess.run(
-            ["cargo", "build", "--quiet", "--package", "unica-coder", "--bin", "unica"],
-            cwd=REPO_ROOT,
-            check=True,
-        )
+        ensure_binary(REPO_ROOT, build_command=["cargo", "build", "--quiet", "--package", "unica-coder", "--bin", "unica"])
         cls.module = load_generator()
         cls.tools = cls.module.read_registry(BINARY)
         cls.review = json.loads(REVIEW.read_text(encoding="utf-8"))

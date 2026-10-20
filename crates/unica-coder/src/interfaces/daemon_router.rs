@@ -7,29 +7,29 @@
 //! itself, never by a second submission.
 use super::canonical_cancellation::{CanonicalCancellation, ControlFailure};
 use super::task_projection::{self, DirectProjection};
-use crate::application::invocation::{
-    handoff_budget, normalized_arguments_hash, INVOCATION_HANDOFF_WINDOW,
-    RESPONSE_SERIALIZATION_MARGIN, RESPONSE_SERIALIZATION_MARGIN_MS,
-};
-use crate::application::receipt_ledger::{
-    request_scope_hash, ReceiptKey, RequestIdentity, V5ToolIdentity,
-    MAX_ORIGINAL_RESPONSE_BUDGET_MS,
-};
-#[cfg(test)]
-use crate::domain::cancellation::CancellationToken;
-use crate::domain::invocation::{InvocationId, TaskId};
-use crate::domain::refusal::RefusalCode;
-use crate::infrastructure::daemon::client_v5::{
-    V5DaemonClient, V5DaemonProcessOwner, V5TaskExchangeError, V5TransportError,
-};
-use crate::infrastructure::daemon::protocol_v5::{
-    V5DaemonErrorCode, V5DaemonTaskSnapshot, V5InvocationPhase, V5InvocationRequest,
-    V5InvocationResponse, V5ServerResponse,
-};
 use rmcp::model::{CallToolResult, ErrorCode, ErrorData};
 use serde_json::{Map, Value};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use unica_daemon::client_v5::{
+    V5DaemonClient, V5DaemonProcessOwner, V5TaskExchangeError, V5TransportError,
+};
+use unica_daemon::protocol_v5::{V5DaemonErrorCode, V5InvocationRequest, V5ServerResponse};
+use unica_execution::invocation::{
+    handoff_budget, normalized_arguments_hash, INVOCATION_HANDOFF_WINDOW,
+    RESPONSE_SERIALIZATION_MARGIN, RESPONSE_SERIALIZATION_MARGIN_MS,
+};
+use unica_execution::receipt_ledger::{
+    request_scope_hash, ReceiptKey, RequestIdentity, V5ToolIdentity,
+    MAX_ORIGINAL_RESPONSE_BUDGET_MS,
+};
+use unica_execution::receipt_runtime::response::{
+    V5DaemonTaskSnapshot, V5InvocationPhase, V5InvocationResponse,
+};
+use unica_execution_contract::invocation::{InvocationId, TaskId};
+use unica_refusal::RefusalCode;
+#[cfg(test)]
+use unica_work_control::cancellation::CancellationToken;
 
 pub(super) const TOOL_EXECUTION_ERROR: i32 = -32000;
 /// The acknowledgement travels after the transport budget of the invocation
@@ -189,11 +189,12 @@ fn build_router(
             let resolved = match workspace.resolve_request(host) {
                 Ok(resolved) => resolved,
                 Err(message) => {
-                    let refusal = crate::domain::invocation::DomainResult::canonical_rejection(
-                        None,
-                        crate::domain::refusal::RefusalCode::InvalidState,
-                        message,
-                    );
+                    let refusal =
+                        unica_execution_contract::invocation::DomainResult::canonical_rejection(
+                            None,
+                            unica_refusal::RefusalCode::InvalidState,
+                            message,
+                        );
                     return task_projection::call_tool_result(&refusal, host.response_budget)
                         .map(CanonicalCallOutcome::Direct)
                         .map_err(task_projection::projection_error);
@@ -362,7 +363,7 @@ fn submit_and_settle(
 }
 
 fn cancel_exact_endpoint(
-    endpoint: crate::infrastructure::daemon::protocol_v5::V5EndpointRecord,
+    endpoint: unica_daemon::protocol_v5::V5EndpointRecord,
     key: ReceiptKey,
 ) -> Result<(), ControlFailure> {
     let mut uncertain = false;
@@ -383,7 +384,7 @@ fn cancel_exact_endpoint(
                         snapshot.task_id() == key.reserved_task_id()
                             && snapshot.invocation_id() == key.invocation_id()
                             && snapshot.receipt_key_digest()
-                                == &crate::application::receipt_ledger::receipt_key_digest(&key)
+                                == &unica_execution::receipt_ledger::receipt_key_digest(&key)
                             && (snapshot.cancel_requested()
                                 || matches!(
                                     snapshot,
@@ -638,10 +639,10 @@ fn lost_submit_outcome(
         task: V5DaemonTaskSnapshot::Queued {
             task_id: receipt_key.reserved_task_id(),
             invocation_id: receipt_key.invocation_id(),
-            receipt_key_digest: crate::application::receipt_ledger::receipt_key_digest(receipt_key),
+            receipt_key_digest: unica_execution::receipt_ledger::receipt_key_digest(receipt_key),
             created_at_epoch_ms: now,
             updated_at_epoch_ms: now,
-            ttl_ms: crate::application::receipt_ledger::DIRECT_TERMINAL_RETENTION_MS,
+            ttl_ms: unica_execution::receipt_ledger::DIRECT_TERMINAL_RETENTION_MS,
             poll_interval_ms: LOST_SUBMIT_POLL_INTERVAL_MS,
             version: 1,
             cancel_requested: false,
@@ -658,7 +659,7 @@ fn unconnected_refusal(error: &V5TransportError, cutoff: Instant) -> ErrorData {
     if Instant::now() >= cutoff {
         return not_sent_refusal(error);
     }
-    let detail = crate::domain::refusal::RefusalDetail::BackendIncompatible;
+    let detail = unica_refusal::RefusalDetail::BackendIncompatible;
     ErrorData::new(
         ErrorCode(TOOL_EXECUTION_ERROR),
         format!("{error}; the call did not reach the daemon and will not run"),
@@ -700,7 +701,7 @@ fn request_too_large_refusal(
     frame_bytes: usize,
     limit_bytes: usize,
 ) -> Result<CanonicalCallOutcome, ErrorData> {
-    let refusal = crate::domain::invocation::DomainResult::canonical_rejection(
+    let refusal = unica_execution_contract::invocation::DomainResult::canonical_rejection(
         None,
         RefusalCode::ProviderLimitExceeded,
         format!(
@@ -744,19 +745,20 @@ pub(in crate::interfaces) mod test_support {
     //! by frame, and the real protocol-v5 runtime in a thread with an injected
     //! canonical service.
     use super::*;
-    use crate::application::receipt_ledger::{canonical_v5_terminal, ReceiptTerminalOutcome};
-    use crate::domain::invocation::DomainResult;
-    use crate::infrastructure::daemon::identity::{CoreIdentity, DaemonStateDirectory};
-    use crate::infrastructure::daemon::protocol_v5::{
-        decode_v5_request_frame, read_bounded_v5_request_frame, V5ClientRequest, V5EndpointRecord,
-        V5HandshakeServerResponse, V5PendingDirectReceipt,
-    };
     use crate::infrastructure::daemon::server::DaemonServerConfig;
     use std::io::{BufReader, Write};
     use std::net::{Ipv4Addr, TcpListener, TcpStream};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
     use std::thread;
+    use unica_daemon::identity::{CoreIdentity, DaemonStateDirectory};
+    use unica_daemon::protocol_v5::{
+        decode_v5_request_frame, read_bounded_v5_request_frame, V5ClientRequest, V5EndpointRecord,
+        V5HandshakeServerResponse,
+    };
+    use unica_execution::receipt_ledger::{canonical_v5_terminal, ReceiptTerminalOutcome};
+    use unica_execution::receipt_runtime::response::V5PendingDirectReceipt;
+    use unica_execution_contract::invocation::DomainResult;
 
     const WORKSPACE_MANIFEST: &str =
         "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: .\n";
@@ -880,7 +882,7 @@ pub(in crate::interfaces) mod test_support {
         }
 
         pub(in crate::interfaces) fn workspace_hint(&self) -> String {
-            crate::test_support::canonical_path(self.workspace.path())
+            unica_workspace::test_support::canonical_path(self.workspace.path())
                 .to_str()
                 .expect("fake daemon workspace path")
                 .to_owned()
@@ -1009,8 +1011,9 @@ pub(in crate::interfaces) mod test_support {
     pub(in crate::interfaces) struct ScriptedService {
         pub(in crate::interfaces) delay: Duration,
         pub(in crate::interfaces) known_long: bool,
-        pub(in crate::interfaces) outcome:
-            Mutex<Option<Result<DomainResult, crate::domain::invocation::InvocationFailure>>>,
+        pub(in crate::interfaces) outcome: Mutex<
+            Option<Result<DomainResult, unica_execution_contract::invocation::InvocationFailure>>,
+        >,
         pub(in crate::interfaces) executions: AtomicUsize,
     }
 
@@ -1018,9 +1021,9 @@ pub(in crate::interfaces) mod test_support {
         fn prepare(
             &self,
             _invocation: &crate::infrastructure::daemon::server::ActorBoundInvocation,
-        ) -> Result<crate::application::operation_descriptors::ExecutionClass, Box<DomainResult>>
+        ) -> Result<unica_execution::receipt_runtime::ports::ExecutionClass, Box<DomainResult>>
         {
-            use crate::application::operation_descriptors::{ExecutionClass, KnownLongReason};
+            use unica_execution::receipt_runtime::ports::{ExecutionClass, KnownLongReason};
             Ok(if self.known_long {
                 ExecutionClass::KnownLong(KnownLongReason::ExternalProcess)
             } else {
@@ -1032,7 +1035,7 @@ pub(in crate::interfaces) mod test_support {
             &self,
             _invocation: &crate::infrastructure::daemon::server::ActorBoundExecution,
             _cancellation: CancellationToken,
-        ) -> Result<DomainResult, crate::domain::invocation::InvocationFailure> {
+        ) -> Result<DomainResult, unica_execution_contract::invocation::InvocationFailure> {
             self.executions.fetch_add(1, Ordering::SeqCst);
             thread::sleep(self.delay);
             self.outcome
@@ -1049,8 +1052,14 @@ pub(in crate::interfaces) mod test_support {
         pub(in crate::interfaces) workspace_hint: String,
         pub(in crate::interfaces) state_root: std::path::PathBuf,
         thread: Option<thread::JoinHandle<Result<(), String>>>,
-        hooks: Option<Arc<dyn crate::infrastructure::daemon::runtime_v5::V5RuntimeHooks>>,
-        epoch_clock: Option<Arc<dyn crate::application::invocation_store::EpochMillisClock>>,
+        hooks: Option<
+            Arc<
+                dyn unica_execution::receipt_runtime::hooks::V5RuntimeHooks<
+                    crate::infrastructure::daemon::server::CanonicalInvocationHost,
+                >,
+            >,
+        >,
+        epoch_clock: Option<Arc<dyn unica_execution::invocation_store::EpochMillisClock>>,
     }
 
     impl LiveDaemon {
@@ -1062,7 +1071,13 @@ pub(in crate::interfaces) mod test_support {
 
         pub(in crate::interfaces) fn start_with_hooks(
             service: Arc<dyn crate::infrastructure::daemon::server::CanonicalInvocationService>,
-            hooks: Option<Arc<dyn crate::infrastructure::daemon::runtime_v5::V5RuntimeHooks>>,
+            hooks: Option<
+                Arc<
+                    dyn unica_execution::receipt_runtime::hooks::V5RuntimeHooks<
+                        crate::infrastructure::daemon::server::CanonicalInvocationHost,
+                    >,
+                >,
+            >,
         ) -> Self {
             let workspace = tempfile::tempdir().unwrap();
             std::fs::write(workspace.path().join("v8project.yaml"), WORKSPACE_MANIFEST).unwrap();
@@ -1075,15 +1090,27 @@ pub(in crate::interfaces) mod test_support {
         /// walk it joins began.
         pub(in crate::interfaces) fn start_with_aged_sources(
             service: Arc<dyn crate::infrastructure::daemon::server::CanonicalInvocationService>,
-            hooks: Option<Arc<dyn crate::infrastructure::daemon::runtime_v5::V5RuntimeHooks>>,
+            hooks: Option<
+                Arc<
+                    dyn unica_execution::receipt_runtime::hooks::V5RuntimeHooks<
+                        crate::infrastructure::daemon::server::CanonicalInvocationHost,
+                    >,
+                >,
+            >,
         ) -> Self {
             Self::start_with_aged_sources_and_clock(service, hooks, None)
         }
 
         pub(in crate::interfaces) fn start_with_aged_sources_and_clock(
             service: Arc<dyn crate::infrastructure::daemon::server::CanonicalInvocationService>,
-            hooks: Option<Arc<dyn crate::infrastructure::daemon::runtime_v5::V5RuntimeHooks>>,
-            epoch_clock: Option<Arc<dyn crate::application::invocation_store::EpochMillisClock>>,
+            hooks: Option<
+                Arc<
+                    dyn unica_execution::receipt_runtime::hooks::V5RuntimeHooks<
+                        crate::infrastructure::daemon::server::CanonicalInvocationHost,
+                    >,
+                >,
+            >,
+            epoch_clock: Option<Arc<dyn unica_execution::invocation_store::EpochMillisClock>>,
         ) -> Self {
             let workspace = tempfile::tempdir().unwrap();
             std::fs::write(
@@ -1098,7 +1125,7 @@ pub(in crate::interfaces) mod test_support {
             )
             .unwrap();
             thread::sleep(
-                crate::infrastructure::daemon::runtime_v5::JOIN_TIMESTAMP_MARGIN
+                unica_execution::receipt_runtime::test_support::TIMESTAMP_MARGIN
                     + Duration::from_millis(200),
             );
             Self::start_over(workspace, service, hooks, epoch_clock)
@@ -1107,8 +1134,14 @@ pub(in crate::interfaces) mod test_support {
         fn start_over(
             workspace: tempfile::TempDir,
             service: Arc<dyn crate::infrastructure::daemon::server::CanonicalInvocationService>,
-            hooks: Option<Arc<dyn crate::infrastructure::daemon::runtime_v5::V5RuntimeHooks>>,
-            epoch_clock: Option<Arc<dyn crate::application::invocation_store::EpochMillisClock>>,
+            hooks: Option<
+                Arc<
+                    dyn unica_execution::receipt_runtime::hooks::V5RuntimeHooks<
+                        crate::infrastructure::daemon::server::CanonicalInvocationHost,
+                    >,
+                >,
+            >,
+            epoch_clock: Option<Arc<dyn unica_execution::invocation_store::EpochMillisClock>>,
         ) -> Self {
             let state = tempfile::tempdir().unwrap();
             let state_root = std::fs::canonicalize(state.path()).unwrap();
@@ -1155,7 +1188,7 @@ pub(in crate::interfaces) mod test_support {
                 None => config,
             };
             self.thread = Some(thread::spawn(move || {
-                crate::infrastructure::daemon::runtime_v5::run_daemon(config)
+                unica_daemon::transport::run_daemon(config.into_transport_config())
             }));
         }
 
@@ -1195,12 +1228,13 @@ mod tests {
         completed, daemon_side_key, direct_receipt, FakeDaemon, LiveDaemon, ScriptedService, Step,
     };
     use super::*;
-    use crate::application::receipt_ledger::{canonical_v5_terminal, ReceiptTerminalOutcome};
-    use crate::infrastructure::daemon::protocol_v5::{V5ClientRequest, V5PendingDirectReceipt};
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
     use std::thread;
+    use unica_daemon::protocol_v5::V5ClientRequest;
+    use unica_execution::receipt_ledger::{canonical_v5_terminal, ReceiptTerminalOutcome};
+    use unica_execution::receipt_runtime::response::V5PendingDirectReceipt;
 
     fn arguments() -> Map<String, Value> {
         json!({"at": "main:Catalog.Товары"})
@@ -1254,7 +1288,7 @@ mod tests {
         );
         assert_eq!(
             lost.task.status(),
-            crate::domain::invocation::InvocationStatus::Queued
+            unica_execution_contract::invocation::InvocationStatus::Queued
         );
         lost.refusal
     }
@@ -1318,7 +1352,7 @@ mod tests {
 
     #[test]
     fn failed_and_cancelled_direct_terminals_answer_closed_errors_after_acknowledgement() {
-        use crate::application::invocation_store_v5::V5SafeFailureReason;
+        use unica_execution::invocation_store_v5::V5SafeFailureReason;
 
         let terminals = Arc::new(Mutex::new(vec![
             ReceiptTerminalOutcome::Cancelled,
@@ -1370,7 +1404,7 @@ mod tests {
             V5ClientRequest::SubmitInvocation { .. } => {
                 // A receipt whose digest does not match its terminal is not a
                 // strict frame: the client poisons the session and recovers.
-                let forged: crate::application::receipt_ledger::TerminalDigest =
+                let forged: unica_execution::receipt_ledger::TerminalDigest =
                     "0a".repeat(32).parse().unwrap();
                 Step::Reply(V5ServerResponse::Invocation {
                     outcome: V5InvocationResponse::Direct {
@@ -1423,7 +1457,7 @@ mod tests {
 
     #[test]
     fn lost_submit_response_follows_replaced_endpoint_without_resubmitting() {
-        use crate::infrastructure::daemon::identity::{CoreIdentity, DaemonStateDirectory};
+        use unica_daemon::identity::{CoreIdentity, DaemonStateDirectory};
         let root = tempfile::tempdir().unwrap();
         let state_root = std::fs::canonicalize(root.path()).unwrap();
         let identity = CoreIdentity::production_v5();
@@ -1535,7 +1569,7 @@ mod tests {
                     Step::Reply(V5ServerResponse::Invocation {
                         outcome: V5InvocationResponse::ReceiptPending {
                             receipt_key: receipt_key.clone(),
-                            phase: crate::infrastructure::daemon::protocol_v5::V5InvocationPhase::ReservedBegun,
+                            phase: unica_execution::receipt_runtime::response::V5InvocationPhase::ReservedBegun,
                             accepted_epoch_ms: epoch_ms_now(),
                             original_budget_ms: 100,
                             cancel_requested: false,
@@ -1577,7 +1611,7 @@ mod tests {
                 Step::Reply(V5ServerResponse::Invocation {
                     outcome: V5InvocationResponse::ReceiptPending {
                         receipt_key: receipt_key.clone(),
-                        phase: crate::infrastructure::daemon::protocol_v5::V5InvocationPhase::ReservedActorBound,
+                        phase: unica_execution::receipt_runtime::response::V5InvocationPhase::ReservedActorBound,
                         accepted_epoch_ms: epoch_ms_now(),
                         original_budget_ms: 7_000,
                         cancel_requested: false,
@@ -1660,11 +1694,11 @@ mod tests {
         assert_eq!(lost.task.invocation_id(), invocation.invocation_id());
         assert_eq!(
             lost.task.receipt_key_digest(),
-            &crate::application::receipt_ledger::receipt_key_digest(&key)
+            &unica_execution::receipt_ledger::receipt_key_digest(&key)
         );
         assert_eq!(
             lost.task.status(),
-            crate::domain::invocation::InvocationStatus::Queued
+            unica_execution_contract::invocation::InvocationStatus::Queued
         );
         assert_names_the_reserved_task(&lost.refusal, &fake);
     }
@@ -2070,7 +2104,7 @@ mod tests {
             delay: Duration::from_millis(9_000),
             known_long: false,
             outcome: Mutex::new(Some(Err(
-                crate::domain::invocation::InvocationFailure::new(
+                unica_execution_contract::invocation::InvocationFailure::new(
                     "provider_exploded",
                     "/private/workspace bearer-secret",
                 ),
@@ -2113,8 +2147,8 @@ mod tests {
             .expect("wait on the handed-off Task");
             if !matches!(
                 observed.status(),
-                crate::domain::invocation::InvocationStatus::Working
-                    | crate::domain::invocation::InvocationStatus::Queued
+                unica_execution_contract::invocation::InvocationStatus::Working
+                    | unica_execution_contract::invocation::InvocationStatus::Queued
             ) {
                 break observed;
             }
@@ -2125,7 +2159,7 @@ mod tests {
         };
         assert_eq!(
             terminal.status(),
-            crate::domain::invocation::InvocationStatus::Failed,
+            unica_execution_contract::invocation::InvocationStatus::Failed,
             "the worker's own failure becomes the Task terminal: {terminal:?}"
         );
         // The safe failure reason never leaks the provider's private text.
@@ -2201,7 +2235,7 @@ mod tests {
     /// refused with the limit and its own size, not a bare `invalid_request`.
     #[test]
     fn live_daemon_runs_a_large_call_and_refuses_one_above_the_bound_unsent() {
-        use crate::infrastructure::daemon::protocol_v5::MAX_V5_REQUEST_LINE_BYTES;
+        use unica_daemon::protocol_v5::MAX_V5_REQUEST_LINE_BYTES;
         let service = Arc::new(ScriptedService {
             delay: Duration::ZERO,
             known_long: false,
@@ -2274,7 +2308,7 @@ mod tests {
                 "daemon invocation stopped without a result. Repeat the call; if the problem persists, report this reason.",
             ),
             (
-                crate::domain::invocation::WORKSPACE_CHANGED_FAILURE,
+                unica_execution_contract::invocation::WORKSPACE_CHANGED_FAILURE,
                 "workspace_changed",
                 "the workspace changed while the call ran, so its result was not published. Repeat the call.",
             ),
@@ -2283,7 +2317,7 @@ mod tests {
                 delay: Duration::ZERO,
                 known_long: false,
                 outcome: Mutex::new(Some(Err(
-                    crate::domain::invocation::InvocationFailure::new(
+                    unica_execution_contract::invocation::InvocationFailure::new(
                         failure_code,
                         "/private/workspace bearer-secret",
                     ),
@@ -2340,7 +2374,7 @@ mod tests {
 
         assert!(!matches!(
             handoff.status(),
-            crate::domain::invocation::InvocationStatus::Completed
+            unica_execution_contract::invocation::InvocationStatus::Completed
         ));
         assert_eq!(observed.task_id(), task_id);
         assert_eq!(
@@ -2351,7 +2385,7 @@ mod tests {
         );
         assert_eq!(
             cancelled.status(),
-            crate::domain::invocation::InvocationStatus::Completed
+            unica_execution_contract::invocation::InvocationStatus::Completed
         );
         assert_eq!(service.executions.load(Ordering::SeqCst), 1);
         drop(router);
@@ -2391,9 +2425,9 @@ mod tests {
         fn prepare(
             &self,
             _invocation: &crate::infrastructure::daemon::server::ActorBoundInvocation,
-        ) -> Result<crate::application::operation_descriptors::ExecutionClass, Box<DomainResultAlias>>
+        ) -> Result<unica_execution::receipt_runtime::ports::ExecutionClass, Box<DomainResultAlias>>
         {
-            use crate::application::operation_descriptors::{ExecutionClass, KnownLongReason};
+            use unica_execution::receipt_runtime::ports::{ExecutionClass, KnownLongReason};
             Ok(ExecutionClass::KnownLong(KnownLongReason::ExternalProcess))
         }
 
@@ -2401,7 +2435,8 @@ mod tests {
             &self,
             invocation: &crate::infrastructure::daemon::server::ActorBoundExecution,
             cancellation: CancellationToken,
-        ) -> Result<DomainResultAlias, crate::domain::invocation::InvocationFailure> {
+        ) -> Result<DomainResultAlias, unica_execution_contract::invocation::InvocationFailure>
+        {
             self.executions.fetch_add(1, Ordering::SeqCst);
             if !self.gate_mutations && invocation.arguments().contains_key("ops") {
                 return Ok(DomainResultAlias::success("applied"));
@@ -2412,10 +2447,12 @@ mod tests {
             {
                 if cancellation.is_cancelled() {
                     self.cancelled.fetch_add(1, Ordering::SeqCst);
-                    return Err(crate::domain::invocation::InvocationFailure::new(
-                        "cancelled",
-                        "cancelled",
-                    ));
+                    return Err(
+                        unica_execution_contract::invocation::InvocationFailure::new(
+                            "cancelled",
+                            "cancelled",
+                        ),
+                    );
                 }
                 thread::sleep(Duration::from_millis(5));
             }
@@ -2423,7 +2460,7 @@ mod tests {
         }
     }
 
-    type DomainResultAlias = crate::domain::invocation::DomainResult;
+    type DomainResultAlias = unica_execution_contract::invocation::DomainResult;
 
     /// Loses the first submit answer and every recovery answer, as an
     /// overloaded transport does: the frontend runs out of its recovery
@@ -2434,7 +2471,11 @@ mod tests {
         lose_recoveries: std::sync::atomic::AtomicBool,
     }
 
-    impl crate::infrastructure::daemon::runtime_v5::V5RuntimeHooks for LostSubmitHooks {
+    impl
+        unica_execution::receipt_runtime::hooks::V5RuntimeHooks<
+            crate::infrastructure::daemon::server::CanonicalInvocationHost,
+        > for LostSubmitHooks
+    {
         fn as_any(&self) -> &dyn std::any::Any {
             self
         }
@@ -2485,9 +2526,9 @@ mod tests {
             .expect("wait for the Task");
             if matches!(
                 snapshot.status(),
-                crate::domain::invocation::InvocationStatus::Completed
-                    | crate::domain::invocation::InvocationStatus::Failed
-                    | crate::domain::invocation::InvocationStatus::Cancelled
+                unica_execution_contract::invocation::InvocationStatus::Completed
+                    | unica_execution_contract::invocation::InvocationStatus::Failed
+                    | unica_execution_contract::invocation::InvocationStatus::Cancelled
             ) {
                 return snapshot;
             }
@@ -2655,15 +2696,15 @@ mod tests {
             );
             assert_eq!(
                 snapshot.status(),
-                crate::domain::invocation::InvocationStatus::Cancelled
+                unica_execution_contract::invocation::InvocationStatus::Cancelled
             );
         }
         let remaining = (router.get)(second.task_id(), deadline(None)).unwrap();
         assert!(!remaining.cancel_requested());
         assert!(matches!(
             remaining.status(),
-            crate::domain::invocation::InvocationStatus::Working
-                | crate::domain::invocation::InvocationStatus::Queued
+            unica_execution_contract::invocation::InvocationStatus::Working
+                | unica_execution_contract::invocation::InvocationStatus::Queued
         ));
         thread::sleep(Duration::from_millis(100));
         assert_eq!(service.cancelled.load(Ordering::SeqCst), 0);
@@ -2672,7 +2713,7 @@ mod tests {
         let second_cancelled = (router.cancel)(second.task_id(), deadline(None)).unwrap();
         assert_eq!(
             second_cancelled.status(),
-            crate::domain::invocation::InvocationStatus::Cancelled
+            unica_execution_contract::invocation::InvocationStatus::Cancelled
         );
         let started = Instant::now();
         while service.cancelled.load(Ordering::SeqCst) == 0 {
@@ -2689,7 +2730,7 @@ mod tests {
 
     struct FixedHolderEpoch;
 
-    impl crate::application::invocation_store::EpochMillisClock for FixedHolderEpoch {
+    impl unica_execution::invocation_store::EpochMillisClock for FixedHolderEpoch {
         fn now_epoch_millis(&self) -> u64 {
             1_000
         }
@@ -2735,7 +2776,7 @@ mod tests {
 
     #[test]
     fn holder_cancel_before_completion_stays_cancelled_at_the_same_epoch() {
-        use crate::domain::invocation::InvocationStatus;
+        use unica_execution_contract::invocation::InvocationStatus;
         for cancel_leader in [true, false] {
             let fixture = JoinedClockFixture::start();
             let router = fixture.router();
@@ -2791,7 +2832,7 @@ mod tests {
 
     #[test]
     fn shared_completion_before_holder_cancel_keeps_result_at_the_same_epoch() {
-        use crate::domain::invocation::InvocationStatus;
+        use unica_execution_contract::invocation::InvocationStatus;
         for cancel_leader in [true, false] {
             let fixture = JoinedClockFixture::start();
             let router = fixture.router();
@@ -2845,7 +2886,7 @@ mod tests {
         );
         assert_eq!(
             wait_terminal(&router, leader.task_id()).status(),
-            crate::domain::invocation::InvocationStatus::Cancelled
+            unica_execution_contract::invocation::InvocationStatus::Cancelled
         );
         assert_eq!(service.cancelled.load(Ordering::SeqCst), 0);
         drop(router);
@@ -3099,7 +3140,8 @@ mod tests {
         assert_eq!(cancelled.task_id(), task_id);
         assert!(
             cancelled.cancel_requested()
-                || cancelled.status() == crate::domain::invocation::InvocationStatus::Cancelled,
+                || cancelled.status()
+                    == unica_execution_contract::invocation::InvocationStatus::Cancelled,
             "{cancelled:?}"
         );
         let _ = submit.join().unwrap();

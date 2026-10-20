@@ -1,4 +1,10 @@
 use super::server::{ActorBoundExecution, ActorBoundInvocation, CanonicalInvocationService};
+use crate::domain::apply::OperationDescriptorExt;
+use crate::domain::apply::OperationRegistryExt;
+use crate::domain::apply::RetiredOperationExt;
+use crate::domain::apply::SourceSetWriteSupport;
+use crate::domain::engine::MissingEngineRefusal;
+use unica_work_control::provider_deadline::ProviderDeadline;
 /// Потолок страницы ветви графа: объявленный максимум поверхности.
 const CALL_GRAPH_PAGE_LIMIT: usize = 50;
 /// Provider APIs accept a top-N request, but no offset. Keep their existing
@@ -11,52 +17,54 @@ use super::v13_call_graph::{
     unready_branch_result, CallGraphFetchError, CallGraphSummary, CompleteBranchError,
 };
 use super::v13_read_modes::{attach_can, operation_node_with, search_scope_prefix, source_backed};
-use crate::application::invocation_store::ToolIdentity;
-use crate::application::operation_descriptors::ExecutionClass;
-use crate::application::result_store::{
-    SearchCursorBinding, SearchCursorStore, StoredSearchCursor, ViewCursorBinding, ViewCursorStore,
-};
-use crate::application::source_navigation::{
-    SOURCE_NAVIGATION_LIMIT_DEFAULT, SOURCE_NAVIGATION_LIMIT_MAX,
-};
 use crate::application::tool_contracts::SurfaceRelease;
 use crate::application::v13::apply::parse_request as parse_apply_request;
 use crate::application::v13::find::{FindIndex, FindRequest};
 use crate::application::v13::resolve::{ResolveRequest, ResolvedLines, ResolvedSource};
 use crate::application::v13::tool_catalog::catalog_for;
 use crate::application::v13::view::{ViewError, ViewReadAuthority, ViewRequest, ViewService};
-use crate::domain::address::{NodeKind, QualifiedAddress};
-use crate::domain::apply::{
-    OperationRegistry, OperationSite, SourceSetTraits, TemplateFormat, UNWRITABLE_SOURCE_MESSAGE,
-};
+use crate::domain::apply::UNWRITABLE_SOURCE_MESSAGE;
+use unica_execution::receipt_runtime::ports::ExecutionClass;
+
 use crate::domain::call_graph_identity::{CallGraphIdentity, CallGraphIdentityError};
-use crate::domain::cancellation::CancellationToken;
-use crate::domain::code_intelligence::{
-    CallGraphState, CodeIntelligenceContext, CodeIntelligenceRegistry, ProviderDeadline,
-    ProviderRole, SearchRequest,
-};
-use crate::domain::invocation::{DomainResult, InvocationFailure};
-use crate::domain::project_sources::SourceSetKind;
-use crate::domain::refusal::{RefusalCode, RefusalDetail};
 use crate::infrastructure::capacity_observation::CapacityObserver;
-use crate::infrastructure::metadata_kinds::metadata_kind;
-use crate::infrastructure::native_operations::apply::{
-    ApplyPlanError, ApplyPlanErrorKind, ApplyStagedState, ApplyStagingErrorKind,
-    PlannedApplyEffects, StagedChangeKind, StagedFileState,
-};
 use crate::infrastructure::native_operations::apply_families::plan_hidden_v13_apply;
 use crate::infrastructure::v13_find::{
     FindBuildError, LayoutFindSource, WorkspaceFindDirectoryBuilder,
-};
-use crate::infrastructure::workspace_actor::{
-    ApplyAdmissionError, ApplyEffectDisposition, ApplyPublicationErrorKind,
-    SavedApplyExecutionError,
 };
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Instant;
+use unica_address::address::{NodeKind, QualifiedAddress};
+use unica_code_intelligence::model::CallGraphState;
+use unica_code_intelligence::model::CodeIntelligenceContext;
+use unica_code_intelligence::model::CodeIntelligenceRegistry;
+use unica_code_intelligence::model::ProviderRole;
+use unica_code_intelligence::model::SearchRequest;
+use unica_execution::invocation_store::ToolIdentity;
+use unica_execution_contract::invocation::{DomainResult, InvocationFailure};
+use unica_navigation::result_store::{
+    SearchCursorBinding, SearchCursorStore, StoredSearchCursor, ViewCursorBinding, ViewCursorStore,
+};
+use unica_navigation::source_navigation::{
+    SOURCE_NAVIGATION_LIMIT_DEFAULT, SOURCE_NAVIGATION_LIMIT_MAX,
+};
+use unica_refusal::{RefusalCode, RefusalDetail};
+use unica_source_contract::proposal::{
+    ApplyPlanError, ApplyPlanErrorKind, ApplyStagingErrorKind, PlannedApplyEffects,
+    StagedChangeKind, StagedFileState,
+};
+use unica_source_contract::SourceSetKind;
+use unica_source_designer::layout::metadata_kind;
+use unica_templates::TemplateFormat;
+use unica_work_control::cancellation::CancellationToken;
+use unica_workspace::actor::{
+    ApplyAdmissionError, ApplyEffectDisposition, ApplyPublicationErrorKind,
+    SavedApplyExecutionError,
+};
+use unica_workspace::apply::ApplyStagedState;
 
 /// Canonical v0.13 service installed by the production v3 daemon composition.
 /// Each public name has a useful closed mode; unfinished variants fail with a
@@ -73,7 +81,7 @@ pub(crate) struct CanonicalV13ReadService {
     ports: Arc<crate::infrastructure::application_ports::InfrastructureApplicationPorts>,
     #[cfg(test)]
     search_providers:
-        Option<Vec<Arc<dyn crate::domain::code_intelligence::CodeIntelligenceProvider>>>,
+        Option<Vec<Arc<dyn unica_code_intelligence::model::CodeIntelligenceProvider>>>,
 }
 
 impl Default for CanonicalV13ReadService {
@@ -205,7 +213,7 @@ impl CanonicalV13ReadService {
     #[cfg(test)]
     pub(super) fn retained_view_usage_for_test(
         &self,
-    ) -> crate::application::result_store::ViewRetainedUsage {
+    ) -> unica_navigation::result_store::ViewRetainedUsage {
         self.cursors.retained_usage_for_test()
     }
 
@@ -229,7 +237,7 @@ impl CanonicalV13ReadService {
 
     #[cfg(test)]
     pub(super) fn with_search_providers_for_test(
-        providers: Vec<Arc<dyn crate::domain::code_intelligence::CodeIntelligenceProvider>>,
+        providers: Vec<Arc<dyn unica_code_intelligence::model::CodeIntelligenceProvider>>,
     ) -> Self {
         Self {
             search_providers: Some(providers),
@@ -280,7 +288,7 @@ impl CanonicalV13ReadService {
                     "execution requires only a nonempty executionToken",
                 );
             }
-            let deadline = crate::domain::operation_deadline::OperationDeadline::NoDeadline;
+            let deadline = unica_work_control::operation_deadline::OperationDeadline::NoDeadline;
             return invocation.execute_saved_apply(token.as_str().unwrap(), cancellation, deadline, |mut result, publication| {
                 match publication {
                     Ok(publication) => {
@@ -380,7 +388,7 @@ impl CanonicalV13ReadService {
                 )
             }
         };
-        let traits = SourceSetTraits::of_source(
+        let traits = crate::domain::apply::source_set_traits_of_source(
             binding.source_kind(),
             binding.source_format(),
             binding.source_profile(),
@@ -409,7 +417,16 @@ impl CanonicalV13ReadService {
         ) {
             return *refusal;
         }
-        admission.bind_request(&request);
+        admission.bind_request_identity(
+            &request.at().to_string(),
+            request.ops().iter().map(|operation| {
+                (
+                    operation.name(),
+                    operation.at().to_string(),
+                    operation.args(),
+                )
+            }),
+        );
         let operations = request
             .ops()
             .iter()
@@ -843,11 +860,14 @@ impl CanonicalV13ReadService {
                 Err(refusal) => *refusal,
             };
         }
-        let can_context = SourceSetTraits::read(source.source_kind(), authority.platform_profile());
+        let can_context = crate::domain::apply::source_set_traits_for_read(
+            source.source_kind(),
+            authority.platform_profile(),
+        );
         let service = ViewService::with_shared_cursors(authority, Arc::clone(&self.cursors));
         let enrich_and_project = |data: &Value| -> Result<Value, ViewError> {
             let mut data = data.clone();
-            if source.source_kind() == crate::domain::project_sources::SourceSetKind::Extension
+            if source.source_kind() == unica_source_contract::SourceSetKind::Extension
                 && data
                     .get("props")
                     .is_some_and(|props| props.get("belonging").is_none())
@@ -888,7 +908,7 @@ impl CanonicalV13ReadService {
                             .get("props")?
                             .get("tag")?
                             .as_str()
-                            .map(crate::domain::apply::FormItemRole::from_tag)
+                            .map(unica_forms::FormItemRole::from_tag)
                     };
                     operation_node_with(&data, op, &owner_at, can_context, &ancestor_role).map_err(
                         |error| {
@@ -1069,7 +1089,7 @@ impl CanonicalV13ReadService {
                         .into_iter()
                         .filter(|source| {
                             source.source_kind()
-                                == crate::domain::project_sources::SourceSetKind::Configuration
+                                == unica_source_contract::SourceSetKind::Configuration
                         })
                         .collect::<Vec<_>>()
                 })
@@ -1519,8 +1539,8 @@ impl CanonicalV13ReadService {
         summary: String,
         extra_data: Map<String, Value>,
     ) -> DomainResult {
-        use crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES;
         use crate::application::v13::view::PREFERRED_PAGE_BYTES;
+        use unica_execution::invocation_store::MAX_CANONICAL_RESULT_BYTES;
 
         let mode = binding.mode.as_str();
         let limit = binding.page_limit;
@@ -1650,11 +1670,13 @@ impl CanonicalV13ReadService {
                         Value::String(address.source_set().to_string()),
                     );
                     let owner = if let Some(capability) =
-                        crate::domain::platform_profile::PlatformProfile::v8_3_27()
-                            .module_capability(&address)
+                        unica_bsl::profile::PlatformProfile::v8_3_27().module_capability(&address)
                     {
-                        match crate::infrastructure::logical_event_source::module_source_address(
-                            &address, capability,
+                        match unica_source_designer::module_layout::module_source_address(
+                            &address,
+                            capability.owner_kind(),
+                            capability.role(),
+                            capability.route_kind(),
                         ) {
                             Ok(module) => module.as_str().to_owned(),
                             Err(error) => {
@@ -1852,7 +1874,8 @@ impl CanonicalV13ReadService {
                 }) {
                     return refusal;
                 }
-                let code = if error.starts_with(crate::domain::cancellation::CANCELLED_PREFIX) {
+                let code = if error.starts_with(unica_work_control::cancellation::CANCELLED_PREFIX)
+                {
                     RefusalCode::Cancelled
                 } else {
                     RefusalCode::ProviderUnavailable
@@ -1888,9 +1911,9 @@ impl CanonicalV13ReadService {
                 return error_result_detailed(None, RefusalDetail::SourceUnreadable, error)
             }
         };
-        let project_hits = |hits: &[crate::domain::code_intelligence::ProviderSearchHit]| -> Result<Vec<Map<String, Value>>, ViewError> {
-            use crate::domain::source_location::SourceLocation;
-            use crate::domain::source_target::TargetKind;
+        let project_hits = |hits: &[unica_code_intelligence::model::ProviderSearchHit]| -> Result<Vec<Map<String, Value>>, ViewError> {
+            use unica_source_contract::location::SourceLocation;
+            use unica_address::source_target::TargetKind;
             let limited = || Map::from_iter([("limits".into(), json!(["The current source does not prove a Body range containing this provider snippet"]))]);
             let mut projected = vec![Map::new(); hits.len()];
             let mut groups = std::collections::BTreeMap::<String, (usize,QualifiedAddress,Vec<usize>)>::new();
@@ -2069,7 +2092,7 @@ impl CanonicalV13ReadService {
         extra_data.insert("sourceCoverage".to_owned(), coverage.clone());
         extra_data.insert("approximate".to_owned(), Value::Bool(found.is_nearest()));
         let empty_page_bytes = search_page_probe_bytes("names", &[], &summary, &extra_data, None);
-        if empty_page_bytes > crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES {
+        if empty_page_bytes > unica_execution::invocation_store::MAX_CANONICAL_RESULT_BYTES {
             return error_result(
                 None,
                 RefusalCode::ResultTooLarge,
@@ -2099,7 +2122,7 @@ impl CanonicalV13ReadService {
             // response field and its cursor; adding one JSON array item adds
             // exactly its serialized byte length.
             if empty_page_bytes.saturating_add(bytes.len())
-                > crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES
+                > unica_execution::invocation_store::MAX_CANONICAL_RESULT_BYTES
             {
                 return error_result(
                     None,
@@ -2863,16 +2886,13 @@ fn metadata_layout_path(address: &QualifiedAddress, source_kind: SourceSetKind) 
     }
     let target = address.to_string();
     let target = target.split_once(':')?.1;
-    let target = crate::domain::source_target::MetadataAddress::parse(
-        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+    let target = unica_address::source_target::MetadataAddress::parse(
+        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
         target,
     )
     .ok()?;
-    let relative = crate::infrastructure::logical_event_source::metadata_descriptor_relative(
-        &target,
-        source_kind,
-    )
-    .ok()?;
+    let relative =
+        unica_source_designer::layout::metadata_descriptor_relative(&target, source_kind).ok()?;
     let relative = relative.to_str()?.replace('\\', "/");
     // A command has no descriptor: the layout places its directory.
     if matches!(segments.last(), Some(last) if last.kind() == NodeKind::Command) {
@@ -2925,7 +2945,7 @@ fn deliver_missing_engine(
     engine: &str,
     cancellation: &CancellationToken,
 ) -> Option<DomainResult> {
-    let progress = crate::infrastructure::engine_delivery::CanonicalDeliveryProgress::default();
+    let progress = unica_artifact_delivery::desk::CanonicalDeliveryProgress::default();
     let state = crate::infrastructure::engine_delivery::deliver_if_missing(
         invocation.delivery_work(),
         plugin_root,
@@ -3009,9 +3029,9 @@ fn search_selected_role(
     request: &SearchRequest,
     context: &CodeIntelligenceContext,
     cancellation: &CancellationToken,
-    deadlines: crate::domain::operational_config::CodeIntelligenceDeadlines,
-) -> Result<crate::application::code_intelligence::CodeSearchExecution, String> {
-    use crate::application::code_intelligence::CodeSearchCoordinator;
+    deadlines: unica_code_intelligence::deadlines::CodeIntelligenceDeadlines,
+) -> Result<unica_code_intelligence::coordinator::CodeSearchExecution, String> {
+    use unica_code_intelligence::coordinator::CodeSearchCoordinator;
 
     let provider = registry
         .search_providers()
@@ -3023,7 +3043,7 @@ fn search_selected_role(
         request,
         context,
         cancellation,
-        &crate::domain::progress::NoopProgressSink,
+        &unica_work_control::progress::NoopProgressSink,
     )
 }
 
@@ -3068,19 +3088,21 @@ fn bind_lexical_source_scope(
 
 fn search_unscoped_lexical(
     ports: &crate::infrastructure::application_ports::InfrastructureApplicationPorts,
-    workspace: &crate::domain::workspace::WorkspaceContext,
+    workspace: &unica_source_contract::workspace::WorkspaceContext,
     sources: UnscopedLexicalSources<'_>,
     registry: CodeIntelligenceRegistry,
     request: &SearchRequest,
     cancellation: &CancellationToken,
-    deadlines: crate::domain::operational_config::CodeIntelligenceDeadlines,
-) -> Result<crate::application::code_intelligence::CodeSearchExecution, String> {
-    use crate::application::code_intelligence::CodeSearchExecution;
+    deadlines: unica_code_intelligence::deadlines::CodeIntelligenceDeadlines,
+) -> Result<unica_code_intelligence::coordinator::CodeSearchExecution, String> {
     use crate::application::ports::ApplicationPorts;
-    use crate::domain::code_intelligence::{
-        CodeSearchResult, ProviderSearchSection, ProviderSectionStatus, SearchCoverage,
-        SearchOrdering, SearchRanking,
-    };
+    use unica_code_intelligence::coordinator::CodeSearchExecution;
+    use unica_code_intelligence::model::CodeSearchResult;
+    use unica_code_intelligence::model::ProviderSearchSection;
+    use unica_code_intelligence::model::ProviderSectionStatus;
+    use unica_code_intelligence::model::SearchCoverage;
+    use unica_code_intelligence::model::SearchOrdering;
+    use unica_code_intelligence::model::SearchRanking;
 
     let source_sets = sources.names;
     if source_sets.is_empty() {
@@ -3113,7 +3135,7 @@ fn search_unscoped_lexical(
     let mut incomplete = None;
     for (name, context) in source_sets.iter().zip(contexts.iter()) {
         if cancellation.is_cancelled() {
-            return Err(crate::domain::cancellation::cancelled_error(
+            return Err(unica_work_control::cancellation::cancelled_error(
                 "unscoped lexical search stopped between source sets",
             ));
         }
@@ -3246,9 +3268,9 @@ fn search_unscoped_lexical(
 /// Ошибка движка может содержать stderr и физические пути. Причину берём
 /// только из типизированной остановки, а данные отказа собираем явно.
 fn provider_search_failure(
-    section: crate::domain::code_intelligence::ProviderSearchSection,
+    section: unica_code_intelligence::model::ProviderSearchSection,
 ) -> DomainResult {
-    use crate::domain::code_intelligence::SearchTerminationCode;
+    use unica_code_intelligence::model::SearchTerminationCode;
 
     let mut result = match section.termination.as_ref().map(|reason| reason.code) {
         Some(SearchTerminationCode::DeadlineExceeded) => error_result(
@@ -3325,7 +3347,7 @@ fn provider_search_failure(
 pub(crate) fn provider_search_page(
     cursors: &SearchCursorStore,
     role: ProviderRole,
-    execution: crate::application::code_intelligence::CodeSearchExecution,
+    execution: unica_code_intelligence::coordinator::CodeSearchExecution,
     binding: SearchCursorBinding,
     cursor_token: Option<&str>,
     cancellation: &CancellationToken,
@@ -3344,7 +3366,7 @@ pub(crate) fn provider_search_page(
 fn provider_search_page_projected<F>(
     cursors: &SearchCursorStore,
     role: ProviderRole,
-    execution: crate::application::code_intelligence::CodeSearchExecution,
+    execution: unica_code_intelligence::coordinator::CodeSearchExecution,
     mut binding: SearchCursorBinding,
     cursor_token: Option<&str>,
     cancellation: &CancellationToken,
@@ -3352,11 +3374,11 @@ fn provider_search_page_projected<F>(
 ) -> DomainResult
 where
     F: Fn(
-        &[crate::domain::code_intelligence::ProviderSearchHit],
+        &[unica_code_intelligence::model::ProviderSearchHit],
     ) -> Result<Vec<Map<String, Value>>, ViewError>,
 {
-    use crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES;
     use crate::application::v13::view::PREFERRED_PAGE_BYTES;
+    use unica_execution::invocation_store::MAX_CANONICAL_RESULT_BYTES;
 
     if cancellation.is_cancelled() {
         return error_result(
@@ -3852,9 +3874,11 @@ fn run_bsl_diagnostics(
     invocation: &ActorBoundExecution,
     cancellation: &CancellationToken,
 ) -> Result<CheckStepVerdict, Box<DomainResult>> {
-    use crate::application::diagnostics::DiagnosticCoordinator;
     use crate::application::ports::ApplicationPorts;
-    use crate::domain::diagnostics::{DiagnosticAction, DiagnosticFilter, DiagnosticRequest};
+    use unica_diagnostics::coordinator::DiagnosticCoordinator;
+    use unica_diagnostics::model::DiagnosticAction;
+    use unica_diagnostics::model::DiagnosticFilter;
+    use unica_diagnostics::model::DiagnosticRequest;
 
     let context = invocation.workspace_context();
     let sources = invocation.read_sources().map_err(|error| {
@@ -4041,13 +4065,14 @@ fn bsl_structure_findings(
     mapping: &crate::infrastructure::diagnostics::CanonicalModuleDiagnosticMapping,
     address: &QualifiedAddress,
     cancellation: &CancellationToken,
-) -> Result<Vec<crate::domain::diagnostics::DiagnosticItem>, Box<DomainResult>> {
-    use crate::domain::diagnostics::{DiagnosticFocus, DiagnosticItem, DiagnosticSeverity};
-    use crate::domain::source_location::SourceLocation;
-    use crate::domain::source_target::TargetKind;
-    use crate::infrastructure::bsl_outline::{
-        misplaced_variable_declarations, MISPLACED_VARIABLE_MESSAGE,
-    };
+) -> Result<Vec<unica_diagnostics::model::DiagnosticItem>, Box<DomainResult>> {
+    use unica_address::source_target::TargetKind;
+    use unica_bsl_parser::MISPLACED_VARIABLE_MESSAGE;
+    use unica_diagnostics::model::DiagnosticFocus;
+    use unica_diagnostics::model::DiagnosticItem;
+    use unica_diagnostics::model::DiagnosticSeverity;
+    use unica_diagnostics::source_ranges::misplaced_variable_declarations;
+    use unica_source_contract::location::SourceLocation;
 
     let text = match std::fs::read_to_string(mapping.module_scope().module_path) {
         Ok(text) => text,
@@ -4088,8 +4113,8 @@ fn bsl_structure_findings(
         .collect())
 }
 
-fn bsl_result_proves_full_verdict(result: &crate::domain::diagnostics::DiagnosticResult) -> bool {
-    use crate::domain::diagnostics::DiagnosticResultState;
+fn bsl_result_proves_full_verdict(result: &unica_diagnostics::model::DiagnosticResult) -> bool {
+    use unica_diagnostics::model::DiagnosticResultState;
     result.ok
         && result.state == DiagnosticResultState::Completed
         && result.complete
@@ -4125,8 +4150,8 @@ const BSL_INCOMPLETE_MESSAGE: &str = "BSL analysis did not complete, so the modu
 /// by its closed code through the coordinator's fixed public wording, never
 /// by the provider's text; an incompleteness nobody named still says so and
 /// what to do.
-fn bsl_incomplete_message(result: &crate::domain::diagnostics::DiagnosticResult) -> String {
-    use crate::application::diagnostics::public_diagnostic_error_message;
+fn bsl_incomplete_message(result: &unica_diagnostics::model::DiagnosticResult) -> String {
+    use unica_diagnostics::coordinator::public_diagnostic_error_message;
     let mut reasons: Vec<String> = Vec::new();
     let mut push = |reason: String| {
         if !reasons.contains(&reason) {
@@ -4152,10 +4177,10 @@ fn bsl_incomplete_message(result: &crate::domain::diagnostics::DiagnosticResult)
             // install mode chooses. Anything else is named by its code.
             let canonical = match error.code.as_str() {
                 "diagnostics_invalid" => {
-                    crate::domain::diagnostics::stream_error::canonical_stream_error(&error.message)
+                    unica_diagnostics::stream_error::canonical_stream_error(&error.message)
                 }
-                crate::domain::engine::BUNDLED_TOOL_MISSING => {
-                    crate::application::diagnostics::canonical_missing_engine_reason(&error.message)
+                unica_artifact_delivery::engine::BUNDLED_TOOL_MISSING => {
+                    unica_diagnostics::coordinator::canonical_missing_engine_reason(&error.message)
                 }
                 _ => None,
             };
@@ -4169,7 +4194,7 @@ fn bsl_incomplete_message(result: &crate::domain::diagnostics::DiagnosticResult)
         }
     }
     for item in &result.items {
-        if let crate::domain::diagnostics::DiagnosticItem::ResourceFailure { error, .. } = item {
+        if let unica_diagnostics::model::DiagnosticItem::ResourceFailure { error, .. } = item {
             push(public_diagnostic_error_message(&error.code).to_string());
         }
     }
@@ -4189,7 +4214,7 @@ const BSL_UNNAMED_INCOMPLETENESS: &str = "the analyzer did not name a cause. Rep
 /// other incompleteness is not an absent engine (#549).
 fn bsl_engine_refusal(
     cwd: &std::path::Path,
-    result: &crate::domain::diagnostics::DiagnosticResult,
+    result: &unica_diagnostics::model::DiagnosticResult,
     at: Option<String>,
     cancellation: &CancellationToken,
 ) -> Option<DomainResult> {
@@ -4224,12 +4249,12 @@ fn bsl_engine_refusal(
 
 /// The engine is not on this machine, failed its install checks or could not
 /// be started: the provider is absent rather than broken mid-run.
-fn bsl_provider_absent(result: &crate::domain::diagnostics::DiagnosticResult) -> bool {
+fn bsl_provider_absent(result: &unica_diagnostics::model::DiagnosticResult) -> bool {
     result.providers.iter().any(|section| {
         section.error.as_ref().is_some_and(|error| {
             matches!(
                 error.code.as_str(),
-                crate::domain::engine::BUNDLED_TOOL_MISSING
+                unica_artifact_delivery::engine::BUNDLED_TOOL_MISSING
                     | "provider_install_invalid"
                     | "provider_start_failed"
             )
@@ -4239,7 +4264,7 @@ fn bsl_provider_absent(result: &crate::domain::diagnostics::DiagnosticResult) ->
 
 /// Подавление по настройке пользователя называется фактом рядом с
 /// вердиктом: «прошёл» с базовой линией значит «прошёл после фильтра».
-fn bsl_suppression_facts(result: &crate::domain::diagnostics::DiagnosticResult) -> Vec<Value> {
+fn bsl_suppression_facts(result: &unica_diagnostics::model::DiagnosticResult) -> Vec<Value> {
     result
         .providers
         .iter()
@@ -4258,8 +4283,9 @@ fn bsl_suppression_facts(result: &crate::domain::diagnostics::DiagnosticResult) 
         .collect()
 }
 
-fn bsl_findings_passed(items: &[crate::domain::diagnostics::DiagnosticItem]) -> bool {
-    use crate::domain::diagnostics::{DiagnosticItem, DiagnosticSeverity};
+fn bsl_findings_passed(items: &[unica_diagnostics::model::DiagnosticItem]) -> bool {
+    use unica_diagnostics::model::DiagnosticItem;
+    use unica_diagnostics::model::DiagnosticSeverity;
     !items.iter().any(|item| {
         matches!(
             item,
@@ -4454,7 +4480,7 @@ fn run_native_validator(
 fn run_meta_validator(
     address: &QualifiedAddress,
     at: &str,
-    context: &crate::domain::workspace::WorkspaceContext,
+    context: &unica_source_contract::workspace::WorkspaceContext,
     cancellation: &CancellationToken,
 ) -> Result<(bool, Vec<Value>), Box<DomainResult>> {
     use crate::infrastructure::native_operations::v13_analysis::validator_metadata_path;
@@ -4466,8 +4492,8 @@ fn run_meta_validator(
             "the metadata validator needs one object descriptor; this address names none",
         )));
     };
-    let target = crate::domain::source_target::MetadataAddress::parse(
-        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+    let target = unica_address::source_target::MetadataAddress::parse(
+        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
         &path,
     )
     .map_err(|error| {
@@ -4477,7 +4503,7 @@ fn run_meta_validator(
             error.to_string(),
         ))
     })?;
-    let request = crate::application::metadata::MetaInfoRequest {
+    let request = unica_metadata::request::MetaInfoRequest {
         source_set: address.source_set().to_string(),
         metadata_path: target,
         sections: Vec::new(),
@@ -4505,7 +4531,7 @@ fn run_meta_validator(
                 .map(|diagnostic| serde_json::to_value(diagnostic).unwrap_or(Value::Null))
                 .collect::<Vec<_>>();
             Ok((
-                validated.status == crate::domain::metadata::MetaValidationStatus::Passed,
+                validated.status == unica_metadata::MetaValidationStatus::Passed,
                 diagnostics,
             ))
         }
@@ -4598,7 +4624,7 @@ fn unreadable_target_format_refusal(
 /// предка: `next` не уводит на макет другого формата.
 pub(super) fn preflight_apply_operations(
     request: &crate::domain::apply::ApplyRequest,
-    source: SourceSetTraits,
+    source: unica_source_contract::context::SourceSetTraits,
     template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
 ) -> Result<(), Box<DomainResult>> {
     preflight_apply_operations_with(
@@ -4606,7 +4632,7 @@ pub(super) fn preflight_apply_operations(
         source,
         template_format,
         &|_| None,
-        &crate::domain::apply::no_member_lookup,
+        &unica_operations::recovery::no_member_lookup,
     )
 }
 
@@ -4615,17 +4641,16 @@ pub(super) fn preflight_apply_operations(
 /// элемента формы — к его пути в форме.
 pub(super) fn preflight_apply_operations_with(
     request: &crate::domain::apply::ApplyRequest,
-    source: SourceSetTraits,
+    source: unica_source_contract::context::SourceSetTraits,
     template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
-    form_item: &dyn Fn(&QualifiedAddress) -> Option<crate::domain::apply::FormItemRole>,
-    members: crate::domain::apply::MemberPathLookup<'_>,
+    form_item: &dyn Fn(&QualifiedAddress) -> Option<unica_forms::FormItemRole>,
+    members: unica_operations::recovery::MemberPathLookup<'_>,
 ) -> Result<(), Box<DomainResult>> {
-    let registry = OperationRegistry::closed();
+    let registry = crate::domain::apply::operation_registry();
     for (index, operation) in request.ops().iter().enumerate() {
         let Some(descriptor) = registry.lookup(operation.name()) else {
             // Снятая операция ведёт к заменившей на узле-родителе (#1354).
-            if let Some(retired) = crate::domain::apply::RetiredOperation::lookup(operation.name())
-            {
+            if let Some(retired) = crate::domain::apply::retired_operation(operation.name()) {
                 return Err(Box::new(retired_operation_refusal(
                     index,
                     operation.at(),
@@ -4649,7 +4674,7 @@ pub(super) fn preflight_apply_operations_with(
         };
         // Общее имя (`attribute.add` объекта и формы, #1465) выбирает
         // запись по адресу вызова.
-        let descriptor = OperationSite::new(operation.at(), source)
+        let descriptor = crate::domain::apply::operation_site(operation.at(), source)
             .and_then(|site| registry.lookup_at(operation.name(), &site))
             .unwrap_or(descriptor);
         // Набор, который семейство не пишет, — свойство набора, а не «не тот
@@ -4667,7 +4692,7 @@ pub(super) fn preflight_apply_operations_with(
             .last()
             .expect("a parsed logical address has a terminal segment")
             .kind();
-        let Some(site) = OperationSite::new(operation.at(), source) else {
+        let Some(site) = crate::domain::apply::operation_site(operation.at(), source) else {
             return Err(Box::new(error_result(
                 Some(format!("ops[{index}].at")),
                 RefusalCode::NotFound,
@@ -4686,9 +4711,16 @@ pub(super) fn preflight_apply_operations_with(
             // Значение назвало элемент, роль которого операцию не принимает
             // (`into` поля): `next` ведёт к ближайшему узлу, где она исполнима.
             if !redirect.listing && !admits_form_item_at(descriptor, &redirect.at, form_item) {
-                if let Some(target) = OperationSite::new(&redirect.at, source).and_then(|target| {
-                    descriptor.nearest_applicable_ancestor_with(&target, template_format, form_item)
-                }) {
+                if let Some(target) = crate::domain::apply::operation_site(&redirect.at, source)
+                    .and_then(|target| {
+                        descriptor.nearest_applicable_ancestor_with(
+                            &target,
+                            registry.context(),
+                            template_format,
+                            form_item,
+                        )
+                    })
+                {
                     redirect.at = target;
                 }
             }
@@ -4833,7 +4865,9 @@ pub(super) fn preflight_apply_operations_with(
         }
         // Прежний псевдоним запроса `Template.T.Query.D` снят (#1353): отказ
         // называет адрес набора, где операция исполнима.
-        if let Some(target) = descriptor.retired_query_alias_target(&site, members) {
+        if let Some(target) =
+            descriptor.retired_query_alias_target(&site, registry.context(), members)
+        {
             return Err(Box::new(with_operation_dictionary(
                 error_result(
                     Some(format!("ops[{index}].at")),
@@ -4886,7 +4920,7 @@ pub(super) fn preflight_apply_operations_with(
                 // которого нет ни в одном дереве, ведёт к корню набора.
                 let readable = crate::infrastructure::logical_tree::route_logical_address(
                     operation.at(),
-                    source.profile(),
+                    crate::domain::apply::source_classification_profile(source),
                 )
                 .is_ok();
                 if readable {
@@ -4911,16 +4945,21 @@ pub(super) fn preflight_apply_operations_with(
 fn retired_operation_refusal(
     index: usize,
     at: &QualifiedAddress,
-    retired: crate::domain::apply::RetiredOperation,
-    source: SourceSetTraits,
+    retired: unica_operations::recovery::RetiredOperation,
+    source: unica_source_contract::context::SourceSetTraits,
     template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
-    form_item: &dyn Fn(&QualifiedAddress) -> Option<crate::domain::apply::FormItemRole>,
+    form_item: &dyn Fn(&QualifiedAddress) -> Option<unica_forms::FormItemRole>,
 ) -> DomainResult {
     let location = Some(format!("ops[{index}].op"));
-    let site = OperationSite::new(at, source);
-    let target = site
-        .as_ref()
-        .and_then(|site| retired.replacement_target(site, template_format, form_item));
+    let site = crate::domain::apply::operation_site(at, source);
+    let target = site.as_ref().and_then(|site| {
+        retired.replacement_target(
+            site,
+            crate::domain::apply::operation_registry().context(),
+            template_format,
+            form_item,
+        )
+    });
     let replacement = retired.descriptor();
     match (target, replacement) {
         (Some(target), Some(replacement)) => {
@@ -4929,7 +4968,9 @@ fn retired_operation_refusal(
                 RefusalCode::BadValue,
                 format!(
                     "apply operation `{}` is retired: call `{}` at `{target}`; {}",
-                    retired.op, retired.replacement, retired.arguments
+                    retired.op,
+                    retired.replacement(),
+                    retired.arguments
                 ),
             );
             if retired.creates.is_some() {
@@ -4947,12 +4988,16 @@ fn retired_operation_refusal(
                 RefusalCode::BadValue,
                 format!(
                     "apply operation `{}` is retired: call `{}`{shape}; {}",
-                    retired.op, retired.replacement, retired.arguments
+                    retired.op,
+                    retired.replacement(),
+                    retired.arguments
                 ),
             );
-            let readable =
-                crate::infrastructure::logical_tree::route_logical_address(at, source.profile())
-                    .is_ok();
+            let readable = crate::infrastructure::logical_tree::route_logical_address(
+                at,
+                crate::domain::apply::source_classification_profile(source),
+            )
+            .is_ok();
             if readable {
                 with_node_dictionary(refusal, &at.to_string())
             } else {
@@ -4965,9 +5010,9 @@ fn retired_operation_refusal(
 /// Принимает ли роль элемента формы по адресу `at` операцию; адрес не
 /// элемента формы фильтр не проходит.
 fn admits_form_item_at(
-    descriptor: crate::domain::apply::OperationDescriptor,
+    descriptor: unica_operations::OperationDescriptor,
     at: &QualifiedAddress,
-    form_item: &dyn Fn(&QualifiedAddress) -> Option<crate::domain::apply::FormItemRole>,
+    form_item: &dyn Fn(&QualifiedAddress) -> Option<unica_forms::FormItemRole>,
 ) -> bool {
     at.segments()
         .last()
@@ -4981,7 +5026,7 @@ fn admits_form_item_at(
 fn with_operation_dictionary(
     mut result: DomainResult,
     at: &str,
-    descriptor: crate::domain::apply::OperationDescriptor,
+    descriptor: unica_operations::OperationDescriptor,
 ) -> DomainResult {
     let at = if descriptor.argument_contract().is_some() {
         format!("{at}.Can.{}", descriptor.name())
@@ -5005,7 +5050,7 @@ fn with_operation_dictionary(
 pub(super) fn with_missing_target_parent(
     mut result: DomainResult,
     request: &crate::domain::apply::ApplyRequest,
-    error: &crate::infrastructure::native_operations::apply::ApplyPlanError,
+    error: &unica_source_contract::proposal::ApplyPlanError,
     node_exists: &dyn Fn(&QualifiedAddress) -> Option<bool>,
 ) -> DomainResult {
     if error.kind() != ApplyPlanErrorKind::NotFound {
@@ -5024,7 +5069,7 @@ pub(super) fn with_missing_target_parent(
     // Отказ касается самого узла операции, когда он назван путём `at` или
     // когда операция не несёт ничего, кроме адреса (`attribute.remove`):
     // тогда «не найден» — это её узел, а не что-то из аргументов.
-    let address_only = OperationRegistry::closed()
+    let address_only = crate::domain::apply::operation_registry()
         .lookup(operation.name())
         .is_some_and(|descriptor| descriptor.skeleton_key() == "at");
     if !(matches!(tail, ".at" | ".args.at") || address_only) {
@@ -5183,7 +5228,7 @@ fn enforce_view_result_limit(result: DomainResult, at: &str) -> DomainResult {
     }
     let bytes =
         serde_json::to_vec(&result).expect("a domain result containing JSON values serializes");
-    if bytes.len() <= crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES {
+    if bytes.len() <= unica_execution::invocation_store::MAX_CANONICAL_RESULT_BYTES {
         result
     } else {
         error_result(
@@ -5224,27 +5269,34 @@ fn view_error_result(
 #[cfg(test)]
 mod tests {
     use super::UnscopedLexicalSources;
-    use crate::application::code_intelligence::CodeSearchExecution;
-    use crate::application::result_store::SearchCursorBinding;
-    use crate::domain::cancellation::CancellationToken;
-    use crate::domain::code_intelligence::{
-        CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceRegistry,
-        CodeSearchScope, ProviderCapability, ProviderDeadline, ProviderIdentity, ProviderRole,
-        ProviderSearchSection, SearchOrdering, SearchRanking, SearchRequest,
-    };
-    use crate::domain::operational_config::CodeIntelligenceDeadlines;
-    use crate::domain::source_roots::ResolvedSourceRoot;
-    use crate::domain::workspace::WorkspaceContext;
     use serde_json::json;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
+    use unica_code_intelligence::coordinator::CodeSearchExecution;
+    use unica_code_intelligence::deadlines::CodeIntelligenceDeadlines;
+    use unica_code_intelligence::model::CodeIntelligenceContext;
+    use unica_code_intelligence::model::CodeIntelligenceProvider;
+    use unica_code_intelligence::model::CodeIntelligenceRegistry;
+    use unica_code_intelligence::model::CodeSearchScope;
+    use unica_code_intelligence::model::ProviderCapability;
+    use unica_code_intelligence::model::ProviderIdentity;
+    use unica_code_intelligence::model::ProviderRole;
+    use unica_code_intelligence::model::ProviderSearchSection;
+    use unica_code_intelligence::model::SearchOrdering;
+    use unica_code_intelligence::model::SearchRanking;
+    use unica_code_intelligence::model::SearchRequest;
+    use unica_navigation::result_store::SearchCursorBinding;
+    use unica_source_contract::workspace::ResolvedSourceRoot;
+    use unica_source_contract::workspace::WorkspaceContext;
+    use unica_work_control::cancellation::CancellationToken;
+    use unica_work_control::provider_deadline::ProviderDeadline;
 
     #[test]
     fn saved_apply_execution_refusal_distinguishes_token_from_internal_state() {
         use super::SavedApplyExecutionError;
-        use crate::infrastructure::workspace_actor::ApplyPublicationError;
+        use unica_workspace::actor::ApplyPublicationError;
         for (error, code, outcome) in [
             (
                 SavedApplyExecutionError::Busy,
@@ -5295,7 +5347,7 @@ mod tests {
     /// `provider_unavailable`, refined to `source_unreadable`.
     #[test]
     fn staging_refusals_keep_their_kind_instead_of_an_absent_provider() {
-        use crate::infrastructure::native_operations::apply::{
+        use unica_source_contract::proposal::{
             ApplyPlanError, ApplyStagingError, ApplyStagingErrorKind,
         };
         for (kind, code, outcome, detail) in [
@@ -5375,7 +5427,7 @@ mod tests {
             super::apply_publication_error_code(
                 super::ApplyPublicationErrorKind::ContainmentIdentity
             ),
-            crate::domain::refusal::RefusalCode::StaleRevision
+            unica_refusal::RefusalCode::StaleRevision
         );
     }
 
@@ -5397,11 +5449,11 @@ mod tests {
         snippet_bytes: usize,
         provider_limit_reached: bool,
     ) -> CodeSearchExecution {
-        use crate::domain::code_intelligence::{
-            CodeSearchResult, ProviderSearchHit, SearchCoverage,
-        };
-        use crate::domain::source_location::SourceLocation;
-        use crate::domain::source_target::TargetKind;
+        use unica_address::source_target::TargetKind;
+        use unica_code_intelligence::model::CodeSearchResult;
+        use unica_code_intelligence::model::ProviderSearchHit;
+        use unica_code_intelligence::model::SearchCoverage;
+        use unica_source_contract::location::SourceLocation;
 
         let hits = (1..=count)
             .map(|rank| ProviderSearchHit {
@@ -5457,7 +5509,7 @@ mod tests {
 
     #[test]
     fn maintenance_transition_invalidates_the_cursor_for_the_previous_answer() {
-        use crate::domain::code_intelligence::IndexMaintenanceEvidence;
+        use unica_code_intelligence::model::IndexMaintenanceEvidence;
         let store = Default::default();
         let mut queued = provider_search_test_execution(75, 8, false);
         queued.result.sections[0].index_maintenance = Some(IndexMaintenanceEvidence::Queued);
@@ -5486,7 +5538,7 @@ mod tests {
 
     #[test]
     fn provider_search_pages_all_received_hits_and_rejects_changed_answers() {
-        let store = crate::application::result_store::SearchCursorStore::default();
+        let store = unica_navigation::result_store::SearchCursorStore::default();
         let cancellation = CancellationToken::new();
         let mut cursor = None;
         let mut ranks = Vec::new();
@@ -5552,7 +5604,7 @@ mod tests {
                 assert_eq!(changed.diagnostics[0]["code"], "stale_cursor");
                 let mut oversized_change = provider_search_test_execution(75, 8, false);
                 oversized_change.result.sections[0].hits[74].snippet =
-                    "x".repeat(crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES);
+                    "x".repeat(unica_execution::invocation_store::MAX_CANONICAL_RESULT_BYTES);
                 let stale_before_size = super::provider_search_page(
                     &store,
                     ProviderRole::Semantic,
@@ -5571,7 +5623,7 @@ mod tests {
 
     #[test]
     fn provider_limit_remains_visible_after_the_last_received_page() {
-        let store = crate::application::result_store::SearchCursorStore::default();
+        let store = unica_navigation::result_store::SearchCursorStore::default();
         let cancellation = CancellationToken::new();
         let mut cursor = None;
         let mut last = None;
@@ -5609,11 +5661,11 @@ mod tests {
 
     #[test]
     fn late_oversized_provider_hit_refuses_before_first_cursor() {
-        let store = crate::application::result_store::SearchCursorStore::default();
+        let store = unica_navigation::result_store::SearchCursorStore::default();
         let cancellation = CancellationToken::new();
         let mut execution = provider_search_test_execution(25, 8, false);
         execution.result.sections[0].hits[24].snippet =
-            "x".repeat(crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES);
+            "x".repeat(unica_execution::invocation_store::MAX_CANONICAL_RESULT_BYTES);
         let result = super::provider_search_page(
             &store,
             ProviderRole::Semantic,
@@ -5635,7 +5687,7 @@ mod tests {
             .sections
             .push(execution.result.sections[0].clone());
         let result = super::provider_search_page(
-            &crate::application::result_store::SearchCursorStore::default(),
+            &unica_navigation::result_store::SearchCursorStore::default(),
             ProviderRole::Semantic,
             execution,
             provider_search_test_binding(ProviderRole::Semantic, 20),
@@ -5647,9 +5699,10 @@ mod tests {
 
     #[test]
     fn bsl_check_never_calls_a_truncated_analyzer_result_complete() {
-        use crate::domain::diagnostics::{
-            DiagnosticAction, DiagnosticResult, DiagnosticResultState, DiagnosticSelection,
-        };
+        use unica_diagnostics::model::DiagnosticAction;
+        use unica_diagnostics::model::DiagnosticResult;
+        use unica_diagnostics::model::DiagnosticResultState;
+        use unica_diagnostics::model::DiagnosticSelection;
         let mut result = DiagnosticResult {
             ok: true,
             action: DiagnosticAction::Analyze,
@@ -5681,11 +5734,14 @@ mod tests {
     /// который называет причину поставщика, а не «анализ не закончился».
     #[test]
     fn bsl_check_passes_under_a_proven_baseline_and_names_a_broken_one() {
-        use crate::domain::diagnostics::{
-            DiagnosticAction, DiagnosticProviderSection, DiagnosticProviderStatus,
-            DiagnosticResult, DiagnosticResultState, DiagnosticSelection, DiagnosticSuppression,
-            DiagnosticSuppressionReason,
-        };
+        use unica_diagnostics::model::DiagnosticAction;
+        use unica_diagnostics::model::DiagnosticProviderSection;
+        use unica_diagnostics::model::DiagnosticProviderStatus;
+        use unica_diagnostics::model::DiagnosticResult;
+        use unica_diagnostics::model::DiagnosticResultState;
+        use unica_diagnostics::model::DiagnosticSelection;
+        use unica_diagnostics::model::DiagnosticSuppression;
+        use unica_diagnostics::model::DiagnosticSuppressionReason;
         let result =
             |complete: bool, reason: Option<DiagnosticSuppressionReason>| DiagnosticResult {
                 ok: true,
@@ -5755,13 +5811,13 @@ mod tests {
         combined.complete = false;
         combined.state = DiagnosticResultState::Partial;
         combined.providers[0].complete = false;
-        combined.items.push(crate::domain::diagnostics::DiagnosticItem::ResourceFailure {
+        combined.items.push(unica_diagnostics::model::DiagnosticItem::ResourceFailure {
             provider:"bsl-analyzer",
-            location:crate::domain::source_location::SourceLocation::Addressed {
+            location:unica_source_contract::location::SourceLocation::Addressed {
                 source_set:"main".to_string(),metadata_path:None,
-                target_kind:crate::domain::source_target::TargetKind::Module,
+                target_kind:unica_address::source_target::TargetKind::Module,
             },location_reason:None,
-            error:crate::domain::diagnostics::DiagnosticError {
+            error:unica_diagnostics::model::DiagnosticError {
                 code:"analysis_filter_unproven".to_string(),
                 message:"CLI author filtering is configured; this analyzer does not report which findings it hid".to_string(),retryable:false,
             },
@@ -5799,11 +5855,15 @@ mod tests {
 
     #[test]
     fn bsl_check_preserves_only_canonical_jsonl_failure_recovery() {
-        use crate::domain::diagnostics::stream_error::{StreamErrorKind, MISSING_START_MESSAGE};
-        use crate::domain::diagnostics::{
-            DiagnosticAction, DiagnosticError, DiagnosticProviderSection, DiagnosticProviderStatus,
-            DiagnosticResult, DiagnosticResultState, DiagnosticSelection,
-        };
+        use unica_diagnostics::model::DiagnosticAction;
+        use unica_diagnostics::model::DiagnosticError;
+        use unica_diagnostics::model::DiagnosticProviderSection;
+        use unica_diagnostics::model::DiagnosticProviderStatus;
+        use unica_diagnostics::model::DiagnosticResult;
+        use unica_diagnostics::model::DiagnosticResultState;
+        use unica_diagnostics::model::DiagnosticSelection;
+        use unica_diagnostics::stream_error::StreamErrorKind;
+        use unica_diagnostics::stream_error::MISSING_START_MESSAGE;
         let result = |code: &str, message: String| DiagnosticResult {
             ok: false,
             action: DiagnosticAction::Analyze,
@@ -5870,7 +5930,7 @@ mod tests {
                 format!(
                     "{}: bsl-analyzer: {}",
                     super::BSL_INCOMPLETE_MESSAGE,
-                    crate::application::diagnostics::public_diagnostic_error_message(code)
+                    unica_diagnostics::coordinator::public_diagnostic_error_message(code)
                 )
             );
             assert!(!published.contains("line 2"), "{published}");
@@ -5883,10 +5943,13 @@ mod tests {
     /// (#1338).
     #[test]
     fn bsl_check_names_why_the_engine_gave_no_result_and_how_to_recover() {
-        use crate::domain::diagnostics::{
-            DiagnosticAction, DiagnosticError, DiagnosticProviderSection, DiagnosticProviderStatus,
-            DiagnosticResult, DiagnosticResultState, DiagnosticSelection,
-        };
+        use unica_diagnostics::model::DiagnosticAction;
+        use unica_diagnostics::model::DiagnosticError;
+        use unica_diagnostics::model::DiagnosticProviderSection;
+        use unica_diagnostics::model::DiagnosticProviderStatus;
+        use unica_diagnostics::model::DiagnosticResult;
+        use unica_diagnostics::model::DiagnosticResultState;
+        use unica_diagnostics::model::DiagnosticSelection;
         let failed = |code: &str| DiagnosticResult {
             ok: false,
             action: DiagnosticAction::Analyze,
@@ -5980,10 +6043,10 @@ mod tests {
         // An absent engine described by its install mode keeps that next
         // step; the expected path never reaches the answer.
         for mode in [
-            crate::domain::engine::InstallMode::Source,
-            crate::domain::engine::InstallMode::Marketplace,
+            unica_artifact_delivery::engine::InstallMode::Source,
+            unica_artifact_delivery::engine::InstallMode::Marketplace,
         ] {
-            let missing = crate::domain::engine::MissingEngine::new(
+            let missing = unica_artifact_delivery::engine::MissingEngine::new(
                 "bsl-analyzer",
                 "win-x64",
                 "C:/private/engine/bsl-analyzer.exe",
@@ -5992,7 +6055,7 @@ mod tests {
             );
             let mut result = failed("bundled_tool_missing");
             result.providers[0].error.as_mut().unwrap().message =
-                crate::application::diagnostics::missing_engine_public_reason(&missing);
+                unica_diagnostics::coordinator::missing_engine_public_reason(&missing);
             let message = super::bsl_incomplete_message(&result);
             assert_eq!(
                 message,
@@ -6008,9 +6071,11 @@ mod tests {
 
     #[test]
     fn bsl_check_sees_an_error_after_two_hundred_warnings() {
-        use crate::domain::diagnostics::{DiagnosticFocus, DiagnosticItem, DiagnosticSeverity};
-        use crate::domain::source_location::SourceLocation;
-        use crate::domain::source_target::TargetKind;
+        use unica_address::source_target::TargetKind;
+        use unica_diagnostics::model::DiagnosticFocus;
+        use unica_diagnostics::model::DiagnosticItem;
+        use unica_diagnostics::model::DiagnosticSeverity;
+        use unica_source_contract::location::SourceLocation;
         let finding = |severity| DiagnosticItem::Diagnostic {
             provider: "bsl-language-server",
             location: SourceLocation::Addressed {
@@ -6140,9 +6205,9 @@ mod tests {
 
     fn invoke_exact_read(
         workspace: &std::path::Path,
-        tool: crate::application::invocation_store::ToolIdentity,
+        tool: unica_execution::invocation_store::ToolIdentity,
         arguments: serde_json::Value,
-    ) -> crate::domain::invocation::DomainResult {
+    ) -> unica_execution_contract::invocation::DomainResult {
         invoke_exact_read_with_service(
             workspace,
             tool,
@@ -6153,13 +6218,13 @@ mod tests {
 
     fn invoke_exact_read_with_service(
         workspace: &std::path::Path,
-        tool: crate::application::invocation_store::ToolIdentity,
+        tool: unica_execution::invocation_store::ToolIdentity,
         arguments: serde_json::Value,
         service: Arc<super::CanonicalV13ReadService>,
-    ) -> crate::domain::invocation::DomainResult {
-        use crate::application::ports::TokioClock;
+    ) -> unica_execution_contract::invocation::DomainResult {
         use crate::infrastructure::daemon::protocol::InvocationRequest;
         use crate::infrastructure::daemon::server::V5CanonicalInvocationRuntime;
+        use unica_execution::clock::TokioClock;
         let runtime = V5CanonicalInvocationRuntime::new(service, Arc::new(TokioClock));
         runtime
             .bind(
@@ -6180,7 +6245,7 @@ mod tests {
 
     #[test]
     fn resolve_exact_bsl_nodes_across_module_roles() {
-        use crate::application::invocation_store::ToolIdentity;
+        use unica_execution::invocation_store::ToolIdentity;
         let workspace = resolve_exact_workspace();
         for (module, path) in [
             ("CommonModule.Probe", "CommonModules/Probe/Ext/Module.bsl"),
@@ -6248,7 +6313,7 @@ mod tests {
 
     #[test]
     fn view_nested_regions_never_substitutes_the_final_name() {
-        use crate::application::invocation_store::ToolIdentity;
+        use unica_execution::invocation_store::ToolIdentity;
         let workspace = resolve_exact_workspace();
         for prefix in ["CommonModule.Probe", "Catalog.Items.Module.Object"] {
             for (suffix, ok) in [
@@ -6296,9 +6361,9 @@ mod tests {
     /// full layout directory answers, for every object shape it handles (#1457).
     #[test]
     fn resolve_metadata_point_matches_the_full_layout_directory() {
-        use crate::application::invocation_store::ToolIdentity;
-        use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
         use crate::infrastructure::v13_find::{LayoutFindSource, WorkspaceFindDirectoryBuilder};
+        use unica_execution::invocation_store::ToolIdentity;
+        use unica_workspace::read::open_source_directory;
         let workspace = resolve_exact_workspace();
         let source = std::fs::canonicalize(workspace.path().join("src")).unwrap();
         std::fs::create_dir_all(source.join("Catalogs/Items/Commands/Refresh/Ext")).unwrap();
@@ -6307,12 +6372,12 @@ mod tests {
             "",
         )
         .unwrap();
-        let root = RetainedDirectoryCapability::open(&source).unwrap();
+        let root = open_source_directory(&source).unwrap();
         let directory = WorkspaceFindDirectoryBuilder::default()
             .build(
                 &[LayoutFindSource::new(
                     "main",
-                    crate::domain::project_sources::SourceSetKind::Configuration,
+                    unica_source_contract::SourceSetKind::Configuration,
                     &root,
                 )],
                 ProviderDeadline::no_deadline(),
@@ -6390,7 +6455,7 @@ mod tests {
 
     #[test]
     fn resolve_exact_tree_children_use_their_containing_xml() {
-        use crate::application::invocation_store::ToolIdentity;
+        use unica_execution::invocation_store::ToolIdentity;
         let workspace = resolve_exact_workspace();
         for (node, kind, path) in [
             (
@@ -6466,7 +6531,7 @@ mod tests {
 
     #[test]
     fn resolve_exact_method_spans_annotations_through_its_closing_line() {
-        use crate::application::invocation_store::ToolIdentity;
+        use unica_execution::invocation_store::ToolIdentity;
         let workspace = resolve_exact_workspace();
         // Документация, отделённая пустой строкой, методу не принадлежит;
         // прилегающая входит в диапазон `Body` — тот же, что текст `view`.
@@ -6557,7 +6622,7 @@ mod tests {
 
     #[test]
     fn body_line_view_and_resolve_share_absolute_byte_exact_ranges() {
-        use crate::application::invocation_store::ToolIdentity;
+        use unica_execution::invocation_store::ToolIdentity;
         let workspace = resolve_exact_workspace();
         let source = "\u{feff}\u{feff}#Область A\r\n\t// comment\r\nПроцедура Ping() Экспорт\r\n\tСообщить(\"needle\");\r\nКонецПроцедуры\r\n#КонецОбласти";
         for (prefix, path) in [
@@ -6606,7 +6671,7 @@ mod tests {
 
     #[test]
     fn body_line_ranges_refuse_file_eof_and_method_boundary_crossings() {
-        use crate::application::invocation_store::ToolIdentity;
+        use unica_execution::invocation_store::ToolIdentity;
         let workspace = resolve_exact_workspace();
         let file = workspace
             .path()
@@ -6628,7 +6693,7 @@ mod tests {
 
     #[test]
     fn body_line_apply_refuses_before_staging_and_can_has_no_writes() {
-        use crate::application::invocation_store::ToolIdentity;
+        use unica_execution::invocation_store::ToolIdentity;
         let workspace = resolve_exact_workspace();
         let file = workspace
             .path()
@@ -6667,7 +6732,7 @@ mod tests {
 
     #[test]
     fn body_line_read_validates_the_tail_and_continuation_reopens_exact_bytes() {
-        use crate::application::invocation_store::ToolIdentity;
+        use unica_execution::invocation_store::ToolIdentity;
         let workspace = resolve_exact_workspace();
         let file = workspace
             .path()
@@ -6693,7 +6758,7 @@ mod tests {
                 crate::application::v13::source_text::apply_response_budget(&whole, 16_384)
                     .into_owned();
             let at = budgeted.next[0]["args"]["at"].as_str().unwrap();
-            let address = crate::domain::address::QualifiedAddress::parse(at).unwrap();
+            let address = unica_address::address::QualifiedAddress::parse(at).unwrap();
             let range = address.line_range().unwrap();
             assert_eq!(range.from, first);
             let part = invoke_exact_read(workspace.path(), ToolIdentity::View, json!({"at":at}));
@@ -6734,12 +6799,12 @@ mod tests {
 
     #[test]
     fn body_line_provider_search_uses_current_spans_and_preserves_evidence() {
-        use crate::application::invocation_store::ToolIdentity;
-        use crate::domain::code_intelligence::ProviderSearchHit;
-        use crate::domain::source_location::SourceLocation;
-        use crate::domain::source_target::{
+        use unica_address::source_target::{
             MetadataAddress, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
         };
+        use unica_code_intelligence::model::ProviderSearchHit;
+        use unica_execution::invocation_store::ToolIdentity;
+        use unica_source_contract::location::SourceLocation;
         let workspace = resolve_exact_workspace();
         std::fs::write(workspace.path().join("src/CommonModules/Probe/Ext/Module.bsl"), "// outside Needle\n\n// Needle doc\nПроцедура Ping()\n\tСообщить(\"Needle\");\nКонецПроцедуры\n").unwrap();
         for role in [
@@ -6831,7 +6896,7 @@ mod tests {
 
     #[test]
     fn a_text_search_hit_opens_the_narrowest_body_line_address() {
-        use crate::application::invocation_store::ToolIdentity;
+        use unica_execution::invocation_store::ToolIdentity;
         let workspace = resolve_exact_workspace();
         std::fs::write(
             workspace
@@ -6869,7 +6934,7 @@ mod tests {
 
     #[test]
     fn resolve_exact_module_body_numbers_lines_like_view() {
-        use crate::application::invocation_store::ToolIdentity;
+        use unica_execution::invocation_store::ToolIdentity;
         let workspace = resolve_exact_workspace();
         let file = workspace
             .path()
@@ -6911,7 +6976,7 @@ mod tests {
 
     #[test]
     fn resolve_exact_module_read_failures_are_never_successful_locations() {
-        use crate::application::invocation_store::ToolIdentity;
+        use unica_execution::invocation_store::ToolIdentity;
         let workspace = resolve_exact_workspace();
         for (prefix, path) in [
             ("CommonModule.Probe", "CommonModules/Probe/Ext/Module.bsl"),
@@ -6966,12 +7031,12 @@ mod tests {
 
     #[test]
     fn resolve_exact_cancelled_read_never_claims_a_location() {
-        use crate::application::invocation_store::ToolIdentity;
-        use crate::application::operation_descriptors::ExecutionClass;
-        use crate::application::ports::TokioClock;
-        use crate::domain::invocation::{DomainResult, InvocationFailure};
         use crate::infrastructure::daemon::protocol::InvocationRequest;
         use crate::infrastructure::daemon::server::V5CanonicalInvocationRuntime;
+        use unica_execution::clock::TokioClock;
+        use unica_execution::invocation_store::ToolIdentity;
+        use unica_execution::receipt_runtime::ports::ExecutionClass;
+        use unica_execution_contract::invocation::{DomainResult, InvocationFailure};
         struct CancelRead(super::CanonicalV13ReadService);
         impl super::CanonicalInvocationService for CancelRead {
             fn prepare(
@@ -7029,10 +7094,10 @@ mod tests {
 
     #[test]
     fn canonical_lexical_module_scope_searches_only_the_selected_file() {
-        use crate::application::invocation_store::ToolIdentity;
-        use crate::application::ports::TokioClock;
         use crate::infrastructure::daemon::protocol::InvocationRequest;
         use crate::infrastructure::daemon::server::V5CanonicalInvocationRuntime;
+        use unica_execution::clock::TokioClock;
+        use unica_execution::invocation_store::ToolIdentity;
 
         let workspace = role_search_workspace();
         let source = workspace.path().join("src");
@@ -7185,10 +7250,10 @@ mod tests {
 
     #[test]
     fn canonical_role_search_preserves_typed_failure_without_private_provider_text() {
-        use crate::application::invocation_store::ToolIdentity;
-        use crate::application::ports::TokioClock;
         use crate::infrastructure::daemon::protocol::InvocationRequest;
         use crate::infrastructure::daemon::server::V5CanonicalInvocationRuntime;
+        use unica_execution::clock::TokioClock;
+        use unica_execution::invocation_store::ToolIdentity;
 
         let workspace = role_search_workspace();
         let private = "/private/provider/cache/index.db: engine stderr contains secret";
@@ -7259,7 +7324,7 @@ mod tests {
         ] {
             section.index_freshness = Some("fresh".into());
             section.index_maintenance =
-                Some(crate::domain::code_intelligence::IndexMaintenanceEvidence::StartFailed);
+                Some(unica_code_intelligence::model::IndexMaintenanceEvidence::StartFailed);
             section.index_build_id = Some("known-build".into());
             section.artifacts.push(private.into());
             let expected = serde_json::to_value(&section).unwrap();
@@ -7400,11 +7465,11 @@ mod tests {
     /// reaches the provider.
     #[test]
     fn search_arguments_are_refused_before_a_cold_provider_is_asked() {
-        use crate::application::invocation_store::ToolIdentity;
-        use crate::application::ports::TokioClock;
-        use crate::application::result_store::SearchCursorStore;
         use crate::infrastructure::daemon::protocol::InvocationRequest;
         use crate::infrastructure::daemon::server::V5CanonicalInvocationRuntime;
+        use unica_execution::clock::TokioClock;
+        use unica_execution::invocation_store::ToolIdentity;
+        use unica_navigation::result_store::SearchCursorStore;
 
         let workspace = role_search_workspace();
         let calls = Arc::new(AtomicUsize::new(0));
@@ -7526,10 +7591,10 @@ mod tests {
 
     #[test]
     fn canonical_role_search_preserves_partial_hits_and_their_cursor() {
-        use crate::application::invocation_store::ToolIdentity;
-        use crate::application::ports::TokioClock;
         use crate::infrastructure::daemon::protocol::InvocationRequest;
         use crate::infrastructure::daemon::server::V5CanonicalInvocationRuntime;
+        use unica_execution::clock::TokioClock;
+        use unica_execution::invocation_store::ToolIdentity;
 
         let workspace = role_search_workspace();
         let complete = provider_search_test_execution(2, 10, false)
@@ -7741,8 +7806,8 @@ mod tests {
             _: ProviderDeadline,
             _: &CancellationToken,
         ) -> ProviderSearchSection {
-            use crate::domain::code_intelligence::ProviderSearchHit;
-            use crate::domain::source_location::SourceLocation;
+            use unica_code_intelligence::model::ProviderSearchHit;
+            use unica_source_contract::location::SourceLocation;
 
             let name = context.source_root.source_set.as_deref().unwrap();
             let count = match (self.0, name) {
@@ -7872,10 +7937,8 @@ mod tests {
             .map(|name| {
                 (
                     name.to_string(),
-                    crate::infrastructure::source_roots::normalize_path_identity(
-                        &root.path().join(name),
-                    )
-                    .unwrap(),
+                    unica_workspace::paths::normalize_path_identity(&root.path().join(name))
+                        .unwrap(),
                 )
             })
             .collect::<Vec<_>>();
@@ -7908,7 +7971,7 @@ mod tests {
         let section = &execution.result.sections[0];
         assert_eq!(
             section.status,
-            crate::domain::code_intelligence::ProviderSectionStatus::Partial
+            unica_code_intelligence::model::ProviderSectionStatus::Partial
         );
         assert!(!section.search_complete);
         assert_eq!(section.hits.len(), 200);
@@ -7920,7 +7983,7 @@ mod tests {
 
     #[test]
     fn unscoped_lexical_names_a_later_failed_or_timed_out_source() {
-        use crate::domain::code_intelligence::ProviderSectionStatus;
+        use unica_code_intelligence::model::ProviderSectionStatus;
 
         for (case, expected) in [
             (
@@ -7987,7 +8050,7 @@ mod tests {
         .unwrap();
         assert!(execution.ok);
         let result = super::provider_search_page(
-            &crate::application::result_store::SearchCursorStore::default(),
+            &unica_navigation::result_store::SearchCursorStore::default(),
             ProviderRole::Lexical,
             execution,
             provider_search_test_binding(ProviderRole::Lexical, 20),
@@ -8036,7 +8099,7 @@ mod tests {
         assert!(section.search_complete, "{section:#?}");
         assert_eq!(
             section.status,
-            crate::domain::code_intelligence::ProviderSectionStatus::Empty
+            unica_code_intelligence::model::ProviderSectionStatus::Empty
         );
     }
 
@@ -8112,11 +8175,11 @@ mod tests {
 
     #[test]
     fn public_role_search_surfaces_partial_provider_warning_and_hit() {
-        use crate::application::code_intelligence::CodeSearchExecution;
-        use crate::domain::code_intelligence::{
-            CodeSearchResult, ProviderSearchHit, SearchCoverage,
-        };
-        use crate::domain::source_location::SourceLocation;
+        use unica_code_intelligence::coordinator::CodeSearchExecution;
+        use unica_code_intelligence::model::CodeSearchResult;
+        use unica_code_intelligence::model::ProviderSearchHit;
+        use unica_code_intelligence::model::SearchCoverage;
+        use unica_source_contract::location::SourceLocation;
 
         let section = ProviderSearchSection::partial(
             ProviderIdentity::new(ProviderRole::Semantic, "rlm"),
@@ -8141,7 +8204,7 @@ mod tests {
         )
         .unwrap();
         let result = super::provider_search_page(
-            &crate::application::result_store::SearchCursorStore::default(),
+            &unica_navigation::result_store::SearchCursorStore::default(),
             ProviderRole::Semantic,
             CodeSearchExecution {
                 ok: true,
@@ -8193,15 +8256,16 @@ mod tests {
             CodeIntelligenceDeadlines::for_test(Duration::from_secs(1)),
         )
         .expect_err("cancelled search must not start");
-        assert!(error.starts_with(crate::domain::cancellation::CANCELLED_PREFIX));
+        assert!(error.starts_with(unica_work_control::cancellation::CANCELLED_PREFIX));
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]
     fn computed_can_section_may_exceed_the_preferred_page_size() {
         let at = "main:Catalog.Товары";
-        let mut result =
-            crate::domain::invocation::DomainResult::success("logical collection page resolved");
+        let mut result = unica_execution_contract::invocation::DomainResult::success(
+            "logical collection page resolved",
+        );
         result.at = Some(at.to_string());
         result.rev = Some("rev-1".to_string());
         result.page = Some(json!({"stoppedBy": "complete"}));
@@ -8230,12 +8294,13 @@ mod tests {
     #[test]
     fn response_enrichment_cannot_exceed_the_transport_result_limit() {
         let at = "main:Catalog.Товары";
-        let mut result =
-            crate::domain::invocation::DomainResult::success("logical collection page resolved");
+        let mut result = unica_execution_contract::invocation::DomainResult::success(
+            "logical collection page resolved",
+        );
         result.at = Some(at.to_string());
         result.page = Some(json!({"stoppedBy": "complete"}));
         result.data = Some(json!({"at": at, "items": ["X".repeat(
-            crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES
+            unica_execution::invocation_store::MAX_CANONICAL_RESULT_BYTES
         )]}));
         let checked = super::enforce_view_result_limit(result, at);
         assert!(!checked.ok);

@@ -1,16 +1,16 @@
-use super::remove::{
-    meta_remove_should_skip_file, plan_meta_remove_subsystem_replacements,
-    plan_meta_remove_subsystem_replacements_bounded, MetaRemoveTraversalLimits,
-};
 use super::{
     force_meta_remove_reparse_path, with_before_meta_remove_subsystem_child_inspection_hook,
     with_meta_remove_forced_reparse_paths,
 };
-use crate::domain::workspace::WorkspaceContext;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+use unica_metadata_designer::remove::{
+    meta_remove_should_skip_file, plan_meta_remove_subsystem_replacements,
+    plan_meta_remove_subsystem_replacements_bounded, MetaRemoveTraversalLimits,
+};
+use unica_source_contract::workspace::WorkspaceContext;
 
 fn temp_context(name: &str) -> WorkspaceContext {
     let nanos = SystemTime::now()
@@ -70,6 +70,8 @@ fn plan_subsystem_replacements_for_test(root: &Path) -> Result<(), String> {
     let mut replacements = Vec::new();
     let mut descriptor_reads = Vec::new();
     plan_meta_remove_subsystem_replacements(
+        &unica_workspace::discovery::ProjectDiscoveryReader::new(root),
+        super::remove::observation_hooks(),
         root,
         "Catalog.Victim",
         &mut replacements,
@@ -86,6 +88,8 @@ fn plan_subsystem_replacements_with_limits_for_test(
     let mut visited_directories = HashSet::new();
     let mut visited_entries = 0usize;
     let result = plan_meta_remove_subsystem_replacements_bounded(
+        &unica_workspace::discovery::ProjectDiscoveryReader::new(root),
+        super::remove::observation_hooks(),
         root,
         "Catalog.Victim",
         &mut replacements,
