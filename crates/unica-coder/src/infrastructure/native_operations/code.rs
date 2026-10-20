@@ -1206,7 +1206,9 @@ fn locate_addressed_replacement(
             } else {
                 method.start
             };
-            let end = if text[method.end..line_end].trim().is_empty() {
+            // A full Method.Body roundtrip includes the entire closing line,
+            // including an inline comment returned by view.
+            let end = if target.with_doc_comment || text[method.end..line_end].trim().is_empty() {
                 line_end
             } else {
                 method.end
@@ -4607,6 +4609,44 @@ pub(super) mod tests {
         assert!(state.planned_changes().is_empty());
         assert!(effects.events().is_empty());
         fixture.cleanup();
+    }
+
+    #[test]
+    fn framed_method_body_text_replaces_its_closing_comment_and_repeats_as_noop() {
+        for (open, statement, close) in [
+            ("Procedure Base()", "Value = 1;", "EndProcedure"),
+            ("Function Base()", "Return 1;", "EndFunction"),
+        ] {
+            for eol in ["\n", "\r\n"] {
+                for (terminal_eol, neighbor) in [
+                    ("", ""),
+                    ("\n", ""),
+                    ("\n", "\nProcedure Neighbor()\nEndProcedure\n"),
+                ] {
+                    let read = format!(
+                            "//+ Synthetic frame\n&AtServer\n{open}\n    {statement}\n{close} //- Synthetic frame{terminal_eol}"
+                        ).replace('\n', eol);
+                    let neighbor = neighbor.replace('\n', eol);
+                    let before = format!("{read}{neighbor}");
+                    let edited = read.replace("1;", "2;");
+                    let operation = CodePlanOperation::Replace(CodeReplaceArgs {
+                        at: crate::domain::address::QualifiedAddress::parse(
+                            "main:CommonModule.Sample.Method.Base.Body",
+                        )
+                        .unwrap(),
+                        anchor: None,
+                        text: edited.clone(),
+                    });
+                    let post = plan_code_postimage(before.as_bytes(), &operation, 0).expect(
+                        "view/read-edit-replace preserves the frame without doubling its tail",
+                    );
+                    assert_eq!(post.after, before.replace("1;", "2;").as_bytes());
+                    let repeated = plan_code_postimage(&post.after, &operation, 0).unwrap();
+                    assert!(repeated.no_op);
+                    assert_eq!(repeated.after, post.after);
+                }
+            }
+        }
     }
 
     #[test]

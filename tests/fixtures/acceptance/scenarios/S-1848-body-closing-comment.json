@@ -1,0 +1,185 @@
+{
+  "id": "S-1848-body-closing-comment",
+  "issue": 1848,
+  "area": "Код BSL",
+  "task": "Прочитать Method.Body с рамкой и комментарием после EndProcedure, изменить тело и заменить его без дублирования рамки; повторная замена сохраняет байты и имеет нулевые эффекты",
+  "workspace": "tests/fixtures/acceptance/workspace-resolve",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.Probe.Body",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "text": "//+ Synthetic frame\n&AtServer\nProcedure Ping() Export\n    Value = 1;\nEndProcedure //- Synthetic frame\n\nProcedure Neighbor() Export\n    Message(\"keep\");\nEndProcedure\n"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "06e6740a8b5bf78f00bebb76e0f91956a97d690e5b78aaa088858b0487cee937"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "3a8bc9aa744bcf23ee36a81eab9df3cc802d6872b927889de4442d25e76ad07b"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Method.Ping.Body"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/sourceText",
+          "eq": "//+ Synthetic frame\n&AtServer\nProcedure Ping() Export\n    Value = 1;\nEndProcedure //- Synthetic frame\n"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "3a8bc9aa744bcf23ee36a81eab9df3cc802d6872b927889de4442d25e76ad07b"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.Probe.Method.Ping.Body",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "text": "//+ Synthetic frame\n&AtServer\nProcedure Ping() Export\n    Value = 2;\nEndProcedure //- Synthetic frame\n"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "3a8bc9aa744bcf23ee36a81eab9df3cc802d6872b927889de4442d25e76ad07b"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "e565917451f128921dcab88345fc53a6455658983fb8f8d52f202171c1ff6e7d"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Method.Ping.Body"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/sourceText",
+          "eq": "//+ Synthetic frame\n&AtServer\nProcedure Ping() Export\n    Value = 2;\nEndProcedure //- Synthetic frame\n"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "e565917451f128921dcab88345fc53a6455658983fb8f8d52f202171c1ff6e7d"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.Probe.Method.Ping.Body",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "text": "//+ Synthetic frame\n&AtServer\nProcedure Ping() Export\n    Value = 2;\nEndProcedure //- Synthetic frame\n"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "e565917451f128921dcab88345fc53a6455658983fb8f8d52f202171c1ff6e7d"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "e565917451f128921dcab88345fc53a6455658983fb8f8d52f202171c1ff6e7d"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ]
+    }
+  ]
+}
