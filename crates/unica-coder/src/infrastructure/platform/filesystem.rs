@@ -5,6 +5,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+pub(crate) mod execution_store;
+
 #[cfg(target_os = "macos")]
 mod macos_acl;
 
