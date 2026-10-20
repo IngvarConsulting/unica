@@ -871,7 +871,15 @@ pub(crate) mod tests {
         let subscription = add_object_event_subscription(&fixture, "CatalogEvents");
         let module_descriptor = fixture.root.join("src/CommonModules/EventHandlers.xml");
         let descriptor = fs::read_to_string(&module_descriptor).unwrap();
-        let malformed = descriptor.replacen("\t\t\t<Global>false</Global>\n", "", 1);
+        let document = roxmltree::Document::parse(&descriptor).unwrap();
+        let global = document
+            .descendants()
+            .filter(|node| node.has_tag_name(("http://v8.1c.ru/8.3/MDClasses", "Global")))
+            .collect::<Vec<_>>();
+        assert_eq!(global.len(), 1, "fixture must have exactly one Global fact");
+        assert_eq!(global[0].text(), Some("false"));
+        let mut malformed = descriptor.clone();
+        malformed.replace_range(global[0].range(), "");
         assert_ne!(malformed, descriptor, "fixture must remove Global evidence");
         fs::write(module_descriptor, malformed).unwrap();
 
@@ -2768,7 +2776,10 @@ pub(crate) mod tests {
                 let fixture =
                     Fixture::new(&format!("net-zero-{spelling_label}-{collection_label}"));
                 let cancellation = CancellationToken::new();
-                let source = String::from_utf8(fs::read(&fixture.descriptor).unwrap()).unwrap();
+                // These authored spellings exercise an existing LF document.
+                let source = String::from_utf8(fs::read(&fixture.descriptor).unwrap())
+                    .unwrap()
+                    .replace("\r\n", "\n");
                 let source = source.replacen("<ChildObjects/>", spelling, 1);
                 fs::write(&fixture.descriptor, source.as_bytes()).unwrap();
                 let collection_dir = fixture
@@ -2829,8 +2840,10 @@ pub(crate) mod tests {
     fn empty_fragment_restoration_does_not_erase_property_or_unrelated_child_edits() {
         let fixture = Fixture::new("net-zero-child-with-property-edit");
         let cancellation = CancellationToken::new();
+        // The literal source comment below belongs to an authored LF fixture.
         let source = String::from_utf8(fs::read(&fixture.descriptor).unwrap())
             .unwrap()
+            .replace("\r\n", "\n")
             .replacen(
                 "<ChildObjects/>",
                 "<ChildObjects><!-- exact source comment -->\n\t\t</ChildObjects>",
@@ -3926,12 +3939,17 @@ pub(crate) mod tests {
         let child_descriptor = fixture
             .root
             .join("src/Catalogs/Editable/Templates/Print.xml");
-        let child = fs::read_to_string(&child_descriptor).unwrap();
+        // Legacy inline sources used LF. Author both parts in that profile,
+        // independently of the current new-file emitter's native CRLF output.
+        let child = fs::read_to_string(&child_descriptor)
+            .unwrap()
+            .replace("\r\n", "\n");
         let start = child.find("<Template uuid=").unwrap();
         let end = child.rfind("</Template>").unwrap() + "</Template>".len();
         let inline = &child[start..end];
         let legacy_owner = fs::read_to_string(&fixture.descriptor)
             .unwrap()
+            .replace("\r\n", "\n")
             .replace("<Template>Print</Template>", inline);
         assert!(legacy_owner.contains("<Template uuid="), "{legacy_owner}");
         fs::write(&fixture.descriptor, &legacy_owner).unwrap();
