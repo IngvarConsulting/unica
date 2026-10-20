@@ -1229,7 +1229,7 @@
         },
         {
           "pointer": "/at",
-          "eq": "ops[0].args.base"
+          "eq": "ops[0].args.name"
         },
         {
           "pointer": "/data",
