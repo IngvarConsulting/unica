@@ -3,6 +3,7 @@ import io
 import json
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -134,10 +135,49 @@ class PrivateProviderFailureEvidenceTests(unittest.TestCase):
             ), evidence.FailureCapture("captured", record()))
 
     def test_unsupported_cache_override_performs_no_discovery(self):
-        for override in ("relative-cache", "/private/external-cache", ""):
-            with self.subTest(override=override), patch.object(Path, "resolve", side_effect=AssertionError):
-                baseline = evidence.before_call(Path("unused"), cache_is_default=False)
-                self.assertEqual(baseline.status, "unlocated")
+        from tests.ci import test_acceptance_scenarios as corpus_runner
+
+        with tempfile.TemporaryDirectory() as raw:
+            workspace = Path(raw)
+            (workspace / "v8project.yaml").write_text("", encoding="utf-8")
+            state = workspace / "state"
+            state.mkdir()
+            for override, expected_default in (
+                (None, True), ("relative-cache", False),
+                ("/private/external-cache", False), ("", False),
+            ):
+                environment = {} if override is None else {"UNICA_CACHE_DIR": override}
+                process = SimpleNamespace(
+                    stdin=io.BytesIO(),
+                    stdout=io.BytesIO(b'{"jsonrpc":"2.0","id":1,"result":{}}\n'),
+                    terminate=lambda: None,
+                    wait=lambda **_: 0,
+                )
+                with self.subTest(override=override), patch.object(
+                    corpus_runner.subprocess, "Popen", return_value=process
+                ) as popen:
+                    server = corpus_runner.AcceptanceServer(
+                        workspace, state, "2025-03-26", environment=environment
+                    )
+                    try:
+                        self.assertEqual(server.provider_failure_cache_is_default, expected_default)
+                        popen.assert_called_once()
+                        forwarded = popen.call_args.kwargs["env"]
+                        if override is None:
+                            self.assertNotIn("UNICA_CACHE_DIR", forwarded)
+                            baseline = evidence.before_call(
+                                workspace, cache_is_default=server.provider_failure_cache_is_default
+                            )
+                            self.assertEqual(baseline.status, "not_present")
+                        else:
+                            self.assertEqual(forwarded["UNICA_CACHE_DIR"], override)
+                            with patch.object(Path, "resolve", side_effect=AssertionError):
+                                baseline = evidence.before_call(
+                                    workspace, cache_is_default=server.provider_failure_cache_is_default
+                                )
+                            self.assertEqual(baseline.status, "unlocated")
+                    finally:
+                        server.close()
 
     def test_multiple_services_and_multiple_new_records_are_ambiguous(self):
         with tempfile.TemporaryDirectory() as raw:
