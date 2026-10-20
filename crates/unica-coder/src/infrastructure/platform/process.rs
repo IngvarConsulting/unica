@@ -349,6 +349,8 @@ pub(crate) struct RuntimeProcessTreeTestScenario {
     leader_with_descendant_args: Vec<String>,
     long_lived_args: Vec<String>,
     descendant_pid_path: PathBuf,
+    #[cfg(target_os = "macos")]
+    _descendant_lifetime: std::fs::File,
 }
 
 #[cfg(test)]
@@ -399,10 +401,12 @@ impl RuntimeProcessTreeTestScenario {
 
 #[cfg(test)]
 pub(crate) struct RuntimeProcessTreeTestProbe {
-    #[cfg(not(any(windows, target_os = "linux")))]
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     process_id: u32,
     #[cfg(target_os = "linux")]
     process: std::fs::File,
+    #[cfg(target_os = "macos")]
+    process: MacosRuntimeProcessTestProbe,
     #[cfg(windows)]
     process: ScopedWindowsHandle,
 }
@@ -410,6 +414,12 @@ pub(crate) struct RuntimeProcessTreeTestProbe {
 #[cfg(test)]
 impl RuntimeProcessTreeTestProbe {
     fn capture(process_id: u32) -> io::Result<Self> {
+        #[cfg(target_os = "macos")]
+        {
+            Ok(Self {
+                process: MacosRuntimeProcessTestProbe::capture(process_id)?,
+            })
+        }
         #[cfg(target_os = "linux")]
         {
             use std::os::fd::FromRawFd;
@@ -440,13 +450,17 @@ impl RuntimeProcessTreeTestProbe {
                 process: ScopedWindowsHandle(process),
             })
         }
-        #[cfg(not(any(windows, target_os = "linux")))]
+        #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
         {
             Ok(Self { process_id })
         }
     }
 
     pub(crate) fn is_alive(&self) -> io::Result<bool> {
+        #[cfg(target_os = "macos")]
+        {
+            self.process.is_alive()
+        }
         #[cfg(target_os = "linux")]
         {
             runtime_process_pidfd_alive_for_test(&self.process)
@@ -455,11 +469,135 @@ impl RuntimeProcessTreeTestProbe {
         {
             runtime_process_handle_alive_for_test(&self.process)
         }
-        #[cfg(not(any(windows, target_os = "linux")))]
+        #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
         {
             runtime_process_pid_alive_for_test(self.process_id)
         }
     }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+struct MacosRuntimeProcessTestProbe {
+    queue: std::fs::File,
+    process_id: u32,
+    exited: Cell<bool>,
+}
+
+#[cfg(all(test, target_os = "macos"))]
+impl MacosRuntimeProcessTestProbe {
+    // The caller must hold the observed process alive through registration.
+    // The runtime scenario retains its FIFO writer; direct controls retain stdin.
+    fn capture(process_id: u32) -> io::Result<Self> {
+        use std::os::fd::{AsRawFd, FromRawFd};
+
+        if process_id == 0 || process_id > i32::MAX as u32 {
+            return Err(io::Error::other("invalid macOS process id"));
+        }
+        let descriptor = unsafe { libc::kqueue() };
+        if descriptor == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        // Own the queue immediately, including every registration failure path.
+        let queue = unsafe { std::fs::File::from_raw_fd(descriptor) };
+        if unsafe { libc::fcntl(queue.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        let registration = libc::kevent {
+            ident: process_id as libc::uintptr_t,
+            filter: libc::EVFILT_PROC,
+            flags: libc::EV_ADD | libc::EV_ENABLE | libc::EV_RECEIPT,
+            fflags: libc::NOTE_EXIT,
+            data: 0,
+            udata: std::ptr::null_mut(),
+        };
+        let mut receipt: libc::kevent = unsafe { std::mem::zeroed() };
+        let timeout = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        let count = unsafe {
+            libc::kevent(
+                queue.as_raw_fd(),
+                &registration,
+                1,
+                &mut receipt,
+                1,
+                &timeout,
+            )
+        };
+        if count == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        if count != 1
+            || receipt.ident != registration.ident
+            || receipt.filter != libc::EVFILT_PROC
+            || receipt.flags & libc::EV_ERROR == 0
+        {
+            return Err(io::Error::other(
+                "unexpected macOS process registration receipt",
+            ));
+        }
+        if receipt.data != 0 {
+            let errno = i32::try_from(receipt.data)
+                .map_err(|_| io::Error::other("invalid macOS process registration error"))?;
+            return Err(io::Error::from_raw_os_error(errno));
+        }
+        // EV_RECEIPT acknowledges registration; it is not an exit observation.
+        Ok(Self {
+            queue,
+            process_id,
+            exited: Cell::new(false),
+        })
+    }
+
+    fn is_alive(&self) -> io::Result<bool> {
+        use std::os::fd::AsRawFd;
+
+        if self.exited.get() {
+            return Ok(false);
+        }
+        let mut event: libc::kevent = unsafe { std::mem::zeroed() };
+        let timeout = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        let count = unsafe {
+            libc::kevent(
+                self.queue.as_raw_fd(),
+                std::ptr::null(),
+                0,
+                &mut event,
+                1,
+                &timeout,
+            )
+        };
+        if count == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        if count == 0 {
+            return Ok(true);
+        }
+        if count != 1 {
+            return Err(io::Error::other("unexpected macOS process event count"));
+        }
+        validate_macos_runtime_exit_event(self.process_id, &event)?;
+        // NOTE_EXIT may be consumed only once. Never consult the numeric PID
+        // again after observing this retained registration's terminal event.
+        self.exited.set(true);
+        Ok(false)
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+fn validate_macos_runtime_exit_event(process_id: u32, event: &libc::kevent) -> io::Result<()> {
+    if event.ident != process_id as libc::uintptr_t
+        || event.filter != libc::EVFILT_PROC
+        || event.flags & libc::EV_ERROR != 0
+        || event.fflags != libc::NOTE_EXIT
+    {
+        return Err(io::Error::other("unexpected macOS process exit event"));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -470,8 +608,40 @@ pub(crate) fn runtime_process_tree_test_scenario_for_test(
     #[cfg(unix)]
     {
         let escaped_path = descendant_pid_path.to_string_lossy().replace('\'', "'\\''");
+        #[cfg(target_os = "macos")]
+        let (descendant_command, descendant_lifetime) = {
+            use std::os::unix::ffi::OsStrExt;
+            use std::os::unix::fs::OpenOptionsExt;
+
+            let lifetime_path = root.join("runtime-tree-descendant.lifetime");
+            let native_path = std::ffi::CString::new(lifetime_path.as_os_str().as_bytes()).unwrap();
+            // mkfifo refuses an existing path; this belongs to the fresh cache.
+            assert_eq!(
+                unsafe { libc::mkfifo(native_path.as_ptr(), 0o600) },
+                0,
+                "create owned descendant lifetime FIFO: {}",
+                io::Error::last_os_error()
+            );
+            let reader = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
+                .open(&lifetime_path)
+                .expect("open initial owned FIFO reader");
+            let writer = std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
+                .open(&lifetime_path)
+                .expect("retain owned descendant lifetime writer");
+            drop(reader);
+            let escaped_lifetime = lifetime_path.to_string_lossy().replace('\'', "'\\''");
+            (
+                format!("(IFS= read -r held < '{escaped_lifetime}')"),
+                writer,
+            )
+        };
         // Linux's GNU sleep does not expire while the fixture is paused before
         // capturing its pidfd. Cancellation remains the sole lifetime owner.
+        #[cfg(not(target_os = "macos"))]
         let descendant_command = if cfg!(target_os = "linux") {
             "sleep infinity"
         } else {
@@ -492,6 +662,8 @@ pub(crate) fn runtime_process_tree_test_scenario_for_test(
                 ),
             ],
             descendant_pid_path,
+            #[cfg(target_os = "macos")]
+            _descendant_lifetime: descendant_lifetime,
         }
     }
     #[cfg(windows)]
@@ -561,7 +733,7 @@ fn runtime_process_pidfd_alive_for_test(process: &std::fs::File) -> io::Result<b
     )))
 }
 
-#[cfg(all(test, unix, not(target_os = "linux")))]
+#[cfg(all(test, unix, not(any(target_os = "linux", target_os = "macos"))))]
 fn runtime_process_pid_alive_for_test(process_id: u32) -> io::Result<bool> {
     let process_id = i32::try_from(process_id)
         .map_err(|_| io::Error::other("process id is outside Unix pid range"))?;
@@ -4304,6 +4476,183 @@ mod tests {
             output.stdout
         );
         assert!(output.stdout.contains("nul=2"), "{}", output.stdout);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_runtime_descendant_probe_distinguishes_exited_unreaped_process() {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "infrastructure::platform::process::tests::managed_child_test_helper",
+                "--nocapture",
+            ])
+            .env(HELPER_ENV, "echo_stdin_len")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        // The existing helper cannot finish before we close its stdin. Retain
+        // the Child until the exact exited process has been observed and reaped.
+        let mut child = ChildCleanupGuard(Some(command.spawn().unwrap()));
+        let pid = child.child_mut().id();
+        let probe = super::RuntimeProcessTreeTestProbe::capture(pid)
+            .expect("capture the live fixture process before releasing stdin");
+        assert!(probe.is_alive().expect("observe the held live process"));
+
+        drop(child.child_mut().stdin.take());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut information: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        loop {
+            // WNOWAIT proves exit without releasing this child's PID identity.
+            assert_eq!(
+                unsafe {
+                    libc::waitid(
+                        libc::P_PID,
+                        pid as libc::id_t,
+                        &mut information,
+                        libc::WEXITED | libc::WNOWAIT | libc::WNOHANG,
+                    )
+                },
+                0,
+                "the fixture must retain its exact child"
+            );
+            if unsafe { information.si_pid() } == pid as libc::pid_t {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "controlled fixture did not exit after stdin EOF"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(information.si_code, libc::CLD_EXITED);
+        assert_eq!(unsafe { information.si_status() }, 0);
+        let exited_reported_alive = probe
+            .is_alive()
+            .expect("observe the exact exited child before reap");
+        assert_eq!(
+            probe.is_alive().expect("repeat the terminal observation"),
+            exited_reported_alive,
+            "consuming NOTE_EXIT must not make the process live again"
+        );
+        let numeric_pid_exists = unsafe { libc::kill(pid as libc::pid_t, 0) } == 0;
+        assert!(child
+            .child_mut()
+            .try_wait()
+            .expect("reap the child whose exit was proven")
+            .expect("WNOWAIT already proved exit")
+            .success());
+        child.wait();
+        assert!(!probe
+            .is_alive()
+            .expect("observe the same process after reap"));
+        assert!(!probe
+            .is_alive()
+            .expect("retain terminal state after the event and process are gone"));
+        eprintln!(
+            "[MACOS-PROBE] live=true pid={pid} waitid=CLD_EXITED status=0 \
+             unreaped_alive={exited_reported_alive} numeric_pid_exists={numeric_pid_exists} \
+             reaped=true after_reap_alive=false"
+        );
+        assert!(
+            !exited_reported_alive,
+            "an exited but unreaped macOS process is not a live process"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_runtime_descendant_probe_refuses_unknown_observations() {
+        use std::os::fd::AsRawFd;
+
+        assert!(super::RuntimeProcessTreeTestProbe::capture(0).is_err());
+        assert!(super::RuntimeProcessTreeTestProbe::capture(u32::MAX).is_err());
+        let pid = std::process::id();
+        let probe = super::MacosRuntimeProcessTestProbe::capture(pid).unwrap();
+        // EV_RECEIPT/data=0 acknowledges a live registration, not an exit.
+        assert!(probe.is_alive().unwrap());
+        let queue_flags = unsafe { libc::fcntl(probe.queue.as_raw_fd(), libc::F_GETFD) };
+        assert_ne!(queue_flags, -1);
+        assert_ne!(queue_flags & libc::FD_CLOEXEC, 0);
+        let bad_queue = super::MacosRuntimeProcessTestProbe {
+            queue: std::fs::File::open("/dev/null").unwrap(),
+            process_id: pid,
+            exited: std::cell::Cell::new(false),
+        };
+        assert!(bad_queue.is_alive().is_err());
+        assert!(!bad_queue.exited.get(), "a syscall error cannot prove exit");
+
+        let terminal = libc::kevent {
+            ident: pid as libc::uintptr_t,
+            filter: libc::EVFILT_PROC,
+            flags: libc::EV_EOF | libc::EV_ONESHOT,
+            fflags: libc::NOTE_EXIT,
+            data: 0,
+            udata: std::ptr::null_mut(),
+        };
+        super::validate_macos_runtime_exit_event(pid, &terminal).unwrap();
+        for wrong in [
+            libc::kevent {
+                ident: terminal.ident + 1,
+                ..terminal
+            },
+            libc::kevent {
+                filter: libc::EVFILT_READ,
+                ..terminal
+            },
+            libc::kevent {
+                flags: libc::EV_ERROR,
+                ..terminal
+            },
+            libc::kevent {
+                fflags: 0,
+                ..terminal
+            },
+            libc::kevent {
+                fflags: libc::NOTE_EXIT | libc::NOTE_FORK,
+                ..terminal
+            },
+        ] {
+            assert!(super::validate_macos_runtime_exit_event(pid, &wrong).is_err());
+        }
+        assert!(
+            probe.is_alive().unwrap(),
+            "invalid events did not terminate this process"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_runtime_fixture_keeps_private_writer_and_refuses_path_reuse() {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::FileTypeExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let scenario = super::runtime_process_tree_test_scenario_for_test(root.path());
+        let fifo = root.path().join("runtime-tree-descendant.lifetime");
+        assert!(std::fs::symlink_metadata(&fifo)
+            .unwrap()
+            .file_type()
+            .is_fifo());
+        let writer_flags =
+            unsafe { libc::fcntl(scenario._descendant_lifetime.as_raw_fd(), libc::F_GETFD) };
+        assert_ne!(writer_flags, -1);
+        assert_ne!(
+            writer_flags & libc::FD_CLOEXEC,
+            0,
+            "the parent writer must not escape into the runtime process"
+        );
+        drop(scenario);
+
+        let occupied = tempfile::tempdir().unwrap();
+        let path = occupied.path().join("runtime-tree-descendant.lifetime");
+        std::fs::write(&path, b"unrelated existing bytes").unwrap();
+        assert!(std::panic::catch_unwind(|| {
+            super::runtime_process_tree_test_scenario_for_test(occupied.path());
+        })
+        .is_err());
+        assert_eq!(std::fs::read(path).unwrap(), b"unrelated existing bytes");
     }
 
     #[cfg(target_os = "linux")]
