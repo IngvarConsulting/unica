@@ -333,6 +333,7 @@ class AcceptanceServer:
         # четверть часа, а сценариев в корпусе десятки — к концу набора их
         # столько же, и подключение начинает отказывать.
         env["UNICA_DAEMON_IDLE_GRACE_MS"] = "5000"
+        self.provider_failure_cache_is_default = "UNICA_CACHE_DIR" not in env
         self.stderr_path = state / "unica-stderr.log"
         self.stderr_file = open(self.stderr_path, "wb")  # noqa: SIM115 - lives as long as the process
         self.process = subprocess.Popen(
@@ -1614,6 +1615,8 @@ class DeliveredAcceptanceServer(AcceptanceServer):
 
 
 def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cleanup=None):
+    from tests.ci.private_provider_failure_evidence import before_call, emit_failure_evidence
+
     default_workspace = corpus["workspace"]
     mismatches = []
     with tempfile.TemporaryDirectory(
@@ -1647,7 +1650,7 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cle
         current_workspace = corpus["scenarios"][0].get("workspace", default_workspace)
         server = fresh_server(current_workspace)
         try:
-            for scenario in corpus["scenarios"]:
+            for case_ordinal, scenario in enumerate(corpus["scenarios"]):
                 wanted = scenario.get("workspace", default_workspace)
                 if wanted != current_workspace:
                     # A scenario may address another fixture workspace;
@@ -1661,6 +1664,8 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cle
                 verification = []
                 for index, step in enumerate(scenario["wire"]):
                     label = f"{scenario['id']} step {index} {step['tool']}"
+                    cache_is_default = getattr(server, "provider_failure_cache_is_default", False)
+                    failure_baseline = before_call(server.workspace, cache_is_default=cache_is_default)
                     try:
                         arguments = substitute(step["args"], context)
                         if step.get("form"):
@@ -1711,6 +1716,11 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cle
                             for descriptor in step["fileAssertions"]
                         ]
                     context = candidate
+                if broken:
+                    emit_failure_evidence(
+                        server.workspace, failure_baseline, cache_is_default=cache_is_default,
+                        case_ordinal=case_ordinal, step_ordinal=index,
+                    )
                 if finish is not None and not broken:
                     finish(verification)
                 # A scenario that published changes leaves its mark on the

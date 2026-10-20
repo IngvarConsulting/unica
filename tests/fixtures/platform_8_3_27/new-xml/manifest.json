@@ -1,0 +1,178 @@
+{
+  "schemaVersion": 1,
+  "description": "Unmodified native exports; only the generated identity slots are rebound in test memory. No whitespace or namespace normalization.",
+  "platformVersion": "8.3.27.2074",
+  "sourceRevision": "4bf85f5f32c7fdea3728a8a5b50b9aa2b77cb202",
+  "producerBoundary": {
+    "form-add-managed": {
+      "tool": "unica.apply",
+      "origin": "canonical stdio through research CARGO_BIN_EXE_unica; not normal-core evidence"
+    },
+    "meta-compile-catalog": {
+      "tool": "unica.meta.add",
+      "origin": "retained typed in-process route in research test; not canonical object.create acceptance"
+    },
+    "template-add-text-document": {
+      "tool": "unica.meta.edit",
+      "origin": "retained typed in-process TextDocument route; not canonical template.add acceptance"
+    }
+  },
+  "normalRuntimeClaim": false,
+  "baseline": {
+    "path": "/private/tmp/unica-v014-new-xml-baseline-4bf85f5f-20261020/baseline.json",
+    "sha256": "175637c1523f984e95681de79f6fa2d7a21c599bafc8bb0231d397fcd542720e",
+    "status": "BASELINE_CAPTURED_NOT_PRODUCT_ACCEPTANCE"
+  },
+  "nativeReport": {
+    "path": "/private/tmp/unica-v014-new-xml-baseline-4bf85f5f-20261020/native-report.json",
+    "sha256": "2bcad0e3a091aa660013838f4fa54b216fe056694fbc82f18c74daddc3901fca",
+    "status": "pass"
+  },
+  "preparedProvenanceSha256": "850834570091939495044f8b9ecc76f1e359c1b4ff54304e4171102734c222f5",
+  "harnessSha256": "f0193d56a59a39a24d237bede665a5a52e9c36c622b32acdad91b8924864d1a3",
+  "configurationSha256": "126ef3edc501686d8038ddaa17fdbafed11fe5f351b6b98f16464c72cd5595e0",
+  "caseContractSha256": "d25fbc7acd95f9e460b31f8895ae9f134cc933da512c23b9d4c063ea624aa9bb",
+  "ibcmdSha256": "e00f3c945fb6f60bb2802151df1b4e7ee4f3caaf7c9e24a981020af575fda6e5",
+  "platformInstall": {
+    "afterDirectoryCount": 96,
+    "afterFileCount": 4337,
+    "afterSha256": "5eb8897c4f7e95876572f2f36943439b0d57e47688314b622f5771e5a22df0ef",
+    "beforeDirectoryCount": 96,
+    "beforeFileCount": 4337,
+    "beforeSha256": "5eb8897c4f7e95876572f2f36943439b0d57e47688314b622f5771e5a22df0ef",
+    "expectedFileCount": 4337,
+    "expectedSha256": "5eb8897c4f7e95876572f2f36943439b0d57e47688314b622f5771e5a22df0ef",
+    "unchanged": true,
+    "verified": true
+  },
+  "capture": "Two isolated databases: import/apply, check, export; second database imports the first export. Both exports were checked byte-exact before copying export1.",
+  "files": [
+    {
+      "file": "native-form-descriptor.xml",
+      "case": "form-add-managed",
+      "relativePath": "Catalogs/CorpusCatalog/Forms/CorpusForm.xml",
+      "source": {
+        "path": "/private/tmp/unica-v014-new-xml-baseline-4bf85f5f-20261020/native-evidence/form-add-managed/input/source/Catalogs/CorpusCatalog/Forms/CorpusForm.xml",
+        "sha256": "32a59e60f21e284629fb8f85f35750c319988b1569e835e0ae510b02952401f1"
+      },
+      "exports": [
+        {
+          "path": "/private/tmp/unica-v014-new-xml-baseline-4bf85f5f-20261020/native-evidence/form-add-managed/round1/export/Catalogs/CorpusCatalog/Forms/CorpusForm.xml",
+          "sha256": "8de9b2d99376bd95e25780af666da1e13410daf8888b0f5cf6276c93391345a5"
+        },
+        {
+          "path": "/private/tmp/unica-v014-new-xml-baseline-4bf85f5f-20261020/native-evidence/form-add-managed/round2/export/Catalogs/CorpusCatalog/Forms/CorpusForm.xml",
+          "sha256": "8de9b2d99376bd95e25780af666da1e13410daf8888b0f5cf6276c93391345a5"
+        }
+      ],
+      "sha256": "8de9b2d99376bd95e25780af666da1e13410daf8888b0f5cf6276c93391345a5",
+      "bytes": 1498
+    },
+    {
+      "file": "native-form-content.xml",
+      "case": "form-add-managed",
+      "relativePath": "Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml",
+      "source": {
+        "path": "/private/tmp/unica-v014-new-xml-baseline-4bf85f5f-20261020/native-evidence/form-add-managed/input/source/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml",
+        "sha256": "5af5bf0560cb81f05bd82ea5c35e0b544c6e4622748fb23086a00303f00f0dbb"
+      },
+      "exports": [
+        {
+          "path": "/private/tmp/unica-v014-new-xml-baseline-4bf85f5f-20261020/native-evidence/form-add-managed/round1/export/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml",
+          "sha256": "125d26cb155eb43903b2ead66814ae16653291b2cccd1c78d11fb8b4e79387e2"
+        },
+        {
+          "path": "/private/tmp/unica-v014-new-xml-baseline-4bf85f5f-20261020/native-evidence/form-add-managed/round2/export/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml",
+          "sha256": "125d26cb155eb43903b2ead66814ae16653291b2cccd1c78d11fb8b4e79387e2"
+        }
+      ],
+      "sha256": "125d26cb155eb43903b2ead66814ae16653291b2cccd1c78d11fb8b4e79387e2",
+      "bytes": 1340
+    },
+    {
+      "file": "native-catalog-descriptor.xml",
+      "case": "meta-compile-catalog",
+      "relativePath": "Catalogs/CorpusCatalog.xml",
+      "source": {
+        "path": "/private/tmp/unica-v014-new-xml-baseline-4bf85f5f-20261020/native-evidence/meta-compile-catalog/input/source/Catalogs/CorpusCatalog.xml",
+        "sha256": "299dac4e2fec10fb7d252b12d00338ca9e600c32308ba9dd03bed4d11bf6cebc"
+      },
+      "exports": [
+        {
+          "path": "/private/tmp/unica-v014-new-xml-baseline-4bf85f5f-20261020/native-evidence/meta-compile-catalog/round1/export/Catalogs/CorpusCatalog.xml",
+          "sha256": "3b73bd8e59c50683d1ec80a59f35495c323e8d7fc9907a255ba186dd1592ea31"
+        },
+        {
+          "path": "/private/tmp/unica-v014-new-xml-baseline-4bf85f5f-20261020/native-evidence/meta-compile-catalog/round2/export/Catalogs/CorpusCatalog.xml",
+          "sha256": "3b73bd8e59c50683d1ec80a59f35495c323e8d7fc9907a255ba186dd1592ea31"
+        }
+      ],
+      "sha256": "3b73bd8e59c50683d1ec80a59f35495c323e8d7fc9907a255ba186dd1592ea31",
+      "bytes": 13857
+    },
+    {
+      "file": "native-form-module.bsl",
+      "case": "form-add-managed",
+      "relativePath": "Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form/Module.bsl",
+      "source": {
+        "path": "/private/tmp/unica-v014-new-xml-baseline-4bf85f5f-20261020/native-evidence/form-add-managed/input/source/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form/Module.bsl",
+        "sha256": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+      },
+      "exports": [
+        {
+          "path": "/private/tmp/unica-v014-new-xml-baseline-4bf85f5f-20261020/native-evidence/form-add-managed/round1/export/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form/Module.bsl",
+          "sha256": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+        },
+        {
+          "path": "/private/tmp/unica-v014-new-xml-baseline-4bf85f5f-20261020/native-evidence/form-add-managed/round2/export/Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form/Module.bsl",
+          "sha256": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+        }
+      ],
+      "sha256": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805",
+      "bytes": 492,
+      "role": "Guard for unchanged new form BSL; outside the new XML formatting fix"
+    },
+    {
+      "file": "native-chart-of-accounts-descriptor.xml",
+      "case": "meta-compile-chart-of-accounts",
+      "relativePath": "ChartsOfAccounts/CorpusAccounts.xml",
+      "source": {
+        "path": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/meta-compile-chart-of-accounts/input/source/ChartsOfAccounts/CorpusAccounts.xml",
+        "sha256": "5b26bbdf160c5346cc1c6413b3574ba539e01cd3e294434940d3aee023c750d0"
+      },
+      "exports": [
+        {
+          "path": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/meta-compile-chart-of-accounts/round1/export/ChartsOfAccounts/CorpusAccounts.xml",
+          "sha256": "d204a3b14e28cf77c523c1f28af497bb1d91989365ab055b2b198e4273142178"
+        },
+        {
+          "path": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/native-evidence/meta-compile-chart-of-accounts/round2/export/ChartsOfAccounts/CorpusAccounts.xml",
+          "sha256": "d204a3b14e28cf77c523c1f28af497bb1d91989365ab055b2b198e4273142178"
+        }
+      ],
+      "sha256": "d204a3b14e28cf77c523c1f28af497bb1d91989365ab055b2b198e4273142178",
+      "bytes": 19927,
+      "capture": {
+        "status": "OBSERVED_NATIVE_PROFILE_NOT_FULL66_ACCEPTANCE",
+        "route": "Retained typed unica.meta.add through research in-process UnicaApplication; no canonical object.create or normal core acceptance claim",
+        "sourceRevision": "4bf85f5f32c7fdea3728a8a5b50b9aa2b77cb202",
+        "provenance": {
+          "path": "/private/tmp/unica-v014-full66-4bf85f5f-20261020/provenance.json",
+          "sha256": "93dc64fc31c037e325c6a471147b3e6cb10072a3f58759564fd3f2fd5929f9d8",
+          "observedStatus": "FULL66_RUNNING",
+          "harnessSha256": "a823a6f18979475e8f20fb9e19627b5793d2a145f1990232c401c2e6d4352b33",
+          "caseContractSha256": "d25fbc7acd95f9e460b31f8895ae9f134cc933da512c23b9d4c063ea624aa9bb",
+          "preparedProvenanceSha256": "850834570091939495044f8b9ecc76f1e359c1b4ff54304e4171102734c222f5"
+        },
+        "retainedObservation": ".session-temp/v014-new-xml-profile/noncatalog-native-observation/observation.json",
+        "retainedObservationSha256": "9ee0733eed2a9dadbe9c4831203d96832878fbacb3c6f7c4b382d2ddc6574f8f"
+      }
+    }
+  ],
+  "defaultCaptureAppliesTo": [
+    "native-form-descriptor.xml",
+    "native-form-content.xml",
+    "native-catalog-descriptor.xml",
+    "native-form-module.bsl"
+  ]
+}

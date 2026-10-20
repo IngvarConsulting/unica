@@ -92,10 +92,6 @@ jobs:
           else
             echo 'runners=["ubuntu-latest"]' >> "$GITHUB_OUTPUT"
           fi
-      # Матрица джоб Python: набор на джобу, `tests/ci` — по полосам размера.
-      # Список считает шов: наборы и допуски ворот живут в нём, а не здесь.
-      - id: python-matrix
-        run: echo "python_matrix=$(python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --python-matrix)" >> "$GITHUB_OUTPUT"
       # Линия прогона едет в подписи результатов: для ветки — она сама, для
       # тега — релизная линия с его коммитом; тег вне релизной линии — отказ.
       - id: line
@@ -112,6 +108,12 @@ jobs:
           RUNNERS: ${{ steps.runners.outputs.runners }}
           RUN_LINE: ${{ steps.line.outputs.line }}
         run: python scripts/ci/classify-workflow-changes.py --github-event --runner-matrix "$RUNNERS" --line "$RUN_LINE" --results .build/ci-routing >> "$GITHUB_OUTPUT"
+      # Маршрут документации сужает оба Python-набора до small; обычная
+      # очередь сохраняет прежний состав. Gate сверяет эту же матрицу.
+      - id: python-matrix
+        env:
+          DOCS_ONLY: ${{ steps.scope.outputs.docs_only }}
+        run: echo "python_matrix=$(python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --python-matrix --docs-only "$DOCS_ONLY")" >> "$GITHUB_OUTPUT"
       - if: steps.scope.outputs.docs_only == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -189,6 +191,7 @@ jobs:
       RUN_LINE: ${{ needs.classify-changes.outputs.line }}
       SUITE: ${{ matrix.suite }}
       LANE: ${{ matrix.lane }}
+      DOCS_ONLY: ${{ needs.classify-changes.outputs.docs_only }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -201,7 +204,7 @@ jobs:
       - run: python -m pip install -r tests/ci/requirements.txt
       # План выгружается до тестов, как у Rust: джоба, умершая на середине
       # набора, оставляет состав, и недошедшие тесты попадут в отчёт `skipped`.
-      - run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$SUITE" --only-size "$LANE" --plan-only --results .build/results --runner ubuntu-latest --line "$RUN_LINE"
+      - run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$SUITE" --only-size "$LANE" --docs-only "$DOCS_ONLY" --plan-only --results .build/results --runner ubuntu-latest --line "$RUN_LINE"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: plan-python-${{ matrix.slug }}
@@ -210,7 +213,7 @@ jobs:
           overwrite: true
       # Наборы гоняет одна точка входа: профиль ворот меняется в ней, а не
       # здесь; `--suite` сужает вызов до набора этой джобы.
-      - run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$SUITE" --only-size "$LANE" --results .build/results --runner ubuntu-latest --line "$RUN_LINE"
+      - run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$SUITE" --only-size "$LANE" --docs-only "$DOCS_ONLY" --results .build/results --runner ubuntu-latest --line "$RUN_LINE"
       # Результаты едут артефактом и при красном прогоне: ради них он и шёл.
       - if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

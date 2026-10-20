@@ -62,3 +62,13 @@ tests/fixtures/acceptance/workspace-whole-template-removal/** -text -whitespace
 
 # Exact native BinaryData Type fragment.
 /tests/fixtures/platform_8_3_27/binary-data/native-type.xml -text whitespace=cr-at-eol
+# Native new-XML oracles retain BOM, CRLF and absence of a terminal newline.
+tests/fixtures/platform_8_3_27/new-xml/native-form-descriptor.xml -text whitespace=cr-at-eol
+tests/fixtures/platform_8_3_27/new-xml/native-form-content.xml -text whitespace=cr-at-eol
+tests/fixtures/platform_8_3_27/new-xml/native-catalog-descriptor.xml -text whitespace=cr-at-eol
+tests/fixtures/platform_8_3_27/new-xml/native-form-module.bsl -text whitespace=cr-at-eol
+tests/fixtures/platform_8_3_27/new-xml/native-chart-of-accounts-descriptor.xml -text whitespace=cr-at-eol
+
+# Vendored archive and delivered license hashes describe the original bytes.
+/vendor/ureq/** -text
+/plugins/unica/third-party/licenses/ureq/** -text

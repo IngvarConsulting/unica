@@ -4169,13 +4169,13 @@ pub(crate) fn form_add_metadata_xml(
     lang: &str,
 ) -> String {
     let extended_presentation = if form_add_processor_like(object_type) {
-        "\t\t\t<ExtendedPresentation/>\n"
+        "\t\t\t<ExtendedPresentation/>\r\n"
     } else {
         ""
     };
     format!(
         concat!(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n",
             "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\"",
             " xmlns:app=\"http://v8.1c.ru/8.2/managed-application/core\"",
             " xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\"",
@@ -4193,26 +4193,26 @@ pub(crate) fn form_add_metadata_xml(
             " xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\"",
             " xmlns:xs=\"http://www.w3.org/2001/XMLSchema\"",
             " xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"",
-            " version=\"{format_version}\">\n",
-            "\t<Form uuid=\"{form_uuid}\">\n",
-            "\t\t<Properties>\n",
-            "\t\t\t<Name>{form_name}</Name>\n",
-            "\t\t\t<Synonym>\n",
-            "\t\t\t\t<v8:item>\n",
-            "\t\t\t\t\t<v8:lang>{lang}</v8:lang>\n",
-            "\t\t\t\t\t<v8:content>{synonym}</v8:content>\n",
-            "\t\t\t\t</v8:item>\n",
-            "\t\t\t</Synonym>\n",
-            "\t\t\t<Comment/>\n",
-            "\t\t\t<FormType>Managed</FormType>\n",
-            "\t\t\t<IncludeHelpInContents>false</IncludeHelpInContents>\n",
-            "\t\t\t<UsePurposes>\n",
-            "\t\t\t\t<v8:Value xsi:type=\"app:ApplicationUsePurpose\">PlatformApplication</v8:Value>\n",
-            "\t\t\t\t<v8:Value xsi:type=\"app:ApplicationUsePurpose\">MobilePlatformApplication</v8:Value>\n",
-            "\t\t\t</UsePurposes>\n",
+            " version=\"{format_version}\">\r\n",
+            "\t<Form uuid=\"{form_uuid}\">\r\n",
+            "\t\t<Properties>\r\n",
+            "\t\t\t<Name>{form_name}</Name>\r\n",
+            "\t\t\t<Synonym>\r\n",
+            "\t\t\t\t<v8:item>\r\n",
+            "\t\t\t\t\t<v8:lang>{lang}</v8:lang>\r\n",
+            "\t\t\t\t\t<v8:content>{synonym}</v8:content>\r\n",
+            "\t\t\t\t</v8:item>\r\n",
+            "\t\t\t</Synonym>\r\n",
+            "\t\t\t<Comment/>\r\n",
+            "\t\t\t<FormType>Managed</FormType>\r\n",
+            "\t\t\t<IncludeHelpInContents>false</IncludeHelpInContents>\r\n",
+            "\t\t\t<UsePurposes>\r\n",
+            "\t\t\t\t<v8:Value xsi:type=\"app:ApplicationUsePurpose\">PlatformApplication</v8:Value>\r\n",
+            "\t\t\t\t<v8:Value xsi:type=\"app:ApplicationUsePurpose\">MobilePlatformApplication</v8:Value>\r\n",
+            "\t\t\t</UsePurposes>\r\n",
             "{extended_presentation}",
-            "\t\t</Properties>\n",
-            "\t</Form>\n",
+            "\t\t</Properties>\r\n",
+            "\t</Form>\r\n",
             "</MetaDataObject>"
         ),
         format_version = escape_xml(format_version),
@@ -4235,6 +4235,7 @@ pub(crate) fn form_add_content_xml(
         " xmlns:app=\"http://v8.1c.ru/8.2/managed-application/core\"",
         " xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\"",
         " xmlns:dcscor=\"http://v8.1c.ru/8.1/data-composition-system/core\"",
+        " xmlns:dcssch=\"http://v8.1c.ru/8.1/data-composition-system/schema\"",
         " xmlns:dcsset=\"http://v8.1c.ru/8.1/data-composition-system/settings\"",
         " xmlns:ent=\"http://v8.1c.ru/8.1/data/enterprise\"",
         " xmlns:lf=\"http://v8.1c.ru/8.2/managed-application/logform\"",
@@ -4252,20 +4253,20 @@ pub(crate) fn form_add_content_xml(
         let main_table = format!("{object_type}.{object_name}");
         return Ok(format!(
             concat!(
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
-                "<Form {ns} version=\"{format_version}\">\n",
-                "\t<AutoCommandBar name=\"ФормаКоманднаяПанель\" id=\"-1\"/>\n",
-                "\t<Attributes>\n",
-                "\t\t<Attribute name=\"Список\" id=\"1\">\n",
-                "\t\t\t<Type>\n",
-                "\t\t\t\t<v8:Type>cfg:DynamicList</v8:Type>\n",
-                "\t\t\t</Type>\n",
-                "\t\t\t<MainAttribute>true</MainAttribute>\n",
-                "\t\t\t<Settings xsi:type=\"DynamicList\">\n",
-                "\t\t\t\t<MainTable>{main_table}</MainTable>\n",
-                "\t\t\t</Settings>\n",
-                "\t\t</Attribute>\n",
-                "\t</Attributes>\n",
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n",
+                "<Form {ns} version=\"{format_version}\">\r\n",
+                "\t<AutoCommandBar name=\"ФормаКоманднаяПанель\" id=\"-1\"/>\r\n",
+                "\t<Attributes>\r\n",
+                "\t\t<Attribute name=\"Список\" id=\"1\">\r\n",
+                "\t\t\t<Type>\r\n",
+                "\t\t\t\t<v8:Type>cfg:DynamicList</v8:Type>\r\n",
+                "\t\t\t</Type>\r\n",
+                "\t\t\t<MainAttribute>true</MainAttribute>\r\n",
+                "\t\t\t<Settings xsi:type=\"DynamicList\">\r\n",
+                "\t\t\t\t<MainTable>{main_table}</MainTable>\r\n",
+                "\t\t\t</Settings>\r\n",
+                "\t\t</Attribute>\r\n",
+                "\t</Attributes>\r\n",
                 "</Form>"
             ),
             ns = ns,
@@ -4277,18 +4278,18 @@ pub(crate) fn form_add_content_xml(
         let main_attr_type = format!("InformationRegisterRecordManager.{object_name}");
         return Ok(format!(
             concat!(
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
-                "<Form {ns} version=\"{format_version}\">\n",
-                "\t<AutoCommandBar name=\"ФормаКоманднаяПанель\" id=\"-1\"/>\n",
-                "\t<Attributes>\n",
-                "\t\t<Attribute name=\"Запись\" id=\"1\">\n",
-                "\t\t\t<Type>\n",
-                "\t\t\t\t<v8:Type>cfg:{main_attr_type}</v8:Type>\n",
-                "\t\t\t</Type>\n",
-                "\t\t\t<MainAttribute>true</MainAttribute>\n",
-                "\t\t\t<SavedData>true</SavedData>\n",
-                "\t\t</Attribute>\n",
-                "\t</Attributes>\n",
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n",
+                "<Form {ns} version=\"{format_version}\">\r\n",
+                "\t<AutoCommandBar name=\"ФормаКоманднаяПанель\" id=\"-1\"/>\r\n",
+                "\t<Attributes>\r\n",
+                "\t\t<Attribute name=\"Запись\" id=\"1\">\r\n",
+                "\t\t\t<Type>\r\n",
+                "\t\t\t\t<v8:Type>cfg:{main_attr_type}</v8:Type>\r\n",
+                "\t\t\t</Type>\r\n",
+                "\t\t\t<MainAttribute>true</MainAttribute>\r\n",
+                "\t\t\t<SavedData>true</SavedData>\r\n",
+                "\t\t</Attribute>\r\n",
+                "\t</Attributes>\r\n",
                 "</Form>"
             ),
             ns = ns,
@@ -4317,33 +4318,33 @@ pub(crate) fn form_add_content_xml(
     let saved_data_line = if form_add_processor_like(object_type) {
         ""
     } else {
-        "\t\t\t<SavedData>true</SavedData>\n"
+        "\t\t\t<SavedData>true</SavedData>\r\n"
     };
     let root_defaults = match object_type {
-        "Catalog" => "\t<UseForFoldersAndItems>Items</UseForFoldersAndItems>\n",
+        "Catalog" => "\t<UseForFoldersAndItems>Items</UseForFoldersAndItems>\r\n",
         "Report" | "ExternalReport" => concat!(
-            "\t<ReportFormType>Main</ReportFormType>\n",
-            "\t<AutoShowState>Auto</AutoShowState>\n",
-            "\t<ReportResultViewMode>Auto</ReportResultViewMode>\n",
-            "\t<ViewModeApplicationOnSetReportResult>Auto</ViewModeApplicationOnSetReportResult>\n"
+            "\t<ReportFormType>Main</ReportFormType>\r\n",
+            "\t<AutoShowState>Auto</AutoShowState>\r\n",
+            "\t<ReportResultViewMode>Auto</ReportResultViewMode>\r\n",
+            "\t<ViewModeApplicationOnSetReportResult>Auto</ViewModeApplicationOnSetReportResult>\r\n"
         ),
         _ => "",
     };
     Ok(format!(
         concat!(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
-            "<Form {ns} version=\"{format_version}\">\n",
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n",
+            "<Form {ns} version=\"{format_version}\">\r\n",
             "{root_defaults}",
-            "\t<AutoCommandBar name=\"ФормаКоманднаяПанель\" id=\"-1\"/>\n",
-            "\t<Attributes>\n",
-            "\t\t<Attribute name=\"Объект\" id=\"1\">\n",
-            "\t\t\t<Type>\n",
-            "\t\t\t\t<v8:Type>cfg:{main_attr_type}</v8:Type>\n",
-            "\t\t\t</Type>\n",
-            "\t\t\t<MainAttribute>true</MainAttribute>\n",
+            "\t<AutoCommandBar name=\"ФормаКоманднаяПанель\" id=\"-1\"/>\r\n",
+            "\t<Attributes>\r\n",
+            "\t\t<Attribute name=\"Объект\" id=\"1\">\r\n",
+            "\t\t\t<Type>\r\n",
+            "\t\t\t\t<v8:Type>cfg:{main_attr_type}</v8:Type>\r\n",
+            "\t\t\t</Type>\r\n",
+            "\t\t\t<MainAttribute>true</MainAttribute>\r\n",
             "{saved_data_line}",
-            "\t\t</Attribute>\n",
-            "\t</Attributes>\n",
+            "\t\t</Attribute>\r\n",
+            "\t</Attributes>\r\n",
             "</Form>"
         ),
         ns = ns,

@@ -247,7 +247,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("cargo clippy --workspace --all-targets --all-features --message-format=json -- -D warnings", text)
         # Наборы гоняет шов; сами команды закреплены тестом `test_run_tests`.
         self.assertIn('python3 scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --results', text)
-        self.assertIn('python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$SUITE" --only-size "$LANE" --results', text)
+        self.assertIn('python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$SUITE" --only-size "$LANE" --docs-only "$DOCS_ONLY" --results', text)
         # Исполнение тестов остаётся у runner. Прогрев имеет отдельный
         # контракт compile-only, проверенный ниже для каждого его шага.
         for job_id, found in jobs(self.release).items():
@@ -724,18 +724,23 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         """Наборы Python используют матрицу штатного runner независимо от guards."""
         python = job(self.release, "test-python")
 
-        self.assertIn('python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$SUITE" --only-size "$LANE" --results', script(python))
+        self.assertIn('python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$SUITE" --only-size "$LANE" --docs-only "$DOCS_ONLY" --results', script(python))
         self.assertEqual(needs(python), ["classify-changes"])
         # Матрицу джоб Python считает шов по воротам; джоба знает набор и полосу.
         self.assertEqual(python["strategy"]["matrix"]["include"], "${{ fromJSON(needs.classify-changes.outputs.python_matrix) }}")
         self.assertEqual(python["env"]["SUITE"], "${{ matrix.suite }}")
         self.assertEqual(python["env"]["LANE"], "${{ matrix.lane }}")
+        self.assertEqual(python["env"]["DOCS_ONLY"], "${{ needs.classify-changes.outputs.docs_only }}")
         self.assertEqual(python["name"], "Python tests (${{ matrix.slug }})")
         classify = job(self.release, "classify-changes")
         self.assertEqual(classify["outputs"]["python_matrix"], "${{ steps.python-matrix.outputs.python_matrix }}")
         self.assertIn('run-tests.py --profile "$GATE_PROFILE" --python-matrix', step_by_id(classify, "python-matrix")["run"])
+        self.assertEqual(step_by_id(classify, "python-matrix")["env"]["DOCS_ONLY"], "${{ steps.scope.outputs.docs_only }}")
+        ids = [step.get("id") for step in steps(classify)]
+        self.assertLess(ids.index("scope"), ids.index("python-matrix"))
         for run_line in [step["run"] for step in steps(python) if "run-tests.py" in step.get("run", "")]:
             self.assertIn('--suite "$SUITE" --only-size "$LANE"', run_line)
+            self.assertIn('--docs-only "$DOCS_ONLY"', run_line)
         self.assertEqual([upload["name"] for upload in uploads(python)], ["plan-python-${{ matrix.slug }}", "results-python-${{ matrix.slug }}"])
         # План выгружается до тестов, как у Rust.
         plan_index = next(index for index, step in enumerate(steps(python)) if "--plan-only" in step.get("run", ""))

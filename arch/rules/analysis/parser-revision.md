@@ -1,7 +1,7 @@
 ---
 id: INV.ANALYSIS.PARSER-ANALYZER-REVISION
-check: []
-gap: https://github.com/IngvarConsulting/unica/issues/956
+check:
+  - tests/ci/test_parser_revision.py::ParserRevisionTests.test_repository_parser_and_analyzer_sources_are_aligned
 ---
 
 # Встроенный разбор BSL и поставляемый анализатор используют одну ревизию

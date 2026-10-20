@@ -375,8 +375,8 @@ fn column_group_and_its_columns_are_addressable_through_the_wire() {
     let form_path = source.join("Documents/Order/Forms/Main/Ext/Form.xml");
     let generated = std::fs::read_to_string(&form_path).unwrap();
     let with_columns = generated.replace(
-        "\t<Attributes>\n",
-        "\t<ChildItems>\n\t\t<Table name=\"Rows\" id=\"1\">\n\t\t\t<ContextMenu name=\"RowsMenu\" id=\"5\"/>\n\t\t\t<AutoCommandBar name=\"RowsBar\" id=\"6\"/>\n\t\t\t<SearchStringAddition name=\"RowsSearch\" id=\"7\"/>\n\t\t\t<ViewStatusAddition name=\"RowsStatus\" id=\"8\"/>\n\t\t\t<SearchControlAddition name=\"RowsControl\" id=\"9\"/>\n\t\t\t<ChildItems>\n\t\t\t\t<ColumnGroup name=\"First\" id=\"2\">\n\t\t\t\t\t<ChildItems>\n\t\t\t\t\t\t<InputField name=\"Column\" id=\"3\">\n\t\t\t\t\t\t\t<ContextMenu name=\"ColumnMenu\" id=\"10\"/>\n\t\t\t\t\t\t\t<ExtendedTooltip name=\"ColumnTip\" id=\"11\"/>\n\t\t\t\t\t\t</InputField>\n\t\t\t\t\t</ChildItems>\n\t\t\t\t</ColumnGroup>\n\t\t\t\t<ColumnGroup name=\"Second\" id=\"4\"/>\n\t\t\t</ChildItems>\n\t\t</Table>\n\t</ChildItems>\n\t<Attributes>\n",
+        "\t<Attributes>\r\n",
+        "\t<ChildItems>\r\n\t\t<Table name=\"Rows\" id=\"1\">\r\n\t\t\t<ContextMenu name=\"RowsMenu\" id=\"5\"/>\r\n\t\t\t<AutoCommandBar name=\"RowsBar\" id=\"6\"/>\r\n\t\t\t<SearchStringAddition name=\"RowsSearch\" id=\"7\"/>\r\n\t\t\t<ViewStatusAddition name=\"RowsStatus\" id=\"8\"/>\r\n\t\t\t<SearchControlAddition name=\"RowsControl\" id=\"9\"/>\r\n\t\t\t<ChildItems>\r\n\t\t\t\t<ColumnGroup name=\"First\" id=\"2\">\r\n\t\t\t\t\t<ChildItems>\r\n\t\t\t\t\t\t<InputField name=\"Column\" id=\"3\">\r\n\t\t\t\t\t\t\t<ContextMenu name=\"ColumnMenu\" id=\"10\"/>\r\n\t\t\t\t\t\t\t<ExtendedTooltip name=\"ColumnTip\" id=\"11\"/>\r\n\t\t\t\t\t\t</InputField>\r\n\t\t\t\t\t</ChildItems>\r\n\t\t\t\t</ColumnGroup>\r\n\t\t\t\t<ColumnGroup name=\"Second\" id=\"4\"/>\r\n\t\t\t</ChildItems>\r\n\t\t</Table>\r\n\t</ChildItems>\r\n\t<Attributes>\r\n",
     );
     assert_ne!(with_columns, generated, "the generated form has ChildItems");
     std::fs::write(&form_path, &with_columns).unwrap();

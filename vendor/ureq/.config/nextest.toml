@@ -1,0 +1,13 @@
+# Dependency-local regression gate; only Unica's fault tests are selected.
+[profile.ureq-recycling]
+default-filter = 'test(/^completed_response_recycling::/)'
+retries = 0
+fail-fast = false
+slow-timeout = { period = "10s", terminate-after = 2 }
+
+[profile.ureq-recycling.junit]
+path = "junit.xml"
+report-name = "ureq-recycling"
+report-skipped = "none"
+store-success-output = false
+store-failure-output = true
