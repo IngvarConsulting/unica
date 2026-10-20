@@ -1,0 +1,16 @@
+{
+  "caseCommit": "06e2bbec0ee34281211a09b81083d5a04ed0c54f",
+  "sourceSnapshotBase": "e2b2d02f3a90d336bb464507749073f00ca256e5",
+  "runnerSha256": "2213aecf84876ee35b54e328764765aff68d12eb946695756731fc0b76ff1956",
+  "sourcePins": {
+    "crates/unica-coder/src/infrastructure/daemon/client_v5.rs": "6272b8bab207dfca123da685e1bfc8d7b7906440d5028e2f277c777af8b0dde9",
+    "crates/unica-coder/src/infrastructure/daemon/client_v5/startup_observation.rs": "b3bba1d6163670a393eb814b7b6051eb6ebf049a9411cdd24190bf061b6fca63",
+    "crates/unica-coder/src/infrastructure/platform/mod.rs": "27259233afa9351f6c18295412dd0bde3afd0e826296661b1fe5ee75f709fb68",
+    "crates/unica-coder/src/infrastructure/platform/process.rs": "589c2e4ac0622b85d9a2b8f12eb541c8547c7422123e3f4db27b2ddca79d7615",
+    "crates/unica-coder/src/infrastructure/platform/process/startup_observation.rs": "05acef26f9f58b895fb12ebff615baf2864c478a5db288e4161d9844a43f2361",
+    "Cargo.toml": "4fc8a62df93851d388fa036c0f151e01a611e5ffdb73504d366dc94352043892",
+    "Cargo.lock": "7582d76565155f43e6a7f51fc917e8f6a405785f4df0922f1a99c7cda24af0d4",
+    "crates/unica-coder/Cargo.toml": "fdab93a2fdf0ad6970f5e8910411b02584ca99b22debb3a5f2b5fa2b12d906e1",
+    ".config/nextest.toml": "f086458060a557a2a14559fb649b12e12428f0b9ad112cdd0b6f858ed8b35e4e"
+  }
+}
