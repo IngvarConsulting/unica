@@ -1628,6 +1628,11 @@ fn late_exact_submit_keeps_original_lazy_cancel_deadline_and_all_durable_winners
             original,
         )
         .expect("actual batch is confirmed before delayed submit");
+    assert_eq!(
+        winners.len(),
+        keys.len(),
+        "the actual batch must return all 32 cancellation winners before recovery"
+    );
     // A controlled wait for this exact existing deadline, not a fresh budget
     // or a fitted arbitrary delay. Spurious park wakeups cannot skip expiry.
     while let Some(remaining) = original.checked_duration_since(Instant::now()) {

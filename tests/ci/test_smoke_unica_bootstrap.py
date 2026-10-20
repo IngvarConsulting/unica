@@ -299,26 +299,167 @@ class SmokeUnicaBootstrapTests(unittest.TestCase):
 
     def test_smoke_does_not_wait_for_a_descendant_holding_standard_output(self) -> None:
         module = load_module()
+        wire_path = REPO_ROOT / "scripts" / "ci" / "probe-unica-wire.py"
+        wire_spec = importlib.util.spec_from_file_location("bootstrap_fixture_ownership", wire_path)
+        assert wire_spec is not None and wire_spec.loader is not None
+        wire = importlib.util.module_from_spec(wire_spec)
+        wire_spec.loader.exec_module(wire)
         with tempfile.TemporaryDirectory() as directory:
             probe = Path(directory) / "inherited-output.py"
             spawned = Path(directory) / "descendant-started"
+            holder_pid_path = Path(directory) / "descendant.pid"
             probe.write_text(
                 (
                     "import subprocess, sys, time\n"
-                    "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(4)'])\n"
+                    # Only real subprocess.run.communicate closes this pipe,
+                    # after the Popen spy has retained ownership of the parent.
+                    "sys.stdin.buffer.read()\n"
+                    "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(4)'])\n"
+                    f"open({str(holder_pid_path)!r}, 'w').write(str(child.pid))\n"
                     f"open({str(spawned)!r}, 'w').write('started')\n"
                     "print('bootstrap started', file=sys.stderr, flush=True)\n"
                 ),
                 encoding="utf-8",
             )
-            started = time.monotonic()
-            code, _, stderr = module.run_bootstrap_command(
-                [sys.executable, str(probe)], os.environ.copy(), 1.5
-            )
-            self.assertEqual(code, 0)
-            self.assertEqual(spawned.read_text(), "started")
-            self.assertIn("bootstrap started", stderr)
-            self.assertLess(time.monotonic() - started, 2.5)
+            command = [sys.executable, str(probe)]
+            real_popen = subprocess.Popen
+            owned = []
+            holder_identities = set()
+
+            def owned_popen(argv, *args, **kwargs):
+                if argv != command:
+                    # Ownership capture itself runs ps: do not intercept it.
+                    return real_popen(argv, *args, **kwargs)
+                self.assertNotIn("stdin", kwargs)
+                kwargs["stdin"] = subprocess.PIPE
+                if os.name == "posix":
+                    kwargs["start_new_session"] = True
+                elif os.name == "nt":
+                    kwargs["creationflags"] = (
+                        subprocess.CREATE_NEW_PROCESS_GROUP | wire._WINDOWS_CREATE_SUSPENDED
+                    )
+                else:
+                    raise AssertionError("fixture process ownership is unavailable")
+                process = real_popen(argv, *args, **kwargs)
+                record = [process, None]
+                # Retain the still-gated process even if capture raises.
+                owned.append(record)
+                owner = wire.ProcessOwnership.capture(
+                    process, cleanup_deadline=time.monotonic() + 0.5
+                )
+                record[1] = owner
+                self.assertIsNotNone(owner.public_identity, "parent identity was not captured")
+                if os.name == "posix":
+                    self.assertEqual(owner.session_id, process.pid)
+                return process
+
+            try:
+                started = time.monotonic()
+                with patch.object(module.subprocess, "Popen", side_effect=owned_popen):
+                    code, _, stderr = module.run_bootstrap_command(
+                        command, os.environ.copy(), 1.5
+                    )
+                self.assertEqual(code, 0)
+                self.assertEqual(spawned.read_text(), "started")
+                self.assertIn("bootstrap started", stderr)
+                self.assertLess(time.monotonic() - started, 2.5)
+                self.assertEqual(len(owned), 1)
+                owner = owned[0][1]
+                holder_pid = int(holder_pid_path.read_text())
+                holder_identities = owner.capture_identities({holder_pid})
+                self.assertEqual({identity.pid for identity in holder_identities}, {holder_pid})
+                self.assertEqual(owner.survivors(holder_identities), holder_identities)
+                if os.name == "posix":
+                    self.assertEqual(
+                        {identity.session_id for identity in holder_identities}, {owner.session_id}
+                    )
+                else:
+                    active, error = owner.windows_job.active_process_count()
+                    self.assertIsNone(error)
+                    self.assertGreaterEqual(active, 1)
+            finally:
+                # Cleanup is outside the original timing oracle, but has one
+                # bounded deadline, including the independent postcondition.
+                cleanup_deadline = time.monotonic() + 2.0
+                cleanup_errors = []
+                for process, owner in owned:
+                    try:
+                        remaining = cleanup_deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise TimeoutError("fixture cleanup deadline expired")
+                        if owner is not None:
+                            result = owner.terminate(holder_identities, timeout_seconds=remaining)
+                            self.assertTrue(result.complete, (result.survivors, result.incomplete))
+                            if os.name == "nt":
+                                self.assertEqual(result.active_processes, 0)
+                        elif os.name != "nt" or getattr(process, "_handle", None) is not None:
+                            # Capture failed before communicate opened the gate:
+                            # no descendant can have been launched. Kill/reap the
+                            # direct parent before closing its private stdin.
+                            if process.poll() is None:
+                                process.kill()
+                            process.wait(timeout=max(0.0, cleanup_deadline - time.monotonic()))
+                        else:
+                            # Windows attach rollback already closed its handle;
+                            # never signal/wait through that closed handle again.
+                            self.assertIsNotNone(process.returncode)
+                        self.assertIsNotNone(process.returncode, "fixture parent was not reaped")
+                    except BaseException as error:
+                        cleanup_errors.append(repr(error))
+                    finally:
+                        if process.returncode is not None and process.stdin is not None:
+                            try:
+                                process.stdin.close()
+                            except OSError as error:
+                                cleanup_errors.append(repr(error))
+                if os.name == "nt":
+                    try:
+                        for identity in holder_identities:
+                            if time.monotonic() >= cleanup_deadline:
+                                raise TimeoutError("no time remains to verify fixture cleanup")
+                            current, running, error = wire._windows_process_state(identity.pid)
+                            self.assertIsNone(error)
+                            self.assertFalse(
+                                running and identity.identifies(current),
+                                "fixture pipe holder is still running",
+                            )
+                    except BaseException as error:
+                        cleanup_errors.append(repr(error))
+                if os.name == "posix" and owned:
+                    try:
+                        remaining = cleanup_deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise TimeoutError("no time remains to verify fixture cleanup")
+                        # The reusable helper treats failed ps reads as empty.
+                        # Check an actual successful snapshot before claiming
+                        # that our newly isolated sessions have no live members.
+                        snapshot = subprocess.run(
+                            ["ps", "-axo", "pid=,uid=,stat=,lstart="],
+                            capture_output=True, text=True, encoding="utf-8",
+                            timeout=remaining, check=True,
+                        )
+                        self.assertFalse(snapshot.stderr, snapshot.stderr)
+                        rows = [line.split(None, 3) for line in snapshot.stdout.splitlines()]
+                        self.assertTrue(all(len(row) == 4 for row in rows))
+                        self.assertIn(os.getpid(), {int(row[0]) for row in rows})
+                        sessions = {process.pid for process, _ in owned}
+                        survivors = []
+                        for pid_text, uid_text, state, _ in rows:
+                            if time.monotonic() >= cleanup_deadline:
+                                raise TimeoutError("fixture cleanup verification deadline expired")
+                            if int(uid_text) != os.getuid() or state.startswith("Z"):
+                                continue
+                            pid = int(pid_text)
+                            try:
+                                session = os.getsid(pid)
+                            except ProcessLookupError:
+                                continue
+                            if session in sessions:
+                                survivors.append(pid)
+                        self.assertFalse(survivors, f"fixture session still has live processes: {survivors}")
+                    except BaseException as error:
+                        cleanup_errors.append(repr(error))
+                self.assertFalse(cleanup_errors, f"fixture cleanup incomplete: {cleanup_errors}")
 
     def test_probe_rejects_stack_overflow_before_download_error(self) -> None:
         module = load_module()
