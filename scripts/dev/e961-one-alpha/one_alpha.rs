@@ -243,7 +243,7 @@ fn active(root:&Path,fixture:&Fixture,layout:Option<&windows_probe::ValidatedLay
 }
 
 fn parent_state()->Value {
-    json!({"pid":std::process::id(),"actualCwd":env::current_dir().map_err(|e|e.to_string()),"privateCalibrationEnvPresent":["UNICA_E961_CALIB_STATE","UNICA_E961_CALIB_A","UNICA_E961_CALIB_B"].map(|name|(name,env::var_os(name).is_some()))})
+    json!({"pid":std::process::id(),"actualCwd":env::current_dir().map_err(|e|e.to_string()),"privateCalibrationEnvPresent":(["UNICA_E961_CALIB_STATE","UNICA_E961_CALIB_A","UNICA_E961_CALIB_B"].map(|name|(name,env::var_os(name).is_some())))})
 }
 fn run_owned(root:&Path)->Report {
     let mut report=Report::default();

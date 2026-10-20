@@ -6,7 +6,14 @@ two reviewed temporary append edits, then restoration only after confirmed comma
 lifetime. Unknown lifetime preserves the instrumented case and all evidence. No PR/merge path
 or automatic rerun is configured.
 
-Revision3 changes only collector failures004/005 from independent review e9593b78
+Revision4 groups parent_state's array.map value in parentheses inside json!.
+This addresses the actual macro parse error from run39369227651 (Cargo101,
+controller2, native observations0). All other executable inputs remain exactv3.
+The initial failure is retained; a successful compilation or native result is
+not claimed. No Rust/Python/formatter/controller/test/native execution occurred
+while authoring this revision.
+
+Revision3 changed only collector failures004/005 from independent review e9593b78
 and addendum40c2c3c5: safe_main print is best effort with unconditional capture-failure2;
 explicit typed KeyboardInterrupt causes retain130 while wrapper/rollback details stay
 secondary. Cause traversal is identity-cycle guarded, does not inspect implicit context

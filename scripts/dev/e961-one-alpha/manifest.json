@@ -10,8 +10,8 @@
     },
     {
       "path": "README.md",
-      "sha256": "e477370a2e422dd91f3b1213b92a237dbdfd8d155a2fee5644f9dd431a260742",
-      "bytes": 4743
+      "sha256": "df747f1ee8349acbee3662d3db9860734d7d6e63bfe9ce1a693a600b7bc27210",
+      "bytes": 5165
     },
     {
       "path": "case.patch",
@@ -30,8 +30,8 @@
     },
     {
       "path": "one_alpha.rs",
-      "sha256": "aead65f6e9754efcdaee708deb0b55b33fc0abf49cee9735b923feee3339a54d",
-      "bytes": 22456
+      "sha256": "820bb0a8349a2e823b1de04fbbc870299c221729f8e687db21aabc7b9e1571e8",
+      "bytes": 22458
     },
     {
       "path": "process-facade.append.rs",
