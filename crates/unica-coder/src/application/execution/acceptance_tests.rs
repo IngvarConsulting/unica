@@ -386,6 +386,7 @@ fn acceptance_writable_capabilities_cannot_be_cloned() {
     let _ = <ReadCompletion as AmbiguousIfClone<_>>::check;
     let _ = <ResultPublicationPermit as AmbiguousIfClone<_>>::check;
     let _ = <HolderPublicationPermit as AmbiguousIfClone<_>>::check;
+    let _ = <AcceptedStoreAuthority as AmbiguousIfClone<_>>::check;
     trait AmbiguousIfDeserializable<A> {
         fn check() {}
     }
@@ -404,6 +405,8 @@ fn acceptance_writable_capabilities_cannot_be_cloned() {
     let _ = <TaskPublicationPermit as AmbiguousIfDeserializable<_>>::check;
     let _ = <AdmissionRejection as AmbiguousIfDeserializable<_>>::check;
     let _ = <CancellationPermit as AmbiguousIfDeserializable<_>>::check;
+    let _ = <AcceptedStoreAuthority as AmbiguousIfDeserializable<_>>::check;
+    let _ = <AuthorityFailure as AmbiguousIfDeserializable<_>>::check;
 }
 
 fn attach(owner: &mut ExecutionCoordinator, primary: &Key, alias: Key) -> Membership {

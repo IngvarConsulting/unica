@@ -11,6 +11,9 @@ check:
   - crates/unica-coder/src/application/execution/acceptance_tests.rs::acceptance_last_cancel_and_attach_are_ordered_by_confirmed_membership
   - crates/unica-coder/src/application/execution/acceptance_tests.rs::acceptance_retired_membership_cannot_cancel_its_successor
   - crates/unica-coder/src/application/execution/acceptance_tests.rs::acceptance_writable_capabilities_cannot_be_cloned
+  - crates/unica-coder/src/infrastructure/platform/filesystem/execution_store/owner_tests.rs::same_epoch_foreign_commit_is_rejected_before_io_without_poisoning_owner
+  - crates/unica-coder/src/infrastructure/platform/filesystem/execution_store/file_tests.rs::physical_cas_readback_redecides_the_same_factual_outcome
+  - crates/unica-coder/src/infrastructure/platform/filesystem/execution_store/process_tests.rs::forced_process_death_recovers_accepted_begun_and_durable_outcome
 gap: https://github.com/IngvarConsulting/unica/issues/1743
 ---
 

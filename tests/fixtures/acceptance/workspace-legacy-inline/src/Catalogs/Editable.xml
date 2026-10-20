@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20">
+<Catalog uuid="66666666-6666-4666-8666-666666666666">
+<InternalInfo>
+<xr:GeneratedType name="CatalogObject.Editable" category="Object"><xr:TypeId>10000000-0000-4000-8000-000000000001</xr:TypeId><xr:ValueId>20000000-0000-4000-8000-000000000001</xr:ValueId></xr:GeneratedType>
+<xr:GeneratedType name="CatalogRef.Editable" category="Ref"><xr:TypeId>10000000-0000-4000-8000-000000000002</xr:TypeId><xr:ValueId>20000000-0000-4000-8000-000000000002</xr:ValueId></xr:GeneratedType>
+<xr:GeneratedType name="CatalogSelection.Editable" category="Selection"><xr:TypeId>10000000-0000-4000-8000-000000000003</xr:TypeId><xr:ValueId>20000000-0000-4000-8000-000000000003</xr:ValueId></xr:GeneratedType>
+<xr:GeneratedType name="CatalogList.Editable" category="List"><xr:TypeId>10000000-0000-4000-8000-000000000004</xr:TypeId><xr:ValueId>20000000-0000-4000-8000-000000000004</xr:ValueId></xr:GeneratedType>
+<xr:GeneratedType name="CatalogManager.Editable" category="Manager"><xr:TypeId>10000000-0000-4000-8000-000000000005</xr:TypeId><xr:ValueId>20000000-0000-4000-8000-000000000005</xr:ValueId></xr:GeneratedType>
+</InternalInfo>
+<Properties><Name>Editable</Name><CodeType>String</CodeType><CodeLength>9</CodeLength><DescriptionLength>25</DescriptionLength><DefaultPresentation>AsDescription</DefaultPresentation></Properties>
+<ChildObjects>
+<Form uuid="11111111-1111-4111-8111-111111111111"><Properties><Name>Main</Name><FormType>Managed</FormType></Properties></Form>
+<Template uuid="22222222-2222-4222-8222-222222222222"><Properties><Name>Print</Name><TemplateType>TextDocument</TemplateType></Properties></Template>
+<Command uuid="33333333-3333-4333-8333-333333333333"><Properties><Name>Open</Name></Properties></Command>
+</ChildObjects>
+</Catalog>
+</MetaDataObject>

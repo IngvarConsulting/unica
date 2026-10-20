@@ -1296,11 +1296,19 @@ mod form_move_tests;
 #[cfg(test)]
 #[path = "metadata_can_tests.rs"]
 mod metadata_can_tests;
+#[cfg(test)]
+mod retained_directory_removal_tests;
 
 #[cfg(test)]
 mod html_template_tests;
 #[cfg(test)]
 mod new_xml_tests;
+
+#[cfg(test)]
+mod form_add_owner_bytes_tests;
+
+#[cfg(test)]
+mod legacy_inline_check_tests;
 
 #[cfg(test)]
 pub(crate) mod actor_capacity_tests {
