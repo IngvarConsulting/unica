@@ -1,0 +1,43 @@
+{
+  "caseCommit": "bc23cc703fcd281d41048349da0beae0848b8c7a",
+  "sourceSnapshotBase": "193c58939c1fc9215eefd19b4bb02c5fca515fa0",
+  "sourceReadyManifestSha256": "43de02f69845bdef4069f5b9e6d97518c363f121e2bd2e756197ecd6693bfd30",
+  "runnerSha256": "5153afb06b07a215ca73e466106bf859549ed2ce941b7f37c5508643859ae234",
+  "workflowSha256": "8aaaa38bd8560524bf2e445c26b561a2bab91dd9b084333c89fe1d4569f67329",
+  "sourcePins": {
+    "crates/unica-coder/src/application/receipt_ledger_actor.rs": "a7f9b436b0b5a5b8322adcf0ac2d0cc066f2e79185afc298702b69cbd1abf8f9",
+    "crates/unica-coder/src/application/receipt_ledger_actor/observation.rs": "79a13bbabcb54e2bea64f0932ca6eac775c40e3b92532c745657bf5801eba9c1",
+    "crates/unica-coder/src/infrastructure/daemon/runtime_v5.rs": "6b5281e3c46f1b2cbcf5aa0da3a04fa81c88c69d2168e28d6970063e08329198",
+    "crates/unica-coder/src/infrastructure/daemon/runtime_v5/receipt_scenario_v5.rs": "a776c249caea25ef6942a8efcb07938637c14e13adcb9e20e674828ed1675573",
+    "crates/unica-coder/src/infrastructure/daemon/runtime_v5/receipt_scenario_v5/dispatch.rs": "b2cdec4dd0edb7464b9fcb9f8dbb13951f12c34012f1ba1682434103fa2526a4",
+    "crates/unica-coder/src/infrastructure/daemon/runtime_v5/receipt_scenario_v5/scenario_probes.rs": "007f98362fda031f804deaf1bd80b313c689bb28c0f47c3e8480981686267d50",
+    "crates/unica-coder/src/infrastructure/daemon/runtime_v5/receipt_scenario_v5/tests.rs": "f4f07e8b681a872df6daad106be140567cd2eaebee2a6351dc694c3c30eea37a",
+    "crates/unica-coder/src/infrastructure/daemon/runtime_v5/receipt_scenario_v5/wire.rs": "c2661de1de4272597b3bc59ec9ebbab190469d675c19f0a7e761e33251a94192",
+    "crates/unica-coder/src/infrastructure/receipt_ledger.rs": "5276d1a5039181948888fe98139fdfc33af04be0e303dfed3222a4f0005e3fcb",
+    "crates/unica-coder/src/infrastructure/receipt_ledger/tests.rs": "f9b59ef4b7cfac4c71b2fa86754d718f6e0c6fd06f6d6ca05200fa5f79bb36ea",
+    "crates/unica-coder/src/infrastructure/task_lifecycle_link_store_v5.rs": "8e7e767bbd184643ff810f0d47f7dcf22fe0a84bf17b6b52f6e7f37c431f85df",
+    "crates/unica-coder/src/infrastructure/task_store_v5.rs": "2368a9a6ac6b75bbde71908a16e8b3ce480cceef5e006d50b08fcefe62682edb",
+    "crates/unica-coder/tests/daemon_receipt_ledger.rs": "e54b924eedd96e0445c092e114f99490d6d77d94c9d1646a8f7eb312668f0dcc",
+    "Cargo.toml": "4fc8a62df93851d388fa036c0f151e01a611e5ffdb73504d366dc94352043892",
+    "Cargo.lock": "7582d76565155f43e6a7f51fc917e8f6a405785f4df0922f1a99c7cda24af0d4",
+    "crates/unica-coder/Cargo.toml": "fdab93a2fdf0ad6970f5e8910411b02584ca99b22debb3a5f2b5fa2b12d906e1",
+    ".config/nextest.toml": "77a61f6293e27fecc1f93828c55e3b43a7d5cf96b945de0fca9759214172cceb"
+  },
+  "features": [
+    "receipt-ledger-test-support"
+  ],
+  "traceEnvironment": {
+    "UNICA_RECEIPT_CAUSAL_TRACE": "1"
+  },
+  "originalProductBudgets": {
+    "lazyCancelMilliseconds": 125,
+    "taskMaterializationMilliseconds": 5000,
+    "taskCount": 4097,
+    "taskBranches": [
+      "TaskPromisedActorBound",
+      "TaskHandoffActorBoundBegun"
+    ]
+  },
+  "diagnosticOnly": true,
+  "issueFixed": false
+}
