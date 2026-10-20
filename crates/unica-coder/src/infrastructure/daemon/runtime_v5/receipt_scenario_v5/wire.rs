@@ -215,6 +215,10 @@ pub(super) enum ReceiptScenarioAction {
     WaitForEvent {
         event: ScenarioEvent,
     },
+    WaitForBarrier {
+        point: ScenarioBarrierPoint,
+    },
+    WaitForTerminalTaskProjection,
     ReleaseBarrier {
         point: ScenarioBarrierPoint,
     },

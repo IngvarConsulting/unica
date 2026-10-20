@@ -25,6 +25,7 @@ pub(super) struct ReceiptScenarioControl {
     callback_invocation_ids: Mutex<Vec<String>>,
     bound_tasks: Mutex<Vec<ScenarioBoundTask>>,
     terminal_bound_tasks: Mutex<Vec<ScenarioTerminalBoundTask>>,
+    terminal_bound_task_changed: Condvar,
     state_root: Mutex<Option<std::path::PathBuf>>,
     receipt_backed_terminals: Mutex<Vec<(TaskTerminalReceiptBackedReceipt, Vec<u8>)>>,
     provider: Mutex<Option<ScenarioProviderFixture>>,
@@ -311,6 +312,7 @@ impl ReceiptScenarioControl {
             callback_invocation_ids: Mutex::new(Vec::new()),
             bound_tasks: Mutex::new(Vec::new()),
             terminal_bound_tasks: Mutex::new(Vec::new()),
+            terminal_bound_task_changed: Condvar::new(),
             state_root: Mutex::new(None),
             receipt_backed_terminals: Mutex::new(Vec::new()),
             provider: Mutex::new(None),
@@ -1372,6 +1374,44 @@ impl ReceiptScenarioControl {
             .lock()
             .expect("scenario bound Task mutex poisoned")
             .retain(|task| task.record.task_id != task_id);
+        self.terminal_bound_task_changed.notify_all();
+    }
+
+    /// Observe the production terminal hook for this exact attempt. Joining
+    /// the cancel sender or seeing the earlier telemetry event is insufficient.
+    pub(super) fn wait_for_terminal_bound_task(
+        &self,
+        key: &ReceiptKey,
+        deadline: Instant,
+    ) -> Result<(), String> {
+        let mut tasks = self
+            .terminal_bound_tasks
+            .lock()
+            .map_err(|_| "scenario terminal Task mutex poisoned".to_owned())?;
+        loop {
+            if tasks.iter().any(|task| {
+                task.bound.key() == key
+                    && task.record.task_id == key.reserved_task_id()
+                    && task.record.invocation_id == key.invocation_id()
+                    && task.record.receipt_key_digest == receipt_key_digest(key)
+                    && task.record.task.terminal_digest() == Some(task.bound.terminal_digest())
+            }) {
+                return Ok(());
+            }
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .ok_or_else(|| {
+                    format!(
+                        "exact Task {} has no terminal projection",
+                        key.reserved_task_id()
+                    )
+                })?;
+            let (next, _) = self
+                .terminal_bound_task_changed
+                .wait_timeout(tasks, remaining)
+                .map_err(|_| "scenario terminal Task mutex poisoned".to_owned())?;
+            tasks = next;
+        }
     }
 
     pub(super) fn terminal_bound_task(&self) -> Option<ScenarioTerminalBoundTask> {

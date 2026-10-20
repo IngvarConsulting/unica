@@ -2565,6 +2565,15 @@ fn run_receipt_scenario_with_control_observer(
             ReceiptScenarioAction::InstallBarrier { point } => {
                 control.install(point);
             }
+            ReceiptScenarioAction::WaitForBarrier { point } => {
+                control.wait_until_reached(point, Instant::now() + SCENARIO_OPERATION_TIMEOUT)?;
+            }
+            ReceiptScenarioAction::WaitForTerminalTaskProjection => {
+                control.wait_for_terminal_bound_task(
+                    &exact_key,
+                    Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                )?;
+            }
             ReceiptScenarioAction::WaitForEventCount { event, count } => {
                 let count = usize::try_from(count)
                     .map_err(|_| "scenario event count exceeds usize".to_owned())?;

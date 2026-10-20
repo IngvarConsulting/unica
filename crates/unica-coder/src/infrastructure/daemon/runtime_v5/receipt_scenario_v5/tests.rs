@@ -8,6 +8,339 @@ use crate::application::receipt_ledger::{
 use crate::infrastructure::daemon::protocol_v5::V5InvocationPhase as TestV5InvocationPhase;
 use crate::infrastructure::receipt_ledger::ReceiptLedgerStore;
 
+struct CancelCheckpointWitnessRunner {
+    control: Arc<ReceiptScenarioControl>,
+    handle: Option<thread::JoinHandle<Result<String, String>>>,
+}
+
+impl CancelCheckpointWitnessRunner {
+    fn join(&mut self) -> Result<String, String> {
+        self.handle
+            .take()
+            .ok_or_else(|| "witness runner was already joined".to_owned())?
+            .join()
+            .map_err(|_| "witness runner panicked".to_owned())?
+    }
+}
+
+impl Drop for CancelCheckpointWitnessRunner {
+    fn drop(&mut self) {
+        if self.handle.is_some() {
+            self.control.process_life().close_permissions();
+            self.control.release_all_barriers();
+            if let Err(error) = self.join() {
+                eprintln!("[1753 SETUP CLEANUP] {error}");
+            }
+        }
+    }
+}
+
+// Each barrier preserves the earlier observation as a negative control.
+// Only the exact terminal projection permits the final positive assertions.
+fn cancel_checkpoint_observation_witness(point: &str, held_cancel: bool) -> (Value, Value) {
+    let control = Arc::new(ReceiptScenarioControl::new());
+    let request = json!({
+        "clock": "fake",
+        "actions": [
+            {"action": "configure_provider", "execution_class": "direct",
+             "terminal": {"terminal": "success", "payload": "canonical-success"},
+             "cooperative_cancel": true, "side_effect_marker": false},
+            {"action": "install_barrier", "point": "admission_entered"},
+            {"action": "install_barrier", "point": "after_working_readback"},
+            {"action": "install_barrier", "point": point},
+            {"action": "submit", "request": "canonical", "response_budget_ms": 7000,
+             "disconnect": "never", "label": "submit"},
+            {"action": "wait_for_event", "event": "admission_entered"},
+            {"action": "advance_monotonic", "millis": 7000},
+            {"action": "release_barrier", "point": "admission_entered"},
+            {"action": "wait_for_event", "event": "task_store_working_readback"},
+            {"action": "spawn_cancel", "key": "exact", "lazy_session": true,
+             "label": "waiting-cancel"},
+            {"action": "wait_for_operation", "label": "waiting-cancel", "state": "blocked"},
+            {"action": "checkpoint", "label": "cancel-waiting"},
+            {"action": "release_barrier", "point": "after_working_readback"},
+            {"action": "wait_for_event", "event": "receipt_begun_committed"},
+            {"action": "wait_for_event", "event": "token_signalled"},
+            {"action": "wait_for_operation", "label": "waiting-cancel", "state": "completed"},
+            {"action": "join_operation", "label": "waiting-cancel"},
+            {"action": "wait_for_barrier", "point": point},
+            {"action": "checkpoint", "label": "post-begun-cancel"},
+            {"action": "release_barrier", "point": point},
+            {"action": "wait_for_terminal_task_projection"},
+            {"action": "checkpoint", "label": "terminal-projection"}
+        ]
+    })
+    .to_string();
+    let worker_control = control.clone();
+    let (finished_sender, finished_receiver) = mpsc::channel();
+    let handle = thread::spawn(move || {
+        let result = dispatch::run_receipt_scenario_with_control_for_test(&request, worker_control);
+        let _ = finished_sender.send(());
+        result
+    });
+    let mut runner = CancelCheckpointWitnessRunner {
+        control: control.clone(),
+        handle: Some(handle),
+    };
+    let finished = finished_receiver
+        .recv_timeout(SCENARIO_ENDPOINT_STARTUP_TIMEOUT + SCENARIO_BULK_OPERATION_TIMEOUT);
+    if finished.is_err() {
+        control.process_life().close_permissions();
+    }
+    control.release_all_barriers();
+    let joined = runner.join();
+    assert!(
+        finished.is_ok(),
+        "[1753 SETUP] runner did not finish: {finished:?}; joined: {joined:?}"
+    );
+    let encoded = joined.expect("[1753 SETUP] scenario and normal daemon cleanup must succeed");
+    assert!(
+        control.runtime().is_none(),
+        "[1753 SETUP] joined scenario retained its runtime"
+    );
+    let report: Value = serde_json::from_str(&encoded).expect("[1753 SETUP] decode report");
+    assert_eq!(report["kind"], "observed", "[1753 SETUP] report shape");
+    let payload = &report["payload"];
+    let checkpoints = &payload["checkpoints"];
+    let waiting = &checkpoints["cancel-waiting"];
+    let held = &checkpoints["post-begun-cancel"];
+    let completed = &checkpoints["terminal-projection"];
+    let submitted_key = &payload["responses"]["submit"]["key"];
+    for field in [
+        "invocationId",
+        "reservedTaskId",
+        "coreIdentityDigest",
+        "tool",
+        "normalizedArgumentsHash",
+        "requestScopeHash",
+        "keyDigest",
+    ] {
+        assert!(
+            submitted_key[field]
+                .as_str()
+                .is_some_and(|value| !value.is_empty()),
+            "[1753 SETUP] submitted identity field {field}"
+        );
+    }
+    for (label, checkpoint) in [
+        ("cancel-waiting", waiting),
+        ("post-begun-cancel", held),
+        ("terminal-projection", completed),
+    ] {
+        assert_eq!(
+            checkpoint["tasks"].as_array().map(Vec::len),
+            Some(1),
+            "[1753 SETUP] {label}: exactly one Task"
+        );
+        assert_eq!(
+            checkpoint["taskLinks"].as_array().map(Vec::len),
+            Some(1),
+            "[1753 SETUP] {label}: exactly one lifecycle link"
+        );
+        assert_eq!(
+            checkpoint["receipts"].as_array().map(Vec::len),
+            Some(0),
+            "[1753 SETUP] {label}: Task owns the attempt"
+        );
+        assert_eq!(
+            checkpoint["callbacks"]["prepare"], 0,
+            "[1753 SETUP] {label}"
+        );
+        assert_eq!(
+            checkpoint["callbacks"]["execute"], 0,
+            "[1753 SETUP] {label}"
+        );
+        assert_eq!(checkpoint["sideEffectMarkers"], 0, "[1753 SETUP] {label}");
+        assert_eq!(
+            checkpoint["tasks"][0]["taskId"], checkpoint["taskLinks"][0]["taskId"],
+            "[1753 SETUP] {label}: Task/link identity"
+        );
+        assert_eq!(
+            checkpoint["tasks"][0]["taskId"], submitted_key["reservedTaskId"],
+            "[1753 SETUP] {label}: original submitted identity"
+        );
+        assert_eq!(
+            checkpoint["tasks"][0]["receiptKey"], *submitted_key,
+            "[1753 SETUP] {label}: full Task receipt identity"
+        );
+        assert_eq!(
+            checkpoint["taskLinks"][0]["key"], *submitted_key,
+            "[1753 SETUP] {label}: full lifecycle receipt identity"
+        );
+    }
+    assert_eq!(
+        waiting["tokenSignals"], 0,
+        "[1753 SETUP] before gate release"
+    );
+    assert_eq!(
+        waiting["tasks"][0]["cancelRequested"], false,
+        "[1753 SETUP]"
+    );
+    assert_eq!(
+        waiting["taskLinks"][0]["lifecycle"]["state"], "task_bound_not_begun",
+        "[1753 SETUP] before gate release"
+    );
+    assert_eq!(held["tokenSignals"], 1, "[1753 SETUP] begun token");
+    assert_eq!(
+        held["tasks"][0]["cancelRequested"], held_cancel,
+        "[1753 SETUP] target barrier must expose the intended window"
+    );
+    assert_eq!(
+        held["taskLinks"][0]["lifecycle"]["state"], "task_bound_begun",
+        "[1753 SETUP] target barrier must precede terminal link publication"
+    );
+    assert!(completed["tasks"][0]["cancelRequested"].as_bool().unwrap());
+    assert_eq!(
+        completed["taskLinks"][0]["lifecycle"]["state"],
+        "task_terminal_bound"
+    );
+    assert_eq!(completed["tokenSignals"], 1);
+    // This hook follows both real terminal writes. Read it only after the
+    // runner's normal cleanup and join, not merely after ReleaseBarrier.
+    let terminal = control
+        .terminal_bound_task()
+        .expect("[1753 SETUP] joined runtime must have published the terminal hook");
+    assert_eq!(
+        receipt_key_observation(terminal.bound.key()),
+        *submitted_key,
+        "[1753 SETUP] terminal hook belongs to the original full identity"
+    );
+    assert_eq!(
+        terminal.record.task_id,
+        terminal.bound.key().reserved_task_id(),
+        "[1753 SETUP] terminal Task identity"
+    );
+    assert_eq!(
+        terminal.record.invocation_id,
+        terminal.bound.key().invocation_id(),
+        "[1753 SETUP] terminal invocation identity"
+    );
+    assert_eq!(
+        &terminal.record.receipt_key_digest,
+        &receipt_key_digest(terminal.bound.key()),
+        "[1753 SETUP] terminal record receipt binding"
+    );
+    assert!(
+        terminal.record.cancel_requested,
+        "[1753 SETUP] terminal cancel flag"
+    );
+    assert!(
+        matches!(&terminal.record.task, V5StoredTask::Cancelled { .. }),
+        "[1753 SETUP] terminal positive control: {:?}",
+        terminal.record.task
+    );
+    assert_eq!(
+        terminal.record.task.terminal_digest(),
+        Some(terminal.bound.terminal_digest()),
+        "[1753 SETUP] terminal Task/link digest"
+    );
+    let operation_states = payload["operationEvents"]
+        .as_array()
+        .expect("[1753 SETUP] operation events")
+        .iter()
+        .filter(|event| event["label"] == "waiting-cancel")
+        .map(|event| {
+            event["state"]
+                .as_str()
+                .expect("[1753 SETUP] operation state")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        operation_states,
+        ["spawned", "blocked", "completed", "joined"],
+        "[1753 SETUP] cancellation sender must actually be joined"
+    );
+    eprintln!(
+        "1753_OBSERVATION_WINDOW point={point} held={held} completed={completed} terminal_after_join={:?}",
+        terminal.record.task
+    );
+    let observed_key = terminal.bound.key();
+    control
+        .wait_for_terminal_bound_task(observed_key, Instant::now())
+        .expect("the exact published terminal remains observable");
+    let wrong_scope_key = ReceiptKey::new(
+        observed_key.invocation_id(),
+        observed_key.reserved_task_id(),
+        RequestIdentity::new(
+            observed_key.core_identity_digest().clone(),
+            observed_key.tool(),
+            observed_key.normalized_arguments_hash().clone(),
+            request_scope_hash("1753-other-workspace").unwrap(),
+        ),
+    );
+    assert_ne!(
+        observed_key.request_scope_hash(),
+        wrong_scope_key.request_scope_hash()
+    );
+    assert!(
+        control
+            .wait_for_terminal_bound_task(&wrong_scope_key, Instant::now())
+            .is_err(),
+        "matching TaskId and InvocationId must not borrow another full ReceiptKey's terminal"
+    );
+    (held.clone(), completed.clone())
+}
+
+#[test]
+fn terminal_projection_wait_covers_cancel_sender_join_before_real_cancel_write() {
+    let (held, completed) =
+        cancel_checkpoint_observation_witness("before_task_cancel_write", false);
+    assert_eq!(held["tasks"][0]["cancelRequested"], false);
+    assert!(
+        completed["tasks"][0]["cancelRequested"]
+            .as_bool()
+            .expect("[1753 SETUP] cancel flag"),
+        "[1753 TERMINAL PROJECTION CANCEL_FLAG] real Task cancellation must be published"
+    );
+}
+
+#[test]
+fn terminal_projection_wait_covers_cancel_flag_before_terminal_lifecycle_link() {
+    let (held, completed) = cancel_checkpoint_observation_witness(
+        "after_task_store_terminal_before_lifecycle_link_terminal",
+        true,
+    );
+    assert_eq!(held["tasks"][0]["cancelRequested"], true);
+    assert_eq!(
+        held["taskLinks"][0]["lifecycle"]["state"],
+        "task_bound_begun"
+    );
+    assert_eq!(
+        completed["taskLinks"][0]["lifecycle"]["state"], "task_terminal_bound",
+        "[1753 TERMINAL PROJECTION LINK] the exact terminal link must be published"
+    );
+}
+
+#[test]
+fn sender_completion_without_a_terminal_hook_cannot_satisfy_the_projection_wait() {
+    let control = ReceiptScenarioControl::new();
+    let key = fresh_key(&CoreIdentity::production_v5(), &Map::new()).unwrap();
+    control.record_operation_event("cancel", "completed");
+    control.record_operation_event("cancel", "joined");
+    assert!(control
+        .wait_for_terminal_bound_task(&key, Instant::now())
+        .is_err());
+    assert!(control.terminal_bound_tasks().is_empty());
+}
+
+#[test]
+fn terminal_projection_action_without_a_terminal_hook_cannot_report_success() {
+    let control = Arc::new(ReceiptScenarioControl::new());
+    let request = json!({
+        "clock": "fake",
+        "actions": [{"action": "wait_for_terminal_task_projection"}]
+    })
+    .to_string();
+    let error = dispatch::run_receipt_scenario_with_control_for_test(&request, control.clone())
+        .expect_err("the terminal projection action must not succeed without a terminal hook");
+    assert!(
+        error.starts_with("exact Task ") && error.ends_with(" has no terminal projection"),
+        "the action must reach the terminal wait rather than fail during setup: {error}"
+    );
+    assert!(control.terminal_bound_tasks().is_empty());
+    assert!(control.runtime().is_none());
+}
+
 #[test]
 fn bulk_key_index_keeps_exact_json_equality_with_collisions_and_missing_digests() {
     let first = json!({"keyDigest": "collision", "invocationId": "first"});

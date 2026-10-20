@@ -94,6 +94,7 @@ enum Action {
     WaitForEvent {
         event: EventKind,
     },
+    WaitForTerminalTaskProjection,
     WaitForEventCount {
         event: EventKind,
         count: u32,
@@ -11432,6 +11433,7 @@ fn cancel_after_working_before_receipt_begun_waits_and_is_post_begun() {
         Action::JoinOperation {
             label: "waiting-cancel".to_string(),
         },
+        Action::WaitForTerminalTaskProjection,
         checkpoint_action("post-begun-cancel"),
     ]));
 
