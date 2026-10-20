@@ -981,6 +981,7 @@ fn malformed_known_variants_are_not_downgraded_by_an_unknown_qname() {
     for xml in [
         r#"<Properties xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config"><Type><v8:TypeSet>cfg:DefinedType.GLN.Form.Main</v8:TypeSet><v8:Type>v8:FutureOpaque</v8:Type></Type></Properties>"#,
         r#"<Properties xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core"><Type><v8:Type>v8:ValueStorage</v8:Type><v8:Type>v8:FutureOpaque</v8:Type></Type></Properties>"#,
+        r#"<Properties xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema"><Type><v8:Type>xs:base64Binary</v8:Type><v8:Type>xs:binary</v8:Type><v8:Type>v8:FutureOpaque</v8:Type></Type></Properties>"#,
     ] {
         let document = roxmltree::Document::parse(xml).unwrap();
         assert!(parse_observed_metadata_type_node(document.root_element()).is_err());
@@ -1758,4 +1759,93 @@ fn property_observation_distinguishes_missing_false_empty_nil_and_damage() {
         nil,
         observe_meta_info_property(doc.root_element(), MetadataKind::Constant, "MaxValue").unwrap()
     );
+}
+
+#[test]
+fn observed_binary_type_accepts_native_qnames_and_keeps_legacy_read_compatibility() {
+    use crate::domain::metadata::{ObservedMetadataTypeVariant, StringLengthMode};
+    let native = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/platform_8_3_27/binary-data/native-type.xml"
+    ));
+    let wrap = |fragment: &str, namespace: &str| {
+        format!(
+        "<Properties xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:xs=\"{namespace}\" xmlns:renamed=\"{namespace}\">{fragment}</Properties>"
+    )
+    };
+    for fragment in [
+        native.to_string(),
+        native.replace("xs:base64Binary", "renamed:base64Binary"),
+        native.replace("xs:base64Binary", "xs:binary"),
+    ] {
+        let xml = wrap(&fragment, "http://www.w3.org/2001/XMLSchema");
+        let document = roxmltree::Document::parse(&xml).unwrap();
+        let observed = parse_observed_metadata_type_node(document.root_element()).unwrap();
+        assert_eq!(
+            observed.variants,
+            vec![ObservedMetadataTypeVariant::BinaryData {
+                length: 32,
+                allowed_length: StringLengthMode::Variable,
+            }]
+        );
+        assert!(!observed_type_is_strict_but_unmodelled(
+            document.root_element()
+        ));
+        let with_unknown = fragment.replace("</Type>", "<v8:Type>v8:FutureOpaque</v8:Type></Type>");
+        let xml = wrap(&with_unknown, "http://www.w3.org/2001/XMLSchema");
+        let document = roxmltree::Document::parse(&xml).unwrap();
+        assert!(observed_type_is_strict_but_unmodelled(
+            document.root_element()
+        ));
+    }
+    for fragment in [
+        native.replace("<v8:Length>32</v8:Length>", "<v8:Length>oops</v8:Length>"),
+        native
+            .replace("<v8:Length>32</v8:Length>", "<v8:Length>0</v8:Length>")
+            .replace(
+                "<v8:AllowedLength>Variable</v8:AllowedLength>",
+                "<v8:AllowedLength>Fixed</v8:AllowedLength>",
+            ),
+        native.replace("<v8:Length>32</v8:Length>", ""),
+        native.replace(
+            "<v8:Length>32</v8:Length>",
+            "<v8:Length>32</v8:Length><v8:Length>32</v8:Length>",
+        ),
+        native.replace(
+            "<v8:Length>32</v8:Length>",
+            "<foreign:Length xmlns:foreign=\"urn:foreign\">32</foreign:Length>",
+        ),
+        native.replace(
+            "<v8:AllowedLength>Variable</v8:AllowedLength>",
+            "<v8:AllowedLength>Unknown</v8:AllowedLength>",
+        ),
+        native.replace(
+            "<v8:Type>xs:base64Binary</v8:Type>",
+            "<v8:Type>xs:base64Binary</v8:Type><v8:Type>xs:binary</v8:Type>",
+        ),
+    ] {
+        let xml = wrap(&fragment, "http://www.w3.org/2001/XMLSchema");
+        let document = roxmltree::Document::parse(&xml).unwrap();
+        assert!(
+            parse_observed_metadata_type_node(document.root_element()).is_err(),
+            "{fragment}"
+        );
+        assert!(
+            !observed_type_is_strict_but_unmodelled(document.root_element()),
+            "{fragment}"
+        );
+        let with_unknown = fragment.replace("</Type>", "<v8:Type>v8:FutureOpaque</v8:Type></Type>");
+        let xml = wrap(&with_unknown, "http://www.w3.org/2001/XMLSchema");
+        let document = roxmltree::Document::parse(&xml).unwrap();
+        assert!(
+            !observed_type_is_strict_but_unmodelled(document.root_element()),
+            "{with_unknown}"
+        );
+    }
+    let foreign = wrap(native, "urn:foreign");
+    let document = roxmltree::Document::parse(&foreign).unwrap();
+    assert!(parse_observed_metadata_type_node(document.root_element()).is_err());
+    assert!(!observed_type_is_strict_but_unmodelled(
+        document.root_element()
+    ));
 }

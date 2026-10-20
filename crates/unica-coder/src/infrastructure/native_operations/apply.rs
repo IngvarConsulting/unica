@@ -16,7 +16,8 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 const MAX_APPLY_FILE_BYTES: usize = 32 * 1024 * 1024;
-const MAX_APPLY_NAMESPACE_ENTRIES: usize = 1_000_000;
+pub(super) const MAX_APPLY_NAMESPACE_ENTRIES: usize = 1_000_000;
+pub(super) const MAX_APPLY_NAMESPACE_DEPTH: usize = 256;
 
 /// A filesystem call on the planned route failed: access denied, I/O, or
 /// a retained name that no longer resolves. The source cannot be read, which
@@ -559,6 +560,23 @@ impl RetainedNamespaceGuard {
         self.checkpoint()
     }
 
+    pub(super) fn validate_relocated(
+        &self,
+        root: Arc<RetainedDirectoryCapability>,
+        relative: PathBuf,
+    ) -> Result<(), ApplyStagingError> {
+        Self {
+            root,
+            relative,
+            identity: self.identity,
+            children: self.children.clone(),
+            entry_limit: self.entry_limit,
+            deadline: self.deadline,
+            cancellation: self.cancellation.clone(),
+        }
+        .validate(&[])
+    }
+
     fn fingerprint(&self, hash: &mut sha2::Sha256) -> Result<(), ApplyStagingError> {
         use sha2::Digest;
         self.checkpoint()?;
@@ -737,6 +755,7 @@ pub(crate) struct ApplyStagedState {
     read_guards: std::collections::BTreeMap<FileIdentity, RetainedApplyReadGuardBinding>,
     namespaces: std::collections::BTreeMap<PathBuf, RetainedNamespaceGuard>,
     path_spellings: std::collections::BTreeMap<usize, RetainedPathSpellingGuard>,
+    directory_removals: Vec<super::retained_directory::DirectoryRemoval>,
     deadline: ProviderDeadline,
     cancellation: CancellationToken,
     writer_authority: crate::infrastructure::workspace_actor::ApplyWriterAuthority,
@@ -758,6 +777,7 @@ impl ApplyStagedState {
             read_guards: Default::default(),
             namespaces: Default::default(),
             path_spellings: Default::default(),
+            directory_removals: Vec::new(),
             deadline,
             cancellation,
             writer_authority,
@@ -777,7 +797,11 @@ impl ApplyStagedState {
         &mut self,
         relative: &Path,
     ) -> Result<Vec<PathBuf>, ApplyStagingError> {
-        self.enumerate_tree_with_limits(relative, 256, MAX_APPLY_NAMESPACE_ENTRIES)
+        self.enumerate_tree_with_limits(
+            relative,
+            MAX_APPLY_NAMESPACE_DEPTH,
+            MAX_APPLY_NAMESPACE_ENTRIES,
+        )
     }
 
     /// Retain the enumerated membership and distinguish a missing root from
@@ -1136,6 +1160,75 @@ impl ApplyStagedState {
         Ok(())
     }
 
+    /// Authority covers this selected payload and its two collection entries,
+    /// never unrelated siblings or the generated subtree. Retained manifests
+    /// include empty directories, which file images cannot represent.
+    pub(crate) fn remove_owned_directories(
+        &mut self,
+        payload: &Path,
+        descriptor: &Path,
+        collection: &Path,
+    ) -> Result<(), ApplyStagingError> {
+        use super::retained_directory::{DirectoryRemoval, RemovedFileImage};
+        if !self.generated_subtree_forbidden {
+            return Err(ApplyStagingError::new(
+                ApplyStagingErrorKind::Invariant,
+                "directory removal requires the source participant",
+            ));
+        }
+        for plan in &self.directory_removals {
+            plan.validate_source()?;
+        }
+        let files = self
+            .entries
+            .iter()
+            .filter_map(|entry| match (&entry.original, &entry.current) {
+                (StagedFileState::Bytes(bytes), StagedFileState::Absent) => Some((
+                    entry
+                        .original_file_identity
+                        .expect("retained original identity"),
+                    RemovedFileImage {
+                        len: bytes.len(),
+                        sha256: sha2::Sha256::digest(bytes).into(),
+                    },
+                )),
+                _ => None,
+            })
+            .collect();
+        let plans = DirectoryRemoval::capture_owned(
+            Arc::clone(&self.root),
+            payload,
+            descriptor,
+            collection,
+            &files,
+            self.deadline,
+            self.cancellation.clone(),
+        )?;
+        self.directory_removals.extend(plans);
+        self.directory_removals
+            .sort_by(|left, right| left.relative.cmp(&right.relative));
+        Ok(())
+    }
+
+    fn active_directory_removals(&self) -> Vec<super::retained_directory::DirectoryRemoval> {
+        let surviving_paths = self
+            .entries
+            .iter()
+            .filter(|entry| matches!(entry.current, StagedFileState::Bytes(_)))
+            .map(|entry| entry.relative_path.clone())
+            .collect::<Vec<_>>();
+        self.directory_removals
+            .iter()
+            .filter(|plan| {
+                self.entries.iter().any(|entry| {
+                    entry.relative_path == plan.owner_descriptor
+                        && matches!(entry.current, StagedFileState::Absent)
+                })
+            })
+            .flat_map(|plan| plan.partition(&surviving_paths))
+            .collect()
+    }
+
     /// All observed inputs, including read-only dependencies and absent targets,
     /// and their planned postimages bind the preview to its exact write intent.
     pub(crate) fn fingerprint_inputs(
@@ -1182,6 +1275,11 @@ impl ApplyStagedState {
             hash.update(path);
             hash.update(guard.expected_len.to_be_bytes());
             hash.update(guard.expected_sha256);
+        }
+        let directories = self.active_directory_removals();
+        hash.update((directories.len() as u64).to_be_bytes());
+        for plan in &directories {
+            plan.fingerprint(hash)?;
         }
         hash.update((self.namespaces.len() as u64).to_be_bytes());
         for guard in self.namespaces.values() {
@@ -1230,10 +1328,12 @@ impl ApplyStagedState {
 
     pub(crate) fn finalize(self) -> Result<CompileTransaction, ApplyStagingError> {
         self.checkpoint("apply finalization")?;
+        let directories = self.active_directory_removals();
         let mut transaction = CompileTransaction::new();
         transaction
             .bind_retained_apply_root(Arc::clone(&self.root), &self.writer_authority)
             .map_err(|error| ApplyStagingError::new(ApplyStagingErrorKind::Invariant, error))?;
+        transaction.bind_retained_directory_removals(directories);
         transaction.bind_retained_namespaces(self.namespaces.into_values().collect());
         transaction.bind_retained_apply_read_guards(self.read_guards.into_values().collect());
         let path_spellings = self

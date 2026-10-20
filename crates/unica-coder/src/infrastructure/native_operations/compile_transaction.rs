@@ -12,6 +12,8 @@
 //! claim process-crash or power-loss atomicity; those require a persistent journal
 //! and directory-entry synchronization that this transaction does not provide.
 
+mod retained_directory_publication;
+
 use roxmltree::Document;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -587,6 +589,7 @@ pub(crate) struct CompileTransaction {
     retained_apply: Vec<PlannedRetainedApplyChange>,
     retained_apply_read_guards: Vec<RetainedApplyReadGuardBinding>,
     retained_namespaces: Vec<super::apply::RetainedNamespaceGuard>,
+    retained_directory_removals: Vec<super::retained_directory::DirectoryRemoval>,
     retained_path_spellings: Vec<super::apply::RetainedPathSpellingGuard>,
     retained_apply_authority: Option<ApplyWriterAuthority>,
     retained_apply_root: Option<Arc<RetainedDirectoryCapability>>,
@@ -777,6 +780,7 @@ impl CompileTransaction {
         &self,
         published: &[PublishedRetainedApplyChange],
         created: &[CreatedRetainedApplyDirectory],
+        removed: &[super::retained_directory::PublishedDirectoryRemoval],
     ) -> Result<(), RetainedApplyValidationError> {
         let Some(root) = &self.retained_apply_root else {
             return Ok(());
@@ -805,7 +809,42 @@ impl CompileTransaction {
                 }
             }
         }
-        self.validate_retained_namespaces(&deltas)
+        for change in removed {
+            deltas.push((change.plan.relative.clone(), None));
+            deltas.push((
+                change
+                    .plan
+                    .relative
+                    .parent()
+                    .expect("directory parent")
+                    .join(&change.recovery_name),
+                Some(1),
+            ));
+        }
+        for guard in &self.retained_namespaces {
+            let relocated = removed
+                .iter()
+                .find(|change| change.plan.contains(guard.relative_path()));
+            let result = match relocated {
+                Some(change) => guard.validate_relocated(
+                    Arc::new(change.recovery.clone()),
+                    guard
+                        .relative_path()
+                        .strip_prefix(&change.plan.relative)
+                        .expect("contained namespace")
+                        .to_path_buf(),
+                ),
+                None => guard.validate(&deltas),
+            };
+            result.map_err(|error| {
+                retained_guard_validation_error(
+                    error,
+                    guard.relative_path(),
+                    ApplyInputRole::DirectoryMembership,
+                )
+            })?;
+        }
+        Ok(())
     }
 
     pub(super) fn bind_retained_apply_change(
@@ -926,6 +965,7 @@ impl CompileTransaction {
                 );
             }
         }
+        self.validate_directory_cache_boundary(&cache, participant)?;
         let cache_start = self.retained_apply.len();
         self.retained_apply.extend(cache.retained_apply);
         self.retained_apply_read_guards
@@ -956,6 +996,7 @@ impl CompileTransaction {
         self.validate_retained_path_spellings()?;
         self.validate_retained_namespaces(&[])?;
         self.validate_retained_apply_read_guards()?;
+        self.validate_directory_plans()?;
         if self.retained_apply.is_empty() {
             return Ok(Vec::new());
         }
@@ -989,7 +1030,16 @@ impl CompileTransaction {
                         )
                     })?;
             }
-            bindings.push(binding);
+            // A directory publication carries these originals as one retained
+            // tree. Do not keep descendant handles open across its rename.
+            bindings.push(if self.directory_contains(entry) {
+                RetainedApplyExecutionBinding {
+                    ancestor: entry.root.as_ref().clone(),
+                    original_file: None,
+                }
+            } else {
+                binding
+            });
         }
         Ok(bindings)
     }
@@ -1022,7 +1072,10 @@ impl CompileTransaction {
         checkpoint()?;
         let mut published = Vec::with_capacity(self.retained_apply.len());
         let mut created_directories = Vec::new();
+        let mut removed_directories = Vec::new();
         let operation = (|| {
+            self.publish_directories(&mut removed_directories)
+                .map_err(|error| error.to_string())?;
             for (_index, (entry, binding)) in self
                 .retained_apply
                 .iter()
@@ -1030,6 +1083,9 @@ impl CompileTransaction {
                 .enumerate()
             {
                 checkpoint()?;
+                if self.directory_contains(entry) {
+                    continue;
+                }
                 publish_retained_apply_change(
                     entry,
                     binding,
@@ -1058,6 +1114,9 @@ impl CompileTransaction {
             }
             for (entry, binding) in self.retained_apply.iter().zip(&execution_bindings) {
                 checkpoint()?;
+                if self.directory_contains(entry) {
+                    continue;
+                }
                 validate_retained_apply_postimage(
                     entry,
                     binding,
@@ -1070,13 +1129,20 @@ impl CompileTransaction {
             run_retained_apply_before_post_validation_hook();
             self.validate_retained_path_spellings()
                 .map_err(|error| error.to_string())?;
-            self.validate_published_namespaces(&published, &created_directories)
-                .map_err(|error| error.to_string())?;
+            self.validate_published_namespaces(
+                &published,
+                &created_directories,
+                &removed_directories,
+            )
+            .map_err(|error| error.to_string())?;
             self.validate_retained_apply_read_guards()
+                .map_err(|error| error.to_string())?;
+            Self::validate_removed_directories(&removed_directories)
                 .map_err(|error| error.to_string())?;
             let validated = post_validation()?;
             let mut report = CommitReport::default();
             finalize_retained_apply_recovery(&mut published, &mut report);
+            Self::finalize_removed_directories(&removed_directories, &mut report);
             for entry in &self.retained_apply {
                 let path = entry.root.path().join(&entry.relative_path);
                 match (&entry.original, &entry.current) {
@@ -1093,8 +1159,9 @@ impl CompileTransaction {
             Err(primary) => {
                 #[cfg(test)]
                 run_retained_apply_before_rollback_hook();
-                let rollback_errors =
+                let mut rollback_errors =
                     rollback_retained_apply(&mut published, &mut created_directories);
+                Self::rollback_removed_directories(&removed_directories, &mut rollback_errors);
                 if rollback_errors.is_empty() {
                     Err(primary)
                 } else {
@@ -1130,12 +1197,17 @@ impl CompileTransaction {
         final_gate.checkpoint("prepared apply commit")?;
         let mut published = Vec::with_capacity(self.retained_apply.len());
         let mut created_directories = Vec::new();
+        let mut removed_directories = Vec::new();
         let operation = (|| {
+            self.publish_directories(&mut removed_directories)?;
             for (entry, binding) in self.retained_apply[..cache_start]
                 .iter()
                 .zip(&execution_bindings[..cache_start])
             {
                 final_gate.checkpoint("prepared apply source publication")?;
+                if self.directory_contains(entry) {
+                    continue;
+                }
                 publish_retained_apply_change(
                     entry,
                     binding,
@@ -1166,6 +1238,7 @@ impl CompileTransaction {
                 )
             })?;
             validate_journal_recoveries(root, &published)?;
+            Self::validate_removed_directories(&removed_directories)?;
             for (entry, binding) in self.retained_apply[cache_start..]
                 .iter()
                 .zip(&execution_bindings[cache_start..])
@@ -1205,6 +1278,9 @@ impl CompileTransaction {
                 .enumerate()
             {
                 final_gate.checkpoint("prepared apply postimage validation")?;
+                if self.directory_contains(entry) {
+                    continue;
+                }
                 validate_retained_apply_postimage(
                     entry,
                     binding,
@@ -1234,13 +1310,19 @@ impl CompileTransaction {
                 .collect::<Vec<_>>();
             self.validate_retained_path_spellings()
                 .map_err(retained_apply_validation_publication_error)?;
-            self.validate_published_namespaces(&published, &created_directories)
-                .map_err(retained_apply_validation_publication_error)?;
+            self.validate_published_namespaces(
+                &published,
+                &created_directories,
+                &removed_directories,
+            )
+            .map_err(retained_apply_validation_publication_error)?;
             self.validate_retained_apply_read_guards()
                 .map_err(retained_apply_validation_publication_error)?;
+            Self::validate_removed_directories(&removed_directories)?;
             final_gate.validate_after_publication(&published_replacements)?;
             let mut report = CommitReport::default();
             finalize_retained_apply_recovery(&mut published, &mut report);
+            Self::finalize_removed_directories(&removed_directories, &mut report);
             for entry in &self.retained_apply {
                 let path = entry.root.path().join(&entry.relative_path);
                 match (&entry.original, &entry.current) {
@@ -1257,8 +1339,9 @@ impl CompileTransaction {
             Err(primary) => {
                 #[cfg(test)]
                 run_retained_apply_before_rollback_hook();
-                let rollback_errors =
+                let mut rollback_errors =
                     rollback_retained_apply(&mut published, &mut created_directories);
+                Self::rollback_removed_directories(&removed_directories, &mut rollback_errors);
                 if rollback_errors.is_empty() {
                     Err(primary)
                 } else {
@@ -1848,6 +1931,9 @@ impl CompileTransaction {
         deadline: crate::domain::code_intelligence::ProviderDeadline,
         cancellation: &crate::domain::cancellation::CancellationToken,
     ) {
+        for plan in &mut self.retained_directory_removals {
+            plan.rebind(deadline, cancellation.clone());
+        }
         for guard in &mut self.retained_namespaces {
             guard.rebind_execution_context(deadline, cancellation);
         }
