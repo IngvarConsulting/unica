@@ -5574,9 +5574,7 @@ fn main() {
                 || !expression_is(&from_profile[0], "source_profile")
                 || !expression_is(
                     error_closure,
-                    r#"|| {
-                        "actor-bound logical source has no supported platform profile".to_string()
-                    }"#,
+                    r#"|| "actor-bound logical source has no supported platform profile".to_string()"#,
                 )
             {
                 return Err(
@@ -6590,7 +6588,7 @@ fn main() {
                 "retained_root",
                 (
                     true,
-                    "fn retained_root(&self,) -> Arc<RetainedDirectoryCapability>",
+                    "fn retained_root(&self) -> Arc<SourceDirectory>",
                     "self.binding.retained_root()",
                 ),
             ),
@@ -6692,6 +6690,14 @@ fn main() {
         Ok(())
     }
 
+    fn audited_actor_read_source() -> &'static str {
+        let source = include_str!("invocation_service.rs");
+        audit_actor_read_source_capability_api(source).unwrap_or_else(|error| {
+            panic!("the unmodified actor capability source must pass its audit: {error}")
+        });
+        source
+    }
+
     #[test]
     pub(crate) fn actor_read_source_capability_is_sealed_after_binding() {
         let source = include_str!("invocation_service.rs");
@@ -6745,15 +6751,18 @@ fn main() {
                 _ => None,
             })
             .expect("the audited production declaration is present")
-            .to_token_stream()
-            .to_string();
-        let fixture = format!(
-            r#"
+            .clone();
+        let mut declaration = declaration;
+        let fixture = |declaration: &syn::ItemStruct| {
+            let declaration = declaration.to_token_stream();
+            format!(
+                r#"
 mod infrastructure {{
     pub mod daemon {{
         mod owner {{
-            struct ProviderRootBinding;
-            struct WorkspaceLogicalReadFence;
+            use std::sync::Arc;
+            pub(super) struct ProviderRootBinding;
+            struct RegistrationCache;
             struct ProviderDeadline;
             {declaration}
         }}
@@ -6766,23 +6775,39 @@ mod infrastructure {{
 }}
 fn main() {{}}
 "#
-        );
+            )
+        };
         let directory = tempfile::tempdir().unwrap();
         let fixture_path = directory.path().join("actor-capability-sibling-privacy.rs");
-        std::fs::write(&fixture_path, fixture).unwrap();
-        let output = std::process::Command::new("rustc")
-            .arg("--edition=2021")
-            .arg("--emit=metadata")
-            .arg("--out-dir")
-            .arg(directory.path())
-            .arg(&fixture_path)
-            .output()
-            .expect("rustc is available to the Rust test suite");
+        let compile = |source: String| {
+            std::fs::write(&fixture_path, source).unwrap();
+            std::process::Command::new("rustc")
+                .arg("--edition=2021")
+                .arg("--emit=metadata")
+                .arg("--out-dir")
+                .arg(directory.path())
+                .arg(&fixture_path)
+                .output()
+                .expect("rustc is available to the Rust test suite")
+        };
+        let output = compile(fixture(&declaration));
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
             !output.status.success() && stderr.contains("E0616") && stderr.contains("binding"),
             "a sibling module accessed the audited private binding; status={:?}, stderr={stderr}",
             output.status.code()
+        );
+        let binding = declaration
+            .fields
+            .iter_mut()
+            .find(|field| field.ident.as_ref().is_some_and(|name| name == "binding"))
+            .expect("the audited binding field exists");
+        binding.vis = syn::parse_quote!(pub(in crate::infrastructure::daemon));
+        let exposed = compile(fixture(&declaration));
+        assert!(
+            exposed.status.success(),
+            "the field-visibility counterexample must compile: {}",
+            String::from_utf8_lossy(&exposed.stderr)
         );
     }
 
@@ -6817,7 +6842,7 @@ fn main() {{}}
 
     #[test]
     fn actor_read_source_capability_audit_rejects_sibling_visible_forge_and_mutator() {
-        let source = include_str!("invocation_service.rs");
+        let source = audited_actor_read_source();
         let inject_method = |hostile_method: &str| {
             source.replacen(
                 "impl ActorReadSourceCapability {",
@@ -6866,6 +6891,9 @@ fn main() {{}}
             ),
         ];
         for hostile in hostile_sources {
+            assert_ne!(hostile, source, "hostile mutation must alter its source");
+            syn::parse_file(&hostile)
+                .expect("hostile capability source must remain valid Rust syntax");
             assert!(
                 audit_actor_read_source_capability_api(&hostile).is_err(),
                 "hostile sibling-visible capability shape escaped the closed API audit"
@@ -6875,7 +6903,7 @@ fn main() {{}}
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_split_sibling_visibility() {
-        let source = include_str!("invocation_service.rs");
+        let source = audited_actor_read_source();
         let hostile = source.replacen(
             "impl ActorReadSourceCapability {",
             r#"impl ActorReadSourceCapability {
@@ -6890,6 +6918,8 @@ fn main() {{}}
     }"#,
             1,
         );
+        assert_ne!(hostile, source, "hostile mutation must alter its source");
+        syn::parse_file(&hostile).expect("hostile capability source must remain valid Rust syntax");
         assert!(
             audit_actor_read_source_capability_api(&hostile).is_err(),
             "split `pub (super)` visibility escaped the capability API audit"
@@ -6898,12 +6928,18 @@ fn main() {{}}
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_multiline_derive_clone() {
-        let source = include_str!("invocation_service.rs");
+        let source = audited_actor_read_source();
         let multiline_derive = source.replacen(
             "#[allow(dead_code)]\npub(in crate::infrastructure::daemon) struct ActorReadSourceCapability {",
             "#[allow(dead_code)]\n#[derive(\n    Clone\n)]\npub(in crate::infrastructure::daemon) struct ActorReadSourceCapability {",
             1,
         );
+        assert_ne!(
+            multiline_derive, source,
+            "hostile mutation must alter its source"
+        );
+        syn::parse_file(&multiline_derive)
+            .expect("hostile capability source must remain valid Rust syntax");
         assert!(
             audit_actor_read_source_capability_api(&multiline_derive).is_err(),
             "multiline derive Clone escaped the capability API audit"
@@ -6912,7 +6948,7 @@ fn main() {{}}
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_multiline_manual_clone() {
-        let source = include_str!("invocation_service.rs");
+        let source = audited_actor_read_source();
         let manual_clone = source.replacen(
             "struct ActorLogicalReadLease {",
             r#"impl
@@ -6926,6 +6962,12 @@ fn main() {{}}
 struct ActorLogicalReadLease {"#,
             1,
         );
+        assert_ne!(
+            manual_clone, source,
+            "hostile mutation must alter its source"
+        );
+        syn::parse_file(&manual_clone)
+            .expect("hostile capability source must remain valid Rust syntax");
         assert!(
             audit_actor_read_source_capability_api(&manual_clone).is_err(),
             "multiline manual Clone escaped the capability API audit"
@@ -6934,7 +6976,7 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_multiline_extra_inherent_impl() {
-        let source = include_str!("invocation_service.rs");
+        let source = audited_actor_read_source();
         let hostile = source.replacen(
             "struct ActorLogicalReadLease {",
             r#"impl
@@ -6952,6 +6994,8 @@ struct ActorLogicalReadLease {"#,
 struct ActorLogicalReadLease {"#,
             1,
         );
+        assert_ne!(hostile, source, "hostile mutation must alter its source");
+        syn::parse_file(&hostile).expect("hostile capability source must remain valid Rust syntax");
         assert!(
             audit_actor_read_source_capability_api(&hostile).is_err(),
             "multiline extra inherent impl escaped the capability API audit"
@@ -6960,7 +7004,7 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_macro_generated_api() {
-        let source = include_str!("invocation_service.rs");
+        let source = audited_actor_read_source();
         let hostile = source.replacen(
             "struct ActorLogicalReadLease {",
             r#"macro_rules! add_actor_capability_api {
@@ -6982,6 +7026,8 @@ struct ActorLogicalReadLease {"#,
 struct ActorLogicalReadLease {"#,
             1,
         );
+        assert_ne!(hostile, source, "hostile mutation must alter its source");
+        syn::parse_file(&hostile).expect("hostile capability source must remain valid Rust syntax");
         assert!(
             audit_actor_read_source_capability_api(&hostile).is_err(),
             "macro-generated sibling API escaped the capability API audit"
@@ -6990,12 +7036,14 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_opaque_item_macro_invocation() {
-        let source = include_str!("invocation_service.rs");
+        let source = audited_actor_read_source();
         let hostile = source.replacen(
             "struct ActorLogicalReadLease {",
             "reopen_sealed_capability!();\n\nstruct ActorLogicalReadLease {",
             1,
         );
+        assert_ne!(hostile, source, "hostile mutation must alter its source");
+        syn::parse_file(&hostile).expect("hostile capability source must remain valid Rust syntax");
         assert!(
             audit_actor_read_source_capability_api(&hostile).is_err(),
             "an opaque item-position macro could generate a sibling capability API"
@@ -7050,12 +7098,14 @@ fn main() {
 "#,
         );
 
-        let source = include_str!("invocation_service.rs");
+        let source = audited_actor_read_source();
         let hostile = source.replacen(
             "struct ActorLogicalReadLease {",
             "const _: () = external_reopen_capability!(ActorReadSourceCapability);\n\nstruct ActorLogicalReadLease {",
             1,
         );
+        assert_ne!(hostile, source, "hostile mutation must alter its source");
+        syn::parse_file(&hostile).expect("hostile capability source must remain valid Rust syntax");
         assert!(
             audit_actor_read_source_capability_api(&hostile).is_err(),
             "an opaque const-expression macro generated a sibling capability forge"
@@ -7110,12 +7160,14 @@ fn main() {
 "#,
         );
 
-        let source = include_str!("invocation_service.rs");
+        let source = audited_actor_read_source();
         let hostile = source.replacen(
             "struct ActorLogicalReadLease {",
             "const _: () = external_reopen_capability!();\n\nstruct ActorLogicalReadLease {",
             1,
         );
+        assert_ne!(hostile, source, "hostile mutation must alter its source");
+        syn::parse_file(&hostile).expect("hostile capability source must remain valid Rust syntax");
         assert!(
             audit_actor_read_source_capability_api(&hostile).is_err(),
             "a no-argument opaque const-expression macro generated a sibling capability forge"
@@ -7124,7 +7176,7 @@ fn main() {
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_opaque_static_and_statement_macros() {
-        let source = include_str!("invocation_service.rs");
+        let source = audited_actor_read_source();
         let hostile_shapes = [
             "static OPAQUE: () = external_reopen_capability!();\n\n",
             "fn opaque_statement() { external_reopen_capability!(); }\n\n",
@@ -7136,6 +7188,9 @@ fn main() {
                 &format!("{shape}struct ActorLogicalReadLease {{"),
                 1,
             );
+            assert_ne!(hostile, source, "hostile mutation must alter its source");
+            syn::parse_file(&hostile)
+                .expect("hostile capability source must remain valid Rust syntax");
             if audit_actor_read_source_capability_api(&hostile).is_ok() {
                 accepted.push(shape);
             }
@@ -7148,7 +7203,7 @@ fn main() {
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_opaque_macro_nested_in_inert_allowlist() {
-        let source = include_str!("invocation_service.rs");
+        let source = audited_actor_read_source();
         let hostile = source.replacen(
             "struct ActorLogicalReadLease {",
             r#"fn nested_opaque_macro() {
@@ -7158,6 +7213,8 @@ fn main() {
 struct ActorLogicalReadLease {"#,
             1,
         );
+        assert_ne!(hostile, source, "hostile mutation must alter its source");
+        syn::parse_file(&hostile).expect("hostile capability source must remain valid Rust syntax");
         assert!(
             audit_actor_read_source_capability_api(&hostile).is_err(),
             "an opaque macro hid inside the inert standard-macro allowlist"
@@ -7166,7 +7223,7 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_inert_macro_import_rename_or_glob_shadow() {
-        let source = include_str!("invocation_service.rs");
+        let source = audited_actor_read_source();
         let hostile_imports = [
             "use hostile_macros::reopen as format;\n",
             "use hostile_macros::matches;\n",
@@ -7179,6 +7236,9 @@ struct ActorLogicalReadLease {"#,
                 &format!("{import}use super::super::protocol::InvocationRequest;"),
                 1,
             );
+            assert_ne!(hostile, source, "hostile mutation must alter its source");
+            syn::parse_file(&hostile)
+                .expect("hostile capability source must remain valid Rust syntax");
             if audit_actor_read_source_capability_api(&hostile).is_ok() {
                 accepted.push(import);
             }
@@ -7191,7 +7251,7 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn review_audit_rejects_opaque_attribute_macro_invocation() {
-        let source = include_str!("invocation_service.rs");
+        let source = audited_actor_read_source();
         let hostile = source.replacen(
             "struct ActorLogicalReadLease {",
             "#[external_reopen_capability]\nconst ATTRIBUTE_MACRO_TRIGGER: () = ();\n\nstruct ActorLogicalReadLease {",
@@ -7201,6 +7261,7 @@ struct ActorLogicalReadLease {"#,
             hostile, source,
             "hostile attribute fixture was not inserted"
         );
+        syn::parse_file(&hostile).expect("hostile capability source must remain valid Rust syntax");
         assert!(
             audit_actor_read_source_capability_api(&hostile).is_err(),
             "an opaque procedural attribute could generate a sibling capability API"
@@ -7209,13 +7270,14 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_custom_derive_macro() {
-        let source = include_str!("invocation_service.rs");
+        let source = audited_actor_read_source();
         let hostile = source.replacen(
             "struct ActorLogicalReadLease {",
             "#[derive(ExternalReopenCapability)]\nstruct DERIVE_MACRO_TRIGGER;\n\nstruct ActorLogicalReadLease {",
             1,
         );
         assert_ne!(hostile, source, "hostile derive fixture was not inserted");
+        syn::parse_file(&hostile).expect("hostile capability source must remain valid Rust syntax");
         assert!(
             audit_actor_read_source_capability_api(&hostile).is_err(),
             "a custom derive could generate a sibling capability API"
@@ -7224,7 +7286,7 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_attribute_macro_evasion_shapes() {
-        let source = include_str!("invocation_service.rs");
+        let source = audited_actor_read_source();
         let hostile_items = [
             "#[hostile_attr::external_reopen_capability]\nconst ATTRIBUTE_MACRO_TRIGGER: () = ();\n\n",
             "#[cfg_attr(not(test), external_reopen_capability)]\nconst ATTRIBUTE_MACRO_TRIGGER: () = ();\n\n",
@@ -7241,6 +7303,9 @@ struct ActorLogicalReadLease {"#,
                 &format!("{item}struct ActorLogicalReadLease {{"),
                 1,
             );
+            assert_ne!(hostile, source, "hostile mutation must alter its source");
+            syn::parse_file(&hostile)
+                .expect("hostile capability source must remain valid Rust syntax");
             if audit_actor_read_source_capability_api(&hostile).is_ok() {
                 accepted.push(item);
             }
@@ -7251,6 +7316,9 @@ struct ActorLogicalReadLease {"#,
                 &format!("{import}use super::super::protocol::InvocationRequest;"),
                 1,
             );
+            assert_ne!(hostile, source, "hostile mutation must alter its source");
+            syn::parse_file(&hostile)
+                .expect("hostile capability source must remain valid Rust syntax");
             if audit_actor_read_source_capability_api(&hostile).is_ok() {
                 accepted.push(import);
             }
@@ -7376,7 +7444,7 @@ fn main() {
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_type_alias_impl() {
-        let source = include_str!("invocation_service.rs");
+        let source = audited_actor_read_source();
         let hostile = source.replacen(
             "struct ActorLogicalReadLease {",
             r#"type CapabilityAlias = ActorReadSourceCapability;
@@ -7394,6 +7462,8 @@ fn main() {
 struct ActorLogicalReadLease {"#,
             1,
         );
+        assert_ne!(hostile, source, "hostile mutation must alter its source");
+        syn::parse_file(&hostile).expect("hostile capability source must remain valid Rust syntax");
         assert!(
             audit_actor_read_source_capability_api(&hostile).is_err(),
             "a type alias reopened the sealed capability outside the enumerated impl"
@@ -7443,7 +7513,7 @@ fn main() {
 "#,
         );
 
-        let source = include_str!("invocation_service.rs");
+        let source = audited_actor_read_source();
         let hostile = source.replacen(
             "struct ActorLogicalReadLease {",
             r#"type CapabilityAlias<T = ActorReadSourceCapability> = T;
@@ -7461,6 +7531,8 @@ fn main() {
 struct ActorLogicalReadLease {"#,
             1,
         );
+        assert_ne!(hostile, source, "hostile mutation must alter its source");
+        syn::parse_file(&hostile).expect("hostile capability source must remain valid Rust syntax");
         assert!(
             audit_actor_read_source_capability_api(&hostile).is_err(),
             "a defaulted generic alias reopened the sealed capability"
@@ -7512,7 +7584,7 @@ fn main() {
 "#,
         );
 
-        let source = include_str!("invocation_service.rs");
+        let source = audited_actor_read_source();
         let hostile = source.replacen(
             "struct ActorLogicalReadLease {",
             r#"pub(super) fn forge_actor_read_source_capability(
@@ -7527,6 +7599,8 @@ fn main() {
 struct ActorLogicalReadLease {"#,
             1,
         );
+        assert_ne!(hostile, source, "hostile mutation must alter its source");
+        syn::parse_file(&hostile).expect("hostile capability source must remain valid Rust syntax");
         assert!(
             audit_actor_read_source_capability_api(&hostile).is_err(),
             "a sibling-visible owner-module free factory escaped the capability audit"
@@ -7535,7 +7609,7 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_nested_production_factory() {
-        let source = include_str!("invocation_service.rs");
+        let source = audited_actor_read_source();
         let hostile = source.replacen(
             "struct ActorLogicalReadLease {",
             r#"mod nested_factory {
@@ -7552,6 +7626,8 @@ struct ActorLogicalReadLease {"#,
 struct ActorLogicalReadLease {"#,
             1,
         );
+        assert_ne!(hostile, source, "hostile mutation must alter its source");
+        syn::parse_file(&hostile).expect("hostile capability source must remain valid Rust syntax");
         assert!(
             audit_actor_read_source_capability_api(&hostile).is_err(),
             "a nested production module exported a capability factory"
@@ -7560,7 +7636,7 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_foreign_impl_signature_escape() {
-        let source = include_str!("invocation_service.rs");
+        let source = audited_actor_read_source();
         let hostile = source.replacen(
             "struct ActorLogicalReadLease {",
             r#"struct CapabilityExporter;
@@ -7576,6 +7652,8 @@ impl CapabilityExporter {
 struct ActorLogicalReadLease {"#,
             1,
         );
+        assert_ne!(hostile, source, "hostile mutation must alter its source");
+        syn::parse_file(&hostile).expect("hostile capability source must remain valid Rust syntax");
         assert!(
             audit_actor_read_source_capability_api(&hostile).is_err(),
             "a foreign impl accepted and returned the capability"
@@ -7584,7 +7662,7 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_associated_type_escape() {
-        let source = include_str!("invocation_service.rs");
+        let source = audited_actor_read_source();
         let hostile = source.replacen(
             "struct ActorLogicalReadLease {",
             r#"trait CapabilityCarrier {
@@ -7598,6 +7676,8 @@ impl CapabilityCarrier for CapabilityCarrierImpl {
 struct ActorLogicalReadLease {"#,
             1,
         );
+        assert_ne!(hostile, source, "hostile mutation must alter its source");
+        syn::parse_file(&hostile).expect("hostile capability source must remain valid Rust syntax");
         assert!(
             audit_actor_read_source_capability_api(&hostile).is_err(),
             "an associated type exported the capability outside the closed surface"
@@ -7606,7 +7686,7 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_item_field_escape() {
-        let source = include_str!("invocation_service.rs");
+        let source = audited_actor_read_source();
         let hostile = source.replacen(
             "struct ActorLogicalReadLease {",
             r#"pub(super) struct CapabilityEscape {
@@ -7616,6 +7696,8 @@ struct ActorLogicalReadLease {"#,
 struct ActorLogicalReadLease {"#,
             1,
         );
+        assert_ne!(hostile, source, "hostile mutation must alter its source");
+        syn::parse_file(&hostile).expect("hostile capability source must remain valid Rust syntax");
         assert!(
             audit_actor_read_source_capability_api(&hostile).is_err(),
             "a sibling-visible item field exported the capability"
@@ -7624,17 +7706,20 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_side_effecting_profile_error_closure() {
-        let source = include_str!("invocation_service.rs");
+        let source = audited_actor_read_source();
         let hostile = source.replacen(
-            r#"|| {
-            "actor-bound logical source has no supported platform profile".to_string()
-        }"#,
+            r#"|| "actor-bound logical source has no supported platform profile".to_string()"#,
             r#"|| {
             PROFILE_ERROR_SIDE_EFFECT.store(true, Ordering::SeqCst);
             "actor-bound logical source has no supported platform profile".to_string()
         }"#,
             1,
         );
+        assert_ne!(
+            hostile, source,
+            "the unsupported-profile closure mutation must alter the source"
+        );
+        syn::parse_file(&hostile).expect("hostile capability source must remain valid Rust syntax");
         assert!(
             audit_actor_read_source_capability_api(&hostile).is_err(),
             "a side-effecting unsupported-profile closure escaped the exact builder audit"
@@ -7643,7 +7728,7 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_substituted_construction_fields() {
-        let source = include_str!("invocation_service.rs");
+        let source = audited_actor_read_source();
         let hostile_fields = [
             (
                 "Ok(ActorReadSourceCapability {\n            binding: source.binding.clone(),",
@@ -7677,6 +7762,8 @@ struct ActorLogicalReadLease {"#,
                 hostile, source,
                 "hostile construction fixture did not replace `{original}`"
             );
+            syn::parse_file(&hostile)
+                .expect("hostile capability source must remain valid Rust syntax");
             if audit_actor_read_source_capability_api(&hostile).is_ok() {
                 accepted.push(substituted);
             }
@@ -7689,7 +7776,7 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_issuance_visibility_and_lazy_substitution() {
-        let source = include_str!("invocation_service.rs");
+        let source = audited_actor_read_source();
         // First prove the valid source passes: a permanently red audit cannot
         // demonstrate that any of these individual boundary mutations is caught.
         audit_actor_read_source_capability_api(source).unwrap();
@@ -7802,6 +7889,7 @@ struct ActorLogicalReadLease {"#,
         ];
         for escape in escapes {
             let hostile = format!("{source}\n{escape}");
+            assert_ne!(hostile, source, "an issuance escape must alter the source");
             syn::parse_file(&hostile).expect("an issuance escape is valid Rust syntax");
             assert!(
                 audit_actor_read_source_capability_api(&hostile).is_err(),
@@ -7899,7 +7987,7 @@ fn main() {{}}
 
     #[test]
     fn actor_read_source_capability_ast_audit_skips_only_exact_cfg_test_scope() {
-        let source = include_str!("invocation_service.rs");
+        let source = audited_actor_read_source();
         let exact_test_only = source.replacen(
             "struct ActorLogicalReadLease {",
             r#"#[cfg(test)]
@@ -7917,6 +8005,10 @@ mod test_only_escape {
 struct ActorLogicalReadLease {"#,
             1,
         );
+        assert_ne!(
+            exact_test_only, source,
+            "the exact cfg(test) insertion must alter the source"
+        );
         audit_actor_read_source_capability_api(&exact_test_only)
             .expect("the production audit deliberately excludes exact cfg(test) modules");
 
@@ -7925,6 +8017,12 @@ struct ActorLogicalReadLease {"#,
             "#[cfg(any(test, feature = \"hostile-production\"))]\nmod test_only_escape",
             1,
         );
+        assert_ne!(
+            partly_production, exact_test_only,
+            "hostile mutation must alter its source"
+        );
+        syn::parse_file(&partly_production)
+            .expect("hostile capability source must remain valid Rust syntax");
         assert!(
             audit_actor_read_source_capability_api(&partly_production).is_err(),
             "a module that can compile outside cfg(test) escaped the production audit"
@@ -7933,12 +8031,18 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_hardcoded_platform_profile() {
-        let source = include_str!("invocation_service.rs");
+        let source = audited_actor_read_source();
         let hardcoded_profile = source.replacen(
             "crate::domain::source_capabilities::bsl_profile_for_source(source_profile)",
             "crate::domain::source_capabilities::bsl_profile_for_source(SourceProfile::platform_xml_8_3_27_format_2_20())",
             1,
         );
+        assert_ne!(
+            hardcoded_profile, source,
+            "hostile mutation must alter its source"
+        );
+        syn::parse_file(&hardcoded_profile)
+            .expect("hostile capability source must remain valid Rust syntax");
         assert!(
             audit_actor_read_source_capability_api(&hardcoded_profile).is_err(),
             "hardcoded platform profile escaped the authority-construction dataflow audit"
@@ -7947,7 +8051,7 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_hardcoded_source_kind() {
-        let source = include_str!("invocation_service.rs");
+        let source = audited_actor_read_source();
         let hardcoded_kind = source.replacen(
             "self.binding.source_kind(),\n            self.binding.retained_root(),",
             "SourceSetKind::Configuration,\n            self.binding.retained_root(),",
@@ -7957,6 +8061,8 @@ struct ActorLogicalReadLease {"#,
             hardcoded_kind, source,
             "the hostile fixture must alter the local snapshot constructor"
         );
+        syn::parse_file(&hardcoded_kind)
+            .expect("hostile capability source must remain valid Rust syntax");
         assert!(
             audit_actor_read_source_capability_api(&hardcoded_kind).is_err(),
             "hardcoded source kind escaped the authority-construction dataflow audit"
@@ -7965,12 +8071,18 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_replenished_deadline() {
-        let source = include_str!("invocation_service.rs");
+        let source = audited_actor_read_source();
         let replenished_deadline = source.replacen(
             "platform_profile,\n                self.deadline,",
             "platform_profile,\n                ProviderDeadline::from_budget(Duration::from_secs(120)),",
             1,
         );
+        assert_ne!(
+            replenished_deadline, source,
+            "hostile mutation must alter its source"
+        );
+        syn::parse_file(&replenished_deadline)
+            .expect("hostile capability source must remain valid Rust syntax");
         assert!(
             audit_actor_read_source_capability_api(&replenished_deadline).is_err(),
             "replenished deadline escaped the authority-construction dataflow audit"
@@ -7979,13 +8091,15 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_foreign_search_deadline() {
-        let source = include_str!("invocation_service.rs");
+        let source = audited_actor_read_source();
         let replenished_search = source.replacen(
             "self.deadline.is_elapsed()",
             "ProviderDeadline::from_budget(Duration::from_secs(120)).is_elapsed()",
             1,
         );
         assert_ne!(replenished_search, source, "the hostile search must change");
+        syn::parse_file(&replenished_search)
+            .expect("hostile capability source must remain valid Rust syntax");
         assert!(
             audit_actor_read_source_capability_api(&replenished_search).is_err(),
             "a fresh search deadline escaped the closed receiver audit while other checks remained"
@@ -7994,9 +8108,11 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     fn actor_read_source_capability_ast_audit_rejects_missing_search_deadline() {
-        let source = include_str!("invocation_service.rs");
+        let source = audited_actor_read_source();
         let unchecked_search = source.replace("self.deadline.is_elapsed()", "false");
         assert_ne!(unchecked_search, source, "the unchecked search must change");
+        syn::parse_file(&unchecked_search)
+            .expect("hostile capability source must remain valid Rust syntax");
         assert!(
             audit_actor_read_source_capability_api(&unchecked_search).is_err(),
             "literal search lost all checks of its closed deadline authority"

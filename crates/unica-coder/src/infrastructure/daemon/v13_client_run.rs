@@ -616,8 +616,9 @@ fn invoke_runner(
             .prefix("unica-launch-")
             .tempdir()
             .and_then(|directory| {
-                let parent =
-                    unica_workspace::state_fs::open_state_directory_nofollow(directory.path())?;
+                let parent = unica_workspace::state_fs::open_state_namespace_root_nofollow(
+                    directory.path(),
+                )?;
                 let logs = unica_workspace::state_fs::create_state_directory_child(
                     &parent,
                     std::ffi::OsStr::new("logs"),

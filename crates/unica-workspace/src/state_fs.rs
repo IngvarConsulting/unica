@@ -218,6 +218,11 @@ pub fn create_state_stage(path: &Path) -> io::Result<StateHandle> {
 pub fn state_file_identity(handle: &StateHandle) -> io::Result<FileIdentity> {
     filesystem::file_identity(&handle.file)
 }
+/// Open a caller-selected namespace root without following its final component.
+/// Ancestor aliases retain the original namespace-root opening policy.
+pub fn open_state_namespace_root_nofollow(path: &Path) -> io::Result<StateHandle> {
+    filesystem::open_directory_nofollow(path).map(|file| StateHandle { file })
+}
 pub fn open_state_directory_nofollow(path: &Path) -> io::Result<StateHandle> {
     filesystem::open_absolute_directory_path_nofollow(path).map(|file| StateHandle { file })
 }

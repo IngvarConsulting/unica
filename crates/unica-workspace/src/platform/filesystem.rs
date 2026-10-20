@@ -3339,6 +3339,14 @@ pub(crate) fn open_or_create_absolute_directory_path_nofollow(path: &Path) -> io
 }
 
 #[cfg(not(any(unix, windows)))]
+pub(crate) fn open_directory_nofollow(_path: &Path) -> io::Result<fs::File> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "secure no-follow directory roots are unavailable on this host",
+    ))
+}
+
+#[cfg(not(any(unix, windows)))]
 pub(crate) fn open_absolute_directory_path_nofollow(_path: &Path) -> io::Result<fs::File> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
@@ -6847,6 +6855,34 @@ mod tests {
         assert_eq!(second_byte, *b"f");
         drop((first, second, retained, directory));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn state_namespace_root_accepts_ancestor_alias_but_rejects_leaf_link() {
+        use crate::state_fs::{
+            open_state_directory_nofollow, open_state_namespace_root_nofollow, state_file_identity,
+        };
+
+        let root = tempfile::tempdir().unwrap();
+        let physical_root = fs::canonicalize(root.path()).unwrap();
+        let real_parent = physical_root.join("real");
+        let real_root = real_parent.join("namespace");
+        fs::create_dir_all(&real_root).unwrap();
+        let ancestor_alias = physical_root.join("ancestor-alias");
+        std::os::unix::fs::symlink(&real_parent, &ancestor_alias).unwrap();
+        let aliased_root = ancestor_alias.join("namespace");
+        let leaf_alias = physical_root.join("leaf-alias");
+        std::os::unix::fs::symlink(&real_root, &leaf_alias).unwrap();
+
+        let expected = open_state_directory_nofollow(&real_root).unwrap();
+        let opened = open_state_namespace_root_nofollow(&aliased_root).unwrap();
+        assert_eq!(
+            state_file_identity(&opened).unwrap(),
+            state_file_identity(&expected).unwrap()
+        );
+        assert!(open_state_namespace_root_nofollow(&leaf_alias).is_err());
+        assert!(open_state_directory_nofollow(&aliased_root).is_err());
     }
 
     #[cfg(any(unix, windows))]
