@@ -1,0 +1,11 @@
+{
+  "names": [
+    "infrastructure::daemon::runtime_v5::tests::queued_staged_completed_transfer_preserves_exact_winner_and_reopens",
+    "infrastructure::daemon::runtime_v5::tests::queued_staged_failed_transfer_preserves_exact_winner_and_reopens",
+    "infrastructure::daemon::runtime_v5::tests::begun_staged_completed_transfer_preserves_exact_winner_and_reopens",
+    "infrastructure::daemon::runtime_v5::tests::queued_staged_cancelled_transfer_preserves_exact_winner_and_reopens"
+  ],
+  "filterExpression": "test(/^infrastructure::daemon::runtime_v5::tests::queued_staged_completed_transfer_preserves_exact_winner_and_reopens$/) | test(/^infrastructure::daemon::runtime_v5::tests::queued_staged_failed_transfer_preserves_exact_winner_and_reopens$/) | test(/^infrastructure::daemon::runtime_v5::tests::begun_staged_completed_transfer_preserves_exact_winner_and_reopens$/) | test(/^infrastructure::daemon::runtime_v5::tests::queued_staged_cancelled_transfer_preserves_exact_winner_and_reopens$/)",
+  "attemptsPerCase": 1,
+  "retries": 0
+}

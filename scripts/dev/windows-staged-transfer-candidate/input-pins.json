@@ -1,0 +1,226 @@
+{
+  "schema": 1,
+  "caseCommit": "a1f7db4be32452aa543f8e01b862a6c177983c1f",
+  "pins": [
+    {
+      "path": "crates/unica-coder/src/application/invocation.rs",
+      "sha256": "3ab1c901b1983f8eb52ac57b494f0c610da1041c60dd04f23962f1bd05210d17",
+      "bytes": 7225
+    },
+    {
+      "path": "crates/unica-coder/src/application/invocation_store.rs",
+      "sha256": "dbb814cb157c9db4e32e1afee953c7892355e321b0ccf918058368585c7935a3",
+      "bytes": 7527
+    },
+    {
+      "path": "crates/unica-coder/src/application/invocation_store_v5.rs",
+      "sha256": "f69837a8ea88041c77a80df4680955c575baf40f2c5d1c68a48793baa18d914f",
+      "bytes": 37221
+    },
+    {
+      "path": "crates/unica-coder/src/application/invocation_v5.rs",
+      "sha256": "30acfff47fb36917e955e2791133fc26117691d772792c1bdac5048d59ffc1a6",
+      "bytes": 10633
+    },
+    {
+      "path": "crates/unica-coder/src/application/receipt_ledger.rs",
+      "sha256": "6dff07d88989699b67a686d5e2274ff9b04075032dd80a258420f45fd8548fc4",
+      "bytes": 135817
+    },
+    {
+      "path": "crates/unica-coder/src/application/receipt_ledger_actor.rs",
+      "sha256": "62009b7fca8070def18943579a73e419dca34233793dde0d8b8be193713b301d",
+      "bytes": 166694
+    },
+    {
+      "path": "crates/unica-coder/src/domain/cancellation.rs",
+      "sha256": "d1c9affdec16daad4240badfb5e6c1eea2adce5c48cfe2ce3cd052607a0d3559",
+      "bytes": 10126
+    },
+    {
+      "path": "crates/unica-coder/src/domain/code_intelligence.rs",
+      "sha256": "172f629d26f2ad6ee020995f35d989e6c46458fcc746380463e2fb369d615760",
+      "bytes": 64333
+    },
+    {
+      "path": "crates/unica-coder/src/domain/invocation.rs",
+      "sha256": "c28a4713fc9fa8b87bc5dd818482be9eaa96aeee129c3550bd06df1d9a1dd993",
+      "bytes": 20371
+    },
+    {
+      "path": "crates/unica-coder/src/domain/operation_deadline.rs",
+      "sha256": "b61d51a7dd346962516ebc5d2c2f896af6c6f168b53bb4af0abc0d619423b945",
+      "bytes": 2054
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/daemon/identity.rs",
+      "sha256": "95097e490de11b516abd2ce2cfba8a019eeda97b51d8e2dc331ffe83fa7d6746",
+      "bytes": 41944
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/daemon/protocol_v5.rs",
+      "sha256": "7920de6c1b94d4645619893b37d1812ab60408af0142ebd3d887ac2d90dcb0ad",
+      "bytes": 79897
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/daemon/runtime_v5.rs",
+      "sha256": "89a4ce15cb07cdcf296c60b859a527121566e3e11b4e3986b305c036d5f5d97d",
+      "bytes": 354776
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/daemon/runtime_v5/hooks.rs",
+      "sha256": "b5599ac2a231e82a9f50f615c7f2942a90b3e2ca5886b27e156ca4c19e128e12",
+      "bytes": 12572
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/daemon/runtime_v5/join_freshness.rs",
+      "sha256": "c6989d704560874a5fe151aab617adbe747b86629229caeffe9ddb17a01dbf77",
+      "bytes": 9771
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/daemon/runtime_v5/joining.rs",
+      "sha256": "cd485ef754852b806e96540bf519602d81344cc86f8718eed2e40b7a0fa21d70",
+      "bytes": 52423
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/daemon/runtime_v5/receipt_scenario_v5.rs",
+      "sha256": "af522a533e432547fda42cdfc4ec812a735067a7dd78a1b4357f70ac5c2a2772",
+      "bytes": 304590
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/daemon/runtime_v5/receipt_scenario_v5/control.rs",
+      "sha256": "1e3e465d56322cb44419e01df2414316e0132b14eb4fde9cf3e6652260f991b8",
+      "bytes": 69146
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/daemon/runtime_v5/receipt_scenario_v5/dispatch.rs",
+      "sha256": "16fde4c282a7bbc88fd03970c75c0bd69bfef22b1282b19e0435cade95c3d653",
+      "bytes": 143135
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/daemon/runtime_v5/receipt_scenario_v5/scenario_hooks.rs",
+      "sha256": "ee592ebaf3f7a100160c8af63785d89a326169f0e00785ffa6b75ff5f6ea0238",
+      "bytes": 39095
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/daemon/runtime_v5/receipt_scenario_v5/scenario_probes.rs",
+      "sha256": "2aa60c9f2972df583c3ec5d4b0d2fd2c40aa05c2909ffd3b6bc271ef40d1c20a",
+      "bytes": 46502
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/daemon/runtime_v5/receipt_scenario_v5/tests.rs",
+      "sha256": "8550bc63416f768bf96c753b9e943eedea03ef8a44a77aa6a97caad0959adf5e",
+      "bytes": 60515
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/daemon/runtime_v5/receipt_scenario_v5/wire.rs",
+      "sha256": "fac4c29938176470d2284c4ae3fe6071ef74d070baef328fdcbfc79f5c3f0f5b",
+      "bytes": 19088
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/daemon/state_collection.rs",
+      "sha256": "e5b0dc4f556fe239715f2383452b879992dc37f3a50064a9ccf399595ac81e69",
+      "bytes": 9993
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/receipt_ledger.rs",
+      "sha256": "4f0e69a0b10818cd02c9d5713360c4ed0a4d51a6c1a68089a519d72944bca614",
+      "bytes": 309245
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/receipt_ledger/catalog.rs",
+      "sha256": "77ccbd4c873ca631cbb02a1f12c0890d461e89efc85a707e8bb61098624733a8",
+      "bytes": 18269
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/receipt_ledger/encoding.rs",
+      "sha256": "c5ac3ab207ed47f532c43747c66e85e4160822fa580eedd81674bb768ec89bc3",
+      "bytes": 10803
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/receipt_ledger/port.rs",
+      "sha256": "c3eb5c51ef946825af998b6b45285ecd1e3e90cd8b27a36354187a5bf0acf007",
+      "bytes": 10923
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/receipt_ledger/records.rs",
+      "sha256": "09c9a16741391ea4805bb958414b39c2fd0c510d7a6fefe8b521eb6c3924c9d0",
+      "bytes": 16296
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/receipt_ledger/tests.rs",
+      "sha256": "b40cdaf1d258db305429c71a38c5aef87907dcd14d683ecb46bee8fb477699ea",
+      "bytes": 277011
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/receipt_ledger/tests/crash_process_tests.rs",
+      "sha256": "c22d90f40d43187ba8c7e32c618b09a95f49892b04e83e144754bf6ac33e767d",
+      "bytes": 8315
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/receipt_ledger/validation.rs",
+      "sha256": "578257103136830e40e13bf5d2bb3dce8d54d93d7802e80b28bba2bc784a8879",
+      "bytes": 21987
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/task_lifecycle_link_store_v5.rs",
+      "sha256": "435ecd5e46cdb34c810acb4006bffaf33a1f354aa0f33851f0bdd44ab96f5638",
+      "bytes": 122925
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/task_store_v5.rs",
+      "sha256": "83982acddd6034a6f5c33b91f68f988e2b5d68a6ad2417e75d31367209fbee7e",
+      "bytes": 96764
+    },
+    {
+      "path": "crates/unica-coder/src/receipt_ledger_test_support.rs",
+      "sha256": "c084ca97f2d55ec80960a37c7a5a8edbea3ad1f9fa75ad24bf797c9c11f5067c",
+      "bytes": 44115
+    },
+    {
+      "path": "Cargo.toml",
+      "sha256": "7b23679c9b01ac042240b4cbc44644b02f28095cc72de914e74fd5980b0822d9",
+      "bytes": 4708
+    },
+    {
+      "path": "Cargo.lock",
+      "sha256": "e73847db9bb8770fa76484341bad98f748c6af41fbf70540d100b5c27d3d3cad",
+      "bytes": 74003
+    },
+    {
+      "path": "crates/unica-coder/Cargo.toml",
+      "sha256": "fdab93a2fdf0ad6970f5e8910411b02584ca99b22debb3a5f2b5fa2b12d906e1",
+      "bytes": 2797
+    },
+    {
+      "path": ".config/nextest.toml",
+      "sha256": "04d0252abe63bba11c2d6cb9831e849ad606890922a85aab065cf0b6cef49321",
+      "bytes": 27671
+    },
+    {
+      "path": "scripts/ci/size-filters.py",
+      "sha256": "f33eeda4fc2602063821db6466dbb012c4fe1938ca5fecc33ea940f1946b99e4",
+      "bytes": 11086
+    },
+    {
+      "path": "arch/rules/runtime/task-retirement.md",
+      "sha256": "d8690c777a281dd39f2b3148c4973308504ae164057b8178b670efc1c4fd9bcf",
+      "bytes": 5411
+    },
+    {
+      "path": "arch/rules/runtime/timer-purpose.md",
+      "sha256": "b30a4ec75fcba5ec2e06d81a53b7283a0bd9eeb7fc457e8bfb0fa8f6671178cf",
+      "bytes": 9914
+    },
+    {
+      "path": "scripts/ci/probe-unica-wire.py",
+      "sha256": "b126d1905a80ec5f062d79206a9f1e3ddd8ce8ce94715d8f02b45e9c789810ad",
+      "bytes": 51853
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs",
+      "sha256": "88aebc66a7e79492b7fcdf15d894352ae9462585ebae13adda0423e17656421b",
+      "bytes": 362652
+    }
+  ]
+}
