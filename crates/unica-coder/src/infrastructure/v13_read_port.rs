@@ -39,7 +39,7 @@ use crate::infrastructure::native_operations::role::parse_role_info_xml;
 use crate::infrastructure::native_operations::subsystem::{
     build_subsystem_info_result, parse_subsystem_command_interface_data,
 };
-use crate::infrastructure::native_operations::xdto::parse_xdto_info_bytes;
+use crate::infrastructure::native_operations::xdto::{parse_xdto_info_bytes, XdtoInfoError};
 use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
 use crate::infrastructure::platform_xml_owner::{
     prove_already_read_metadata_owner, prove_already_read_source_set_owner,
@@ -1029,7 +1029,17 @@ impl ProviderReadAuthority {
         )?;
         let data =
             parse_xdto_info_bytes(&package, &descriptor, self.source_set(), target, type_name)
-                .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+                .map_err(|error| {
+                    let message = error.to_string();
+                    match error {
+                        XdtoInfoError::TypeNotFound(_) => {
+                            ViewError::new(RefusalCode::NotFound, message)
+                        }
+                        XdtoInfoError::Source(_) => {
+                            ViewError::detailed(RefusalDetail::SourceUnreadable, message)
+                        }
+                    }
+                })?;
         serde_json::to_value(data)
             .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
     }

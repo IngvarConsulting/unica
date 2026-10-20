@@ -3019,28 +3019,34 @@ fn assert_staged_handoff_terminal_transfer(phase: AttemptPhase, outcome: Receipt
     });
     let publication =
         runtime.publish_staged_handoff_terminal_reply(staged, terminal.clone(), 1_100, deadline);
+    assert!(
+        publication.is_ok(),
+        "saved {phase:?} {outcome:?} transfer failed: {:?}",
+        publication.err()
+    );
     let stored = runtime
         .task_projection
         .task_store
         .get(
             key.reserved_task_id(),
-            crate::domain::code_intelligence::ProviderDeadline::new(deadline),
+            crate::domain::code_intelligence::ProviderDeadline::new(
+                Instant::now() + Duration::from_secs(5),
+            ),
         )
         .unwrap();
-    assert!(
-        publication.is_ok(),
-        "saved {phase:?} {outcome:?} transfer failed: {:?}; actual TaskStore state {:?}",
-        publication.err(),
-        stored.task
-    );
     assert_eq!(stored.updated_at_epoch_ms, 1_100);
     assert_eq!(stored.task.terminal_digest(), Some(terminal.digest()));
     assert!(matches!(
-        runtime.receipt_ledger.recover(key.clone(), deadline),
+        runtime
+            .receipt_ledger
+            .recover(key.clone(), Instant::now() + Duration::from_secs(5)),
         Err(ReceiptLedgerError::ReceiptNotFound)
     ));
     let snapshot = runtime
-        .resolve_task(key.reserved_task_id(), deadline)
+        .resolve_task(
+            key.reserved_task_id(),
+            Instant::now() + Duration::from_secs(5),
+        )
         .unwrap();
     assert_eq!(service.prepares.load(Ordering::SeqCst), 0);
     drop(runtime);
@@ -3048,7 +3054,10 @@ fn assert_staged_handoff_terminal_transfer(phase: AttemptPhase, outcome: Receipt
     let reopened = V5ReceiptRuntime::open(&state, &config).unwrap();
     assert_eq!(
         reopened
-            .resolve_task(key.reserved_task_id(), deadline)
+            .resolve_task(
+                key.reserved_task_id(),
+                Instant::now() + Duration::from_secs(5),
+            )
             .unwrap(),
         snapshot
     );
@@ -3058,7 +3067,9 @@ fn assert_staged_handoff_terminal_transfer(phase: AttemptPhase, outcome: Receipt
             .task_store
             .get(
                 key.reserved_task_id(),
-                crate::domain::code_intelligence::ProviderDeadline::new(deadline),
+                crate::domain::code_intelligence::ProviderDeadline::new(
+                    Instant::now() + Duration::from_secs(5),
+                ),
             )
             .unwrap(),
         stored

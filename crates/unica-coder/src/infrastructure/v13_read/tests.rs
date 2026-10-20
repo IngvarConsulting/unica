@@ -5,6 +5,7 @@ mod form;
 mod metadata;
 mod metadata_declaration_diagnostics;
 mod support;
+mod xdto_missing_target;
 
 use support::*;
 

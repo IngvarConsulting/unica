@@ -1288,6 +1288,8 @@ impl DaemonServerConfig {
 }
 
 #[cfg(test)]
+mod external_cache_apply_tests;
+#[cfg(test)]
 #[path = "form_lifecycle_tests.rs"]
 mod form_lifecycle_tests;
 #[cfg(test)]
