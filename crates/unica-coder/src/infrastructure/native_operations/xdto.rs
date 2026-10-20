@@ -1141,8 +1141,38 @@ fn info(
     } else {
         None
     };
-    let data = build_xdto_info(&package, &model, requested.as_deref(), page)?;
+    let data = build_xdto_info(&package, &model, requested.as_deref(), page)
+        .map_err(|error| error.to_string())?;
     Ok(xdto_info_execution(&package, data))
+}
+
+/// Selection absence remains distinct from failures to read an XDTO source.
+#[derive(Debug)]
+pub(crate) enum XdtoInfoError {
+    TypeNotFound(String),
+    Source(String),
+}
+
+impl std::fmt::Display for XdtoInfoError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TypeNotFound(name) => {
+                write!(
+                    formatter,
+                    "target_not_found: XDTO type `{name}` was not found"
+                )
+            }
+            Self::Source(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for XdtoInfoError {}
+
+impl From<String> for XdtoInfoError {
+    fn from(message: String) -> Self {
+        Self::Source(message)
+    }
 }
 
 /// Parse the exact XDTO bytes admitted by a caller-owned read capability.
@@ -1156,9 +1186,11 @@ pub(crate) fn parse_xdto_info_bytes(
     source_set: &str,
     metadata_address: &MetadataAddress,
     type_name: Option<&str>,
-) -> Result<XdtoInfoData, String> {
+) -> Result<XdtoInfoData, XdtoInfoError> {
     if source_set.trim().is_empty() || source_set != source_set.trim() {
-        return Err("source_set_unknown: sourceSet must be a non-empty string".to_string());
+        return Err("source_set_unknown: sourceSet must be a non-empty string"
+            .to_string()
+            .into());
     }
     let identity = AdmittedXdtoIdentity {
         source_set,
@@ -1194,7 +1226,7 @@ fn build_xdto_info(
     model: &PackageModel,
     requested: Option<&str>,
     page: Option<(usize, usize, Option<String>)>,
-) -> Result<XdtoInfoData, String> {
+) -> Result<XdtoInfoData, XdtoInfoError> {
     validate_xdto_type_name(requested)?;
     let value_types = model
         .types
@@ -1215,9 +1247,9 @@ fn build_xdto_info(
             .collect::<Vec<_>>();
         if matches.len() != 1 {
             return Err(if matches.is_empty() {
-                format!("target_not_found: XDTO type `{name}` was not found")
+                XdtoInfoError::TypeNotFound(name.to_string())
             } else {
-                format!("duplicate_type: XDTO type `{name}` is ambiguous")
+                XdtoInfoError::Source(format!("duplicate_type: XDTO type `{name}` is ambiguous"))
             });
         }
         (Vec::new(), Some(type_info(identity, matches[0])), None)
@@ -2372,7 +2404,7 @@ pub(crate) mod tests {
         let error = parse_xdto_info_bytes(PACKAGE.as_bytes(), wrong_owner, "main", &address, None)
             .unwrap_err();
         assert_eq!(
-            error,
+            error.to_string(),
             "not_an_xdto_package: descriptor Name does not match metadataPath"
         );
 
@@ -2385,7 +2417,7 @@ pub(crate) mod tests {
         )
         .expect_err("malformed descriptor must fail");
         assert_eq!(
-            malformed,
+            malformed.to_string(),
             "not_an_xdto_package: XDTO descriptor is not valid XML"
         );
 
@@ -2394,7 +2426,7 @@ pub(crate) mod tests {
             parse_xdto_info_bytes(PACKAGE.as_bytes(), other_namespace, "main", &address, None)
                 .expect_err("namespace mismatch must fail");
         assert_eq!(
-            mismatch,
+            mismatch.to_string(),
             "namespace_mismatch: descriptor Namespace must equal package targetNamespace"
         );
     }
