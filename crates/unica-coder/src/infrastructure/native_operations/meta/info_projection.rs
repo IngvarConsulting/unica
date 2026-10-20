@@ -290,7 +290,7 @@ fn parse_observed_metadata_type_contents_node(
             (XML_SCHEMA_NAMESPACE, "dateTime") => {
                 expected_qualifiers.insert("DateQualifiers");
             }
-            (XML_SCHEMA_NAMESPACE, "binary") => {
+            (XML_SCHEMA_NAMESPACE, "binary" | "base64Binary") => {
                 expected_qualifiers.insert("BinaryDataQualifiers");
             }
             _ => {}
@@ -370,20 +370,25 @@ fn parse_observed_metadata_type_contents_node(
                         }
                     },
                 },
-                (XML_SCHEMA_NAMESPACE, "binary") => ObservedMetadataTypeVariant::BinaryData {
-                    length: qualifier_u32("BinaryDataQualifiers", "Length")?,
-                    allowed_length: match qualifier_text("BinaryDataQualifiers", "AllowedLength")
+                (XML_SCHEMA_NAMESPACE, "binary" | "base64Binary") => {
+                    ObservedMetadataTypeVariant::BinaryData {
+                        length: qualifier_u32("BinaryDataQualifiers", "Length")?,
+                        allowed_length: match qualifier_text(
+                            "BinaryDataQualifiers",
+                            "AllowedLength",
+                        )
                         .as_deref()
-                    {
-                        Some("Fixed") => StringLengthMode::Fixed,
-                        Some("Variable") | None => StringLengthMode::Variable,
-                        Some(_) => {
-                            return Err(invalid_observed_type(
-                                "existing binary length mode is unsupported",
-                            ))
-                        }
-                    },
-                },
+                        {
+                            Some("Fixed") => StringLengthMode::Fixed,
+                            Some("Variable") | None => StringLengthMode::Variable,
+                            Some(_) => {
+                                return Err(invalid_observed_type(
+                                    "existing binary length mode is unsupported",
+                                ))
+                            }
+                        },
+                    }
+                }
                 (DATA_CORE_NAMESPACE, "ValueStorage") => ObservedMetadataTypeVariant::ValueStorage,
                 (DATA_CORE_NAMESPACE, "UUID") => ObservedMetadataTypeVariant::Uuid,
                 (CURRENT_CONFIG_NAMESPACE, raw) => {
@@ -550,7 +555,15 @@ pub(super) fn observed_type_is_strict_but_unmodelled(properties: roxmltree::Node
         let Ok((namespace, local)) = expand_observed_type_qname(node, value.trim()) else {
             return false;
         };
-        if !seen_variants.insert((node.tag_name().name(), namespace.clone(), local.clone())) {
+        let canonical_local = match (namespace.as_str(), local.as_str()) {
+            (XML_SCHEMA_NAMESPACE, "base64Binary") => "binary",
+            _ => local.as_str(),
+        };
+        if !seen_variants.insert((
+            node.tag_name().name(),
+            namespace.clone(),
+            canonical_local.to_string(),
+        )) {
             return false;
         }
         if node.tag_name().name() == "TypeSet" {
@@ -576,15 +589,16 @@ pub(super) fn observed_type_is_strict_but_unmodelled(properties: roxmltree::Node
             (XML_SCHEMA_NAMESPACE, "dateTime") => {
                 expected_qualifiers.insert("DateQualifiers");
             }
-            (XML_SCHEMA_NAMESPACE, "binary") => {
+            (XML_SCHEMA_NAMESPACE, "binary" | "base64Binary") => {
                 expected_qualifiers.insert("BinaryDataQualifiers");
             }
             _ => {}
         }
         let known = match (namespace.as_str(), local.as_str()) {
-            (XML_SCHEMA_NAMESPACE, "string" | "decimal" | "boolean" | "dateTime" | "binary") => {
-                true
-            }
+            (
+                XML_SCHEMA_NAMESPACE,
+                "string" | "decimal" | "boolean" | "dateTime" | "binary" | "base64Binary",
+            ) => true,
             (DATA_CORE_NAMESPACE, "ValueStorage") => {
                 saw_value_storage = true;
                 true

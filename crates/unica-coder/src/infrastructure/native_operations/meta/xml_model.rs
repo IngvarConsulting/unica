@@ -1815,7 +1815,7 @@ fn typed_wire_type(variant: &MetadataTypeVariant) -> (&'static str, String) {
         MetadataTypeVariant::Boolean => ("Type", "xs:boolean".to_string()),
         MetadataTypeVariant::Uuid => ("Type", "v8:UUID".to_string()),
         MetadataTypeVariant::Date { .. } => ("Type", "xs:dateTime".to_string()),
-        MetadataTypeVariant::BinaryData { .. } => ("Type", "xs:binary".to_string()),
+        MetadataTypeVariant::BinaryData { .. } => ("Type", "xs:base64Binary".to_string()),
         MetadataTypeVariant::ValueStorage => ("Type", "v8:ValueStorage".to_string()),
         MetadataTypeVariant::Reference { metadata_path } => {
             let mut segments = metadata_path.segments();
@@ -1866,6 +1866,22 @@ pub(super) fn emit_meta_typed_fill_value(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn binary_metadata_type_matches_the_native_platform_qname_and_qualifiers() {
+        let metadata_type = MetadataType::new(vec![MetadataTypeVariant::BinaryData {
+            length: 32,
+            allowed_length: StringLengthMode::Variable,
+        }])
+        .unwrap();
+        let mut lines = Vec::new();
+        emit_meta_typed_value_type(&mut lines, "\t\t\t\t\t", &metadata_type);
+        let native = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/platform_8_3_27/binary-data/native-type.xml"
+        ));
+        assert_eq!(lines.join("\n"), native.replace("\r\n", "\n"));
+    }
 
     fn set_synonym(source: &str, lang: &str, text: &str) -> String {
         let document = roxmltree::Document::parse(source).unwrap();
