@@ -153,6 +153,47 @@ class XdtoEvidenceTests(unittest.TestCase):
         preview["payload"]["params"]["arguments"]["ops"][0]["args"]["values"]["property"]["minOccurs"] = 0.0
         driver.audit(records)
 
+    def test_audit_accepts_final_readability_check_with_published_limit(self):
+        for optional in [{"limit": 50}, {"limit": 1}, {"limit": None}, {"cursor": ""}, {"cursor": None},
+                         {"limit": None, "cursor": ""}, {"limit": 50, "cursor": None}]:
+            with self.subTest(optional=optional):
+                records = self.records()
+                request = next(r for r in records if r["direction"] == "request"
+                               and r["payload"].get("method") == "tools/call"
+                               and r["payload"]["params"]["name"] == "unica.check")
+                request["payload"]["params"]["arguments"].update(optional)
+                response = next(r for r in records if r["direction"] == "response"
+                                and r["payload"]["id"] == request["payload"]["id"])
+                response["payload"]["result"]["structuredContent"] = {
+                    "ok": True, "at": evidence.PACKAGE, "data": {
+                        "at": evidence.PACKAGE, "kind": "XDTOPackage", "status": "readable",
+                        "validators": [], "diagnosticCount": 0, "diagnostics": []},
+                    "page": {"stoppedBy": "complete"},
+                }
+                driver.audit(records)
+
+    def test_audit_rejects_wrong_check_target_and_illegal_check_envelopes(self):
+        for arguments in [
+            {"at": evidence.NESTED, "limit": 50},
+            {"at": evidence.PACKAGE, "limit": 0},
+            {"at": evidence.PACKAGE, "limit": 51},
+            {"at": evidence.PACKAGE, "limit": False},
+            {"at": evidence.PACKAGE, "limit": "50"},
+            {"at": evidence.PACKAGE, "limit": 50, "unknown": True},
+            {"at": evidence.PACKAGE, "cursor": False},
+            {"at": evidence.PACKAGE, "cursor": 0},
+            {"at": evidence.PACKAGE, "cursor": []},
+            {"at": evidence.PACKAGE, "cursor": "resume-token"},
+        ]:
+            with self.subTest(arguments=arguments):
+                records = self.records()
+                request = next(r for r in records if r["direction"] == "request"
+                               and r["payload"].get("method") == "tools/call"
+                               and r["payload"]["params"]["name"] == "unica.check")
+                request["payload"]["params"]["arguments"] = arguments
+                with self.assertRaisesRegex(ValueError, "readability check"):
+                    driver.audit(records)
+
     def test_audit_rejects_unusable_or_inapplicable_published_can_schemas(self):
         for mutation in ["empty closed schema", "missing values", "missing field", "wrong field type", "invalid schema"]:
             with self.subTest(mutation=mutation):

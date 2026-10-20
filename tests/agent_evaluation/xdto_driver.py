@@ -193,7 +193,13 @@ def audit(records):
                    and (call["result"] or {}).get("at") == target
                    and any(item.get("code") == "not_found" for item in (call["result"] or {}).get("diagnostics", [])) for call in later):
             raise ValueError("agent did not verify its removed XDTO node")
-    if not any(call["params"]["name"] == "unica.check" and call["params"]["arguments"] == {"at": PACKAGE}
+    if not any(call["params"]["name"] == "unica.check"
+               and set(call["params"]["arguments"]) <= {"at", "limit", "cursor"}
+               and call["params"]["arguments"].get("at") == PACKAGE
+               and (call["params"]["arguments"].get("limit") is None
+                    or (type(call["params"]["arguments"]["limit"]) is int
+                        and 1 <= call["params"]["arguments"]["limit"] <= 50))
+               and call["params"]["arguments"].get("cursor") in (None, "")
                and (call["result"] or {}).get("ok") is True and (call["result"] or {}).get("at") == PACKAGE
                and ((call["result"] or {}).get("data") or {}).get("status") == "readable"
                and ((call["result"] or {}).get("data") or {}).get("validators") == [] for call in later):
