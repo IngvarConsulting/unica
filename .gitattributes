@@ -60,4 +60,4 @@ tests/fixtures/acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates/Platf
 tests/fixtures/acceptance/workspace-whole-template-removal/** -text -whitespace
 
 # Exact native BinaryData Type fragment.
-/tests/fixtures/platform_8_3_27/binary-data/native-type.xml -text
+/tests/fixtures/platform_8_3_27/binary-data/native-type.xml -text whitespace=cr-at-eol
