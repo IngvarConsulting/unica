@@ -5483,6 +5483,11 @@ pub(super) fn parse_typed_fill_value_node(
             Some("fillValue"),
         )),
         (READABLE_NAMESPACE, "DesignTimeRef") => {
+            // Platform dumps encode an unset reference as a typed empty node.
+            // Structural and namespace checks above still reject malformed XML.
+            if value.is_empty() {
+                return Ok(None);
+            }
             // Real platform dumps carry item designators after the metadata
             // address — `Catalog.Валюты.EmptyRef` or a predefined item name.
             // The address prefix is validated; the designator round-trips
@@ -9570,6 +9575,84 @@ pub(crate) mod tests {
             failure.diagnostics[0].field.as_deref(),
             Some("operations[1].elements[0].fillValue")
         );
+    }
+
+    #[test]
+    fn empty_design_time_ref_is_unset_without_accepting_malformed_fill_values() {
+        for fill in [
+            r#"<FillValue xsi:type="xr:DesignTimeRef"/>"#,
+            r#"<FillValue xsi:type="xr:DesignTimeRef"></FillValue>"#,
+            r#"<FillValue xmlns:r="http://v8.1c.ru/8.3/xcf/readable" xsi:type="r:DesignTimeRef"/>"#,
+        ] {
+            let xml = format!(
+                r#"<Properties xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">{fill}</Properties>"#
+            );
+            let document = Document::parse(&xml).unwrap();
+            assert_eq!(
+                parse_typed_fill_value_node(document.root_element()).unwrap(),
+                None,
+                "{fill}"
+            );
+        }
+        for fill in [
+            "<FillValue/>",
+            r#"<FillValue xsi:type="xr:DesignTimeRef"> </FillValue>"#,
+            r#"<FillValue xsi:type="xr:DesignTimeRef">broken</FillValue>"#,
+            r#"<FillValue xmlns:r="urn:foreign" xsi:type="r:DesignTimeRef"/>"#,
+            r#"<FillValue xsi:type="xr:DesignTimeRef" extra="x"/>"#,
+            r#"<FillValue xsi:type="xr:DesignTimeRef"><Nested/></FillValue>"#,
+            r#"<FillValue xsi:type="xr:DesignTimeRef"/><FillValue xsi:type="xr:DesignTimeRef"/>"#,
+        ] {
+            let xml = format!(
+                r#"<Properties xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">{fill}</Properties>"#
+            );
+            let document = Document::parse(&xml).unwrap();
+            assert!(
+                parse_typed_fill_value_node(document.root_element()).is_err(),
+                "{fill}"
+            );
+        }
+    }
+
+    #[test]
+    fn adding_boolean_preserves_an_existing_empty_design_time_ref() {
+        let existing = r#"<Attribute uuid="22222222-2222-4222-8222-222222222222"><Properties><Name>StorageUnit</Name><Type><v8:Type>cfg:CatalogRef.Units</v8:Type></Type><FillValue xsi:type="xr:DesignTimeRef"/><FillChecking>ShowError</FillChecking></Properties></Attribute>"#;
+        for fill_value in [None, Some(MetaFillValue::Boolean(false))] {
+            let expected_fill = fill_value.clone();
+            let mut xml = object_xml("Catalog", "Items", "").replace(
+                "<ChildObjects/>",
+                &format!("<ChildObjects>{existing}</ChildObjects>"),
+            );
+            let operation = MetaEditOperation::add(
+                MetaCollection::Attributes,
+                None,
+                vec![MetaElementInput {
+                    name: "NewFlag".into(),
+                    r#type: Some(MetadataType::new(vec![MetadataTypeVariant::Boolean]).unwrap()),
+                    fill_value,
+                    required: Some(false),
+                    ..MetaElementInput::default()
+                }],
+            )
+            .unwrap();
+            let counts = apply_typed_operations(&mut xml, &[operation]).unwrap();
+            assert_eq!(counts.added, 1);
+            assert!(xml.contains(existing), "existing bytes must survive");
+            let document = Document::parse(&xml).unwrap();
+            let new_flag = document
+                .descendants()
+                .filter(|node| node.is_element() && node.tag_name().name() == "Attribute")
+                .find(|node| meta_edit_child_object_name(*node).as_deref() == Some("NewFlag"))
+                .unwrap();
+            assert_eq!(
+                parse_typed_fill_value_node(new_flag).unwrap(),
+                expected_fill
+            );
+            assert!(new_flag.descendants().any(|node| {
+                node.has_tag_name(("http://v8.1c.ru/8.1/data/core", "Type"))
+                    && node.text() == Some("xs:boolean")
+            }));
+        }
     }
 
     #[test]
