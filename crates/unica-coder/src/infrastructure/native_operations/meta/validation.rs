@@ -947,6 +947,29 @@ fn validate_child_footprints(
             }
         };
 
+        if child.has_inline_descriptor
+            && matches!(
+                child.kind,
+                ClosedChildKind::Form | ClosedChildKind::Template
+            )
+        {
+            let registration = child
+                .child
+                .segments()
+                .skip(subject.target.segments().count())
+                .collect::<Vec<_>>()
+                .join(".");
+            diagnostics.push(validation_warning(
+                subject,
+                &format!("childObjects.{registration}"),
+                format!(
+                    "Legacy inline registration {} exists alongside its separate descriptor; \
+                     platform 8.3.27 may hang while importing this owner",
+                    child.child
+                ),
+            ));
+        }
+
         let footprints = subject
             .child_footprints
             .iter()
@@ -1096,6 +1119,7 @@ impl ClosedChildKind {
 struct ClosedOwnerChild {
     child: MetadataAddress,
     kind: ClosedChildKind,
+    has_inline_descriptor: bool,
 }
 
 fn final_owner_child_graph(
@@ -1293,7 +1317,11 @@ fn parse_owner_child_artifact(
         &format!("{owner}.{child_kind}.{name}"),
     )
     .map_err(|_| "owner child identity is not representable".to_string())?;
-    Ok(ClosedOwnerChild { child, kind })
+    Ok(ClosedOwnerChild {
+        child,
+        kind,
+        has_inline_descriptor: !properties.is_empty(),
+    })
 }
 
 fn parse_child_descriptor(
@@ -5068,6 +5096,7 @@ mod tests {
             ],
             vec![(MetadataChildResourceKind::OrdinaryFormContent, 0)],
         );
+        subject.resources[0].bytes = typed_owner_descriptor(&["<Form>Main</Form>".into()]);
         subject.child_footprints[0].profile = MetadataChildProfile::OrdinaryForm;
         subject.resources.last_mut().unwrap().bytes = vec![0xff, 0, 0x81];
         assert!(closed_child_diagnostics(&subject).is_empty());
@@ -5200,6 +5229,10 @@ mod tests {
             directories,
             kinds,
         );
+        // Payload checks use the platform's by-name registration; legacy inline
+        // diagnostics have their own canonical fixtures and descriptor guards.
+        subject.resources[0].bytes =
+            typed_owner_descriptor(&[format!("<Template>{name}</Template>")]);
         for (ordinal, (_, _, bytes)) in resources.into_iter().enumerate() {
             if let Some(resource) = subject.resources.iter_mut().find(|resource| {
                 matches!(
@@ -5646,7 +5679,12 @@ mod tests {
                 // Either the existing owner or an adopted child's descriptor can
                 // carry the incompatible profile. Reading is not a write grant.
                 for resource_index in [0, 1] {
-                    let mut subject = closed_validator_subject(kind, template_type, &child, &child);
+                    let mut subject = closed_validator_subject(
+                        kind,
+                        template_type,
+                        &format!("<{kind}>Main</{kind}>"),
+                        &child,
+                    );
                     let original =
                         String::from_utf8(subject.resources[resource_index].bytes.clone()).unwrap();
                     subject.resources[resource_index].bytes = original
@@ -5859,6 +5897,14 @@ mod tests {
                     .any(|diagnostic| diagnostic.message.contains(expected_message)),
                 "{label}: {diagnostics:?}"
             );
+            if label != "template-type" {
+                assert!(
+                    diagnostics
+                        .iter()
+                        .all(|diagnostic| diagnostic.severity == MetaDiagnosticSeverity::Error),
+                    "a descriptor for another identity/kind must not produce a legacy warning: {label}: {diagnostics:?}"
+                );
+            }
         }
 
         let form = typed_child_xml("Form", "Main", None);
@@ -5904,6 +5950,12 @@ mod tests {
                     .message
                     .contains("no descriptor among the read resources")),
                 "{label}: {diagnostics:?}"
+            );
+            assert!(
+                diagnostics
+                    .iter()
+                    .all(|diagnostic| diagnostic.severity == MetaDiagnosticSeverity::Error),
+                "an invalid descriptor namespace/profile must not produce a legacy warning: {label}: {diagnostics:?}"
             );
         }
     }
@@ -5965,6 +6017,12 @@ mod tests {
                     .any(|diagnostic| diagnostic.message.starts_with(expected)),
                 "{label}: {diagnostics:?}"
             );
+            assert!(
+                diagnostics
+                    .iter()
+                    .all(|diagnostic| diagnostic.severity == MetaDiagnosticSeverity::Error),
+                "missing, duplicate or misfiled descriptor evidence must not produce a legacy warning: {label}: {diagnostics:?}"
+            );
         }
     }
 
@@ -6011,6 +6069,8 @@ mod tests {
             ],
             vec![(page, 1), (primary, 0)],
         );
+        reordered.resources[0].bytes =
+            typed_owner_descriptor(&["<Template>Main</Template>".into()]);
         set_html_descriptor(&mut reordered);
         reordered.resources.reverse();
         let mut diagnostics = Vec::new();
