@@ -8082,7 +8082,9 @@ mod tests {
             service.executions("reuse-original")
         );
         assert!(
-            initialize_flush_pause.flush_completed.load(Ordering::Acquire),
+            initialize_flush_pause
+                .flush_completed
+                .load(Ordering::Acquire),
             "original execute must follow the completed initialize flush"
         );
         flush.armed.store(true, Ordering::Release);
