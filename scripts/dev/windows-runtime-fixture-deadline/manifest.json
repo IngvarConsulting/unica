@@ -1,0 +1,80 @@
+{
+  "schema": 1,
+  "kind": "windows-runtime-fixture-deadline-control-payload",
+  "caseCommit": "cf2875a393e31158fa762c5f71000d9c39953c99",
+  "sourceProposalManifestSha256": "762d4e48f64c4db51ed4f6ecf1d4f0b22e7fad9cf1d0405ccf66156cc75aeb62",
+  "selectedCases": 6,
+  "retries": 0,
+  "ordinaryFeatures": true,
+  "environmentContractSource": {
+    "path": "tests/fixtures/mcp/host-workspace-context.json",
+    "sha256": "addfd5ffae105db397e4e68569f816db61ec4a59e10339661cae401abecceeb3"
+  },
+  "clearEnvironment": [
+    "CARGO_BUILD_TARGET",
+    "CARGO_ENCODED_RUSTFLAGS",
+    "CLAUDE_PROJECT_DIR",
+    "EMBEDDING_API_KEY",
+    "EMBEDDING_URL",
+    "RUSTC_BOOTSTRAP",
+    "RUSTC_WORKSPACE_WRAPPER",
+    "RUSTC_WRAPPER",
+    "RUSTFLAGS",
+    "UNICA_ARTIFACT_CACHE",
+    "UNICA_E961_CALIB_A",
+    "UNICA_E961_CALIB_B",
+    "UNICA_E961_CALIB_STATE",
+    "UNICA_E961_HANDLES_STATE",
+    "UNICA_HOST_CONTEXT_REQUIRED",
+    "UNICA_RUNTIME_MANIFEST",
+    "UNICA_TEST_WORKSPACE_SERVICE_EXE",
+    "ZCODE_PROJECT_DIR"
+  ],
+  "members": [
+    {
+      "path": "README.md",
+      "sha256": "bbe828e3a31822644b5d848d9006d1bd1372acb94b7a589a7a306b464aa385cd",
+      "bytes": 3837
+    },
+    {
+      "path": "input-pins.json",
+      "sha256": "e00fbdb1a5bd33d095dcd8a1053b8c3197afe00f6eae4f058b76daa0789ed13b",
+      "bytes": 10355
+    },
+    {
+      "path": "owned_commands.py",
+      "sha256": "f995b2608359753120b1658dd0b831819ed35a3eb15f99717eda19fdcfa01fe4",
+      "bytes": 33516
+    },
+    {
+      "path": "run_diagnostic.py",
+      "sha256": "ed6b6321361df90b4e0679c677f9e037ba64068c49bfb20e9af842b740a8c2a2",
+      "bytes": 26376
+    },
+    {
+      "path": "selection.json",
+      "sha256": "d689a30cfc3d2b4343cd7752799c7b09f15f4ed5fc70c57a55c8177437e50777",
+      "bytes": 1015
+    },
+    {
+      "path": "source/fixture_deadline_trace.rs",
+      "sha256": "755c655a20b78528b0b1866590228bbee8e47993cd7976013371326cf0761663",
+      "bytes": 5810
+    },
+    {
+      "path": "source/staged_deadline_control.rs",
+      "sha256": "1b6eddf4a277d64c603c305ff6ee139c4a13c236dffd02313823647dfc8c105f",
+      "bytes": 8588
+    },
+    {
+      "path": "source/tests.rs",
+      "sha256": "b20be8ab722155c958cc66f49339f7b29257d9a742ef1dc0c1e16d2e554eb66d",
+      "bytes": 364491
+    }
+  ],
+  "runnerProvenance": {
+    "originalSha256": "194fd4ec180cf85d48518d0576edd3876d1ae19069fc52611458b3f74be8fb4f",
+    "privateCommandDelta": "typed secondary-interrupt preservation only",
+    "processOwnerUnchanged": true
+  }
+}

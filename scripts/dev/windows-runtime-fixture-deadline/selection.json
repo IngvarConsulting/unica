@@ -1,0 +1,17 @@
+{
+  "status": "SOURCE_ONLY_NOT_ACTUAL_LIST",
+  "names": [
+    "infrastructure::daemon::runtime_v5::tests::queued_staged_completed_transfer_preserves_exact_winner_and_reopens",
+    "infrastructure::daemon::runtime_v5::tests::queued_staged_failed_transfer_preserves_exact_winner_and_reopens",
+    "infrastructure::daemon::runtime_v5::tests::begun_staged_completed_transfer_preserves_exact_winner_and_reopens",
+    "infrastructure::daemon::runtime_v5::tests::queued_staged_cancelled_transfer_preserves_exact_winner_and_reopens",
+    "infrastructure::daemon::runtime_v5::tests::retirement_finalize_failure_stays_with_its_record",
+    "infrastructure::daemon::runtime_v5::tests::staged_publication_preserves_winner_after_original_read_deadline_expires"
+  ],
+  "count": 6,
+  "features": "ordinary unit build, no receipt-ledger-test-support",
+  "retries": 0,
+  "failFast": false,
+  "mediumSelectorAlreadyPresent": "test(/^infrastructure::daemon::runtime_v5::tests::[^:]+$/)",
+  "WindowsRunAuthorizedByThisPacket": false
+}
