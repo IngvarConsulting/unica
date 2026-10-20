@@ -390,3 +390,158 @@ fn bind_native_identities(native: &[u8], published: &[u8], kind: &str) -> Vec<u8
     }
     result.into_bytes()
 }
+
+#[test]
+fn canonical_object_create_then_form_add_preserves_native_new_file_bytes() {
+    let root = workspace(false);
+    let root_path = std::fs::canonicalize(root.path()).unwrap();
+    let source = root_path.join("src");
+    let before = tree_snapshot(&source);
+    let directories_before = tree_directories(&source);
+    let cache = root_path.join(".build/unica");
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::write(cache.join("preview-sentinel"), b"retained cache\r\n").unwrap();
+    let cache_before = (tree_snapshot(&cache), tree_directories(&cache));
+    let runtime = runtime();
+    let call = |arguments| {
+        direct_v5(
+            &runtime,
+            InvocationRequest::new(
+                ToolIdentity::Apply,
+                arguments,
+                root_path.to_string_lossy(),
+                7_000,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    };
+    let planned = call(json!({
+        "at": "main:Configuration",
+        "ops": [
+            {"op":"object.create","args":{"values":{"kind":"Catalog","name":"CorpusCatalog"}}},
+            {"op":"form.add","args":{"at":"main:Catalog.CorpusCatalog","items":[{"name":"CorpusForm","type":"ObjectForm"}]}}
+        ]
+    }));
+    assert!(planned.ok, "joint preview failed: {planned:?}");
+    let plan = planned.data.as_ref().unwrap();
+    assert!(plan["planHash"]
+        .as_str()
+        .is_some_and(|hash| !hash.is_empty()));
+    assert_eq!(plan["mode"], "preview");
+    assert_eq!(plan["validated"], true);
+    assert_eq!(plan["executable"], true);
+    assert_eq!(
+        plan["operations"],
+        json!([
+            {"index":0,"op":"object.create","at":"main:Configuration"},
+            {"index":1,"op":"form.add","at":"main:Catalog.CorpusCatalog"}
+        ])
+    );
+    assert_eq!(plan["effects"], 2);
+    assert_eq!(
+        planned.changed,
+        vec![
+            json!({"at":"main:Catalog.CorpusCatalog","event":"MetadataChanged"}),
+            json!({"at":"main:Catalog.CorpusCatalog","event":"FormChanged"})
+        ]
+    );
+    assert!(plan["executionToken"]
+        .as_str()
+        .is_some_and(|token| !token.is_empty()));
+    assert_eq!(tree_snapshot(&source), before, "joint preview wrote source");
+    assert_eq!(tree_directories(&source), directories_before);
+    assert_eq!(
+        (tree_snapshot(&cache), tree_directories(&cache)),
+        cache_before,
+        "joint preview wrote cache"
+    );
+
+    // This is the only execution request: no intermediate object publication
+    // and no second preview may provide the owner to form.add.
+    let published = call(json!({"executionToken":plan["executionToken"]}));
+    assert!(published.ok, "joint publication failed: {published:?}");
+    let publication = published.data.as_ref().unwrap();
+    assert_eq!(publication["mode"], "published");
+    assert_eq!(publication["planHash"], plan["planHash"]);
+    assert_eq!(publication["operations"], plan["operations"]);
+    assert_eq!(publication["effects"], plan["effects"]);
+    assert_eq!(published.changed, planned.changed);
+
+    let object_module = "Catalogs/CorpusCatalog/Ext/ObjectModule.bsl";
+    let created = [
+        CATALOG,
+        object_module,
+        FORM_DESCRIPTOR,
+        FORM_CONTENT,
+        FORM_MODULE,
+    ];
+    assert_effects(&source, &before, &created, &["Configuration.xml"]);
+    let mut expected_directories = directories_before;
+    for relative in created {
+        let mut parent = Path::new(relative).parent();
+        while let Some(directory) = parent {
+            if !directory.as_os_str().is_empty() {
+                expected_directories.insert(directory.to_path_buf());
+            }
+            parent = directory.parent();
+        }
+    }
+    assert_eq!(tree_directories(&source), expected_directories);
+
+    let descriptor = std::fs::read(source.join(FORM_DESCRIPTOR)).unwrap();
+    assert_eq!(
+        descriptor,
+        bind_native_identities(NATIVE_FORM_DESCRIPTOR, &descriptor, "Form")
+    );
+    assert_eq!(
+        std::fs::read(source.join(FORM_CONTENT)).unwrap(),
+        NATIVE_FORM_CONTENT
+    );
+    assert_eq!(
+        std::fs::read(source.join(FORM_MODULE)).unwrap(),
+        NATIVE_FORM_MODULE
+    );
+    assert_eq!(
+        std::fs::read(source.join(object_module)).unwrap(),
+        b"\xef\xbb\xbf"
+    );
+
+    let owner = std::fs::read(source.join(CATALOG)).unwrap();
+    let native_with_ids = bind_native_identities(NATIVE_CATALOG, &owner, "Catalog");
+    let mut expected_owner = String::from_utf8(native_with_ids).unwrap();
+    // The minimal native Catalog is the independent object.create baseline.
+    // These two declared form edits are not a normalized/native final golden.
+    for (before, after) in [
+        (
+            "<DefaultObjectForm/>",
+            "<DefaultObjectForm>Catalog.CorpusCatalog.Form.CorpusForm</DefaultObjectForm>",
+        ),
+        (
+            "<ChildObjects/>",
+            "<ChildObjects><Form>CorpusForm</Form></ChildObjects>",
+        ),
+    ] {
+        assert_eq!(expected_owner.matches(before).count(), 1);
+        expected_owner = expected_owner.replacen(before, after, 1);
+    }
+    assert_eq!(
+        owner,
+        expected_owner.as_bytes(),
+        "form.add may alter only the declared default and registration bytes of the newly staged Catalog"
+    );
+    for (at, kind) in [
+        ("main:Catalog.CorpusCatalog", "Catalog"),
+        ("main:Catalog.CorpusCatalog.Form.CorpusForm", "Form"),
+        (
+            "main:Catalog.CorpusCatalog.Form.CorpusForm.Metadata",
+            "Metadata",
+        ),
+        (
+            "main:Catalog.CorpusCatalog.Form.CorpusForm.Module.Form",
+            "Module",
+        ),
+    ] {
+        assert_view(&runtime, root.path(), at, kind);
+    }
+}
