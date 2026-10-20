@@ -30,6 +30,34 @@ def load_module():
 
 
 class RunTestsSeamTests(unittest.TestCase):
+    def test_documentation_selects_small_in_both_suites_without_changing_queue_profile(self) -> None:
+        module = load_module()
+        self.assertEqual(module.python_matrix("queue", docs_only=True), [
+            {"suite": "tests/ci", "lane": "small", "slug": "ci-small"},
+            {"suite": "tests/dev", "lane": "small", "slug": "dev-small"},
+        ])
+        for results in (None, Path("results")):
+            for profile in ("pr", "queue"):
+                for suite in ("tests/ci", "tests/dev"):
+                    with self.subTest(profile=profile, suite=suite, results=results):
+                        command, = module.python_commands(
+                            profile, results=results, suite=suite, only_size="small", docs_only=True,
+                        )
+                        self.assertEqual(command[command.index("--admit") + 1], "small")
+                        self.assertEqual(command[command.index("--profile") + 1], profile)
+                        self.assertEqual("--scope-skip-medium" in command, profile == "queue")
+
+    def test_documentation_override_cannot_shorten_other_profiles_or_run_rust(self) -> None:
+        module = load_module()
+        for profile in ("all", "main", "release", "large"):
+            with self.subTest(profile=profile), self.assertRaises(ValueError):
+                module.python_matrix(profile, docs_only=True)
+        for ecosystem in ("rust", "all"):
+            with self.subTest(ecosystem=ecosystem), self.assertRaises(ValueError):
+                module.commands("queue", ecosystem, docs_only=True)
+        with self.assertRaises(ValueError):
+            module.python_commands("queue", only_size="medium", docs_only=True)
+
     def test_profile_all_runs_every_ci_managed_suite(self) -> None:
         """Команды закреплены дословно: правка гейта не должна прятаться в шве.
 

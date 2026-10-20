@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from workflow_routing import CACHE_JOB, RUST_JOBS, rust_route  # noqa: E402
+from workflow_routing import CACHE_JOB, RUST_JOBS, python_matrix as routed_python_matrix, rust_route  # noqa: E402
 
 
 CLASSIFICATION_OUTPUTS = (
@@ -125,7 +125,7 @@ def expected_results(
     profiles = {"main", "large"} if is_manual else {
         "release" if is_tag else "queue" if is_queue else "pr" if is_pr else "main"
     }
-    if gate_profile is not None and gate_profile not in profiles:
+    if gate_profile not in profiles:
         invalid["gate_profile"] = (gate_profile, ", ".join(sorted(profiles)))
 
     docs_only = values["docs_only"]
@@ -137,10 +137,8 @@ def expected_results(
             "all contours enabled for tag, release-line push, merge_group or workflow_dispatch",
         )
 
-    # Empty GitHub Actions matrices fail before running a step. The large tier
-    # currently has no Python suites, so only that explicit manual contour may
-    # skip the job. A missing or empty matrix elsewhere must never pass as a
-    # successful test run.
+    # A nonempty matrix alone could silently omit medium or an entire suite.
+    # Compare all rows against the same selection policy as the runner.
     if python_matrix is not None:
         try:
             matrix = json.loads(python_matrix)
@@ -148,9 +146,17 @@ def expected_results(
             matrix = None
         if not isinstance(matrix, list):
             invalid["python_matrix"] = (python_matrix, "a JSON list of Python suites")
-        elif not matrix and not (is_manual and gate_profile == "large") and not is_main_push:
-            invalid["python_matrix"] = (python_matrix, "a nonempty matrix outside manual large")
-    elif gate_profile == "large":
+        elif gate_profile in profiles:
+            try:
+                expected_matrix = routed_python_matrix(gate_profile, docs_only=docs_only)
+            except ValueError as error:
+                invalid["python_matrix"] = (python_matrix, str(error))
+            else:
+                if matrix != expected_matrix and not (is_main_push and matrix == []):
+                    invalid["python_matrix"] = (
+                        python_matrix, json.dumps(expected_matrix, separators=(",", ":")),
+                    )
+    else:
         invalid["python_matrix"] = ("missing", "the classified Python matrix")
 
     # The classifier emits this same policy for workflow conditions. The gate
