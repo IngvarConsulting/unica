@@ -144,6 +144,7 @@ def evaluate_mxl_fixture(root, mutation=None):
 
 class AgentEvaluationAuditTests(unittest.TestCase):
     def test_dcs_physical_outcome_accepts_independent_platform_scaffold(self):
+        """Accept native defaults or their removal without losing the requested schema data."""
         from tests.agent_evaluation.dcs_driver import verify_dcs_images
         for keep_source, keep_variant, keep_group in [
             (True, True, True), (False, True, True), (True, True, False),
@@ -164,6 +165,7 @@ class AgentEvaluationAuditTests(unittest.TestCase):
                 self.assertEqual(observed["created"]["groupBy"], ["Category"])
 
     def test_dcs_physical_outcome_reports_kept_and_removed_creation_scaffold(self):
+        """Keep legacy defaults optional while reporting the retained scaffold exactly."""
         from tests.agent_evaluation.dcs_driver import verify_dcs_images
         for keep_source, keep_variant, keep_group, keep_selection in [
             (True, True, True, True), (False, False, False, False),
@@ -186,6 +188,7 @@ class AgentEvaluationAuditTests(unittest.TestCase):
                 self.assertEqual(observed["created"]["groupBy"], ["Category"])
 
     def test_dcs_scaffold_comparison_uses_qname_namespaces(self):
+        """Compare settings types by namespace URI, independent of prefix spelling."""
         from tests.agent_evaluation.dcs_driver import NEW_DCS_XML, verify_dcs_images
         for platform_scaffold in (False, True):
             with self.subTest(platform_scaffold=platform_scaffold), tempfile.TemporaryDirectory() as raw:
@@ -203,6 +206,7 @@ class AgentEvaluationAuditTests(unittest.TestCase):
                     verify_dcs_images(workspace)
 
     def test_dcs_required_settings_reject_missing_wrong_and_foreign_types(self):
+        """Reject invalid required settings types even when either scaffold is otherwise valid."""
         from tests.agent_evaluation.dcs_driver import NEW_DCS_XML, verify_dcs_images
         s = "{http://v8.1c.ru/8.1/data-composition-system/schema}"
         t = "{http://v8.1c.ru/8.1/data-composition-system/settings}"
@@ -242,6 +246,7 @@ class AgentEvaluationAuditTests(unittest.TestCase):
                         verify_dcs_images(workspace)
 
     def test_dcs_required_settings_accept_equivalent_type_prefixes(self):
+        """Preserve required settings semantics under equivalent QName prefixes."""
         from tests.agent_evaluation.dcs_driver import NEW_DCS_XML, verify_dcs_images
         s = "{http://v8.1c.ru/8.1/data-composition-system/schema}"
         t = "{http://v8.1c.ru/8.1/data-composition-system/settings}"
@@ -267,6 +272,7 @@ class AgentEvaluationAuditTests(unittest.TestCase):
                 self.assertEqual(verify_dcs_images(workspace), before)
 
     def test_dcs_scaffold_rejects_hybrid_and_changed_group_contents(self):
+        """Reject mixed scaffold forms and changes inside an otherwise optional group."""
         from tests.agent_evaluation.dcs_driver import NEW_DCS_XML, verify_dcs_images
         s = "{http://v8.1c.ru/8.1/data-composition-system/schema}"
         t = "{http://v8.1c.ru/8.1/data-composition-system/settings}"
@@ -291,6 +297,8 @@ class AgentEvaluationAuditTests(unittest.TestCase):
                 selection = group.find(t + "selection")
                 auto = selection.find(t + "item")
                 if mutation == "hybrid":
+                    # This produces the same semantic XML as removing group/order
+                    # from the legacy scaffold while keeping its top-level selection.
                     settings.insert(0, ET.Element(t + "selection"))
                 elif mutation == "order-reversed":
                     order = group.find(t + "order")
@@ -332,6 +340,7 @@ class AgentEvaluationAuditTests(unittest.TestCase):
                     verify_dcs_images(workspace)
 
     def test_dcs_physical_outcome_rejects_extra_or_mutated_creation_nodes(self):
+        """Keep defaults and required business nodes closed to unrequested changes."""
         from tests.agent_evaluation.dcs_driver import NEW_DCS_XML, verify_dcs_images
         s = "{http://v8.1c.ru/8.1/data-composition-system/schema}"
         t = "{http://v8.1c.ru/8.1/data-composition-system/settings}"
