@@ -1,0 +1,16 @@
+{
+  "platform": "8.3.27.2074",
+  "format": "2.20",
+  "source": "Pinned ibcmd export after manually changing only rejected xs:binary to xs:base64Binary in a fresh owned configuration; diagnostic oracle, not production-writer acceptance.",
+  "sourceRevision": "20d7f50410b1d02b8ba8a73dd16561aa67f6dff8",
+  "sourceFileSha256": "8daceb83a15a6e47047ed2a810af5afa3c6124327e04e9ad04e29733f35acffc",
+  "fragmentSha256": "6046c14eab68b332d3d7e6b5bec0342d58189f86d712f932e88cf056135bb338",
+  "fragmentSize": 222,
+  "fragmentRange": [
+    29380,
+    29602
+  ],
+  "bytes": "Exact Type element including leading indentation, CRLF inside, no trailing newline; ancestor namespace declarations are supplied explicitly by tests.",
+  "nativeCycles": 2,
+  "evidenceReportSha256": "28449b55a57a3db0940277725dea5c11c5e17f9befcdd05e28bd362777cd3042"
+}

@@ -1624,6 +1624,7 @@ pub(crate) fn form_valid_closed_types() -> &'static [&'static str] {
         "xs:decimal",
         "xs:dateTime",
         "xs:binary",
+        "xs:base64Binary",
         "v8:FillChecking",
         "v8:Null",
         "v8:StandardPeriod",
@@ -2759,7 +2760,7 @@ pub(crate) fn form_format_type(type_node: roxmltree::Node<'_, '_>) -> String {
                 Some("Time") => "time".to_string(),
                 _ => "dateTime".to_string(),
             },
-            "xs:binary" => "binary".to_string(),
+            "xs:binary" | "xs:base64Binary" => "binary".to_string(),
             "v8:ValueTable" => "ValueTable".to_string(),
             "v8:ValueTree" => "ValueTree".to_string(),
             "v8:ValueListType" => "ValueList".to_string(),
@@ -11526,7 +11527,7 @@ pub(crate) fn normalize_form_type_base(base: &str) -> Option<&'static str> {
         "дата" | "date" => Some("date"),
         "датавремя" | "datetime" => Some("dateTime"),
         "время" | "time" => Some("time"),
-        "binary" | "xs:binary" => Some("xs:binary"),
+        "binary" | "xs:binary" | "xs:base64binary" => Some("xs:base64Binary"),
         "справочникссылка" | "catalogref" => Some("CatalogRef"),
         "справочникобъект" | "catalogobject" => Some("CatalogObject"),
         "документссылка" | "documentref" => Some("DocumentRef"),
@@ -17666,9 +17667,45 @@ pub(crate) mod tests {
         assert!(
             emitted
                 .iter()
-                .any(|line| line == "\t<v8:Type>xs:binary</v8:Type>"),
+                .any(|line| line == "\t<v8:Type>xs:base64Binary</v8:Type>"),
             "{emitted:?}"
         );
+    }
+
+    #[test]
+    fn form_binary_aliases_emit_the_native_base64_qname() {
+        for alias in ["binary", "xs:binary", "xs:base64Binary"] {
+            let mut emitted = Vec::new();
+            emit_form_type(&mut emitted, alias, "").unwrap();
+            assert!(
+                emitted
+                    .iter()
+                    .any(|line| line == "\t<v8:Type>xs:base64Binary</v8:Type>"),
+                "{alias}: {emitted:?}"
+            );
+            assert!(
+                !emitted.iter().any(|line| line.contains("xs:binary")),
+                "{emitted:?}"
+            );
+        }
+        for aliases in [
+            "binary | xs:binary",
+            "binary | xs:base64Binary",
+            "xs:binary | xs:base64Binary",
+        ] {
+            let mut emitted = Vec::new();
+            assert!(
+                emit_form_type(&mut emitted, aliases, "").is_err(),
+                "{aliases}"
+            );
+            assert!(
+                emitted.is_empty(),
+                "invalid unions must not emit a partial type"
+            );
+        }
+        let native = format!("<Type xmlns:v8=\"{FORM_V8_NS}\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\"><v8:Type>xs:base64Binary</v8:Type></Type>");
+        let document = Document::parse(&native).unwrap();
+        assert_eq!(form_format_type(document.root_element()), "binary");
     }
 
     #[test]
