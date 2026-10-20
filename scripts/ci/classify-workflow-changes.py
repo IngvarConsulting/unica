@@ -91,6 +91,7 @@ CI_CONTRACT_PATHS = {
     "tests/ci/test_research_policy.py",
     "tests/ci/test_allure_results.py",
     "tests/ci/test_collect_results.py",
+    "tests/ci/test_scope_skips.py",
     "tests/ci/test_classify_workflow_changes.py",
     "tests/ci/test_evaluate_ci_gate.py",
     "tests/ci/test_unica_workflow.py",
