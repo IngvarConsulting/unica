@@ -281,7 +281,7 @@ jobs:
           python-version: "3.12"
       - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
-          tool: cargo-nextest@0.9.143
+          tool: cargo-nextest@0.9.148
       # Подпись и план выгружаются до исполнения; недошедшие тесты попадут
       # в отчёт как `skipped`, а не исчезнут из него.
       - run: python3 scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --plan-only --results .build/results --runner "$MATRIX_RUNNER" --line "$RUN_LINE"

@@ -135,6 +135,43 @@ pub(crate) enum Effect {
     Rejected { key: Key, error: Error },
 }
 
+/// Diagnostic cause, not proof that a write failed before publication. The
+/// adapter must establish that separately before completing a commit request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WriteFailureCause {
+    NoSpace,
+    AccessDenied,
+    IoFailure,
+}
+
+/// The first validated no-publication failure of this authority. This is
+/// volatile diagnostic evidence, not a durable record or a writable capability.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct KnownWriteFailure {
+    stamp: Stamp,
+    cause: WriteFailureCause,
+}
+impl KnownWriteFailure {
+    pub(crate) fn cause(&self) -> WriteFailureCause {
+        self.cause
+    }
+    pub(crate) fn key(&self) -> &Key {
+        &self.stamp.key
+    }
+    pub(crate) fn authority_epoch(&self) -> AuthorityEpoch {
+        self.stamp.epoch
+    }
+    pub(crate) fn commit_id(&self) -> u64 {
+        self.stamp.id
+    }
+    pub(crate) fn expected_revision(&self) -> u64 {
+        self.stamp.expected_revision
+    }
+    pub(crate) fn candidate_fingerprint(&self) -> [u8; 32] {
+        self.stamp.fingerprint
+    }
+}
+
 /// The adapter is the trust boundary for known commit/rollback/readback. It can
 /// inspect only the durable candidate, never the group's volatile membership.
 #[derive(Debug)]
@@ -183,6 +220,17 @@ impl CommitRequest {
             resolution: Resolution::RolledBack,
         }
     }
+    /// Stop this owner after a permanent write failure. The adapter must prove
+    /// both that the candidate was not published and that no unfinished step
+    /// can still publish it. An errno or a phase label alone proves neither;
+    /// ambiguous completion must use `unknown`. This does not release an OS
+    /// lease or authorize cleanup, and is not a retryable metadata conflict.
+    pub(crate) fn failed_before_publication(self, cause: WriteFailureCause) -> CommitCompletion {
+        CommitCompletion {
+            stamp: self.stamp,
+            resolution: Resolution::FailedBeforePublication(cause),
+        }
+    }
     pub(crate) fn unknown(self) -> CommitCompletion {
         CommitCompletion {
             stamp: self.stamp,
@@ -209,6 +257,7 @@ struct Stamp {
 enum Resolution {
     Committed,
     RolledBack,
+    FailedBeforePublication(WriteFailureCause),
     Readback(Box<StoredRecord>),
     Unknown,
 }
@@ -236,6 +285,7 @@ pub(crate) struct ExecutionCoordinator {
     epoch: AuthorityEpoch,
     next_commit: u64,
     unavailable: bool,
+    first_known_write_failure: Option<KnownWriteFailure>,
     recovering: bool,
     groups: HashMap<InvocationId, Slot>,
     // Both indexes claim the complete key, including pending and cancel-only
@@ -252,6 +302,7 @@ impl ExecutionCoordinator {
             epoch,
             next_commit: 0,
             unavailable: false,
+            first_known_write_failure: None,
             recovering: false,
             groups: HashMap::new(),
             invocations: HashMap::new(),
@@ -354,6 +405,10 @@ impl ExecutionCoordinator {
     }
     pub(crate) fn unavailable(&self) -> bool {
         self.unavailable
+    }
+    /// None does not imply availability: an uncertain commit also fail-stops.
+    pub(crate) fn first_known_write_failure(&self) -> Option<&KnownWriteFailure> {
+        self.first_known_write_failure.as_ref()
     }
     pub(crate) fn recovering(&self) -> bool {
         self.recovering
@@ -622,6 +677,17 @@ impl ExecutionCoordinator {
         {
             return Err(Error::StaleCompletion);
         }
+        if let Resolution::FailedBeforePublication(cause) = completion.resolution {
+            // Stamp validation precedes this latch. Keep pending ownership and
+            // all queued facts; neither retry nor grant the candidate's rights.
+            self.first_known_write_failure
+                .get_or_insert(KnownWriteFailure {
+                    stamp: completion.stamp,
+                    cause,
+                });
+            self.unavailable = true;
+            return Ok(vec![Effect::FailStop]);
+        }
         // Unknown preserves the candidate and queued factual outcome for this
         // authority's fail-stop. No callback can reopen admission afterward.
         if matches!(completion.resolution, Resolution::Unknown) {
@@ -765,3 +831,6 @@ mod test_support;
 
 #[cfg(test)]
 mod compact_tests;
+
+#[cfg(test)]
+mod commit_failure_tests;
