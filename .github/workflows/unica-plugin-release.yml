@@ -1,6 +1,5 @@
-# Replace only the existing unica-plugin-release.yml on a temporary control ref.
-# This proposal is NOT EXECUTED. Payload hash is substituted by root after freeze.
-name: E961 missing-platform real-engine witness
+# Temporary dispatch-only control; no PR/merge/release path.
+name: E961 one-Alpha Windows causal observation
 on:
   workflow_dispatch:
     inputs:
@@ -14,17 +13,11 @@ on:
 permissions:
   contents: read
 jobs:
-  compatibility:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: windows-latest
-            target: win-x64
-    runs-on: ${{ matrix.runner }}
+  forensic:
+    runs-on: windows-latest
     timeout-minutes: 50
     steps:
-      - name: Preserve source bytes in both checkouts
+      - name: Preserve bytes before either checkout
         shell: bash
         run: git config --global core.autocrlf false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -42,46 +35,46 @@ jobs:
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
         with:
           toolchain: stable
-      - name: One observation using reviewed immutable inputs
+      - name: Exactly one Alpha observation; nonzero forensic outcomes preserved
         shell: bash
         env:
           CASE_COMMIT: ${{ inputs.case_commit }}
           PAYLOAD_SHA256: ${{ inputs.payload_manifest_sha256 }}
-          TARGET: ${{ matrix.target }}
         run: >-
-          python control/scripts/dev/e961-pinned-compat/run_probe.py
-          --case case --case-commit "$CASE_COMMIT" --target "$TARGET"
-          --results "e961-results-$TARGET"
+          python control/scripts/dev/e961-one-alpha/run_probe.py
+          --case case --case-commit "$CASE_COMMIT" --target win-x64
+          --results e961-one-alpha-results
           --payload-manifest-sha256 "$PAYLOAD_SHA256"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
-          name: e961-real-engine-${{ matrix.target }}
+          name: e961-one-alpha-win-x64
           if-no-files-found: error
           retention-days: 7
           path: |
-            e961-results-${{ matrix.target }}/receipt.json
-            e961-results-${{ matrix.target }}/*.stdout
-            e961-results-${{ matrix.target }}/*.stderr
-            e961-results-${{ matrix.target }}/*.json
-            e961-results-${{ matrix.target }}/*.rs
-            e961-results-${{ matrix.target }}/owned-libtest*
-            e961-results-${{ matrix.target }}/owned/owner.json
-            e961-results-${{ matrix.target }}/owned/engines.json
-            e961-results-${{ matrix.target }}/owned/events.jsonl
-            e961-results-${{ matrix.target }}/owned/inner.stdout
-            e961-results-${{ matrix.target }}/owned/inner.stderr
-      - name: Retain actual control checkout bytes
+            e961-one-alpha-results/receipt.json
+            e961-one-alpha-results/*.stdout
+            e961-one-alpha-results/*.stderr
+            e961-one-alpha-results/*.json
+            e961-one-alpha-results/*.rs
+            e961-one-alpha-results/owned-libtest.exe
+            e961-one-alpha-results/owned/owner.json
+            e961-one-alpha-results/owned/engines.json
+            e961-one-alpha-results/owned/events.jsonl
+            e961-one-alpha-results/owned/inner.stdout
+            e961-one-alpha-results/owned/inner.stderr
+            e961-one-alpha-results/owned/cwd-calibration/
+      - name: Retain actual control source bytes
         if: always()
         shell: bash
         run: |
-          mkdir -p e961-control-source
-          cp control/.github/workflows/unica-plugin-release.yml e961-control-source/workflow.yml
-          cp control/scripts/dev/e961-pinned-compat/manifest.json control/scripts/dev/e961-pinned-compat/pinned_compat.rs control/scripts/dev/e961-pinned-compat/run_probe.py control/scripts/dev/e961-pinned-compat/source-pins.json e961-control-source/
+          mkdir -p e961-one-alpha-control-source
+          cp control/.github/workflows/unica-plugin-release.yml e961-one-alpha-control-source/workflow.yml
+          cp -R control/scripts/dev/e961-one-alpha e961-one-alpha-control-source/payload
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
-          name: e961-control-source-${{ matrix.target }}
+          name: e961-one-alpha-control-source-win-x64
           if-no-files-found: error
           retention-days: 7
-          path: e961-control-source/
+          path: e961-one-alpha-control-source/

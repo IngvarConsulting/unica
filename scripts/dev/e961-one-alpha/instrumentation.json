@@ -1,0 +1,13 @@
+{
+  "caseCommit": "de78b1f5f407179fb5eb4af63bf8e5da744dd7d7",
+  "originalSha256": {
+    "crates/unica-coder/src/infrastructure/workspace_services.rs": "93e6a6330e70030184c99ec95fb36e72d99f8583139d44cb2fe8399ad38eed23",
+    "crates/unica-coder/src/infrastructure/platform/process.rs": "93566193fc26bfe97cd0f71fed095499b1a276e4f4091ad91b76c714aeee25f8"
+  },
+  "instrumentedSha256": {
+    "crates/unica-coder/src/infrastructure/workspace_services.rs": "bca4d3424a3a54d9bb0ee379265950f61cb4ed5d3482e453f1b1f2d2c7bc796a",
+    "crates/unica-coder/src/infrastructure/platform/process.rs": "dbd888a3686bc16dcd2b23dc03cd36bd6d2b9f76dfbe0ddad268e7eb7bfd1c55"
+  },
+  "scope": "Exactly two append-only temporary tracked source edits; no Cargo/product API/feature change; payload external in control checkout",
+  "wireRequires": "case and control sibling checkouts under same workspace; control/scripts/dev/e961-one-alpha"
+}

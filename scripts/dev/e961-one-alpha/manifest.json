@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "kind": "e961-one-alpha-windows-causal-control-payload",
+  "caseCommit": "de78b1f5f407179fb5eb4af63bf8e5da744dd7d7",
+  "members": [
+    {
+      "path": "NTAPI-LICENSE-MIT.txt",
+      "sha256": "11a7964ccc0dd115d16720ab1d826c5d03e52838748ffaba3d21bae8bcacd82a",
+      "bytes": 1023
+    },
+    {
+      "path": "README.md",
+      "sha256": "e477370a2e422dd91f3b1213b92a237dbdfd8d155a2fee5644f9dd431a260742",
+      "bytes": 4743
+    },
+    {
+      "path": "case.patch",
+      "sha256": "d7647eea6db61eca6628e3c0b7713db2e41be525431db21324384159729718a6",
+      "bytes": 863
+    },
+    {
+      "path": "instrumentation.json",
+      "sha256": "a619c60394c9c23e31dd8c95b0087966301c84f27765a6ee2fadf089c1ec76d4",
+      "bytes": 912
+    },
+    {
+      "path": "ntapi-source-provenance.json",
+      "sha256": "306f262f404aef181396bc747a1f6bfd9b4077553f3c8acb41ad2fc14990b17c",
+      "bytes": 3289
+    },
+    {
+      "path": "one_alpha.rs",
+      "sha256": "aead65f6e9754efcdaee708deb0b55b33fc0abf49cee9735b923feee3339a54d",
+      "bytes": 22456
+    },
+    {
+      "path": "process-facade.append.rs",
+      "sha256": "dbae46660d2df55b41765547a1c49f314a698627913c021625d03ed55bd76a84",
+      "bytes": 388
+    },
+    {
+      "path": "process-ownership-helper.json",
+      "sha256": "f4201f437cbcd4093c24cd75c2aa155f49a60d14a7aa1b032f4629d8a7df1786",
+      "bytes": 642
+    },
+    {
+      "path": "run_probe.py",
+      "sha256": "06729079c0692e269018cc13535d6069dd4d99fe32bf14ec89e7fd8bd69ebe59",
+      "bytes": 27470
+    },
+    {
+      "path": "source-pins.json",
+      "sha256": "c8531605f1016ba4b5729acd48478f3db33675f74b8ff46dbe5548ff5fbcb9b7",
+      "bytes": 2673
+    },
+    {
+      "path": "windows_probe.rs",
+      "sha256": "dc098ced7a875603d4e640e2b3f4f346e3ad37d292456e4b45f0c806e9b3dd74",
+      "bytes": 20332
+    },
+    {
+      "path": "workspace-wire.append.rs",
+      "sha256": "959f7d98118a622f5b91730a3440f06c38501c4a37bb2f18bd323dc1b604d24b",
+      "bytes": 109
+    }
+  ]
+}

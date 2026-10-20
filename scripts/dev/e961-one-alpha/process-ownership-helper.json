@@ -1,0 +1,15 @@
+{
+  "caseCommit": "de78b1f5f407179fb5eb4af63bf8e5da744dd7d7",
+  "path": "scripts/ci/probe-unica-wire.py",
+  "gitBlob": "8edd54bb842c207ed707a403137203ce9c561568",
+  "sha256": "b126d1905a80ec5f062d79206a9f1e3ddd8ce8ce94715d8f02b45e9c789810ad",
+  "separateFromOriginal16": true,
+  "usedAPIs": [
+    "ProcessOwnership.capture",
+    "ProcessOwnership.quiesce",
+    "_WINDOWS_CREATE_SUSPENDED"
+  ],
+  "ownership": "Retained Windows Job before primary-thread resume; bounded cleanup + activeProcessCount0",
+  "outputs": "Regular files; closure and hash, no pipe EOF claim",
+  "unknownDisposition": "No source restoration; preserve case and data"
+}

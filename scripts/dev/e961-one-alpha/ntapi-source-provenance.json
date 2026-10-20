@@ -1,0 +1,71 @@
+{
+  "role": "Primary ntapi upstream layout source; non-Microsoft internal Native API binding; not a supported Windows ABI guarantee",
+  "version": "0.4.3",
+  "retrievedAt": "2026-10-20T03:18:58.523861+00:00",
+  "files": [
+    {
+      "repository": "https://github.com/MSxDOS/ntapi",
+      "commit": "3f8ac79fdfea53d8fbe1282237173cee8c4f198c",
+      "path": "Cargo.toml",
+      "url": "https://raw.githubusercontent.com/MSxDOS/ntapi/3f8ac79fdfea53d8fbe1282237173cee8c4f198c/Cargo.toml",
+      "file": "upstream/Cargo.toml",
+      "sha256": "a200e949a10c632bb9c9cbfdbf3029483b39629a7d19d4b45d5fc327d9d26864",
+      "bytes": 945
+    },
+    {
+      "repository": "https://github.com/MSxDOS/ntapi",
+      "commit": "3f8ac79fdfea53d8fbe1282237173cee8c4f198c",
+      "path": "README.md",
+      "url": "https://raw.githubusercontent.com/MSxDOS/ntapi/3f8ac79fdfea53d8fbe1282237173cee8c4f198c/README.md",
+      "file": "upstream/README.md",
+      "sha256": "99136e0f3f3e03e96a87d7050b4e9d0a2a45475d81fb31b93934293eea3246b2",
+      "bytes": 1017
+    },
+    {
+      "repository": "https://github.com/MSxDOS/ntapi",
+      "commit": "3f8ac79fdfea53d8fbe1282237173cee8c4f198c",
+      "path": "LICENSE-MIT",
+      "url": "https://raw.githubusercontent.com/MSxDOS/ntapi/3f8ac79fdfea53d8fbe1282237173cee8c4f198c/LICENSE-MIT",
+      "file": "upstream/LICENSE-MIT",
+      "sha256": "11a7964ccc0dd115d16720ab1d826c5d03e52838748ffaba3d21bae8bcacd82a",
+      "bytes": 1023
+    },
+    {
+      "repository": "https://github.com/MSxDOS/ntapi",
+      "commit": "3f8ac79fdfea53d8fbe1282237173cee8c4f198c",
+      "path": "LICENSE-APACHE",
+      "url": "https://raw.githubusercontent.com/MSxDOS/ntapi/3f8ac79fdfea53d8fbe1282237173cee8c4f198c/LICENSE-APACHE",
+      "file": "upstream/LICENSE-APACHE",
+      "sha256": "cf90d659de5c1e6418267ab8043b756e65508ee5d8d50b29eb2d2fe444c2c3eb",
+      "bytes": 11360
+    },
+    {
+      "repository": "https://github.com/MSxDOS/ntapi",
+      "commit": "3f8ac79fdfea53d8fbe1282237173cee8c4f198c",
+      "path": "src/ntrtl.rs",
+      "url": "https://raw.githubusercontent.com/MSxDOS/ntapi/3f8ac79fdfea53d8fbe1282237173cee8c4f198c/src/ntrtl.rs",
+      "file": "upstream/src/ntrtl.rs",
+      "sha256": "d970ae6cba47f346eef103d6bcac7260bb7fc70ebb7ec226b09acb6c5bc1f6c6",
+      "bytes": 133689
+    },
+    {
+      "repository": "https://github.com/MSxDOS/ntapi",
+      "commit": "3f8ac79fdfea53d8fbe1282237173cee8c4f198c",
+      "path": "src/ntpebteb.rs",
+      "url": "https://raw.githubusercontent.com/MSxDOS/ntapi/3f8ac79fdfea53d8fbe1282237173cee8c4f198c/src/ntpebteb.rs",
+      "file": "upstream/src/ntpebteb.rs",
+      "sha256": "94a9fbc1b3c48fa368f1b602fa205d41d3201e4d8c638c0898402eb3ebb5b72a",
+      "bytes": 14021
+    },
+    {
+      "repository": "https://github.com/MSxDOS/ntapi",
+      "commit": "3f8ac79fdfea53d8fbe1282237173cee8c4f198c",
+      "path": "src/macros.rs",
+      "url": "https://raw.githubusercontent.com/MSxDOS/ntapi/3f8ac79fdfea53d8fbe1282237173cee8c4f198c/src/macros.rs",
+      "file": "upstream/src/macros.rs",
+      "sha256": "dfc7a037b5cf07c427885ed450c0309b4337ebe1124ec95164e754371bd8c097",
+      "bytes": 3472
+    }
+  ],
+  "policy": "No crate dependency, tool installation or PDB download; bounded test-only prefix adaptation proposed, not implemented"
+}
