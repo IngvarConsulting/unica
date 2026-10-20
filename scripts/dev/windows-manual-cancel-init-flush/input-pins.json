@@ -1,0 +1,77 @@
+{
+  "schema": 1,
+  "caseCommit": "37e639fd8d2ce70b41d02b8581621ac6200c1ce9",
+  "ready": true,
+  "pins": [
+    {
+      "path": "crates/unica-coder/src/interfaces/mcp.rs",
+      "sha256": "d506817e11954426eef5edb266a201d7776db65a222bc7146508a3179233099e",
+      "bytes": 369558
+    },
+    {
+      "path": "crates/unica-coder/src/interfaces/mcp/manual_calls.rs",
+      "sha256": "d5fae95d35e5ad20e6db9a1f47a8c65873e87f449f708ea8471e47bb9a068387",
+      "bytes": 13230
+    },
+    {
+      "path": "crates/unica-coder/src/interfaces/mcp/receive_pump.rs",
+      "sha256": "ea176d40a9411e3c92825b661e65110531c91cef85c325a21b31949bed3a91dc",
+      "bytes": 8378
+    },
+    {
+      "path": "crates/unica-coder/src/interfaces/daemon_router.rs",
+      "sha256": "8326f785b68ddd54ee376fed6ca5dcc1425c81040bd9eb1a47b9254efb48d703",
+      "bytes": 129312
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/daemon/runtime_v5.rs",
+      "sha256": "89a4ce15cb07cdcf296c60b859a527121566e3e11b4e3986b305c036d5f5d97d",
+      "bytes": 354776
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/daemon/server.rs",
+      "sha256": "6d051f7fb451b20c142f3f3a22f49483f9031cd50695599123817da642ba97f2",
+      "bytes": 752083
+    },
+    {
+      "path": "crates/unica-coder/src/application/receipt_ledger.rs",
+      "sha256": "6dff07d88989699b67a686d5e2274ff9b04075032dd80a258420f45fd8548fc4",
+      "bytes": 135817
+    },
+    {
+      "path": "crates/unica-coder/src/application/receipt_ledger_actor.rs",
+      "sha256": "62009b7fca8070def18943579a73e419dca34233793dde0d8b8be193713b301d",
+      "bytes": 166694
+    },
+    {
+      "path": "Cargo.toml",
+      "sha256": "7b23679c9b01ac042240b4cbc44644b02f28095cc72de914e74fd5980b0822d9",
+      "bytes": 4708
+    },
+    {
+      "path": "Cargo.lock",
+      "sha256": "e73847db9bb8770fa76484341bad98f748c6af41fbf70540d100b5c27d3d3cad",
+      "bytes": 74003
+    },
+    {
+      "path": "crates/unica-coder/Cargo.toml",
+      "sha256": "fdab93a2fdf0ad6970f5e8910411b02584ca99b22debb3a5f2b5fa2b12d906e1",
+      "bytes": 2797
+    },
+    {
+      "path": ".config/nextest.toml",
+      "sha256": "8371bdf1392a3c64097e077b05eeaecd6f6faf264a665fbe3fbaa60b9d3a9ed6",
+      "bytes": 27879
+    },
+    {
+      "path": "scripts/ci/probe-unica-wire.py",
+      "sha256": "b126d1905a80ec5f062d79206a9f1e3ddd8ce8ce94715d8f02b45e9c789810ad",
+      "bytes": 51853
+    },
+    {
+      "path": "tests/fixtures/mcp/host-workspace-context.json",
+      "sha256": "addfd5ffae105db397e4e68569f816db61ec4a59e10339661cae401abecceeb3",
+      "bytes": 149
+    }
+  ]
+}
