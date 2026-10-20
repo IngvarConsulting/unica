@@ -1,5 +1,9 @@
+#[cfg(test)]
+mod startup_observation;
 #[cfg(any(windows, test))]
 mod windows_job_exit;
+#[cfg(test)]
+pub(crate) use startup_observation::StartupChildObservation;
 
 use crate::domain::cancellation::{cancelled_error, CancellationToken};
 #[cfg(test)]
@@ -1984,6 +1988,11 @@ impl ManagedStartupChild {
     #[cfg(test)]
     pub(crate) fn is_running(&mut self) -> Result<bool, String> {
         self.try_wait_status().map(|status| status.is_none())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn observe_before_cleanup_for_test(&self) -> StartupChildObservation {
+        startup_observation::observe(self.child.as_ref().expect("startup child exists"))
     }
 
     #[cfg(test)]

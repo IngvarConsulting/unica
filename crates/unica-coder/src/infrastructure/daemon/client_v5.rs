@@ -1,4 +1,6 @@
 mod connections;
+#[cfg(test)]
+mod startup_observation;
 pub(crate) use connections::V5DaemonClient;
 
 use super::identity::{CoreIdentity, DaemonStateDirectory};
@@ -369,12 +371,21 @@ impl V5DaemonProcessOwner {
     ) -> Result<Self, String> {
         let expected_pid = child.id();
         let mut endpoint = StartupEndpointObservation::new(expected_pid);
+        #[cfg(test)]
+        startup_observation::entered(readiness_deadline, deadline);
 
         let readiness = loop {
             if let Err(error) = remaining(readiness_deadline, "spawn readiness") {
+                #[cfg(test)]
+                startup_observation::stopped(startup_observation::Stop::DeadlineBeforePoll);
                 break Err(error);
             }
-            let child_status = match child.try_wait_status() {
+            #[cfg(test)]
+            startup_observation::poll_started();
+            let child_status = child.try_wait_status();
+            #[cfg(test)]
+            startup_observation::poll_finished(&child_status);
+            let child_status = match child_status {
                 Ok(status) => status,
                 Err(error) => break Err(error),
             };
@@ -392,7 +403,12 @@ impl V5DaemonProcessOwner {
                     );
                 }
                 if record.pid() == expected_pid {
-                    let child_status = match child.try_wait_status() {
+                    #[cfg(test)]
+                    startup_observation::poll_started();
+                    let child_status = child.try_wait_status();
+                    #[cfg(test)]
+                    startup_observation::poll_finished(&child_status);
+                    let child_status = match child_status {
                         Ok(status) => status,
                         Err(error) => break Err(error),
                     };
@@ -410,7 +426,11 @@ impl V5DaemonProcessOwner {
             }
             let retry_budget = match remaining(readiness_deadline, "spawn readiness") {
                 Ok(remaining) => remaining,
-                Err(error) => break Err(error),
+                Err(error) => {
+                    #[cfg(test)]
+                    startup_observation::stopped(startup_observation::Stop::DeadlineBeforeSleep);
+                    break Err(error);
+                }
             };
             std::thread::sleep(RETRY_INTERVAL.min(retry_budget));
         };
@@ -418,12 +438,16 @@ impl V5DaemonProcessOwner {
         match readiness {
             Ok(owner) => finish_ready_startup(owner, child, state, &endpoint, deadline),
             Err(error) => {
+                #[cfg(test)]
+                startup_observation::before_cleanup(child);
                 let cleanup = child.terminate_bounded(
                     deadline
                         .saturating_duration_since(Instant::now())
                         .min(STARTUP_CLEANUP_TIMEOUT),
                 );
                 let endpoint_cleanup = endpoint.cleanup(state);
+                #[cfg(test)]
+                startup_observation::cleanup_finished(cleanup.is_ok(), endpoint_cleanup.is_ok());
                 let mut diagnostic = error;
                 if let Err(cleanup) = cleanup {
                     diagnostic.push_str(&format!(
@@ -1431,13 +1455,17 @@ mod tests {
             let fixture = line_printing_command(false, &[]);
             let mut command = std::process::Command::new(fixture.program);
             command.args(fixture.args);
-            let deadline = Instant::now() + Duration::from_secs(20);
+            let started = Instant::now();
+            let observation = startup_observation::Scope::start("original_empty_command", started);
+            let deadline = started + Duration::from_secs(20);
             let mut child =
                 ManagedStartupChild::spawn_configured_before(command, deadline).unwrap();
             let pid = child.id();
+            startup_observation::spawned(pid);
             // A record of another process is what a stale file looks like.
             let recorded_pid = if own_record { pid } else { pid.wrapping_add(1) };
             state.publish_startup_failure(recorded_pid, reason).unwrap();
+            startup_observation::published(recorded_pid);
             let message = match V5DaemonProcessOwner::await_startup_before(
                 &mut child,
                 &state,
@@ -1448,7 +1476,11 @@ mod tests {
                 Ok(_) => panic!("an exiting child cannot become ready"),
                 Err(message) => message,
             };
-            assert!(message.contains("exited before readiness"), "{message}");
+            let trace = observation.finish();
+            assert!(
+                message.contains("exited before readiness"),
+                "{message}; {trace:?}"
+            );
             let state_path = state.path().display().to_string();
             assert_eq!(message.contains(reason), own_record, "{message}");
             assert_eq!(message.contains(&state_path), own_record, "{message}");
@@ -1465,9 +1497,11 @@ mod tests {
         let mut command = std::process::Command::new(fixture.program);
         command.args(fixture.args);
         let started = Instant::now();
+        let observation = startup_observation::Scope::start("live_child_deadline", started);
         let deadline = started + Duration::from_millis(900);
         let mut child = ManagedStartupChild::spawn_configured_before(command, deadline).unwrap();
         let pid = child.id();
+        startup_observation::spawned(pid);
         let outcome = V5DaemonProcessOwner::await_startup_before(
             &mut child,
             &state,
@@ -1488,6 +1522,136 @@ mod tests {
             "failed startup left its child alive"
         );
         assert!(state.read_v5_endpoint_record().unwrap().is_none());
+        let trace = observation.finish();
+        assert_eq!(trace.cleanup_ok, Some(true), "{trace:?}");
+        let before_cleanup = trace.before_cleanup.expect("pre-cleanup observation");
+        if before_cleanup.supported {
+            assert_eq!(before_cleanup.signaled, Some(false), "{trace:?}");
+            assert!(before_cleanup.error.is_none(), "{trace:?}");
+        }
+    }
+
+    #[test]
+    fn startup_observation_exit_fixture() {
+        if std::env::var_os("UNICA_STARTUP_EXIT_FIXTURE").is_some() {
+            std::process::exit(23);
+        }
+    }
+
+    fn confirmed_startup_exit_child(deadline: Instant) -> ManagedStartupChild {
+        use std::process::{Command, Stdio};
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "infrastructure::daemon::client_v5::tests::startup_observation_exit_fixture",
+                "--nocapture",
+            ])
+            .env("UNICA_STARTUP_EXIT_FIXTURE", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut child = ManagedStartupChild::spawn_configured_before(command, deadline).unwrap();
+        startup_observation::spawned(child.id());
+        loop {
+            let budget = remaining(deadline, "controlled child exit precondition").unwrap();
+            if let Some(status) = child.try_wait_status().unwrap() {
+                assert_eq!(status.code(), Some(23));
+                return child;
+            }
+            std::thread::sleep(RETRY_INTERVAL.min(budget));
+        }
+    }
+
+    #[test]
+    fn startup_observation_confirmed_exit_preserves_pid_attribution() {
+        let reason = "controlled child startup failure";
+        for own_record in [true, false] {
+            let (_root, state) = state_directory();
+            let started = Instant::now();
+            let observation = startup_observation::Scope::start("controlled_exit", started);
+            let deadline = started + Duration::from_secs(20);
+            let readiness_deadline = deadline - Duration::from_secs(5);
+            let mut child = confirmed_startup_exit_child(readiness_deadline);
+            let pid = child.id();
+            let recorded_pid = if own_record { pid } else { pid.wrapping_add(1) };
+            state.publish_startup_failure(recorded_pid, reason).unwrap();
+            startup_observation::published(recorded_pid);
+            let outcome = V5DaemonProcessOwner::await_startup_before(
+                &mut child,
+                &state,
+                &CoreIdentity::production_v5(),
+                readiness_deadline,
+                deadline,
+            );
+            let trace = observation.finish();
+            let message = outcome.err().expect("confirmed exit cannot become ready");
+            assert!(
+                message.contains("exited before readiness"),
+                "{message}; {trace:?}"
+            );
+            assert_eq!(message.contains(reason), own_record, "{message}");
+            assert_eq!(
+                message.contains(&state.path().display().to_string()),
+                own_record,
+                "{message}"
+            );
+            assert_eq!(trace.polls, 1, "{trace:?}");
+            assert_eq!(
+                trace.stop.map(|stop| stop.0),
+                Some(startup_observation::Stop::ObservedExit),
+                "{trace:?}"
+            );
+            assert_eq!(trace.cleanup_ok, Some(true), "{trace:?}");
+            let before = trace.before_cleanup.expect("pre-cleanup observation");
+            if before.supported {
+                assert_eq!(before.signaled, Some(true), "{trace:?}");
+                assert_eq!(before.exit_code, Some(23), "{trace:?}");
+                assert!(
+                    before.exit_filetime_100ns.is_some_and(|time| time > 0),
+                    "{trace:?}"
+                );
+                assert!(before.error.is_none(), "{trace:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn startup_observation_expired_readiness_still_precedes_confirmed_exit() {
+        let (_root, state) = state_directory();
+        let started = Instant::now();
+        let observation = startup_observation::Scope::start("deadline_first", started);
+        let deadline = started + Duration::from_secs(20);
+        let mut child = confirmed_startup_exit_child(deadline - Duration::from_secs(5));
+        let outcome = V5DaemonProcessOwner::await_startup_before(
+            &mut child,
+            &state,
+            &CoreIdentity::production_v5(),
+            started,
+            deadline,
+        );
+        let trace = observation.finish();
+        let message = outcome
+            .err()
+            .expect("expired readiness cannot become ready");
+        assert!(
+            message.contains("deadline expired during spawn readiness"),
+            "{message}; {trace:?}"
+        );
+        assert!(!message.contains("exited before readiness"), "{message}");
+        assert_eq!(trace.polls, 0, "{trace:?}");
+        assert_eq!(
+            trace.stop.map(|stop| stop.0),
+            Some(startup_observation::Stop::DeadlineBeforePoll),
+            "{trace:?}"
+        );
+        assert_eq!(trace.cleanup_ok, Some(true), "{trace:?}");
+        let before = trace.before_cleanup.expect("pre-cleanup observation");
+        if before.supported {
+            assert_eq!(before.signaled, Some(true), "{trace:?}");
+            assert_eq!(before.exit_code, Some(23), "{trace:?}");
+            assert!(before.error.is_none(), "{trace:?}");
+        }
     }
 
     #[test]
