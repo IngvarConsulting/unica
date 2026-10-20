@@ -3,6 +3,8 @@ use crate::test_support::tree_snapshot;
 
 const SCHEMA: &str = "main:Report.ParityReport.Template.MainSchema";
 
+/// Добавляет XML параметров без предварительного разбора, чтобы тесты
+/// проверяли декодирование выражений штатным читателем СКД.
 fn add_parameters(fixture: &RealReaderFixture, parameters: &str) {
     let path = fixture
         .source
