@@ -77,7 +77,7 @@ fn architecture(handle:Handle)->Check {
     ensure(unsafe{IsWow64Process2(handle,&mut machine,&mut native)}!=0,last("IsWow64Process2"))?;
     ensure(machine==0&&native==0x8664&&size_of::<usize>()==8,"empirical observer requires native AMD64, not WOW64/ARM64")
 }
-fn identity(handle:Handle)->Check<Value> {
+pub(super) fn identity(handle:Handle)->Check<Value> {
     // SAFETY: GetCurrentProcess returns the current-process pseudo handle; it is not closed.
     architecture(unsafe{GetCurrentProcess()})?;architecture(handle)?;
     let mut created=FileTime{low:0,high:0};let mut exited=FileTime{low:0,high:0};let mut kernel=FileTime{low:0,high:0};let mut user=FileTime{low:0,high:0};
@@ -176,7 +176,7 @@ fn second_root(root:&Path,token:&str)->Check<PathBuf> {
     }
     Err("no existing second fixed drive; no mappings created".into())
 }
-fn write_new(path:&Path,bytes:&[u8])->Check {
+pub(super) fn write_new(path:&Path,bytes:&[u8])->Check {
     match fs::symlink_metadata(path) {
         Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
         Ok(_)=>return Err("owned control destination already exists".into()),
@@ -189,7 +189,7 @@ fn write_new(path:&Path,bytes:&[u8])->Check {
     }
     fs::rename(pending,path).map_err(|e|e.to_string())
 }
-fn wait_file(path:&Path,deadline:Instant)->Check<Vec<u8>> {
+pub(super) fn wait_file(path:&Path,deadline:Instant)->Check<Vec<u8>> {
     loop {
         match fs::metadata(path) {
             Ok(meta)=>{ensure(meta.is_file()&&meta.len()<=MAX_REPORT_BYTES,"control file exceeds closed bound")?;return fs::read(path).map_err(|e|e.to_string());},

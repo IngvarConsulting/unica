@@ -6,6 +6,8 @@ two reviewed temporary append edits, then restoration only after confirmed comma
 lifetime. Unknown lifetime preserves the instrumented case and all evidence. No PR/merge path
 or automatic rerun is configured.
 
+Current extension: one post-OS5 owned handle diagnostic worker, described below. E4's actual first live-forward OS5 is preserved in receipt1f7968cb; its cause remains unknown. The following Revision4/3/2 paragraphs describe earlier source-only revisions, not new execution claims. This extension has not been compiled or run.
+
 Revision4 groups parent_state's array.map value in parentheses inside json!.
 This addresses the actual macro parse error from run39369227651 (Cargo101,
 controller2, native observations0). All other executable inputs remain exactv3.
@@ -71,3 +73,12 @@ hash its ZIP member as a stream, not extract another large executable copy.
 This is a source-only proposal. No Cargo/format/test/native/probe/tool install or
 symbol download was executed while authoring it. Root and an independent reviewer
 must review the actual source before apply/any separately authorized dispatch.
+
+
+## Post-OS5 owned handle observation
+
+After the first live-forward Win32 5, one bounded worker calibrates four owned read/list handles: file and directory with share RWD, and file and directory with share RW. The same PSS parser must find their known handle values and named File paths, including UNKNOWN ObjectType. After checked PSS free, DELETE access must yield 0/0/32/32; closing the two RW holders must yield 0/0 with the same objects preserved. Closed parser/formatter inputs cover flags, bounded UTF-16 descriptors, foreign-name filtering and distinct raw Win32 5/32.
+
+The worker receives only a SAME_ACCESS, non-inherited duplicate of the held engine PROCESS handle, verifies held creation identity, and snapshots that owned process. PSS names are matched to the ten original fixture paths; other names are counted. DELETE probes use OPEN_EXISTING, share RWD and BACKUP_SEMANTICS and close every opened probe. The build explicitly enables the existing windows-sys ProcessSnapshotting feature.
+
+Worker stdout/stderr, request/response, checked PSS free results and partial calibration/probe records are retained under owned/handles. A normally reaped/drained worker precedes engine retirement and post-retire rename. Unconfirmed worker lifetime blocks post-rename while engine cleanup and outer Job reaping remain mandatory. A failed/unsupported observer yields CAPTURE_INCOMPLETE while retaining the original OS5; it is not a second live rename attempt. This is a conditional resource diagnostic, not evidence that any observed handle caused the historical rename failure.

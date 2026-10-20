@@ -64,6 +64,7 @@ jobs:
             e961-one-alpha-results/owned/inner.stdout
             e961-one-alpha-results/owned/inner.stderr
             e961-one-alpha-results/owned/cwd-calibration/
+            e961-one-alpha-results/owned/handles/
       - name: Retain actual control source bytes
         if: always()
         shell: bash

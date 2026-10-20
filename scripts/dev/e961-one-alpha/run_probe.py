@@ -323,7 +323,7 @@ def execute(args, record):
     cleared = [*contract["projectEnvironment"], "UNICA_ARTIFACT_CACHE", "UNICA_RUNTIME_MANIFEST", "UNICA_HOST_CONTEXT_REQUIRED",
         "UNICA_TEST_WORKSPACE_SERVICE_EXE", "EMBEDDING_URL", "EMBEDDING_API_KEY", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS",
         "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "RUSTC_BOOTSTRAP", "CARGO_BUILD_TARGET",
-        "UNICA_E961_CALIB_STATE", "UNICA_E961_CALIB_A", "UNICA_E961_CALIB_B"]
+        "UNICA_E961_CALIB_STATE", "UNICA_E961_CALIB_A", "UNICA_E961_CALIB_B", "UNICA_E961_HANDLES_STATE"]
     for name in cleared:
         environment.pop(name, None)
     environment.update(UNICA_PLUGIN_ROOT=str(plugin), UNICA_E1_COMPAT_ROOT=str(owned), UNICA_E1_COMPAT_TOKEN=token,
@@ -351,7 +351,7 @@ def execute(args, record):
     try:
         for path in SOURCES:
             atomic_replace(case / path, instrumented[path], results)
-        record["build"] = checked_command(["cargo", "+stable", "test", "--locked", "-p", "unica-coder", "--lib", "--no-run", "--message-format=json"], case, results / "build", 2400, environment, record, process_owner)
+        record["build"] = checked_command(["cargo", "+stable", "test", "--locked", "-p", "unica-coder", "--lib", "--no-run", "--message-format=json", "--features", "windows-sys/Win32_System_Diagnostics_ProcessSnapshotting"], case, results / "build", 2400, environment, record, process_owner)
         artifacts = []
         with (results / "build.stdout").open(encoding="utf-8") as stream:
             for line in stream:
@@ -397,6 +397,7 @@ def execute(args, record):
         require(driver.get("ownedLeaderReaped") and not any(driver.get(key) for key in ["timedOut", "cancelled", "stdoutTruncated", "stderrTruncated"]), "inner driver cleanup/output incomplete")
         final = finals[0]
         record.update(final=final, engineSessionsActual=len(starts), semanticHitsActual=len(hits), eventsSha256=digest(owned / "events.jsonl"))
+        validate_handle_observer(events, final, record)
         require(final.get("status") in ["PASS", "OBSERVED_FAIL"] and not final.get("captureErrors"), "forensic capture incomplete")
         if final["status"] == "PASS":
             require(actual.get("exit") == 0 and driver.get("statusSuccess") and final.get("firstFailure") is None, "PASS/exit disagreement")
@@ -415,6 +416,59 @@ def execute(args, record):
             record.setdefault("firstError", error_record(finalization_error))
             raise finalization_error
 
+
+
+def validate_handle_observer(events, final, record):
+    """One conditional, private observer; it does not replace the first rename outcome."""
+    first = final.get("firstFailure") or {}
+    eligible = first.get("stage") == "live-forward" and (first.get("error") or {}).get("osError") == 5
+    selected = {kind: [(index, item["data"]) for index, item in enumerate(events) if item["kind"] == kind]
+                for kind in ["handle-worker-start", "handle-observer-disposition", "handle-worker-cleanup", "handle-worker-response", "handle-observation"]}
+    record["handleObserver"] = {"eligibleAfterFirstOS5": eligible, "counts": {key: len(value) for key, value in selected.items()}}
+    if not eligible:
+        require(not any(selected.values()), "observer ran outside first live OS5 boundary")
+        return
+    require(all(len(value) == 1 for value in selected.values()), "conditional handle observation incomplete/duplicated")
+    started = selected["handle-worker-start"][0][1]
+    disposition = selected["handle-observer-disposition"][0][1]
+    cleanup = selected["handle-worker-cleanup"][0][1]
+    response = selected["handle-worker-response"][0][1]
+    observation = selected["handle-observation"][0][1]
+    require(disposition == {"attempted": True, "workerQuiescent": True, "status": "Captured"}, "observer is Unknown or lifetime unconfirmed")
+    require(cleanup.get("cleanupConfirmed") and cleanup.get("streamsDrained") and cleanup.get("ownedLeaderReaped") == {"Ok": True}
+            and cleanup.get("statusSuccess") and cleanup.get("termination") is None, "worker did not exit normally/reap/drain")
+    require(response.get("workerIdentity", {}).get("pid") == cleanup["pid"] and response.get("workerIdentity") == started.get("worker"), "worker creation identity/cleanup PID differs")
+    body = response.get("result", {}).get("Ok")
+    require(isinstance(body, dict) and body == observation.get("observation") and observation.get("cleanup") == cleanup
+            and observation.get("firstFailureUnchanged") is True, "worker successful record disagrees with parent")
+    calibration = body.get("calibration", {})
+    rows = calibration.get("snapshot", {}).get("rows", [])
+    require(calibration.get("status") == "Validated" and len(rows) == 4 and all(row.get("knownHandleMatched") for row in rows), "named File capability was not calibrated")
+    require([value.get("rawWin32") for value in calibration.get("live", [])] == [0, 0, 32, 32]
+            and [value.get("rawWin32") for value in calibration.get("afterClose", [])] == [0, 0]
+            and calibration.get("allFourHoldersClosed") and calibration.get("before") == calibration.get("after"), "sharing/close/identity control differs")
+    controls = calibration.get("inputControls", {})
+    require(all(controls.get(key) is True for key in ["unknownNamedFileAccepted", "invalidDescriptorsRejected", "unflaggedPointerIgnored", "foreignNameNotEmitted"])
+            and controls.get("win32Codes") == [{"rawWin32": 0, "classification": "opened"}, {"rawWin32": 32, "classification": "sharing_violation"}, {"rawWin32": 5, "classification": "other_win32"}], "closed input controls differ")
+    require(body.get("delegatedProcessHandleClosed") and body.get("engineBefore") == body.get("engineAfter") == started.get("engine")
+            and body.get("snapshot", {}).get("snapshotAndMarkerFreed") is True
+            and calibration.get("snapshot", {}).get("snapshotAndMarkerFreed") is True, "process/PSS ownership not closed before engine cleanup")
+    expected_paths = ["", "alpha", "alpha/Configuration.xml", "alpha/CommonModules", "alpha/CommonModules/SearchProbe.xml", "alpha/CommonModules/SearchProbe", "alpha/CommonModules/SearchProbe/Ext", "alpha/CommonModules/SearchProbe/Ext/Module.bsl", "nested", "nested/deeper"]
+    require([row.get("path") for row in body.get("snapshot", {}).get("rows", [])] == expected_paths
+            and [row.get("path") for row in body.get("deleteProbes", [])] == expected_paths, "observer output escaped closed fixture list")
+    for row in body["deleteProbes"]:
+        value = row.get("probe", {})
+        code = value.get("rawWin32")
+        expected = "opened" if code == 0 else "sharing_violation" if code == 32 else "other_win32"
+        require(isinstance(code, int) and code >= 0 and value.get("classification") == expected
+                and value.get("openedHandleClosed") is (code == 0), "probe lost its raw error or checked close")
+    live = [index for index, item in enumerate(events) if item["kind"] == "rename" and item["data"].get("phase") == "live-forward"]
+    retire = [index for index, item in enumerate(events) if item["kind"] == "session-cleanup"]
+    post = [index for index, item in enumerate(events) if item["kind"] == "rename" and item["data"].get("phase", "").startswith("post-retire")]
+    require(len(live) == 1 and len(retire) == 1 and post
+            and live[0] < selected["handle-worker-start"][0][0] < selected["handle-worker-cleanup"][0][0] < selected["handle-worker-response"][0][0]
+            < selected["handle-observation"][0][0] < retire[0] < min(post), "observer cleanup/engine retirement/post-rename order differs")
+    record["handleObserver"].update(status="Captured", workerPID=cleanup["pid"], enginePID=body["engineBefore"]["pid"], inference="owned named-resource and DELETE-open evidence; does not identify historical rename cause")
 
 def main():
     parser = argparse.ArgumentParser()

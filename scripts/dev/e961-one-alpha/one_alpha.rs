@@ -6,6 +6,8 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 
 #[path = "windows_probe.rs"]
 mod windows_probe;
+#[path = "owned_handles.rs"]
+mod owned_handles;
 
 type Check<T = ()> = Result<T, String>;
 const MODULE: &str = "CommonModules/SearchProbe/Ext/Module.bsl";
@@ -204,7 +206,7 @@ fn bsl_ready(session: &mut PersistentMcpSession, root: &Path, label: &str, symbo
 }
 
 
-fn active(root:&Path,fixture:&Fixture,layout:Option<&windows_probe::ValidatedLayout>,deadline:Instant,owner:&mut Option<SessionOwner>,report:&mut Report)->Check {
+fn active(root:&Path,fixture:&Fixture,layout:Option<&windows_probe::ValidatedLayout>,deadline:Instant,owner:&mut Option<SessionOwner>,observer_quiescent:&mut bool,report:&mut Report)->Check {
     fixture.metadata(root,"baseline-before",report);
     ensure(report.capture.is_empty(),"baseline evidence incomplete")?;
     ensure(fixture.roundtrip(root,"baseline",1,report),"pre-engine rename roundtrip failed")?;
@@ -237,13 +239,22 @@ fn active(root:&Path,fixture:&Fixture,layout:Option<&windows_probe::ValidatedLay
     let identity_after=match windows_probe::process_evidence(&session.child) {Ok(value)=>value,Err(error)=>{report.capture_error("live-process-after",&error);return Err(error);}};
     report.emit(root,"live-process-after",identity_after.clone());
     ensure(identity_before==identity_after,"owned process identity/liveness changed across live rename")?;
+    let eligible=report.first.as_ref().is_some_and(|failure|failure["stage"]=="live-forward"&&failure["error"]["osError"]==5);
+    if eligible&&report.capture.is_empty() {
+        *observer_quiescent=false; // Unknown/unwind blocks post-rename, never the mandatory engine cleanup.
+        let (quiescent,observation)=owned_handles::observe(root,fixture,&session.child,deadline);
+        *observer_quiescent=quiescent;
+        report.emit(root,"handle-observer-disposition",json!({"attempted":true,"workerQuiescent":quiescent,"status":if observation.is_ok(){"Captured"}else{"Unknown"}}));
+        match observation {Ok(value)=>report.emit(root,"handle-observation",value),Err(error)=>report.capture_error("handle-observer",error)}
+    }
+
     let again=bsl_analyzer_command(&program,&fixture.context,&fixture.source)?;
     ensure(command_evidence(&command)==command_evidence(&again),"factory arguments/environment changed")?;
     Ok(())
 }
 
 fn parent_state()->Value {
-    json!({"pid":std::process::id(),"actualCwd":env::current_dir().map_err(|e|e.to_string()),"privateCalibrationEnvPresent":(["UNICA_E961_CALIB_STATE","UNICA_E961_CALIB_A","UNICA_E961_CALIB_B"].map(|name|(name,env::var_os(name).is_some())))})
+    json!({"pid":std::process::id(),"actualCwd":env::current_dir().map_err(|e|e.to_string()),"privateCalibrationEnvPresent":(["UNICA_E961_CALIB_STATE","UNICA_E961_CALIB_A","UNICA_E961_CALIB_B","UNICA_E961_HANDLES_STATE"].map(|name|(name,env::var_os(name).is_some())))})
 }
 fn run_owned(root:&Path)->Report {
     let mut report=Report::default();
@@ -257,9 +268,9 @@ fn run_owned(root:&Path)->Report {
         Ok(Err(error))=>{report.capture_error("cwd-calibration-cleanup",error);None},
         Err(_)=>{report.capture_error("cwd-calibration-panic","calibration ownership outcome unconfirmed");None},
     };
-    let mut owner=None;
+    let mut owner=None;let mut observer_quiescent=true;
     if report.capture.is_empty() {
-        match catch_unwind(AssertUnwindSafe(||active(root,&fixture,layout.as_ref(),deadline,&mut owner,&mut report))) {
+        match catch_unwind(AssertUnwindSafe(||active(root,&fixture,layout.as_ref(),deadline,&mut owner,&mut observer_quiescent,&mut report))) {
             Ok(Err(error))=>if report.first.is_none(){report.fail("active",json!(error));},
             Err(_)=>report.fail("active-panic",json!("panic during Alpha; original stderr retained")),
             Ok(Ok(()))=>{},
@@ -273,14 +284,14 @@ fn run_owned(root:&Path)->Report {
         }
     }
     // Parent/context remain alive; post-retire is a distinct phase, never a live retry.
-    if engine_started&&cleaned {
+    if engine_started&&cleaned&&observer_quiescent {
         fixture.metadata(root,"post-retire-before",&mut report);
         match fixture.locate() {
             Ok(path) if path==fixture.context.workspace_root=>{let _=fixture.roundtrip(root,"post-retire",3,&mut report);},
             Ok(path)=>{let _=fixture.rename(root,"post-retire-restoration",&path,&fixture.context.workspace_root,&mut report);},
             Err(error)=>report.capture_error("post-retire-location",error),
         }
-    } else {report.emit(root,"post-retire-not-run",json!({"engineStarted":engine_started,"cleanupConfirmed":cleaned}));}
+    } else {report.emit(root,"post-retire-not-run",json!({"engineStarted":engine_started,"cleanupConfirmed":cleaned,"observerQuiescent":observer_quiescent}));}
     // Mandatory finally snapshot, including a failed forward/restore/semantic request.
     match fixture.locate() {
         Ok(path)=>match snapshot(&path.join("alpha")) {
@@ -324,3 +335,7 @@ fn owned_one_alpha_causal_driver()->Check {
 #[test]
 #[ignore = "owned child-only cwd calibration, never ordinary test selection"]
 fn cwd_calibration_child()->Check {windows_probe::calibration_child()}
+
+#[test]
+#[ignore = "owned post-failure PSS/share observer worker only"]
+fn handle_diagnostic_child()->Check {owned_handles::worker()}

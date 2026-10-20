@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "kind": "e961-one-alpha-windows-causal-control-payload",
+  "kind": "e961-one-alpha-windows-owned-handle-control-payload",
   "caseCommit": "de78b1f5f407179fb5eb4af63bf8e5da744dd7d7",
   "members": [
     {
@@ -10,8 +10,8 @@
     },
     {
       "path": "README.md",
-      "sha256": "df747f1ee8349acbee3662d3db9860734d7d6e63bfe9ce1a693a600b7bc27210",
-      "bytes": 5165
+      "sha256": "76ff9ffac8a6730115027d0aacf244a7dfd8059580b58a07a8daa53afbc740f4",
+      "bytes": 7075
     },
     {
       "path": "case.patch",
@@ -20,8 +20,8 @@
     },
     {
       "path": "instrumentation.json",
-      "sha256": "a619c60394c9c23e31dd8c95b0087966301c84f27765a6ee2fadf089c1ec76d4",
-      "bytes": 912
+      "sha256": "e8612fb2aa4f27e2f9cf6d52b4a6c8c2750cd842adf1385ffd90761e6eaa9049",
+      "bytes": 955
     },
     {
       "path": "ntapi-source-provenance.json",
@@ -30,8 +30,13 @@
     },
     {
       "path": "one_alpha.rs",
-      "sha256": "820bb0a8349a2e823b1de04fbbc870299c221729f8e687db21aabc7b9e1571e8",
-      "bytes": 22458
+      "sha256": "9bc60f6ef477969ab27ae49793ef80350bbc6594724de589ca6ff2a58d7e8c67",
+      "bytes": 23549
+    },
+    {
+      "path": "owned_handles.rs",
+      "sha256": "485aa7aa7a0a1bbb5866f29a014d2285516a6509cc87b315a16a3c7cfcb7278b",
+      "bytes": 23215
     },
     {
       "path": "process-facade.append.rs",
@@ -45,8 +50,8 @@
     },
     {
       "path": "run_probe.py",
-      "sha256": "06729079c0692e269018cc13535d6069dd4d99fe32bf14ec89e7fd8bd69ebe59",
-      "bytes": 27470
+      "sha256": "194fd4ec180cf85d48518d0576edd3876d1ae19069fc52611458b3f74be8fb4f",
+      "bytes": 33022
     },
     {
       "path": "source-pins.json",
@@ -55,8 +60,8 @@
     },
     {
       "path": "windows_probe.rs",
-      "sha256": "dc098ced7a875603d4e640e2b3f4f346e3ad37d292456e4b45f0c806e9b3dd74",
-      "bytes": 20332
+      "sha256": "88c74557bf42aa93870724c52fe7b2d39db0a5df1a499fd11cb318847edb765c",
+      "bytes": 20365
     },
     {
       "path": "workspace-wire.append.rs",
