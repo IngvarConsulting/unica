@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<GraphicalSchema xmlns="http://v8.1c.ru/8.3/xcf/scheme" xmlns:sch="http://v8.1c.ru/8.2/data/graphscheme" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+  <BackColor>style:FieldBackColor</BackColor>
+  <GridEnabled>true</GridEnabled>
+  <DrawGridMode>Lines</DrawGridMode>
+  <GridHorizontalStep>20</GridHorizontalStep>
+  <GridVerticalStep>20</GridVerticalStep>
+  <PrintParameters>
+    <TopMargin>10</TopMargin><LeftMargin>10</LeftMargin><BottomMargin>10</BottomMargin><RightMargin>10</RightMargin>
+    <BlackAndWhite>false</BlackAndWhite><FitPageMode>Auto</FitPageMode>
+  </PrintParameters>
+  <Items>
+    <Decoration id="1">
+      <Properties>
+        <Name>RedSquare</Name>
+        <Title/>
+        <ToolTip/>
+        <TabOrder>1</TabOrder>
+        <BackColor>auto</BackColor>
+        <TextColor>style:FormTextColor</TextColor>
+        <LineColor>style:BorderColor</LineColor>
+        <GroupNumber>0</GroupNumber>
+        <ZOrder>1</ZOrder>
+        <Hyperlink>false</Hyperlink>
+        <Transparent>false</Transparent>
+        <Font kind="AutoFont"/>
+        <HorizontalAlign>Right</HorizontalAlign>
+        <VerticalAlign>Center</VerticalAlign>
+        <PictureLocation>Center</PictureLocation>
+        <Location top="10" left="10" bottom="26" right="26"/>
+        <Picture><xr:Abs>Picture.png</xr:Abs><xr:LoadTransparent>false</xr:LoadTransparent></Picture>
+        <PictureSize>AutoSize</PictureSize>
+        <Shape>None</Shape>
+        <FlipMode>0</FlipMode>
+        <Angle xsi:type="xs:decimal">0</Angle>
+      </Properties>
+    </Decoration>
+    <Decoration id="2">
+      <Properties>
+        <Name>BlueSquare</Name>
+        <Title/>
+        <ToolTip/>
+        <TabOrder>2</TabOrder>
+        <BackColor>auto</BackColor>
+        <TextColor>style:FormTextColor</TextColor>
+        <LineColor>style:BorderColor</LineColor>
+        <GroupNumber>0</GroupNumber>
+        <ZOrder>2</ZOrder>
+        <Hyperlink>false</Hyperlink>
+        <Transparent>false</Transparent>
+        <Font kind="AutoFont"/>
+        <HorizontalAlign>Right</HorizontalAlign>
+        <VerticalAlign>Center</VerticalAlign>
+        <PictureLocation>Center</PictureLocation>
+        <Location top="10" left="42" bottom="26" right="58"/>
+        <Picture><xr:Abs>Picture.png</xr:Abs><xr:LoadTransparent>false</xr:LoadTransparent></Picture>
+        <PictureSize>AutoSize</PictureSize>
+        <Shape>None</Shape>
+        <FlipMode>0</FlipMode>
+        <Angle xsi:type="xs:decimal">0</Angle>
+      </Properties>
+    </Decoration>
+  </Items>
+</GraphicalSchema>

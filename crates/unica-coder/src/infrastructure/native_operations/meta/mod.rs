@@ -156,7 +156,11 @@ pub(crate) use remove::remove_metadata_child_text_with_flag;
 pub(crate) use template_catalog::emit_meta_internal_info;
 pub(crate) use template_catalog::metadata_generated_types_8_3_27;
 pub(crate) use usage_scan::{scan_local_enrichment, LocalEnrichment, LocalSection};
-pub(crate) use validation::{parse_child_profile_from_bytes, MetadataAdmission};
+pub(crate) use validation::{
+    parse_child_profile_from_bytes, template_removal_has_inherited_owners,
+    template_removal_primary_path, validate_template_removal_identity,
+    validate_template_removal_primary_image, MetadataAdmission,
+};
 pub(crate) use validation::{
     service_child_semantics, validate_metadata_owner_shape_8_3_27, MetadataValidator,
 };

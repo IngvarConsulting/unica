@@ -156,6 +156,7 @@ fn html_template_descriptor(format_version: &str) -> String {
 
 pub(crate) fn html_template_page() -> &'static str {
     concat!(
+        "\u{feff}",
         "<!DOCTYPE html PUBLIC \"-//W3C//DTD HTML 4.0 Transitional//EN\">",
         "<html><head>",
         "<meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\"></meta>",
