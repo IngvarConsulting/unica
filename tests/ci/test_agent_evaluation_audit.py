@@ -8,11 +8,13 @@ import copy
 import xml.etree.ElementTree as ET
 from unittest.mock import patch
 from pathlib import Path
+from itertools import product
 
 from tests.agent_evaluation.dcs_driver import DCS_TEMPLATE, allowed_help_command, audit_cli, audit_mcp, audit_review, terminal_calls
 
 
-def dcs_physical_fixture(root, *, keep_source=True, keep_variant=True, keep_group=True, keep_selection=True):
+def dcs_physical_fixture(root, *, keep_source=True, keep_variant=True, keep_group=True, keep_selection=True,
+                         platform_scaffold=False):
     """Required facts plus the independently frozen, optional creation scaffold."""
     import shutil
     from tests.agent_evaluation import dcs_driver
@@ -33,7 +35,9 @@ def dcs_physical_fixture(root, *, keep_source=True, keep_variant=True, keep_grou
     ET.SubElement(item, v + "content").text = "Added"
     old.find(".//" + t + "groupItems/" + t + "item/" + t + "field").text = "Amount"
     old.write(workspace / dcs_driver.XML, encoding="utf-8")
-    new = ET.parse(dcs_driver.FIXTURE / "template-add-scaffold.xml")
+    scaffold = (dcs_driver.REPO / "tests/fixtures/platform_8_3_27/template-new-xml/native-canonical-dcs-content.xml"
+                if platform_scaffold else dcs_driver.FIXTURE / "template-add-scaffold.xml")
+    new = ET.parse(scaffold)
     for child in list(new.getroot()):
         if child.tag == s + "dataSource" and not keep_source:
             new.getroot().remove(child)
@@ -41,10 +45,9 @@ def dcs_physical_fixture(root, *, keep_source=True, keep_variant=True, keep_grou
             new.getroot().remove(child)
         elif child.tag == s + "settingsVariant":
             settings = child.find(t + "settings")
-            if not keep_group:
-                settings.remove(settings.find(t + "item"))
-            if not keep_selection:
-                settings.remove(settings.find(t + "selection"))
+            for node in list(settings):
+                if (node.tag == t + "item" and not keep_group) or (node.tag == t + "selection" and not keep_selection):
+                    settings.remove(node)
     source = ET.SubElement(new.getroot(), s + "dataSource")
     ET.SubElement(source, s + "name").text = "AgentSource"
     ET.SubElement(source, s + "dataSourceType").text = "Local"
@@ -140,6 +143,26 @@ def evaluate_mxl_fixture(root, mutation=None):
 
 
 class AgentEvaluationAuditTests(unittest.TestCase):
+    def test_dcs_physical_outcome_accepts_independent_platform_scaffold(self):
+        from tests.agent_evaluation.dcs_driver import verify_dcs_images
+        for keep_source, keep_variant, keep_group in [
+            (True, True, True), (False, True, True), (True, True, False),
+            (True, False, False), (False, False, False),
+        ]:
+            with self.subTest(source=keep_source, variant=keep_variant, group=keep_group), \
+                 tempfile.TemporaryDirectory() as raw:
+                workspace = dcs_physical_fixture(Path(raw), platform_scaffold=True, keep_source=keep_source,
+                                                 keep_variant=keep_variant, keep_group=keep_group)
+                observed = verify_dcs_images(workspace)
+                self.assertEqual(observed["created"]["templateAddScaffold"], {
+                    "dataSource": {"name": "ИсточникДанных1", "count": int(keep_source)},
+                    "variant": {"name": "Основной", "count": int(keep_variant),
+                                "emptyGroupCount": int(keep_variant and keep_group), "emptySelectionCount": 0},
+                })
+                self.assertEqual(observed["created"]["dataSource"], "AgentSource")
+                self.assertEqual(observed["created"]["dataSet"], "AgentData")
+                self.assertEqual(observed["created"]["groupBy"], ["Category"])
+
     def test_dcs_physical_outcome_reports_kept_and_removed_creation_scaffold(self):
         from tests.agent_evaluation.dcs_driver import verify_dcs_images
         for keep_source, keep_variant, keep_group, keep_selection in [
@@ -164,19 +187,20 @@ class AgentEvaluationAuditTests(unittest.TestCase):
 
     def test_dcs_scaffold_comparison_uses_qname_namespaces(self):
         from tests.agent_evaluation.dcs_driver import NEW_DCS_XML, verify_dcs_images
-        with tempfile.TemporaryDirectory() as raw:
-            workspace = dcs_physical_fixture(Path(raw))
-            path = workspace / NEW_DCS_XML
-            text = path.read_text().replace("dcsset:", "settingsAlias:").replace(
-                "xmlns:dcsset=", "xmlns:settingsAlias=",
-            ).replace("xs:string", "schemaAlias:string").replace("xmlns:xs=", "xmlns:schemaAlias=")
-            path.write_text(text)
-            observed = verify_dcs_images(workspace)
-            self.assertEqual(observed["created"]["templateAddScaffold"]["variant"]["emptyGroupCount"], 1)
-            path.write_text(text.replace('xmlns:settingsAlias="http://v8.1c.ru/8.1/data-composition-system/settings"',
-                                         'xmlns:settingsAlias="urn:foreign-settings"'))
-            with self.assertRaises(ValueError):
-                verify_dcs_images(workspace)
+        for platform_scaffold in (False, True):
+            with self.subTest(platform_scaffold=platform_scaffold), tempfile.TemporaryDirectory() as raw:
+                workspace = dcs_physical_fixture(Path(raw), platform_scaffold=platform_scaffold)
+                path = workspace / NEW_DCS_XML
+                text = path.read_text().replace("dcsset:", "settingsAlias:").replace(
+                    "xmlns:dcsset=", "xmlns:settingsAlias=",
+                ).replace("xs:string", "schemaAlias:string").replace("xmlns:xs=", "xmlns:schemaAlias=")
+                path.write_text(text)
+                observed = verify_dcs_images(workspace)
+                self.assertEqual(observed["created"]["templateAddScaffold"]["variant"]["emptyGroupCount"], 1)
+                path.write_text(text.replace('xmlns:settingsAlias="http://v8.1c.ru/8.1/data-composition-system/settings"',
+                                             'xmlns:settingsAlias="urn:foreign-settings"'))
+                with self.assertRaises(ValueError):
+                    verify_dcs_images(workspace)
 
     def test_dcs_required_settings_reject_missing_wrong_and_foreign_types(self):
         from tests.agent_evaluation.dcs_driver import NEW_DCS_XML, verify_dcs_images
@@ -185,10 +209,11 @@ class AgentEvaluationAuditTests(unittest.TestCase):
         xsi = "{http://www.w3.org/2001/XMLSchema-instance}"
         targets = [("group", "StructureItemGroup"), ("group-item", "GroupItemField")]
         targets += [("selection-" + field, "SelectedItemField") for field in ["Category", "Amount", "Added"]]
-        for target, type_name in targets:
+        for (target, type_name), platform_scaffold in product(targets, (False, True)):
             for mutation in ["missing", "wrong", "foreign"]:
-                with self.subTest(target=target, mutation=mutation), tempfile.TemporaryDirectory() as raw:
-                    workspace = dcs_physical_fixture(Path(raw))
+                with self.subTest(target=target, mutation=mutation, platform_scaffold=platform_scaffold), \
+                     tempfile.TemporaryDirectory() as raw:
+                    workspace = dcs_physical_fixture(Path(raw), platform_scaffold=platform_scaffold)
                     path = workspace / NEW_DCS_XML
                     document = ET.parse(path)
                     settings = document.find(s + "settingsVariant[" + t + "name='AgentVariant']/" + t + "settings")
@@ -221,39 +246,109 @@ class AgentEvaluationAuditTests(unittest.TestCase):
         s = "{http://v8.1c.ru/8.1/data-composition-system/schema}"
         t = "{http://v8.1c.ru/8.1/data-composition-system/settings}"
         xsi = "{http://www.w3.org/2001/XMLSchema-instance}"
-        with tempfile.TemporaryDirectory() as raw:
-            workspace = dcs_physical_fixture(Path(raw))
-            before = verify_dcs_images(workspace)
-            path = workspace / NEW_DCS_XML
-            document = ET.parse(path)
-            settings = document.find(s + "settingsVariant[" + t + "name='AgentVariant']/" + t + "settings")
-            group = settings.find(t + "item[" + t + "name='AgentGroup']")
-            nodes = [group, group.find(t + "groupItems/" + t + "item")]
-            nodes += list(settings.find(t + "selection"))
-            self.assertEqual(len(nodes), 5)
-            for node in nodes:
-                node.set("xmlns:requiredAlias", t[1:-1])
-                node.set(xsi + "type", "requiredAlias:" + node.attrib[xsi + "type"].split(":", 1)[-1])
-            document.getroot().set("xmlns:dcsset", t[1:-1])
-            document.getroot().set("xmlns", s[1:-1])
-            document.getroot().set("xmlns:xs", "http://www.w3.org/2001/XMLSchema")
-            document.write(path, encoding="utf-8")
-            self.assertEqual(verify_dcs_images(workspace), before)
+        for platform_scaffold in (False, True):
+            with self.subTest(platform_scaffold=platform_scaffold), tempfile.TemporaryDirectory() as raw:
+                workspace = dcs_physical_fixture(Path(raw), platform_scaffold=platform_scaffold)
+                before = verify_dcs_images(workspace)
+                path = workspace / NEW_DCS_XML
+                document = ET.parse(path)
+                settings = document.find(s + "settingsVariant[" + t + "name='AgentVariant']/" + t + "settings")
+                group = settings.find(t + "item[" + t + "name='AgentGroup']")
+                nodes = [group, group.find(t + "groupItems/" + t + "item")]
+                nodes += list(settings.find(t + "selection"))
+                self.assertEqual(len(nodes), 5)
+                for node in nodes:
+                    node.set("xmlns:requiredAlias", t[1:-1])
+                    node.set(xsi + "type", "requiredAlias:" + node.attrib[xsi + "type"].split(":", 1)[-1])
+                document.getroot().set("xmlns:dcsset", t[1:-1])
+                document.getroot().set("xmlns", s[1:-1])
+                document.getroot().set("xmlns:xs", "http://www.w3.org/2001/XMLSchema")
+                document.write(path, encoding="utf-8")
+                self.assertEqual(verify_dcs_images(workspace), before)
+
+    def test_dcs_scaffold_rejects_hybrid_and_changed_group_contents(self):
+        from tests.agent_evaluation.dcs_driver import NEW_DCS_XML, verify_dcs_images
+        s = "{http://v8.1c.ru/8.1/data-composition-system/schema}"
+        t = "{http://v8.1c.ru/8.1/data-composition-system/settings}"
+        xsi = "{http://www.w3.org/2001/XMLSchema-instance}"
+        cases = [(True, "hybrid")]
+        cases += [(False, mutation) for mutation in
+                  ["order-reversed", "order-duplicate", "order-child", "order-attribute"]]
+        cases += list(product((False, True), [
+            "selection-missing", "auto-missing", "auto-duplicate", "auto-child",
+            "auto-type-missing", "auto-type-wrong", "auto-type-foreign",
+            "group-type-missing", "group-type-foreign", "presentation-type-foreign", "variant-reordered",
+        ]))
+        for platform_scaffold, mutation in cases:
+            with self.subTest(platform_scaffold=platform_scaffold, mutation=mutation), \
+                 tempfile.TemporaryDirectory() as raw:
+                workspace = dcs_physical_fixture(Path(raw), platform_scaffold=platform_scaffold)
+                path = workspace / NEW_DCS_XML
+                document = ET.parse(path)
+                variant = document.find(s + "settingsVariant[" + t + "name='Основной']")
+                settings = variant.find(t + "settings")
+                group = settings.find(t + "item")
+                selection = group.find(t + "selection")
+                auto = selection.find(t + "item")
+                if mutation == "hybrid":
+                    settings.insert(0, ET.Element(t + "selection"))
+                elif mutation == "order-reversed":
+                    order = group.find(t + "order")
+                    group.remove(order)
+                    group.append(order)
+                elif mutation == "order-duplicate":
+                    group.insert(0, copy.deepcopy(group.find(t + "order")))
+                elif mutation == "order-child":
+                    ET.SubElement(group.find(t + "order"), t + "item")
+                elif mutation == "order-attribute":
+                    group.find(t + "order").set("changed", "true")
+                elif mutation == "selection-missing":
+                    group.remove(selection)
+                elif mutation == "auto-missing":
+                    selection.remove(auto)
+                elif mutation == "auto-duplicate":
+                    selection.append(copy.deepcopy(auto))
+                elif mutation == "auto-child":
+                    ET.SubElement(auto, t + "field").text = "Category"
+                elif mutation == "variant-reordered":
+                    name = variant.find(t + "name")
+                    variant.remove(name)
+                    variant.append(name)
+                else:
+                    node = (group if mutation.startswith("group-") else
+                            variant.find(t + "presentation") if mutation.startswith("presentation-") else auto)
+                    if mutation.endswith("missing"):
+                        del node.attrib[xsi + "type"]
+                    elif mutation.endswith("wrong"):
+                        node.set(xsi + "type", "dcsset:SelectedItemField")
+                    else:
+                        node.set("xmlns:foreign", "urn:foreign")
+                        node.set(xsi + "type", "foreign:" + node.attrib[xsi + "type"].split(":")[-1])
+                document.getroot().set("xmlns:dcsset", t[1:-1])
+                document.getroot().set("xmlns", s[1:-1])
+                document.getroot().set("xmlns:xs", "http://www.w3.org/2001/XMLSchema")
+                document.write(path, encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    verify_dcs_images(workspace)
 
     def test_dcs_physical_outcome_rejects_extra_or_mutated_creation_nodes(self):
         from tests.agent_evaluation.dcs_driver import NEW_DCS_XML, verify_dcs_images
         s = "{http://v8.1c.ru/8.1/data-composition-system/schema}"
         t = "{http://v8.1c.ru/8.1/data-composition-system/settings}"
         xsi = "{http://www.w3.org/2001/XMLSchema-instance}"
-        for mutation in ["extra-source", "duplicate-source", "source-kind", "source-name", "source-child",
+        for platform_scaffold, mutation in product((False, True), ["extra-source", "duplicate-source", "source-kind", "source-name", "source-child",
                          "duplicate-variant", "variant-name", "variant-title", "variant-child",
                          "group-type", "group-name", "group-child", "duplicate-group", "extra-agent-group",
                          "selection-child", "duplicate-empty-selection", "settings-attribute", "group-text-tail",
                          "reordered-default-settings", "agent-group-child", "duplicate-agent-presentation",
                          "extra-agent-selection", "extra-dataset", "extra-root-node", "agent-source-child",
-                         "missing-agent-source", "missing-agent-dataset", "missing-agent-variant", "missing-agent-group"]:
-            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as raw:
-                workspace = dcs_physical_fixture(Path(raw))
+                         "missing-agent-source", "missing-agent-dataset", "missing-agent-variant", "missing-agent-group"]):
+            # The canonical settings have only one child, so there is no order to reverse.
+            if platform_scaffold and mutation == "reordered-default-settings":
+                continue
+            with self.subTest(mutation=mutation, platform_scaffold=platform_scaffold), \
+                 tempfile.TemporaryDirectory() as raw:
+                workspace = dcs_physical_fixture(Path(raw), platform_scaffold=platform_scaffold)
                 path = workspace / NEW_DCS_XML
                 document = ET.parse(path)
                 root = document.getroot()
@@ -291,9 +386,15 @@ class AgentEvaluationAuditTests(unittest.TestCase):
                 elif mutation == "duplicate-group":
                     settings.append(copy.deepcopy(group))
                 elif mutation == "selection-child":
-                    ET.SubElement(settings.find(t + "selection"), t + "item")
+                    selection = settings.find(t + "selection")
+                    if selection is None:
+                        selection = ET.SubElement(settings, t + "selection")
+                    ET.SubElement(selection, t + "item")
                 elif mutation == "duplicate-empty-selection":
-                    settings.insert(0, copy.deepcopy(settings.find(t + "selection")))
+                    selection = settings.find(t + "selection")
+                    if selection is None:
+                        selection = ET.SubElement(settings, t + "selection")
+                    settings.insert(0, copy.deepcopy(selection))
                 elif mutation == "settings-attribute":
                     settings.set("changed", "true")
                 elif mutation == "group-text-tail":

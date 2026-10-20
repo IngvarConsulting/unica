@@ -23,6 +23,7 @@ from pathlib import Path
 from tests.ci.acceptance_profiles import REPO, host_target, isolated_environment
 
 FIXTURE = REPO / "tests/fixtures/acceptance/agent-dcs"
+PLATFORM_DCS_SCAFFOLD = REPO / "tests/fixtures/platform_8_3_27/template-new-xml/native-canonical-dcs-content.xml"
 XML = "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml"
 DCS_TEMPLATE = "cf:Report.F05Report.Template.F05Schema"
 DCS_OWNER = "cf:Report.F05Report"
@@ -534,7 +535,13 @@ def verify_dcs_images(workspace):
             raise ValueError("creation scaffold source changed")
     default_settings = one(default_variant, t + "settings")
     optional_settings = [one(default_settings, t + "selection"), one(default_settings, t + "item")]
+    canonical, canonical_contexts = xml_with_namespaces(PLATFORM_DCS_SCAFFOLD)
+    canonical_variant = one(canonical, s + "settingsVariant")
     for variant in variants:
+        # The native 8.3.27 export omits the legacy empty selection and order.
+        # Match the whole variant so the two frozen forms cannot be mixed.
+        if xml_shape(variant, new_contexts) == xml_shape(canonical_variant, canonical_contexts):
+            continue
         settings = one(variant, t + "settings")
         children = list(settings)
         expected_tags = [node.tag for node in optional_settings]
