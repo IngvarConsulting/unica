@@ -1299,6 +1299,8 @@ mod metadata_can_tests;
 
 #[cfg(test)]
 mod html_template_tests;
+#[cfg(test)]
+mod new_xml_tests;
 
 #[cfg(test)]
 pub(crate) mod actor_capacity_tests {

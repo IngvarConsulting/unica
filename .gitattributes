@@ -58,3 +58,10 @@ tests/fixtures/acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates/Platf
 
 # Keep the native-validated whole-template-removal fixture bytes on every host.
 tests/fixtures/acceptance/workspace-whole-template-removal/** -text -whitespace
+
+# Native new-XML oracles retain BOM, CRLF and absence of a terminal newline.
+tests/fixtures/platform_8_3_27/new-xml/native-form-descriptor.xml -text whitespace=cr-at-eol
+tests/fixtures/platform_8_3_27/new-xml/native-form-content.xml -text whitespace=cr-at-eol
+tests/fixtures/platform_8_3_27/new-xml/native-catalog-descriptor.xml -text whitespace=cr-at-eol
+tests/fixtures/platform_8_3_27/new-xml/native-form-module.bsl -text whitespace=cr-at-eol
+tests/fixtures/platform_8_3_27/new-xml/native-chart-of-accounts-descriptor.xml -text whitespace=cr-at-eol
