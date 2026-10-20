@@ -1206,9 +1206,12 @@ fn locate_addressed_replacement(
             } else {
                 method.start
             };
-            // A full Method.Body roundtrip includes the entire closing line,
-            // including an inline comment returned by view.
-            let end = if target.with_doc_comment || text[method.end..line_end].trim().is_empty() {
+            // A full Method.Body roundtrip includes an inline closing comment,
+            // but executable code on that line belongs outside this method.
+            let closing_tail = text[method.end..line_end].trim();
+            let end = if closing_tail.is_empty()
+                || (target.with_doc_comment && closing_tail.starts_with("//"))
+            {
                 line_end
             } else {
                 method.end
@@ -4646,6 +4649,31 @@ pub(super) mod tests {
                     assert_eq!(repeated.after, post.after);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn method_body_replacement_keeps_executable_tail_on_its_closing_line() {
+        for eol in ["", "\n", "\r\n"] {
+            let before =
+                format!("Procedure Base() EndProcedure Procedure Neighbor() EndProcedure{eol}");
+            let operation = CodePlanOperation::Replace(CodeReplaceArgs {
+                at: crate::domain::address::QualifiedAddress::parse(
+                    "main:CommonModule.Sample.Method.Base.Body",
+                )
+                .unwrap(),
+                anchor: None,
+                text: "Procedure Base() Value = 2; EndProcedure".to_owned(),
+            });
+            let post = plan_code_postimage(before.as_bytes(), &operation, 0).unwrap();
+            assert_eq!(
+                post.after,
+                format!("Procedure Base() Value = 2; EndProcedure Procedure Neighbor() EndProcedure{eol}").as_bytes(),
+                "a Body replacement must not consume the next method on the same line"
+            );
+            let repeated = plan_code_postimage(&post.after, &operation, 0).unwrap();
+            assert!(repeated.no_op);
+            assert_eq!(repeated.after, post.after);
         }
     }
 
