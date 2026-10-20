@@ -1,0 +1,13 @@
+{
+  "names": [
+    "interfaces::mcp::tests::canonical_manual_cancellation_reused_id_keeps_old_control_and_targets_new_receipt"
+  ],
+  "filterExpression": "test(/^interfaces::mcp::tests::canonical_manual_cancellation_reused_id_keeps_old_control_and_targets_new_receipt$/)",
+  "attemptsPerCase": 1,
+  "retries": 0,
+  "ordinaryFeatures": [
+    "default"
+  ],
+  "inventoryProfile": "queue",
+  "execution": "retained ordinary libtest --exact; no nextest run"
+}

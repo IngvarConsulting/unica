@@ -1,0 +1,61 @@
+{
+  "schema": 1,
+  "kind": "windows-manual-cancel-init-flush-first-payload",
+  "caseCommit": "b471028e270826bc03ee163efe91a876d65bbf96",
+  "selectedCases": 1,
+  "retries": 0,
+  "ordinaryFeatures": [
+    "default"
+  ],
+  "sourcePinsCount": 14,
+  "environmentContractSource": {
+    "path": "tests/fixtures/mcp/host-workspace-context.json",
+    "sha256": "addfd5ffae105db397e4e68569f816db61ec4a59e10339661cae401abecceeb3"
+  },
+  "clearEnvironment": [
+    "CARGO_BUILD_TARGET",
+    "CARGO_ENCODED_RUSTFLAGS",
+    "CLAUDE_PROJECT_DIR",
+    "EMBEDDING_API_KEY",
+    "EMBEDDING_URL",
+    "RUSTC_BOOTSTRAP",
+    "RUSTC_WORKSPACE_WRAPPER",
+    "RUSTC_WRAPPER",
+    "RUSTFLAGS",
+    "UNICA_ARTIFACT_CACHE",
+    "UNICA_HOST_CONTEXT_REQUIRED",
+    "UNICA_RUNTIME_MANIFEST",
+    "UNICA_TEST_WORKSPACE_SERVICE_EXE",
+    "ZCODE_PROJECT_DIR"
+  ],
+  "members": [
+    {
+      "path": "README.md",
+      "sha256": "7e52884dcb7b5b6d10f96e6ce7251b9eb695788d36caa9014f3383c87833e264",
+      "bytes": 1151
+    },
+    {
+      "path": "input-pins.json",
+      "sha256": "004f729b4f50309d64eb33b35f2b4d50a3cfc1040dbbd0327eaf8c8cac56187a",
+      "bytes": 2579
+    },
+    {
+      "path": "owned_commands.py",
+      "sha256": "f995b2608359753120b1658dd0b831819ed35a3eb15f99717eda19fdcfa01fe4",
+      "bytes": 33516
+    },
+    {
+      "path": "run_candidate.py",
+      "sha256": "997cabbf98129735b70ebf8cc731dc210895500d43c03e40a7f02bc0af6199e9",
+      "bytes": 20234
+    },
+    {
+      "path": "selection.json",
+      "sha256": "403968ad2011ed0a256c0569febabc1b9834856480554106fc1bc3a89f03e987",
+      "bytes": 456
+    }
+  ],
+  "ready": true,
+  "reuseControl": "7fceba5dfd299f507d4b830a308c587c80f0aed4",
+  "observation": "fixed first"
+}
