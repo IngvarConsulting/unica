@@ -1,0 +1,95 @@
+{
+  "schema": 1,
+  "caseCommit": "c79d24db82dc3f541f0a6c715b7f4727c4c2e3de",
+  "ready": true,
+  "codeCommit": "3f9739b787b09ff27484224dff568189f7ba2dbe",
+  "mainParent": "da36e2a5712dd4e593cc250e74b94ffb89d340f6",
+  "sourceBinding": "All 17 selected files reread from the clean immutable candidate and compared byte-for-byte with Git. The exact commit, not this selected list, binds the full tracked tree.",
+  "pins": [
+    {
+      "path": "crates/unica-coder/src/infrastructure/execution_store/namespace.rs",
+      "sha256": "7c5b8e0990349dfde5bf3b5cdf1d895c23f763ef1cd5227be852d999290a3c28",
+      "bytes": 19296
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/platform/filesystem/execution_store.rs",
+      "sha256": "5d75c611c61c0ad5211d4164e491bcd5d3b75dbb6de1649ee27796fd3fd3dd44",
+      "bytes": 22382
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/platform/filesystem/execution_store/bootstrap_tests.rs",
+      "sha256": "779e34e3523758873bd51bec00d519ac1e27d767a2e39ae2ede76ea60461e4e8",
+      "bytes": 16957
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/platform/filesystem/execution_store/file_tests.rs",
+      "sha256": "9f08ad94b4b0f426083e0d96eb4ee94abb0f17df4cf44e9eb47e01aac83a2de8",
+      "bytes": 23603
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/platform/filesystem/execution_store/owner_tests.rs",
+      "sha256": "3f96ccc57832240f2c722be9d8bdbf2190d8bcbc522b9952c1c4b7a9cb24b71b",
+      "bytes": 14005
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/platform/filesystem/execution_store/process_tests.rs",
+      "sha256": "6c199eb9ae4a3277966a30c55127110b750220b06722e4a5f9bc2a8174865dac",
+      "bytes": 26286
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/platform/filesystem/execution_store/tests.rs",
+      "sha256": "dab2d6823e988e654e0439754abeb2f02276392b539378efc12b889cb339d601",
+      "bytes": 14868
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/platform/filesystem.rs",
+      "sha256": "ea3e8ecdac463b3af9be5572c484a4c91e1a2b98ee623da29dcda89214408964",
+      "bytes": 352780
+    },
+    {
+      "path": "crates/unica-coder/src/infrastructure/execution_store.rs",
+      "sha256": "caa3aab824467028ce63bc68805c5bbd5c4bd4285e9ab8a4d8bb460af2dc0c5b",
+      "bytes": 1275
+    },
+    {
+      "path": "Cargo.toml",
+      "sha256": "7b23679c9b01ac042240b4cbc44644b02f28095cc72de914e74fd5980b0822d9",
+      "bytes": 4708
+    },
+    {
+      "path": "Cargo.lock",
+      "sha256": "e73847db9bb8770fa76484341bad98f748c6af41fbf70540d100b5c27d3d3cad",
+      "bytes": 74003
+    },
+    {
+      "path": "crates/unica-coder/Cargo.toml",
+      "sha256": "fdab93a2fdf0ad6970f5e8910411b02584ca99b22debb3a5f2b5fa2b12d906e1",
+      "bytes": 2797
+    },
+    {
+      "path": "crates/unica-bootstrap/Cargo.toml",
+      "sha256": "bf66d961e62040c9be79b2a793707589c837aa2188734022bad2e8f01cbd116c",
+      "bytes": 1137
+    },
+    {
+      "path": "vendor/ureq/Cargo.toml",
+      "sha256": "4a21b039ac6e22175e41dd6b6ce350c2c9986992024937df201768d9f640e4f1",
+      "bytes": 4216
+    },
+    {
+      "path": ".config/nextest.toml",
+      "sha256": "8371bdf1392a3c64097e077b05eeaecd6f6faf264a665fbe3fbaa60b9d3a9ed6",
+      "bytes": 27879
+    },
+    {
+      "path": "scripts/ci/probe-unica-wire.py",
+      "sha256": "b126d1905a80ec5f062d79206a9f1e3ddd8ce8ce94715d8f02b45e9c789810ad",
+      "bytes": 51853
+    },
+    {
+      "path": "tests/fixtures/mcp/host-workspace-context.json",
+      "sha256": "addfd5ffae105db397e4e68569f816db61ec4a59e10339661cae401abecceeb3",
+      "bytes": 149
+    }
+  ]
+}

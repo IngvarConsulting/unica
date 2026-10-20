@@ -1,0 +1,13 @@
+{
+  "names": [
+    "infrastructure::platform::filesystem::execution_store::tests::unsupported_durability_refuses_before_creating_a_stage_or_namespace"
+  ],
+  "filterExpression": "test(/^infrastructure::platform::filesystem::execution_store::tests::unsupported_durability_refuses_before_creating_a_stage_or_namespace$/)",
+  "attemptsPerCase": 1,
+  "retries": 0,
+  "ordinaryFeatures": [
+    "default"
+  ],
+  "inventoryProfile": "queue",
+  "execution": "retained ordinary libtest --exact; no nextest run"
+}
