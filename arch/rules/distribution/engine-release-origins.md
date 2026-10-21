@@ -1,10 +1,10 @@
 ---
 id: INV.PKG.ENGINE-RELEASE-SOURCES
 check:
-  - crates/unica-bootstrap/tests/manifest_contract.rs::a_maintained_engine_source_is_approved_without_opening_other_origins
-  - crates/unica-bootstrap/tests/manifest_contract.rs::an_engine_is_accepted_from_the_toolchain_release
-  - crates/unica-bootstrap/tests/manifest_contract.rs::an_engine_from_an_unapproved_origin_is_refused
-  - crates/unica-bootstrap/tests/manifest_contract.rs::an_engine_may_not_borrow_the_core_origin
+  - crates/unica-artifact-delivery/tests/manifest_contract.rs::a_maintained_engine_source_is_approved_without_opening_other_origins
+  - crates/unica-artifact-delivery/tests/manifest_contract.rs::an_engine_is_accepted_from_the_toolchain_release
+  - crates/unica-artifact-delivery/tests/manifest_contract.rs::an_engine_from_an_unapproved_origin_is_refused
+  - crates/unica-artifact-delivery/tests/manifest_contract.rs::an_engine_may_not_borrow_the_core_origin
   - tests/ci/test_product_contracts.py::ProductContractTests.test_both_sides_of_the_wire_approve_the_same_release_origins
 ---
 

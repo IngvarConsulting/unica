@@ -36,8 +36,9 @@ ADMITTED = {
     "queue": ("small", "medium"),
     "main": ("small", "medium"),
     "release": SIZES,
-    # Ночной прогон: только тяжёлый Rust-ярус; Python-наборов этого размера нет.
-    "large": ("large",),
+    # Keep the historical gate/report identity, but execute the full nightly
+    # product inventory. Old large-only reports are not full-nightly evidence.
+    "large": SIZES,
 }
 
 # Наборы Python: сначала проверки CI, потом инструментов разработчика.

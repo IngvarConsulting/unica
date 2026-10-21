@@ -26,27 +26,24 @@ use super::v13_infobase_exports::{
     valid_1c_identifier, RunnerAbsence, CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
 };
 use super::v13_source_set_name::{source_set_name_guidance, valid_source_set_name};
-use crate::application::invocation_store::ToolIdentity;
-use crate::domain::cancellation::CancellationToken;
-use crate::domain::invocation::{DomainResult, SafeIdentityHash};
-use crate::domain::refusal::RefusalCode;
-use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::bundled_tools::BundledTool;
+use unica_adapter_v8_runner::full_dump::FullDumpSelection;
+use unica_artifact_delivery::engine::BundledTool;
+use unica_execution::invocation_store::ToolIdentity;
 #[cfg(test)]
-use crate::infrastructure::internal_adapters::ProcessOutput;
-use crate::infrastructure::internal_adapters::{
-    ProcessCommand, ProcessRunner, SystemProcessRunner,
-};
-use crate::infrastructure::platform::full_dump_publication::{
-    FullDumpSelection, VerifiedFullDumpPublication,
-};
-use crate::infrastructure::redaction::redactor;
-use crate::infrastructure::source_roots::normalize_path_identity;
+use unica_process::runner::ProcessOutput;
+use unica_process::runner::{ProcessCommand, ProcessRunner, SystemProcessRunner};
+use unica_source_contract::workspace::WorkspaceContext;
+
 use crate::infrastructure::workspace::discover_workspace;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use unica_execution_contract::invocation::{DomainResult, SafeIdentityHash};
+use unica_redaction::redactor;
+use unica_refusal::RefusalCode;
+use unica_work_control::cancellation::CancellationToken;
+use unica_workspace::paths::normalize_path_identity;
 
 pub(super) const OPERATION: &str = "pull";
 /// Имя команды раннера и в командной строке, и в конверте: с 0.12 раннер
@@ -512,13 +509,12 @@ fn reject_absent_runner(absence: RunnerAbsence) -> DomainResult {
 mod tests {
     use super::super::v13_infobase_exports::map_runner_code;
     use super::*;
-    use crate::domain::refusal::Outcome;
-    use crate::infrastructure::internal_adapters::{
-        ProcessLineReply, ProcessStreamFailure, ProcessStreamOutput,
-    };
-    use crate::infrastructure::platform::full_dump_publication::with_test_platform;
     use std::fs;
     use std::sync::Mutex;
+    use unica_adapter_v8_runner::full_dump::with_test_platform;
+    use unica_process::runner::{ProcessStreamFailure, ProcessStreamOutput};
+    use unica_process::ProcessLineReply;
+    use unica_refusal::Outcome;
 
     type ApplyEffect = Box<dyn Fn(&ProcessCommand, &Path)>;
 
@@ -606,6 +602,7 @@ mod tests {
             panic!("source export must exchange live publication frames")
         }
 
+        /// Drive the fixture publication protocol with configured faults and stop replies.
         fn run_controlled_streaming_staged(
             &self,
             command: &ProcessCommand,
@@ -734,8 +731,8 @@ mod tests {
                     }
                 }
             }
-            if !stopped
-                && !(published && matches!(&self.fault, Some(PublicationFault::MissingTerminal)))
+            if !(stopped
+                || (published && matches!(&self.fault, Some(PublicationFault::MissingTerminal))))
             {
                 if published && matches!(&self.fault, Some(PublicationFault::MalformedTerminal)) {
                     stopped = on_line(3, b"not a JSON frame") == ProcessLineReply::Stop;
@@ -1186,15 +1183,17 @@ mod tests {
         let cancellation = CancellationToken::new();
         let cancel_waiter = cancellation.clone();
         let runner = SequenceRunner::new(Vec::new());
-        let result = crate::infrastructure::platform::full_dump_publication::with_test_project_lock_contention(
+        let result = unica_workspace::full_dump::test_support::with_test_project_lock_contention(
             move || cancel_waiter.cancel(),
-            || execute_with_resolved_runner(
-                &prepared(root.path(), ExportMode::Full, None, None, true),
-                &runner,
-                cancellation,
-                &tool(root.path()),
-                "0.15.2",
-            ),
+            || {
+                execute_with_resolved_runner(
+                    &prepared(root.path(), ExportMode::Full, None, None, true),
+                    &runner,
+                    cancellation,
+                    &tool(root.path()),
+                    "0.15.2",
+                )
+            },
         );
         assert!(!result.ok);
         assert_eq!(result.diagnostics[0]["code"], "cancelled");
@@ -1424,7 +1423,7 @@ mod tests {
             let target = root.path().join("main");
             write_valid_dump(&target, false);
             fs::write(target.join("keep.bsl"), "unchanged").unwrap();
-            let original = crate::test_support::tree_snapshot(&target);
+            let original = unica_workspace::test_support::tree_snapshot(&target);
             let mut applied = envelope(root.path(), "main", "FULL", None, true);
             match defect {
                 "command" => applied["command"] = json!("push"),
@@ -1499,7 +1498,7 @@ mod tests {
                 "{defect}"
             );
             assert_eq!(
-                crate::test_support::tree_snapshot(&target),
+                unica_workspace::test_support::tree_snapshot(&target),
                 original,
                 "{defect}"
             );
@@ -1517,7 +1516,7 @@ mod tests {
             let root = workspace();
             let target = root.path().join("main");
             write_valid_dump(&target, false);
-            let original = crate::test_support::tree_snapshot(&target);
+            let original = unica_workspace::test_support::tree_snapshot(&target);
             let mut runner = SequenceRunner::exporting(
                 vec![process(
                     envelope(root.path(), "main", "FULL", None, false),
@@ -1540,7 +1539,10 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|reply| reply["decision"] == "continue"));
-            assert_eq!(crate::test_support::tree_snapshot(&target), original);
+            assert_eq!(
+                unica_workspace::test_support::tree_snapshot(&target),
+                original
+            );
             assert!(result.changed.is_empty());
         }
     }
@@ -1563,11 +1565,11 @@ mod tests {
                 "preserve foreign target",
             )
             .unwrap();
-            let foreign = crate::test_support::tree_snapshot(outside.path());
+            let foreign = unica_workspace::test_support::tree_snapshot(outside.path());
             let target = root.path().join("main");
             write_valid_dump(&target, false);
             fs::write(target.join("keep.bsl"), "preserve original sources").unwrap();
-            let original = crate::test_support::tree_snapshot(&target);
+            let original = unica_workspace::test_support::tree_snapshot(&target);
             let mut runner = SequenceRunner::exporting(
                 vec![
                     process(envelope(root.path(), "main", "FULL", None, false), true),
@@ -1593,12 +1595,12 @@ mod tests {
             assert!(!result.ok, "{field}: {result:?}");
             assert!(result.changed.is_empty(), "{field}: {result:?}");
             assert_eq!(
-                crate::test_support::tree_snapshot(&target),
+                unica_workspace::test_support::tree_snapshot(&target),
                 original,
                 "{field}"
             );
             assert_eq!(
-                crate::test_support::tree_snapshot(outside.path()),
+                unica_workspace::test_support::tree_snapshot(outside.path()),
                 foreign,
                 "{field}"
             );
@@ -1618,7 +1620,7 @@ mod tests {
             let root = workspace();
             let target = root.path().join("main");
             write_valid_dump(&target, false);
-            let original = crate::test_support::tree_snapshot(&target);
+            let original = unica_workspace::test_support::tree_snapshot(&target);
             let mut runner = SequenceRunner::exporting(
                 vec![process(
                     envelope(root.path(), "main", "FULL", None, false),
@@ -1653,7 +1655,10 @@ mod tests {
                 "apply must not start after changed inputs"
             );
             assert!(runner.stage_writes.lock().unwrap().is_empty());
-            assert_eq!(crate::test_support::tree_snapshot(&target), original);
+            assert_eq!(
+                unica_workspace::test_support::tree_snapshot(&target),
+                original
+            );
             assert!(result.changed.is_empty());
         }
     }
@@ -1695,7 +1700,7 @@ mod tests {
         let target = root.path().join("main");
         write_valid_dump(&target, false);
         fs::write(target.join("local.bsl"), b"original public source").unwrap();
-        let before = crate::test_support::tree_snapshot(&target);
+        let before = unica_workspace::test_support::tree_snapshot(&target);
         let writer = Arc::new(Mutex::new(None));
         let writer_for_runner = writer.clone();
         let mut runner = SequenceRunner::exporting(
@@ -1757,7 +1762,10 @@ mod tests {
             Some(result)
         };
         let mut writer = writer.lock().unwrap().take().unwrap();
-        assert_eq!(crate::test_support::tree_snapshot(&target), before);
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&target),
+            before
+        );
         assert!(
             !writer.worker.as_ref().unwrap().is_finished(),
             "the fixture must still own a live stage writer"
@@ -1775,7 +1783,10 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(fs::read(&writer.path).unwrap(), b"before\nafter\n");
-        assert_eq!(crate::test_support::tree_snapshot(&target), before);
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&target),
+            before
+        );
         if let Some(result) = result {
             assert_ne!(
                 result.data.as_ref().and_then(|data| data["state"].as_str()),
@@ -1805,9 +1816,13 @@ mod tests {
 
     #[test]
     fn full_export_reports_unconfirmed_private_location_without_changing_publication_facts() {
-        use crate::infrastructure::platform::filesystem::{
-            file_identity, is_file_sharing_violation, open_directory_nofollow, FileIdentity,
+        use unica_workspace::paths::is_file_sharing_violation;
+        use unica_workspace::read::{
+            open_read_directory_nofollow as open_directory_nofollow, FileIdentity, ReadFile,
         };
+        fn file_identity(handle: &ReadFile) -> std::io::Result<FileIdentity> {
+            handle.identity()
+        }
         use std::collections::BTreeMap;
 
         type CapturedTree = (BTreeMap<PathBuf, Vec<u8>>, BTreeMap<PathBuf, FileIdentity>);
@@ -1821,7 +1836,9 @@ mod tests {
                 let handle = if current.is_dir() {
                     open_directory_nofollow(current).unwrap()
                 } else {
-                    fs::File::open(current).unwrap()
+                    unica_workspace::test_support::read_file_from_fixture_file(
+                        fs::File::open(current).unwrap(),
+                    )
                 };
                 identities.insert(
                     current.strip_prefix(root).unwrap().to_path_buf(),
@@ -1835,7 +1852,10 @@ mod tests {
             }
             let mut identities = BTreeMap::new();
             visit(root, root, &mut identities);
-            (crate::test_support::tree_snapshot(root), identities)
+            (
+                unica_workspace::test_support::tree_snapshot(root),
+                identities,
+            )
         }
 
         enum Relocation {
@@ -2365,7 +2385,7 @@ mod tests {
                     "{mode}: unconfirmed finish removed recovery"
                 );
                 assert!(
-                    crate::test_support::tree_snapshot(private_root)
+                    unica_workspace::test_support::tree_snapshot(private_root)
                         .values()
                         .any(|bytes| bytes == b"old source"),
                     "{mode}: original source bytes must remain available for recovery"
@@ -2504,7 +2524,7 @@ mod tests {
 
     #[test]
     fn full_export_preserves_concurrent_occupant_and_retains_rollback_recovery() {
-        use crate::infrastructure::platform::full_dump_publication::{
+        use unica_workspace::full_dump::test_support::{
             with_publication_hook, PublicationCheckpoint,
         };
         let root = workspace();
@@ -2698,15 +2718,22 @@ mod tests {
     }
 
     fn verify_rejected_ready_retains_the_stage_without_a_process_tree_witness(invalid_xml: bool) {
-        use crate::infrastructure::platform::filesystem::{
-            file_identity, open_directory_nofollow, open_regular_child_nofollow,
-            verify_owner_only_acl,
+        use unica_workspace::read::{
+            open_read_directory_nofollow as open_directory_nofollow,
+            open_read_regular_child_nofollow as open_regular_child_nofollow, FileIdentity,
+            ReadFile,
         };
-        use crate::infrastructure::platform::full_dump_publication::{
-            with_publication_hook, PublicationCheckpoint,
-        };
+        fn file_identity(handle: &ReadFile) -> std::io::Result<FileIdentity> {
+            handle.identity()
+        }
+        fn verify_owner_only_acl(handle: &ReadFile) -> std::io::Result<()> {
+            handle.verify_owner_only()
+        }
         use std::ffi::OsStr;
         use std::io::Read;
+        use unica_workspace::full_dump::test_support::{
+            with_publication_hook, PublicationCheckpoint,
+        };
 
         let root = workspace();
         let target = root.path().join("main");
@@ -2719,7 +2746,7 @@ mod tests {
         .unwrap();
         let original_primary = fs::read(root.path().join(CONFIG_NAME)).unwrap();
         let original_local = fs::read(root.path().join(LOCAL_CONFIG_NAME)).unwrap();
-        let target_before = crate::test_support::tree_snapshot(&target);
+        let target_before = unica_workspace::test_support::tree_snapshot(&target);
         let target_identity = file_identity(&open_directory_nofollow(&target).unwrap()).unwrap();
         let mut runner = SequenceRunner::exporting(
             vec![
@@ -2776,7 +2803,10 @@ mod tests {
                 concurrent_input
             );
         }
-        assert_eq!(crate::test_support::tree_snapshot(&target), target_before);
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&target),
+            target_before
+        );
         assert_eq!(
             file_identity(&open_directory_nofollow(&target).unwrap()).unwrap(),
             target_identity

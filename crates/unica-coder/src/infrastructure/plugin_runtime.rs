@@ -1,4 +1,3 @@
-use serde_json::Value;
 use std::env;
 use std::path::{Path, PathBuf};
 
@@ -61,15 +60,6 @@ fn plugin_root_from_base(base: &Path) -> Option<PathBuf> {
         return Some(base.to_path_buf());
     }
     None
-}
-
-pub fn value_to_cli_string(value: &Value) -> String {
-    match value {
-        Value::String(text) => text.clone(),
-        Value::Number(number) => number.to_string(),
-        Value::Bool(flag) => flag.to_string(),
-        other => serde_json::to_string(other).unwrap_or_else(|_| other.to_string()),
-    }
 }
 
 #[cfg(test)]

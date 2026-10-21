@@ -1,220 +1,52 @@
 #![allow(dead_code, unused_imports)]
+use crate::infrastructure::interface_composition::*;
+use crate::infrastructure::subsystem_composition::*;
+use unica_metadata::interface::*;
+use unica_metadata::subsystem::*;
+use unica_metadata_designer::interface::*;
+use unica_metadata_designer::subsystem::*;
+use unica_source_designer::read::file_stem_string;
 
 use crate::application::operation_descriptors::{CFE_VALIDATE_PATH, CF_PATH, RIGHTS_PATH};
-use crate::application::{AdapterOutcome, SupportGuardRequirement};
-use crate::domain::address::QualifiedAddress;
-use crate::domain::format_profile::{
-    classify_root_version, ExportFormatVersion, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
-};
-use crate::domain::source_target::{
-    MetadataAddress, ResolvedTarget, SourceTarget, SourceTargetError, SourceTargetErrorCode,
-    TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
-};
-use crate::domain::support_state::{SupportReadError, SupportReadErrorCode};
-use crate::domain::workspace::WorkspaceContext;
+use crate::application::SupportGuardRequirement;
+use crate::infrastructure::form_composition::*;
 use crate::infrastructure::native_operations::logical_selector::{
     logical_selection, physical_selection, typed_reader_metadata_target, AttachedResource,
     ResolvedReadTarget,
 };
-use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
 use crate::infrastructure::platform_xml_source_targets::{
     resolve_platform_xml_target, revalidate_platform_xml_target, ClosedPlatformXmlTarget,
     TargetKindPolicy,
 };
-use crate::infrastructure::source_roots::normalize_path_identity;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-
-use super::compile_transaction::CompileTransaction;
-use super::single_file_publisher::{publish, PublishMode, PublishRequest};
-use super::{
-    cf::*, cfe::*, dcs::*, form::*, interface::*, meta::*, mxl::*, role::*, subsystem::*,
-    template::*,
+use unica_address::address::QualifiedAddress;
+use unica_address::source_target::{
+    MetadataAddress, ResolvedTarget, SourceTarget, SourceTargetError, SourceTargetErrorCode,
+    TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
 };
-pub(crate) fn resolve_form_info_path(mut form_path: PathBuf) -> PathBuf {
-    if form_path.is_dir() {
-        form_path = form_path.join("Ext").join("Form.xml");
-    }
-    if !form_path.is_file()
-        && form_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name == "Form.xml")
-    {
-        let candidate = form_path
-            .parent()
-            .unwrap_or_else(|| Path::new(""))
-            .join("Ext")
-            .join("Form.xml");
-        if candidate.is_file() {
-            form_path = candidate;
-        }
-    }
-    if !form_path.is_file()
-        && form_path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("xml"))
-    {
-        let stem = form_path.file_stem().and_then(|stem| stem.to_str());
-        if let (Some(stem), Some(parent)) = (stem, form_path.parent()) {
-            let candidate = parent.join(stem).join("Ext").join("Form.xml");
-            if candidate.is_file() {
-                form_path = candidate;
-            }
-        }
-    }
-    form_path
-}
+use unica_execution_contract::adapter_outcome::AdapterOutcome;
+use unica_forms::facts::*;
+use unica_forms_designer::codec::*;
+use unica_metadata::support_state::{SupportReadError, SupportReadErrorCode};
+use unica_metadata_designer::support::{
+    parse_support_state_compat_bytes, parse_support_state_strict_bytes,
+    support_root_uuid_from_bytes, SupportState,
+};
+use unica_source_contract::workspace::WorkspaceContext;
+use unica_source_designer::format_profile::{
+    classify_root_version, ExportFormatVersion, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
+};
+use unica_workspace::paths::metadata_is_link_or_reparse_point;
+use unica_workspace::paths::normalize_path_identity;
 
-pub(crate) fn resolve_form_add_object_path(mut object_path: PathBuf) -> Result<PathBuf, String> {
-    if object_path.is_dir() {
-        let dir_name = object_path
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("")
-            .to_string();
-        let candidate = object_path.join(format!("{dir_name}.xml"));
-        let sibling = object_path
-            .parent()
-            .map(|parent| parent.join(format!("{dir_name}.xml")))
-            .unwrap_or_else(|| PathBuf::from(format!("{dir_name}.xml")));
-        if candidate.is_file() {
-            object_path = candidate;
-        } else if sibling.is_file() {
-            object_path = sibling;
-        }
-    }
-    if !object_path.is_file() {
-        return Err(format!("Файл объекта не найден: {}", object_path.display()));
-    }
-    Ok(object_path.canonicalize().unwrap_or(object_path))
-}
-
-pub(crate) fn detect_form_add_object(object_text: &str) -> Result<(String, String), String> {
-    let supported = form_add_supported_object_types();
-    let doc = Document::parse(object_text)
-        .map_err(|err| format!("XML parse error in object XML: {err}"))?;
-    for node in doc.descendants().filter(roxmltree::Node::is_element) {
-        let object_type = node.tag_name().name();
-        if !supported.contains(&object_type) {
-            continue;
-        }
-        let Some(props) = meta_info_child(node, "Properties") else {
-            continue;
-        };
-        let Some(object_name) = meta_info_child_text(props, "Name") else {
-            continue;
-        };
-        if !object_name.is_empty() {
-            return Ok((object_type.to_string(), object_name));
-        }
-    }
-    Err(format!(
-        "Не удалось определить тип объекта. Поддерживаемые типы: {}",
-        supported.join(", ")
-    ))
-}
-
-pub(crate) fn validate_form_purpose(object_type: &str, purpose: &str) -> Result<(), String> {
-    const VALID: &[&str] = &["Object", "List", "Choice", "Record"];
-    if !VALID.contains(&purpose) {
-        return Err(format!(
-            "Недопустимое назначение: {purpose}. Допустимые: Object, List, Choice, Record"
-        ));
-    }
-    if purpose == "List" && object_type == "DataProcessor" {
-        return Err("Purpose=List недопустим для DataProcessor".to_string());
-    }
-    if purpose == "Choice"
-        && (form_add_processor_like(object_type) || object_type == "InformationRegister")
-    {
-        return Err(format!("Purpose=Choice недопустим для {object_type}"));
-    }
-    if purpose == "Record" && object_type != "InformationRegister" {
-        return Err("Purpose=Record допустим только для InformationRegister".to_string());
-    }
-    Ok(())
-}
-
-/// Registers `<Form>form_name</Form>` in the owner's top-level `ChildObjects`
-/// in the platform slot of forms (#1385): before the first entry of a kind the
-/// export writes after forms, else after the last entry. An owner without a
-/// known platform order keeps forms before its first template.
-pub(crate) fn register_form_in_object_text(text: &str, form_name: &str) -> String {
-    let entry = format!("\t\t\t<Form>{form_name}</Form>\n");
-    if let Some(offset) = platform_child_object_insertion_offset(text, "Form").or_else(|| {
-        platform_child_object_order(&top_object_kind(text)?)
-            .is_none()
-            .then(|| first_top_child_object_offset(text, "Template"))
-            .flatten()
-    }) {
-        let mut updated = text.to_string();
-        updated.insert_str(offset, &entry);
-        return updated;
-    }
-    if let Some(close) = top_child_objects_close(text) {
-        let line_start = text[..close].rfind('\n').map_or(0, |index| index + 1);
-        let mut updated = text.to_string();
-        if text[line_start..close]
-            .chars()
-            .all(|ch| ch == '\t' || ch == ' ')
-        {
-            updated.insert_str(line_start, &entry);
-        } else {
-            updated.insert_str(close, &format!("\n{entry}\t\t"));
-        }
-        return updated;
-    }
-    if text.contains("<ChildObjects/>") {
-        return text.replacen(
-            "<ChildObjects/>",
-            &format!("<ChildObjects>\n{entry}\t\t</ChildObjects>"),
-            1,
-        );
-    }
-    text.to_string()
-}
-
-fn top_object_kind(text: &str) -> Option<String> {
-    let doc = Document::parse(text.trim_start_matches('\u{feff}')).ok()?;
-    let object = doc
-        .root_element()
-        .children()
-        .find(|node| node.is_element())?;
-    Some(object.tag_name().name().to_string())
-}
-
-/// Byte offset of the closing tag of the metadata object's own
-/// `ChildObjects`; a nested tabular-section block is not it.
-fn top_child_objects_close(text: &str) -> Option<usize> {
-    let body = text.trim_start_matches('\u{feff}');
-    let shift = text.len() - body.len();
-    let doc = Document::parse(body).ok()?;
-    let object = doc
-        .root_element()
-        .children()
-        .find(|node| node.is_element())?;
-    let child_objects = object
-        .children()
-        .find(|node| node.is_element() && node.tag_name().name() == "ChildObjects")?;
-    let range = child_objects.range();
-    let block = &body[range.clone()];
-    if block.ends_with("/>") {
-        return None;
-    }
-    Some(shift + range.start + block.rfind("</")?)
-}
-
-#[derive(Clone)]
-pub(crate) struct Utf8TextSnapshot {
-    pub(crate) raw: Vec<u8>,
-    pub(crate) text: String,
-}
+use super::{cf::*, cfe::*, dcs::*, meta::*, role::*};
+use unica_workspace::compile_transaction::CompileTransaction;
+use unica_workspace::single_file_publisher::{publish, PublishMode, PublishRequest};
 
 /// Exact regular-file bytes used to derive a mutation plan.
 ///
@@ -238,11 +70,9 @@ impl ExactFileInput {
     pub(crate) fn bind_to_staged(
         &self,
         root: &Path,
-        staged: &mut crate::infrastructure::native_operations::apply::ApplyStagedState,
-    ) -> Result<(), crate::infrastructure::native_operations::apply::ApplyStagingError> {
-        use crate::infrastructure::native_operations::apply::{
-            ApplyStagingError, ApplyStagingErrorKind,
-        };
+        staged: &mut unica_workspace::apply::ApplyStagedState,
+    ) -> Result<(), unica_source_contract::proposal::ApplyStagingError> {
+        use unica_source_contract::proposal::{ApplyStagingError, ApplyStagingErrorKind};
         let relative = self.path.strip_prefix(root).map_err(|_| {
             ApplyStagingError::new(
                 ApplyStagingErrorKind::ContainmentIdentity,
@@ -290,1117 +120,18 @@ impl FileBackedJson {
     }
 }
 
-pub(crate) fn read_utf8_sig_snapshot(path: &Path) -> Result<Utf8TextSnapshot, String> {
-    let raw =
-        fs::read(path).map_err(|error| format!("failed to read {}: {error}", path.display()))?;
-    let text = std::str::from_utf8(&raw)
-        .map_err(|error| format!("{} is not valid UTF-8: {error}", path.display()))?
-        .trim_start_matches('\u{feff}')
-        .to_string();
-    Ok(Utf8TextSnapshot { raw, text })
+pub(crate) fn read_utf8_sig_snapshot(
+    path: &Path,
+) -> Result<unica_xml_format::text::Utf8TextSnapshot, String> {
+    // The legacy entry point binds the same ordinary, uncaptured reads. The
+    // route is passed through unchanged; this session construction performs no IO.
+    let reader = unica_workspace::discovery::ProjectDiscoveryReader::new(Path::new(""));
+    unica_source_designer::read::read_utf8_sig_snapshot(&reader, path)
 }
 
 pub(crate) fn read_utf8_sig(path: &Path) -> Result<String, String> {
-    let mut text = fs::read_to_string(path)
-        .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
-    while text.starts_with('\u{feff}') {
-        text.remove(0);
-    }
-    Ok(text)
-}
-
-pub(crate) fn ensure_trailing_newline(mut text: String) -> String {
-    if !text.ends_with('\n') {
-        text.push('\n');
-    }
-    text
-}
-
-pub(crate) fn count_files_recursive(path: &Path) -> usize {
-    let Ok(entries) = fs::read_dir(path) else {
-        return 0;
-    };
-    entries
-        .filter_map(Result::ok)
-        .map(|entry| {
-            let path = entry.path();
-            if path.is_dir() {
-                count_files_recursive(&path)
-            } else if path.is_file() {
-                1
-            } else {
-                0
-            }
-        })
-        .sum()
-}
-
-pub(crate) fn relative_display(path: &Path, base: &Path) -> String {
-    path.strip_prefix(base)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .replace('\\', "/")
-}
-
-pub(crate) fn remove_object_from_subsystems(
-    dir: &Path,
-    obj_type: &str,
-    obj_name: &str,
-    dry_run: bool,
-    stdout: &mut String,
-    subsystems_cleaned: &mut usize,
-    changes: &mut Vec<String>,
-) -> Result<(), String> {
-    let mut entries = fs::read_dir(dir)
-        .map_err(|err| format!("failed to read {}: {err}", dir.display()))?
-        .filter_map(Result::ok)
-        .collect::<Vec<_>>();
-    entries.sort_by_key(|entry| entry.file_name());
-
-    for entry in entries {
-        let path = entry.path();
-        if !path.is_file()
-            || !path
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("xml"))
-        {
-            continue;
-        }
-
-        let mut text = match read_utf8_sig(&path) {
-            Ok(text) => text,
-            Err(_) => continue,
-        };
-        let subsystem_name =
-            first_tag_text_in_xml(&text, "Name").unwrap_or_else(|| file_stem_string(&path));
-        let mut modified = false;
-        loop {
-            let (next_text, removed) = remove_metadata_child_text_with_flag(
-                &text,
-                "Item",
-                &format!("{obj_type}.{obj_name}"),
-            );
-            if !removed {
-                break;
-            }
-            stdout.push_str(&format!(
-                "[OK]    Removed from subsystem '{subsystem_name}'\n"
-            ));
-            *subsystems_cleaned += 1;
-            modified = true;
-            text = next_text;
-        }
-
-        if modified && !dry_run {
-            write_utf8_bom(&path, &ensure_trailing_newline(text))?;
-            changes.push(format!("updated {}", path.display()));
-        }
-
-        let child_dir = path
-            .parent()
-            .unwrap_or(dir)
-            .join(file_stem_string(&path))
-            .join("Subsystems");
-        if child_dir.is_dir() {
-            remove_object_from_subsystems(
-                &child_dir,
-                obj_type,
-                obj_name,
-                dry_run,
-                stdout,
-                subsystems_cleaned,
-                changes,
-            )?;
-        }
-    }
-
-    Ok(())
-}
-
-pub(crate) fn first_tag_text_in_xml(xml_text: &str, local_name: &str) -> Option<String> {
-    for tag in [local_name.to_string(), format!("md:{local_name}")] {
-        let open = format!("<{tag}>");
-        let close = format!("</{tag}>");
-        let Some(start) = xml_text.find(&open) else {
-            continue;
-        };
-        let content_start = start + open.len();
-        let Some(close_rel) = xml_text[content_start..].find(&close) else {
-            continue;
-        };
-        let text = xml_text[content_start..content_start + close_rel].trim();
-        if !text.is_empty() {
-            return Some(text.to_string());
-        }
-    }
-    None
-}
-
-pub(crate) fn file_stem_string(path: &Path) -> String {
-    path.file_stem()
-        .and_then(|name| name.to_str())
-        .unwrap_or_default()
-        .to_string()
-}
-
-pub(crate) fn clear_main_data_composition_schema_text(
-    xml_text: &str,
-    template_name: &str,
-) -> (String, bool) {
-    clear_metadata_reference_text(
-        xml_text,
-        "MainDataCompositionSchema",
-        &format!("Template.{template_name}"),
-    )
-}
-
-pub(crate) fn clear_metadata_reference_text(
-    xml_text: &str,
-    local_name: &str,
-    suffix: &str,
-) -> (String, bool) {
-    for tag in [local_name.to_string(), format!("md:{local_name}")] {
-        let Some(open_start) = xml_text.find(&format!("<{tag}")) else {
-            continue;
-        };
-        let Some(open_end_rel) = xml_text[open_start..].find('>') else {
-            continue;
-        };
-        let content_start = open_start + open_end_rel + 1;
-        let close = format!("</{tag}>");
-        let Some(close_start_rel) = xml_text[content_start..].find(&close) else {
-            continue;
-        };
-        let close_start = content_start + close_start_rel;
-        let content = &xml_text[content_start..close_start];
-        if !content.trim().ends_with(suffix) {
-            continue;
-        }
-        let mut result = String::with_capacity(xml_text.len() - content.len());
-        result.push_str(&xml_text[..content_start]);
-        result.push_str(&xml_text[close_start..]);
-        return (result, true);
-    }
-    (xml_text.to_string(), false)
-}
-
-pub(crate) fn resolve_subsystem_edit_xml(mut path: PathBuf) -> Result<PathBuf, String> {
-    if path.is_dir() {
-        let dir_name = path
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("")
-            .to_string();
-        let candidate = path.join(format!("{dir_name}.xml"));
-        let sibling = path
-            .parent()
-            .map(|parent| parent.join(format!("{dir_name}.xml")))
-            .unwrap_or_else(|| PathBuf::from(format!("{dir_name}.xml")));
-        if candidate.is_file() {
-            path = candidate;
-        } else if sibling.is_file() {
-            path = sibling;
-        } else {
-            return Err(format!(
-                "No {dir_name}.xml found in directory or as sibling"
-            ));
-        }
-    }
-
-    if !path.is_file() {
-        let stem = path
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .unwrap_or("");
-        let parent = path.parent().unwrap_or_else(|| Path::new(""));
-        if stem
-            == parent
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or("")
-        {
-            if let Some(grand) = parent.parent() {
-                let candidate = grand.join(format!("{stem}.xml"));
-                if candidate.is_file() {
-                    path = candidate;
-                }
-            }
-        }
-    }
-
-    if !path.is_file() {
-        return Err(format!("File not found: {}", path.display()));
-    }
-    Ok(path.canonicalize().unwrap_or(path))
-}
-
-pub(crate) fn load_subsystem_edit_model(path: &Path) -> Result<SubsystemEditModel, String> {
-    let text = fs::read_to_string(path)
-        .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
-    parse_subsystem_edit_model(&text, &path.display().to_string())
-}
-
-/// Parses a subsystem descriptor already in memory; `label` names the source
-/// in error messages.
-pub(crate) fn parse_subsystem_edit_model(
-    text: &str,
-    label: &str,
-) -> Result<SubsystemEditModel, String> {
-    let doc = Document::parse(text.trim_start_matches('\u{feff}'))
-        .map_err(|err| format!("XML parse error in {label}: {err}"))?;
-    let root = doc.root_element();
-    if root.tag_name().name() != "MetaDataObject" {
-        return Err(format!(
-            "Expected <MetaDataObject> root element, got <{}>",
-            root.tag_name().name()
-        ));
-    }
-    let Some(sub) = root
-        .children()
-        .find(|node| role_info_element(*node, "Subsystem", Some("http://v8.1c.ru/8.3/MDClasses")))
-    else {
-        return Err("No <Subsystem> element found".to_string());
-    };
-    let Some(props) = meta_info_child(sub, "Properties") else {
-        return Err("No <Properties> element found".to_string());
-    };
-    let Some(child_objects) = meta_info_child(sub, "ChildObjects") else {
-        return Err("No <ChildObjects> element found".to_string());
-    };
-
-    let content = meta_info_child(props, "Content")
-        .map(|content| {
-            content
-                .children()
-                .filter(|node| {
-                    role_info_element(*node, "Item", Some("http://v8.1c.ru/8.3/xcf/readable"))
-                })
-                .filter_map(|node| node.text())
-                .map(str::trim)
-                .map(ToOwned::to_owned)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let children = child_objects
-        .children()
-        .filter(|node| role_info_element(*node, "Subsystem", Some("http://v8.1c.ru/8.3/MDClasses")))
-        .filter_map(|node| node.text())
-        .map(str::trim)
-        .map(ToOwned::to_owned)
-        .collect::<Vec<_>>();
-
-    Ok(SubsystemEditModel {
-        version: root
-            .attribute("version")
-            .unwrap_or(ACTIVE_FORMAT_PROFILE.export_format)
-            .to_string(),
-        uuid: sub
-            .attribute("uuid")
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| stable_uuid(70)),
-        name: meta_info_child_text(props, "Name").unwrap_or_default(),
-        synonym: subsystem_edit_ml_text(props, "Synonym"),
-        comment: meta_info_child_text(props, "Comment").unwrap_or_default(),
-        include_help: meta_info_child_text(props, "IncludeHelpInContents")
-            .unwrap_or_else(|| "true".to_string()),
-        include_ci: meta_info_child_text(props, "IncludeInCommandInterface")
-            .unwrap_or_else(|| "true".to_string()),
-        use_one_command: meta_info_child_text(props, "UseOneCommand")
-            .unwrap_or_else(|| "false".to_string()),
-        explanation: subsystem_edit_ml_text(props, "Explanation"),
-        picture: subsystem_edit_picture_text(props),
-        picture_load_transparent: meta_info_child(props, "Picture")
-            .and_then(|picture| {
-                picture
-                    .children()
-                    .find(|child| role_info_element(*child, "LoadTransparent", None))
-            })
-            .and_then(|node| node.text())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned),
-        content,
-        children,
-    })
-}
-
-/// Change only subsystem membership. Existing entries and all outside XML stay raw.
-pub(crate) fn patch_subsystem_lists(
-    text: &str,
-    model: &SubsystemEditModel,
-    original: Option<&str>,
-) -> Result<String, String> {
-    const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
-    const XR: &str = "http://v8.1c.ru/8.3/xcf/readable";
-    const XSI: &str = "http://www.w3.org/2001/XMLSchema-instance";
-    fn child<'a, 'input>(
-        node: roxmltree::Node<'a, 'input>,
-        name: &str,
-    ) -> Result<Option<roxmltree::Node<'a, 'input>>, String> {
-        let mut found = node.children().filter(|n| n.has_tag_name((MD, name)));
-        let first = found.next();
-        if found.next().is_some() {
-            return Err(format!("ambiguous subsystem {name}"));
-        }
-        Ok(first)
-    }
-    fn lexical_name<'a>(body: &'a str, node: roxmltree::Node<'_, '_>) -> &'a str {
-        body[node.range().start + 1..]
-            .split([' ', '\t', '\r', '\n', '/', '>'])
-            .next()
-            .unwrap()
-    }
-    fn insert(
-        body: &str,
-        node: roxmltree::Node<'_, '_>,
-        value: &str,
-    ) -> Result<(std::ops::Range<usize>, String), String> {
-        let range = node.range();
-        let raw = &body[range.clone()];
-        if raw.ends_with("/>") {
-            let at = range.end - 2;
-            Ok((
-                at..range.end,
-                format!(">{value}</{}>", lexical_name(body, node)),
-            ))
-        } else {
-            let at = raw
-                .rfind("</")
-                .ok_or("subsystem container has no closing tag")?
-                + range.start;
-            Ok((at..at, value.to_owned()))
-        }
-    }
-    let body = text.strip_prefix('\u{feff}').unwrap_or(text);
-    let doc = Document::parse(body).map_err(|e| format!("XML parse error: {e}"))?;
-    if !doc.root_element().has_tag_name((MD, "MetaDataObject")) {
-        return Err("Expected MDClasses MetaDataObject root".to_owned());
-    }
-    let sub = child(doc.root_element(), "Subsystem")?.ok_or("No Subsystem element")?;
-    let props = child(sub, "Properties")?.ok_or("No Properties element")?;
-    let children = child(sub, "ChildObjects")?.ok_or("No ChildObjects element")?;
-    let content = child(props, "Content")?;
-    let original_body = original.map(|s| s.strip_prefix('\u{feff}').unwrap_or(s));
-    let original_doc = original_body
-        .map(Document::parse)
-        .transpose()
-        .map_err(|e| format!("XML parse error: {e}"))?;
-    let mut edits = Vec::new();
-    for (container, parent, name, item_namespace, item_name, desired) in [
-        (content, props, "Content", XR, "Item", &model.content),
-        (
-            Some(children),
-            sub,
-            "ChildObjects",
-            MD,
-            "Subsystem",
-            &model.children,
-        ),
-    ] {
-        let entries: Vec<_> = container
-            .into_iter()
-            .flat_map(|n| n.children())
-            .filter(|n| n.has_tag_name((item_namespace, item_name)))
-            .collect();
-        if let (Some(base_doc), Some(base_body)) = (&original_doc, original_body) {
-            let base_sub = child(base_doc.root_element(), "Subsystem")?
-                .ok_or("No original Subsystem element")?;
-            let base_parent = if name == "Content" {
-                child(base_sub, "Properties")?.ok_or("No original Properties element")?
-            } else {
-                base_sub
-            };
-            let base_container = child(base_parent, name)?;
-            let base_items: Vec<_> = base_container
-                .into_iter()
-                .flat_map(|n| n.children())
-                .filter(|n| n.has_tag_name((item_namespace, item_name)))
-                .map(|n| n.text().unwrap_or("").trim())
-                .collect();
-            // An intervening editor may have changed inherited namespace
-            // bindings. Never transplant raw prefixed XML into a different
-            // context; edit the current list normally in that case.
-            let bindings_compatible = base_container.is_none_or(|base| {
-                let current_scope = container.unwrap_or(parent);
-                base.namespaces()
-                    .all(|ns| current_scope.lookup_namespace_uri(ns.name()) == Some(ns.uri()))
-            });
-            if bindings_compatible
-                && base_items
-                    .iter()
-                    .copied()
-                    .eq(desired.iter().map(String::as_str))
-            {
-                if let Some(node) = container {
-                    let raw = base_container.map_or("", |n| &base_body[n.range()]);
-                    edits.push((node.range(), raw.to_owned()));
-                }
-                continue;
-            }
-        }
-        let current: Vec<_> = entries
-            .iter()
-            .map(|n| n.text().unwrap_or("").trim())
-            .collect();
-        if current
-            .iter()
-            .copied()
-            .eq(desired.iter().map(String::as_str))
-        {
-            continue;
-        }
-        for entry in &entries {
-            if !desired
-                .iter()
-                .any(|v| v == entry.text().unwrap_or("").trim())
-            {
-                edits.push((entry.range(), String::new()));
-            }
-        }
-        let scope = container.unwrap_or(parent);
-        let prefix = scope.lookup_prefix(item_namespace);
-        let tag = prefix.map_or_else(|| item_name.to_owned(), |p| format!("{p}:{item_name}"));
-        let mut added = String::new();
-        for value in desired.iter().filter(|v| !current.contains(&v.as_str())) {
-            if item_namespace == XR {
-                // A QName in xsi:type must bind to the readable namespace too.
-                let xsi_prefix = scope.lookup_prefix(XSI);
-                let xr = prefix.unwrap_or(if xsi_prefix == Some("xr") {
-                    "xr1"
-                } else {
-                    "xr"
-                });
-                let xsi = xsi_prefix.unwrap_or(if xr == "xsi" { "xsi1" } else { "xsi" });
-                let xr_decl = if prefix.is_none() {
-                    format!(" xmlns:{xr}=\"{XR}\"")
-                } else {
-                    String::new()
-                };
-                let xsi_decl = if scope.lookup_prefix(XSI).is_none() {
-                    format!(" xmlns:{xsi}=\"{XSI}\"")
-                } else {
-                    String::new()
-                };
-                added.push_str(&format!(
-                    "<{xr}:Item{xr_decl}{xsi_decl} {xsi}:type=\"{xr}:MDObjectRef\">{}</{xr}:Item>",
-                    escape_xml(value)
-                ));
-            } else {
-                added.push_str(&format!("<{tag}>{}</{tag}>", escape_xml(value)));
-            }
-        }
-        if !added.is_empty() {
-            if let Some(node) = container {
-                edits.push(insert(body, node, &added)?);
-            } else {
-                let prefix = parent.lookup_prefix(MD);
-                let tag = prefix.map_or_else(|| name.to_owned(), |p| format!("{p}:{name}"));
-                edits.push(insert(body, parent, &format!("<{tag}>{added}</{tag}>"))?);
-            }
-        }
-    }
-    edits.sort_by_key(|a| std::cmp::Reverse(a.0.start));
-    let mut updated = body.to_owned();
-    for (range, replacement) in edits {
-        updated.replace_range(range, &replacement);
-    }
-    if body.len() != text.len() {
-        updated.insert(0, '\u{feff}');
-    }
-    Ok(updated)
-}
-
-pub(crate) fn emit_subsystem_edit_model(model: &SubsystemEditModel) -> String {
-    let mut lines = Vec::new();
-    lines.push("<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string());
-    lines.push(format!(
-        "<MetaDataObject {} version=\"{}\">",
-        full_md_namespace_declarations(),
-        escape_xml(&model.version)
-    ));
-    lines.push(format!(
-        "\t<Subsystem uuid=\"{}\">",
-        escape_xml(&model.uuid)
-    ));
-    lines.push("\t\t<Properties>".to_string());
-    lines.push(format!("\t\t\t<Name>{}</Name>", escape_xml(&model.name)));
-    emit_subsystem_edit_ml(&mut lines, "\t\t\t", "Synonym", &model.synonym);
-    if model.comment.is_empty() {
-        lines.push("\t\t\t<Comment/>".to_string());
-    } else {
-        lines.push(format!(
-            "\t\t\t<Comment>{}</Comment>",
-            escape_xml(&model.comment)
-        ));
-    }
-    lines.push(format!(
-        "\t\t\t<IncludeHelpInContents>{}</IncludeHelpInContents>",
-        escape_xml(&model.include_help)
-    ));
-    lines.push(format!(
-        "\t\t\t<IncludeInCommandInterface>{}</IncludeInCommandInterface>",
-        escape_xml(&model.include_ci)
-    ));
-    lines.push(format!(
-        "\t\t\t<UseOneCommand>{}</UseOneCommand>",
-        escape_xml(&model.use_one_command)
-    ));
-    emit_subsystem_edit_ml(&mut lines, "\t\t\t", "Explanation", &model.explanation);
-    if model.picture.is_empty() && model.picture_load_transparent.is_none() {
-        lines.push("\t\t\t<Picture/>".to_string());
-    } else {
-        lines.push("\t\t\t<Picture>".to_string());
-        if !model.picture.is_empty() {
-            lines.push(format!(
-                "\t\t\t\t<xr:Ref>{}</xr:Ref>",
-                escape_xml(&model.picture)
-            ));
-        }
-        if let Some(load_transparent) = &model.picture_load_transparent {
-            lines.push(format!(
-                "\t\t\t\t<xr:LoadTransparent>{}</xr:LoadTransparent>",
-                escape_xml(load_transparent)
-            ));
-        }
-        lines.push("\t\t\t</Picture>".to_string());
-    }
-    if model.content.is_empty() {
-        lines.push("\t\t\t<Content/>".to_string());
-    } else {
-        lines.push("\t\t\t<Content>".to_string());
-        for item in &model.content {
-            lines.push(format!(
-                "\t\t\t\t<xr:Item xsi:type=\"xr:MDObjectRef\">{}</xr:Item>",
-                escape_xml(item)
-            ));
-        }
-        lines.push("\t\t\t</Content>".to_string());
-    }
-    lines.push("\t\t</Properties>".to_string());
-    if model.children.is_empty() {
-        lines.push("\t\t<ChildObjects/>".to_string());
-    } else {
-        lines.push("\t\t<ChildObjects>".to_string());
-        for child in &model.children {
-            lines.push(format!(
-                "\t\t\t<Subsystem>{}</Subsystem>",
-                escape_xml(child)
-            ));
-        }
-        lines.push("\t\t</ChildObjects>".to_string());
-    }
-    lines.push("\t</Subsystem>".to_string());
-    lines.push("</MetaDataObject>".to_string());
-    format!("{}\n", lines.join("\n"))
-}
-
-pub(crate) fn emit_subsystem_edit_ml(lines: &mut Vec<String>, indent: &str, tag: &str, text: &str) {
-    if text.is_empty() {
-        lines.push(format!("{indent}<{tag}/>"));
-        return;
-    }
-    lines.push(format!("{indent}<{tag}>"));
-    lines.push(format!("{indent}\t<v8:item>"));
-    lines.push(format!("{indent}\t\t<v8:lang>ru</v8:lang>"));
-    lines.push(format!(
-        "{indent}\t\t<v8:content>{}</v8:content>",
-        escape_xml(text)
-    ));
-    lines.push(format!("{indent}\t</v8:item>"));
-    lines.push(format!("{indent}</{tag}>"));
-}
-
-pub(crate) fn resolve_subsystem_validate_xml(mut path: PathBuf) -> Result<PathBuf, String> {
-    if path.is_dir() {
-        let dir_name = path
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("");
-        let candidate = path.join(format!("{dir_name}.xml"));
-        let sibling = path
-            .parent()
-            .map(|parent| parent.join(format!("{dir_name}.xml")))
-            .unwrap_or_else(|| PathBuf::from(format!("{dir_name}.xml")));
-        if candidate.exists() {
-            path = candidate;
-        } else if sibling.exists() {
-            path = sibling;
-        } else {
-            return Err(format!(
-                "[ERROR] No {dir_name}.xml found in directory: {}",
-                path.display()
-            ));
-        }
-    }
-
-    if !path.exists() {
-        let stem = path
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .unwrap_or("");
-        let parent = path.parent().unwrap_or_else(|| Path::new(""));
-        if stem
-            == parent
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or("")
-        {
-            if let Some(grand) = parent.parent() {
-                let candidate = grand.join(format!("{stem}.xml"));
-                if candidate.exists() {
-                    path = candidate;
-                }
-            }
-        }
-    }
-
-    if !path.exists() {
-        return Err(format!("[ERROR] File not found: {}", path.display()));
-    }
-    Ok(path)
-}
-
-pub(crate) fn load_subsystem_info_data(
-    path: &Path,
-) -> Result<(SubsystemInfoData, Vec<String>), String> {
-    let text = fs::read_to_string(path)
-        .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
-    parse_subsystem_info_data(path, &text)
-}
-
-pub(crate) fn parse_subsystem_info_data(
-    path: &Path,
-    text: &str,
-) -> Result<(SubsystemInfoData, Vec<String>), String> {
-    let has_ci = subsystem_dir_for_xml(path)
-        .join("Ext")
-        .join("CommandInterface.xml")
-        .is_file();
-    parse_subsystem_info_xml(path, text, has_ci)
-}
-
-pub(crate) fn parse_subsystem_info_xml(
-    path: &Path,
-    text: &str,
-    has_ci: bool,
-) -> Result<(SubsystemInfoData, Vec<String>), String> {
-    let doc = Document::parse(text.trim_start_matches('\u{feff}'))
-        .map_err(|err| format!("XML parse error in {}: {err}", path.display()))?;
-    let root = doc.root_element();
-    let Some(sub) = root
-        .children()
-        .find(|node| role_info_element(*node, "Subsystem", Some("http://v8.1c.ru/8.3/MDClasses")))
-    else {
-        return Err(format!(
-            "[ERROR] Not a valid subsystem XML: {}",
-            path.display()
-        ));
-    };
-    let Some(props) = sub
-        .children()
-        .find(|node| role_info_element(*node, "Properties", Some("http://v8.1c.ru/8.3/MDClasses")))
-    else {
-        return Err(format!(
-            "[ERROR] Not a valid subsystem XML: {}",
-            path.display()
-        ));
-    };
-
-    let name = child_text(props, "Name", Some("http://v8.1c.ru/8.3/MDClasses"));
-    let synonym = props
-        .children()
-        .find(|node| role_info_element(*node, "Synonym", Some("http://v8.1c.ru/8.3/MDClasses")))
-        .map(multilang_text)
-        .unwrap_or_default();
-    let comment = child_text(props, "Comment", Some("http://v8.1c.ru/8.3/MDClasses"));
-    let include_ci = child_text(
-        props,
-        "IncludeInCommandInterface",
-        Some("http://v8.1c.ru/8.3/MDClasses"),
-    );
-    let use_one_command = child_text(
-        props,
-        "UseOneCommand",
-        Some("http://v8.1c.ru/8.3/MDClasses"),
-    );
-    let explanation = props
-        .children()
-        .find(|node| role_info_element(*node, "Explanation", Some("http://v8.1c.ru/8.3/MDClasses")))
-        .map(multilang_text)
-        .unwrap_or_default();
-    let picture = props
-        .children()
-        .find(|node| role_info_element(*node, "Picture", Some("http://v8.1c.ru/8.3/MDClasses")))
-        .and_then(|node| {
-            node.children()
-                .find(|child| role_info_element(*child, "Ref", None))
-                .and_then(|child| child.text())
-        })
-        .unwrap_or("")
-        .to_string();
-    let content_items = subsystem_content_items(props);
-    let groups = subsystem_group_content(&content_items);
-    let child_names = subsystem_child_names(sub);
-    Ok((
-        SubsystemInfoData {
-            name,
-            synonym,
-            comment,
-            include_ci,
-            use_one_command,
-            explanation,
-            picture,
-            content_items,
-            groups,
-            child_names,
-            has_ci,
-        },
-        Vec::new(),
-    ))
-}
-
-pub(crate) fn append_subsystem_overview(lines: &mut Vec<String>, data: &SubsystemInfoData) {
-    lines.push(format!("Подсистема: {}", data.name));
-    if !data.synonym.is_empty() && data.synonym != data.name {
-        lines.push(format!("Синоним: {}", data.synonym));
-    }
-    if !data.comment.is_empty() {
-        lines.push(format!("Комментарий: {}", data.comment));
-    }
-    lines.push(format!("ВключатьВКомандныйИнтерфейс: {}", data.include_ci));
-    lines.push(format!("ИспользоватьОднуКоманду: {}", data.use_one_command));
-    if !data.explanation.is_empty() {
-        lines.push(format!("Пояснение: {}", data.explanation));
-    }
-    if !data.picture.is_empty() {
-        lines.push(format!("Картинка: {}", data.picture));
-    }
-    if data.content_items.is_empty() {
-        lines.push("Состав: пусто".to_string());
-    } else {
-        let parts = data
-            .groups
-            .iter()
-            .map(|(type_name, items)| format!("{type_name}: {}", items.len()))
-            .collect::<Vec<_>>();
-        lines.push(format!(
-            "Состав: {} объектов ({})",
-            data.content_items.len(),
-            parts.join(", ")
-        ));
-    }
-    if !data.child_names.is_empty() {
-        lines.push(format!(
-            "Дочерние подсистемы ({}): {}",
-            data.child_names.len(),
-            data.child_names.join(", ")
-        ));
-    }
-    if data.has_ci {
-        lines.push("Командный интерфейс: есть".to_string());
-    }
-}
-
-pub(crate) fn append_subsystem_content(
-    lines: &mut Vec<String>,
-    data: &SubsystemInfoData,
-    name_filter: &str,
-) {
-    lines.push(format!(
-        "Состав подсистемы {} ({} объектов):",
-        data.name,
-        data.content_items.len()
-    ));
-    lines.push(String::new());
-    if !name_filter.is_empty() {
-        if let Some((_, items)) = data
-            .groups
-            .iter()
-            .find(|(type_name, _)| type_name == name_filter)
-        {
-            lines.push(format!("{name_filter} ({}):", items.len()));
-            for item in items {
-                lines.push(format!("  {item}"));
-            }
-        } else {
-            lines.push(format!("[INFO] Тип '{name_filter}' не найден в составе."));
-            lines.push(format!(
-                "Доступные типы: {}",
-                data.groups
-                    .iter()
-                    .map(|(type_name, _)| type_name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
-        }
-    } else {
-        for (type_name, items) in &data.groups {
-            lines.push(format!("{type_name} ({}):", items.len()));
-            for item in items {
-                lines.push(format!("  {item}"));
-            }
-            lines.push(String::new());
-        }
-    }
-}
-
-pub(crate) fn build_subsystem_tree_entry(
-    xml_path: &Path,
-    prefix: &str,
-    is_last: bool,
-    is_root: bool,
-    lines: &mut Vec<String>,
-) -> Result<(), String> {
-    let (data, _) = load_subsystem_info_data(xml_path)?;
-    let mut markers = Vec::new();
-    if data.has_ci {
-        markers.push("CI");
-    }
-    if data.use_one_command == "true" {
-        markers.push("OneCmd");
-    }
-    if data.include_ci == "false" {
-        markers.push("Скрыт");
-    }
-    let marker = if markers.is_empty() {
-        String::new()
-    } else {
-        format!(" [{}]", markers.join(", "))
-    };
-    let child_str = if data.child_names.is_empty() {
-        String::new()
-    } else {
-        format!(", {} дочерних", data.child_names.len())
-    };
-    let connector = if is_root {
-        ""
-    } else if is_last {
-        "└── "
-    } else {
-        "├── "
-    };
-    lines.push(format!(
-        "{prefix}{connector}{}{} ({} объектов{child_str})",
-        data.name,
-        marker,
-        data.content_items.len()
-    ));
-
-    if !data.child_names.is_empty() {
-        let child_prefix = if is_root {
-            String::new()
-        } else if is_last {
-            format!("{prefix}    ")
-        } else {
-            format!("{prefix}│   ")
-        };
-        let subs_dir = subsystem_dir_for_xml(xml_path).join("Subsystems");
-        for (idx, child_name) in data.child_names.iter().enumerate() {
-            let child_xml = subs_dir.join(format!("{child_name}.xml"));
-            let child_is_last = idx == data.child_names.len() - 1;
-            if child_xml.is_file() {
-                build_subsystem_tree_entry(&child_xml, &child_prefix, child_is_last, false, lines)?;
-            } else {
-                let conn = if child_is_last {
-                    "└── "
-                } else {
-                    "├── "
-                };
-                lines.push(format!("{child_prefix}{conn}{child_name} [NOT FOUND]"));
-            }
-        }
-    }
-    Ok(())
-}
-
-pub(crate) fn paginate_subsystem_info(
-    lines: &mut Vec<String>,
-    args: &Map<String, Value>,
-) -> Option<String> {
-    let total_lines = lines.len();
-    let offset = int_arg(args, &["offset", "Offset"]).unwrap_or(0);
-    let limit = int_arg(args, &["limit", "Limit"]).unwrap_or(150);
-    if offset > 0 {
-        if offset as usize >= total_lines {
-            return Some(format!(
-                "[INFO] Offset {offset} exceeds total lines ({total_lines}). Nothing to show.\n"
-            ));
-        }
-        *lines = lines[offset as usize..].to_vec();
-    }
-    if limit > 0 && lines.len() > limit as usize {
-        let mut shown = lines[..limit as usize].to_vec();
-        shown.push(String::new());
-        shown.push(format!(
-            "[ОБРЕЗАНО] Показано {limit} из {total_lines} строк. Используйте -Offset {} для продолжения.",
-            offset + limit
-        ));
-        *lines = shown;
-    }
-    None
-}
-
-pub(crate) fn push_group_item(groups: &mut Vec<(String, Vec<String>)>, group: &str, item: String) {
-    if let Some((_, items)) = groups.iter_mut().find(|(name, _)| name == group) {
-        items.push(item);
-    } else {
-        groups.push((group.to_string(), vec![item]));
-    }
-}
-
-pub(crate) fn looks_like_uuid_prefix(value: &str) -> bool {
-    value.len() >= 9
-        && value.chars().take(8).all(|ch| ch.is_ascii_hexdigit())
-        && value.as_bytes().get(8) == Some(&b'-')
-}
-
-pub(crate) fn is_1c_identifier(value: &str) -> bool {
-    let mut chars = value.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    if !is_1c_identifier_start(first) {
-        return false;
-    }
-    chars.all(is_1c_identifier_part)
-}
-
-pub(crate) fn is_1c_identifier_start(ch: char) -> bool {
-    ch == '_'
-        || ch.is_ascii_alphabetic()
-        || ('А'..='Я').contains(&ch)
-        || ('а'..='я').contains(&ch)
-        || ch == 'Ё'
-        || ch == 'ё'
-}
-
-pub(crate) fn is_1c_identifier_part(ch: char) -> bool {
-    is_1c_identifier_start(ch) || ch.is_ascii_digit()
-}
-
-pub(crate) fn is_subsystem_content_ref(value: &str) -> bool {
-    let Some((prefix, rest)) = value.split_once('.') else {
-        return false;
-    };
-    !prefix.is_empty() && !rest.is_empty() && prefix.chars().all(|ch| ch.is_ascii_alphabetic())
-}
-
-pub(crate) fn attribute_by_local_name<'a>(
-    node: roxmltree::Node<'a, '_>,
-    local_name: &str,
-) -> Option<&'a str> {
-    node.attributes()
-        .find(|attr| attr.name() == local_name)
-        .map(|attr| attr.value())
-}
-
-pub(crate) fn duplicates_preserve_order(items: &[String]) -> Vec<String> {
-    let mut result = Vec::new();
-    for item in items {
-        let count = items.iter().filter(|candidate| *candidate == item).count();
-        if count > 1 && !result.iter().any(|existing| existing == item) {
-            result.push(item.clone());
-        }
-    }
-    result
-}
-
-pub(crate) fn multilang_text(node: roxmltree::Node<'_, '_>) -> String {
-    for item in node.children().filter(|child| child.is_element()) {
-        let mut lang = "";
-        let mut content = "";
-        for child in item.children().filter(|child| child.is_element()) {
-            match child.tag_name().name() {
-                "lang" => lang = child.text().unwrap_or(""),
-                "content" => content = child.text().unwrap_or(""),
-                _ => {}
-            }
-        }
-        if lang == "ru" && !content.is_empty() {
-            return content.to_string();
-        }
-    }
-    for item in node.children().filter(|child| child.is_element()) {
-        for child in item.children().filter(|child| child.is_element()) {
-            if child.tag_name().name() == "content" {
-                if let Some(text) = child.text() {
-                    if !text.is_empty() {
-                        return text.to_string();
-                    }
-                }
-            }
-        }
-    }
-    String::new()
-}
-
-pub(crate) fn child_text(
-    node: roxmltree::Node<'_, '_>,
-    local_name: &str,
-    namespace: Option<&str>,
-) -> String {
-    node.children()
-        .find(|child| role_info_element(*child, local_name, namespace))
-        .and_then(|child| child.text())
-        .unwrap_or("")
-        .to_string()
-}
-
-pub(crate) fn add_role_info_right(
-    groups: &mut Vec<RoleInfoGroup>,
-    type_prefix: &str,
-    short_name: &str,
-    right: RoleInfoRightSummary,
-) {
-    let group_index = groups
-        .iter()
-        .position(|group| group.type_prefix == type_prefix)
-        .unwrap_or_else(|| {
-            groups.push(RoleInfoGroup {
-                type_prefix: type_prefix.to_string(),
-                objects: Vec::new(),
-            });
-            groups.len() - 1
-        });
-
-    let group = &mut groups[group_index];
-    let object_index = group
-        .objects
-        .iter()
-        .position(|object| object.short_name == short_name)
-        .unwrap_or_else(|| {
-            group.objects.push(RoleInfoObjectSummary {
-                short_name: short_name.to_string(),
-                rights: Vec::new(),
-            });
-            group.objects.len() - 1
-        });
-    group.objects[object_index].rights.push(right);
-}
-
-pub(crate) fn append_role_info_group(
-    lines: &mut Vec<String>,
-    objects: &[RoleInfoObjectSummary],
-    is_denied: bool,
-) {
-    for object in objects {
-        let rights = object
-            .rights
-            .iter()
-            .map(|right| {
-                if is_denied {
-                    format!("-{}", right.name)
-                } else if right.rls {
-                    format!("{} [RLS]", right.name)
-                } else {
-                    right.name.clone()
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-        lines.push(format!("    {}: {rights}", object.short_name));
-    }
+    let reader = unica_workspace::discovery::ProjectDiscoveryReader::new(Path::new(""));
+    unica_source_designer::read::read_utf8_sig(&reader, path)
 }
 
 pub(crate) fn resolve_role_validate_rights_path(path: PathBuf) -> PathBuf {
@@ -1437,11 +168,10 @@ pub(crate) fn resolve_role_read_rights_path(
             .map(|selection| selection.resource_path)
             .map_err(|failure| failure.to_string());
     }
-    let raw = required_path(args, RIGHTS_PATH, "RightsPath")?;
-    Ok(resolve_role_validate_rights_path(absolutize(
-        raw,
-        &context.cwd,
-    )))
+    let raw = unica_operation_contract::input::required_path(args, RIGHTS_PATH, "RightsPath")?;
+    Ok(resolve_role_validate_rights_path(
+        unica_operation_contract::input::absolutize(raw, &context.cwd),
+    ))
 }
 
 pub(crate) fn resolve_role_info_target(
@@ -1457,54 +187,13 @@ pub(crate) fn resolve_role_info_target(
         .map_err(|failure| failure.to_string())
 }
 
-pub(crate) fn is_valid_uuid(value: &str) -> bool {
-    let parts = value.split('-').collect::<Vec<_>>();
-    let expected = [8usize, 4, 4, 4, 12];
-    parts.len() == expected.len()
-        && parts
-            .iter()
-            .zip(expected)
-            .all(|(part, len)| part.len() == len && part.chars().all(|ch| ch.is_ascii_hexdigit()))
-}
-
-pub(crate) fn replace_first_xml_element_text(
-    xml_text: &mut String,
-    tag: &str,
-    value: &str,
-) -> bool {
-    let open = format!("<{tag}>");
-    let close = format!("</{tag}>");
-    let Some(start) = xml_text.find(&open) else {
-        return false;
-    };
-    let content_start = start + open.len();
-    let Some(relative_end) = xml_text[content_start..].find(&close) else {
-        return false;
-    };
-    let content_end = content_start + relative_end;
-    xml_text.replace_range(content_start..content_end, &escape_xml(value));
-    true
-}
-
-pub(crate) fn insert_meta_property_before_child_objects(
-    xml_text: &mut String,
-    tag: &str,
-    value: &str,
-) -> Result<(), String> {
-    let Some(properties_end) = xml_text.find("\n\t\t</Properties>") else {
-        return Err("No <Properties> element found".to_string());
-    };
-    let insertion = format!("\n\t\t\t<{tag}>{}</{tag}>", escape_xml(value));
-    xml_text.insert_str(properties_end, &insertion);
-    Ok(())
-}
-
 pub(crate) fn resolve_cf_edit_config_path(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> Result<PathBuf, String> {
     let mut config_path =
-        required_path(args, CF_PATH, "ConfigPath").map(|path| absolutize(path, &context.cwd))?;
+        unica_operation_contract::input::required_path(args, CF_PATH, "ConfigPath")
+            .map(|path| unica_operation_contract::input::absolutize(path, &context.cwd))?;
     if config_path.is_dir() {
         let candidate = config_path.join("Configuration.xml");
         if candidate.is_file() {
@@ -1560,8 +249,8 @@ fn resolve_configuration_read_path(
     label: &str,
     context: &WorkspaceContext,
 ) -> Result<PathBuf, String> {
-    let raw = required_path(args, names, label)?;
-    let mut path = absolutize(raw, &context.cwd);
+    let raw = unica_operation_contract::input::required_path(args, names, label)?;
+    let mut path = unica_operation_contract::input::absolutize(raw, &context.cwd);
     if path.is_dir() {
         let candidate = path.join("Configuration.xml");
         if candidate.is_file() {
@@ -1579,94 +268,19 @@ fn resolve_configuration_read_path(
     Ok(path.canonicalize().unwrap_or(path))
 }
 
-pub(crate) fn ensure_trailing_lf(text: &str) -> String {
-    if text.ends_with('\n') {
-        text.to_string()
-    } else {
-        format!("{text}\n")
-    }
-}
-
-pub(crate) fn lxml_tree_serialized_text(text: &str) -> String {
-    let mut output = text.to_string();
-    output = output.replace(" />", "/>");
-    output = output.replace("\r\n", "\n");
-    output = output.replace('\r', "&#13;");
-    if !output.ends_with('\n') {
-        output.push('\n');
-    }
-    output
-}
-
-pub(crate) fn lxml_tree_serialized_text_like_source(text: &str, source_text: &str) -> String {
-    let output = lxml_tree_serialized_text(text);
-    if source_text.contains("\r\n") {
-        output.replace('\n', "\r\n")
-    } else {
-        output
-    }
-}
-
-pub(crate) fn lxml_tree_serialized_text_like_source_preserving_final_newline(
-    text: &str,
-    source_text: &str,
-) -> String {
-    preserve_source_final_newline(
-        lxml_tree_serialized_text_like_source(text, source_text),
-        source_text,
-    )
-}
-
-pub(crate) fn preserve_source_final_newline(mut output: String, source_text: &str) -> String {
-    let source_final_newline = if source_text.ends_with("\r\n") {
-        Some("\r\n")
-    } else if source_text.ends_with('\n') {
-        Some("\n")
-    } else if source_text.ends_with('\r') {
-        Some("\r")
-    } else {
-        None
-    };
-
-    match source_final_newline {
-        Some(line_ending) if !output.ends_with('\n') && !output.ends_with('\r') => {
-            output.push_str(line_ending);
-        }
-        None if output.ends_with("\r\n") => {
-            output.truncate(output.len() - 2);
-        }
-        None if output.ends_with('\n') || output.ends_with('\r') => {
-            output.pop();
-        }
-        _ => {}
-    }
-    output
-}
-
-pub(crate) fn lxml_parser_normalized_text(text: &str) -> String {
-    text.replace("\r\n", "\n").replace('\r', "\n")
-}
-
-pub(crate) fn unescape_xml(value: &str) -> String {
-    value
-        .replace("&quot;", "\"")
-        .replace("&gt;", ">")
-        .replace("&lt;", "<")
-        .replace("&amp;", "&")
-}
-
 pub(crate) fn output_dir_arg(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
     names: &[&str],
     default: &str,
 ) -> PathBuf {
-    let path = path_arg(args, names).unwrap_or_else(|| PathBuf::from(default));
-    absolutize(path, &context.cwd)
+    let path = unica_operation_contract::input::path_arg(args, names)
+        .unwrap_or_else(|| PathBuf::from(default));
+    unica_operation_contract::input::absolutize(path, &context.cwd)
 }
 
 pub(crate) fn write_utf8_bom(path: &Path, content: &str) -> Result<(), String> {
-    let bytes = utf8_bom_bytes(content);
+    let bytes = unica_xml_format::text::utf8_bom_bytes(content);
     let expected_preimage = match fs::read(path) {
         Ok(bytes) => Some(bytes),
         Err(error) if error.kind() == ErrorKind::NotFound => None,
@@ -1703,58 +317,19 @@ pub(crate) fn write_utf8_bom(path: &Path, content: &str) -> Result<(), String> {
     }
 }
 
-pub(crate) fn utf8_bom_bytes(content: &str) -> Vec<u8> {
-    let content = content.trim_start_matches('\u{feff}');
-    let mut bytes = Vec::with_capacity(content.len() + 3);
-    bytes.extend_from_slice(b"\xef\xbb\xbf");
-    bytes.extend_from_slice(content.as_bytes());
-    bytes
-}
-
-pub(crate) fn stable_uuid(index: usize) -> String {
-    format!("00000000-0000-0000-0000-{index:012x}")
-}
-
 #[cfg(test)]
 mod mutation_tests {
-    use super::{
-        emit_subsystem_edit_model, format_compatibility_warning, guard_active_format_owner,
-        read_utf8_sig_snapshot, utf8_bom_bytes, write_utf8_bom,
-    };
-    use crate::domain::format_profile::{ExportFormatVersion, FormatCompatibility};
-    use crate::domain::workspace::WorkspaceContext;
-    use crate::infrastructure::native_operations::compile_transaction::CompileTransaction;
-    use crate::infrastructure::native_operations::single_file_publisher::{
-        with_before_commit_hook, with_publish_failpoints, PublishCheckpoint,
-    };
-    use crate::infrastructure::native_operations::subsystem::SubsystemEditModel;
+    use super::{guard_active_format_owner, read_utf8_sig_snapshot, write_utf8_bom};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
-
-    #[test]
-    fn subsystem_edit_emits_platform_canonical_utf8_declaration() {
-        let xml = emit_subsystem_edit_model(&SubsystemEditModel {
-            version: "2.20".to_string(),
-            uuid: "11111111-2222-4333-8444-555555555555".to_string(),
-            name: "CanonicalEncoding".to_string(),
-            synonym: String::new(),
-            comment: String::new(),
-            include_help: "true".to_string(),
-            include_ci: "true".to_string(),
-            use_one_command: "false".to_string(),
-            explanation: String::new(),
-            picture: String::new(),
-            picture_load_transparent: None,
-            content: Vec::new(),
-            children: Vec::new(),
-        });
-
-        assert!(
-            xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"),
-            "subsystem XML must use the platform-canonical declaration: {}",
-            xml.lines().next().unwrap_or_default()
-        );
-    }
+    use unica_metadata::subsystem::SubsystemEditModel;
+    use unica_metadata_designer::subsystem::emit_subsystem_edit_model;
+    use unica_source_contract::workspace::WorkspaceContext;
+    use unica_source_designer::format_profile::{ExportFormatVersion, FormatCompatibility};
+    use unica_workspace::compile_transaction::CompileTransaction;
+    use unica_workspace::single_file_publisher::{
+        with_before_commit_hook, with_publish_failpoints, PublishCheckpoint,
+    };
 
     fn format_owner_context(name: &str, version: &str) -> (WorkspaceContext, std::path::PathBuf) {
         let root = std::env::temp_dir().join(format!(
@@ -1793,9 +368,12 @@ mod mutation_tests {
 
     #[test]
     fn utf8_bom_bytes_emits_exactly_one_bom() {
-        assert_eq!(utf8_bom_bytes("<xml/>"), b"\xef\xbb\xbf<xml/>");
         assert_eq!(
-            utf8_bom_bytes("\u{feff}\u{feff}<xml/>"),
+            unica_xml_format::text::utf8_bom_bytes("<xml/>"),
+            b"\xef\xbb\xbf<xml/>"
+        );
+        assert_eq!(
+            unica_xml_format::text::utf8_bom_bytes("\u{feff}\u{feff}<xml/>"),
             b"\xef\xbb\xbf<xml/>"
         );
     }
@@ -1881,9 +459,11 @@ mod mutation_tests {
 
     #[test]
     fn older_format_warning_offers_explicit_platform_reexport_without_auto_migration() {
-        let warning = format_compatibility_warning(&FormatCompatibility::Older {
-            actual: ExportFormatVersion::parse("2.19").unwrap(),
-        });
+        let warning = unica_source_designer::format_profile::format_compatibility_warning(
+            &FormatCompatibility::Older {
+                actual: ExportFormatVersion::parse("2.19").unwrap(),
+            },
+        );
 
         assert!(
             warning.contains("will not migrate it automatically"),
@@ -1896,9 +476,11 @@ mod mutation_tests {
 
     #[test]
     fn newer_format_warning_keeps_8_5_roadmap_copy_without_downgrade_offer() {
-        let warning = format_compatibility_warning(&FormatCompatibility::Newer {
-            actual: ExportFormatVersion::parse("2.21").unwrap(),
-        });
+        let warning = unica_source_designer::format_profile::format_compatibility_warning(
+            &FormatCompatibility::Newer {
+                actual: ExportFormatVersion::parse("2.21").unwrap(),
+            },
+        );
 
         assert!(warning.contains("1C 8.5 support is planned"), "{warning}");
         assert!(!warning.to_ascii_lowercase().contains("downgrade"));
@@ -1960,8 +542,8 @@ pub(crate) fn analyze_xml(
                 "operation": operation,
                 "file": target.display().to_string(),
                 "root": root.tag_name().name(),
-                "name": first_text(&doc, "Name"),
-                "synonym": first_text(&doc, "Synonym"),
+                "name": unica_xml_format::read::first_text(&doc, "Name"),
+                "synonym": unica_xml_format::read::first_text(&doc, "Synonym"),
                 "elementCount": element_count,
                 "topLevel": root
                     .children()
@@ -2003,10 +585,13 @@ pub(crate) fn validation_warnings(operation: &str, doc: &Document<'_>) -> Vec<St
     if operation.starts_with("cf-") && root != "MetaDataObject" {
         warnings.push(format!("expected MetaDataObject root, got {root}"));
     }
-    if operation.starts_with("role-") && !has_element(doc, "Rights") {
+    if operation.starts_with("role-") && !unica_xml_format::names::has_element(doc, "Rights") {
         warnings.push("expected role Rights content".to_string());
     }
-    if operation.starts_with("form-") && !has_element(doc, "Form") && root != "Form" {
+    if operation.starts_with("form-")
+        && !unica_xml_format::names::has_element(doc, "Form")
+        && root != "Form"
+    {
         warnings.push("expected managed form XML content".to_string());
     }
     warnings
@@ -2018,41 +603,49 @@ pub(crate) fn resolve_target(
     context: &WorkspaceContext,
 ) -> Result<PathBuf, String> {
     let path = if operation.starts_with("cf-") {
-        required_path(
+        unica_operation_contract::input::required_path(
             args,
             &["configPath", "ConfigPath", "path", "Path"],
             "ConfigPath",
         )?
     } else if operation.starts_with("cfe-") {
-        required_path(
+        unica_operation_contract::input::required_path(
             args,
             &["extensionPath", "ExtensionPath", "path", "Path"],
             "ExtensionPath",
         )?
     } else if operation.starts_with("meta-") {
-        required_path(
+        unica_operation_contract::input::required_path(
             args,
             &["objectPath", "ObjectPath", "path", "Path"],
             "ObjectPath",
         )?
     } else if operation.starts_with("form-") {
-        required_path(args, &["formPath", "FormPath", "path", "Path"], "FormPath")?
+        unica_operation_contract::input::required_path(
+            args,
+            &["formPath", "FormPath", "path", "Path"],
+            "FormPath",
+        )?
     } else if operation.starts_with("interface-") {
-        required_path(args, &["ciPath", "CIPath", "path", "Path"], "CIPath")?
+        unica_operation_contract::input::required_path(
+            args,
+            &["ciPath", "CIPath", "path", "Path"],
+            "CIPath",
+        )?
     } else if operation.starts_with("subsystem-") {
-        required_path(
+        unica_operation_contract::input::required_path(
             args,
             &["subsystemPath", "SubsystemPath", "path", "Path"],
             "SubsystemPath",
         )?
     } else if operation.starts_with("dcs-") || operation.starts_with("mxl-") {
-        required_path(
+        unica_operation_contract::input::required_path(
             args,
             &["templatePath", "TemplatePath", "path", "Path"],
             "TemplatePath",
         )?
     } else if operation.starts_with("role-") {
-        required_path(
+        unica_operation_contract::input::required_path(
             args,
             &["rightsPath", "RightsPath", "path", "Path"],
             "RightsPath",
@@ -2065,7 +658,7 @@ pub(crate) fn resolve_target(
 
     Ok(resolve_existing_path(
         operation,
-        absolutize(path, &context.cwd),
+        unica_operation_contract::input::absolutize(path, &context.cwd),
     ))
 }
 
@@ -2119,63 +712,6 @@ pub(crate) fn special_file(operation: &str) -> &'static str {
         "Rights.xml"
     } else {
         "Template.xml"
-    }
-}
-
-pub(crate) fn required_path(
-    args: &Map<String, Value>,
-    names: &[&str],
-    label: &str,
-) -> Result<PathBuf, String> {
-    path_arg(args, names).ok_or_else(|| format!("missing required {label} argument"))
-}
-
-pub(crate) fn required_string<'a>(
-    args: &'a Map<String, Value>,
-    names: &[&str],
-    label: &str,
-) -> Result<&'a str, String> {
-    string_arg(args, names).ok_or_else(|| format!("missing required {label} argument"))
-}
-
-pub(crate) fn path_arg(args: &Map<String, Value>, names: &[&str]) -> Option<PathBuf> {
-    names
-        .iter()
-        .find_map(|name| args.get(*name).and_then(Value::as_str))
-        .filter(|value| !value.trim().is_empty())
-        .map(PathBuf::from)
-}
-
-pub(crate) fn string_arg<'a>(args: &'a Map<String, Value>, names: &[&str]) -> Option<&'a str> {
-    names
-        .iter()
-        .find_map(|name| args.get(*name).and_then(Value::as_str))
-        .filter(|value| !value.trim().is_empty())
-}
-
-pub(crate) fn bool_arg(args: &Map<String, Value>, names: &[&str]) -> bool {
-    names
-        .iter()
-        .any(|name| args.get(*name).and_then(Value::as_bool).unwrap_or(false))
-}
-
-pub(crate) fn optional_bool_arg(args: &Map<String, Value>, names: &[&str]) -> Option<bool> {
-    names
-        .iter()
-        .find_map(|name| args.get(*name).and_then(Value::as_bool))
-}
-
-pub(crate) fn int_arg(args: &Map<String, Value>, names: &[&str]) -> Option<i64> {
-    names
-        .iter()
-        .find_map(|name| args.get(*name).and_then(json_i64_value))
-}
-
-pub(crate) fn absolutize(path: PathBuf, cwd: &Path) -> PathBuf {
-    if path.is_absolute() {
-        path
-    } else {
-        cwd.join(path)
     }
 }
 
@@ -2368,7 +904,7 @@ pub(crate) fn guard_active_format_owner_with_exact_root(
     transaction: &mut CompileTransaction,
     target: &Path,
     context: &WorkspaceContext,
-    expected_root: crate::infrastructure::platform_xml_owner::PlatformXmlRootExpectation,
+    expected_root: unica_source_designer::owner::PlatformXmlRootExpectation,
 ) -> Result<(), String> {
     guard_active_format_dependency_targets(
         transaction,
@@ -2398,7 +934,7 @@ pub(crate) fn guard_active_format_dependencies(
 #[derive(Clone, Copy)]
 struct FormatDependencyTarget<'a> {
     path: &'a Path,
-    expected_root: Option<crate::infrastructure::platform_xml_owner::PlatformXmlRootExpectation>,
+    expected_root: Option<unica_source_designer::owner::PlatformXmlRootExpectation>,
 }
 
 fn guard_active_format_dependency_targets(
@@ -2490,7 +1026,7 @@ fn collect_platform_xml_tree_paths(target: &Path, paths: &mut Vec<PathBuf>) -> R
             return Err(format!("failed to inspect {}: {error}", target.display()));
         }
     };
-    if crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point(&metadata) {
+    if unica_workspace::paths::metadata_is_link_or_reparse_point(&metadata) {
         return Err(format!(
             "platform XML dependency must not be a symbolic link or reparse point: {}",
             target.display()
@@ -2524,7 +1060,7 @@ fn collect_platform_xml_tree_paths(target: &Path, paths: &mut Vec<PathBuf>) -> R
 }
 
 fn require_supported_platform_xml_owners(
-    owners: &[crate::infrastructure::platform_xml_owner::PlatformXmlOwner],
+    owners: &[unica_source_designer::owner::PlatformXmlOwner],
 ) -> Result<(), String> {
     let mut older = None;
     let mut newer = None;
@@ -2542,7 +1078,9 @@ fn require_supported_platform_xml_owners(
         }
     }
     if let Some(compatibility) = newer.or(older) {
-        return Err(format_compatibility_warning(&compatibility));
+        return Err(
+            unica_source_designer::format_profile::format_compatibility_warning(&compatibility),
+        );
     }
     Ok(())
 }
@@ -2560,61 +1098,6 @@ pub(crate) fn guard_exact_preimage_if_unprotected(
         transaction.guard_exact_preimage(path, expected_preimage)?;
     }
     Ok(())
-}
-
-pub(crate) fn format_compatibility_warning(compatibility: &FormatCompatibility) -> String {
-    match compatibility {
-        FormatCompatibility::Older { actual } => format!(
-            "Export format {actual} is older than supported {}. Unica will not migrate it automatically; re-export the source explicitly with 1C:Enterprise {}, then retry.",
-            ACTIVE_FORMAT_PROFILE.export_format,
-            ACTIVE_FORMAT_PROFILE.platform_line
-        ),
-        FormatCompatibility::Newer { actual } => format!(
-            "Export format {actual} is newer than supported {}; platform 1C 8.5 support is planned in upcoming releases.",
-            ACTIVE_FORMAT_PROFILE.export_format
-        ),
-        FormatCompatibility::Supported { .. } => format!(
-            "Export format is supported ({})",
-            ACTIVE_FORMAT_PROFILE.export_format
-        ),
-    }
-}
-
-/// Typed answer shared by the writing tools (ADR-0023). Each tool builds it
-/// from the paths it actually touched, never by re-reading its own report: the
-/// point of the decision is to stop parsing prose, including our own.
-#[derive(Debug, serde::Serialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct MutationData {
-    /// `false` when the call was a preview and nothing was written.
-    pub(crate) applied: bool,
-    pub(crate) created: Vec<String>,
-    pub(crate) updated: Vec<String>,
-    pub(crate) removed: Vec<String>,
-}
-
-impl MutationData {
-    pub(crate) fn new(applied: bool) -> Self {
-        Self {
-            applied,
-            ..Default::default()
-        }
-    }
-
-    pub(crate) fn created(mut self, path: &Path) -> Self {
-        self.created.push(path.display().to_string());
-        self
-    }
-
-    pub(crate) fn updated(mut self, path: &Path) -> Self {
-        self.updated.push(path.display().to_string());
-        self
-    }
-
-    pub(crate) fn removed(mut self, path: &Path) -> Self {
-        self.removed.push(path.display().to_string());
-        self
-    }
 }
 
 pub(crate) fn support_state_lines_for_configuration(
@@ -2719,86 +1202,12 @@ pub(crate) fn support_guard_violation(
     }
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct SupportState {
-    global_editing_enabled: bool,
-    vendor_count: usize,
-    removed: bool,
-    counts: [usize; 3],
-    object_rules: HashMap<String, u8>,
-    vendors: Vec<SupportVendor>,
-}
-
-impl SupportState {
-    pub(crate) fn object_rule(&self, object_uuid: &str) -> Option<u8> {
-        self.object_rules
-            .get(&object_uuid.to_ascii_lowercase())
-            .copied()
-    }
-
-    pub(crate) fn global_editing_enabled(&self) -> bool {
-        self.global_editing_enabled
-    }
-
-    pub(crate) fn removed(&self) -> bool {
-        self.removed
-    }
-
-    pub(crate) fn counts(&self) -> [usize; 3] {
-        self.counts
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct SupportVendor {
-    version: String,
-    vendor: String,
-    name: String,
-}
-
 pub(crate) fn read_support_state(bin_path: &Path) -> Option<SupportState> {
     if !bin_path.is_file() {
         return None;
     }
     let data = fs::read(bin_path).ok()?;
     parse_support_state_compat_bytes(Some(&data))
-}
-
-/// Parses already-read support marker bytes with the current V12 mutating
-/// guard semantics. Identity and no-follow proof remain the caller's job.
-pub(crate) fn parse_support_state_compat_bytes(data: Option<&[u8]>) -> Option<SupportState> {
-    let data = data?;
-    if data.len() <= 32 {
-        return Some(SupportState {
-            global_editing_enabled: true,
-            vendor_count: 0,
-            removed: true,
-            counts: [0, 0, 0],
-            object_rules: HashMap::new(),
-            vendors: Vec::new(),
-        });
-    }
-    let text = String::from_utf8_lossy(data.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(data));
-    let (global_flag, vendor_count) = parse_support_header(&text)?;
-    if vendor_count == 0 {
-        return Some(SupportState {
-            global_editing_enabled: true,
-            vendor_count,
-            removed: true,
-            counts: [0, 0, 0],
-            object_rules: HashMap::new(),
-            vendors: Vec::new(),
-        });
-    }
-    let (counts, object_rules) = parse_support_object_rules(&text);
-    Some(SupportState {
-        global_editing_enabled: global_flag == 0,
-        vendor_count,
-        removed: false,
-        counts,
-        object_rules,
-        vendors: parse_support_vendors(&text),
-    })
 }
 
 /// Strict read semantics for subject readers (ADR-0054).
@@ -2855,486 +1264,6 @@ pub(crate) fn read_support_state_strict(
         )
     })?;
     parse_support_state_strict_bytes(Some(&data))
-}
-
-/// Parses already-admitted support-state bytes with the same semantics as the
-/// path wrapper. The caller owns file identity/no-follow checks.
-pub(crate) fn parse_support_state_strict_bytes(
-    data: Option<&[u8]>,
-) -> Result<Option<SupportState>, SupportReadError> {
-    let Some(data) = data else {
-        return Ok(None);
-    };
-    let mut parser = SupportStateStreamParser::default();
-    // The slice adapter shares the streaming parser, including whole-tail validation.
-    for chunk in data.chunks(64 * 1024) {
-        parser.feed(chunk)?;
-    }
-    parser.finish().map(Some)
-}
-
-/// Strict marker parsing retains the result and bounded input windows, never the
-/// complete marker. The compatibility mutation guard intentionally has its own
-/// historical acceptance rules (lossy UTF-8 and short-marker removal).
-#[derive(Default)]
-pub(crate) struct SupportStateStreamParser {
-    nonempty: bool,
-    utf8_tail: Vec<u8>,
-    rule_tail: Vec<u8>,
-    header: SupportHeaderStream,
-    counts: [usize; 3],
-    object_rules: HashMap<String, u8>,
-    quote_open: bool,
-    quote_pending: bool,
-    quoted_value: String,
-    vendor_fields: Vec<String>,
-    vendors: Vec<SupportVendor>,
-}
-
-impl SupportStateStreamParser {
-    pub(crate) fn feed(&mut self, chunk: &[u8]) -> Result<(), SupportReadError> {
-        self.nonempty |= !chunk.is_empty();
-        let mut input = std::mem::take(&mut self.utf8_tail);
-        input.extend_from_slice(chunk);
-        let valid = match std::str::from_utf8(&input) {
-            Ok(text) => text,
-            Err(error) if error.error_len().is_none() => {
-                self.utf8_tail
-                    .extend_from_slice(&input[error.valid_up_to()..]);
-                // valid_up_to is an established UTF-8 boundary, not a guessed character split.
-                std::str::from_utf8(&input[..error.valid_up_to()]).expect("validated UTF-8 prefix")
-            }
-            Err(_) => return Err(Self::invalid_utf8()),
-        };
-        for ch in valid.chars() {
-            self.header.push(ch);
-            if self.header.removed() {
-                continue;
-            }
-            if self.quote_pending {
-                self.quote_pending = false;
-                if ch == '"' {
-                    self.quoted_value.push('"');
-                    continue;
-                }
-                self.finish_quoted_value();
-            }
-            if ch == '"' {
-                if self.quote_open {
-                    self.quote_pending = true;
-                } else {
-                    self.quote_open = true;
-                }
-            } else if self.quote_open {
-                self.quoted_value.push(ch);
-            }
-        }
-        if !self.header.removed() {
-            self.scan_rules(valid.as_bytes());
-        }
-        Ok(())
-    }
-
-    fn scan_rules(&mut self, bytes: &[u8]) {
-        let mut input = std::mem::take(&mut self.rule_tail);
-        input.extend_from_slice(bytes);
-        let mut offset = 0;
-        while offset + 40 <= input.len() {
-            let candidate = &input[offset..offset + 40];
-            if matches!(candidate[0], b'0'..=b'2')
-                && &candidate[1..4] == b",0,"
-                && candidate[4..].iter().enumerate().all(|(index, byte)| {
-                    if matches!(index, 8 | 13 | 18 | 23) {
-                        *byte == b'-'
-                    } else {
-                        byte.is_ascii_hexdigit()
-                    }
-                })
-            {
-                let flag = candidate[0] - b'0';
-                self.counts[flag as usize] += 1;
-                let uuid = std::str::from_utf8(&candidate[4..])
-                    .expect("UUID consists of ASCII bytes")
-                    .to_ascii_lowercase();
-                self.object_rules
-                    .entry(uuid)
-                    .and_modify(|value| *value = (*value).min(flag))
-                    .or_insert(flag);
-                // Legacy matching consumes the complete match, including its last UUID byte.
-                offset += 40;
-            } else {
-                offset += 1;
-            }
-        }
-        self.rule_tail.extend_from_slice(&input[offset..]);
-    }
-
-    fn finish_quoted_value(&mut self) {
-        self.quote_open = false;
-        self.vendor_fields
-            .push(std::mem::take(&mut self.quoted_value));
-        if self.vendor_fields.len() == 3 {
-            let mut fields = self.vendor_fields.drain(..);
-            self.vendors.push(SupportVendor {
-                version: fields.next().expect("three vendor fields"),
-                vendor: fields.next().expect("three vendor fields"),
-                name: fields.next().expect("three vendor fields"),
-            });
-        }
-    }
-
-    pub(crate) fn finish(mut self) -> Result<SupportState, SupportReadError> {
-        if !self.utf8_tail.is_empty() {
-            return Err(Self::invalid_utf8());
-        }
-        let (global_flag, vendor_count) = if self.nonempty {
-            self.header.finish().ok_or_else(|| {
-                SupportReadError::new(
-                    SupportReadErrorCode::StateInvalid,
-                    "support-state marker has an unsupported header",
-                )
-            })?
-        } else {
-            (0, 0)
-        };
-        if self.quote_open {
-            self.finish_quoted_value();
-        }
-        let removed = vendor_count == 0;
-        Ok(SupportState {
-            global_editing_enabled: removed || global_flag == 0,
-            vendor_count,
-            removed,
-            counts: if removed { [0; 3] } else { self.counts },
-            object_rules: if removed {
-                HashMap::new()
-            } else {
-                self.object_rules
-            },
-            vendors: if removed { Vec::new() } else { self.vendors },
-        })
-    }
-
-    fn invalid_utf8() -> SupportReadError {
-        SupportReadError::new(
-            SupportReadErrorCode::StateInvalid,
-            "support-state marker is not valid UTF-8",
-        )
-    }
-}
-
-#[derive(Default)]
-struct SupportHeaderStream {
-    // 0: leading BOMs, 1: leading whitespace, 2..=4: header tokens, 5: complete.
-    phase: u8,
-    invalid: bool,
-    token: SupportHeaderNumber,
-    global_flag: u8,
-    vendor_count: usize,
-}
-
-impl SupportHeaderStream {
-    fn push(&mut self, ch: char) {
-        if self.invalid || self.phase == 5 {
-            return;
-        }
-        if self.phase == 0 {
-            if ch == '\u{feff}' {
-                return;
-            }
-            self.phase = 1;
-        }
-        if self.phase == 1 {
-            if ch.is_whitespace() {
-                return;
-            }
-            if ch == '{' {
-                self.phase = 2;
-            } else {
-                self.invalid = true;
-            }
-        } else if ch == ',' {
-            self.finish_token();
-        } else {
-            self.token.push(ch);
-        }
-    }
-
-    fn finish_token(&mut self) {
-        let token = std::mem::take(&mut self.token);
-        if token.invalid || token.digits == 0 {
-            self.invalid = true;
-            return;
-        }
-        match self.phase {
-            2 if token.value == 6 && token.digits == 1 && !token.plus => {}
-            3 => match u8::try_from(token.value) {
-                Ok(value) => self.global_flag = value,
-                Err(_) => self.invalid = true,
-            },
-            4 => self.vendor_count = token.value,
-            _ => self.invalid = true,
-        }
-        self.phase += 1;
-    }
-
-    fn removed(&self) -> bool {
-        self.phase == 5 && !self.invalid && self.vendor_count == 0
-    }
-
-    fn finish(&mut self) -> Option<(u8, usize)> {
-        if self.phase == 4 {
-            self.finish_token();
-        }
-        (!self.invalid && self.phase == 5).then_some((self.global_flag, self.vendor_count))
-    }
-}
-
-#[derive(Default)]
-struct SupportHeaderNumber {
-    value: usize,
-    digits: u8,
-    plus: bool,
-    ended: bool,
-    invalid: bool,
-}
-
-impl SupportHeaderNumber {
-    fn push(&mut self, ch: char) {
-        if ch.is_whitespace() {
-            self.ended |= self.digits > 0 || self.plus;
-        } else if ch == '+' && self.digits == 0 && !self.plus && !self.ended {
-            self.plus = true;
-        } else if ch.is_ascii_digit() && !self.ended {
-            self.digits = self.digits.saturating_add(1);
-            if let Some(value) = self
-                .value
-                .checked_mul(10)
-                .and_then(|value| value.checked_add(ch as usize - '0' as usize))
-            {
-                self.value = value;
-            } else {
-                self.invalid = true;
-            }
-        } else {
-            self.invalid = true;
-        }
-    }
-}
-
-#[cfg(test)]
-mod support_stream_tests {
-    use super::*;
-
-    #[test]
-    fn every_marker_split_preserves_counts_duplicate_minimum_and_quoted_vendors() {
-        let uuid = "ABCDEF00-1234-5678-90AB-123456789AB0";
-        let other = "00000000-0000-0000-0000-000000000001";
-        let text = format!("\u{feff}\u{feff}\u{2003}{{6, +000, +1,2,0,{uuid},0,0,{uuid},1,0,{other},\"версия\" \"По\"\"ставщик\" \"имя🦀\"}}");
-        for split in 0..=text.len() {
-            let mut parser = SupportStateStreamParser::default();
-            parser.feed(&text.as_bytes()[..split]).unwrap();
-            assert!(parser.utf8_tail.len() <= 3);
-            assert!(parser.rule_tail.len() <= 39);
-            parser.feed(&text.as_bytes()[split..]).unwrap();
-            let state = parser.finish().unwrap();
-            assert_eq!(state.counts(), [1, 1, 1], "split {split}");
-            assert_eq!(state.object_rule(uuid), Some(0));
-            assert_eq!(state.object_rule(other), Some(1));
-            assert!(state.global_editing_enabled());
-            assert_eq!(state.vendor_count, 1);
-            assert_eq!(state.vendors.len(), 1);
-            assert_eq!(state.vendors[0].version, "версия");
-            assert_eq!(state.vendors[0].vendor, "По\"ставщик");
-            assert_eq!(state.vendors[0].name, "имя🦀");
-        }
-    }
-
-    #[test]
-    fn stream_header_preserves_whole_token_numeric_and_empty_marker_semantics() {
-        assert!(parse_support_state_strict_bytes(None).unwrap().is_none());
-        assert!(parse_support_state_strict_bytes(Some(b""))
-            .unwrap()
-            .unwrap()
-            .removed());
-        for text in [
-            "\u{feff}",
-            " ",
-            "{6,0,1}",
-            "{06,0,1,",
-            "{+6,0,1,",
-            "{6,256,1,",
-            "{6,-0,1,",
-            "{6,0,+ 1,",
-            "{6,0,1 2,",
-            "{6,0,18446744073709551616,",
-            " \u{feff}{6,0,1,",
-        ] {
-            let error = parse_support_state_strict_bytes(Some(text.as_bytes())).unwrap_err();
-            assert_eq!(error.code, SupportReadErrorCode::StateInvalid, "{text:?}");
-        }
-        for (text, editing, removed) in [
-            ("{6,255,1", false, false),
-            ("{6,0,0,ignored tail", true, true),
-            (
-                "{\u{2003}6\u{2003},\u{2003}+000\u{2003},+0001\u{2003},",
-                true,
-                false,
-            ),
-        ] {
-            let state = parse_support_state_strict_bytes(Some(text.as_bytes()))
-                .unwrap()
-                .unwrap();
-            assert_eq!(state.global_editing_enabled(), editing);
-            assert_eq!(state.removed(), removed);
-        }
-        let leading_zeroes = format!("{{6,{},1,", "0".repeat(70_000));
-        assert!(
-            parse_support_state_strict_bytes(Some(leading_zeroes.as_bytes()))
-                .unwrap()
-                .unwrap()
-                .global_editing_enabled()
-        );
-    }
-
-    #[test]
-    fn stream_validates_utf8_in_the_entire_tail_even_after_removed_header() {
-        for header in [b"{6,0,0,".as_slice(), b"{6,0,1,", b"{9,0,1,"] {
-            for tail in [
-                b"\xff".as_slice(),
-                b"\xf0\x9f\xa6",
-                b"\xed\xa0\x80",
-                b"\xc0\xaf",
-            ] {
-                let mut input = header.to_vec();
-                input.resize(64 * 1024 - 1, b' ');
-                input.extend_from_slice(tail);
-                let error = parse_support_state_strict_bytes(Some(&input)).unwrap_err();
-                assert_eq!(error.code, SupportReadErrorCode::StateInvalid);
-                assert!(error.message.contains("UTF-8"));
-            }
-        }
-    }
-
-    #[test]
-    fn rule_match_consumes_its_last_uuid_character_and_unclosed_quotes_keep_legacy_meaning() {
-        let first = "00000000-0000-0000-0000-000000000000";
-        let second = "11111111-1111-1111-1111-111111111111";
-        // The last zero of the first UUID cannot start an overlapping second match.
-        let text = format!("{{6,0,1,2,0,{first},0,{second},\"v\"\"endor\" \"name\" \"unfinished");
-        for size in [1, 2, 3, 7, 39, 40, 41, 64 * 1024] {
-            let mut parser = SupportStateStreamParser::default();
-            for chunk in text.as_bytes().chunks(size) {
-                parser.feed(chunk).unwrap();
-            }
-            let state = parser.finish().unwrap();
-            assert_eq!(state.counts(), [0, 0, 1]);
-            assert_eq!(state.object_rule(second), None);
-            assert_eq!(state.vendors.len(), 1);
-            assert_eq!(state.vendors[0].version, "v\"endor");
-            assert_eq!(state.vendors[0].vendor, "name");
-            assert_eq!(state.vendors[0].name, "unfinished");
-        }
-    }
-}
-
-pub(crate) fn parse_support_header(text: &str) -> Option<(u8, usize)> {
-    let mut parts = text
-        .trim_start_matches('\u{feff}')
-        .trim_start()
-        .strip_prefix('{')?
-        .split(',')
-        .map(str::trim);
-    if parts.next()? != "6" {
-        return None;
-    }
-    let global_flag = parts.next()?.parse::<u8>().ok()?;
-    let vendor_count = parts.next()?.parse::<usize>().ok()?;
-    Some((global_flag, vendor_count))
-}
-
-pub(crate) fn parse_support_object_rules(text: &str) -> ([usize; 3], HashMap<String, u8>) {
-    let mut counts = [0usize; 3];
-    let mut object_rules = HashMap::<String, u8>::new();
-    let bytes = text.as_bytes();
-    let mut i = 0usize;
-    while i + 40 <= bytes.len() {
-        let flag = bytes[i];
-        if matches!(flag, b'0'..=b'2') && bytes.get(i + 1..i + 4) == Some(b",0,") {
-            let uuid_start = i + 4;
-            let uuid_end = uuid_start + 36;
-            if uuid_end <= bytes.len() {
-                let uuid = &text[uuid_start..uuid_end];
-                if is_uuid_text(uuid) {
-                    let flag_value = flag - b'0';
-                    counts[flag_value as usize] += 1;
-                    let entry = object_rules
-                        .entry(uuid.to_ascii_lowercase())
-                        .or_insert(flag_value);
-                    if flag_value < *entry {
-                        *entry = flag_value;
-                    }
-                    i = uuid_end;
-                    continue;
-                }
-            }
-        }
-        i += 1;
-    }
-    (counts, object_rules)
-}
-
-pub(crate) fn parse_support_vendors(text: &str) -> Vec<SupportVendor> {
-    let quoted = parse_quoted_support_strings(text);
-    quoted
-        .chunks(3)
-        .filter_map(|chunk| {
-            if chunk.len() == 3 {
-                Some(SupportVendor {
-                    version: chunk[0].clone(),
-                    vendor: chunk[1].clone(),
-                    name: chunk[2].clone(),
-                })
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
-pub(crate) fn parse_quoted_support_strings(text: &str) -> Vec<String> {
-    let mut result = Vec::<String>::new();
-    let mut chars = text.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch != '"' {
-            continue;
-        }
-        let mut value = String::new();
-        while let Some(next) = chars.next() {
-            if next == '"' {
-                if chars.peek() == Some(&'"') {
-                    chars.next();
-                    value.push('"');
-                    continue;
-                }
-                break;
-            }
-            value.push(next);
-        }
-        result.push(value);
-    }
-    result
-}
-
-pub(crate) fn is_uuid_text(value: &str) -> bool {
-    value.len() == 36
-        && value.chars().enumerate().all(|(index, ch)| {
-            if matches!(index, 8 | 13 | 18 | 23) {
-                ch == '-'
-            } else {
-                ch.is_ascii_hexdigit()
-            }
-        })
 }
 
 pub(crate) fn find_support_config_dir(target_path: &Path) -> Option<PathBuf> {
@@ -3418,215 +1347,4 @@ pub(crate) fn support_object_uuid_for_path(target_path: &Path) -> Option<String>
 pub(crate) fn support_root_uuid(xml_path: &Path) -> Option<String> {
     let raw = fs::read(xml_path).ok()?;
     support_root_uuid_from_bytes(&raw)
-}
-
-pub(crate) fn support_root_uuid_from_bytes(raw: &[u8]) -> Option<String> {
-    let text = std::str::from_utf8(raw).ok()?;
-    let doc = Document::parse(text.trim_start_matches('\u{feff}')).ok()?;
-    let root = doc.root_element();
-    if let Some(uuid) = root.attribute("uuid") {
-        return Some(uuid.to_ascii_lowercase());
-    }
-    root.children()
-        .find(|node| node.is_element() && node.attribute("uuid").is_some())
-        .and_then(|node| node.attribute("uuid"))
-        .map(str::to_ascii_lowercase)
-}
-
-pub(crate) fn extract_xml_attr(text: &str, element: &str, attr: &str) -> Option<String> {
-    let start = text.find(&format!("<{element}"))?;
-    let rest = &text[start..];
-    let end = rest.find('>')?;
-    let tag = &rest[..end];
-    let needle = format!("{attr}=\"");
-    let attr_start = tag.find(&needle)? + needle.len();
-    let value_rest = &tag[attr_start..];
-    let attr_end = value_rest.find('"')?;
-    Some(value_rest[..attr_end].to_string())
-}
-
-pub(crate) fn split_camel_case(name: &str) -> String {
-    if name.is_empty() {
-        return name.to_string();
-    }
-    let mut result = String::new();
-    let mut previous_lower = false;
-    for ch in name.chars() {
-        if previous_lower && ch.is_uppercase() {
-            result.push(' ');
-        }
-        result.push(ch);
-        previous_lower = ch.is_lowercase();
-    }
-    let mut chars = result.chars();
-    let Some(first) = chars.next() else {
-        return result;
-    };
-    format!("{}{}", first, chars.as_str().to_lowercase())
-}
-
-pub(crate) fn json_string_field(value: &Value, field: &str) -> Option<String> {
-    value.get(field).map(json_value_to_python_string)
-}
-
-pub(crate) fn json_value_to_python_string(value: &Value) -> String {
-    match value {
-        Value::String(value) => value.clone(),
-        Value::Bool(value) => {
-            if *value {
-                "True".to_string()
-            } else {
-                "False".to_string()
-            }
-        }
-        Value::Number(value) => value.to_string(),
-        Value::Null => "None".to_string(),
-        other => other.to_string(),
-    }
-}
-
-pub(crate) fn json_value_to_python_lower(value: &Value) -> String {
-    json_value_to_python_string(value).to_lowercase()
-}
-
-pub(crate) fn truthy_json_field(value: &Value, field: &str) -> bool {
-    truthy_value(value.get(field))
-}
-
-pub(crate) fn truthy_value(value: Option<&Value>) -> bool {
-    match value {
-        Some(Value::Null) | None => false,
-        Some(Value::Bool(value)) => *value,
-        Some(Value::Number(value)) => value.as_i64().unwrap_or(1) != 0,
-        Some(Value::String(value)) => !value.is_empty(),
-        Some(Value::Array(value)) => !value.is_empty(),
-        Some(Value::Object(value)) => !value.is_empty(),
-    }
-}
-
-pub(crate) fn json_i64_field(value: &Value, field: &str) -> Option<i64> {
-    value.get(field).and_then(json_i64_value)
-}
-
-pub(crate) fn json_i64_value(value: &Value) -> Option<i64> {
-    value
-        .as_i64()
-        .or_else(|| value.as_str().and_then(|text| text.parse::<i64>().ok()))
-}
-
-pub(crate) fn register_mxl_cell_format(
-    style_name: &str,
-    fill_type: &str,
-    defn: &Value,
-    font_map: &std::collections::BTreeMap<String, usize>,
-    thin_line_index: i64,
-    thick_line_index: i64,
-    registry: &mut MxlFormatRegistry,
-) -> usize {
-    let props = mxl_resolve_style(
-        style_name,
-        fill_type,
-        defn,
-        font_map,
-        thin_line_index,
-        thick_line_index,
-    );
-    registry.register(mxl_format_key(&props), props)
-}
-
-pub(crate) fn first_text(doc: &Document<'_>, local_name: &str) -> Option<String> {
-    doc.descendants()
-        .find(|node| node.is_element() && node.tag_name().name() == local_name)
-        .and_then(|node| node.text())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-}
-
-pub(crate) fn has_element(doc: &Document<'_>, local_name: &str) -> bool {
-    doc.descendants()
-        .any(|node| node.is_element() && node.tag_name().name() == local_name)
-}
-
-pub(crate) fn escape_xml(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-}
-
-#[cfg(test)]
-mod subsystem_list_patch_tests {
-    use super::{parse_subsystem_edit_model, patch_subsystem_lists};
-    const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
-    const XR: &str = "http://v8.1c.ru/8.3/xcf/readable";
-    const XSI: &str = "http://www.w3.org/2001/XMLSchema-instance";
-
-    #[test]
-    fn subsystem_list_patch_preserves_raw_entries_and_foreign_nodes() {
-        let retained = "<ref:Item xsi:type=\"ref:MDObjectRef\" extra=\"keep\">Document.&#70;irst</ref:Item><!--keep--><foreign:Item>Document.Foreign</foreign:Item>";
-        let source = format!("\u{feff}<md:MetaDataObject xmlns:md=\"{MD}\" xmlns:ref=\"{XR}\" xmlns:xsi=\"{XSI}\" xmlns:foreign=\"urn:other\" version=\"2.20\">\r\n<md:Subsystem><md:Properties><md:Name>Sales</md:Name><md:Content>{retained}<ref:Item xsi:type=\"ref:MDObjectRef\">Document.Remove</ref:Item></md:Content></md:Properties><md:ChildObjects/></md:Subsystem></md:MetaDataObject>");
-        let mut model = parse_subsystem_edit_model(&source, "test").unwrap();
-        assert_eq!(model.content, ["Document.First", "Document.Remove"]);
-        assert_eq!(
-            patch_subsystem_lists(&source, &model, None).unwrap(),
-            source
-        );
-        model.content = vec!["Document.First".into(), "Document.Added".into()];
-        let actual = patch_subsystem_lists(&source, &model, None).unwrap();
-        let expected = source.replace(
-            "<ref:Item xsi:type=\"ref:MDObjectRef\">Document.Remove</ref:Item>",
-            "<ref:Item xsi:type=\"ref:MDObjectRef\">Document.Added</ref:Item>",
-        );
-        assert_eq!(actual, expected);
-        model.content.clear();
-        let actual = patch_subsystem_lists(&source, &model, None).unwrap();
-        assert!(actual.contains("<!--keep--><foreign:Item>Document.Foreign</foreign:Item>"));
-        assert!(!actual.contains("<ref:Item"));
-    }
-
-    #[test]
-    fn subsystem_list_patch_binds_missing_or_rebound_prefixes() {
-        for declarations in [
-            "",
-            "xmlns:xr=\"urn:foreign\" xmlns:xsi=\"urn:foreign-instance\"",
-            "xmlns:xsi=\"http://v8.1c.ru/8.3/xcf/readable\"",
-            "xmlns:xr=\"http://www.w3.org/2001/XMLSchema-instance\"",
-        ] {
-            let source = format!("<MetaDataObject xmlns=\"{MD}\" {declarations} version=\"2.20\"><Subsystem><Properties><Name>Sales</Name><Content /></Properties><ChildObjects /></Subsystem></MetaDataObject>");
-            let mut model = parse_subsystem_edit_model(&source, "test").unwrap();
-            model.content.push("Document.First".into());
-            model.children.push("Orders".into());
-            let actual = patch_subsystem_lists(&source, &model, None).unwrap();
-            let doc = roxmltree::Document::parse(&actual).unwrap();
-            let item = doc
-                .descendants()
-                .find(|n| n.has_tag_name((XR, "Item")))
-                .unwrap();
-            assert_eq!(item.text(), Some("Document.First"));
-            let ty = item.attribute((XSI, "type")).unwrap();
-            let (prefix, local) = ty.split_once(':').unwrap();
-            assert_eq!(item.lookup_namespace_uri(Some(prefix)), Some(XR));
-            assert_eq!(local, "MDObjectRef");
-            assert!(doc
-                .descendants()
-                .any(|n| n.has_tag_name((MD, "Subsystem")) && n.text() == Some("Orders")));
-        }
-    }
-
-    #[test]
-    fn subsystem_list_patch_refuses_ambiguous_direct_containers() {
-        for duplicate in [
-            "<Properties/><Properties/>",
-            "<Properties><Content/><Content/></Properties>",
-            "<Properties/><ChildObjects/>",
-        ] {
-            let source = format!("<MetaDataObject xmlns=\"{MD}\" version=\"2.20\"><Subsystem>{duplicate}<ChildObjects/></Subsystem></MetaDataObject>");
-            let model = parse_subsystem_edit_model(&source, "test").unwrap();
-            assert!(patch_subsystem_lists(&source, &model, None)
-                .unwrap_err()
-                .contains("ambiguous"));
-        }
-    }
 }

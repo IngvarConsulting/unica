@@ -1,12 +1,12 @@
 ---
 id: INV.APP.EXECUTION-DELIVERY
 check:
-  - crates/unica-coder/src/application/execution/recovery_acceptance_tests.rs::acceptance_pending_ack_and_expose_follow_commit_order_without_resurrection
-  - crates/unica-coder/src/application/execution/tests.rs::publication_requires_committed_outcome_exact_key_and_live_direct_right
-  - crates/unica-coder/src/application/execution/acceptance_tests.rs::acceptance_primary_ack_does_not_drop_an_active_alias_or_factual_result
-  - crates/unica-coder/src/application/execution/acceptance_tests.rs::acceptance_both_ack_expose_orders_obey_confirmed_public_promises
-  - crates/unica-coder/src/application/execution/acceptance_tests.rs::acceptance_observer_and_wrong_owner_cannot_release_primary_payload
-  - crates/unica-coder/src/application/execution/acceptance_tests.rs::acceptance_delivery_choice_does_not_ack_a_late_direct_or_lose_built_direct
+  - crates/unica-execution/src/coordinator/recovery_acceptance_tests.rs::acceptance_pending_ack_and_expose_follow_commit_order_without_resurrection
+  - crates/unica-execution/src/coordinator/tests.rs::publication_requires_committed_outcome_exact_key_and_live_direct_right
+  - crates/unica-execution/src/coordinator/acceptance_tests.rs::acceptance_primary_ack_does_not_drop_an_active_alias_or_factual_result
+  - crates/unica-execution/src/coordinator/acceptance_tests.rs::acceptance_both_ack_expose_orders_obey_confirmed_public_promises
+  - crates/unica-execution/src/coordinator/acceptance_tests.rs::acceptance_observer_and_wrong_owner_cannot_release_primary_payload
+  - crates/unica-execution/src/coordinator/acceptance_tests.rs::acceptance_delivery_choice_does_not_ack_a_late_direct_or_lose_built_direct
 gap: https://github.com/IngvarConsulting/unica/issues/1743
 ---
 

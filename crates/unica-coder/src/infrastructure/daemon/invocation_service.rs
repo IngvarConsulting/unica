@@ -1,35 +1,44 @@
 use super::super::protocol::InvocationRequest;
 use super::super::v13_workspace_bootstrap::project_config_present;
-use crate::application::invocation::InvocationResponseDeadline;
-use crate::application::operation_descriptors::ExecutionClass;
-use crate::application::shared_work::{
-    LongWorkFailure, ProviderHostKey, ProviderHostOwner, SharedWorkLease, SharedWorkProducer,
-};
-use crate::application::v13::view::ViewError;
-use crate::domain::address::{NodeKind, QualifiedAddress};
 use crate::domain::apply::ApplyRequest;
-use crate::domain::cancellation::CancellationToken;
-use crate::domain::code_intelligence::ProviderDeadline;
-use crate::domain::invocation::{DomainResult, InvocationFailure, SafeIdentityHash};
-use crate::domain::project_sources::{
-    ProjectSourceSet, SourceFormat, SourceProfile, SourceSetKind,
-};
-use crate::domain::refusal::RefusalCode;
-use crate::infrastructure::logical_event_source::module_address_for_relative;
-use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
-use crate::infrastructure::runtime_jobs::{RuntimeJobService, RuntimeResourceOwner};
-use crate::infrastructure::source_selection_evidence::discover_project_source_admission;
-use crate::infrastructure::source_selection_evidence::SourceSelectionEvidenceErrorKind;
+use unica_analysis_services::provider_host::{LongWorkFailure, ProviderHostKey, ProviderHostOwner};
+use unica_execution::invocation::InvocationResponseDeadline;
+use unica_execution::receipt_runtime::ports::ExecutionClass;
+use unica_execution_contract::view_error::ViewError;
+use unica_source_contract::{ProjectSourceSet, SourceFormat, SourceProfile, SourceSetKind};
+use unica_work_control::shared_work::{SharedWorkLease, SharedWorkProducer};
+
+use crate::infrastructure::event_sources::module_address_for_relative;
+use unica_execution::runtime_jobs::RuntimeResourceOwner;
+use unica_source_contract::read::SourceDirectory;
+type RuntimeJobService = unica_execution::runtime_jobs::RuntimeJobService<
+    unica_adapter_v8_runner::request::RuntimeJobRequest,
+>;
+use crate::infrastructure::source_workspace::discover_project_source_admission;
+use crate::infrastructure::source_workspace::{WorkspaceActor, WorkspaceActorRegistry};
 use crate::infrastructure::v13_large_configuration::{RegistrationCache, RegistrationIndex};
 use crate::infrastructure::workspace::discover_workspace;
-use crate::infrastructure::workspace_actor::{
-    ApplyAdmission, ApplyAdmissionError, IndexWorkIdentity, ProviderRootBinding, WorkspaceActor,
-    WorkspaceActorRegistry, WorkspaceActorRegistryError, WorkspaceSourceSetInput,
-};
 use std::io::BufRead;
 use std::sync::Arc;
+use unica_address::address::{NodeKind, QualifiedAddress};
+use unica_execution_contract::invocation::{DomainResult, InvocationFailure, SafeIdentityHash};
+use unica_refusal::RefusalCode;
+use unica_work_control::cancellation::CancellationToken;
+use unica_work_control::provider_deadline::ProviderDeadline;
+use unica_workspace::actor::{
+    ApplyAdmission, ApplyAdmissionError, IndexWorkIdentity, ProviderRootBinding,
+    WorkspaceActorRegistryError, WorkspaceSourceSetInput,
+};
+use unica_workspace::selection_evidence::SourceSelectionEvidenceErrorKind;
 
-const CANONICAL_SEARCH_MAX_ENTRIES: usize = 16_384;
+mod ordered_search_names;
+
+struct SearchDirectoryFrame {
+    relative: std::path::PathBuf,
+    directory: SourceDirectory,
+    names: Option<ordered_search_names::OrderedNames>,
+    directories: bool,
+}
 // Regex anchors and Unicode columns require a complete line. Keep that
 // indivisible unit bounded; neither file nor corpus size is a memory budget.
 const CANONICAL_SEARCH_MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
@@ -74,7 +83,7 @@ impl LiteralSearchScan {
 /// is decided once per scan. An extension object that is neither its own nor
 /// borrowed is not registered there and stays unproven.
 struct SearchHitOwners<'a> {
-    root: &'a RetainedDirectoryCapability,
+    root: &'a SourceDirectory,
     source_kind: SourceSetKind,
     cache: &'a RegistrationCache,
     index: Option<Option<Arc<RegistrationIndex>>>,
@@ -83,7 +92,7 @@ struct SearchHitOwners<'a> {
 
 impl<'a> SearchHitOwners<'a> {
     fn new(
-        root: &'a RetainedDirectoryCapability,
+        root: &'a SourceDirectory,
         source_kind: SourceSetKind,
         cache: &'a RegistrationCache,
     ) -> Self {
@@ -190,7 +199,7 @@ fn read_search_line_bounded(
 
 #[derive(Clone)]
 pub(crate) struct ActorBoundInvocation {
-    tool: crate::application::invocation_store::ToolIdentity,
+    tool: unica_execution::invocation_store::ToolIdentity,
     arguments: serde_json::Map<String, serde_json::Value>,
     response_deadline: InvocationResponseDeadline,
     actor: Arc<WorkspaceActor>,
@@ -199,9 +208,9 @@ pub(crate) struct ActorBoundInvocation {
     read_sources: Arc<[ActorReadSourceBinding]>,
     parent_source_names: Vec<String>,
     parent_source_selection:
-        Arc<crate::infrastructure::source_selection_evidence::RetainedSourceSelectionEvidence>,
+        Arc<unica_workspace::selection_evidence::RetainedSourceSelectionEvidence>,
     workspace_identity_hash: SafeIdentityHash,
-    deliveries: Arc<crate::infrastructure::engine_delivery::DeliveryDesk>,
+    deliveries: Arc<unica_artifact_delivery::desk::DeliveryDesk>,
     provider_hosts: Arc<ProviderHostOwner>,
     runtime_resources: Arc<RuntimeResourceOwner>,
     runtime_service: Option<Arc<RuntimeJobService>>,
@@ -249,9 +258,10 @@ impl ActorReadSourceCapability {
         cancellation: &'a CancellationToken,
     ) -> Result<crate::infrastructure::v13_read::LogicalViewReadAuthority<'a>, String> {
         let source_profile = self.binding.source_profile();
-        let platform_profile = source_profile.platform_profile().ok_or_else(|| {
-            "actor-bound logical source has no supported platform profile".to_string()
-        })?;
+        let platform_profile =
+            crate::domain::source_capabilities::bsl_profile_for_source(source_profile).ok_or_else(
+                || "actor-bound logical source has no supported platform profile".to_string(),
+            )?;
         let read = crate::infrastructure::v13_read_port::ProviderReadAuthority::new_local_snapshot(
             self.binding.source_set_name(),
             self.identity.clone(),
@@ -270,9 +280,7 @@ impl ActorReadSourceCapability {
         )
     }
 
-    pub(in crate::infrastructure::daemon) fn retained_root(
-        &self,
-    ) -> Arc<RetainedDirectoryCapability> {
+    pub(in crate::infrastructure::daemon) fn retained_root(&self) -> Arc<SourceDirectory> {
         self.binding.retained_root()
     }
 
@@ -289,7 +297,7 @@ impl ActorReadSourceCapability {
         scope_at: &QualifiedAddress,
         cancellation: &CancellationToken,
     ) -> Result<LiteralSearchScan, String> {
-        use crate::infrastructure::platform::filesystem::RetainedChildCapability;
+        use unica_source_contract::read::SourceEntry;
 
         // A raw OS error carries no recovery signal for the caller; every
         // surviving I/O failure names the search phase it interrupted. An
@@ -320,14 +328,13 @@ impl ActorReadSourceCapability {
                         }
                     };
                     match child {
-                        RetainedChildCapability::Directory(next) => directory = next,
-                        RetainedChildCapability::ReparsePoint => {
+                        SourceEntry::Directory(next) => directory = next,
+                        SourceEntry::ReparsePoint => {
                             return Err(
                                 "canonical search scope crosses a link/reparse point".to_string()
                             )
                         }
-                        RetainedChildCapability::RegularFile(_)
-                        | RetainedChildCapability::Unsupported => {
+                        SourceEntry::RegularFile(_) | SourceEntry::Unsupported => {
                             return Ok(LiteralSearchScan::complete())
                         }
                     }
@@ -335,7 +342,9 @@ impl ActorReadSourceCapability {
                 (relative, directory)
             }
         };
-        let platform_profile = self.binding.source_profile().platform_profile();
+        let platform_profile = crate::domain::source_capabilities::bsl_profile_for_source(
+            self.binding.source_profile(),
+        );
         let owner_checkpoint = || {
             if cancellation.is_cancelled() {
                 Err(ViewError::new(
@@ -353,245 +362,271 @@ impl ActorReadSourceCapability {
         };
         let mut owners =
             SearchHitOwners::new(&root, self.binding.source_kind(), &self.registration_cache);
-        let mut stack = vec![(start_relative, start_directory, 0_usize)];
-        let mut visited_entries = 0_usize;
+        let mut stack = vec![SearchDirectoryFrame {
+            relative: start_relative,
+            directory: start_directory,
+            names: None,
+            directories: false,
+        }];
         let mut scan = LiteralSearchScan::complete();
         let mut file_ordinal = 0_usize;
-        while let Some((relative_directory, directory, depth)) = stack.pop() {
-            if cancellation.is_cancelled() {
-                return Err("canonical search was cancelled".to_string());
-            }
-            if self.deadline.is_elapsed() {
-                return Err("canonical search operation deadline elapsed".to_string());
-            }
-            match directory.validate_named_identity() {
-                Ok(()) => {}
-                Err(error) if vanished(&error) => continue,
-                Err(error) => return Err(context("lost a retained directory", error)),
-            }
-            let remaining_entries = CANONICAL_SEARCH_MAX_ENTRIES.saturating_sub(visited_entries);
-            if remaining_entries == 0 {
-                return Err("canonical search exceeded its retained entry limit".to_string());
-            }
-            let mut names = match directory.read_immediate_names_bounded(remaining_entries, || {
+        while !stack.is_empty() {
+            let checkpoint = || {
                 if cancellation.is_cancelled() {
                     Err(std::io::Error::new(
                         std::io::ErrorKind::Interrupted,
                         "canonical search was cancelled",
                     ))
+                } else if self.deadline.is_elapsed() {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "canonical search operation deadline elapsed",
+                    ))
                 } else {
                     Ok(())
                 }
-            }) {
-                Ok(names) => names,
-                Err(error) if vanished(&error) => continue,
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
-                    return Err(error.to_string())
-                }
-                Err(error) => return Err(context("could not list a source directory", error)),
             };
-            names.sort();
-            for name in names {
-                visited_entries = visited_entries.saturating_add(1);
-                if visited_entries > CANONICAL_SEARCH_MAX_ENTRIES {
-                    return Err("canonical search exceeded its retained entry limit".to_string());
+            checkpoint().map_err(|error| error.to_string())?;
+            let depth = stack.len() - 1;
+            let frame = stack.last_mut().expect("active search directory");
+            let directory = &frame.directory;
+            if frame.names.is_none() {
+                match directory.validate_named_identity() {
+                    Ok(()) => {}
+                    Err(error) if vanished(&error) => {
+                        stack.pop();
+                        continue;
+                    }
+                    Err(error) => return Err(context("lost a retained directory", error)),
                 }
-                let relative = relative_directory.join(&name);
-                let child = match directory.retain_immediate_child_nofollow(&name) {
-                    Ok(child) => child,
-                    Err(error) if vanished(&error) => continue,
-                    Err(error) => {
-                        return Err(context("could not open a source directory entry", error))
-                    }
-                };
-                match child {
-                    RetainedChildCapability::Directory(child_directory)
-                        if depth < CANONICAL_SEARCH_MAX_DEPTH =>
-                    {
-                        stack.push((relative, child_directory, depth + 1));
-                    }
-                    RetainedChildCapability::Directory(_) => {
-                        return Err("canonical search exceeded its retained depth limit".to_string())
-                    }
-                    RetainedChildCapability::RegularFile(file)
-                        if relative
+                frame.names =
+                    match ordered_search_names::OrderedNames::collect(directory, checkpoint) {
+                        Ok(names) => Some(names),
+                        Err(error) => {
+                            return Err(context("could not list a source directory", error))
+                        }
+                    };
+            }
+            let names = frame.names.as_mut().expect("enumerated search directory");
+            let name = names
+                .next(frame.directories)
+                .map_err(|error| context("could not read sorted source names", error))?;
+            let Some(name) = name else {
+                if frame.directories {
+                    stack.pop();
+                } else {
+                    frame.directories = true;
+                }
+                continue;
+            };
+            let directories = frame.directories;
+            let relative_directory = &frame.relative;
+            let relative = relative_directory.join(&name);
+            // Files precede subdirectories in the established scan order.
+            // Unrelated names need opening only in the directory pass.
+            if !directories
+                && !relative
+                    .extension()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("bsl"))
+            {
+                continue;
+            }
+            let child = match directory.retain_immediate_child_nofollow(&name) {
+                Ok(child) => child,
+                Err(error) if vanished(&error) => continue,
+                Err(error) => {
+                    return Err(context("could not open a source directory entry", error))
+                }
+            };
+            match child {
+                SourceEntry::Directory(child_directory)
+                    if directories && depth < CANONICAL_SEARCH_MAX_DEPTH =>
+                {
+                    stack.push(SearchDirectoryFrame {
+                        relative,
+                        directory: child_directory,
+                        names: None,
+                        directories: false,
+                    });
+                }
+                SourceEntry::Directory(_) if directories => {
+                    return Err("canonical search exceeded its retained depth limit".to_string())
+                }
+                SourceEntry::RegularFile(file)
+                    if !directories
+                        && relative
                             .extension()
                             .and_then(std::ffi::OsStr::to_str)
                             .is_some_and(|extension| extension.eq_ignore_ascii_case("bsl")) =>
-                    {
-                        file_ordinal += 1;
-                        let opened = match file.open_named_identity_for_read() {
-                            Ok(opened) => opened,
-                            Err(error) if vanished(&error) => continue,
-                            Err(error) => {
-                                return Err(context("lost a retained source file", error))
-                            }
-                        };
-                        let mut reader = std::io::BufReader::new(opened);
-                        let mut raw_line = Vec::new();
-                        let mut line_index = 0_usize;
-                        // Mapped once per file, on its first hit, from the
-                        // path already in hand: no descriptor or module read.
-                        let mut module_at = None::<Result<String, &'static str>>;
-                        loop {
-                            let has_line = read_search_line_bounded(
-                                &mut reader,
-                                &mut raw_line,
-                                CANONICAL_SEARCH_MAX_LINE_BYTES,
-                                || {
-                                    if cancellation.is_cancelled() {
-                                        Err(std::io::Error::new(
-                                            std::io::ErrorKind::Interrupted,
-                                            "canonical search was cancelled",
-                                        ))
-                                    } else if self.deadline.is_elapsed() {
-                                        Err(std::io::Error::new(
-                                            std::io::ErrorKind::TimedOut,
-                                            "canonical search operation deadline elapsed",
-                                        ))
-                                    } else {
-                                        Ok(())
-                                    }
-                                },
-                            );
-                            let has_line = match has_line {
-                                Ok(has_line) => has_line,
-                                Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => {
-                                    scan.mark_uncovered(
-                                        self.binding.source_set_name(),
-                                        file_ordinal,
-                                        "line_too_long",
-                                    );
-                                    break;
+                {
+                    file_ordinal += 1;
+                    let opened = match file.open_named_identity_for_read() {
+                        Ok(opened) => opened,
+                        Err(error) if vanished(&error) => continue,
+                        Err(error) => return Err(context("lost a retained source file", error)),
+                    };
+                    let mut reader = std::io::BufReader::new(opened);
+                    let mut raw_line = Vec::new();
+                    let mut line_index = 0_usize;
+                    // Mapped once per file, on its first hit, from the
+                    // path already in hand: no descriptor or module read.
+                    let mut module_at = None::<Result<String, &'static str>>;
+                    loop {
+                        let has_line = read_search_line_bounded(
+                            &mut reader,
+                            &mut raw_line,
+                            CANONICAL_SEARCH_MAX_LINE_BYTES,
+                            || {
+                                if cancellation.is_cancelled() {
+                                    Err(std::io::Error::new(
+                                        std::io::ErrorKind::Interrupted,
+                                        "canonical search was cancelled",
+                                    ))
+                                } else if self.deadline.is_elapsed() {
+                                    Err(std::io::Error::new(
+                                        std::io::ErrorKind::TimedOut,
+                                        "canonical search operation deadline elapsed",
+                                    ))
+                                } else {
+                                    Ok(())
                                 }
-                                Err(error)
-                                    if matches!(
-                                        error.kind(),
-                                        std::io::ErrorKind::Interrupted
-                                            | std::io::ErrorKind::TimedOut
-                                    ) =>
-                                {
-                                    return Err(error.to_string())
-                                }
-                                Err(error) => {
-                                    return Err(context("could not read a source file", error))
-                                }
-                            };
-                            if !has_line {
-                                break;
-                            }
-                            line_index += 1;
-                            let Ok(text) = std::str::from_utf8(&raw_line) else {
+                            },
+                        );
+                        let has_line = match has_line {
+                            Ok(has_line) => has_line,
+                            Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => {
                                 scan.mark_uncovered(
                                     self.binding.source_set_name(),
                                     file_ordinal,
-                                    "invalid_utf8",
+                                    "line_too_long",
                                 );
                                 break;
-                            };
-                            let line = text.strip_suffix('\n').map_or(text, |without_lf| {
-                                without_lf.strip_suffix('\r').unwrap_or(without_lf)
-                            });
-                            // `view` reads the module without its byte-order
-                            // mark; the hit column and snippet must match it.
-                            let line = if line_index == 1 {
-                                line.strip_prefix('\u{feff}').unwrap_or(line)
-                            } else {
-                                line
-                            };
-                            let mut previous_byte = 0;
-                            let mut column = 1;
-                            let mut snippet = None::<String>;
-                            for byte_column in matcher.match_starts(line) {
-                                if cancellation.is_cancelled() {
-                                    return Err("canonical search was cancelled".to_string());
-                                }
-                                if self.deadline.is_elapsed() {
-                                    return Err(
-                                        "canonical search operation deadline elapsed".to_string()
+                            }
+                            Err(error)
+                                if matches!(
+                                    error.kind(),
+                                    std::io::ErrorKind::Interrupted | std::io::ErrorKind::TimedOut
+                                ) =>
+                            {
+                                return Err(error.to_string())
+                            }
+                            Err(error) => {
+                                return Err(context("could not read a source file", error))
+                            }
+                        };
+                        if !has_line {
+                            break;
+                        }
+                        line_index += 1;
+                        let Ok(text) = std::str::from_utf8(&raw_line) else {
+                            scan.mark_uncovered(
+                                self.binding.source_set_name(),
+                                file_ordinal,
+                                "invalid_utf8",
+                            );
+                            break;
+                        };
+                        let line = text.strip_suffix('\n').map_or(text, |without_lf| {
+                            without_lf.strip_suffix('\r').unwrap_or(without_lf)
+                        });
+                        // `view` reads the module without its byte-order
+                        // mark; the hit column and snippet must match it.
+                        let line = if line_index == 1 {
+                            line.strip_prefix('\u{feff}').unwrap_or(line)
+                        } else {
+                            line
+                        };
+                        let mut previous_byte = 0;
+                        let mut column = 1;
+                        let mut snippet = None::<String>;
+                        for byte_column in matcher.match_starts(line) {
+                            if cancellation.is_cancelled() {
+                                return Err("canonical search was cancelled".to_string());
+                            }
+                            if self.deadline.is_elapsed() {
+                                return Err(
+                                    "canonical search operation deadline elapsed".to_string()
+                                );
+                            }
+                            column += line[previous_byte..byte_column].chars().count();
+                            previous_byte = byte_column;
+                            if *skip > 0 {
+                                *skip -= 1;
+                                continue;
+                            }
+                            let mut item = serde_json::Map::new();
+                            item.insert(
+                                "scope".to_string(),
+                                serde_json::Value::String(scope_at.to_string()),
+                            );
+                            if module_at.is_none() {
+                                let mapped = match platform_profile {
+                                    None => Err("unsupported_source_profile"),
+                                    Some(profile) => match module_address_for_relative(
+                                        self.binding.source_set_name(),
+                                        self.binding.source_kind(),
+                                        profile,
+                                        &relative,
+                                    ) {
+                                        None => Err("outside_module_layout"),
+                                        Some(at) => {
+                                            if owners
+                                                .proves(&at, &owner_checkpoint)
+                                                .map_err(|error| error.to_string())?
+                                            {
+                                                Ok(at.to_string())
+                                            } else {
+                                                Err("owner_unproven")
+                                            }
+                                        }
+                                    },
+                                };
+                                module_at = Some(mapped);
+                            }
+                            match module_at.as_ref() {
+                                Some(Ok(hit_at)) => {
+                                    item.insert(
+                                        "at".to_string(),
+                                        serde_json::Value::String(hit_at.clone()),
                                     );
                                 }
-                                column += line[previous_byte..byte_column].chars().count();
-                                previous_byte = byte_column;
-                                if *skip > 0 {
-                                    *skip -= 1;
-                                    continue;
+                                Some(Err(reason)) => {
+                                    // No proven module owns this file: name
+                                    // it by the scan ordinal, never by path.
+                                    item.insert(
+                                        "fileId".to_string(),
+                                        format!("bsl-{file_ordinal}").into(),
+                                    );
+                                    item.insert("unaddressed".to_string(), (*reason).into());
                                 }
-                                let mut item = serde_json::Map::new();
-                                item.insert(
-                                    "scope".to_string(),
-                                    serde_json::Value::String(scope_at.to_string()),
-                                );
-                                if module_at.is_none() {
-                                    let mapped = match platform_profile {
-                                        None => Err("unsupported_source_profile"),
-                                        Some(profile) => match module_address_for_relative(
-                                            self.binding.source_set_name(),
-                                            self.binding.source_kind(),
-                                            profile,
-                                            &relative,
-                                        ) {
-                                            None => Err("outside_module_layout"),
-                                            Some(at) => {
-                                                if owners
-                                                    .proves(&at, &owner_checkpoint)
-                                                    .map_err(|error| error.to_string())?
-                                                {
-                                                    Ok(at.to_string())
-                                                } else {
-                                                    Err("owner_unproven")
-                                                }
-                                            }
-                                        },
-                                    };
-                                    module_at = Some(mapped);
-                                }
-                                match module_at.as_ref() {
-                                    Some(Ok(hit_at)) => {
-                                        item.insert(
-                                            "at".to_string(),
-                                            serde_json::Value::String(hit_at.clone()),
-                                        );
-                                    }
-                                    Some(Err(reason)) => {
-                                        // No proven module owns this file: name
-                                        // it by the scan ordinal, never by path.
-                                        item.insert(
-                                            "fileId".to_string(),
-                                            format!("bsl-{file_ordinal}").into(),
-                                        );
-                                        item.insert("unaddressed".to_string(), (*reason).into());
-                                    }
-                                    // Mapped just above; a file is never left unmapped.
-                                    None => {}
-                                }
-                                item.insert(
-                                    "line".to_string(),
-                                    serde_json::Value::from(line_index),
-                                );
-                                item.insert("column".to_string(), serde_json::Value::from(column));
-                                item.insert(
-                                    "snippet".to_string(),
-                                    serde_json::Value::String(
-                                        snippet
-                                            .get_or_insert_with(|| {
-                                                line.chars().take(512).collect::<String>()
-                                            })
-                                            .clone(),
-                                    ),
-                                );
-                                scan.matches.push(serde_json::Value::Object(item));
-                                if scan.matches.len() == limit {
-                                    scan.scan_complete = false;
-                                    return Ok(scan);
-                                }
+                                // Mapped just above; a file is never left unmapped.
+                                None => {}
+                            }
+                            item.insert("line".to_string(), serde_json::Value::from(line_index));
+                            item.insert("column".to_string(), serde_json::Value::from(column));
+                            item.insert(
+                                "snippet".to_string(),
+                                serde_json::Value::String(
+                                    snippet
+                                        .get_or_insert_with(|| {
+                                            line.chars().take(512).collect::<String>()
+                                        })
+                                        .clone(),
+                                ),
+                            );
+                            scan.matches.push(serde_json::Value::Object(item));
+                            if scan.matches.len() == limit {
+                                scan.scan_complete = false;
+                                return Ok(scan);
                             }
                         }
                     }
-                    RetainedChildCapability::RegularFile(_)
-                    | RetainedChildCapability::ReparsePoint
-                    | RetainedChildCapability::Unsupported => {}
                 }
+                SourceEntry::Directory(_)
+                | SourceEntry::RegularFile(_)
+                | SourceEntry::ReparsePoint
+                | SourceEntry::Unsupported => {}
             }
         }
         Ok(scan)
@@ -640,7 +675,7 @@ struct ActorLogicalReadLease {
 pub(in crate::infrastructure::daemon) struct ActorLayoutSource {
     name: String,
     kind: SourceSetKind,
-    root: Arc<RetainedDirectoryCapability>,
+    root: Arc<SourceDirectory>,
     deadline: ProviderDeadline,
 }
 
@@ -653,7 +688,7 @@ impl ActorLayoutSource {
         self.kind
     }
 
-    pub(in crate::infrastructure::daemon) fn root(&self) -> &RetainedDirectoryCapability {
+    pub(in crate::infrastructure::daemon) fn root(&self) -> &SourceDirectory {
         &self.root
     }
 
@@ -673,7 +708,7 @@ enum ActorLogicalReadRoute {
 }
 
 impl ActorBoundInvocation {
-    pub(crate) fn tool(&self) -> crate::application::invocation_store::ToolIdentity {
+    pub(crate) fn tool(&self) -> unica_execution::invocation_store::ToolIdentity {
         self.tool
     }
 
@@ -730,12 +765,12 @@ impl ActorBoundInvocation {
             return Err("source operation was cancelled before admission".into());
         }
         let revision = match self.tool {
-            crate::application::invocation_store::ToolIdentity::Diff
+            unica_execution::invocation_store::ToolIdentity::Diff
                 if self.arguments.contains_key("executionToken") =>
             {
                 ActorExecutionRevision::UnpublishedApply(std::sync::atomic::AtomicBool::new(false))
             }
-            crate::application::invocation_store::ToolIdentity::Apply => {
+            unica_execution::invocation_store::ToolIdentity::Apply => {
                 ActorExecutionRevision::UnpublishedApply(std::sync::atomic::AtomicBool::new(false))
             }
             // Поиск по именам ходит в тот же справочник адресов и путей, что
@@ -743,7 +778,7 @@ impl ActorBoundInvocation {
             // без аренды ревизии. Свод выбирает режим, потому что режимы у
             // сводов разные по природе: текст читается из текущих файлов,
             // справочник имён использует раскладку, и ни один не собирает ревизию.
-            crate::application::invocation_store::ToolIdentity::Search
+            unica_execution::invocation_store::ToolIdentity::Search
                 if self
                     .arguments
                     .get("corpus")
@@ -764,7 +799,7 @@ impl ActorBoundInvocation {
             // и хватает справочника раскладки. Адрес известен — предмет один,
             // а диапазон строк у него берётся чтением исходника, значит нужен
             // тот же допуск, что у `view`.
-            crate::application::invocation_store::ToolIdentity::Resolve
+            unica_execution::invocation_store::ToolIdentity::Resolve
                 if !self.arguments.contains_key("at") =>
             {
                 ActorExecutionRevision::LayoutRead(ActorLayoutReadLease {
@@ -779,14 +814,14 @@ impl ActorBoundInvocation {
             // `Docs` в этом перечне нет: справка отвечает до допуска и
             // аренды исходников не просит — свод, который читал бы рабочее
             // пространство, до actor-owned читателя отвечает отказом.
-            crate::application::invocation_store::ToolIdentity::View
-            | crate::application::invocation_store::ToolIdentity::Resolve
-            | crate::application::invocation_store::ToolIdentity::Search
-            | crate::application::invocation_store::ToolIdentity::Check
-            | crate::application::invocation_store::ToolIdentity::Diff => {
+            unica_execution::invocation_store::ToolIdentity::View
+            | unica_execution::invocation_store::ToolIdentity::Resolve
+            | unica_execution::invocation_store::ToolIdentity::Search
+            | unica_execution::invocation_store::ToolIdentity::Check
+            | unica_execution::invocation_store::ToolIdentity::Diff => {
                 let (selected, route) = match self.tool {
-                    crate::application::invocation_store::ToolIdentity::View
-                    | crate::application::invocation_store::ToolIdentity::Resolve => {
+                    unica_execution::invocation_store::ToolIdentity::View
+                    | unica_execution::invocation_store::ToolIdentity::Resolve => {
                         match self.arguments.get("at").and_then(serde_json::Value::as_str) {
                             Some(at) => match QualifiedAddress::parse(at) {
                                 Ok(address) => match self
@@ -925,7 +960,7 @@ impl ActorBoundExecution {
     // Task 22 cutover, only injected canonical services exercise this narrow
     // capability surface.
     #[allow(dead_code)]
-    pub(crate) fn tool(&self) -> crate::application::invocation_store::ToolIdentity {
+    pub(crate) fn tool(&self) -> unica_execution::invocation_store::ToolIdentity {
         self.invocation.tool()
     }
 
@@ -949,7 +984,7 @@ impl ActorBoundExecution {
 
     pub(in crate::infrastructure::daemon) fn workspace_context(
         &self,
-    ) -> &crate::domain::workspace::WorkspaceContext {
+    ) -> &unica_source_contract::workspace::WorkspaceContext {
         self.invocation.actor.context()
     }
 
@@ -1045,7 +1080,7 @@ impl ActorBoundExecution {
                     .ok_or_else(|| {
                         ApplyAdmissionError::Other("borrow parent address is missing".to_string())
                     })?;
-                let parent = crate::domain::address::QualifiedAddress::parse(from)
+                let parent = unica_address::address::QualifiedAddress::parse(from)
                     .map_err(|error| ApplyAdmissionError::Other(error.to_string()))?;
                 self.invocation
                     .read_sources
@@ -1076,10 +1111,10 @@ impl ActorBoundExecution {
 
     pub(in crate::infrastructure::daemon) fn preview_prepared_apply(
         &self,
-        prepared: &crate::infrastructure::workspace_actor::PreparedApplyBatch,
+        prepared: &unica_workspace::actor::PreparedApplyBatch,
     ) -> Result<
-        crate::infrastructure::workspace_actor::ApplyPublicationResult,
-        crate::infrastructure::workspace_actor::ApplyPublicationError,
+        unica_workspace::actor::ApplyPublicationResult,
+        unica_workspace::actor::ApplyPublicationError,
     > {
         let result = self.invocation.actor.preview_prepared_apply(prepared)?;
         if let ActorExecutionRevision::UnpublishedApply(confirmed) = &self.revision {
@@ -1090,9 +1125,9 @@ impl ActorBoundExecution {
 
     pub(in crate::infrastructure::daemon) fn save_prepared_apply(
         &self,
-        prepared: crate::infrastructure::workspace_actor::PreparedApplyBatch,
+        prepared: unica_workspace::actor::PreparedApplyBatch,
         preview: DomainResult,
-    ) -> Result<String, crate::infrastructure::workspace_actor::SavedApplyPlanError> {
+    ) -> Result<String, unica_workspace::actor::SavedApplyPlanError> {
         self.invocation.actor.save_prepared_apply(prepared, preview)
     }
 
@@ -1102,12 +1137,14 @@ impl ActorBoundExecution {
         limit: usize,
         cursor: Option<&str>,
         cancellation: &CancellationToken,
-    ) -> Result<serde_json::Value, crate::infrastructure::workspace_actor::SavedApplyExecutionError>
-    {
-        let result =
-            self.invocation
-                .actor
-                .read_saved_apply_diff(token, limit, cursor, cancellation)?;
+    ) -> Result<serde_json::Value, unica_workspace::actor::SavedApplyExecutionError> {
+        let result = self.invocation.actor.read_saved_apply_diff(
+            token,
+            limit,
+            cursor,
+            cancellation,
+            crate::infrastructure::source_diff::layout,
+        )?;
         if let ActorExecutionRevision::UnpublishedApply(confirmed) = &self.revision {
             confirmed.store(true, std::sync::atomic::Ordering::Release);
         }
@@ -1118,29 +1155,28 @@ impl ActorBoundExecution {
         &self,
         token: &str,
         cancellation: &CancellationToken,
-        deadline: crate::domain::operation_deadline::OperationDeadline,
+        deadline: unica_work_control::operation_deadline::OperationDeadline,
         finish: impl FnOnce(
             DomainResult,
             Result<
-                crate::infrastructure::workspace_actor::ApplyPublicationResult,
-                crate::infrastructure::workspace_actor::ApplyPublicationError,
+                unica_workspace::actor::ApplyPublicationResult,
+                unica_workspace::actor::ApplyPublicationError,
             >,
         ) -> DomainResult,
-    ) -> Result<DomainResult, crate::infrastructure::workspace_actor::SavedApplyExecutionError>
-    {
+    ) -> Result<DomainResult, unica_workspace::actor::SavedApplyExecutionError> {
         let ActorExecutionRevision::UnpublishedApply(confirmed) = &self.revision else {
             return Err(
-                crate::infrastructure::workspace_actor::SavedApplyExecutionError::StateUnavailable(
+                unica_workspace::actor::SavedApplyExecutionError::StateUnavailable(
                     "saved apply execution belongs to a non-apply invocation",
                 ),
             );
         };
         // Adapt the caller's cutoff; this boundary must not start a new budget.
         let deadline = match deadline {
-            crate::domain::operation_deadline::OperationDeadline::NoDeadline => {
+            unica_work_control::operation_deadline::OperationDeadline::NoDeadline => {
                 ProviderDeadline::no_deadline()
             }
-            crate::domain::operation_deadline::OperationDeadline::Finite(deadline) => {
+            unica_work_control::operation_deadline::OperationDeadline::Finite(deadline) => {
                 ProviderDeadline::new(deadline)
             }
         };
@@ -1157,18 +1193,16 @@ impl ActorBoundExecution {
     #[cfg(test)]
     pub(in crate::infrastructure::daemon) fn publish_prepared_apply(
         &self,
-        prepared: crate::infrastructure::workspace_actor::PreparedApplyBatch,
+        prepared: unica_workspace::actor::PreparedApplyBatch,
     ) -> Result<
-        crate::infrastructure::workspace_actor::ApplyPublicationResult,
-        crate::infrastructure::workspace_actor::ApplyPublicationError,
+        unica_workspace::actor::ApplyPublicationResult,
+        unica_workspace::actor::ApplyPublicationError,
     > {
         let ActorExecutionRevision::UnpublishedApply(confirmed) = &self.revision else {
-            return Err(
-                crate::infrastructure::workspace_actor::ApplyPublicationError::new(
-                    crate::infrastructure::workspace_actor::ApplyPublicationErrorKind::Invariant,
-                    "prepared apply publication belongs to a non-apply invocation",
-                ),
-            );
+            return Err(unica_workspace::actor::ApplyPublicationError::new(
+                unica_workspace::actor::ApplyPublicationErrorKind::Invariant,
+                "prepared apply publication belongs to a non-apply invocation",
+            ));
         };
         let published = self.invocation.actor.publish_prepared_apply(prepared)?;
         confirmed.store(true, std::sync::atomic::Ordering::Release);
@@ -1321,7 +1355,7 @@ impl ActorBoundExecution {
     /// Daemon-owned exact delivery capability. Canonical work may wait here
     /// only after request admission has become an Invocation or durable Task.
     #[allow(dead_code)]
-    pub(crate) fn delivery_work(&self) -> &crate::infrastructure::engine_delivery::DeliveryDesk {
+    pub(crate) fn delivery_work(&self) -> &unica_artifact_delivery::desk::DeliveryDesk {
         &self.invocation.deliveries
     }
 
@@ -1332,9 +1366,17 @@ impl ActorBoundExecution {
         profile: &str,
         generation: &str,
         work: W,
-    ) -> Result<(IndexWorkIdentity, SharedWorkLease<(), LongWorkFailure>), String>
+    ) -> Result<
+        (
+            IndexWorkIdentity,
+            SharedWorkLease<IndexWorkIdentity, (), unica_workspace::actor::IndexWorkFailure>,
+        ),
+        String,
+    >
     where
-        W: FnOnce(SharedWorkProducer) -> Result<(), LongWorkFailure> + Send + 'static,
+        W: FnOnce(SharedWorkProducer) -> Result<(), unica_workspace::actor::IndexWorkFailure>
+            + Send
+            + 'static,
     {
         self.invocation.actor.join_index_work(
             &self.invocation.provider_root,
@@ -1350,7 +1392,7 @@ impl ActorBoundExecution {
         &self,
         key: ProviderHostKey,
         work: W,
-    ) -> SharedWorkLease<(), LongWorkFailure>
+    ) -> SharedWorkLease<ProviderHostKey, (), LongWorkFailure>
     where
         W: FnOnce(SharedWorkProducer) -> Result<(), LongWorkFailure> + Send + 'static,
     {
@@ -1362,9 +1404,20 @@ impl ActorBoundExecution {
         &self,
         lease_id: &str,
         work: W,
-    ) -> Result<SharedWorkLease<(), LongWorkFailure>, String>
+    ) -> Result<
+        SharedWorkLease<
+            unica_execution::runtime_jobs::RuntimeWorkKey,
+            (),
+            unica_execution::runtime_jobs::RuntimeWorkFailure,
+        >,
+        String,
+    >
     where
-        W: FnOnce(SharedWorkProducer) -> Result<(), LongWorkFailure> + Send + 'static,
+        W: FnOnce(
+                SharedWorkProducer,
+            ) -> Result<(), unica_execution::runtime_jobs::RuntimeWorkFailure>
+            + Send
+            + 'static,
     {
         let service = self.invocation.runtime_service.as_ref().ok_or_else(|| {
             "runtime resource capability is not admitted for this daemon invocation".to_string()
@@ -1421,8 +1474,8 @@ impl ActorBoundExecution {
                 }
                 if matches!(
                     self.invocation.tool,
-                    crate::application::invocation_store::ToolIdentity::Search
-                        | crate::application::invocation_store::ToolIdentity::Resolve
+                    unica_execution::invocation_store::ToolIdentity::Search
+                        | unica_execution::invocation_store::ToolIdentity::Resolve
                 ) {
                     if cancellation.is_cancelled() {
                         return Ok(Ok(DomainResult::canonical_rejection(
@@ -1620,7 +1673,7 @@ pub(crate) trait CanonicalInvocationService: Send + Sync {
 pub(super) fn bind_workspace_invocation(
     request: &InvocationRequest,
     actors: &WorkspaceActorRegistry,
-    deliveries: Arc<crate::infrastructure::engine_delivery::DeliveryDesk>,
+    deliveries: Arc<unica_artifact_delivery::desk::DeliveryDesk>,
     provider_hosts: Arc<ProviderHostOwner>,
     runtime_resources: Arc<RuntimeResourceOwner>,
     runtime_service: Option<Arc<RuntimeJobService>>,
@@ -1662,7 +1715,7 @@ pub(super) fn bind_workspace_invocation_cancellable(
 
 /// The daemon-wide resources an admitted invocation may join.
 pub(super) struct ActorInvocationResources {
-    deliveries: Arc<crate::infrastructure::engine_delivery::DeliveryDesk>,
+    deliveries: Arc<unica_artifact_delivery::desk::DeliveryDesk>,
     provider_hosts: Arc<ProviderHostOwner>,
     runtime_resources: Arc<RuntimeResourceOwner>,
     runtime_service: Option<Arc<RuntimeJobService>>,
@@ -1670,7 +1723,7 @@ pub(super) struct ActorInvocationResources {
 
 impl ActorInvocationResources {
     pub(super) fn new(
-        deliveries: Arc<crate::infrastructure::engine_delivery::DeliveryDesk>,
+        deliveries: Arc<unica_artifact_delivery::desk::DeliveryDesk>,
         provider_hosts: Arc<ProviderHostOwner>,
         runtime_resources: Arc<RuntimeResourceOwner>,
         runtime_service: Option<Arc<RuntimeJobService>>,
@@ -1691,7 +1744,7 @@ struct DiscoveredActorSource {
     source_format: SourceFormat,
     source_profile: SourceProfile,
     root: std::path::PathBuf,
-    retained_identity: crate::infrastructure::platform::filesystem::FileIdentity,
+    retained_identity: unica_source_contract::read::FileIdentity,
 }
 
 #[cfg(test)]
@@ -1700,7 +1753,7 @@ pub(super) struct ActorInvocationResourcesForTest(ActorInvocationResources);
 #[cfg(test)]
 impl ActorInvocationResourcesForTest {
     pub(super) fn new(
-        deliveries: Arc<crate::infrastructure::engine_delivery::DeliveryDesk>,
+        deliveries: Arc<unica_artifact_delivery::desk::DeliveryDesk>,
         provider_hosts: Arc<ProviderHostOwner>,
         runtime_resources: Arc<RuntimeResourceOwner>,
         runtime_service: Option<Arc<RuntimeJobService>>,
@@ -1785,7 +1838,7 @@ fn bind_workspace_invocation_controlled(
         .map(|source| source.name.clone())
         .collect::<Vec<_>>();
     let view_extension_target = (request.tool()
-        == crate::application::invocation_store::ToolIdentity::View)
+        == unica_execution::invocation_store::ToolIdentity::View)
         .then(|| {
             request
                 .arguments()
@@ -2097,11 +2150,11 @@ pub(crate) mod test_control {
 #[cfg(test)]
 mod registration_cache_tests {
     use super::*;
-    use crate::application::invocation_store::ToolIdentity;
-    use crate::application::ports::TokioClock;
-    use crate::application::result_store::ViewCursorStore;
     use crate::application::v13::view::{ViewRequest, ViewService};
     use crate::infrastructure::v13_large_configuration::RegistrationIndex;
+    use unica_execution::clock::TokioClock;
+    use unica_execution::invocation_store::ToolIdentity;
+    use unica_navigation::result_store::ViewCursorStore;
 
     fn registrations(source: &ActorReadSourceCapability) -> Arc<RegistrationIndex> {
         source
@@ -2153,7 +2206,7 @@ mod registration_cache_tests {
             7_000,
         )
         .unwrap();
-        let actors = WorkspaceActorRegistry::default();
+        let actors = crate::infrastructure::source_workspace::actor_registry();
         let bind = || {
             bind_workspace_invocation(
                 &request,
@@ -2263,10 +2316,10 @@ mod search_line_tests {
 #[cfg(test)]
 mod body_range_refusal_tests {
     use super::*;
-    use crate::application::invocation_store::ToolIdentity;
-    use crate::application::ports::TokioClock;
     use crate::infrastructure::daemon::protocol::InvocationRequest;
     use serde_json::json;
+    use unica_execution::clock::TokioClock;
+    use unica_execution::invocation_store::ToolIdentity;
 
     fn workspace() -> tempfile::TempDir {
         let root = tempfile::tempdir().unwrap();
@@ -2299,7 +2352,7 @@ mod body_range_refusal_tests {
         .unwrap();
         bind_workspace_invocation(
             &request,
-            &WorkspaceActorRegistry::default(),
+            &crate::infrastructure::source_workspace::actor_registry(),
             Arc::default(),
             Arc::default(),
             Arc::default(),
@@ -2399,10 +2452,10 @@ mod body_range_refusal_tests {
 
     #[test]
     fn body_range_refusal_capability_rejects_foreign_actor_and_preserves_profile() {
-        use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
-        use crate::infrastructure::workspace_actor::{
-            WorkspaceActorRegistry, WorkspaceSourceSetInput,
-        };
+        use unica_source_contract::{SourceFormat, SourceProfile, SourceSetKind};
+
+        use unica_workspace::actor::WorkspaceSourceSetInput;
+
         let root = workspace();
         let other = workspace();
         let ranged = QualifiedAddress::parse("main:CommonModule.Probe.Body#L4").unwrap();
@@ -2427,7 +2480,7 @@ mod body_range_refusal_tests {
             args(&ranged.to_string(), None),
         );
         let source = root.path().join("src");
-        let actor = WorkspaceActorRegistry::default()
+        let actor = crate::infrastructure::source_workspace::actor_registry()
             .get_or_create(
                 execution.workspace_context(),
                 [WorkspaceSourceSetInput::new(
@@ -2456,7 +2509,7 @@ mod body_range_refusal_tests {
 
     #[test]
     fn body_range_refusal_read_preserves_cancellation_and_rejects_replaced_root() {
-        use crate::infrastructure::platform::testing::{
+        use unica_workspace::test_support::{
             attempt_retained_directory_replacement_for_test, RetainedDirectoryReplacementOutcome,
         };
         let root = workspace();
@@ -2527,7 +2580,7 @@ mod body_range_refusal_tests {
 
     #[test]
     fn body_range_refusal_publication_rechecks_root_after_advisory_read() {
-        use crate::infrastructure::platform::testing::{
+        use unica_workspace::test_support::{
             attempt_retained_directory_replacement_for_test, RetainedDirectoryReplacementOutcome,
         };
         let root = workspace();

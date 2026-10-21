@@ -38569,7 +38569,7 @@
       },
       {
        "pointer": "/next/0/args/at",
-       "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект"
+       "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект.Can.property.add"
       },
       {
        "pointer": "/next/1/args/at",
@@ -38632,7 +38632,7 @@
       },
       {
        "pointer": "/next/0/args/at",
-       "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект"
+       "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект.Can.property.remove"
       },
       {
        "pointer": "/next/1/args/at",

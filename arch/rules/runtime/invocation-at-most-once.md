@@ -7,26 +7,26 @@ check:
   - crates/unica-coder/src/interfaces/daemon_router.rs::live_daemon_executes_once_and_compacts_the_acknowledged_receipt_to_a_tombstone
   - crates/unica-coder/src/interfaces/daemon_router.rs::live_daemon_hands_slow_work_off_to_a_task_that_get_wait_and_cancel_observe
   - crates/unica-coder/tests/daemon_receipt_ledger.rs::exact_duplicate_of_a_bound_task_reads_the_task_without_a_second_reservation
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::exact_repeat_submit_reads_its_bound_task_without_a_second_attempt
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::exact_repeat_racing_the_handoff_completion_reads_the_same_task
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::staged_handoff_completion_waits_for_the_key_lock
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::bound_handoff_completion_waits_for_the_key_lock
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::exact_repeat_of_a_retiring_task_is_not_found_and_reserves_nothing
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::exact_cancel_racing_the_handoff_completion_cancels_the_task
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::exact_cancel_during_the_begun_promotion_cancels_the_unstarted_task
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::exact_cancel_during_the_handoff_continuation_cancels_the_unstarted_task
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::exact_cancel_during_the_inline_cutoff_cancels_the_running_task
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::exact_cancel_marking_the_inline_handoff_cancels_the_running_task
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::exact_cancel_during_the_promised_continuation_cancels_the_unstarted_task
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::exact_cancel_racing_the_start_of_the_continued_task_ends_it_cancelled
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::task_id_cancel_during_the_begun_promotion_cancels_the_unstarted_task
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::task_id_cancel_during_the_handoff_continuation_cancels_the_unstarted_task
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::task_id_cancel_during_the_inline_cutoff_cancels_the_running_task
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::task_id_cancel_marking_the_inline_handoff_cancels_the_running_task
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::task_id_cancel_during_the_promised_continuation_cancels_the_unstarted_task
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::task_id_cancel_racing_the_start_of_the_continued_task_ends_it_cancelled
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::task_id_cancel_waits_for_the_staged_handoff_completion
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::begun_promotion_after_the_early_look_executes_the_materialized_task
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::exact_repeat_submit_reads_its_bound_task_without_a_second_attempt
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::exact_repeat_racing_the_handoff_completion_reads_the_same_task
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::staged_handoff_completion_waits_for_the_key_lock
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::bound_handoff_completion_waits_for_the_key_lock
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::exact_repeat_of_a_retiring_task_is_not_found_and_reserves_nothing
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::exact_cancel_racing_the_handoff_completion_cancels_the_task
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::exact_cancel_during_the_begun_promotion_cancels_the_unstarted_task
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::exact_cancel_during_the_handoff_continuation_cancels_the_unstarted_task
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::exact_cancel_during_the_inline_cutoff_cancels_the_running_task
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::exact_cancel_marking_the_inline_handoff_cancels_the_running_task
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::exact_cancel_during_the_promised_continuation_cancels_the_unstarted_task
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::exact_cancel_racing_the_start_of_the_continued_task_ends_it_cancelled
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::task_id_cancel_during_the_begun_promotion_cancels_the_unstarted_task
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::task_id_cancel_during_the_handoff_continuation_cancels_the_unstarted_task
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::task_id_cancel_during_the_inline_cutoff_cancels_the_running_task
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::task_id_cancel_marking_the_inline_handoff_cancels_the_running_task
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::task_id_cancel_during_the_promised_continuation_cancels_the_unstarted_task
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::task_id_cancel_racing_the_start_of_the_continued_task_ends_it_cancelled
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::task_id_cancel_waits_for_the_staged_handoff_completion
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::begun_promotion_after_the_early_look_executes_the_materialized_task
 gap: https://github.com/IngvarConsulting/unica/issues/1743
 ---
 

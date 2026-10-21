@@ -1,16 +1,22 @@
-use crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES;
-use crate::application::result_store::{
-    ViewCursorBinding, ViewCursorError, ViewCursorQuestion, ViewCursorStore,
-};
-use crate::application::v13::source_text::{body_text_result, oversized_body, ModuleText};
-use crate::domain::address::QualifiedAddress;
-use crate::domain::invocation::DomainResult;
 use crate::domain::node_view::SourceText;
 use crate::domain::node_view::{NodeView, NodeViewData, TextView};
-use crate::domain::refusal::{RefusalCode, RefusalDetail};
+use unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES;
+use unica_execution_contract::view_error::{error_result, ViewError};
+use unica_navigation::result_store::{
+    ViewCursorBinding, ViewCursorError, ViewCursorQuestion, ViewCursorStore,
+};
+use {
+    crate::application::v13::source_text::ModuleText,
+    unica_execution_contract::source_text_budget::body_text_result,
+    unica_execution_contract::source_text_budget::oversized_body,
+};
+
 use serde_json::{json, Map, Value};
 use std::io::{self, Write};
 use std::sync::Arc;
+use unica_address::address::QualifiedAddress;
+use unica_execution_contract::invocation::DomainResult;
+use unica_refusal::RefusalCode;
 
 const DEFAULT_LIMIT: usize = 20;
 const MAX_LIMIT: usize = 50;
@@ -145,61 +151,6 @@ pub(crate) trait ViewReadAuthority: Send + Sync {
         _admitted: &ViewSourceSnapshot,
     ) -> Result<Option<ModuleText>, ViewError> {
         Ok(None)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ViewError {
-    code: RefusalCode,
-    detail: Option<RefusalDetail>,
-    message: String,
-    next: Vec<Value>,
-}
-
-impl ViewError {
-    pub(crate) fn new(code: RefusalCode, message: impl Into<String>) -> Self {
-        Self {
-            code,
-            detail: None,
-            message: message.into(),
-            next: Vec::new(),
-        }
-    }
-
-    /// Отказ с уточнением: код берётся из уточнения, поэтому пару «код и не
-    /// его уточнение» составить нельзя.
-    pub(crate) fn detailed(detail: RefusalDetail, message: impl Into<String>) -> Self {
-        Self {
-            code: detail.code(),
-            detail: Some(detail),
-            message: message.into(),
-            next: Vec::new(),
-        }
-    }
-
-    pub(crate) const fn code(&self) -> RefusalCode {
-        self.code
-    }
-
-    pub(crate) const fn detail(&self) -> Option<RefusalDetail> {
-        self.detail
-    }
-
-    /// Маршрут к следующему вопросу. Отказ, который знает альтернативу, обязан
-    /// её назвать — иначе агент останавливается там, где путь есть. Каждый
-    /// вызов добавляет маршрут в конец списка.
-    pub(crate) fn set_next(&mut self, next: Value) {
-        self.next.push(next);
-    }
-
-    pub(crate) fn next(&self) -> &[Value] {
-        &self.next
-    }
-}
-
-impl std::fmt::Display for ViewError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.message)
     }
 }
 
@@ -403,7 +354,11 @@ impl<A: ViewReadAuthority> ViewService<A> {
                         result.source_text = Some(text);
                     }
                     SourceText::Oversized { bytes, prefix } => {
-                        let error = oversized_body(&canonical_at.to_string(), bytes);
+                        let error = oversized_body(
+                            &canonical_at.to_string(),
+                            bytes,
+                            unica_bootstrap::MAX_RESPONSE_BUDGET,
+                        );
                         let data = result.data.take();
                         let rev = result.rev.take();
                         result = DomainResult::canonical_rejection(
@@ -414,22 +369,24 @@ impl<A: ViewReadAuthority> ViewService<A> {
                         result.data = data;
                         result.rev = rev;
                         result.next.extend(error.next().iter().cloned());
-                        result.source_text_read_hint =
-                            Some(Box::new(crate::domain::invocation::SourceTextReadHint {
+                        result.source_text_read_hint = Some(Box::new(
+                            unica_execution_contract::invocation::SourceTextReadHint {
                                 from_line: from,
                                 to_line: to,
                                 prefix: Some(prefix),
-                            }));
+                            },
+                        ));
                     }
                     SourceText::Window { .. } => unreachable!("a Body has one coordinate window"),
                 }
                 if result.source_text_read_hint.is_none() && to >= from {
-                    result.source_text_read_hint =
-                        Some(Box::new(crate::domain::invocation::SourceTextReadHint {
+                    result.source_text_read_hint = Some(Box::new(
+                        unica_execution_contract::invocation::SourceTextReadHint {
                             from_line: from,
                             to_line: to,
                             prefix: None,
-                        }));
+                        },
+                    ));
                 }
                 if serialized_result_size(&result) > MAX_CANONICAL_RESULT_BYTES {
                     return Err(ViewError::new(
@@ -713,26 +670,18 @@ fn cursor_error(error: ViewCursorError) -> ViewError {
     }
 }
 
-fn error_result(at: Option<String>, error: ViewError) -> DomainResult {
-    let mut result = match error.detail {
-        Some(detail) => DomainResult::canonical_rejection_detailed(at, detail, error.message),
-        None => DomainResult::canonical_rejection(at, error.code, error.message),
-    };
-    result.next.extend(error.next);
-    result
-}
-
 #[cfg(test)]
 mod tests {
     use super::{ViewError, ViewReadAuthority, ViewRequest, ViewService, ViewSourceSnapshot};
-    use crate::application::result_store::ViewCursorStore;
     use crate::application::v13::source_text::{ModuleText, MAX_SOURCE_TEXT_BYTES};
-    use crate::domain::address::QualifiedAddress;
     use crate::domain::node_view::{CollectionView, NodeView, NodeViewData};
+    use unica_navigation::result_store::ViewCursorStore;
+
     use serde_json::{json, Map};
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
+    use unica_address::address::QualifiedAddress;
 
     struct FixtureAuthority {
         revisions: Mutex<HashMap<String, ViewSourceSnapshot>>,
@@ -807,7 +756,7 @@ mod tests {
                 .cloned()
                 .ok_or_else(|| {
                     ViewError::new(
-                        crate::domain::refusal::RefusalCode::NotFound,
+                        unica_refusal::RefusalCode::NotFound,
                         "fixture address was not found",
                     )
                 })?;
@@ -827,7 +776,7 @@ mod tests {
         ) -> Result<NodeViewData, ViewError> {
             self.views.get(&at.to_string()).cloned().ok_or_else(|| {
                 ViewError::new(
-                    crate::domain::refusal::RefusalCode::NotFound,
+                    unica_refusal::RefusalCode::NotFound,
                     "fixture address was not found",
                 )
             })
@@ -1381,7 +1330,7 @@ mod tests {
             at.to_string(),
             NodeViewData::Collection(CollectionView::new(
                 NodeView::new(at, "Body", "Тело модуля", Map::new()),
-                vec![json!({"text": "X".repeat(crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES)})],
+                vec![json!({"text": "X".repeat(unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES)})],
             )),
         );
         let result = ViewService::new(authority, ViewCursorStore::default())
@@ -1398,7 +1347,7 @@ mod tests {
         let mut props = Map::new();
         props.insert(
             "description".to_string(),
-            json!("X".repeat(crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES)),
+            json!("X".repeat(unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES)),
         );
         authority.views.insert(
             at.to_string(),
@@ -1433,7 +1382,7 @@ mod tests {
         };
         let baseline = read(0);
         assert!(baseline.ok);
-        let exact_size = crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES;
+        let exact_size = unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES;
         let result = read(exact_size - serde_json::to_vec(&baseline).unwrap().len());
         assert!(result.ok);
         assert_eq!(serde_json::to_vec(&result).unwrap().len(), exact_size);
@@ -1499,7 +1448,7 @@ mod tests {
             at.to_string(),
             NodeViewData::Collection(CollectionView::new(
                 NodeView::new(at, "Body", "Тело модуля", Map::new()),
-                vec![json!({"line":1}), json!({"line":2,"text":"X".repeat(crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES)})],
+                vec![json!({"line":1}), json!({"line":2,"text":"X".repeat(unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES)})],
             )),
         );
         let result = ViewService::new(authority, ViewCursorStore::default())
@@ -1549,7 +1498,7 @@ mod tests {
     /// которого уточнение заведено, теряется.
     #[test]
     fn a_detailed_read_refusal_keeps_its_detail_and_overridden_outcome_on_the_wire() {
-        use crate::domain::refusal::{Outcome, RefusalCode, RefusalDetail};
+        use unica_refusal::{Outcome, RefusalCode, RefusalDetail};
 
         struct UnreadableSource;
 
@@ -1591,8 +1540,8 @@ mod tests {
 
     #[test]
     fn actual_cursor_size_is_reserved_for_late_items_and_metadata() {
-        use crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES;
-        use crate::application::result_store::ViewCursorBinding;
+        use unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES;
+        use unica_navigation::result_store::ViewCursorBinding;
         let at = "main:Document.Заказ.Module.Object.Body";
         let binding = ViewCursorBinding {
             canonical_at: at.into(),
@@ -1628,7 +1577,7 @@ mod tests {
             super::preflight_collection(&node, &over, &binding)
                 .unwrap_err()
                 .code(),
-            crate::domain::refusal::RefusalCode::ResultTooLarge
+            unica_refusal::RefusalCode::ResultTooLarge
         );
 
         let base = super::collection_result(

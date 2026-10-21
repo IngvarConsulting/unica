@@ -12,7 +12,4 @@ pub mod receipt_ledger_test_support;
 #[doc(hidden)]
 pub mod frontend_restart_test_support;
 
-#[cfg(test)]
-pub(crate) mod test_support;
-
 pub use infrastructure::platform::run_platform_main;

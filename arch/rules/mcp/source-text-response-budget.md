@@ -1,16 +1,16 @@
 ---
 id: INV.WIRE.SOURCE-TEXT-RESPONSE-BUDGET
 check:
-  - crates/unica-coder/src/application/v13/source_text.rs::continuation_fits_the_real_ranged_envelope_at_each_host_budget
-  - crates/unica-coder/src/infrastructure/receipt_ledger/tests.rs::body_read_hint_survives_receipt_reopen_and_tampering_is_rejected
-  - crates/unica-coder/src/infrastructure/task_store_v5.rs::body_read_hint_survives_completed_task_reopen_without_rewriting
+  - crates/unica-execution-contract/src/source_text_budget.rs::continuation_fits_the_real_ranged_envelope_at_each_host_budget
+  - crates/unica-execution/src/receipt_store/tests.rs::body_read_hint_survives_receipt_reopen_and_tampering_is_rejected
+  - crates/unica-execution/src/task_store.rs::body_read_hint_survives_completed_task_reopen_without_rewriting
   - crates/unica-coder/src/application/v13/view.rs::module_text_over_the_limit_is_refused_whole_with_structural_next
   - crates/unica-coder/src/application/v13/view.rs::oversized_module_text_does_not_refuse_a_projection_that_returns_no_text
   - crates/unica-coder/src/application/v13/source_text.rs::source_text_limit_is_the_largest_known_host_budget
-  - crates/unica-coder/src/application/v13/source_text.rs::oversized_method_refusal_routes_to_the_method_and_module_structure
-  - crates/unica-coder/src/application/v13/source_text.rs::response_budget_refuses_text_with_its_envelope_and_marks_oversized_branches
-  - crates/unica-coder/src/application/v13/source_text.rs::overbudget_mark_and_refusal_share_one_boundary
-  - crates/unica-coder/src/application/v13/source_text.rs::oversized_body_routes_by_address_segments_not_by_text
+  - crates/unica-execution-contract/src/source_text_budget.rs::oversized_method_refusal_routes_to_the_method_and_module_structure
+  - crates/unica-execution-contract/src/source_text_budget.rs::response_budget_refuses_text_with_its_envelope_and_marks_oversized_branches
+  - crates/unica-execution-contract/src/source_text_budget.rs::overbudget_mark_and_refusal_share_one_boundary
+  - crates/unica-execution-contract/src/source_text_budget.rs::oversized_body_routes_by_address_segments_not_by_text
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::view_never_returns_module_text_above_the_largest_host_budget
   - crates/unica-coder/src/interfaces/task_projection.rs::task_result_with_source_text_follows_the_client_budget
   - crates/unica-coder/src/interfaces/mcp.rs::every_tool_that_can_return_source_text_declares_its_result_size

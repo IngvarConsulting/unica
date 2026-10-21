@@ -1,15 +1,15 @@
 ---
 id: INV.APP.RUNTIME-RETAINED-JOB-PUBLICATION
 check:
-  - crates/unica-coder/src/infrastructure/runtime_jobs.rs::quarantine_release_never_removes_active_lock_from_replacement_jobs_root
-  - crates/unica-coder/src/infrastructure/runtime_jobs.rs::quarantine_record_read_never_follows_replacement_after_retained_validation
-  - crates/unica-coder/src/infrastructure/runtime_jobs.rs::quarantine_record_publish_never_writes_replacement_root
-  - crates/unica-coder/src/infrastructure/runtime_jobs.rs::quarantine_publication_never_releases_after_same_root_job_directory_replacement
-  - crates/unica-coder/src/infrastructure/runtime_jobs.rs::quarantine_post_rename_flush_failure_never_releases_active_lock
-  - crates/unica-coder/src/infrastructure/runtime_jobs.rs::quarantine_post_publication_confirmation_rejects_same_root_job_directory_swap
-  - crates/unica-coder/src/infrastructure/runtime_jobs.rs::quarantine_record_transition_completes_only_in_exact_retained_root
-  - crates/unica-coder/src/infrastructure/runtime_jobs.rs::ownership_retained_transition_never_writes_replacement_job_directory
-  - crates/unica-coder/src/infrastructure/runtime_jobs.rs::failed_activation_cleanup_never_writes_replacement_job_directory
+  - crates/unica-coder/src/infrastructure/runtime_jobs_integration.rs::quarantine_release_never_removes_active_lock_from_replacement_jobs_root
+  - crates/unica-coder/src/infrastructure/runtime_jobs_integration.rs::quarantine_record_read_never_follows_replacement_after_retained_validation
+  - crates/unica-coder/src/infrastructure/runtime_jobs_integration.rs::quarantine_record_publish_never_writes_replacement_root
+  - crates/unica-coder/src/infrastructure/runtime_jobs_integration.rs::quarantine_publication_never_releases_after_same_root_job_directory_replacement
+  - crates/unica-coder/src/infrastructure/runtime_jobs_integration.rs::quarantine_post_rename_flush_failure_never_releases_active_lock
+  - crates/unica-coder/src/infrastructure/runtime_jobs_integration.rs::quarantine_post_publication_confirmation_rejects_same_root_job_directory_swap
+  - crates/unica-coder/src/infrastructure/runtime_jobs_integration.rs::quarantine_record_transition_completes_only_in_exact_retained_root
+  - crates/unica-coder/src/infrastructure/runtime_jobs_integration.rs::ownership_retained_transition_never_writes_replacement_job_directory
+  - crates/unica-coder/src/infrastructure/runtime_jobs_integration.rs::failed_activation_cleanup_never_writes_replacement_job_directory
 ---
 
 # Завершение runtime записывается в исходный каталог задания

@@ -1,10 +1,10 @@
 ---
 id: INV.PKG.RUNTIME-CACHE-RETENTION
 check:
-  - crates/unica-bootstrap/tests/runtime_install.rs::collecting_failure_does_not_fail_a_successful_installation
-  - crates/unica-bootstrap/tests/runtime_install.rs::collecting_keeps_the_newest_versions_of_each_artifact
-  - crates/unica-bootstrap/tests/runtime_install.rs::collecting_leaves_an_artifact_that_is_within_the_limit
-  - crates/unica-bootstrap/tests/runtime_install.rs::collecting_does_not_remove_a_version_owned_by_an_active_delivery_lock
+  - crates/unica-artifact-delivery/tests/runtime_install.rs::collecting_failure_does_not_fail_a_successful_installation
+  - crates/unica-artifact-delivery/tests/runtime_install.rs::collecting_keeps_the_newest_versions_of_each_artifact
+  - crates/unica-artifact-delivery/tests/runtime_install.rs::collecting_leaves_an_artifact_that_is_within_the_limit
+  - crates/unica-artifact-delivery/tests/runtime_install.rs::collecting_does_not_remove_a_version_owned_by_an_active_delivery_lock
 gap: https://github.com/IngvarConsulting/unica/issues/1747
 ---
 

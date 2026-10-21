@@ -1,0 +1,27 @@
+[package]
+name = "unica-analysis-services"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+test-support = ["unica-workspace/test-support", "unica-process/test-support"]
+
+[dependencies]
+unica-workspace = { path = "../unica-workspace" }
+unica-process = { path = "../unica-process" }
+unica-work-control = { path = "../unica-work-control" }
+unica-source-contract = { path = "../unica-source-contract" }
+unica-redaction = { path = "../unica-redaction" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+uuid.workspace = true
+fs2.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+unica-workspace = { path = "../unica-workspace", features = ["test-support"] }
+unica-process = { path = "../unica-process", features = ["test-support"] }

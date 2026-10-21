@@ -4,7 +4,7 @@
 # Source-scanned V13 fixtures and the hashed catalog must not inherit
 # Git-for-Windows CRLF conversion from the runner's global configuration.
 tests/fixtures/v013/modules/*.bsl text eol=lf
-crates/unica-coder/src/infrastructure/platform-event-catalog-8.3.27.2074.json text eol=lf
+crates/unica-metadata/src/platform-event-catalog-8.3.27.2074.json text eol=lf
 
 # BSP parity fixtures preserve harvested bytes, including BOM and CRLF.
 tests/fixtures/unica_mcp_script_parity/bsp/** -text -whitespace
@@ -45,6 +45,7 @@ tests/fixtures/acceptance/workspace-metadata-values/** -text whitespace=cr-at-eo
 tests/fixtures/acceptance/workspace-metadata-commands/** -text whitespace=cr-at-eol
 tests/fixtures/acceptance/workspace-borrowed/** -text whitespace=cr-at-eol
 tests/fixtures/acceptance/metadata-declaration-diagnostics/** -text whitespace=cr-at-eol
+tests/fixtures/acceptance/workspace-command-interface/** -text whitespace=cr-at-eol
 
 tests/fixtures/acceptance/workspace/** -text whitespace=cr-at-eol
 
@@ -72,3 +73,7 @@ tests/fixtures/platform_8_3_27/new-xml/native-chart-of-accounts-descriptor.xml -
 # Vendored archive and delivered license hashes describe the original bytes.
 /vendor/ureq/** -text
 /plugins/unica/third-party/licenses/ureq/** -text
+
+# Raw template XML exports and the complete native Report seed retain their bytes.
+/tests/fixtures/platform_8_3_27/template-new-xml/*.xml -text whitespace=cr-at-eol
+/tests/fixtures/platform_8_3_27/template-new-xml/seed/** -text whitespace=cr-at-eol

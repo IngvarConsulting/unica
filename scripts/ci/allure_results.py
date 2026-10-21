@@ -166,20 +166,89 @@ def write_plan(out: Path, entries: list[dict]) -> Path:
     return path
 
 
-class SizeMatcher:
-    """Размер теста по выражениям `medium` и `large` из `.config/nextest.toml`.
+class _SizeExpression:
+    """The declaring subset of nextest filters: groups, union and intersection."""
 
-    Выражение объявляет размер вне теста: `kind(test)` — интеграционные
-    цели, `test(/…/)` — модули по пути, `binary(…)` в `large` — цель, чьи
-    тесты по именам ушли в ночной ярус. Здесь они читаются, чтобы отчёт нёс
-    метку `size` тем же правилом, каким ворота отбирают тесты.
-    """
+    def __init__(self, expression: str):
+        self.tokens = []
+        rest = expression.strip()
+        while rest:
+            atom = re.match(r"test\(/(.*?)/\)|binary\(([A-Za-z0-9_-]+)\)|kind\(test\)|[()&|]", rest)
+            if atom is None:
+                raise ValueError(f"unsupported size filter near {rest[:60]!r}")
+            token = atom[0]
+            if token.startswith("test("):
+                self.tokens.append(("test", re.compile(atom[1])))
+            elif token.startswith("binary("):
+                self.tokens.append(("binary", atom[2]))
+            else:
+                self.tokens.append(token)
+            rest = rest[atom.end():].lstrip()
+        self.position = 0
+        self.tree = self._union() if self.tokens else ("false",)
+        if self.position != len(self.tokens):
+            raise ValueError("unconsumed size filter tokens")
+
+    def _union(self):
+        tree = self._intersection()
+        while self._take("|"):
+            tree = ("or", tree, self._intersection())
+        return tree
+
+    def _intersection(self):
+        tree = self._primary()
+        while self._take("&"):
+            tree = ("and", tree, self._primary())
+        return tree
+
+    def _take(self, token):
+        if self.position < len(self.tokens) and self.tokens[self.position] == token:
+            self.position += 1
+            return True
+        return False
+
+    def _primary(self):
+        if self._take("("):
+            tree = self._union()
+            if not self._take(")"):
+                raise ValueError("unclosed size filter group")
+            return tree
+        if self.position >= len(self.tokens):
+            raise ValueError("missing size filter operand")
+        token = self.tokens[self.position]
+        self.position += 1
+        if token == "kind(test)":
+            return ("integration",)
+        if not isinstance(token, tuple):
+            raise ValueError("invalid size filter operand")
+        return token
+
+    def matches(self, binary: str, name: str) -> bool:
+        binary_name = binary.rsplit("::", 1)[-1].replace("-", "_")
+
+        def evaluate(tree):
+            kind = tree[0]
+            if kind == "or":
+                return evaluate(tree[1]) or evaluate(tree[2])
+            if kind == "and":
+                return evaluate(tree[1]) and evaluate(tree[2])
+            if kind == "test":
+                return tree[1].search(name) is not None
+            if kind == "binary":
+                return binary_name == tree[1]
+            if kind == "integration":
+                return "::" in binary and "bin/" not in binary
+            return False
+
+        return evaluate(self.tree)
+
+
+class SizeMatcher:
+    """Keep each size expression bound to both its binary and test name."""
 
     def __init__(self, medium: str, large: str = ""):
-        self.integration = "kind(test)" in medium
-        self.patterns = [re.compile(found) for found in re.findall(r"test\(/(.*?)/\)", medium)]
-        self.large_binaries = set(re.findall(r"binary\(([A-Za-z0-9_-]+)\)", large))
-        self.large_patterns = [re.compile(found) for found in re.findall(r"test\(/(.*?)/\)", large)]
+        self.medium = _SizeExpression(medium)
+        self.large = _SizeExpression(large)
 
     @classmethod
     def from_toml(cls, path: Path = NEXTEST_TOML) -> "SizeMatcher":
@@ -193,11 +262,9 @@ class SizeMatcher:
         return cls(medium, large)
 
     def size(self, binary: str, name: str) -> str:
-        if binary.rsplit("::", 1)[-1] in self.large_binaries and any(p.search(name) for p in self.large_patterns):
+        if self.large.matches(binary, name):
             return "large"
-        if self.integration and "::" in binary and "bin/" not in binary:
-            return "medium"
-        if any(pattern.search(name) for pattern in self.patterns):
+        if self.medium.matches(binary, name):
             return "medium"
         return "small"
 

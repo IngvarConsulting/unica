@@ -1,13 +1,13 @@
 ---
 id: INV.PKG.ARTIFACT-DELIVERY-FORM
 check:
-  - crates/unica-bootstrap/tests/manifest_contract.rs::an_artifact_delivered_as_one_file_is_accepted
-  - crates/unica-bootstrap/tests/manifest_contract.rs::a_one_file_artifact_declares_exactly_the_file_it_delivers
-  - crates/unica-bootstrap/tests/manifest_contract.rs::the_core_is_still_required_to_arrive_as_an_archive
-  - crates/unica-bootstrap/tests/runtime_install.rs::an_artifact_delivered_as_one_file_is_installed_without_unpacking
-  - crates/unica-bootstrap/tests/runtime_install.rs::a_file_artifact_whose_bytes_are_wrong_is_refused_like_any_other
-  - crates/unica-bootstrap/tests/runtime_install.rs::a_publisher_zip_installs_every_declared_file
-  - crates/unica-bootstrap/tests/runtime_install.rs::a_publisher_zip_is_refused_when_unsafe_or_drifted
+  - crates/unica-artifact-delivery/tests/manifest_contract.rs::an_artifact_delivered_as_one_file_is_accepted
+  - crates/unica-artifact-delivery/tests/manifest_contract.rs::a_one_file_artifact_declares_exactly_the_file_it_delivers
+  - crates/unica-artifact-delivery/tests/manifest_contract.rs::the_core_is_still_required_to_arrive_as_an_archive
+  - crates/unica-artifact-delivery/tests/runtime_install.rs::an_artifact_delivered_as_one_file_is_installed_without_unpacking
+  - crates/unica-artifact-delivery/tests/runtime_install.rs::a_file_artifact_whose_bytes_are_wrong_is_refused_like_any_other
+  - crates/unica-artifact-delivery/tests/runtime_install.rs::a_publisher_zip_installs_every_declared_file
+  - crates/unica-artifact-delivery/tests/runtime_install.rs::a_publisher_zip_is_refused_when_unsafe_or_drifted
 ---
 
 # Движок может поставляться одним файлом или архивом издателя

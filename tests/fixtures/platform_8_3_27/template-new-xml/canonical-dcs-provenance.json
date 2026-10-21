@@ -1,0 +1,101 @@
+{
+  "schemaVersion": 1,
+  "status": "STABLE_NATIVE_CANONICAL_DCS_ORACLE_ORIGINAL_PRODUCER_RAW_MISMATCH_PRESERVED",
+  "fixture": "native-canonical-dcs-content.xml",
+  "fixtureSha256": "c52388a0ade8f039ba6e4ee6a7de6b166b20a7c07371056e7b13808b3a1183e4",
+  "bytes": 1249,
+  "sourceRevision": "4bf85f5f32c7fdea3728a8a5b50b9aa2b77cb202",
+  "authoredOnRevision": "e2b2d02f3a90d336bb464507749073f00ca256e5",
+  "normalCore": {
+    "sha256": "ae8b00de9a80d25639942b50540a8de8c52a4501adbf51a6853f7293e366b5e7",
+    "features": [
+      "default"
+    ],
+    "compilerTarget": "unica",
+    "preparedProvenance": "/private/tmp/unica-v014-native3-4bf85f5f-20261020-fresh/provenance.json",
+    "preparedProvenanceSha256": "850834570091939495044f8b9ecc76f1e359c1b4ff54304e4171102734c222f5"
+  },
+  "originalPublicCreation": {
+    "wire": "/private/tmp/unica-v014-canonical-dcs-4bf85f5f-20261020-first/canonical-dcs-template/wire.json",
+    "wireSha256": "81a9df62b48cd9d249b2df317a86b3e39a09056f973efa3edc04b2361a95ceba",
+    "report": "/private/tmp/unica-v014-canonical-dcs-4bf85f5f-20261020-first/canonical-dcs-template/public-apply.json",
+    "reportSha256": "8bc277cb96b06d15f95ab79b093a44b40bce52bf6e811d47be997b559f7c3082",
+    "arguments": {
+      "at": "main:Report.CorpusReport",
+      "ops": [
+        {
+          "op": "template.add",
+          "args": {
+            "items": [
+              {
+                "name": "CorpusTemplate",
+                "templateType": "DataCompositionSchema"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "tokenOnlyPublication": true,
+    "previewSourceAndCacheUnchanged": true,
+    "planHashPreserved": true
+  },
+  "originalAttempt": {
+    "report": "/private/tmp/unica-v014-canonical-dcs-4bf85f5f-20261020-first/report.json",
+    "reportSha256": "171e6c96e1168f7ae1bfb5722f8c8dc11d16c26d17f1f611a69a1d9341fb197b",
+    "status": "FAILED",
+    "error": "canonical selection/structure settings changed",
+    "nativeCommands": 3,
+    "round2": "NOT_RUN",
+    "producerRawEqual": false
+  },
+  "continuation": {
+    "report": "/private/tmp/unica-v014-canonical-dcs-continuation-4bf85f5f-20261020-first/report.json",
+    "reportSha256": "f53468e3994bc744fe69480a5ad0ea2375af7c0af24cbe1433b5f2c9aab403ee",
+    "status": "STABLE_CANONICAL_DCS_ORACLE_FROM_FIRST_EXPORT",
+    "harnessSha256": "223372e85d67d2528d74642bcd59040a1f964297bdf7ef02db31d71173964384",
+    "configSha256": "169707f1e7f08524f18659b27a8c5a8dfcef5aa2fd308222bd2f0edbfbc53f5c",
+    "nativeCommands": 3,
+    "freshInfobase": true,
+    "inputIsExactFirstExport": true,
+    "wholeTreeException": "ConfigDumpInfo.xml configVersion values only"
+  },
+  "export1": {
+    "path": "/private/tmp/unica-v014-canonical-dcs-4bf85f5f-20261020-first/canonical-dcs-template/round-1/export/Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template.xml",
+    "sha256": "c52388a0ade8f039ba6e4ee6a7de6b166b20a7c07371056e7b13808b3a1183e4"
+  },
+  "export2": {
+    "path": "/private/tmp/unica-v014-canonical-dcs-continuation-4bf85f5f-20261020-first/round-2/export/Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template.xml",
+    "sha256": "c52388a0ade8f039ba6e4ee6a7de6b166b20a7c07371056e7b13808b3a1183e4"
+  },
+  "platform": {
+    "version": "8.3.27.2074",
+    "ibcmdSha256": "e00f3c945fb6f60bb2802151df1b4e7ee4f3caaf7c9e24a981020af575fda6e5",
+    "closureSha256": "5eb8897c4f7e95876572f2f36943439b0d57e47688314b622f5771e5a22df0ef",
+    "files": 4337,
+    "directories": 96
+  },
+  "semanticDelta": {
+    "onlyRemovedXmlElements": [
+      "settings/selection (empty)",
+      "settings/item[StructureItemGroup]/order (empty)"
+    ],
+    "StructureItemGroupPreserved": true,
+    "SelectedItemAutoPreserved": true,
+    "originalOtherRawDelta": [
+      "LF to CRLF",
+      "terminal newline removed"
+    ],
+    "fixtureTransformed": false
+  },
+  "independentReview": {
+    "path": "/Users/ingvarvilkman/Documents/git/unica/.session-temp/v014-platform-1369-20261020/canonical-dcs-continuation/independent-review.json",
+    "sha256": "712c5a79b39d5753e69b00ba85173d12badaa4e8b133daa4cd0f64a45c426083",
+    "status": "ACCEPT_STABLE_NATIVE_ORACLE_NOT_FIXED_PRODUCER_ACCEPTANCE"
+  },
+  "limits": [
+    "Specific empty canonical scaffold; retained empty-settings payload is a different fixture.",
+    "Not current producer acceptance, report execution, general DCS equivalence, full66 or release acceptance.",
+    "First export snapshot was captured after original failure, before continuation; original report remains FAILED."
+  ]
+}

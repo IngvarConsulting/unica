@@ -73,16 +73,10 @@ fn run_before_meta_remove_subsystem_child_inspection_hook(path: &Path) {
 }
 
 mod edit;
-mod form_metadata;
-mod format_contract;
-pub(crate) use form_metadata::parse_form_metadata_properties;
-mod help_facet;
+
 mod info;
-mod info_projection;
-mod integrity_check;
-mod member_properties;
-pub(crate) use integrity_check::check_meta_object_integrity;
-mod predefined;
+
+pub(crate) mod predefined;
 mod publisher;
 
 #[cfg(test)]
@@ -95,86 +89,36 @@ pub(crate) fn typed_resource_preimage_contract_is_complete() {
     publisher::typed_add_publication_tests::meta_add_detects_concurrent_owner_change_without_overwriting_it();
 }
 pub(crate) mod remove;
-pub(crate) mod template_catalog;
-mod usage_scan;
+pub(crate) mod template_source;
 mod validation;
+#[cfg(test)]
 mod validation_context;
-mod xml_model;
 
 pub(crate) use edit::{
-    canonical_typed_command_name, meta_edit_object_identity, prepare_typed_edit,
-    resolve_typed_edit_object, resolve_typed_metadata_object, typed_command_module_path,
-    typed_operations_write_multilingual_text, EXTERNAL_SOURCE_TEXT_LANGUAGE,
+    prepare_typed_edit, resolve_typed_edit_object, resolve_typed_metadata_object,
 };
-pub(crate) use xml_model::{
-    first_top_child_object_offset, meta_default_text_language, meta_mltext_property_replacement,
-    platform_child_object_insertion_offset, platform_child_object_order,
-};
-pub(crate) fn apply_typed_operations_to_image_with_seed(
-    xml_text: &mut String,
-    operations: &[crate::domain::metadata::MetaEditOperation],
-    lang: &str,
-    seed: &[u8],
-) -> Result<(), crate::application::metadata::MetaFailure> {
-    use sha2::{Digest, Sha256};
 
-    let mut counter = 0_u64;
-    let mut next_uuid = || {
-        let mut hasher = Sha256::new();
-        hasher.update(b"unica-v13-metadata-uuid-v1\0");
-        hasher.update(seed);
-        hasher.update(counter.to_be_bytes());
-        counter = counter.saturating_add(1);
-        let digest = hasher.finalize();
-        let mut bytes = [0_u8; 16];
-        bytes.copy_from_slice(&digest[..16]);
-        bytes[6] = (bytes[6] & 0x0f) | 0x40;
-        bytes[8] = (bytes[8] & 0x3f) | 0x80;
-        uuid::Uuid::from_bytes(bytes).to_string()
-    };
-    edit::apply_typed_operations_with_uuid(xml_text, operations, lang, &mut next_uuid).map(|_| ())
-}
-pub(crate) use info::{parse_typed_meta_local_info_for_source, read_typed_meta_info};
+pub(crate) use info::read_typed_meta_info;
 #[cfg(test)]
 pub(crate) use info::{
     with_meta_info_descriptor_image_hook, with_registrar_processing_hook,
-    with_subsystem_evidence_processing_hook, RegistrarProcessingPhase,
-    SubsystemEvidenceProcessingPhase,
+    with_subsystem_evidence_processing_hook,
 };
-pub(crate) use info_projection::{observe_meta_borrowing_property, observe_meta_info_property};
-pub(crate) use predefined::{
-    predefined_item_id, predefined_post_image, read_complete_predefined_items_for_code_type,
-    require_predefined_code_type, PredefinedCodeType, MISSING_PREDEFINED_CODE_TYPE,
-};
+
 pub(crate) use publisher::prepare_meta_add;
 #[cfg(test)]
 pub(crate) use publisher::{
     with_meta_add_after_authorization_hook, with_meta_edit_before_reauthorization_hook,
 };
-pub(crate) use remove::remove_metadata_child_text_with_flag;
-#[cfg(test)]
-pub(crate) use template_catalog::emit_meta_internal_info;
-pub(crate) use template_catalog::metadata_generated_types_8_3_27;
-pub(crate) use usage_scan::{scan_local_enrichment, LocalEnrichment, LocalSection};
-pub(crate) use validation::{
-    parse_child_profile_from_bytes, template_removal_has_inherited_owners,
-    template_removal_primary_path, validate_template_removal_identity,
-    validate_template_removal_primary_image, MetadataAdmission,
-};
-pub(crate) use validation::{
-    service_child_semantics, validate_metadata_owner_shape_8_3_27, MetadataValidator,
-};
-pub(crate) use xml_model::{
-    configuration_is_extension, descriptor_extends_parent, meta_info_child, meta_info_child_text,
-    meta_info_children, meta_info_inner_text, parse_meta_borrowing, MetaBorrowing,
-};
+
+pub(crate) use validation::validate_metadata_owner_shape_8_3_27;
 
 /// The hidden v0.13 tree delegates metadata branches to the current typed
 /// metadata reader. This predicate describes only reader ownership; it never
 /// resolves a path or treats a physical resource as logical identity.
 pub(crate) fn logical_metadata_reader_target(
-    address: &crate::domain::address::QualifiedAddress,
-) -> Option<crate::domain::source_target::MetadataAddress> {
+    address: &unica_address::address::QualifiedAddress,
+) -> Option<unica_address::source_target::MetadataAddress> {
     let owner = address.segments().first()?;
     if !owner.kind().is_metadata_kind() || owner.name().is_none() {
         return None;
@@ -186,7 +130,7 @@ pub(crate) fn logical_metadata_reader_target(
 }
 
 pub(crate) fn accepts_logical_metadata_address(
-    address: &crate::domain::address::QualifiedAddress,
+    address: &unica_address::address::QualifiedAddress,
 ) -> bool {
     let Some(owner) = address.segments().first() else {
         return false;
@@ -197,8 +141,8 @@ pub(crate) fn accepts_logical_metadata_address(
     if owner.name().is_some() {
         return logical_metadata_reader_target(address).is_some();
     }
-    crate::domain::source_target::MetadataAddressPrefix::parse(
-        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+    unica_address::source_target::MetadataAddressPrefix::parse(
+        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
         owner.kind().as_str(),
     )
     .is_ok()
@@ -214,32 +158,3 @@ mod remove_tests;
 mod template_catalog_tests;
 #[cfg(test)]
 mod usage_scan_tests;
-
-/// One staged file change of the embedded help facet: `(path, preimage,
-/// postimage)` with absolute paths under the source root.
-pub(crate) type HelpFacetFileChange = (std::path::PathBuf, Option<Vec<u8>>, Option<Vec<u8>>);
-
-/// Plans the create-only embedded help facet for one owner without a
-/// transaction: `Ext/Help.xml`, `Ext/Help/<lang>.html` and the owner's forms
-/// gaining `IncludeHelpInContents`.
-pub(crate) fn plan_help_facet_files(
-    descriptor_path: &std::path::Path,
-    owner: &crate::domain::source_target::MetadataAddress,
-    object_name: &str,
-    lang: &str,
-) -> Result<Vec<HelpFacetFileChange>, crate::application::metadata::MetaFailure> {
-    let operations = [crate::domain::metadata::MetaEditOperation::AddHelp {
-        lang: lang.to_string(),
-    }];
-    let plan = help_facet::plan_help_resource_after_descriptor_edit(
-        descriptor_path,
-        owner,
-        object_name,
-        &operations,
-    )?;
-    Ok(plan
-        .file_mutations
-        .into_iter()
-        .map(|mutation| (mutation.path, mutation.pre_image, mutation.post_image))
-        .collect())
-}

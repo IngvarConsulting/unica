@@ -1,101 +1,32 @@
-use crate::domain::project_sources::{
-    classify_already_read_config_dump_info_xml, ConfigDumpInfoXmlKind, SourceSetKind,
-};
-use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::metadata_kinds::METADATA_KIND_TAGS;
-use crate::infrastructure::native_operations::compile_transaction::{
-    snapshot_directory_membership, CompileTransaction, DirectoryMembershipSelector,
-    DirectoryMembershipSnapshot,
-};
-use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
-use crate::infrastructure::platform_xml_roots::{
-    platform_xml_owner_policy, platform_xml_publication_policy, PlatformXmlOwnerPolicy,
-    PlatformXmlPublicationPolicy,
-};
-use crate::infrastructure::project_sources::{
-    discover_project_source_map_with_provenance, ProjectSourceMapProvenance,
-};
-use crate::infrastructure::source_roots::{
-    normalize_contained_source_root, normalize_path_identity,
-    select_unique_deepest_source_set_match,
-};
+use crate::infrastructure::project_sources::discover_project_source_map_with_provenance;
 use roxmltree::Document;
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PlatformXmlOwnerKind {
-    Configuration,
-    Extension,
-    ExternalProcessor,
-    ExternalReport,
-    Standalone,
-}
-
-impl PlatformXmlOwnerKind {
-    pub(crate) const fn label(self) -> &'static str {
-        match self {
-            Self::Configuration => "configuration",
-            Self::Extension => "extension",
-            Self::ExternalProcessor => "external_processor",
-            Self::ExternalReport => "external_report",
-            Self::Standalone => "standalone",
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct PlatformXmlOwner {
-    pub kind: PlatformXmlOwnerKind,
-    pub path: PathBuf,
-    pub version: Option<String>,
-    pub raw: Vec<u8>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct PlatformXmlSourceSetOwnerEvidence {
-    version: Option<String>,
-    artifact_kind: String,
-    artifact_name: Option<String>,
-    registrations: BTreeSet<(String, String)>,
-    configuration_extension: bool,
-}
-
-impl PlatformXmlSourceSetOwnerEvidence {
-    pub(crate) fn version(&self) -> Option<&str> {
-        self.version.as_deref()
-    }
-
-    pub(crate) fn registers(&self, kind: &str, name: &str) -> bool {
-        self.registrations
-            .contains(&(kind.to_string(), name.to_string()))
-    }
-
-    pub(crate) fn artifact_kind(&self) -> &str {
-        &self.artifact_kind
-    }
-
-    pub(crate) fn artifact_name(&self) -> Option<&str> {
-        self.artifact_name.as_deref()
-    }
-
-    pub(crate) fn registrations(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.registrations
-            .iter()
-            .map(|(kind, name)| (kind.as_str(), name.as_str()))
-    }
-
-    pub(crate) const fn is_configuration_extension(&self) -> bool {
-        self.configuration_extension
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct PlatformXmlOwnerError {
-    pub path: PathBuf,
-    pub message: String,
-}
+use unica_source_contract::proposal::{DirectoryMembershipSelector, DirectoryMembershipSnapshot};
+use unica_source_contract::workspace::WorkspaceContext;
+use unica_source_contract::SourceSetKind;
+#[cfg(test)]
+use unica_source_designer::owner::MD_CLASSES_NS;
+use unica_source_designer::owner::{
+    invalid_owner, parse_platform_xml_owner, OwnerExpectation, PlatformXmlOwner,
+    PlatformXmlOwnerError, PlatformXmlRootExpectation,
+};
+#[cfg(test)]
+use unica_source_designer::owner::{PlatformXmlOwnerKind, DCS_ROOT, MXL_ROOT};
+use unica_source_designer::probe::{
+    classify_already_read_config_dump_info_xml, ConfigDumpInfoXmlKind,
+};
+use unica_source_designer::roots::{
+    platform_xml_owner_policy, platform_xml_publication_policy, root_version_literal,
+    PlatformXmlOwnerPolicy, PlatformXmlPublicationPolicy,
+};
+use unica_source_designer::selection::select_unique_deepest_source_set_match;
+use unica_workspace::compile_transaction::{snapshot_directory_membership, CompileTransaction};
+use unica_workspace::discovery::normalize_contained_source_root;
+use unica_workspace::discovery::ProjectSourceMapProvenance;
+use unica_workspace::paths::metadata_is_link_or_reparse_point;
+use unica_workspace::paths::normalize_path_identity;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PlatformXmlOwnerCandidateInput {
@@ -184,141 +115,6 @@ impl PlatformXmlOwnerProvenance {
 pub(crate) struct PlatformXmlOwnerResolution {
     pub owners: Vec<PlatformXmlOwner>,
     pub provenance: PlatformXmlOwnerProvenance,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum OwnerExpectation {
-    SourceSet(SourceSetKind),
-    Standalone,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PlatformXmlRootExpectation {
-    pub(crate) namespace: &'static str,
-    pub(crate) local_name: &'static str,
-}
-
-impl PlatformXmlRootExpectation {
-    pub(crate) const fn new(namespace: &'static str, local_name: &'static str) -> Self {
-        Self {
-            namespace,
-            local_name,
-        }
-    }
-}
-
-pub(crate) const MANAGED_FORM_ROOT: PlatformXmlRootExpectation =
-    PlatformXmlRootExpectation::new("http://v8.1c.ru/8.3/xcf/logform", "Form");
-pub(crate) const DCS_ROOT: PlatformXmlRootExpectation = PlatformXmlRootExpectation::new(
-    "http://v8.1c.ru/8.1/data-composition-system/schema",
-    "DataCompositionSchema",
-);
-pub(crate) const MXL_ROOT: PlatformXmlRootExpectation =
-    PlatformXmlRootExpectation::new("http://v8.1c.ru/8.2/data/spreadsheet", "document");
-
-const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
-
-pub(crate) fn root_version_literal(source: &str, root: roxmltree::Node<'_, '_>) -> Option<String> {
-    root.attributes()
-        .find(|attribute| attribute.namespace().is_none() && attribute.name() == "version")
-        .and_then(|attribute| source.get(attribute.range_value()))
-        .map(str::to_owned)
-}
-
-pub(crate) fn prove_already_read_source_set_owner(
-    path: &Path,
-    raw: &[u8],
-    configured_kind: SourceSetKind,
-) -> Result<PlatformXmlSourceSetOwnerEvidence, PlatformXmlOwnerError> {
-    let (source, document) = parse_platform_xml_document(path, raw)?;
-    let root = document.root_element();
-    validate_source_set_owner(root, configured_kind, path)?;
-    let artifact = root
-        .children()
-        .find(|node| node.is_element())
-        .expect("validated source-set owner has one direct artifact");
-    let mut registrations = BTreeSet::new();
-    for child_objects in artifact.children().filter(|node| {
-        node.is_element()
-            && node.tag_name().namespace() == Some(MD_CLASSES_NS)
-            && node.tag_name().name() == "ChildObjects"
-    }) {
-        for registration in child_objects
-            .children()
-            .filter(|node| node.is_element() && node.tag_name().namespace() == Some(MD_CLASSES_NS))
-        {
-            if let Some(name) = registered_child_name(registration) {
-                registrations.insert((registration.tag_name().name().to_string(), name));
-            }
-        }
-    }
-    Ok(PlatformXmlSourceSetOwnerEvidence {
-        version: root_version_literal(source, root),
-        artifact_kind: artifact.tag_name().name().to_string(),
-        artifact_name: metadata_artifact_property(artifact, "Name"),
-        registrations,
-        configuration_extension: is_configuration_extension_artifact(artifact),
-    })
-}
-
-pub(crate) fn prove_already_read_metadata_owner(
-    path: &Path,
-    raw: &[u8],
-) -> Result<PlatformXmlSourceSetOwnerEvidence, PlatformXmlOwnerError> {
-    parse_platform_xml_owner(path, raw.to_vec(), OwnerExpectation::Standalone)?;
-    let (source, document) = parse_platform_xml_document(path, raw)?;
-    let root = document.root_element();
-    if root.tag_name().namespace() != Some(MD_CLASSES_NS)
-        || root.tag_name().name() != "MetaDataObject"
-    {
-        return invalid_owner(path, "metadata owner must use the MetaDataObject root");
-    }
-    let artifact = root
-        .children()
-        .find(|node| node.is_element())
-        .expect("strict standalone metadata owner has one artifact child");
-    let mut registrations = BTreeSet::new();
-    for child_objects in artifact.children().filter(|node| {
-        node.is_element()
-            && node.tag_name().namespace() == Some(MD_CLASSES_NS)
-            && node.tag_name().name() == "ChildObjects"
-    }) {
-        for registration in child_objects
-            .children()
-            .filter(|node| node.is_element() && node.tag_name().namespace() == Some(MD_CLASSES_NS))
-        {
-            if let Some(name) = registered_child_name(registration) {
-                registrations.insert((registration.tag_name().name().to_string(), name));
-            }
-        }
-    }
-    Ok(PlatformXmlSourceSetOwnerEvidence {
-        version: root_version_literal(source, root),
-        artifact_kind: artifact.tag_name().name().to_string(),
-        artifact_name: metadata_artifact_property(artifact, "Name"),
-        registrations,
-        configuration_extension: false,
-    })
-}
-
-fn metadata_artifact_property(artifact: roxmltree::Node<'_, '_>, name: &str) -> Option<String> {
-    artifact
-        .children()
-        .find(|node| {
-            node.is_element()
-                && node.tag_name().namespace() == Some(MD_CLASSES_NS)
-                && node.tag_name().name() == "Properties"
-        })?
-        .children()
-        .find(|node| {
-            node.is_element()
-                && node.tag_name().namespace() == Some(MD_CLASSES_NS)
-                && node.tag_name().name() == name
-        })?
-        .text()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
 }
 
 pub(crate) fn resolve_platform_xml_owners(
@@ -958,231 +754,13 @@ pub(crate) fn source_set_owner_from_bytes(
     parse_platform_xml_owner(path, raw, OwnerExpectation::SourceSet(kind))
 }
 
-fn parse_platform_xml_owner(
-    path: &Path,
-    raw: Vec<u8>,
-    expectation: OwnerExpectation,
-) -> Result<PlatformXmlOwner, PlatformXmlOwnerError> {
-    let (source, document) = parse_platform_xml_document(path, &raw)?;
-    let root = document.root_element();
-    let root_qname = (root.tag_name().namespace(), root.tag_name().name());
-    let artifact_children = root
-        .children()
-        .filter(|node| node.is_element())
-        .collect::<Vec<_>>();
-    let direct_artifact = match artifact_children.as_slice() {
-        [artifact] => Some(*artifact),
-        _ => None,
-    };
-    let is_extension = direct_artifact.is_some_and(is_configuration_extension_artifact);
-    let kind = match expectation {
-        OwnerExpectation::SourceSet(configured_kind) => {
-            validate_source_set_owner(root, configured_kind, path)?;
-            match configured_kind {
-                SourceSetKind::ExternalProcessor => PlatformXmlOwnerKind::ExternalProcessor,
-                SourceSetKind::ExternalReport => PlatformXmlOwnerKind::ExternalReport,
-                SourceSetKind::Extension => PlatformXmlOwnerKind::Extension,
-                SourceSetKind::Configuration if is_extension => PlatformXmlOwnerKind::Extension,
-                SourceSetKind::Configuration => PlatformXmlOwnerKind::Configuration,
-            }
-        }
-        OwnerExpectation::Standalone => {
-            if root_qname == (Some(MD_CLASSES_NS), "MetaDataObject") {
-                let Some(artifact) = direct_artifact else {
-                    return invalid_owner(
-                        path,
-                        &format!(
-                            "standalone metadata descriptor must contain exactly one direct {{{MD_CLASSES_NS}}} artifact child"
-                        ),
-                    );
-                };
-                if artifact.tag_name().namespace() != Some(MD_CLASSES_NS) {
-                    return invalid_owner(
-                        path,
-                        &format!(
-                            "standalone metadata descriptor direct artifact child must use namespace {{{MD_CLASSES_NS}}}"
-                        ),
-                    );
-                }
-                if !is_supported_metadata_artifact(artifact.tag_name().name()) {
-                    return invalid_owner(
-                        path,
-                        &format!(
-                            "unsupported 8.3.27 metadata artifact family {{{MD_CLASSES_NS}}}{}",
-                            artifact.tag_name().name()
-                        ),
-                    );
-                }
-                match artifact.tag_name().name() {
-                    "ExternalDataProcessor" => PlatformXmlOwnerKind::ExternalProcessor,
-                    "ExternalReport" => PlatformXmlOwnerKind::ExternalReport,
-                    "Configuration" if is_extension => PlatformXmlOwnerKind::Extension,
-                    _ => PlatformXmlOwnerKind::Standalone,
-                }
-            } else if known_standalone_root(root_qname) {
-                PlatformXmlOwnerKind::Standalone
-            } else {
-                return invalid_owner(
-                    path,
-                    &format!(
-                        "unsupported standalone platform XML root {{{}}}{}",
-                        root_qname.0.unwrap_or(""),
-                        root_qname.1
-                    ),
-                );
-            }
-        }
-    };
-    Ok(PlatformXmlOwner {
-        kind,
-        path: path.to_path_buf(),
-        version: root_version_literal(source, root),
-        raw,
-    })
-}
-
-fn parse_platform_xml_document<'a>(
-    path: &Path,
-    raw: &'a [u8],
-) -> Result<(&'a str, Document<'a>), PlatformXmlOwnerError> {
-    let text = std::str::from_utf8(raw).map_err(|error| PlatformXmlOwnerError {
-        path: path.to_path_buf(),
-        message: format!("failed to read {} as UTF-8: {error}", path.display()),
-    })?;
-    let source = text.trim_start_matches('\u{feff}');
-    let document = Document::parse(source).map_err(|error| PlatformXmlOwnerError {
-        path: path.to_path_buf(),
-        message: format!("failed to parse {}: {error}", path.display()),
-    })?;
-    Ok((source, document))
-}
-
-fn validate_source_set_owner(
-    root: roxmltree::Node<'_, '_>,
-    configured_kind: SourceSetKind,
-    path: &Path,
-) -> Result<(), PlatformXmlOwnerError> {
-    if root.tag_name().namespace() != Some(MD_CLASSES_NS)
-        || root.tag_name().name() != "MetaDataObject"
-    {
-        return invalid_owner(
-            path,
-            "source-set owner root must be {http://v8.1c.ru/8.3/MDClasses}MetaDataObject",
-        );
-    }
-    let expected_child = match configured_kind {
-        SourceSetKind::Configuration | SourceSetKind::Extension => "Configuration",
-        SourceSetKind::ExternalProcessor => "ExternalDataProcessor",
-        SourceSetKind::ExternalReport => "ExternalReport",
-    };
-    let artifact_children = root
-        .children()
-        .filter(|node| node.is_element())
-        .collect::<Vec<_>>();
-    if artifact_children.len() != 1
-        || artifact_children[0].tag_name().namespace() != Some(MD_CLASSES_NS)
-        || artifact_children[0].tag_name().name() != expected_child
-    {
-        return invalid_owner(
-            path,
-            &format!(
-                "source-set owner must contain exactly one direct {{{MD_CLASSES_NS}}}{expected_child} artifact child"
-            ),
-        );
-    }
-    Ok(())
-}
-
-fn is_configuration_extension_artifact(artifact: roxmltree::Node<'_, '_>) -> bool {
-    artifact.tag_name().namespace() == Some(MD_CLASSES_NS)
-        && artifact.tag_name().name() == "Configuration"
-        && artifact
-            .children()
-            .find(|node| {
-                node.is_element()
-                    && node.tag_name().namespace() == Some(MD_CLASSES_NS)
-                    && node.tag_name().name() == "Properties"
-            })
-            .is_some_and(|properties| {
-                properties.children().any(|node| {
-                    node.is_element()
-                        && node.tag_name().namespace() == Some(MD_CLASSES_NS)
-                        && node.tag_name().name() == "ConfigurationExtensionPurpose"
-                })
-            })
-}
-
-/// The name a `ChildObjects` entry registers. Forms and templates are text
-/// references (`<Form>Main</Form>`); a command is registered by its full
-/// inline definition (`<Command uuid="…"><Properties><Name>…`) and has no
-/// descriptor file of its own, exactly as Platform XML 8.3.27 emits it.
-fn registered_child_name(registration: roxmltree::Node<'_, '_>) -> Option<String> {
-    if let Some(name) = registration
-        .text()
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-    {
-        return Some(name.to_string());
-    }
-    let properties = registration.children().find(|node| {
-        node.is_element()
-            && node.tag_name().namespace() == Some(MD_CLASSES_NS)
-            && node.tag_name().name() == "Properties"
-    })?;
-    properties
-        .children()
-        .find(|node| {
-            node.is_element()
-                && node.tag_name().namespace() == Some(MD_CLASSES_NS)
-                && node.tag_name().name() == "Name"
-        })
-        .and_then(|node| node.text())
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .map(str::to_string)
-}
-
-fn is_supported_metadata_artifact(tag: &str) -> bool {
-    METADATA_KIND_TAGS.contains(&tag)
-        || matches!(
-            tag,
-            "Configuration"
-                | "ExternalDataProcessor"
-                | "ExternalReport"
-                | "Form"
-                | "Template"
-                | "Command"
-        )
-}
-
-/// Returns whether the qualified root is supported as a standalone Platform XML
-/// owner.
-///
-/// Derived from the explicit owner axis of the shared QName profile. Publication
-/// syntax is deliberately not enough to make a container-scoped sidecar an
-/// independent format owner.
-fn known_standalone_root(qname: (Option<&str>, &str)) -> bool {
-    let (Some(namespace), local_name) = qname else {
-        return false;
-    };
-    platform_xml_owner_policy(namespace, local_name)
-        == Some(PlatformXmlOwnerPolicy::StandaloneVersionOwner)
-}
-
-fn invalid_owner<T>(path: &Path, reason: &str) -> Result<T, PlatformXmlOwnerError> {
-    Err(PlatformXmlOwnerError {
-        path: path.to_path_buf(),
-        message: format!("invalid platform XML owner {}: {reason}", path.display()),
-    })
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::infrastructure::platform::testing::{
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use unica_workspace::test_support::{
         create_file_link_fixture_for_test, FileLinkFixtureOutcome,
     };
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEST_ROOT_NONCE: AtomicU64 = AtomicU64::new(0);
 
@@ -1198,60 +776,6 @@ pub(crate) mod tests {
             workspace_root: root.clone(),
             cache_root: root.join(".build/unica"),
             workspace_epoch: 1,
-        }
-    }
-
-    #[test]
-    fn standalone_ownership_is_independent_from_publication_versioning() {
-        for (namespace, local_name) in [
-            ("http://v8.1c.ru/8.3/xcf/logform", "Form"),
-            ("http://v8.1c.ru/8.2/roles", "Rights"),
-        ] {
-            assert!(known_standalone_root((Some(namespace), local_name)));
-        }
-        for (namespace, local_name) in [
-            ("http://v8.1c.ru/8.3/xcf/predef", "PredefinedData"),
-            ("http://v8.1c.ru/8.3/xcf/extrnprops", "ExtPicture"),
-            ("http://v8.1c.ru/8.3/xcf/extrnprops", "JobSchedule"),
-            ("http://v8.1c.ru/8.3/xcf/dumpinfo", "ConfigDumpInfo"),
-            (
-                "http://v8.1c.ru/8.2/managed-application/core",
-                "ClientApplicationInterface",
-            ),
-        ] {
-            assert!(!known_standalone_root((Some(namespace), local_name)));
-        }
-    }
-
-    #[test]
-    fn inline_command_definitions_register_the_command_by_name() {
-        let xml = format!(
-            r#"<MetaDataObject xmlns="{MD_CLASSES_NS}" version="2.20"><Catalog><Properties><Name>Items</Name></Properties><ChildObjects><Form>ItemForm</Form><Command uuid="10000000-0000-4000-8000-000000000001"><Properties><Name>Refresh</Name><Synonym/></Properties></Command><Command uuid="10000000-0000-4000-8000-000000000002"><Properties><Comment/></Properties></Command></ChildObjects></Catalog></MetaDataObject>"#
-        );
-        let evidence =
-            prove_already_read_metadata_owner(Path::new("Catalogs/Items.xml"), xml.as_bytes())
-                .unwrap_or_else(|error| panic!("{}", error.message));
-        let registrations = evidence.registrations().collect::<Vec<_>>();
-        assert_eq!(
-            registrations,
-            vec![("Command", "Refresh"), ("Form", "ItemForm")],
-            "a command is registered by its inline definition; a nameless one registers nothing"
-        );
-    }
-
-    #[test]
-    fn strict_metadata_owner_evidence_accepts_registered_physical_child_families() {
-        for kind in ["Form", "Template", "Command"] {
-            let xml = format!(
-                r#"<MetaDataObject xmlns="{MD_CLASSES_NS}" version="2.20"><{kind}><Properties><Name>Main</Name></Properties></{kind}></MetaDataObject>"#
-            );
-            let evidence = prove_already_read_metadata_owner(
-                Path::new(&format!("{kind}s/Main.xml")),
-                xml.as_bytes(),
-            )
-            .unwrap_or_else(|error| panic!("{kind}: {}", error.message));
-            assert_eq!(evidence.artifact_kind(), kind);
-            assert_eq!(evidence.artifact_name(), Some("Main"));
         }
     }
 

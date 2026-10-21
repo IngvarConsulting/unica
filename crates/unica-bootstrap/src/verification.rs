@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-use crate::error::{BootstrapError, Failure, Result};
+use unica_artifact_delivery::{BootstrapError, Failure, Result};
 
 const EXPECTED_COMPATIBILITY_TOOLS: [&str; 11] = [
     "unica.view",

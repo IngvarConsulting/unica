@@ -1,9 +1,10 @@
 use super::persistent_provider_cwd_command_tests::{argument, CwdFixture};
 use super::*;
-use crate::infrastructure::platform::testing;
-use crate::test_support::canonical_path;
 use std::ffi::{OsStr, OsString};
 use std::process::Command;
+use unica_process::{ManagedChild, ManagedStartupChild};
+
+use unica_workspace::test_support::canonical_path;
 
 #[derive(Debug)]
 struct Observation {
@@ -76,10 +77,7 @@ fn assert_outside(actual: &Observation, workspace: &Path, source: &Path) {
     let cwd = canonical_path(&actual.cwd);
     for inside in [workspace, source] {
         assert!(
-            !crate::infrastructure::platform::filesystem::path_starts_with_host_root(
-                &cwd,
-                &canonical_path(inside)
-            ),
+            !unica_workspace::paths::path_starts_with_host_root(&cwd, &canonical_path(inside)),
             "actual persistent cwd {cwd:?} is inside {inside:?}"
         );
     }
@@ -89,7 +87,10 @@ fn assert_outside(actual: &Observation, workspace: &Path, source: &Path) {
 fn compile_probe(fixture: &CwdFixture) -> PathBuf {
     let bin_dir = fixture.root.join("bin");
     fs::create_dir_all(&bin_dir).unwrap();
-    let binary = testing::fixture_executable_path(&bin_dir, "persistent-provider-cwd-probe");
+    let binary = unica_process::test_support::fixture_executable_path(
+        &bin_dir,
+        "persistent-provider-cwd-probe",
+    );
     let source = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/platform/fixtures/persistent_provider_cwd_probe.rs");
     assert!(!source.starts_with(&fixture.context.workspace_root));
@@ -129,14 +130,13 @@ fn probe(session: &mut PersistentMcpSession) -> Observation {
 }
 
 fn stop_session(session: &mut PersistentMcpSession) {
+    let deadline = ElapsedBudgetDeadline::new(Duration::from_secs(2));
+    let cancellation = CancellationToken::new();
     session
-        .retire_for_replacement(
-            &ElapsedBudgetDeadline::new(Duration::from_secs(2)),
-            &CancellationToken::new(),
-        )
+        .retire_for_replacement(|| deadline.remaining_cancellable(&cancellation))
         .unwrap();
     assert!(
-        session.child.poll_owned_leader_exit().unwrap(),
+        session.test_poll_owned_leader_exit().unwrap(),
         "owned probe leader must be reaped before fixture cleanup"
     );
 }
@@ -159,7 +159,7 @@ fn live_provider_rename(rlm: bool) {
     let mut session =
         PersistentMcpSession::start_with_command(command, &CancellationToken::new()).unwrap();
     let before = probe(&mut session);
-    assert_eq!(before.pid, session.child.id());
+    assert_eq!(before.pid, session.test_child_pid());
     assert_eq!(before.args, expected_args);
     assert_outside(&before, &fixture.context.workspace_root, &fixture.source);
     assert_actual_cwd(
@@ -254,7 +254,7 @@ fn windows_factories_start_live_providers_at_an_external_anchor_when_other_candi
         let mut session =
             PersistentMcpSession::start_with_command(command, &CancellationToken::new()).unwrap();
         let before = probe(&mut session);
-        assert_eq!(before.pid, session.child.id());
+        assert_eq!(before.pid, session.test_child_pid());
         assert_eq!(before.args, expected_args);
         assert_outside(&before, &temp, &executable);
         assert_actual_cwd(&before, anchor);

@@ -1,7 +1,7 @@
 ---
 id: INV.TOKEN.RUNTIME-LOG-TAIL
 check:
-  - crates/unica-coder/src/infrastructure/runtime_jobs.rs::runtime_job_lifecycle_and_log_bounds_are_complete
+  - crates/unica-coder/src/infrastructure/runtime_jobs_integration.rs::runtime_job_lifecycle_and_log_bounds_are_complete
 ---
 
 # Чтение журналов возвращает только запрошенный хвост

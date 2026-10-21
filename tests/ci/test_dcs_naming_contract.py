@@ -132,7 +132,7 @@ class DcsNamingContractTests(unittest.TestCase):
         }
         self.assertTrue(HISTORICAL_SKILLS <= entries.keys())
         self.assertTrue({"skd-compile", "skd-edit"}.isdisjoint(entries.keys()))
-        primitive_path = "crates/unica-coder/src/infrastructure/native_operations/dcs_primitives.rs"
+        primitive_path = "crates/unica-dcs-designer/src/primitives.rs"
         for skill in HISTORICAL_SKILLS:
             entry = entries[skill]
             self.assertFalse(entry["promptSkill"])

@@ -114,7 +114,7 @@ class LauncherExitCodeTests(unittest.TestCase):
         self.assertIn("Unica bootstrap is missing", result.stderr)
 
     def test_the_bootstrap_codes_do_not_contradict_the_launcher(self) -> None:
-        error_rs = (REPO_ROOT / "crates" / "unica-bootstrap" / "src" / "error.rs").read_text(
+        error_rs = (REPO_ROOT / "crates" / "unica-artifact-delivery" / "src" / "error.rs").read_text(
             encoding="utf-8"
         )
         codes = {

@@ -35,7 +35,8 @@ EXTERNAL_CHECK_ADDRESSES = {
     "erf:ExternalReport.Sales.Module.Object",
 }
 AGENT_EVALUATIONS = {"dcs-contract": DCS_WORKSPACE, "mxl-contract": MXL_WORKSPACE,
-                     "props-contract": "tests/fixtures/acceptance/workspace"}
+                     "props-contract": "tests/fixtures/acceptance/workspace",
+                     "xdto-contract": "tests/fixtures/acceptance/workspace-xdto-contract"}
 ACCEPTANCE_ROOT = REPO / "tests/fixtures/acceptance"
 SOURCE_PROFILE_DIR = "source-profiles"
 

@@ -78,7 +78,7 @@ class RunTestsSeamTests(unittest.TestCase):
                     "--features", "receipt-ledger-test-support",
                     "--lib", "--test", "daemon_receipt_ledger", "-E",
                     "binary(daemon_receipt_ledger) | "
-                    "test(/^infrastructure::daemon::runtime_v5::receipt_scenario_v5::tests::/)",
+                    "test(/^infrastructure::receipt_scenario::tests::/)",
                     "--profile", "default",
                 ],
                 ["cargo", "nextest", "run", *UREQ_SELECTION, "--profile", "ureq-recycling"],
@@ -222,7 +222,7 @@ class RunTestsSeamTests(unittest.TestCase):
                 "cargo nextest run -p unica-coder --features receipt-ledger-test-support"
                 " --lib --test daemon_receipt_ledger"
                 " -E binary(daemon_receipt_ledger) |"
-                " test(/^infrastructure::daemon::runtime_v5::receipt_scenario_v5::tests::/)"
+                " test(/^infrastructure::receipt_scenario::tests::/)"
                 " --profile default",
                 "cargo nextest run --manifest-path vendor/ureq/Cargo.toml --locked --lib"
                 " --features json,serde_json/preserve_order,serde_json/float_roundtrip"
@@ -242,7 +242,7 @@ class GateProfileTests(unittest.TestCase):
             "-p", "unica-coder", "--features", "receipt-ledger-test-support",
             "--lib", "--test", "daemon_receipt_ledger", "-E",
             "binary(daemon_receipt_ledger) | "
-            "test(/^infrastructure::daemon::runtime_v5::receipt_scenario_v5::tests::/)",
+            "test(/^infrastructure::receipt_scenario::tests::/)",
         ]
         for gate in ("pr", "queue", "main", "release"):
             with self.subTest(gate=gate):
@@ -524,7 +524,7 @@ class GateProfileTests(unittest.TestCase):
                 suites = [command[3] for command in module.python_commands(gate, "python3")]
                 self.assertEqual(suites, [suite for suite, size, _ in module.PYTHON_SUITES
                                          if size in module.ADMITTED[gate]])
-        self.assertEqual(module.python_commands("large", "python3"), [])
+        self.assertEqual(module.python_commands("large", "python3"), module.python_commands("release", "python3"))
         with self.assertRaises(ValueError):
             module.python_commands("all", "python3", suite="tests/agent_evaluation")
 

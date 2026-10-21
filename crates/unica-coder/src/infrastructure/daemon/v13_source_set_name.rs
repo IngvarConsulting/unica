@@ -1,4 +1,4 @@
-use crate::domain::source_target::xml_ncname_is_valid;
+use unica_xml_format::names::xml_ncname_is_valid;
 
 /// The compatibility adapter's existing bound is in UTF-8 bytes. Keeping it
 /// also keeps previously accepted ASCII names and their size limit unchanged.

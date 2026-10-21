@@ -1,7 +1,4 @@
-use super::{meta_edit_remove_xml_node_range, remove_typed_element, MetaCollection};
-use crate::infrastructure::native_operations::meta::remove::{
-    empty_child_objects_after_removal, remove_metadata_child_text_with_flag,
-};
+use super::MetaCollection;
 
 const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
 
@@ -35,11 +32,15 @@ fn last_registration_removal_uses_native_empty_child_objects_and_preserves_outer
                     );
                     let expected = format!("{before}<{prefix}ChildObjects/>{after}");
                     let (actual, removed) =
-                        remove_metadata_child_text_with_flag(&input, tag, "Last");
+                        unica_source_designer::registration::remove_metadata_child_text_with_flag(
+                            &input, tag, "Last",
+                        );
                     assert!(removed);
                     assert_eq!(actual, expected, "{tag}, prefix={prefix}, BOM={bom:?}");
                     assert_eq!(
-                        remove_metadata_child_text_with_flag(&actual, tag, "Last"),
+                        unica_source_designer::registration::remove_metadata_child_text_with_flag(
+                            &actual, tag, "Last"
+                        ),
                         (actual.clone(), false),
                         "a repeated removal must not sweep existing empty containers",
                     );
@@ -61,7 +62,13 @@ fn last_typed_child_removal_compacts_only_its_direct_parent() {
         let expected = owner(&format!(
             "{prefix}{outer}<{ns}ChildObjects/>{outer}{suffix}"
         ));
-        remove_typed_element(&mut actual, MetaCollection::Templates, None, "Last").unwrap();
+        unica_metadata_designer::edit::remove_typed_element(
+            &mut actual,
+            MetaCollection::Templates,
+            None,
+            "Last",
+        )
+        .unwrap();
         assert_eq!(actual, expected);
     }
 }
@@ -74,7 +81,7 @@ fn scoped_removal_preserves_outer_collection_and_parent_opening_spelling() {
         "{before}<md:ChildObjects \t>\n<Attribute uuid=\"22222222-2222-4222-8222-222222222222\"><Properties><Name>Last</Name></Properties></Attribute>\r\n</md:ChildObjects>{after}"
     ));
     let expected = owner(&format!("{before}<md:ChildObjects \t/>{after}"));
-    remove_typed_element(
+    unica_metadata_designer::edit::remove_typed_element(
         &mut actual,
         MetaCollection::Attributes,
         Some("Rows"),
@@ -93,7 +100,10 @@ fn inline_registration_removal_preserves_neighbors_and_parent_prefix() {
         let expected = owner(&format!(
             "<untouched><ChildObjects> </ChildObjects></untouched><{prefix}ChildObjects/><!-- after -->"
         ));
-        let (actual, removed) = remove_metadata_child_text_with_flag(&input, "Form", "Last");
+        let (actual, removed) =
+            unica_source_designer::registration::remove_metadata_child_text_with_flag(
+                &input, "Form", "Last",
+            );
         assert!(removed);
         assert_eq!(actual, expected);
     }
@@ -116,7 +126,11 @@ fn registration_removal_preserves_attributed_or_nonempty_container_bytes() {
         let before = format!("{opening}\r\n\t<Form>Last</Form>\n\t{retained}\r\n</ChildObjects>");
         let expected = format!("{opening}\r\n\t{retained}\r\n</ChildObjects>");
         let (actual, removed) =
-            remove_metadata_child_text_with_flag(&owner(&before), "Form", "Last");
+            unica_source_designer::registration::remove_metadata_child_text_with_flag(
+                &owner(&before),
+                "Form",
+                "Last",
+            );
         assert!(removed);
         assert_eq!(actual, owner(&expected), "{opening}, {retained:?}");
     }
@@ -140,7 +154,13 @@ fn typed_removal_preserves_attributed_or_nonempty_container_bytes() {
             typed_template()
         ));
         let expected = owner(&format!("{opening}\n\t{retained}\n</ChildObjects>"));
-        remove_typed_element(&mut actual, MetaCollection::Templates, None, "Last").unwrap();
+        unica_metadata_designer::edit::remove_typed_element(
+            &mut actual,
+            MetaCollection::Templates,
+            None,
+            "Last",
+        )
+        .unwrap();
         assert_eq!(actual, expected, "{opening}, {retained:?}");
     }
 }
@@ -158,7 +178,10 @@ fn removing_a_registration_does_not_normalize_an_unrelated_qname_or_content_pare
             "{untouched}<ChildObjects>\n\t<Form>Last</Form>\n</ChildObjects>"
         ));
         let expected = owner(&format!("{untouched}<ChildObjects/>"));
-        let (actual, removed) = remove_metadata_child_text_with_flag(&input, "Form", "Last");
+        let (actual, removed) =
+            unica_source_designer::registration::remove_metadata_child_text_with_flag(
+                &input, "Form", "Last",
+            );
         assert!(removed);
         assert_eq!(actual, expected);
     }
@@ -170,7 +193,10 @@ fn registration_compaction_does_not_remove_matching_comment_or_foreign_sibling()
     let input = owner(&format!(
         "{before}<ChildObjects>\r\n\t<Form>Last</Form>\n</ChildObjects>"
     ));
-    let (actual, removed) = remove_metadata_child_text_with_flag(&input, "Form", "Last");
+    let (actual, removed) =
+        unica_source_designer::registration::remove_metadata_child_text_with_flag(
+            &input, "Form", "Last",
+        );
     assert!(removed);
     assert_eq!(actual, owner(&format!("{before}<ChildObjects/>")));
 }
@@ -179,7 +205,9 @@ fn registration_compaction_does_not_remove_matching_comment_or_foreign_sibling()
 fn absent_registration_leaves_all_existing_empty_child_objects_unchanged() {
     let input = owner("<ChildObjects>\r\n\t</ChildObjects><other:ChildObjects/> ");
     assert_eq!(
-        remove_metadata_child_text_with_flag(&input, "Form", "Missing"),
+        unica_source_designer::registration::remove_metadata_child_text_with_flag(
+            &input, "Form", "Missing"
+        ),
         (input.clone(), false),
     );
 }
@@ -189,7 +217,10 @@ fn temporary_range_cut_for_a_move_keeps_the_expanded_container() {
     let child = typed_template();
     let mut actual = owner(&format!("<ChildObjects>{child}</ChildObjects>"));
     let start = actual.find(child).unwrap();
-    meta_edit_remove_xml_node_range(&mut actual, start..start + child.len());
+    unica_metadata_designer::edit::meta_edit_remove_xml_node_range(
+        &mut actual,
+        start..start + child.len(),
+    );
     assert_eq!(actual, owner("<ChildObjects></ChildObjects>"));
 }
 
@@ -210,10 +241,13 @@ fn compaction_requires_the_exact_removed_element_preimage_range() {
         0..input.len(),
         input.len()..input.len() + 1,
     ] {
-        assert_eq!(empty_child_objects_after_removal(&input, range), None);
+        assert_eq!(
+            unica_source_designer::registration::empty_child_objects_after_removal(&input, range),
+            None
+        );
     }
     assert_eq!(
-        empty_child_objects_after_removal(&input, start..end),
+        unica_source_designer::registration::empty_child_objects_after_removal(&input, start..end),
         Some(format!("\u{feff}{}", owner("<ChildObjects/>"))),
     );
 }
@@ -246,7 +280,10 @@ fn compaction_requires_a_direct_md_child_and_md_collection() {
         let input = owner(&format!("{opening}{child}{closing}"));
         let start = input.find(child).unwrap();
         assert_eq!(
-            empty_child_objects_after_removal(&input, start..start + child.len()),
+            unica_source_designer::registration::empty_child_objects_after_removal(
+                &input,
+                start..start + child.len()
+            ),
             None,
             "{opening}",
         );

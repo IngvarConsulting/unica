@@ -88,7 +88,7 @@ class VersionContractTests(unittest.TestCase):
                 [f"zcode-plugin version 0.0.1 != expected {values['workspace']}"],
             )
 
-    def test_meta_surface_delivery_is_versioned_across_the_013_line(self) -> None:
+    def test_meta_surface_delivery_is_versioned_across_the_014_line(self) -> None:
         module = load_module()
         values = module.read_version_contract(REPO_ROOT)
         lock = (REPO_ROOT / "Cargo.lock").read_text(encoding="utf-8")
@@ -106,7 +106,7 @@ class VersionContractTests(unittest.TestCase):
         self.assertEqual(len(delivered), 1, values)
         version = next(iter(delivered))
         # Пин держит линию поставки; суффикс предвыпуска ей не противоречит.
-        self.assertRegex(version, r"^0\.13\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$")
+        self.assertRegex(version, r"^0\.14\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$")
         self.assertEqual(
             workspace_packages,
             {"unica-bootstrap": version, "unica-coder": version},

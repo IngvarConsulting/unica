@@ -1,24 +1,24 @@
 ---
 id: INV.APP.RETAINED-SOURCE-SELECTION-FINALITY
 check:
-  - crates/unica-coder/src/infrastructure/project_sources.rs::actor_health_accepts_yaml_input_past_eight_mib_and_binds_late_bytes
-  - crates/unica-coder/src/infrastructure/source_selection_evidence.rs::retained_selection_pass_rejects_inconsistent_regular_repeat
-  - crates/unica-coder/src/infrastructure/source_selection_evidence.rs::retained_selection_pass_rejects_inconsistent_directory_repeat
-  - crates/unica-coder/src/infrastructure/source_selection_evidence.rs::retained_selection_pass_rejects_inconsistent_membership_repeat
-  - crates/unica-coder/src/infrastructure/workspace_actor.rs::apply_selection_rejects_v8project_kind_change_after_prepare
-  - crates/unica-coder/src/infrastructure/workspace_actor.rs::apply_selection_rejects_v8project_absence_to_appearance_after_prepare
-  - crates/unica-coder/src/infrastructure/workspace_actor.rs::apply_selection_rejects_autodetected_extension_membership_change
-  - crates/unica-coder/src/infrastructure/workspace_actor.rs::apply_selection_rejects_unselected_declared_parent_appearance
-  - crates/unica-coder/src/infrastructure/workspace_actor.rs::apply_selection_rejects_unselected_non_platform_map_input_change
-  - crates/unica-coder/src/infrastructure/workspace_actor.rs::apply_selection_rejects_repaired_large_unselected_external_descriptor
-  - crates/unica-coder/src/infrastructure/workspace_actor.rs::apply_selection_rejects_autodetection_container_identity_replacement
-  - crates/unica-coder/src/infrastructure/project_sources.rs::actor_admission_external_config_dump_info_content_change_invalidates_evidence
-  - crates/unica-coder/src/infrastructure/project_sources.rs::actor_admission_recognizes_large_reserved_descriptor_and_binds_exact_content
-  - crates/unica-coder/src/infrastructure/project_sources.rs::actor_admission_external_descriptor_absence_to_appearance_invalidates_evidence
-  - crates/unica-coder/src/infrastructure/workspace_actor.rs::apply_selection_dry_run_rejects_late_map_change_without_receipt
-  - crates/unica-coder/src/infrastructure/workspace_actor.rs::apply_selection_late_change_rolls_back_source_cache_revision_and_receipt
-  - crates/unica-coder/src/infrastructure/source_selection_evidence.rs::published_replacement_of_a_retained_source_map_file_passes_the_final_gate
-  - crates/unica-coder/src/infrastructure/workspace_actor.rs::unchanged_selection_input_replaced_after_writes_refuses_and_rolls_back
+  - crates/unica-source-integration-tests/tests/project_sources.rs::actor_health_accepts_yaml_input_past_eight_mib_and_binds_late_bytes
+  - crates/unica-source-integration-tests/tests/selection.rs::retained_selection_pass_rejects_inconsistent_regular_repeat
+  - crates/unica-workspace/src/selection_evidence.rs::retained_selection_pass_rejects_inconsistent_directory_repeat
+  - crates/unica-workspace/src/selection_evidence.rs::retained_selection_pass_rejects_inconsistent_membership_repeat
+  - crates/unica-coder/src/infrastructure/workspace_actor_contract_tests.rs::apply_selection_rejects_v8project_kind_change_after_prepare
+  - crates/unica-coder/src/infrastructure/workspace_actor_contract_tests.rs::apply_selection_rejects_v8project_absence_to_appearance_after_prepare
+  - crates/unica-coder/src/infrastructure/workspace_actor_contract_tests.rs::apply_selection_rejects_autodetected_extension_membership_change
+  - crates/unica-coder/src/infrastructure/workspace_actor_contract_tests.rs::apply_selection_rejects_unselected_declared_parent_appearance
+  - crates/unica-coder/src/infrastructure/workspace_actor_contract_tests.rs::apply_selection_rejects_unselected_non_platform_map_input_change
+  - crates/unica-coder/src/infrastructure/workspace_actor_contract_tests.rs::apply_selection_rejects_repaired_large_unselected_external_descriptor
+  - crates/unica-coder/src/infrastructure/workspace_actor_contract_tests.rs::apply_selection_rejects_autodetection_container_identity_replacement
+  - crates/unica-source-integration-tests/tests/project_sources.rs::actor_admission_external_config_dump_info_content_change_invalidates_evidence
+  - crates/unica-source-integration-tests/tests/project_sources.rs::actor_admission_recognizes_large_reserved_descriptor_and_binds_exact_content
+  - crates/unica-source-integration-tests/tests/project_sources.rs::actor_admission_external_descriptor_absence_to_appearance_invalidates_evidence
+  - crates/unica-coder/src/infrastructure/workspace_actor_contract_tests.rs::apply_selection_dry_run_rejects_late_map_change_without_receipt
+  - crates/unica-coder/src/infrastructure/workspace_actor_contract_tests.rs::apply_selection_late_change_rolls_back_source_cache_revision_and_receipt
+  - crates/unica-source-integration-tests/tests/selection.rs::published_replacement_of_a_retained_source_map_file_passes_the_final_gate
+  - crates/unica-coder/src/infrastructure/workspace_actor_contract_tests.rs::unchanged_selection_input_replaced_after_writes_refuses_and_rolls_back
 gap: https://github.com/IngvarConsulting/unica/issues/987
 ---
 

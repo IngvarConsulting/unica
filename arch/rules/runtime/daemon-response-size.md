@@ -1,7 +1,7 @@
 ---
 id: INV.WIRE.DAEMON-RESPONSE-SIZE
 check:
-  - crates/unica-coder/src/infrastructure/daemon/client_v5.rs::malformed_v5_response_permanently_poisons_owner_session
+  - crates/unica-daemon/src/client_v5.rs::malformed_v5_response_permanently_poisons_owner_session
 gap: https://github.com/IngvarConsulting/unica/issues/984
 ---
 

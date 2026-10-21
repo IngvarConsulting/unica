@@ -35,10 +35,9 @@ fn form_table_column_event_consumes_arbitrary_depth_and_preserves_owner_address(
 
 #[test]
 fn pure_event_source_resolver_returns_relative_platform_and_nested_form_identities() {
-    use crate::infrastructure::event_projection::resolve_property_event_source;
-    use crate::infrastructure::logical_event_source::{
-        resolve_event_source, LogicalEventSource, PropertyEventOwnerKind,
-    };
+    use crate::infrastructure::event_sources::{resolve_event_source, LogicalEventSource};
+    use crate::infrastructure::event_views::resolve_property_event_source;
+    use unica_forms::event_targets::PropertyEventOwnerKind;
 
     let platform = resolve_event_source(
         "main",
@@ -139,7 +138,7 @@ fn pure_event_source_resolver_returns_relative_platform_and_nested_form_identiti
 
 #[test]
 fn pure_event_source_resolver_requires_form_evidence_for_every_item_depth() {
-    use crate::infrastructure::logical_event_source::resolve_event_source;
+    use crate::infrastructure::event_sources::resolve_event_source;
 
     for raw in [
         "main:Report.ParityReport.Form.MainForm.Item.Field.Event.OnChange",
@@ -163,11 +162,12 @@ fn pure_event_source_resolver_requires_form_evidence_for_every_item_depth() {
 
 #[test]
 fn form_evidence_resolver_returns_complete_typed_owner_chains_at_arbitrary_depth() {
-    use crate::infrastructure::event_projection::{
+    use crate::infrastructure::event_views::{
         project_property_event, resolve_property_event_source,
     };
-    use crate::infrastructure::logical_event_source::PropertyEventOwnerKind;
+
     use crate::infrastructure::v13_read::event_node_value;
+    use unica_forms::event_targets::PropertyEventOwnerKind;
 
     let fixture = RealReaderFixture::new();
     fixture.install_main_form_sources(
@@ -302,7 +302,7 @@ fn form_evidence_resolver_returns_complete_typed_owner_chains_at_arbitrary_depth
 
 #[test]
 fn pure_event_source_resolver_fails_closed_for_unproved_event_layouts() {
-    use crate::infrastructure::logical_event_source::resolve_event_source;
+    use crate::infrastructure::event_sources::resolve_event_source;
 
     for (kind, raw) in [
         (
@@ -343,10 +343,12 @@ fn pure_event_source_resolver_fails_closed_for_unproved_event_layouts() {
 
 #[test]
 fn pure_event_projectors_match_physical_view_service_event_nodes() {
-    use crate::infrastructure::event_projection::{
-        project_platform_event, project_property_event, resolve_property_event_source,
+    use crate::infrastructure::event_sources::{resolve_event_source, LogicalEventSource};
+    use crate::infrastructure::event_views::{
+        project_property_event, resolve_property_event_source,
     };
-    use crate::infrastructure::logical_event_source::{resolve_event_source, LogicalEventSource};
+    use unica_bindings::events::project_platform_event;
+
     use crate::infrastructure::v13_read::event_node_value;
 
     let profile = PlatformProfile::v8_3_27();
@@ -372,7 +374,9 @@ fn pure_event_projectors_match_physical_view_service_event_nodes() {
             panic!("platform event must resolve to a module source")
         };
         let capability = profile.module_prefix_capability(&platform_at).unwrap();
-        let pure = project_platform_event(&resolved, capability, source).unwrap();
+        let pure =
+            project_platform_event(&resolved.event_at, &resolved.module_at, capability, source)
+                .unwrap();
         let physical = fixture
             .view_service()
             .view(ViewRequest::new(&platform_at.to_string()).unwrap());
@@ -418,9 +422,10 @@ fn pure_event_projectors_match_physical_view_service_event_nodes() {
 
 #[test]
 fn pure_form_projector_matches_every_physical_owner_and_all_event_states() {
-    use crate::infrastructure::event_projection::{
+    use crate::infrastructure::event_views::{
         project_property_event, resolve_property_event_source,
     };
+
     use crate::infrastructure::v13_read::event_node_value;
 
     let fixture = RealReaderFixture::new();
@@ -1042,7 +1047,7 @@ fn form_metadata_rejects_orphans_and_does_not_follow_descriptor_links() {
         assert!(refused.is_err() || !refused.unwrap().ok, "{raw}");
     }
     {
-        use crate::infrastructure::platform::testing::{
+        use unica_workspace::test_support::{
             create_file_link_fixture_for_test, FileLinkFixtureOutcome,
         };
         let descriptor = fixture.source.join("CommonForms/ОбщаяФорма.xml");

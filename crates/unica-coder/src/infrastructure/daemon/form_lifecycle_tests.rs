@@ -1,8 +1,8 @@
 use super::actor_capacity_tests::direct_v5;
 use super::*;
-use crate::application::invocation_store::ToolIdentity;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use unica_execution::invocation_store::ToolIdentity;
 
 type SourceImage = BTreeMap<PathBuf, Vec<u8>>;
 
@@ -13,7 +13,7 @@ fn assert_exact_effects(
     replaced: &[&str],
     removed: &[&str],
 ) -> SourceImage {
-    let after = crate::test_support::tree_snapshot(source);
+    let after = unica_workspace::test_support::tree_snapshot(source);
     let paths = |values: &[&str]| values.iter().map(PathBuf::from).collect::<BTreeSet<_>>();
     let actual_created = after
         .keys()
@@ -108,12 +108,15 @@ fn canonical_form_lifecycle_preserves_companions_and_removes_the_entire_resource
         direct_v5(&runtime, request).unwrap()
     };
     let preview = |at: &str, ops: serde_json::Value| {
-        let before = crate::test_support::tree_snapshot(&source);
+        let before = unica_workspace::test_support::tree_snapshot(&source);
         let result = call(ToolIdentity::Apply, serde_json::json!({"at":at,"ops":ops}));
         assert!(result.ok, "preview failed: {result:?}");
         assert_eq!(result.data.as_ref().unwrap()["mode"], "preview");
         assert!(result.data.as_ref().unwrap()["executionToken"].is_string());
-        assert_eq!(crate::test_support::tree_snapshot(&source), before);
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&source),
+            before
+        );
         result
     };
     let apply_pair = |at: &str, ops: serde_json::Value| {
@@ -133,7 +136,7 @@ fn canonical_form_lifecycle_preserves_companions_and_removes_the_entire_resource
     let content = "Documents/Order/Forms/Main/Ext/Form.xml";
     let module = "Documents/Order/Forms/Main/Ext/Form/Module.bsl";
     let sidecar = "Documents/Order/Forms/Main/Ext/Form/Items/nested/opaque.bin";
-    let before_add = crate::test_support::tree_snapshot(&source);
+    let before_add = unica_workspace::test_support::tree_snapshot(&source);
     apply_pair(
         "main:Document.Order",
         serde_json::json!([{"op":"form.add","args":{"items":[{"name":"Main","type":"ObjectForm"}]}}]),
@@ -179,7 +182,7 @@ fn canonical_form_lifecycle_preserves_companions_and_removes_the_entire_resource
     std::fs::write(source.join(module), retained_bsl).unwrap();
     std::fs::create_dir_all(source.join(sidecar).parent().unwrap()).unwrap();
     std::fs::write(source.join(sidecar), b"\0\xffform sidecar\r\n").unwrap();
-    let prepared = crate::test_support::tree_snapshot(&source);
+    let prepared = unica_workspace::test_support::tree_snapshot(&source);
     apply_pair(
         "main:Document.Order",
         serde_json::json!([{"op":"form.set","args":{"values":{"defaultChoiceForm":"Main"}}}]),
@@ -263,7 +266,7 @@ fn canonical_form_lifecycle_preserves_companions_and_removes_the_entire_resource
         .data
         .as_ref()
         .is_none_or(|d| d.get("executionToken").is_none()));
-    assert_eq!(crate::test_support::tree_snapshot(&source), image);
+    assert_eq!(unica_workspace::test_support::tree_snapshot(&source), image);
 
     let pending = preview(
         "main:Document.Order",
@@ -280,7 +283,7 @@ fn canonical_form_lifecycle_preserves_companions_and_removes_the_entire_resource
         ),
     )
     .unwrap();
-    let externally_changed = crate::test_support::tree_snapshot(&source);
+    let externally_changed = unica_workspace::test_support::tree_snapshot(&source);
     let stale = call(
         ToolIdentity::Apply,
         serde_json::json!({"executionToken":pending.data.as_ref().unwrap()["executionToken"]}),
@@ -289,7 +292,7 @@ fn canonical_form_lifecycle_preserves_companions_and_removes_the_entire_resource
     assert_eq!(stale.diagnostics[0]["code"], "stale_revision");
     assert!(stale.changed.is_empty());
     assert_eq!(
-        crate::test_support::tree_snapshot(&source),
+        unica_workspace::test_support::tree_snapshot(&source),
         externally_changed
     );
 
@@ -297,7 +300,7 @@ fn canonical_form_lifecycle_preserves_companions_and_removes_the_entire_resource
     let foreign = "Documents/Order/Forms/Main/Extras/nested/opaque.bin";
     std::fs::create_dir_all(source.join(foreign).parent().unwrap()).unwrap();
     std::fs::write(source.join(foreign), b"foreign binary").unwrap();
-    let with_foreign = crate::test_support::tree_snapshot(&source);
+    let with_foreign = unica_workspace::test_support::tree_snapshot(&source);
     let refused = call(
         ToolIdentity::Apply,
         serde_json::json!({"at":form_at,"ops":[{"op":"form.remove"}]}),
@@ -319,11 +322,14 @@ fn canonical_form_lifecycle_preserves_companions_and_removes_the_entire_resource
         .data
         .as_ref()
         .is_none_or(|d| d.get("executionToken").is_none()));
-    assert_eq!(crate::test_support::tree_snapshot(&source), with_foreign);
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&source),
+        with_foreign
+    );
     // Fixture cleanup restores the admitted inputs; the product did not write.
     std::fs::remove_file(source.join(foreign)).unwrap();
     assert_eq!(
-        crate::test_support::tree_snapshot(&source),
+        unica_workspace::test_support::tree_snapshot(&source),
         externally_changed
     );
 

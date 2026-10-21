@@ -22,6 +22,13 @@ WINDOWS_SYS_ROOT_IMPORT = re.compile(
     r"\b(?:use|extern\s+crate)\s+(?:::)?(?P<crate>windows_sys)\b"
 )
 HOST_FACADE_ROOTS = ("crates/unica-bootstrap/src/host/",)
+PLATFORM_FACADE_ROOTS = (
+    "crates/unica-bootstrap/src/platform/",
+    "crates/unica-coder/src/infrastructure/platform/",
+    "crates/unica-process/src/platform/",
+    "crates/unica-workspace/src/platform/",
+    "crates/unica-artifact-delivery/src/platform/",
+)
 HOST_ENVIRONMENT_VARIABLES = (
     "CODEX_HOME", "CLAUDE_PLUGIN_DATA", "CLAUDE_PLUGIN_ROOT", "CLAUDE_PROJECT_DIR",
     "ZCODE_PROJECT_DIR", "ZCODE_PLUGIN_ROOT", "ZCODE_PLUGIN_DATA",
@@ -68,6 +75,42 @@ HOST_MARKER_KINDS = {
     "manifest": "host manifest directory",
     "name": "host name",
 }
+# Semantic packages retain the former domain boundary after physical relocation.
+DOMAIN_COMPONENTS = frozenset({
+    "unica-address", "unica-source-contract", "unica-operation-contract",
+    "unica-metadata", "unica-forms", "unica-roles", "unica-dcs", "unica-xdto",
+    "unica-templates", "unica-bsl", "unica-bindings", "unica-documentation",
+})
+
+
+# Designer codecs and the engines around them read and propose source changes
+# through workspace ports; a direct `std::fs` call would bypass the publication
+# authority that workspace owns (INV.APP.COMPONENT-DEPENDENCIES). The owners are
+# named by package, never by file: every `unica-*-designer` package is a codec.
+FILE_IO_COMPONENTS = frozenset({
+    "unica-operations", "unica-navigation", "unica-diagnostics",
+    "unica-code-intelligence", "unica-xml-format", "unica-work-control",
+})
+DESIGNER_CODEC_PACKAGE = re.compile(r"unica-[a-z0-9-]+-designer")
+
+
+def _is_file_io_free_source(path: PurePosixPath) -> bool:
+    parts = path.parts
+    return (
+        len(parts) >= 4 and parts[0] == "crates" and parts[2] == "src"
+        and (parts[1] in FILE_IO_COMPONENTS
+             or DESIGNER_CODEC_PACKAGE.fullmatch(parts[1]) is not None)
+    )
+
+
+def _is_domain_source(path: PurePosixPath) -> bool:
+    parts = path.parts
+    return path.as_posix().startswith("crates/unica-coder/src/domain/") or (
+        len(parts) >= 4 and parts[0] == "crates"
+        and parts[2] == "src" and (parts[1] in DOMAIN_COMPONENTS or parts[3] == "model")
+    )
+
+
 FORBIDDEN_DOMAIN_IMPORTS = ("application", "infrastructure", "interfaces")
 FORBIDDEN_APPLICATION_IMPORTS = ("infrastructure", "interfaces")
 # An adapter that reached into `interfaces` could render an MCP response itself
@@ -109,9 +152,7 @@ def _is_platform_test(path: PurePosixPath) -> bool:
 
 def _is_platform_facade(path: PurePosixPath) -> bool:
     normalized = path.as_posix()
-    return normalized.startswith("crates/unica-coder/src/infrastructure/platform/") or normalized.startswith(
-        "crates/unica-bootstrap/src/platform/"
-    )
+    return any(normalized.startswith(root) for root in PLATFORM_FACADE_ROOTS)
 
 
 def _is_host_test(path: PurePosixPath) -> bool:
@@ -285,6 +326,11 @@ def _platform_diagnostics(path: PurePosixPath, source: str, masked: str) -> list
         return []
 
     diagnostics: list[str] = []
+    for match in re.finditer(r"\bpub\s+mod\s+platform\b", masked):
+        diagnostics.append(
+            _diagnostic(path, _line_number(source, match.start()),
+                        "platform implementation module must be private")
+        )
     for match in CFG_INVOCATION.finditer(masked):
         expression_end = _cfg_expression_end(masked, match.end() - 1)
         if OS_CFG_TERM.search(masked[match.start() : expression_end]):
@@ -336,7 +382,7 @@ def _host_diagnostics(path: PurePosixPath, source: str) -> list[str]:
 
 def _forbidden_imports(path: PurePosixPath) -> tuple[str, ...]:
     normalized = path.as_posix()
-    if normalized.startswith("crates/unica-coder/src/domain/"):
+    if _is_domain_source(path):
         return FORBIDDEN_DOMAIN_IMPORTS
     if normalized.startswith("crates/unica-coder/src/application/"):
         return FORBIDDEN_APPLICATION_IMPORTS
@@ -347,6 +393,8 @@ def _forbidden_imports(path: PurePosixPath) -> tuple[str, ...]:
 
 def _layer_name(path: PurePosixPath) -> str:
     normalized = path.as_posix()
+    if _is_domain_source(path):
+        return "domain"
     for layer in ("domain", "application", "infrastructure"):
         if f"/src/{layer}/" in normalized:
             return layer
@@ -659,28 +707,37 @@ def _path_io_ufcs_method_pattern(
 
 
 def _domain_io_diagnostics(path: PurePosixPath, source: str, masked: str) -> list[str]:
-    if not path.as_posix().startswith("crates/unica-coder/src/domain/"):
-        return []
+    if _is_domain_source(path):
+        return _std_io_diagnostics(path, source, masked, "domain", DOMAIN_STD_IO_MODULES)
+    if _is_file_io_free_source(path):
+        return _std_io_diagnostics(path, source, masked, "component", frozenset({"fs"}))
+    return []
 
+
+def _std_io_diagnostics(
+    path: PurePosixPath, source: str, masked: str, layer: str, modules: frozenset[str]
+) -> list[str]:
     diagnostics: list[str] = []
     std_roots = ("std", *_std_root_aliases(masked))
     for index, module in _direct_std_io_roots(masked, std_roots):
-        diagnostics.append(
-            _diagnostic(
-                path,
-                _line_number(source, index),
-                f"domain must not access std::{module} directly",
+        if module in modules:
+            diagnostics.append(
+                _diagnostic(
+                    path,
+                    _line_number(source, index),
+                    f"{layer} must not access std::{module} directly",
+                )
             )
-        )
 
     for index, module in _grouped_std_io_roots(masked, std_roots):
-        diagnostics.append(
-            _diagnostic(
-                path,
-                _line_number(source, index),
-                f"domain must not access std::{module} directly",
+        if module in modules:
+            diagnostics.append(
+                _diagnostic(
+                    path,
+                    _line_number(source, index),
+                    f"{layer} must not access std::{module} directly",
+                )
             )
-        )
 
     path_type_names = ("Path", "PathBuf", *_path_type_aliases(masked, std_roots))
     for method_call in _path_io_ufcs_method_pattern(path_type_names, std_roots).finditer(masked):
@@ -689,7 +746,7 @@ def _domain_io_diagnostics(path: PurePosixPath, source: str, masked: str) -> lis
             _diagnostic(
                 path,
                 _line_number(source, method_call.start()),
-                f"domain must not call filesystem method .{method} directly",
+                f"{layer} must not call filesystem method .{method} directly",
             )
         )
     return diagnostics

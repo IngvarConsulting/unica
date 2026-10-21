@@ -1,0 +1,110 @@
+{
+  "id": "S-1835-root-subsystem-order",
+  "issue": 1835,
+  "area": "Подсистемы и интерфейс",
+  "task": "Поставить Администрирование первым в порядке подсистем корневого командного интерфейса: view показывает прежний порядок, предпросмотр не пишет файл, публикация переставляет только SubsystemsOrder",
+  "workspace": "tests/fixtures/acceptance/workspace-command-interface",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/interface/subsystemOrder",
+          "eq": [
+            "main:Subsystem.Sales",
+            "main:Subsystem.Warehouse",
+            "main:Subsystem.Administration"
+          ]
+        }
+      ],
+      "captures": {
+        "before": {
+          "file": "src/Ext/CommandInterface.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "subsystemOrder.set",
+            "args": {
+              "values": {
+                "subsystems": [
+                  "Subsystem.Administration",
+                  "Subsystem.Sales",
+                  "Subsystem.Warehouse"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Ext/CommandInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Ext/CommandInterface.xml",
+          "kind": "sha256",
+          "eq": "1a8a199c1cf5ab7b6196c062ecee383ca0588645a95bec5fb5cf436b67ce4270"
+        },
+        {
+          "path": "src/Ext/CommandInterface.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/extrnprops}SubsystemsOrder/{http://v8.1c.ru/8.3/xcf/extrnprops}Subsystem",
+          "eq": [
+            "Subsystem.Administration",
+            "Subsystem.Sales",
+            "Subsystem.Warehouse"
+          ]
+        }
+      ]
+    }
+  ]
+}
