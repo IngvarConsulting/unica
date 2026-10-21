@@ -1728,6 +1728,71 @@ fn method_body_text_read_by_view_replaces_the_same_span_and_repeats_as_noop() {
 }
 
 #[test]
+fn framed_method_body_text_replaces_its_closing_comment_and_repeats_as_noop() {
+    for (open, statement, close) in [
+        ("Procedure Base()", "Value = 1;", "EndProcedure"),
+        ("Function Base()", "Return 1;", "EndFunction"),
+    ] {
+        for eol in ["\n", "\r\n"] {
+            for (terminal_eol, neighbor) in [
+                ("", ""),
+                ("\n", ""),
+                ("\n", "\nProcedure Neighbor()\nEndProcedure\n"),
+            ] {
+                let read = format!(
+                        "//+ Synthetic frame\n&AtServer\n{open}\n    {statement}\n{close} //- Synthetic frame{terminal_eol}"
+                    ).replace('\n', eol);
+                let neighbor = neighbor.replace('\n', eol);
+                let before = format!("{read}{neighbor}");
+                let edited = read.replace("1;", "2;");
+                let operation = CodePlanOperation::Replace(CodeReplaceArgs {
+                    at: unica_address::address::QualifiedAddress::parse(
+                        "main:CommonModule.Sample.Method.Base.Body",
+                    )
+                    .unwrap(),
+                    anchor: None,
+                    text: edited.clone(),
+                });
+                let post = plan_code_postimage(before.as_bytes(), &operation, 0)
+                    .expect("view/read-edit-replace preserves the frame without doubling its tail");
+                assert_eq!(post.after, before.replace("1;", "2;").as_bytes());
+                let repeated = plan_code_postimage(&post.after, &operation, 0).unwrap();
+                assert!(repeated.no_op);
+                assert_eq!(repeated.after, post.after);
+            }
+        }
+    }
+}
+
+#[test]
+fn method_body_replacement_keeps_executable_tail_on_its_closing_line() {
+    for eol in ["", "\n", "\r\n"] {
+        let before =
+            format!("Procedure Base() EndProcedure Procedure Neighbor() EndProcedure{eol}");
+        let operation = CodePlanOperation::Replace(CodeReplaceArgs {
+            at: unica_address::address::QualifiedAddress::parse(
+                "main:CommonModule.Sample.Method.Base.Body",
+            )
+            .unwrap(),
+            anchor: None,
+            text: "Procedure Base() Value = 2; EndProcedure".to_owned(),
+        });
+        let post = plan_code_postimage(before.as_bytes(), &operation, 0).unwrap();
+        assert_eq!(
+            post.after,
+            format!(
+                "Procedure Base() Value = 2; EndProcedure Procedure Neighbor() EndProcedure{eol}"
+            )
+            .as_bytes(),
+            "a Body replacement must not consume the next method on the same line"
+        );
+        let repeated = plan_code_postimage(&post.after, &operation, 0).unwrap();
+        assert!(repeated.no_op);
+        assert_eq!(repeated.after, post.after);
+    }
+}
+
+#[test]
 fn method_text_that_does_not_parse_is_refused_as_the_input_text() {
     let before = "Procedure Base()\n    Value = 1;\nEndProcedure\n";
     let fixture = staged_code_fixture("broken-method-text", before.as_bytes());

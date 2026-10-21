@@ -2277,6 +2277,11 @@ pub fn parse_typed_fill_value_node(
             Some("fillValue"),
         )),
         (READABLE_NAMESPACE, "DesignTimeRef") => {
+            // Platform dumps encode an unset reference as a typed empty node.
+            // Structural and namespace checks above still reject malformed XML.
+            if value.is_empty() {
+                return Ok(None);
+            }
             // Real platform dumps carry item designators after the metadata
             // address — `Catalog.Валюты.EmptyRef` or a predefined item name.
             // The address prefix is validated; the designator round-trips
