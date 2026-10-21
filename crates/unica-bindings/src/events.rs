@@ -680,11 +680,36 @@ mod directive_tests {
             )
             .unwrap_err();
             assert_eq!(error.code().as_str(), "provider_unavailable");
+            let mut dynamic = spec(&contexts);
+            dynamic.event_id = "OnGetDataAtServer".into();
+            assert!(required_event_directive(
+                EventDirectiveOwner::Property(FormBindingOwner::Table),
+                &dynamic
+            )
+            .is_err());
         }
         assert_eq!(
             required_event_directive(
                 EventDirectiveOwner::Property(FormBindingOwner::Form),
                 &spec(&["server"]),
+            )
+            .unwrap(),
+            RequiredEventDirective::Server
+        );
+        let mut dynamic = spec(&["server"]);
+        dynamic.event_id = "OnGetDataAtServer".into();
+        assert_eq!(
+            required_event_directive(
+                EventDirectiveOwner::Property(FormBindingOwner::Table),
+                &dynamic,
+            )
+            .unwrap(),
+            RequiredEventDirective::ServerOrServerNoContext
+        );
+        assert_eq!(
+            required_event_directive(
+                EventDirectiveOwner::Property(FormBindingOwner::Form),
+                &dynamic,
             )
             .unwrap(),
             RequiredEventDirective::Server

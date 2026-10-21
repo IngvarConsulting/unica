@@ -1244,7 +1244,19 @@ pub fn required_event_directive(
         )));
     }
     if spec.contexts.iter().all(|context| context == "server") {
-        return Ok(RequiredEventDirective::Server);
+        // This dynamic-list callback has no form context. Preserve the
+        // previously accepted AtServer binding; generate NoContext methods.
+        return Ok(
+            if matches!(
+                owner,
+                EventDirectiveOwner::Property(FormBindingOwner::Table)
+            ) && spec.event_id == "OnGetDataAtServer"
+            {
+                RequiredEventDirective::ServerOrServerNoContext
+            } else {
+                RequiredEventDirective::Server
+            },
+        );
     }
     if spec
         .contexts
@@ -1269,6 +1281,14 @@ fn event_directive_matches(directive: Option<&str>, required: RequiredEventDirec
         RequiredEventDirective::Server => normalized
             .as_deref()
             .is_some_and(|value| matches!(value, "&насервере" | "&atserver")),
+        RequiredEventDirective::ServerOrServerNoContext => {
+            normalized.as_deref().is_some_and(|value| {
+                matches!(
+                    value,
+                    "&насервере" | "&atserver" | "&насерверебезконтекста" | "&atservernocontext"
+                )
+            })
+        }
     }
 }
 

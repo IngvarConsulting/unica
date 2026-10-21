@@ -965,7 +965,12 @@ impl ProviderReadAuthority {
         let relative = self.metadata_descriptor_relative(target)?;
         let evidence = prove_already_read_metadata_owner(&relative, &descriptor)
             .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.message))?;
-        identity_metadata_payload_from_evidence(target, &evidence)
+        let mut payload = identity_metadata_payload_from_evidence(target, &evidence)?;
+        if evidence.artifact_kind() == "StyleItem" {
+            unica_metadata_designer::style_item_read::enrich_style_item(&descriptor, &mut payload)
+                .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?;
+        }
+        Ok(payload)
     }
 
     pub(crate) fn metadata_owner_evidence(
@@ -1017,6 +1022,26 @@ impl ProviderReadAuthority {
         .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
         serde_json::to_value(data)
             .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
+    }
+
+    pub(crate) fn xdto_check_outcome(
+        &self,
+        target: &MetadataAddress,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<crate::application::v13::check::NativeCheckOutcome, ViewError> {
+        checkpoint()?;
+        let descriptor = self.metadata_descriptor(target)?;
+        let package = self.read_relative_with_checkpoint(
+            &self.attached_resource_relative(target, "Package.bin")?,
+            Some(MAX_CONFIGURATION_BYTES),
+            checkpoint,
+        )?;
+        let data = parse_xdto_info_bytes(&package, &descriptor, self.source_set(), target, None)
+            .map_err(|error| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+            })?;
+        checkpoint()?;
+        Ok(crate::infrastructure::native_operations::xdto::xdto_check_outcome(data))
     }
 
     pub(crate) fn xdto_payload(

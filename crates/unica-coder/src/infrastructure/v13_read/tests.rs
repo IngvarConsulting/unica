@@ -42,6 +42,138 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 #[test]
+fn styleitem_font_border_values_reach_flat_public_props() {
+    let fixture = RealReaderFixture::new();
+    let configuration = fixture.source.join("Configuration.xml");
+    let mut xml = fs::read_to_string(&configuration).unwrap();
+    for (name, expected) in [
+        (
+            "StyleFont",
+            json!({"Type":"Font", "fontRef":"style:NormalTextFont", "fontKind":"StyleItem", "fontBold":true, "fontItalic":false, "fontUnderline":false, "fontStrikeout":false}),
+        ),
+        (
+            "AbsoluteFont",
+            json!({"Type":"Font", "fontFaceName":"Arial", "fontHeight":16, "fontScale":100, "fontKind":"Absolute", "fontBold":true, "fontItalic":false, "fontUnderline":false, "fontStrikeout":false}),
+        ),
+        (
+            "SingleBorder",
+            json!({"Type":"Border", "borderWidth":1, "borderStyle":"Single"}),
+        ),
+    ] {
+        xml = xml.replace(
+            "</ChildObjects>",
+            &format!("<StyleItem>{name}</StyleItem></ChildObjects>"),
+        );
+        write(
+            &fixture.source.join(format!("StyleItems/{name}.xml")),
+            &fixture_text(&format!("styleitem_values/{name}.xml")),
+        );
+        write(&configuration, &xml);
+        let result = fixture
+            .view_service()
+            .view(ViewRequest::new(&format!("main:StyleItem.{name}")).unwrap());
+        assert!(result.ok, "{result:?}");
+        let props = &result.data.as_ref().unwrap()["props"];
+        for (key, value) in expected.as_object().unwrap() {
+            assert_eq!(&props[key], value, "{name}.{key}");
+        }
+        assert_eq!(props["kind"], "StyleItem");
+        assert!(props
+            .as_object()
+            .unwrap()
+            .values()
+            .all(|value| !value.is_object() && !value.is_array()));
+    }
+}
+
+#[test]
+fn styleitem_preserves_absent_false_and_damaged_overrides_independently() {
+    for (edit, expected_flag, limited) in [
+        ("italic=\"false\"", Some(false), false),
+        ("italic=\"true\"", Some(true), false),
+        ("", None, false),
+        ("italic=\"broken\"", None, true),
+        ("italic=\"\"", None, true),
+    ] {
+        let fixture = RealReaderFixture::new();
+        let configuration = fixture.source.join("Configuration.xml");
+        let xml = fs::read_to_string(&configuration).unwrap();
+        write(
+            &configuration,
+            &xml.replace(
+                "</ChildObjects>",
+                "<StyleItem>AbsoluteFont</StyleItem></ChildObjects>",
+            ),
+        );
+        let source = fixture_text("styleitem_values/AbsoluteFont.xml")
+            .replace("italic=\"false\"", edit)
+            .replace("scale=\"100\"", "scale=\"100\" vendor=\"private\"");
+        write(&fixture.source.join("StyleItems/AbsoluteFont.xml"), &source);
+        let result = fixture
+            .view_service()
+            .view(ViewRequest::new("main:StyleItem.AbsoluteFont").unwrap());
+        assert!(result.ok, "{result:?}");
+        let data = result.data.as_ref().unwrap();
+        assert_eq!(data["props"]["fontHeight"], 16);
+        assert_eq!(data["props"]["Type"], "Font");
+        assert!(data["props"]["synonym"].is_string());
+        assert_eq!(
+            data["props"].get("fontItalic"),
+            expected_flag.map(serde_json::Value::Bool).as_ref()
+        );
+        assert!(data["props"].get("vendor").is_none());
+        let limits = data.get("limits").and_then(serde_json::Value::as_array);
+        assert_eq!(
+            limits.is_some_and(|v| v
+                .iter()
+                .any(|v| v.as_str().is_some_and(|s| s.contains("fontItalic")))),
+            limited,
+            "{data}"
+        );
+    }
+}
+
+#[test]
+fn styleitem_value_type_is_namespace_aware_and_damage_preserves_identity() {
+    for (from, to, visible) in [
+        ("v8ui", "aliased", true),
+        ("http://v8.1c.ru/8.1/data/ui", "urn:vendor", false),
+        ("xsi:type=\"v8ui:Font\"", "xsi:type=\"v8ui:Border\"", false),
+        (
+            "<Type>Font</Type>",
+            "<Type>Font</Type><Type>Border</Type>",
+            false,
+        ),
+    ] {
+        let fixture = RealReaderFixture::new();
+        let configuration = fixture.source.join("Configuration.xml");
+        let xml = fs::read_to_string(&configuration).unwrap();
+        write(
+            &configuration,
+            &xml.replace(
+                "</ChildObjects>",
+                "<StyleItem>AbsoluteFont</StyleItem></ChildObjects>",
+            ),
+        );
+        write(
+            &fixture.source.join("StyleItems/AbsoluteFont.xml"),
+            &fixture_text("styleitem_values/AbsoluteFont.xml").replace(from, to),
+        );
+        let result = fixture
+            .view_service()
+            .view(ViewRequest::new("main:StyleItem.AbsoluteFont").unwrap());
+        assert!(result.ok, "{result:?}");
+        let data = result.data.as_ref().unwrap();
+        assert_eq!(data["props"].get("fontHeight").is_some(), visible, "{data}");
+        assert_eq!(data["props"]["kind"], "StyleItem");
+        assert!(data["props"]["synonym"].is_string());
+        if !visible {
+            assert!(!data["limits"].as_array().unwrap().is_empty());
+        }
+    }
+}
+
+#[test]
 fn borrowed_common_module_keeps_missing_privileged_unknown() {
     let borrowed = fixture_text("platform_8_3_27/cfe_borrow/extension-common-module.xml");
     let props = super::common_module_properties(borrowed.as_bytes(), SourceSetKind::Extension)
@@ -6433,6 +6565,180 @@ fn tabular_standard_attributes_preserve_profiled_member_facts_and_independent_li
         assert_eq!(
             unica_workspace::test_support::tree_snapshot(&fixture.source),
             before
+        );
+    }
+}
+
+fn install_xdto_check_fixture(fixture: &RealReaderFixture) {
+    let path = fixture.source.join("Configuration.xml");
+    let config=fs::read_to_string(&path).unwrap().replace("</ChildObjects>","<XDTOPackage>Control</XDTOPackage><XDTOPackage>Unsupported</XDTOPackage><XDTOPackage>Paged</XDTOPackage><XDTOPackage>Mixed</XDTOPackage></ChildObjects>");
+    write(&path, &config);
+    for name in ["Control", "Unsupported", "Paged", "Mixed"] {
+        for suffix in [".xml", "/Ext/Package.bin"] {
+            let relative = format!("XDTOPackages/{name}{suffix}");
+            write(
+                &fixture.source.join(&relative),
+                &fixture_text(&format!("acceptance/workspace-xdto-check/src/{relative}")),
+            );
+        }
+    }
+}
+
+#[test]
+fn xdto_check_preserves_complete_native_findings_and_distinguishes_profile_limits() {
+    let fixture = RealReaderFixture::new();
+    install_xdto_check_fixture(&fixture);
+    for (name, count, error_count) in [
+        ("Control", 0, 0),
+        ("Unsupported", 7, 0),
+        ("Paged", 55, 0),
+        ("Mixed", 56, 1),
+    ] {
+        let at = QualifiedAddress::parse(&format!("main:XDTOPackage.{name}")).unwrap();
+        let path = fixture
+            .source
+            .join(format!("XDTOPackages/{name}/Ext/Package.bin"));
+        let before = fs::read(&path).unwrap();
+        let authority = fixture.read_authority();
+        let target = MetadataAddress::parse(
+            PLATFORM_XML_8_3_27_FORMAT_2_20,
+            &format!("XDTOPackage.{name}"),
+        )
+        .unwrap();
+        let native = authority.read.xdto_payload(&target, None).unwrap();
+        let (_, outcome) = authority.check_xdto(&at).unwrap();
+        let checked = crate::application::v13::check::normalize_native_outcome(
+            &at,
+            "XDTOPackage",
+            crate::application::v13::check::CheckValidator::Xdto,
+            outcome.unwrap(),
+        )
+        .unwrap();
+        let findings = native["findings"].as_array().unwrap();
+        assert_eq!(findings.len(), count, "{name}");
+        assert_eq!(checked.diagnostics().len(), count, "{name}");
+        assert_eq!(checked.ok(), error_count == 0, "{name}");
+        assert_eq!(
+            checked
+                .diagnostics()
+                .iter()
+                .filter(|d| d.severity() == "error")
+                .count(),
+            error_count,
+            "{name}"
+        );
+        for (finding, diagnostic) in findings.iter().zip(checked.diagnostics()) {
+            assert_eq!(
+                finding["severity"], "error",
+                "native/writer classification must remain unchanged"
+            );
+            assert_eq!(diagnostic.code(), finding["code"].as_str().unwrap());
+            let offset = finding["location"]["bodyByteRange"]["start"]
+                .as_u64()
+                .unwrap();
+            assert!(
+                diagnostic
+                    .message()
+                    .contains(&format!("byte offset {offset} (0-based, BOM excluded)")),
+                "{diagnostic:?}"
+            );
+            assert!(
+                diagnostic
+                    .message()
+                    .contains(finding["message"].as_str().unwrap()),
+                "{diagnostic:?}"
+            );
+            if diagnostic.code() == "unsupported_node" {
+                assert_eq!(diagnostic.severity(), "warning");
+                assert!(diagnostic.message().contains("Unica profile limitation"));
+            }
+        }
+        assert_eq!(fs::read(path).unwrap(), before);
+    }
+}
+
+#[test]
+fn xdto_check_rejects_unreadable_sources_and_keeps_inherited_packages_opaque() {
+    let fixture = RealReaderFixture::new();
+    install_xdto_check_fixture(&fixture);
+    let at = QualifiedAddress::parse("main:XDTOPackage.Control").unwrap();
+    let path = fixture.source.join("XDTOPackages/Control/Ext/Package.bin");
+    let body = fs::read(&path).unwrap();
+    for invalid in [
+        b"not XML".as_slice(),
+        b"\xff",
+        b"\xef\xbb\xbf\xef\xbb\xbf<package/>",
+    ] {
+        fs::write(&path, invalid).unwrap();
+        let result = fixture.read_authority().check_xdto(&at);
+        assert!(
+            result.is_err(),
+            "parse failures are not unsupported-node warnings: {result:?}"
+        );
+    }
+    fs::write(&path, &body).unwrap();
+    let descriptor = fixture.source.join("XDTOPackages/Control.xml");
+    let original = fs::read_to_string(&descriptor).unwrap();
+    for invalid in [
+        original.replace("urn:sample", "urn:other"),
+        original.replace("<Name>Control</Name>", "<Name>Other</Name>"),
+        original.replace("http://v8.1c.ru/8.3/MDClasses", "urn:foreign"),
+    ] {
+        fs::write(&descriptor, invalid).unwrap();
+        assert!(fixture.read_authority().check_xdto(&at).is_err());
+    }
+    fs::write(&descriptor, &original).unwrap();
+    let config = fixture.source.join("Configuration.xml");
+    let original_config = fs::read_to_string(&config).unwrap();
+    fs::write(
+        &config,
+        original_config.replace("<XDTOPackage>Control</XDTOPackage>", ""),
+    )
+    .unwrap();
+    assert_eq!(
+        fixture.read_authority().check_xdto(&at).unwrap_err().code(),
+        RefusalCode::NotFound
+    );
+    fs::write(&config, original_config).unwrap();
+    fs::write(&descriptor,original.replace("</Properties>","<ExtendedConfigurationObject>99999999-9999-4999-8999-999999999999</ExtendedConfigurationObject></Properties>")).unwrap();
+    fs::remove_file(&path).unwrap();
+    assert!(fixture
+        .extension_read_authority()
+        .check_xdto(&at)
+        .unwrap()
+        .1
+        .is_none());
+    fixture.cancellation.cancel();
+    assert_eq!(
+        fixture.read_authority().check_xdto(&at).unwrap_err().code(),
+        RefusalCode::Cancelled
+    );
+}
+
+#[test]
+fn xdto_check_refuses_linked_descriptor_and_package_resources() {
+    use crate::composition::testing::{create_file_link_fixture_for_test, FileLinkFixtureOutcome};
+    for relative in [
+        "XDTOPackages/Control.xml",
+        "XDTOPackages/Control/Ext/Package.bin",
+    ] {
+        let fixture = RealReaderFixture::new();
+        install_xdto_check_fixture(&fixture);
+        let path = fixture.source.join(relative);
+        let bytes = fs::read(&path).unwrap();
+        let foreign = fixture.root.path().join("foreign.xml");
+        fs::write(&foreign, bytes).unwrap();
+        fs::remove_file(&path).unwrap();
+        let outcome = create_file_link_fixture_for_test(&foreign, &path).unwrap();
+        if outcome != FileLinkFixtureOutcome::Created {
+            eprintln!("[SKIPPED FIXTURE] file-link fixture unavailable: {outcome:?}");
+            return;
+        }
+        let at = QualifiedAddress::parse("main:XDTOPackage.Control").unwrap();
+        assert_eq!(
+            fixture.read_authority().check_xdto(&at).unwrap_err().code(),
+            RefusalCode::ProviderUnavailable,
+            "{relative}"
         );
     }
 }
