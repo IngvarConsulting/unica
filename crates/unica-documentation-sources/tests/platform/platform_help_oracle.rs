@@ -8,15 +8,15 @@
 //! The vendor help is not installed on CI runners, so the oracles are
 //! `#[ignore]`d and reported as skipped there instead of passing empty. Run
 //! them on a stand with the platform:
-//! `UNICA_PLATFORM_HELP_DIR=<8.3.27.2074 installation> cargo nextest run -p unica-coder --lib --run-ignored only -E 'test(/^infrastructure::platform_help_oracle::/)'`.
+//! `UNICA_PLATFORM_HELP_DIR=<8.3.27.2074 installation> cargo nextest run -p unica-documentation-sources --lib --run-ignored only -E 'test(/^platform_help_oracle::/)'`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-use unica_documentation_sources::platform_help::corpus::{read_corpus, CorpusPage};
-use unica_documentation_sources::platform_help::installation::discover;
+use crate::platform_help::corpus::{read_corpus, CorpusPage};
+use crate::platform_help::installation::discover;
 use unica_metadata::event_catalog::{
     ExcludedEventPage, FormPlatformEventCatalog, PlatformEventCatalogFixture, PlatformEventSpec,
 };
