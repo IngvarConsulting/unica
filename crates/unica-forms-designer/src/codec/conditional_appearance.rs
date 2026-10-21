@@ -1,6 +1,6 @@
 use roxmltree::Node;
-use serde::Serialize;
 use serde_json::{json, Map, Value};
+use unica_forms::facts::{FormInfoConditionalAppearance, FormInfoConditionalAppearanceRule};
 
 const FORM: &str = "http://v8.1c.ru/8.3/xcf/logform";
 const SETTINGS: &str = "http://v8.1c.ru/8.1/data-composition-system/settings";
@@ -9,26 +9,6 @@ const V8: &str = "http://v8.1c.ru/8.1/data/core";
 const UI: &str = "http://v8.1c.ru/8.1/data/ui";
 const XS: &str = "http://www.w3.org/2001/XMLSchema";
 const XSI: &str = "http://www.w3.org/2001/XMLSchema-instance";
-
-#[derive(Debug, Serialize)]
-pub(crate) struct ConditionalAppearance {
-    rules: Vec<Rule>,
-    limits: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct Rule {
-    name: String,
-    #[serde(rename = "use", skip_serializing_if = "Option::is_none")]
-    enabled: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    selection: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    filter: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    appearance: Option<Value>,
-    limits: Vec<String>,
-}
 
 type Read<T> = Result<T, String>;
 
@@ -320,11 +300,11 @@ fn fact(
     }
 }
 
-pub(super) fn read(root: Node<'_, '_>) -> Option<ConditionalAppearance> {
+pub(super) fn read(root: Node<'_, '_>) -> Option<FormInfoConditionalAppearance> {
     let attrs = children(root).find(|n| n.has_tag_name((FORM, "Attributes")))?;
     let mut containers = children(attrs).filter(|n| n.tag_name().name() == "ConditionalAppearance");
     let container = containers.next()?;
-    let mut result = ConditionalAppearance {
+    let mut result = FormInfoConditionalAppearance {
         rules: Vec::new(),
         limits: Vec::new(),
     };
@@ -344,7 +324,7 @@ pub(super) fn read(root: Node<'_, '_>) -> Option<ConditionalAppearance> {
         let mut limits = Vec::new();
         if !item.has_tag_name((SETTINGS, "item")) {
             limits.push(format!("{name}: неподдержанное пространство имён правила"));
-            result.rules.push(Rule {
+            result.rules.push(FormInfoConditionalAppearanceRule {
                 name,
                 enabled: None,
                 selection: None,
@@ -372,7 +352,7 @@ pub(super) fn read(root: Node<'_, '_>) -> Option<ConditionalAppearance> {
         let selection = fact(item, "selection", selection, &mut limits);
         let filter = fact(item, "filter", filter, &mut limits);
         let appearance = fact(item, "appearance", appearance, &mut limits);
-        result.rules.push(Rule {
+        result.rules.push(FormInfoConditionalAppearanceRule {
             name,
             enabled,
             selection,

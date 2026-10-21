@@ -1,6 +1,6 @@
 use super::{install_form_metadata_test_sources, write, RealReaderFixture, ViewRequest};
-use crate::test_support::tree_snapshot;
 use serde_json::{json, Value};
+use unica_workspace::test_support::tree_snapshot;
 
 const XML: &str = include_str!("../../../../../../tests/fixtures/acceptance/form-conditional-appearance/src/CommonForms/Appearance/Ext/Form.xml");
 const FORM: &str = "main:CommonForm.ОбщаяФорма";
