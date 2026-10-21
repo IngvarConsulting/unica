@@ -744,6 +744,15 @@ jobs:
       # причиной «план не сравнён с прежним инвентарём».
       - if: ${{ !cancelled() }}
         run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --phase verify --runners "$RUNNERS" --sha "$GITHUB_SHA" --results .build/ci-proof --baseline .build/ci-baseline/baseline.json
+      # Pull request не сравнивает отдельные кейсы с базой очереди: отбор
+      # профилей разный. Снятый тест без строки `Removes-test` в описании
+      # ловится здесь по diff против первого родителя merge-коммита,
+      # а не падением пачки очереди.
+      - name: Removed Rust tests are declared
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/ci/removed_tests.py --base HEAD^1
       - if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

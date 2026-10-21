@@ -2,7 +2,7 @@
 id: INV.SOURCE.REVISION-CONTENT-BOUNDS
 check:
   - crates/unica-workspace/src/apply.rs::apply_staged_read_has_one_closed_bound_that_cannot_be_caller_bypassed
-  - crates/unica-coder/src/infrastructure/workspace_transaction_contract_tests.rs::reference_scan_refuses_a_file_larger_than_the_per_file_budget
+  - crates/unica-source-integration-tests/tests/compile_transaction.rs::reference_scan_refuses_a_file_larger_than_the_per_file_budget
   - crates/unica-workspace/src/apply.rs::reference_scan_entry_budget_stops_incrementally_at_a_test_limit
   - crates/unica-workspace/src/apply.rs::reference_scan_depth_budget_stops_before_recursive_descent
   - crates/unica-workspace/src/apply.rs::reference_guard_preserves_finite_deadline_after_capture_without_writing

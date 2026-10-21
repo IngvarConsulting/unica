@@ -257,6 +257,35 @@ fn canonical_object_create_publishes_native_catalog_descriptor_bytes() {
     assert_eq!(published, bind_native_identities(NATIVE_CATALOG, &published, "Catalog"), "new Catalog must match raw native export apart from its 11 declared generated identity slots");
 }
 
+#[test]
+fn canonical_catalog_created_with_a_comment_keeps_the_native_descriptor_profile() {
+    let root = workspace(false);
+    let source = root.path().join("src");
+    let before = tree_snapshot(&source);
+    let runtime = runtime();
+    apply_pair(
+        &runtime,
+        root.path(),
+        "main:Configuration",
+        json!([
+            {"op":"object.create","args":{"values":{"kind":"Catalog","name":"CorpusCatalog"}}},
+            {"op":"props.set","args":{"at":"main:Catalog.CorpusCatalog","values":{"Comment":"retained comment"}}}
+        ]),
+    );
+    let module = "Catalogs/CorpusCatalog/Ext/ObjectModule.bsl";
+    assert_effects(&source, &before, &[CATALOG, module], &["Configuration.xml"]);
+    assert_eq!(std::fs::read(source.join(module)).unwrap(), b"\xef\xbb\xbf");
+    let native = std::str::from_utf8(NATIVE_CATALOG).unwrap();
+    assert_eq!(native.matches("<Comment/>").count(), 1);
+    let with_comment = native.replacen("<Comment/>", "<Comment>retained comment</Comment>", 1);
+    let published = std::fs::read(source.join(CATALOG)).unwrap();
+    assert_eq!(
+        published,
+        bind_native_identities(with_comment.as_bytes(), &published, "Catalog"),
+        "a Comment set at creation must keep the new descriptor's native byte profile"
+    );
+}
+
 fn publish_catalog_user_value(
     runtime: &V5CanonicalInvocationRuntime,
     root: &Path,

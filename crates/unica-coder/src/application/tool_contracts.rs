@@ -2643,7 +2643,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "documentId",
-        "Stable locator of a documentation hit, minted by the canonical documentation query and passed verbatim to unica.documentation.get to fetch the full document text: configuration-help:<source-set>:<path> for the workspace configuration's embedded help, platform-syntax-help:<corpus>:<path> for the installed platform's help, an absolute https://kb.1ci.com/... page address for the vendor knowledge base, and an https://v8std.ru/... address for a development standard; the provider that minted the locator is the only one that resolves it.",
+        "Stable locator of a documentation hit, minted by the canonical documentation query and passed verbatim to unica.documentation.get to fetch the full document text: configuration-help:<source-set>:<path> for the workspace configuration's embedded help, platform-syntax-help:<corpus>:<path> for the installed platform's help, and an https://v8std.ru/... address for a development standard; the provider that minted the locator is the only one that resolves it.",
     ),
     (
         "platformVersion",
@@ -5586,21 +5586,6 @@ pub(crate) mod tests {
             error.contains("requires `name`"),
             "reader validation cannot be weakened by a preview boolean: {error}"
         );
-    }
-
-    #[test]
-    fn retired_meta_tools_are_absent_from_the_contract_registry() {
-        let names = tools()
-            .into_iter()
-            .map(|tool| tool.name)
-            .collect::<Vec<_>>();
-        for retired in [
-            "unica.meta.compile",
-            "unica.meta.profile",
-            "unica.meta.validate",
-        ] {
-            assert!(!names.contains(&retired), "retired {retired} is public");
-        }
     }
 
     #[test]

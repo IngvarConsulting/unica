@@ -302,16 +302,100 @@ def fixture_binary_environment(root: Path, document: dict) -> dict[str, str]:
             "UNICA_CANONICAL_DELIVERY_SUCCESS_SHA256": descriptor["sha256"]}
 
 
+# A test without a host capability (symlinks, a case-insensitive volume, ...)
+# reports it through `unica_process::test_support::skip_without_host_capability`
+# instead of passing silently (#1893). The helper writes one record per skip
+# into `HOST_CAPABILITY_SKIPS_ENV`; the runner turns that passing case into a
+# skip with the reason. A runner that must have the capability refuses the
+# skip, so a lost capability on Linux or macOS is red, not a quiet skip.
+HOST_CAPABILITY_SKIPS_ENV = "UNICA_HOST_CAPABILITY_SKIPS"
+HOST_CAPABILITIES = frozenset({
+    "symlink", "case-sensitive-filesystem", "case-insensitive-filesystem",
+    "normalization-insensitive-filesystem", "enforced-permission-bits",
+    "directory-mtime", "non-utf8-file-names", "rename-under-open-handle",
+    "unix-process-groups", "unix-permission-bits", "windows-job-object", "windows-path-syntax",
+})
+UNIX_RUNNER_CAPABILITIES = frozenset({
+    "symlink", "enforced-permission-bits", "directory-mtime", "rename-under-open-handle",
+    "unix-process-groups", "unix-permission-bits",
+})
+REQUIRED_HOST_CAPABILITIES = {
+    "ubuntu-latest": UNIX_RUNNER_CAPABILITIES | {"case-sensitive-filesystem", "non-utf8-file-names"},
+    "macos-14": UNIX_RUNNER_CAPABILITIES | {"case-insensitive-filesystem", "normalization-insensitive-filesystem"},
+    # A decision, not a fact about the runner: Windows stays advisory (#1523),
+    # so every skip there is visible but none is refused yet.
+    "windows-latest": frozenset(),
+}
+CAPABILITY_SKIP_REASON = re.compile(r"host capability (?P<capability>[a-z0-9-]+): ")
+
+
+def capability_environment(destination: Path, base: dict[str, str] | None = None) -> dict[str, str]:
+    directory = destination / "capability-skips"
+    directory.mkdir(parents=True, exist_ok=True)
+    return {**(base if base is not None else os.environ), HOST_CAPABILITY_SKIPS_ENV: str(directory)}
+
+
+def capability_skips(destination: Path) -> dict[str, tuple[int, str]]:
+    """Case ID → (latest skipping attempt, reason) written by the tests of this run."""
+    skips: dict[str, tuple[int, str]] = {}
+    for path in sorted((destination / "capability-skips").glob("*.json")):
+        record = json.loads(path.read_text(encoding="utf-8"))
+        if record.get("capability") not in HOST_CAPABILITIES or not isinstance(record.get("reason"), str) \
+                or not all(isinstance(record.get(key), str) and record[key] for key in ("binary", "name")) \
+                or not str(record.get("attempt", "")).isdigit():
+            raise ValueError(f"malformed host capability skip record {path.name}")
+        identifier = record["binary"] + "::" + record["name"]
+        entry = (int(record["attempt"]), f"host capability {record['capability']}: {record['reason']}")
+        skips[identifier] = max(skips.get(identifier, entry), entry)
+    return skips
+
+
+def apply_capability_skips(tree: ET.ElementTree, skips: dict[str, tuple[int, str]], owned: set[str]) -> None:
+    """Mark passing owned cases that reported a missing capability as skipped."""
+    found = set()
+    for suite in tree.getroot().iter("testsuite"):
+        for case in suite.findall("testcase"):
+            identifier = suite.get("name", "") + "::" + case.get("name", "")
+            if identifier not in skips:
+                continue
+            if identifier not in owned:
+                raise ValueError(f"host capability skip for an unassigned case {identifier}")
+            found.add(identifier)
+            if any(child.tag in {"failure", "error", "skipped"} for child in case):
+                continue  # a failing test stays failed whatever it reported
+            # Only the final, passing attempt decides: an earlier attempt that
+            # skipped and then failed does not make a later pass a skip.
+            attempt, message = skips[identifier]
+            final = 1 + sum(child.tag in allure_results.RETRIED_ATTEMPTS for child in case)
+            if attempt == final:
+                ET.SubElement(case, "skipped", {"message": message})
+    if set(skips) - found:
+        raise ValueError("host capability skip for a case missing from JUnit: " + ", ".join(sorted(set(skips) - found)))
+
+
+def capability_skip_refusal(record: dict, runner: str) -> str | None:
+    """Why a skipped required case is not an allowed host capability skip."""
+    found = CAPABILITY_SKIP_REASON.match(record.get("reason", ""))
+    if found is None or found.group("capability") not in HOST_CAPABILITIES:
+        return "a required shard test did not execute"
+    if found.group("capability") in REQUIRED_HOST_CAPABILITIES.get(runner, frozenset()):
+        return f"host capability {found.group('capability')} is required on {runner} but {record['id']} skipped"
+    return None
+
+
 def junit_outcomes(path: Path) -> list[dict]:
     records = []
     for suite in ET.parse(path).getroot().iter("testsuite"):
         for case in suite.findall("testcase"):
             markers = [child for child in case if child.tag in {"skipped", "failure", "error"}]
-            if len(markers) > 1 or (case.find("skipped") is not None and any(
+            skipped = case.find("skipped")
+            # A retried test may skip on its final attempt for a missing host
+            # capability (#1893); any other skip after an executed attempt conflicts.
+            capability_skip = skipped is not None and (skipped.get("message") or "").startswith("host capability ")
+            if len(markers) > 1 or (skipped is not None and not capability_skip and any(
                 child.tag in allure_results.RETRIED_ATTEMPTS for child in case
             )):
                 raise ValueError("JUnit case has conflicting or executed skipped outcomes")
-            skipped = case.find("skipped")
             record = {"id": suite.get("name", "") + "::" + case.get("name", ""),
                       "status": "skipped" if skipped is not None else "failed" if markers else "passed"}
             if skipped is not None:
@@ -320,12 +404,19 @@ def junit_outcomes(path: Path) -> list[dict]:
     return records
 
 
-def assigned_junit(source: Path, destination: Path, manifest: dict, plan: list[dict]) -> tuple[Path, list[dict], list[dict]]:
+def assigned_junit(source: Path, destination: Path, manifest: dict, plan: list[dict],
+                   skips: dict[str, tuple[int, str]] | None = None) -> tuple[Path, list[dict], list[dict]]:
     """Keep raw bytes; emit only owned cases, retaining their attempt nodes."""
     destination.mkdir(parents=True, exist_ok=True)
     raw = destination / "junit.raw.xml"
     raw.write_bytes(source.read_bytes())
-    records = junit_outcomes(raw)
+    observed_path = raw
+    if skips:
+        tree = ET.parse(raw)
+        apply_capability_skips(tree, skips, {case_id(case) for case in plan})
+        observed_path = destination / "junit.observed.xml"
+        tree.write(observed_path, encoding="utf-8", xml_declaration=True)
+    records = junit_outcomes(observed_path)
     observed = Counter(record["id"] for record in records)
     if any(count != 1 for count in observed.values()):
         raise ValueError("JUnit repeats a raw case ID")
@@ -335,7 +426,7 @@ def assigned_junit(source: Path, destination: Path, manifest: dict, plan: list[d
     if any(record["id"] not in known_ignored or record["status"] != "skipped" for record in annotations):
         raise ValueError("JUnit contains an unknown or executed unassigned case")
     assigned = [record for record in records if record["id"] in owned]
-    tree = ET.parse(raw)
+    tree = ET.parse(observed_path)
     for suite in tree.getroot().iter("testsuite"):
         for case in list(suite.findall("testcase")):
             if suite.get("name", "") + "::" + case.get("name", "") not in owned:
@@ -447,12 +538,12 @@ def run_archive(root: Path, prepared: Path, destination: Path, lane: str, profil
     command = reuse_command("run", root, archive, lane, profile, f"hash:{index}/{len(document['shards'])}", host=host)
     if not any(not case["ignored"] for case in plan):
         command.append("--no-tests=pass")
-    completed, seconds = timed(command, root, **run_options)
+    completed, seconds = timed(command, root, env=capability_environment(destination, run_options.get("env")))
     found = [path for path in candidates if path.is_file()]
     records = []
     annotations = []
     if len(found) == 1:
-        filtered, records, annotations = assigned_junit(found[0], destination, document, plan)
+        filtered, records, annotations = assigned_junit(found[0], destination, document, plan, capability_skips(destination))
         runner.emit_rust(destination, profile, host, filtered, selection=selection(lane))
     status = {
         "schemaVersion": 1, "sha": current["sha"], "profile": profile, "runner": host,
@@ -494,14 +585,15 @@ def run_archive(root: Path, prepared: Path, destination: Path, lane: str, profil
                 for path in candidates:
                     path.unlink(missing_ok=True)
                 shadow_command = reuse_command("run", root, archive, lane, profile, f"hash:{index}/{len(document['shards'])}", candidate=expression, host=host)
-                shadow_run, shadow_seconds = timed(shadow_command, root, **run_options)
+                shadow_run, shadow_seconds = timed(shadow_command, root, env=capability_environment(
+                    destination / "shadow", run_options.get("env")))
                 comparison.update(shadowNotRun=False, affectedSeconds=shadow_seconds, exitCode=shadow_run.returncode)
                 shadow_reports = [path for path in candidates if path.is_file()]
                 if shadow_run.returncode != 0 or len(shadow_reports) != 1:
                     write(destination / "shadow.json", comparison)
                     raise ValueError("shadow execution failed or did not report results")
                 _, comparison["records"], comparison["frameworkAnnotations"] = assigned_junit(
-                    shadow_reports[0], destination / "shadow", document, affected)
+                    shadow_reports[0], destination / "shadow", document, affected, capability_skips(destination / "shadow"))
                 write(destination / "shadow.json", comparison)
                 shadow_manifest = {**document, "shards": list(document["shards"])}
                 shadow_manifest["shards"][index - 1] = affected
@@ -567,10 +659,11 @@ def run_medium(root: Path, prepared: Path, destination: Path, host: str, shadow:
         junit = root / "target/nextest" / MEDIUM_PROFILE / "junit.xml"
         junit.unlink(missing_ok=True)
         command = reuse_command("run", root, archive, "ordinary", MEDIUM_PROFILE, candidate=expression)
-        completed, seconds = timed(command, root, env=fixture_binary_environment(root, document))
+        completed, seconds = timed(command, root, env=capability_environment(destination, fixture_binary_environment(root, document)))
         status.update(exitCode=completed.returncode, executionSeconds=seconds)
         if junit.is_file():
-            _, status["records"], status["frameworkAnnotations"] = assigned_junit(junit, destination, document, plan)
+            _, status["records"], status["frameworkAnnotations"] = assigned_junit(
+                junit, destination, document, plan, capability_skips(destination))
     write(destination / "medium.json", status)
     validate_medium(document, status)
     return status["exitCode"]
@@ -618,8 +711,11 @@ def validate_result(manifest: dict, result: dict, index: int) -> None:
     observed = Counter(record["id"] for record in records + annotations)
     if any(count != 1 for count in observed.values()) or not wanted.issubset({record["id"] for record in records}) or not {record["id"] for record in records}.issubset(allowed):
         raise ValueError("shard results do not cover their assigned tests exactly once")
-    if any(record["status"] == "skipped" and record["id"] in wanted for record in records):
-        raise ValueError("a required shard test did not execute")
+    for record in records:
+        if record["status"] == "skipped" and record["id"] in wanted:
+            refusal = capability_skip_refusal(record, manifest["runner"])
+            if refusal:
+                raise ValueError(refusal)
     if result.get("exitCode") != 0 or any(record["status"] not in ("passed", "skipped") for record in records):
         raise ValueError("a required shard test failed")
 

@@ -53,7 +53,7 @@ use unica_execution::receipt_ledger::{
     TaskLinkIdentity, TaskLinkReference, TaskRetirementPendingReceipt, TaskTerminalBoundReceipt,
     TerminalDigest, V5ToolIdentity, DIRECT_TERMINAL_RETENTION_MS,
 };
-use unica_execution::receipt_ledger_actor::ReceiptLedgerActor;
+use unica_execution::receipt_ledger_actor::{observation, ReceiptLedgerActor};
 use unica_execution::receipt_runtime::contracts::scenario_hooks::{
     acknowledge_direct_for_scenario, inject_receipt_identity_collision_for_scenario,
     open_receipt_actor_for_scenario, seed_receipt_backed_task_terminal_for_scenario,
@@ -1490,11 +1490,14 @@ fn run_lazy_cancel_storm(
         install_epoch_clock_for_fixture(&mut runtime, daemon_clock);
         runtime
     });
+    let causal = observation::Context::from_environment_for_test();
     let operation = (|| {
         wait_for_endpoint(state_root, identity)?;
         let runtime = control
             .runtime()
             .ok_or_else(|| "lazy cancel daemon did not publish its runtime owner".to_owned())?;
+        let _causal = causal.install();
+        observation::mark("lazy.preparation", "enter", None);
         let window_started = clock.now_monotonic_millis();
         let accepted_epoch_ms = clock.now_epoch_millis();
         let mut work = Vec::with_capacity(submits as usize);
@@ -1518,8 +1521,14 @@ fn run_lazy_cancel_storm(
             unica_bootstrap::MAX_RESPONSE_BUDGET,
         )
         .map_err(|error| format!("encode batched lazy cancel terminal: {error}"))?;
+        observation::mark("lazy.preparation", "complete", None);
         let started = clock.now_monotonic_millis();
         let operation_deadline = Instant::now() + Duration::from_millis(per_cancel_deadline_ms);
+        observation::mark(
+            "lazy.batch",
+            "enter_original_deadline",
+            Some(operation_deadline.saturating_duration_since(Instant::now())),
+        );
         let receipts = receipt_actor_for_fixture(&runtime)
             .publish_cancelled_direct_batch(
                 work.iter()
@@ -1534,6 +1543,16 @@ fn run_lazy_cancel_storm(
                 operation_deadline,
             )
             .map_err(|error| format!("publish batched lazy cancels: {error}"))?;
+        observation::mark(
+            "lazy.batch",
+            "complete",
+            Some(operation_deadline.saturating_duration_since(Instant::now())),
+        );
+        observation::mark(
+            "lazy.encode_decode",
+            "enter",
+            Some(operation_deadline.saturating_duration_since(Instant::now())),
+        );
         let first_invocation = work
             .first()
             .map(|(_, invocation)| invocation.clone())
@@ -1545,6 +1564,16 @@ fn run_lazy_cancel_storm(
         frame.push(b'\n');
         let decoded = decode_v5_request_frame(frame)
             .map_err(|error| format!("decode lazy cancel submit: {error}"))?;
+        observation::mark(
+            "lazy.encode_decode",
+            "complete",
+            Some(operation_deadline.saturating_duration_since(Instant::now())),
+        );
+        observation::mark(
+            "lazy.exact_submit",
+            "enter_original_deadline",
+            Some(operation_deadline.saturating_duration_since(Instant::now())),
+        );
         let response = runtime
             .submit_invocation(
                 unica_daemon::protocol_v5::DecodedSubmitAdapter::new(decoded, identity.clone()),
@@ -1552,6 +1581,11 @@ fn run_lazy_cancel_storm(
                 operation_deadline,
             )
             .map_err(|error| format!("submit lazy cancelled invocation: {error}"))?;
+        observation::mark(
+            "lazy.exact_submit",
+            "complete",
+            Some(operation_deadline.saturating_duration_since(Instant::now())),
+        );
         if !matches!(
             response,
             ReceiptReply::Json(ReceiptResponse::Invocation {
@@ -1597,6 +1631,9 @@ fn run_lazy_cancel_storm(
         });
         Ok((load, keys))
     })();
+    // Formatting/output is after every timing sample and outside its scope;
+    // cleanup cannot overwrite the trace's first source failure.
+    causal.emit_for_test("lazy_cancel_storm", operation.is_ok());
     let cleanup = daemon.stop_and_join("protocol-v5 lazy cancel storm daemon panicked");
     finish_with_daemon_cleanup(operation, cleanup)
 }
@@ -6033,6 +6070,27 @@ fn merge_exact_runtime_task_projection(
     Ok(())
 }
 
+/// Replaces the whole prior observation only after a successful physical
+/// inventory. It does not merge only the exact new Task into cached old rows.
+fn refresh_task_projection_from_disk(
+    projection: &mut TaskProjectionObservation,
+    state_root: &Path,
+    identity: &CoreIdentity,
+    clock: Arc<ScenarioEpochClock>,
+    known_keys: &[ReceiptKey],
+    seeded_task_versions: &HashMap<TaskId, u64>,
+) -> Result<(), String> {
+    let fresh = inspect_task_projection(
+        state_root,
+        identity,
+        clock,
+        known_keys,
+        seeded_task_versions,
+    )?;
+    *projection = fresh;
+    Ok(())
+}
+
 fn inspect_task_projection(
     state_root: &Path,
     identity: &CoreIdentity,
@@ -6085,6 +6143,7 @@ fn inspect_task_projection(
     }
 
     let mut task_links = Vec::new();
+    let mut workspace_by_task = HashMap::new();
     for entry in catalog.entries() {
         let TaskLifecycleLinkCatalogEntry::Record(record) = entry else {
             continue;
@@ -6111,9 +6170,18 @@ fn inspect_task_projection(
             },
             Err(error) => return Err(format!("read lifecycle-linked TaskStore record: {error}")),
         };
+        let workspace = match record {
+            TaskLifecycleLinkRecord::TaskBound(record) => record.link().workspace_identity_hash(),
+            TaskLifecycleLinkRecord::TaskTerminalBound(record) => {
+                record.link().workspace_identity_hash()
+            }
+            TaskLifecycleLinkRecord::TaskRetirementPending(record) => {
+                record.link().workspace_identity_hash()
+            }
+        };
+        workspace_by_task.insert(task_id, workspace.as_str().to_owned());
         task_links.push(task_lifecycle_link_observation(record, &task_record)?);
     }
-    drop(link_store);
 
     let mut tasks = Vec::new();
     let mut task_store_mutations = 0u64;
@@ -6130,15 +6198,20 @@ fn inspect_task_projection(
                 .version
                 .saturating_sub(seeded_task_versions.get(&task_id).copied().unwrap_or(0)),
         );
-        tasks.push(task_observation_from_response(
+        // Reuse the physically read and validated catalog while its sole
+        // writer remains held. Reopening the whole link store for each Task
+        // would make a full 4097-row observation perform N catalog scans.
+        tasks.push(task_observation_from_response_with_workspace(
             V5ServerResponse::Task {
                 snapshot: task_store_snapshot(&record),
             },
             key,
             state_root,
             identity,
+            Some(workspace_by_task.get(&task_id).cloned()),
         )?);
     }
+    drop(link_store);
 
     let task_link_count = u64::try_from(task_links.len())
         .map_err(|_| "Task lifecycle-link count exceeds u64".to_owned())?;

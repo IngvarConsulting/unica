@@ -38,9 +38,10 @@ Runtime идёт через `unica.run`: вызов без `op` отдаёт с�
   the operation catalogue.
 - Add or remove metadata templates using the owning node's `can` dictionary.
 - `epf-init` and `erf-init` for make-ready artifact scaffolds inside external
-  source-sets, with an optional managed form. These skills call
-  `unica.epf.init` or `unica.erf.init`
-  and do not synthesize `Configuration.xml` or a platform-generated CDFI sidecar.
+  source-sets, with an optional managed form. No canonical operation creates
+  an external descriptor; this is a contract gap. The skills give the file
+  formats to write, then admit the source-set with `unica.check {}`. They do
+  not synthesize `Configuration.xml` or a platform-generated CDFI sidecar.
 - `epf-bsp-init` and `epf-bsp-add-command` for BSP registration code.
 - For source transfer, inspect the `unica.run` dictionary of the current
   source-set. External processor/report transfer and `.epf`/`.erf`

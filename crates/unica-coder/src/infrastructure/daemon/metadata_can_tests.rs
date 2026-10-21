@@ -55,6 +55,36 @@ impl Fixture {
         }
     }
 
+    /// Минимальная конфигурация с одним языком: объекты создаёт сам тест
+    /// каноническим `apply`, без прежнего `cf.init`/`meta.add`.
+    fn blank() -> Self {
+        let root = tempfile::tempdir().unwrap();
+        let workspace =
+            unica_workspace::test_support::canonical_path(root.path()).join("workspace");
+        let source = workspace.join("src");
+        std::fs::create_dir_all(source.join("Languages")).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="f3317000-0000-4000-8000-0000000000c1"><Properties><Name>Store</Name><DefaultLanguage>Language.Русский</DefaultLanguage></Properties><ChildObjects><Language>Русский</Language></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Languages/Русский.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Language uuid="33333333-3333-4333-8333-333333333333"><Properties><Name>Русский</Name><Comment/><LanguageCode>ru</LanguageCode></Properties></Language></MetaDataObject>"#,
+        )
+        .unwrap();
+        Self {
+            _root: root,
+            source,
+            workspace,
+        }
+    }
+
     fn with_extension() -> Self {
         let fixture = Self::new("workspace");
         copy_image(
@@ -122,6 +152,34 @@ fn call(
         InvocationRequest::new(tool, args, fixture.workspace.to_string_lossy(), 7_000).unwrap(),
     )
     .unwrap()
+}
+
+/// Канонический цикл `apply`: план без записи, затем исполнение по токену
+/// с тем же хешем плана.
+fn publish(runtime: &V5CanonicalInvocationRuntime, fixture: &Fixture, args: Value) -> DomainResult {
+    let before = unica_workspace::test_support::tree_snapshot(&fixture.workspace);
+    let planned = call(runtime, fixture, ToolIdentity::Apply, args);
+    assert!(planned.ok, "{planned:?}");
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&fixture.workspace),
+        before,
+        "planning writes nothing"
+    );
+    let planned = planned.data.unwrap();
+    assert_eq!(planned["mode"], "preview");
+    let published = call(
+        runtime,
+        fixture,
+        ToolIdentity::Apply,
+        json!({"executionToken":planned["executionToken"]}),
+    );
+    assert!(published.ok, "{published:?}");
+    assert_eq!(published.data.as_ref().unwrap()["mode"], "published");
+    assert_eq!(
+        published.data.as_ref().unwrap()["planHash"],
+        planned["planHash"]
+    );
+    published
 }
 
 fn contract(
@@ -886,4 +944,553 @@ fn canonical_help_saved_execute_creates_the_facet_and_preserves_neighbors_and_re
         unica_workspace::test_support::tree_snapshot(&fixture.source),
         after
     );
+}
+
+/// Задаёт состав определяемого типа: член с точкой и без префикса
+/// `DefinedType.` пишется как `Type`, семейство и определяемый тип — как `TypeSet`.
+fn set_defined_type_members(source: &Path, name: &str, members: &[&str]) {
+    let path = source.join(format!("DefinedTypes/{name}.xml"));
+    let descriptor = std::fs::read_to_string(&path).unwrap();
+    let body = members
+        .iter()
+        .map(|member| {
+            let tag = if member.starts_with("DefinedType.") || !member.contains('.') {
+                "TypeSet"
+            } else {
+                "Type"
+            };
+            format!("<v8:{tag}>cfg:{member}</v8:{tag}>")
+        })
+        .collect::<String>();
+    let (start, end) = match descriptor.find("<Type/>") {
+        Some(start) => (start, start + "<Type/>".len()),
+        None => {
+            let start = descriptor.find("<Type>").expect("DefinedType Type");
+            let close = start + descriptor[start..].find("</Type>").unwrap();
+            (start, close + "</Type>".len())
+        }
+    };
+    let mut changed = descriptor.clone();
+    changed.replace_range(start..end, &format!("<Type>{body}</Type>"));
+    assert_ne!(changed, descriptor, "{name}: members must change");
+    std::fs::write(path, changed).unwrap();
+}
+
+/// Заменяет единственное вхождение фрагмента в файле исходников.
+fn rewrite(path: &Path, from: &str, to: &str) {
+    let text = std::fs::read_to_string(path).unwrap();
+    assert_eq!(text.matches(from).count(), 1, "{}: {from}", path.display());
+    std::fs::write(path, text.replacen(from, to, 1)).unwrap();
+}
+
+fn diagnostics(result: &DomainResult) -> Vec<Value> {
+    assert!(result.ok, "{result:?}");
+    result.data.as_ref().unwrap()["diagnostics"]
+        .as_array()
+        .expect("check diagnostics")
+        .clone()
+}
+
+fn check_status(result: &DomainResult) -> &str {
+    result.data.as_ref().unwrap()["status"].as_str().unwrap()
+}
+
+/// INV.SOURCE.OBSERVED-TYPE-CAPABILITY: UUID записывается каноническим
+/// `attribute.add` как `v8:UUID` и читается `view` тем же изменяемым вариантом.
+#[test]
+fn canonical_uuid_attribute_round_trips_as_an_editable_observed_type() {
+    let fixture = Fixture::blank();
+    let runtime = runtime();
+    publish(
+        &runtime,
+        &fixture,
+        json!({"at":"main:Configuration","ops":[{"op":"object.create","args":{"values":{"kind":"Catalog","name":"Products"}}}]}),
+    );
+    publish(
+        &runtime,
+        &fixture,
+        json!({"at":"main:Catalog.Products","ops":[{"op":"attribute.add","args":{"items":[
+            {"name":"ExternalId","type":{"variants":[{"kind":"uuid"}]}}
+        ]}}]}),
+    );
+
+    let xml = std::fs::read_to_string(fixture.source.join("Catalogs/Products.xml")).unwrap();
+    let document = roxmltree::Document::parse(xml.trim_start_matches('\u{feff}')).unwrap();
+    let attribute = document
+        .descendants()
+        .find(|node| {
+            node.has_tag_name("Attribute")
+                && node
+                    .descendants()
+                    .any(|name| name.has_tag_name("Name") && name.text() == Some("ExternalId"))
+        })
+        .expect("the attribute is written");
+    let types = attribute
+        .descendants()
+        .filter(|node| node.has_tag_name(("http://v8.1c.ru/8.1/data/core", "Type")))
+        .collect::<Vec<_>>();
+    assert_eq!(types.len(), 1, "{xml}");
+    let (prefix, local) = types[0].text().unwrap().split_once(':').unwrap();
+    assert_eq!(local, "UUID");
+    assert_eq!(
+        types[0].lookup_namespace_uri(Some(prefix)),
+        Some("http://v8.1c.ru/8.1/data/core")
+    );
+
+    let viewed = call(
+        &runtime,
+        &fixture,
+        ToolIdentity::View,
+        json!({"at":"main:Catalog.Products.Attribute.ExternalId"}),
+    );
+    assert!(viewed.ok, "{viewed:?}");
+    let props = &viewed.data.as_ref().unwrap()["props"];
+    assert!(props.get("incomplete").is_none(), "{props}");
+    let observed: Value =
+        serde_json::from_str(props["type"].as_str().expect("compact type")).unwrap();
+    assert_eq!(
+        observed,
+        json!({"variants":[{"kind":"uuid"}],"mutationCapability":"editable"})
+    );
+    let checked = call(
+        &runtime,
+        &fixture,
+        ToolIdentity::Check,
+        json!({"at":"main:Catalog.Products"}),
+    );
+    assert_eq!(check_status(&checked), "passed", "{checked:?}");
+    assert!(diagnostics(&checked).is_empty(), "{checked:?}");
+}
+
+/// INV.APP.META-OBSERVATION: посторонний файл в каталоге формы не скрывает
+/// справочник и его форму в `view`, а `check` того же узла называет форму
+/// ошибкой `provider_unavailable` логическим адресом.
+#[test]
+fn canonical_foreign_form_file_keeps_catalog_structure_and_reports_provider_unavailable() {
+    let fixture = Fixture::blank();
+    let runtime = runtime();
+    publish(
+        &runtime,
+        &fixture,
+        json!({"at":"main:Configuration","ops":[{"op":"object.create","args":{"values":{"kind":"Catalog","name":"Products"}}}]}),
+    );
+    publish(
+        &runtime,
+        &fixture,
+        json!({"at":"main:Catalog.Products","ops":[{"op":"form.add","args":{"items":[{"name":"Main","type":"ObjectForm"}]}}]}),
+    );
+    let at = json!({"at":"main:Catalog.Products"});
+    let clean = call(&runtime, &fixture, ToolIdentity::Check, at.clone());
+    assert_eq!(check_status(&clean), "passed", "{clean:?}");
+
+    std::fs::write(
+        fixture
+            .source
+            .join("Catalogs/Products/Forms/Main/unexpected.bin"),
+        b"unexpected",
+    )
+    .unwrap();
+
+    let viewed = call(&runtime, &fixture, ToolIdentity::View, at.clone());
+    assert!(viewed.ok, "{viewed:?}");
+    let data = viewed.data.as_ref().unwrap();
+    assert_eq!(data["title"], "Products");
+    assert_eq!(data["props"]["synonym"], "Products");
+    assert!(
+        data["branches"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({"at":"main:Catalog.Products.Form","count":1})),
+        "{data}"
+    );
+    let forms = call(
+        &runtime,
+        &fixture,
+        ToolIdentity::View,
+        json!({"at":"main:Catalog.Products.Form"}),
+    );
+    assert!(forms.ok, "{forms:?}");
+    assert_eq!(
+        forms.data.as_ref().unwrap()["items"],
+        json!([{"at":"main:Catalog.Products.Form.Main","kind":"Form","title":"Main"}])
+    );
+
+    let checked = call(&runtime, &fixture, ToolIdentity::Check, at);
+    assert_eq!(check_status(&checked), "failed", "{checked:?}");
+    let found = diagnostics(&checked);
+    let unavailable = found
+        .iter()
+        .find(|diagnostic| diagnostic["code"] == "provider_unavailable")
+        .unwrap_or_else(|| panic!("{found:?}"));
+    assert_eq!(unavailable["severity"], "error");
+    assert_eq!(unavailable["metadataPath"], "Catalog.Products.Form.Main");
+    let serialized = serde_json::to_string(&checked).unwrap();
+    assert!(
+        !serialized.contains(&fixture.workspace.display().to_string()),
+        "diagnostics expose logical identities only: {serialized}"
+    );
+}
+
+/// INV.APP.META-FINDINGS: `check` справочника проверяет длину текста команды
+/// по непустому представлению списка, а не по синониму, и предупреждает о
+/// представлении, повторяющем синоним. Обе находки — предупреждения с полем и
+/// языком, вердикт остаётся `passed`.
+#[test]
+fn canonical_check_reports_list_presentation_findings_with_field_and_language() {
+    let long = "Текст длиной не менее тридцати девяти символов";
+    assert!(long.chars().count() > 38);
+    let presentation = |text: &str| {
+        format!("<ListPresentation><v8:item><v8:lang>ru</v8:lang><v8:content>{text}</v8:content></v8:item></ListPresentation>")
+    };
+    let command_text = |diagnostic: &Value| {
+        diagnostic["code"]
+            .as_str()
+            .is_some_and(|code| code.starts_with("command_text_"))
+    };
+    for (synonym, list, expected) in [
+        (
+            "Products",
+            Some("Products"),
+            Some(("redundant_list_presentation", "properties.ListPresentation")),
+        ),
+        (
+            "Products",
+            Some(long),
+            Some(("command_text_upper_limit", "properties.ListPresentation")),
+        ),
+        (long, Some("Товары"), None),
+        (
+            long,
+            None,
+            Some(("command_text_upper_limit", "properties.Synonym")),
+        ),
+    ] {
+        let fixture = Fixture::blank();
+        let runtime = runtime();
+        publish(
+            &runtime,
+            &fixture,
+            json!({"at":"main:Configuration","ops":[{"op":"object.create","args":{"values":{"kind":"Catalog","name":"Products"}}}]}),
+        );
+        let descriptor = fixture.source.join("Catalogs/Products.xml");
+        if synonym != "Products" {
+            rewrite(
+                &descriptor,
+                "<v8:content>Products</v8:content>",
+                &format!("<v8:content>{synonym}</v8:content>"),
+            );
+        }
+        if let Some(list) = list {
+            rewrite(&descriptor, "<ListPresentation/>", &presentation(list));
+        }
+        let case = format!("synonym={synonym} list={list:?}");
+        let checked = call(
+            &runtime,
+            &fixture,
+            ToolIdentity::Check,
+            json!({"at":"main:Catalog.Products"}),
+        );
+        assert_eq!(check_status(&checked), "passed", "{case}: {checked:?}");
+        let found = diagnostics(&checked);
+        let relevant = found
+            .iter()
+            .filter(|diagnostic| {
+                command_text(diagnostic) || diagnostic["code"] == "redundant_list_presentation"
+            })
+            .collect::<Vec<_>>();
+        match expected {
+            None => assert!(relevant.is_empty(), "{case}: {found:?}"),
+            Some((code, field)) => {
+                assert_eq!(relevant.len(), 1, "{case}: {found:?}");
+                let warning = relevant[0];
+                assert_eq!(warning["code"], code, "{case}");
+                assert_eq!(warning["severity"], "warning", "{case}");
+                assert_eq!(warning["metadataPath"], "Catalog.Products", "{case}");
+                assert_eq!(warning["field"], field, "{case}");
+                assert_eq!(warning["language"], "ru", "{case}");
+                assert!(
+                    warning["message"].as_str().is_some_and(|m| !m.is_empty()),
+                    "{case}"
+                );
+            }
+        }
+    }
+}
+
+/// INV.SOURCE.EVENT-DEFINED-TYPE: `check` подписки раскрывает определяемый
+/// тип источника вместе с вложенным определяемым типом до классов событий;
+/// цикл и неподходящий член остаются ошибками у `relations.source`.
+#[test]
+fn canonical_check_expands_nested_defined_type_event_sources() {
+    let fixture = Fixture::new("workspace-event-source-order");
+    let runtime = runtime();
+    let at = "main:EventSubscription.CorpusEventSubscription";
+    publish(
+        &runtime,
+        &fixture,
+        json!({"at":"main:Configuration","ops":[
+            {"op":"object.create","args":{"values":{"kind":"DefinedType","name":"Inner"}}},
+            {"op":"object.create","args":{"values":{"kind":"DefinedType","name":"Outer"}}}
+        ]}),
+    );
+    set_defined_type_members(&fixture.source, "Inner", &["CatalogObject.ПримерБ"]);
+    set_defined_type_members(&fixture.source, "Outer", &["DefinedType.Inner"]);
+    publish(
+        &runtime,
+        &fixture,
+        json!({"at":at,"ops":[{"op":"relation.add","args":{"values":{"relation":"source","targets":[
+            {"kind":"definedType","metadataPath":"DefinedType.Outer"}
+        ]}}}]}),
+    );
+    let relations = call(
+        &runtime,
+        &fixture,
+        ToolIdentity::View,
+        json!({"at":format!("{at}.Relation")}),
+    );
+    assert!(relations.ok, "{relations:?}");
+    assert!(
+        relations.data.as_ref().unwrap()["items"]
+            .as_array()
+            .unwrap()
+            .contains(
+                &json!({"relation":"source","at":"main:DefinedType.Outer","kind":"DefinedType"})
+            ),
+        "{relations:?}"
+    );
+    let check = || call(&runtime, &fixture, ToolIdentity::Check, json!({"at":at}));
+    let consistent = check();
+    assert_eq!(check_status(&consistent), "passed", "{consistent:?}");
+
+    // A document class reachable only through the nested type changes the
+    // verdict: the handler signature of BeforeWrite no longer fits both classes.
+    set_defined_type_members(
+        &fixture.source,
+        "Inner",
+        &["CatalogObject.ПримерБ", "DocumentObject"],
+    );
+    let nested = check();
+    assert_eq!(check_status(&nested), "failed", "{nested:?}");
+    assert!(
+        diagnostics(&nested).iter().any(|diagnostic| {
+            diagnostic["severity"] == "error"
+                && diagnostic["field"] == "properties.event"
+                && diagnostic["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("documentObject"))
+        }),
+        "{nested:?}"
+    );
+
+    let inner = fixture.source.join("DefinedTypes/Inner.xml");
+    let unfit_type = |_: &Path| {
+        set_defined_type_members(&fixture.source, "Inner", &["CatalogObject.ПримерБ"]);
+        rewrite(
+            &inner,
+            "<v8:Type>cfg:CatalogObject.ПримерБ</v8:Type>",
+            "<v8:Type>cfg:String</v8:Type>",
+        );
+    };
+    let cycle =
+        |_: &Path| set_defined_type_members(&fixture.source, "Inner", &["DefinedType.Outer"]);
+    let unfit_family = |_: &Path| set_defined_type_members(&fixture.source, "Inner", &["String"]);
+    for (corrupt, cause) in [
+        (&cycle as &dyn Fn(&Path), "cycle"),
+        (&unfit_family, "class family cfg:String is unsupported"),
+        (&unfit_type, "configuration type cfg:String is malformed"),
+    ] {
+        corrupt(&inner);
+        let refused = check();
+        assert_eq!(check_status(&refused), "failed", "{cause}: {refused:?}");
+        assert!(
+            diagnostics(&refused).iter().any(|diagnostic| {
+                diagnostic["severity"] == "error"
+                    && diagnostic["field"]
+                        .as_str()
+                        .is_some_and(|field| field.starts_with("relations.source"))
+                    && diagnostic["message"]
+                        .as_str()
+                        .is_some_and(|message| message.contains(cause))
+            }),
+            "{cause}: {refused:?}"
+        );
+    }
+}
+
+/// Подписка из корпуса без единого справочника: источник — семейство
+/// документов, конфигурация не содержит `Catalog`.
+fn event_source_without_catalogs() -> Fixture {
+    let fixture = Fixture::new("workspace-event-source-order");
+    std::fs::remove_dir_all(fixture.source.join("Catalogs")).unwrap();
+    let configuration = fixture.source.join("Configuration.xml");
+    for name in ["ПримерВ", "ПримерА", "ПримерБ"] {
+        rewrite(
+            &configuration,
+            &format!("\t\t\t<Catalog>{name}</Catalog>\n"),
+            "",
+        );
+    }
+    rewrite(
+        &fixture.source.join("EventSubscriptions/CorpusEventSubscription.xml"),
+        "\t\t\t\t<v8:Type>cfg:CatalogObject.ПримерВ</v8:Type>\n\t\t\t\t<v8:Type>cfg:CatalogObject.ПримерА</v8:Type>\n",
+        "\t\t\t\t<v8:TypeSet>cfg:DocumentObject</v8:TypeSet>\n",
+    );
+    fixture
+}
+
+fn subscription_source(fixture: &Fixture) -> Vec<(String, String)> {
+    let xml = std::fs::read_to_string(
+        fixture
+            .source
+            .join("EventSubscriptions/CorpusEventSubscription.xml"),
+    )
+    .unwrap();
+    let document = roxmltree::Document::parse(xml.trim_start_matches('\u{feff}')).unwrap();
+    let source = document
+        .descendants()
+        .find(|node| node.has_tag_name("Source"))
+        .expect("Source");
+    source
+        .children()
+        .filter(|node| node.is_element())
+        .map(|node| {
+            let (prefix, local) = node.text().unwrap().split_once(':').unwrap();
+            assert_eq!(
+                node.lookup_namespace_uri(Some(prefix)),
+                Some("http://v8.1c.ru/8.1/data/enterprise/current-config")
+            );
+            (node.tag_name().name().to_owned(), local.to_owned())
+        })
+        .collect()
+}
+
+/// INV.APP.EVENT-SOURCE: семейство `catalogObject` записывается без
+/// справочников в конфигурации; явный выбор класса менеджера константы
+/// сохраняется в XML. Повторная та же замена — пустой план: типизированный
+/// читатель возвращает записанный источник.
+#[test]
+fn canonical_event_source_family_and_constant_manager_choice_round_trip() {
+    let fixture = event_source_without_catalogs();
+    let runtime = runtime();
+    let at = "main:EventSubscription.CorpusEventSubscription";
+    assert!(!fixture.source.join("Catalogs").exists());
+    let replace = |target: Value| json!({"at":at,"ops":[{"op":"relation.replace","args":{"values":{"relation":"source","targets":[target]}}}]});
+    let assert_noop = |target: Value| {
+        let before = unica_workspace::test_support::tree_snapshot(&fixture.source);
+        let planned = call(
+            &runtime,
+            &fixture,
+            ToolIdentity::Apply,
+            replace(target.clone()),
+        );
+        assert!(planned.ok, "{target}: {planned:?}");
+        assert_eq!(
+            planned.data.as_ref().unwrap()["effects"],
+            0,
+            "{target}: {planned:?}"
+        );
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&fixture.source),
+            before
+        );
+    };
+
+    let family = json!({"kind":"family","sourceClass":"catalogObject"});
+    publish(&runtime, &fixture, replace(family.clone()));
+    assert_eq!(
+        subscription_source(&fixture),
+        [("TypeSet".to_owned(), "CatalogObject".to_owned())]
+    );
+    assert!(!fixture.source.join("Catalogs").exists());
+    let checked = call(&runtime, &fixture, ToolIdentity::Check, json!({"at":at}));
+    assert_eq!(check_status(&checked), "passed", "{checked:?}");
+    assert_noop(family);
+
+    publish(
+        &runtime,
+        &fixture,
+        json!({"at":"main:Configuration","ops":[{"op":"object.create","args":{"values":{"kind":"Constant","name":"Sample"}}}]}),
+    );
+    for (class, written) in [
+        ("constantManager", "ConstantManager.Sample"),
+        ("constantValueManager", "ConstantValueManager.Sample"),
+    ] {
+        let target = json!({"kind":"manager","metadataPath":"Constant.Sample","sourceClass":class});
+        let published = publish(&runtime, &fixture, replace(target.clone()));
+        assert_eq!(published.data.as_ref().unwrap()["effects"], 1, "{class}");
+        assert_eq!(
+            subscription_source(&fixture),
+            [("Type".to_owned(), written.to_owned())],
+            "{class}"
+        );
+        assert_noop(target);
+    }
+}
+
+/// INV.SOURCE.WRITABLE-PROFILE: канонический `apply` принимает только
+/// буквальную версию `2.20`; старый формат и численно равные написания
+/// отклоняются до плана без записи, событий и артефактов, а отказ по старому
+/// формату предлагает повторную выгрузку платформой 8.3.27.
+#[test]
+fn canonical_apply_refuses_inexact_export_format_and_offers_platform_reexport() {
+    let args = json!({"at":"main:Catalog.Products","ops":[{"op":"attribute.add","args":{"items":[{"name":"Extra"}]}}]});
+    let runtime = runtime();
+    let created = |raw: &str| {
+        let fixture = Fixture::blank();
+        publish(
+            &runtime,
+            &fixture,
+            json!({"at":"main:Configuration","ops":[{"op":"object.create","args":{"values":{"kind":"Catalog","name":"Products"}}}]}),
+        );
+        rewrite(
+            &fixture.source.join("Catalogs/Products.xml"),
+            r#"version="2.20""#,
+            &format!(r#"version="{raw}""#),
+        );
+        fixture
+    };
+    let exact = created("2.20");
+    let planned = call(&runtime, &exact, ToolIdentity::Apply, args.clone());
+    assert!(planned.ok, "the exact profile is writable: {planned:?}");
+
+    for raw in ["2.19", "2.20.0", "02.20", "2.020", "2.&#50;0"] {
+        let fixture = created(raw);
+        let before = unica_workspace::test_support::tree_snapshot(&fixture.workspace);
+        let refused = call(&runtime, &fixture, ToolIdentity::Apply, args.clone());
+        assert!(!refused.ok, "{raw}: {refused:?}");
+        assert_eq!(refused.diagnostics.len(), 1, "{raw}: {refused:?}");
+        assert_eq!(refused.diagnostics[0]["code"], "invalid_source", "{raw}");
+        let message = refused.diagnostics[0]["message"].as_str().unwrap();
+        assert!(
+            message.contains("Catalogs/Products.xml"),
+            "{raw}: {message}"
+        );
+        // Отказ называет несовместимый формат владельца как он записан.
+        assert!(message.contains(raw), "{raw}: {message}");
+        if raw == "2.19" {
+            for expected in [
+                "2.19",
+                "2.20",
+                "1C 8.3.27",
+                "re-export",
+                "with the platform",
+            ] {
+                assert!(message.contains(expected), "{raw}: {message}");
+            }
+        }
+        assert!(
+            refused
+                .data
+                .as_ref()
+                .is_none_or(|data| data.get("executionToken").is_none()),
+            "{raw}: {refused:?}"
+        );
+        assert!(refused.changed.is_empty(), "{raw}: {refused:?}");
+        assert!(refused.artifacts.is_empty(), "{raw}: {refused:?}");
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&fixture.workspace),
+            before,
+            "{raw}"
+        );
+    }
 }

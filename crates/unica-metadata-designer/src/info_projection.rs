@@ -911,7 +911,7 @@ pub fn project_meta_info_declarations(
             properties,
             "StandardAttributes",
             "standardAttributes",
-            parse_standard_attributes,
+            parse_standard_attributes_for_public_properties,
             target,
             diagnostics,
         ))
@@ -1987,6 +1987,30 @@ pub fn node_is_empty_placeholder(node: roxmltree::Node<'_, '_>) -> bool {
     !node
         .children()
         .any(|child| child.is_element() || child.text().is_some_and(|text| !text.trim().is_empty()))
+}
+
+fn parse_standard_attributes_for_public_properties(
+    container: roxmltree::Node<'_, '_>,
+) -> Result<Vec<MetaStandardAttribute>, ProjectionError> {
+    let attributes = parse_standard_attributes(container)?;
+    for (index, attribute) in container
+        .children()
+        .filter(roxmltree::Node::is_element)
+        .enumerate()
+    {
+        for property in attribute.children().filter(roxmltree::Node::is_element) {
+            let name = property.tag_name().name();
+            if matches!(name, "Synonym" | "ToolTip")
+                && !direct_text_content(property).trim().is_empty()
+            {
+                return Err(ProjectionError::malformed(
+                    format!("standardAttributes[{index}].properties.{name}"),
+                    "localized standard attribute property must contain localized items",
+                ));
+            }
+        }
+    }
+    Ok(attributes)
 }
 
 pub fn observe_tabular_standard_attributes(
@@ -3176,3 +3200,7 @@ pub fn qname_resolves_to(
         && local_name == expected_local_name
         && node.lookup_namespace_uri(Some(prefix)) == Some(expected_namespace)
 }
+
+#[cfg(test)]
+#[path = "../tests/platform/info_projection.rs"]
+mod tests;
