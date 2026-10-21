@@ -322,6 +322,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--shard", type=int, default=1)
     parser.add_argument("--runners", default="[]", help="JSON runner matrix for complete inventory verification")
     parser.add_argument("--shadow", type=Path, help="shadow decision; mandatory selection remains full")
+    parser.add_argument("--baseline", type=Path, help="previous Rust inventory of the same configuration")
     parser.add_argument("--rust-matrix", choices=("build", "run"), help="print a lane matrix without compiling")
     args = parser.parse_args(argv)
     args.docs_only = args.docs_only == "true"
@@ -337,7 +338,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.phase == "verify":
             if args.results is None or args.sha is None:
                 parser.error("--phase verify requires --results and --sha")
-            print(json.dumps(ci_rust_lanes.verify_union(args.results, args.profile, json.loads(args.runners), args.sha), indent=2))
+            print(json.dumps(ci_rust_lanes.verify_union(args.results, args.profile, json.loads(args.runners), args.sha,
+                                                         ci_rust_lanes.read_baseline(args.baseline)), indent=2))
             return 0
         if args.rust_lane is None or args.prepared is None:
             parser.error("--phase build/run requires --rust-lane and --prepared")

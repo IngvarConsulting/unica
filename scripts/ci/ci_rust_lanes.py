@@ -125,6 +125,11 @@ def ignored_ids(manifest: dict) -> set[str]:
     return known
 
 
+def archive_binaries(document: dict) -> list[str]:
+    """Every test binary of the archive, independent of the profile filter."""
+    return sorted(suite["binary-id"] for suite in document["rust-suites"].values())
+
+
 def case_id(case: dict) -> str:
     return case["binary"] + "::" + case["name"]
 
@@ -294,7 +299,7 @@ def build(root: Path, destination: Path, lane: str, profile: str, host: str, lin
         "nextestVersion": prepared_binary.output(root, ["cargo", "nextest", "--version"]),
         "selection": list(selection(lane)), "archiveSha256": prepared_binary.digest(archive),
         "archiveBytes": archive.stat().st_size, "inventory": full, "shards": parts,
-        "ignoredInventory": ignored_inventory(listed),
+        "ignoredInventory": ignored_inventory(listed), "binaries": archive_binaries(listed),
         "buildSeconds": seconds, "listSeconds": list_seconds,
         "runId": os.environ.get("GITHUB_RUN_ID"), "attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
     }
@@ -313,6 +318,11 @@ def validate_manifest(document: dict, *, profile: str, host: str, lane: str, sha
         raise ValueError("archive has an unexpected shard count")
     validate_partition(document["inventory"], document["shards"])
     ignored_ids(document)
+    binaries = document.get("binaries")
+    if (not isinstance(binaries, list) or any(not isinstance(item, str) or not item for item in binaries)
+        or len(set(binaries)) != len(binaries)
+        or not {case["binary"] for case in document["inventory"]} <= set(binaries)):
+        raise ValueError("missing or malformed archive test binary inventory")
 
 
 def run_archive(root: Path, prepared: Path, destination: Path, lane: str, profile: str, host: str, index: int, line: str | None, shadow: Path | None = None) -> int:
@@ -429,17 +439,94 @@ def validate_result(manifest: dict, result: dict, index: int) -> None:
         raise ValueError("a required shard test failed")
 
 
-def verify_union(directory: Path, profile: str, hosts: list[str], sha: str) -> dict:
+def inventory_summary(manifests: list[dict], *, profile: str, sha: str, jobs: list[str] | None) -> dict:
+    """The compact plan a later run of the same configuration compares with."""
+    configurations = []
+    for manifest in sorted(manifests, key=lambda item: (item["runner"], item["lane"])):
+        selected = Counter(case["binary"] for case in manifest["inventory"] if not case["ignored"])
+        configurations.append({
+            "runner": manifest["runner"], "lane": manifest["lane"], "shards": len(manifest["shards"]),
+            "binaries": sorted(manifest["binaries"]),
+            "selected": {binary: selected.get(binary, 0) for binary in sorted(manifest["binaries"])},
+            "cases": [case_id(case) for case in manifest["inventory"]],
+        })
+    return {"schemaVersion": 1, "sha": sha, "profile": profile, "runId": os.environ.get("GITHUB_RUN_ID"),
+            "attempt": os.environ.get("GITHUB_RUN_ATTEMPT"), "jobs": jobs, "configurations": configurations}
+
+
+def same_selection(first: str, second: str) -> bool:
+    """Profiles with one size admission, lane set and partition select the same plan."""
+    if first not in ADMITTED or second not in ADMITTED:
+        return False
+    def shape(profile):
+        return ADMITTED[profile], lanes(profile), tuple(shards(profile, lane) for lane in lanes(profile))
+    return shape(first) == shape(second)
+
+
+def compare_inventory(baseline: dict, current: dict) -> tuple[list[str], list[str], dict]:
+    """Return blocking losses, Windows-advisory losses and the visible case drift."""
+    explanations = baseline.get("explanations")
+    if (not isinstance(explanations, dict) or not isinstance(explanations.get("reset"), bool)
+        or not isinstance(explanations.get("removedTargets"), list)
+        or any(not isinstance(item, str) or not item for item in explanations["removedTargets"])):
+        raise ValueError("malformed previous inventory explanations")
+    previous = baseline.get("inventory")
+    removed = set(explanations["removedTargets"])
+    drift = {"source": baseline.get("source"), "reset": explanations["reset"],
+             "removedTargets": sorted(removed), "removedCases": {}}
+    if previous is None:
+        # The main line always has a verified ancestor; release lines and
+        # manual runs may outlive the artifact retention and only report it.
+        if explanations["reset"] or current["profile"] not in ("pr", "queue"):
+            return [], [], drift
+        return ["no previous inventory of this configuration; declare 'Rust-inventory-baseline: reset' in a commit message"], [], drift
+    if previous.get("schemaVersion") != 1 or not isinstance(previous.get("configurations"), list):
+        raise ValueError("malformed previous inventory")
+    problems, advisory = [], []
+    same_profile = same_selection(previous.get("profile"), current["profile"])
+    if previous.get("jobs") is not None and current["jobs"] is not None:
+        problems += [f"job {job} disappeared since the previous inventory" for job in sorted(set(previous["jobs"]) - set(current["jobs"]))]
+    present = {(item["runner"], item["lane"]): item for item in current["configurations"]}
+    for old in previous["configurations"]:
+        key = (old["runner"], old["lane"])
+        target = advisory if current["profile"] == "large" and old["runner"] == "windows-latest" else problems
+        new = present.get(key)
+        if new is None:
+            if same_profile or old["lane"] not in lanes(previous["profile"]):
+                target.append(f"{key[0]}/{key[1]}: configuration and its results disappeared since the previous inventory")
+            continue
+        for binary in sorted(set(old["binaries"]) - set(new["binaries"]) - removed):
+            target.append(f"{key[0]}/{key[1]}: test target {binary} disappeared; declare 'Removes-test-target: {binary}' if intended")
+        if same_profile:
+            for binary, count in sorted(old["selected"].items()):
+                if count and binary in new["binaries"] and not new["selected"].get(binary) and binary not in removed:
+                    target.append(f"{key[0]}/{key[1]}: selection of test target {binary} became empty")
+            lost = sorted(set(old["cases"]) - set(new["cases"]))
+            if lost:
+                drift["removedCases"][f"{key[0]}/{key[1]}"] = lost
+    if explanations["reset"]:
+        drift["resetSuppressed"] = problems + advisory
+        return [], [], drift
+    return problems, advisory, drift
+
+
+def read_baseline(path: Path | None) -> dict | None:
+    # A failed lookup leaves no file; CI then reports the missing comparison.
+    return None if path is None or not path.is_file() else json.loads(path.read_text(encoding="utf-8"))
+
+
+def verify_union(directory: Path, profile: str, hosts: list[str], sha: str, baseline: dict | None = None) -> dict:
     if not hosts or len(hosts) != len(set(hosts)) or any(host not in {"ubuntu-latest", "macos-14", "windows-latest"} for host in hosts):
         raise ValueError("missing, duplicate or unknown OS inventory")
     manifests = [json.loads(path.read_text()) for path in directory.rglob("lane.json")]
     results = [json.loads(path.read_text()) for path in directory.rglob("shard.json")]
-    problems, advisory = [], []
+    problems, advisory, verified, job_names = [], [], [], None
     if os.environ.get("CI_LANE_JOB_RESULTS"):
         expected_hosts = ["ubuntu-latest", "macos-14", "windows-latest"] if profile == "large" else ["ubuntu-latest", "macos-14"]
         if hosts != expected_hosts and not (profile == "pr" and hosts == ["ubuntu-latest"]):
             problems.append("runner matrix omits an expected operating system")
         jobs = json.loads(os.environ["CI_LANE_JOB_RESULTS"])
+        job_names = sorted(jobs)
         for lane in LANES:
             expected = "success" if lane in lanes(profile) else "skipped"
             for phase in ("build", "run"):
@@ -467,12 +554,22 @@ def verify_union(directory: Path, profile: str, hosts: list[str], sha: str) -> d
                 raise ValueError("missing or duplicate shard index")
             for result in matching_results:
                 validate_result(manifest, result, result["shard"])
+            verified.append(manifest)
         except (KeyError, TypeError, ValueError) as error:
             target = advisory if profile == "large" and host == "windows-latest" else problems
             target.append(f"{host}/{lane}: {error}")
+    summary = inventory_summary(verified, profile=profile, sha=sha, jobs=job_names)
+    write(directory / "inventory.json", summary)
+    drift = None
+    if baseline is not None:
+        lost, lost_advisory, drift = compare_inventory(baseline, summary)
+        problems += lost
+        advisory += lost_advisory
+    elif os.environ.get("CI_LANE_JOB_RESULTS"):
+        problems.append("the plan was not compared with the previous inventory")
     report = {"sha": sha, "profile": profile, "mandatoryComplete": not problems,
               "fullMatrixPassed": not problems and not advisory, "errors": problems,
-              "advisoryFailures": advisory, "affectedAdmission": False}
+              "advisoryFailures": advisory, "affectedAdmission": False, "previousInventory": drift}
     write(directory / "verification.json", report)
     if problems:
         raise ValueError("; ".join(problems))
@@ -494,11 +591,13 @@ def main() -> int:
     parser.add_argument("--sha", default=os.environ.get("GITHUB_SHA"))
     parser.add_argument("--line")
     parser.add_argument("--shadow", type=Path)
+    parser.add_argument("--baseline", type=Path, help="previous inventory found by rust_inventory_baseline.py")
     args = parser.parse_args()
     if args.action == "matrix":
         print(json.dumps(matrix(args.profile, json.loads(args.runners), lane=args.lane, run=args.run_matrix), separators=(",", ":")))
     elif args.action == "verify":
-        print(json.dumps(verify_union(args.destination, args.profile, json.loads(args.runners), args.sha), indent=2))
+        print(json.dumps(verify_union(args.destination, args.profile, json.loads(args.runners), args.sha,
+                                      read_baseline(args.baseline)), indent=2))
     elif args.action == "build":
         build(args.repo_root.resolve(), args.destination, args.lane, args.profile, args.runner, args.line)
     else:

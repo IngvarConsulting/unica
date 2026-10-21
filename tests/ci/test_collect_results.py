@@ -476,7 +476,7 @@ class CollectResultsTests(unittest.TestCase):
         uploads += [step["with"]["name"] for step in workflow("unica-nightly.yml")["jobs"]["lines"]["steps"] if "upload-artifact" in step.get("uses", "")]
         self.assertTrue(all(name.startswith(prefixes) for name in uploads))
         verification = [step["with"]["name"] for step in release["jobs"]["test-rust-platforms"]["steps"] if "upload-artifact" in step.get("uses", "")]
-        self.assertEqual(verification, ["ci-rust-inventory-verification"])
+        self.assertEqual(verification, ["ci-rust-inventory-verification", "ci-rust-inventory-${{ env.GATE_PROFILE }}"])
         pages = workflow("unica-pages.yml")
         pattern = next(step["with"]["pattern"] for step in pages["jobs"]["build"]["steps"] if "download-artifact" in step.get("uses", ""))
         self.assertEqual(pattern, "{" + ",".join(prefix.rstrip("-") for prefix in prefixes) + "}-*")
