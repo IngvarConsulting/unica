@@ -969,7 +969,7 @@ impl ProviderReadAuthority {
             .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.message))?;
         let mut payload = identity_metadata_payload_from_evidence(target, &evidence)?;
         if evidence.artifact_kind() == "StyleItem" {
-            crate::infrastructure::style_item_read::enrich_style_item(&descriptor, &mut payload)
+            unica_metadata_designer::style_item_read::enrich_style_item(&descriptor, &mut payload)
                 .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?;
         }
         Ok(payload)

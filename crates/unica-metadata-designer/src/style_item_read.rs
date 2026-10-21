@@ -1,4 +1,5 @@
-//! Explicit StyleItem observations, independent of the metadata writer algebra.
+//! Explicit StyleItem observations over already retained descriptor bytes,
+//! independent of the metadata writer algebra.
 use roxmltree::{Document, Node};
 use serde_json::{json, Number, Value};
 
@@ -241,7 +242,9 @@ impl StyleItem {
     }
 }
 
-pub(crate) fn enrich_style_item(raw: &[u8], payload: &mut Value) -> Result<(), String> {
+/// Publishes the closed flat StyleItem profile into an identity payload;
+/// damaged fields go to `unreadable` while independent facts are kept.
+pub fn enrich_style_item(raw: &[u8], payload: &mut Value) -> Result<(), String> {
     StyleItem::read(raw)?.publish(payload);
     Ok(())
 }

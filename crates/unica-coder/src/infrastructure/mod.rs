@@ -43,7 +43,6 @@ pub(crate) mod runtime_jobs_integration;
 #[cfg(test)]
 mod runtime_preflight_integration;
 pub(crate) mod source_roots;
-mod style_item_read;
 // The topology provider is introduced before both public consumers migrate to it.
 #[allow(dead_code)]
 pub(crate) mod support_guard;
