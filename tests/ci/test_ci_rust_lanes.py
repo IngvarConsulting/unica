@@ -701,18 +701,19 @@ class PreviousInventoryTests(unittest.TestCase):
                               "reason": "shadow selection is full; all medium tests", "expression": None, "packages": []}
                     lanes.write(root / host / "medium" / "medium.json", medium)
 
-    def previous(self, profile="queue", *, reset=False, removed=(), jobs=None, mutate=None, hosts=None):
+    def previous(self, profile="queue", *, reset=False, removed=(), tests=(), jobs=None, mutate=None, hosts=None):
         with tempfile.TemporaryDirectory() as temporary, \
              patch.dict(lanes.os.environ, {"CI_LANE_JOB_RESULTS": json.dumps(jobs or self.jobs(profile))}, clear=True):
             root = Path(temporary)
             self.collect(root, profile, hosts, mutate)
             lanes.verify_union(root, profile, hosts or self.HOSTS, "a" * 40, self.baseline(None, reset=True))
             inventory = json.loads((root / "inventory.json").read_text())
-        return self.baseline(inventory, reset=reset, removed=removed)
+        return self.baseline(inventory, reset=reset, removed=removed, tests=tests)
 
-    def baseline(self, inventory, *, reset=False, removed=()):
+    def baseline(self, inventory, *, reset=False, removed=(), tests=()):
         return {"schemaVersion": 1, "source": None if inventory is None else {"headSha": "b" * 40},
-                "inventory": inventory, "explanations": {"range": "b..HEAD", "reset": reset, "removedTargets": list(removed)}}
+                "inventory": inventory, "explanations": {"range": "b..HEAD", "reset": reset, "removedTargets": list(removed),
+                                                         "removedTests": list(tests), "declaredBy": {}}}
 
     def verify(self, baseline, profile="queue", *, jobs=None, mutate=None, hosts=None):
         with tempfile.TemporaryDirectory() as temporary, \
@@ -737,7 +738,7 @@ class PreviousInventoryTests(unittest.TestCase):
         self.assertTrue(report["mandatoryComplete"])
         self.assertEqual(report["previousInventory"]["source"], {"headSha": "b" * 40})
 
-    def test_vanished_test_target_fails_unless_a_commit_declares_its_removal(self):
+    def test_vanished_test_target_fails_unless_its_removal_is_declared(self):
         with self.assertRaisesRegex(ValueError, "test target unica-coder disappeared"):
             self.verify(self.previous(), mutate=self.without_target("unica-coder"))
         self.assertFalse(self.report["mandatoryComplete"])
@@ -776,27 +777,59 @@ class PreviousInventoryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "nonempty complete plan"):
             self.verify(self.previous(), mutate=lambda plan: plan.update(inventory=[], shards=[[]] * len(plan["shards"])))
 
-    def test_removed_cases_are_reported_without_failing(self):
+    def test_vanished_results_fail_unless_their_names_or_prefix_are_declared(self):
         def rename(plan):
             for part in plan["shards"]:
                 for case in part:
                     case["name"] += "_renamed"
             plan["inventory"] = sum(plan["shards"], [])
-        report = self.verify(self.previous(), mutate=rename)
-        self.assertIn("ubuntu-latest/ordinary", report["previousInventory"]["removedCases"])
+        with self.assertRaisesRegex(ValueError, r"ubuntu-latest/ordinary: 2 test result\(s\) disappeared: package-ordinary::case_0"):
+            self.verify(self.previous(), mutate=rename)
+        exact = [f"package-{lane}::case_{index}" for lane in lanes.LANES for index in range(2)]
+        for tests in (exact, [f"package-{lane}::case_*" for lane in lanes.LANES], [f"package-{lane}::*" for lane in lanes.LANES]):
+            with self.subTest(tests=tests):
+                report = self.verify(self.previous(tests=tests), mutate=rename)
+                self.assertIn("ubuntu-latest/ordinary", report["previousInventory"]["removedCases"])
+        # A declaration must name its target: wildcards across targets explain nothing.
+        for tests in (["*"], ["package-*"], ["u*"], ["package-ordinary::case_*", "package-vendor::case_*", "package-receipt::case"]):
+            with self.subTest(tests=tests), self.assertRaisesRegex(ValueError, "package-receipt::case_0"):
+                self.verify(self.previous(tests=tests), mutate=rename)
+        # A declared target removal explains nothing while the target is still archived.
+        with self.assertRaisesRegex(ValueError, "test result"):
+            self.verify(self.previous(removed=["package-ordinary", "package-receipt", "package-vendor"]), mutate=rename)
+
+    def test_cases_belong_to_the_longest_nested_target_id(self):
+        binaries = ["unica-coder", "unica-coder::daemon_receipt_ledger"]
+        self.assertEqual(lanes.binary_of("unica-coder::daemon_receipt_ledger::t1", binaries), "unica-coder::daemon_receipt_ledger")
+        self.assertFalse(lanes.explained_case("unica-coder::daemon_receipt_ledger::t1", binaries, {"unica-coder"}, []))
+        self.assertFalse(lanes.explained_case("unica-coder::daemon_receipt_ledger::t1", binaries, set(), ["unica-coder::*"]))
+        self.assertTrue(lanes.explained_case("unica-coder::daemon_receipt_ledger::t1", binaries, set(), ["unica-coder::daemon_receipt_ledger::*"]))
+        self.assertTrue(lanes.explained_case("unica-coder::lib_case", binaries, {"unica-coder"}, []))
+        self.assertFalse(lanes.explained_case("other::case", binaries, set(), ["*"]))
+
+    def test_cases_of_a_vanished_declared_target_need_no_separate_declaration(self):
+        def drop(plan):
+            plan["binaries"] = [item for item in plan["binaries"] if item != f"package-{plan['lane']}"]
+            plan["inventory"] = [{"binary": "unica-coder", "name": "kept", "ignored": False}]
+            plan["shards"] = [plan["inventory"]] + [[] for _ in plan["shards"][1:]]
+        report = self.verify(self.previous(removed=[f"package-{lane}" for lane in lanes.LANES]), mutate=drop)
+        self.assertTrue(report["mandatoryComplete"])
 
     def test_missing_baseline_requires_an_explicit_reset_and_ci_requires_the_comparison(self):
         with self.assertRaisesRegex(ValueError, "Rust-inventory-baseline: reset"):
             self.verify(self.baseline(None))
         self.assertTrue(self.verify(self.baseline(None, reset=True))["mandatoryComplete"])
-        # Release lines and manual runs may outlive the artifact retention.
-        self.assertIsNone(self.verify(self.baseline(None), "main", jobs=self.jobs("main"))["previousInventory"]["source"])
+        # Release lines, tags and manual runs are not exempt either.
+        with self.assertRaisesRegex(ValueError, "Rust-inventory-baseline: reset"):
+            self.verify(self.baseline(None), "main", jobs=self.jobs("main"))
         report = self.verify(self.previous(reset=True), mutate=self.without_target("unica-coder"))
         self.assertTrue(report["previousInventory"]["resetSuppressed"])
         with self.assertRaisesRegex(ValueError, "not compared with the previous inventory"):
             self.verify(None)
         with self.assertRaises(ValueError):
-            self.verify({**self.baseline(None), "explanations": {"reset": "yes", "removedTargets": []}})
+            self.verify({**self.baseline(None), "explanations": {"reset": "yes", "removedTargets": [], "removedTests": []}})
+        with self.assertRaises(ValueError):
+            self.verify({**self.baseline(None), "explanations": {"reset": False, "removedTargets": []}})
 
     def test_equivalent_profiles_compare_selection_and_configurations(self):
         self.assertTrue(lanes.same_selection("queue", "main"))
@@ -962,7 +995,7 @@ class PullRequestMediumTests(unittest.TestCase):
                 if name in ("narrowed", "selection differs"):
                     lanes.write(root / "shadow/selection.json", {"mode": "affected", "mandatoryMode": "full", "affectedAdmission": False,
                                                                   "headSha": "a" * 40, "packages": ["package-ordinary"]})
-                baseline = {"inventory": None, "explanations": {"reset": True, "removedTargets": []}}
+                baseline = {"inventory": None, "explanations": {"reset": True, "removedTargets": [], "removedTests": []}}
                 if error is None:
                     report = lanes.verify_union(root, "pr", ["ubuntu-latest"], "a" * 40, baseline)
                     self.assertEqual(report["medium"][0]["tests"], len(document["plan"]))
