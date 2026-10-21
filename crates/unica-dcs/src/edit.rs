@@ -48,6 +48,7 @@ pub fn dcs_target(target: &QualifiedAddress, op_index: usize) -> Result<DcsTarge
         target,
         op_index,
         "DCS operations address a schema template: `Owner.Name.Template.Name[.DataSet.Name[.Query]|.Setting.Name[.Item.Name…]|.DataSource.Name|.CalculatedField.Name|.Total.Name]`",
+        "DCS operations address a `Template` node of a report or object",
     )?;
     let mut datasets = Vec::new();
     let mut variant = String::new();

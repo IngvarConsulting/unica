@@ -5,12 +5,14 @@ use unica_address::address::{AddressSegment, NodeKind, QualifiedAddress};
 use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use unica_source_contract::proposal::{ApplyPlanError, ApplyPlanErrorKind};
 
-/// Адрес макета и сегменты под ним. `shape` — отказ для адреса короче
-/// `Owner.Name.Template.Name`: его форму называет семейство.
+/// Адрес макета и сегменты под ним. Отказы называет семейство: `shape` —
+/// для адреса короче `Owner.Name.Template.Name`, `not_template` — когда
+/// второй сегмент не макет.
 pub fn template_owner<'a>(
     target: &'a QualifiedAddress,
     op_index: usize,
     shape: &str,
+    not_template: &str,
 ) -> Result<(MetadataAddress, &'a [AddressSegment]), ApplyPlanError> {
     let at_path = format!("ops[{op_index}].args.at");
     let bad = |message: &str| {
@@ -21,9 +23,7 @@ pub fn template_owner<'a>(
         return Err(bad(shape));
     };
     if template.kind() != NodeKind::Template {
-        return Err(bad(
-            "DCS operations address a `Template` node of a report or object",
-        ));
+        return Err(bad(not_template));
     }
     let owner_name = owner
         .name()
@@ -40,4 +40,27 @@ pub fn template_owner<'a>(
     )
     .map_err(|error| bad(&error.to_string()))?;
     Ok((template, rest))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn refusal(raw: &str) -> String {
+        let target = QualifiedAddress::parse(raw).unwrap();
+        template_owner(&target, 2, "shape refusal", "not a template refusal")
+            .unwrap_err()
+            .to_string()
+    }
+
+    #[test]
+    fn refusals_name_the_calling_family_shape_and_template_node() {
+        assert!(refusal("main:Report.Sales").contains("shape refusal"));
+        assert!(refusal("main:Report.Sales.Form.Main").contains("not a template refusal"));
+        let target =
+            QualifiedAddress::parse("main:Report.Sales.Template.Schema.DataSet.D").unwrap();
+        let (template, rest) = template_owner(&target, 0, "shape", "kind").unwrap();
+        assert_eq!(template.as_str(), "Report.Sales.Template.Schema");
+        assert_eq!(rest.len(), 1);
+    }
 }

@@ -220,8 +220,12 @@ fn parse_mxl_operation(
         source_set: address.source_set().to_string(),
         segments: template_segments,
     };
-    let (template, _) =
-        unica_templates::address::template_owner(&template_address, op_index, shape)?;
+    let (template, _) = unica_templates::address::template_owner(
+        &template_address,
+        op_index,
+        shape,
+        "MXL operations address a `Template` node of a report or object",
+    )?;
     let edits = match operation {
         MxlOperation::Set => {
             let area = area.expect("mxl.set retained the addressed area");
