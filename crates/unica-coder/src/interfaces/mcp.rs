@@ -5666,11 +5666,11 @@ mod tests {
 
     #[tokio::test]
     async fn modern_meta_inside_legacy_session_keeps_the_session_model() {
-        // SDK semantics, pinned as observed: a request that declares full
-        // modern `_meta` inside an `initialize` session gets a modern-shaped
-        // response for itself, while the session is not switched — the next
-        // plain request keeps the legacy wire shape.
-        let (mut client, _) = spawn_server(application_handler());
+        // Метаданные одного запроса не повышают полномочия сессии: внутри
+        // сессии `initialize` современный `_meta` меняет форму ответа, но
+        // страницы выдаются только сессии 2026-07-28. Каталог длиннее
+        // страницы, чтобы целый ответ отличался от первой страницы.
+        let (mut client, _) = spawn_unica_server(synthetic_catalog_server());
         client.initialize().await;
         client
             .send(json!({
@@ -5681,13 +5681,15 @@ mod tests {
             }))
             .await;
         let modern_shaped = client.receive().await;
-        // Modern semantics follow the request's effective encoding, pagination
-        // included: the first page plus a continuation cursor.
         assert_eq!(
             modern_shaped["result"]["tools"].as_array().unwrap().len(),
-            TOOLS_PAGE_SIZE
+            synthetic_tool_catalog().len(),
+            "{modern_shaped}"
         );
-        assert!(modern_shaped["result"]["nextCursor"].is_string());
+        assert!(
+            modern_shaped["result"].get("nextCursor").is_none(),
+            "{modern_shaped}"
+        );
         assert_eq!(modern_shaped["result"]["resultType"], "complete");
         client
             .send(json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {} }))
