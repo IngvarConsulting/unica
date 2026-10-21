@@ -263,12 +263,17 @@ class GateProfileCompositionTests(unittest.TestCase):
         groups = nightly_only_groups(expression)
         self.assertEqual(sum(map(len, groups.values())), expression.count("test("))
         for target, names in groups.items():
+            # The declared source must be what the target compiles, or the
+            # catalogue would vouch for a file that no longer runs.
+            included = Path(NIGHTLY_ONLY_TARGETS[target]).relative_to("crates/unica-coder/tests").as_posix()
+            root = (REPO_ROOT / "crates/unica-coder/tests" / f"{target}.rs").read_text(encoding="utf-8")
+            self.assertIn(f'include!("{included}");', root, f"{target} must compile its declared source")
             declared = test_function_attributes((REPO_ROOT / NIGHTLY_ONLY_TARGETS[target]).read_text(encoding="utf-8"))
             for name in names:
                 with self.subTest(target=target, test=name):
                     self.assertIn(name, declared, "nightly-only member must have a test attribute in its target")
-                    self.assertFalse(any(attribute.startswith("#[ignore") for attribute in declared[name]),
-                                     "nightly-only member must not be ignored")
+                    self.assertFalse(any(re.search(r"\bignore\b", attribute) for attribute in declared[name]),
+                                     "nightly-only member must not be ignored, also not through cfg_attr")
         name = groups["v13_workspace_bootstrap"][0]
         exact = f"test(/^{name}$/)"
         for replacement in [f"test(/^{name}/)", f"test(/^module::{name}$/)", exact + " | " + exact]:
