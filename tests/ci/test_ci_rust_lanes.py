@@ -30,6 +30,35 @@ def result(plan, index):
 
 
 class RustLaneTests(unittest.TestCase):
+    def test_archive_and_list_failures_leave_the_same_signed_configuration_before_any_plan(self):
+        for stage in ("archive", "list"):
+            with self.subTest(stage=stage), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                destination = root / "lane"
+                identity = {"sha": "a" * 40, "target": "fixture-target"}
+                calls = []
+
+                def command(argv, _root, **kwargs):
+                    calls.append(argv[2])
+                    self.assertTrue((destination / "run.json").is_file(),
+                                    "the archive/list starts before its signed configuration is persisted")
+                    signed = json.loads((destination / "run.json").read_text())
+                    self.assertEqual((signed["sha"], signed["configuration"]["lane"]),
+                                     (identity["sha"], "receipt"))
+                    self.assertFalse((destination / "plan.json").exists())
+                    if argv[2] == stage:
+                        raise subprocess.CalledProcessError(1, argv)
+                    (destination / "tests.tar.zst").write_bytes(b"fixture archive")
+                    return subprocess.CompletedProcess(argv, 0), 0.01
+
+                with patch.object(lanes.prepared_binary, "identity", return_value=identity), \
+                     patch.object(lanes, "timed", side_effect=command):
+                    with self.assertRaises(subprocess.CalledProcessError):
+                        lanes.build(root, destination, "receipt", "queue", "ubuntu-latest", "main")
+                self.assertEqual(calls, ["archive"] if stage == "archive" else ["archive", "list"])
+                self.assertFalse((destination / "plan.json").exists())
+                self.assertFalse((destination / "lane.json").exists())
+
     def test_production_receipt_vendor_configs_are_separate_and_all_admitted(self):
         self.assertEqual(lanes.lanes("pr"), ("ordinary",))
         for profile in ("queue", "main", "release", "large", "all"):

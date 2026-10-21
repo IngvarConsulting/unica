@@ -1,5 +1,6 @@
 //! Runtime and projection operations the contract harness drives directly:
 //! seeds, gated probes and the writers the runner still applies itself.
+#![cfg(feature = "receipt-ledger-test-support")]
 pub mod control;
 pub mod scenario_hooks;
 pub mod wire;

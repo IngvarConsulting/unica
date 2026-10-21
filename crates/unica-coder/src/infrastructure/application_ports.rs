@@ -2212,6 +2212,11 @@ mod tests {
             (
                 "meta",
                 include_str!("native_operations/meta/info.rs"),
+                &["unica_metadata_designer::info_read::read_typed_meta_info("],
+            ),
+            (
+                "meta-codec",
+                include_str!("../../../unica-metadata-designer/src/info_read.rs"),
                 &[".object_support("],
             ),
         ];

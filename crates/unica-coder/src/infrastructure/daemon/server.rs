@@ -17778,6 +17778,9 @@ mod finite_deadline_guard {
 
     fn finite_deadline_calls(source: &str) -> usize {
         let file = syn::parse_file(source).expect("production source parses");
+        if is_test_only(&file.attrs) {
+            return 0;
+        }
         let mut calls = FiniteDeadlineCalls::default();
         syn::visit::Visit::visit_file(&mut calls, &file);
         calls.calls
@@ -17836,6 +17839,44 @@ mod finite_deadline_guard {
             found, allowed,
             "a production path starts a finite operation deadline outside the per-step allow-list"
         );
+    }
+
+    #[test]
+    fn finite_deadline_guard_honors_whole_file_cfg_without_hiding_operation_paths() {
+        for source in [
+            r#"#![cfg(feature = "receipt-ledger-test-support")]
+fn contract() { let _ = ProviderDeadline::new(deadline); }"#,
+            r#"#![cfg(test)]
+fn fixture() { let _ = ProviderDeadline::from_budget(B); }"#,
+            r#"#![cfg(all(test, target_os = "macos"))]
+fn fixture() { let _ = ProviderDeadline::from_budget(B); }"#,
+        ] {
+            assert_eq!(
+                finite_deadline_calls(source),
+                0,
+                "the file's compiler gate applies to every item: {source}"
+            );
+        }
+        for source in [
+            "fn contract() { let _ = ProviderDeadline::new(deadline); }",
+            r#"#![cfg(any(test, feature = "receipt-ledger-test-support"))]
+fn contract() { let _ = ProviderDeadline::new(deadline); }"#,
+            r#"#![cfg(not(test))]
+fn operation() { let _ = ProviderDeadline::new(deadline); }"#,
+            r#"#![cfg(feature = "other")]
+fn operation() { let _ = ProviderDeadline::new(deadline); }"#,
+            r#"#![cfg(not(feature = "receipt-ledger-test-support"))]
+fn operation() { let _ = ProviderDeadline::new(deadline); }"#,
+            r#"#![cfg(feature = "other")]
+use unica_work_control::provider_deadline::ProviderDeadline as Budget;
+fn operation() { let _ = Budget::from_budget(B); }"#,
+        ] {
+            assert_eq!(
+                finite_deadline_calls(source),
+                1,
+                "an unguarded or conservatively production file stays checked: {source}"
+            );
+        }
     }
 
     #[test]

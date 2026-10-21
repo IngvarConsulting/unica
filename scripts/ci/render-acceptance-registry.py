@@ -37,7 +37,7 @@ PAGE_NAME = "acceptance-scenarios.html"
 # table from which its enum and descriptor bindings are generated.
 TYPED_FAMILIES = {
     "Role": "RoleOperation", "Support": "SupportOperation",
-    "Metadata": "MetadataOperation", "Form": "FormOperation",
+    "Metadata": "unica_metadata::apply_operations::MetadataOperation", "Form": "FormOperation",
     "Mxl": "MxlOperation", "Event": "EventOperation", "Dcs": "Primitive",
     "Properties": "PropertiesOperation", "Xdto": "XdtoOperation",
     "Code": "CodeOperation", "Subsystem": "SubsystemOperation",
@@ -190,7 +190,7 @@ def load_apply_registry() -> tuple[list[tuple[str, str, str, str]], set[str]]:
     table = _literal_table(source, "operation_descriptors")
     pattern = re.compile(
         r'\(\s*(?:"([A-Za-z]+\.[A-Za-z]+)"\s*,\s*(\w+)\s*,\s*(\w+)\s*,\s*(\w+)'
-        r'|([A-Za-z_]\w*)::([A-Za-z_]\w*))\s*\)'
+        r'|([A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)::([A-Za-z_]\w*))\s*\)'
     )
     entries = []
     typed = {operation_type: _registration_metadata(family) for family, operation_type in TYPED_FAMILIES.items()}

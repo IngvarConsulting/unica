@@ -805,7 +805,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         for _, name, applicability, skeleton in FORM_CONTEXT
     ]
     CONTEXT_REGISTRATIONS = "".join(
-        f"(MetadataOperation::{variant})," for variant, _, _, _ in METADATA_CONTEXT
+        f"(unica_metadata::apply_operations::MetadataOperation::{variant})," for variant, _, _, _ in METADATA_CONTEXT
     ) + "".join(
         f"(FormOperation::{variant})," for variant, _, _, _ in FORM_CONTEXT
     )
@@ -972,6 +972,39 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         self.assertEqual(registry[114:119], expected["Interface"])
         self.assertEqual(registry[119:121], expected["Code"])
 
+    def test_metadata_registration_requires_the_actual_qualified_owner(self) -> None:
+        with patch("subprocess.Popen", side_effect=AssertionError("registry inspection must not launch a process")):
+            module = self.renderer()
+            operation = "unica_metadata::apply_operations::MetadataOperation"
+            self.assertEqual(module.TYPED_FAMILIES["Metadata"], operation)
+            original = module.APPLY_REGISTRY.read_text(encoding="utf-8")
+            registry, _ = module.load_apply_registry()
+            self.assertEqual(
+                [row for row in registry if row[1] == "Metadata"],
+                [row for row in self.CONTEXT_ROWS if row[1] == "Metadata"],
+            )
+            self.assertEqual(len(registry), 122)
+            self.assertEqual(len({row[0] for row in registry}), 120)
+            registration = f"({operation}::ObjectBorrow),"
+            self.assertEqual(original.count(registration), 1)
+            replacements = {
+                "old bare alias": "(MetadataOperation::ObjectBorrow),",
+                "wrong crate same enum suffix": "(other_metadata::apply_operations::MetadataOperation::ObjectBorrow),",
+                "wrong module same enum suffix": "(unica_metadata::request::MetadataOperation::ObjectBorrow),",
+                "unknown prefix": f"(unknown::{operation}::ObjectBorrow),",
+                "unknown variant": f"({operation}::Unknown),",
+                "generic path": f"({operation}::<Other>::ObjectBorrow),",
+                "missing": "",
+                "duplicate": registration * 2,
+                "raw replacement": '("object.borrow", Metadata, ExtensionRoot, From),',
+                "unconsumed entry": registration + "unexpected_registration!(),",
+            }
+            for case, replacement in replacements.items():
+                changed = original.replace(registration, replacement, 1)
+                self.assertNotEqual(changed, original, f"{case} must alter a real registration")
+                with self.subTest(case=case), self.assertRaises(RuntimeError):
+                    self.product_registration_fixture(changed)
+
     def test_code_subsystem_and_interface_tables_fail_closed_in_product_composition(self) -> None:
         module = self.renderer()
         original = module.APPLY_REGISTRY.read_text(encoding="utf-8")
@@ -1110,15 +1143,15 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         metadata = (REPO_ROOT / "crates/unica-roles/src/operations.rs").read_text(encoding="utf-8")
         registry, _ = self.registration_fixture(
             '(RoleOperation::Create), (RoleOperation::RightAdd), (RoleOperation::RightSet),\n'
-            '(MetadataOperation::AttributeAdd),\n'
-            '(MetadataOperation::AttributeSet),\n'
-            '(MetadataOperation::ObjectCreate),\n'
+            '(unica_metadata::apply_operations::MetadataOperation::AttributeAdd),\n'
+            '(unica_metadata::apply_operations::MetadataOperation::AttributeSet),\n'
+            '(unica_metadata::apply_operations::MetadataOperation::ObjectCreate),\n'
             '("content.add", Subsystem, Subsystem, Items),\n'
             '(FormOperation::Add), (FormOperation::Set), (FormOperation::Remove),\n'
             '(FormOperation::AttributeAdd),\n'
-            '(MetadataOperation::AttributeRemove),\n'
-            '(MetadataOperation::CommandAdd),\n'
-            '(MetadataOperation::CommandSet), (MetadataOperation::CommandRemove),\n'
+            '(unica_metadata::apply_operations::MetadataOperation::AttributeRemove),\n'
+            '(unica_metadata::apply_operations::MetadataOperation::CommandAdd),\n'
+            '(unica_metadata::apply_operations::MetadataOperation::CommandSet), (unica_metadata::apply_operations::MetadataOperation::CommandRemove),\n'
             '(FormOperation::ItemAdd),\n'
             '(FormOperation::CommandAdd),\n'
             '(FormOperation::ItemRemove), (FormOperation::ItemMove), (FormOperation::EventBind),',
@@ -1276,7 +1309,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         cases = {
             "unknown typed family": (table.replace("Primitive::QuerySet", "DcsOperation::QuerySet"), metadata),
             "unknown variant": (table.replace("Primitive::QuerySet", "Primitive::Unknown"), metadata),
-            "wrong typed family": (table.replace("Primitive::QuerySet", "MetadataOperation::QuerySet"), metadata),
+            "wrong typed family": (table.replace("Primitive::QuerySet", "unica_metadata::apply_operations::MetadataOperation::QuerySet"), metadata),
             "all family registrations missing": (roles, metadata),
             "raw unknown name": (table + '("future.operation", Dcs, DcsSchema, Items),', metadata),
             "raw original name after rename": (
@@ -1339,12 +1372,12 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         for family, applicability in [("Metadata", "MetadataCommands"), ("Form", "Form")]:
             filename = f"{family.lower()}_operation.rs"
             table_name = f"{family.lower()}_operations"
-            operation_type = f"{family}Operation"
+            operation_type = self.renderer().TYPED_FAMILIES[family]
             metadata = self.family_source(family)
             last_row = f'    CommandAdd => ("command.add", {applicability}, Items),\n'
             self.assertIn(last_row, metadata)
             raw = f'("command.add", {family}, {applicability}, Items),'
-            other_type = "FormOperation" if family == "Metadata" else "MetadataOperation"
+            other_type = self.renderer().TYPED_FAMILIES["Form" if family == "Metadata" else "Metadata"]
             operations = self.METADATA_CONTEXT if family == "Metadata" else self.FORM_CONTEXT
             without_family = table
             for variant, _, _, _ in operations:

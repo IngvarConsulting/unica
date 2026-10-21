@@ -215,6 +215,7 @@ def build(root: Path, destination: Path, lane: str, profile: str, host: str, lin
         raise ValueError(f"lane destination already exists: {destination}")
     destination.mkdir(parents=True)
     before = prepared_binary.identity(root)
+    signature(destination, profile=profile, host=host, lane=lane, line=line, sha=before["sha"])
     archive = destination / "tests.tar.zst"
     completed, seconds = timed(archive_command(lane, archive, root, before["target"]), root)
     completed.check_returncode()
@@ -245,7 +246,6 @@ def build(root: Path, destination: Path, lane: str, profile: str, host: str, lin
     }
     write(destination / "lane.json", document)
     allure_results.write_plan(destination, full)
-    signature(destination, profile=profile, host=host, lane=lane, line=line, sha=before["sha"])
 
 
 def validate_manifest(document: dict, *, profile: str, host: str, lane: str, sha: str) -> None:
