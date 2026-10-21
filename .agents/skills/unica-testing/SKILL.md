@@ -122,7 +122,10 @@ Rust items: например, функцию, модуль или `impl`. Не �
 из каталога, и он вернётся в очередь. Цель без оставшихся тестов убери
 из `NIGHTLY_ONLY_TARGETS` в `tests/ci/test_gate_profiles.py`. Пустой
 каталог снимается целиком: профиль `nightly-only`, его исключение
-в `queue` и `main` и проверки стража.
+в `queue` и `main` и проверки стража. Профиль `queue` исключает тесты
+каталога и при точном `-E`, поэтому изменённый тест каталога перед push
+запускай его профилем, например
+`cargo nextest run -p unica-coder --test platform_project_health --profile nightly-only -E 'test(=project_health_full_portable_repository_is_ready)'`.
 
 При изменении хранилища квитанций сохраняй нагрузочный критерий
 [#975](https://github.com/IngvarConsulting/unica/issues/975): за 60 секунд
