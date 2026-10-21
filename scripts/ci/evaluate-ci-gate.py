@@ -67,7 +67,7 @@ STEP_GROUPS = {
     "classify-changes": ("classify",),
     "guards": ("guards-compile", "guards-version", "guards-fmt", "guards-zizmor"),
     "build-python-product": ("product",),
-    "test-python": ("python",),
+    "test-python": ("python-plan", "python"),
     "test-rust-platforms": ("shadow", "rust-build", "rust-run", "verify"),
     RUST_MEDIUM: ("rust-medium",),
     "lint-rust-platforms": ("clippy", "clippy-packages"),

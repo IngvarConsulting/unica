@@ -417,7 +417,7 @@ def build_host(root: Path, work: Path, report: Path, profile: str, host: str, li
     for lane in lanes(profile, host):
         try:
             build(root, work / lane, lane, profile, host, line)
-        except (subprocess.CalledProcessError, ValueError) as error:
+        except Exception as error:  # one red lane never stops the next one
             print(f"::error::{host}/{lane}: archive was not built: {error}", flush=True)
             failed.append(lane)
         finally:
@@ -439,7 +439,7 @@ def run_host(root: Path, work: Path, report: Path, profile: str, host: str, line
         try:
             code = run_archive(root, work / lane, result_directory(report, host, lane), lane, profile, host, 1, line,
                                shadow if shadow is not None and shadow.is_file() else None)
-        except (subprocess.CalledProcessError, ValueError) as error:
+        except Exception as error:  # one red lane never stops the next one
             print(f"::error::{host}/{lane}: {error}", flush=True)
             code = 1
         if code != 0:

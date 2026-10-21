@@ -217,6 +217,19 @@ class HostLaneTests(unittest.TestCase):
                     raise ValueError("a required shard test failed")
                 return 0
 
+            # Any failure inside a lane — a truncated JUnit, a missing archive —
+            # is that lane's red result, never the end of the runner's lanes.
+            for error in (ET.ParseError("no element found"), FileNotFoundError("tests.tar.zst")):
+                order = []
+                def broken(_root, prepared, destination, lane, *rest, error=error):
+                    order.append(lane)
+                    if lane == "ordinary":
+                        raise error
+                    return 0
+                with self.subTest(error=type(error).__name__), patch.object(lanes, "run_archive", side_effect=broken):
+                    self.assertEqual(lanes.run_host(root, root / "work", root / f"report-{type(error).__name__}", "large", "ubuntu-latest", None, None), 1)
+                    self.assertEqual(order, ["ordinary", "receipt"])
+
             with patch.object(lanes, "run_archive", side_effect=run):
                 status = lanes.run_host(root, root / "work", root / "report", "large", "ubuntu-latest", None, root / "absent.json")
             self.assertEqual(status, 1)
