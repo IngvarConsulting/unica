@@ -6,6 +6,8 @@
 //! protocol sessions, daemon processes, barriers and clocks and performs every assertion here. The
 //! bridge is not a second ReceiptLedger and must not synthesize observations from a scenario name.
 
+#[path = "daemon_receipt_ledger/facade_guards.rs"]
+mod facade_guards;
 #[path = "support/frontend_process.rs"]
 mod frontend_process;
 #[path = "daemon_receipt_ledger/frontend_restart.rs"]
