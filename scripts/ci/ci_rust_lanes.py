@@ -468,6 +468,7 @@ def verify_union(directory: Path, profile: str, hosts: list[str], sha: str) -> d
             for result in matching_results:
                 validate_result(manifest, result, result["shard"])
         except (KeyError, TypeError, ValueError) as error:
+            # Windows large is advisory until its known failures (#1523) are fixed.
             target = advisory if profile == "large" and host == "windows-latest" else problems
             target.append(f"{host}/{lane}: {error}")
     report = {"sha": sha, "profile": profile, "mandatoryComplete": not problems,

@@ -241,6 +241,7 @@ default-filter = 'all()'
 [profile.nightly-full]
 default-filter = 'all()'
 
+# Windows-исключение то же, что у `large` ниже; снятие — #1879.
 [[profile.nightly-full.overrides]]
 platform = 'cfg(windows)'
 default-filter = 'all() - test(/^deterministic_horizon_load_does_not_saturate$/)'
@@ -291,6 +292,7 @@ binary(selection) & (
 # управляемыми часами, платформе безразличный; на двухъядерном Windows он не
 # укладывается и в два срока `large` (замер 07.09.2026: ubuntu 415 с, macOS
 # 465 с, Windows — остановлен на 1800 с), а доказан он двумя другими ОС.
+# Снятие исключения — #1879; прочие известные отказы Windows large — #1523.
 [[profile.large.overrides]]
 platform = 'cfg(windows)'
 default-filter = 'all() - test(/^deterministic_horizon_load_does_not_saturate$/)'
