@@ -176,7 +176,13 @@
             "Report.СертификатыЭлектроннойПодписи"
           ]
         }
-      ]
+      ],
+      "captures": {
+        "afterContent": {
+          "file": "src/Subsystems/Администрирование.xml",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.apply",
@@ -209,6 +215,11 @@
         }
       ],
       "fileAssertions": [
+        {
+          "path": "src/Subsystems/Администрирование.xml",
+          "kind": "sha256",
+          "eq": "$capture.afterContent"
+        },
         {
           "path": "src/Subsystems/Администрирование/Subsystems/НастройкиПользователей.xml",
           "kind": "exists",
@@ -257,7 +268,13 @@
             "НастройкиПользователей"
           ]
         }
-      ]
+      ],
+      "captures": {
+        "afterAdd": {
+          "file": "src/Subsystems/Администрирование.xml",
+          "kind": "sha256"
+        }
+      }
     },
     {
       "tool": "unica.apply",
@@ -284,6 +301,11 @@
         }
       ],
       "fileAssertions": [
+        {
+          "path": "src/Subsystems/Администрирование.xml",
+          "kind": "sha256",
+          "eq": "$capture.afterAdd"
+        },
         {
           "path": "src/Subsystems/Администрирование/Subsystems/КонтрольРаботыПользователей.xml",
           "kind": "exists",

@@ -87,6 +87,22 @@
           "path": "src/Subsystems/Администрирование/Ext/CommandInterface.xml",
           "kind": "sha256",
           "eq": "639bc05c46a6133c1774e273e6295bb9ad70cba3b0174a9ef2a5e0a4ee1fd7cf"
+        },
+        {
+          "path": "src/Subsystems/Администрирование/Ext/CommandInterface.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/extrnprops}CommandsOrder/{http://v8.1c.ru/8.3/xcf/extrnprops}Command[1][@name='Catalog.ГруппыДоступа.StandardCommand.OpenList']/{http://v8.1c.ru/8.3/xcf/extrnprops}CommandGroup",
+          "eq": [
+            "NavigationPanelImportant"
+          ]
+        },
+        {
+          "path": "src/Subsystems/Администрирование/Ext/CommandInterface.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/extrnprops}CommandsOrder/{http://v8.1c.ru/8.3/xcf/extrnprops}Command[2][@name='Catalog.Пользователи.StandardCommand.OpenList']/{http://v8.1c.ru/8.3/xcf/extrnprops}CommandGroup",
+          "eq": [
+            "NavigationPanelImportant"
+          ]
         }
       ]
     }

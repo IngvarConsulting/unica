@@ -317,11 +317,22 @@ def names_form(address: str) -> bool | None:
     return None if FORM_KINDS & set(segments[:-2]) else False
 
 
+def pins_published_file(assertion) -> bool:
+    """True when a file assertion fixes what the publication wrote: exact
+    bytes, XML content or a removed path.  `notEq`, a still-present path or
+    the digest of an earlier capture tell nothing about the new state."""
+    if assertion["kind"] == "exists":
+        return assertion.get("eq") is False
+    if assertion["kind"] == "sha256":
+        return isinstance(assertion.get("eq"), str) and not assertion["eq"].startswith("$")
+    return assertion["kind"] in {"xml", "xmlTags"} and ("eq" in assertion or "contains" in assertion)
+
+
 def apply_operation_cases(scenarios, registry) -> dict[tuple[str, str], list[str]]:
     """Map every registered `(operation, family)` to the scenarios that
     publish it: an `unica.apply` preview freezes exactly `ok`, and a later
     step executes its token (`$executionToken` of the last plan or the
-    `$capture` of its `/data/executionToken`), freezes exactly `ok` and checks
+    `$capture` of its `/data/executionToken`), freezes exactly `ok` and pins
     the published files.  A refusal, a gap, an unfinished task or a preview that
     nobody publishes does not run the writer, so it is not a case.  A name
     that several families register is told apart by the kind of its target:
@@ -339,8 +350,11 @@ def apply_operation_cases(scenarios, registry) -> dict[tuple[str, str], list[str
                 continue
             token = step["args"].get("executionToken")
             if token is not None:
+                # A refused execution leaves the plan and its token in place.
+                if step["expect"] != ["ok"]:
+                    continue
                 planned = plans.pop(token, [])
-                if step["expect"] == ["ok"] and step.get("fileAssertions"):
+                if any(pins_published_file(assertion) for assertion in step.get("fileAssertions") or []):
                     for key in planned:
                         ids = cases.setdefault(key, [])
                         if scenario["id"] not in ids:
@@ -1054,10 +1068,15 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         def preview(expect, at, *operations):
             return {"tool": "unica.apply", "expect": expect, "args": {"at": at, "ops": [{"op": name} for name in operations]}}
 
-        def publish(expect=("ok",), checked=True, token="$executionToken"):
+        pinned = {"path": "src/X.xml", "kind": "xml", "select": "./{*}Name", "eq": ["X"]}
+        vague = [{"path": "src/X.xml", "kind": "exists", "eq": True},
+                 {"path": "src/X.xml", "kind": "sha256", "notEq": "$capture.before"},
+                 {"path": "src/X.xml", "kind": "sha256", "eq": "$capture.before"}]
+
+        def publish(expect=("ok",), checked=True, token="$executionToken", assertions=(pinned,)):
             step = {"tool": "unica.apply", "expect": list(expect), "args": {"executionToken": token}}
             if checked:
-                step["fileAssertions"] = [{"path": "src/X.xml", "kind": "exists", "eq": True}]
+                step["fileAssertions"] = list(assertions)
             return step
 
         registry = [
@@ -1076,8 +1095,12 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
                 preview(["ok"], form, "attribute.add"), publish(),
                 publish(),
                 preview(["ok"], form, "item.remove"), publish(checked=False),
-                preview(["ok"], form, "item.remove"), publish(expect=("refused",)),
                 preview(["ok"], form, "item.remove"), publish(token="literal"),
+                preview(["ok"], form, "item.remove"), publish(assertions=vague),
+            ]},
+            {"id": "H", "wire": [
+                preview(["ok"], catalog, "field.add"), publish(expect=("refused",)),
+                publish(assertions=[{"path": "src/X.xml", "kind": "exists", "eq": False}]),
             ]},
             {"id": "G", "wire": [
                 preview(["ok", "task"], catalog, "props.set"), publish(),
@@ -1100,7 +1123,9 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("attribute.add", "Metadata"): ["A"],
             ("attribute.add", "Form"): ["B", "C"],
             ("item.remove", "Form"): ["F"],
+            ("field.add", "Dcs"): ["H"],
         })
+        self.assertTrue(pins_published_file({"path": "a", "kind": "sha256", "eq": "0" * 64}))
         self.assertTrue(names_form("main:CommonForm.Main"))
         self.assertIsNone(names_form("main:Catalog.X.Form.Y.Attribute.Z"))
         self.assertIs(names_form("main:Configuration"), False)

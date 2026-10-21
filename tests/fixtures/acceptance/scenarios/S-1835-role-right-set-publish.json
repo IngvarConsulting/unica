@@ -2,7 +2,7 @@
   "id": "S-1835-role-right-set-publish",
   "issue": 1835,
   "area": "Роли и права",
-  "task": "Разрешить роли SalesReader интерактивное удаление валют: предпросмотр не пишет права, публикация добавляет ровно это право объекта",
+  "task": "Разрешить роли SalesReader изменение валют, у которых уже есть чтение: предпросмотр не пишет права, публикация добавляет ровно право Update объекта",
   "wire": [
     {
       "tool": "unica.view",
@@ -28,7 +28,7 @@
             "op": "right.set",
             "args": {
               "values": {
-                "right": "InteractiveDelete",
+                "right": "Update",
                 "value": true
               }
             }
@@ -78,7 +78,7 @@
         {
           "path": "src/Roles/SalesReader/Ext/Rights.xml",
           "kind": "sha256",
-          "eq": "b4884184732c226271b4ed53d547840504f22bcd3b28c2bd8b14546974434e7c"
+          "eq": "739d45186fde9d9e191660dcfbf0b9fbd2fbb1e1736329fd251221f858ae1224"
         },
         {
           "path": "src/Roles/SalesReader/Ext/Rights.xml",
@@ -87,7 +87,7 @@
           "eq": [
             "Read",
             "View",
-            "InteractiveDelete"
+            "Update"
           ]
         }
       ]
