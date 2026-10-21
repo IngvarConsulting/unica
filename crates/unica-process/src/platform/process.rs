@@ -3866,6 +3866,7 @@ mod tests {
                         "--nocapture",
                     ])
                     .env(HELPER_ENV, "success")
+                    .env_remove(HELPER_STARTED_ENV)
                     .stdin(Stdio::null())
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
@@ -4022,6 +4023,7 @@ mod tests {
                     .spawn()
                     .unwrap();
                 wait_for_helper_start(&grandchild_marker);
+                std::fs::remove_file(&grandchild_marker).unwrap();
                 std::fs::write(
                     pid_file,
                     format!("{}\n{}\n", std::process::id(), child.id()),
@@ -4046,6 +4048,7 @@ mod tests {
                 print!("inherited-pipe-before-timeout");
                 std::io::Write::flush(&mut std::io::stdout()).unwrap();
                 wait_for_helper_start(&grandchild_marker);
+                std::fs::remove_file(&grandchild_marker).unwrap();
                 std::fs::write(
                     pid_file,
                     format!("{}\n{}\n", std::process::id(), child.id()),
@@ -4071,6 +4074,7 @@ mod tests {
                             "--nocapture",
                         ])
                         .env(HELPER_ENV, "windows_parked_handoff_client")
+                        .env_remove(HELPER_STARTED_ENV)
                         .stdin(Stdio::null())
                         .stdout(Stdio::null())
                         .stderr(Stdio::null())
@@ -4115,6 +4119,7 @@ mod tests {
                         "--nocapture",
                     ])
                     .env(HELPER_ENV, "process_tree_child")
+                    .env_remove(HELPER_STARTED_ENV)
                     .stdin(Stdio::null())
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
@@ -4134,6 +4139,7 @@ mod tests {
                         "--nocapture",
                     ])
                     .env(HELPER_ENV, "process_tree_child")
+                    .env_remove(HELPER_STARTED_ENV)
                     .spawn()
                     .unwrap();
                 print!("{{\"ok\":true,\"pid\":{}}}", grandchild.id());
@@ -4174,6 +4180,7 @@ mod tests {
                 }
                 let mut external_child = command.spawn().unwrap();
                 wait_for_helper_start(&grandchild_marker);
+                std::fs::remove_file(&grandchild_marker).unwrap();
                 std::fs::write(
                     pid_file,
                     format!("{}\n{}\n", std::process::id(), external_child.id()),
@@ -4212,6 +4219,7 @@ mod tests {
                     .spawn()
                     .unwrap();
                 wait_for_helper_start(&grandchild_marker);
+                std::fs::remove_file(&grandchild_marker).unwrap();
                 std::fs::write(
                     pid_file,
                     format!("{}\n{}\n", std::process::id(), child.id()),
