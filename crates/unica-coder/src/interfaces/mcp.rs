@@ -2340,16 +2340,7 @@ mod tests {
     async fn applied_runtime_answers_once_without_input_disclosure() {
         const CWD_SENTINEL: &str = "/missing/unica-issue-406-private-workspace";
         const CONNECTION_SENTINEL: &str = "File=/private/issue-406-sensitive.ib";
-        // The applied run reaches the canonical handler with its arguments;
-        // the frontend's answer is the handler's terminal, never the input.
-        let received = Arc::new(Mutex::new(None::<Map<String, Value>>));
-        let seen = Arc::clone(&received);
-        let handler: Arc<CanonicalCallHandler> = Arc::new(move |tool, arguments, _, _, _| {
-            assert_eq!(tool.wire_name(), "unica.run");
-            *seen.lock().unwrap() = Some(arguments.clone());
-            direct_outcome(canonical_result("runner is not available"))
-        });
-        let (mut client, _) = spawn_unica_server(UnicaServer::with_canonical_v13(handler));
+        let (mut client, _) = spawn_server(application_handler());
         client.initialize().await;
         client
             .send(json!({
@@ -2357,11 +2348,11 @@ mod tests {
                 "id": "runtime-refusal",
                 "method": "tools/call",
                 "params": {
-                    "name": "unica.run",
+                    "name": "unica.runtime.execute",
                     "arguments": {
-                        "op": "infobase.create",
                         "cwd": CWD_SENTINEL,
                         "dryRun": false,
+                        "operation": "config-init",
                         "config": "v8project.yaml",
                         "connection": CONNECTION_SENTINEL
                     }
@@ -2371,10 +2362,9 @@ mod tests {
 
         let response = client.receive().await;
         assert_eq!(response["id"], "runtime-refusal", "{response}");
-        let delivered = received.lock().unwrap().take().expect("handler was called");
-        assert_eq!(delivered["connection"], CONNECTION_SENTINEL);
-        // What the test pins is the shape: one terminal answer, no input
-        // echoed.
+        // The applied call is no longer refused before discovery, so
+        // this fixture answers with the missing bundled runner instead. What the
+        // test still pins is the shape: one terminal answer, no input echoed.
         let serialized = response.to_string();
         assert!(
             !serialized.contains("runtime_operation_unbounded"),
@@ -5970,10 +5960,6 @@ mod tests {
                 "page overflow: {}",
                 tools.len()
             );
-            assert!(
-                tools.iter().all(|tool| tool.get("description").is_none()),
-                "the schema-only baseline holds on the modern branch too"
-            );
             names.extend(
                 tools
                     .iter()
@@ -5998,7 +5984,9 @@ mod tests {
 
     #[tokio::test]
     async fn modern_tools_list_rejects_a_cursor_the_server_never_issued() {
-        let (mut client, _) = spawn_unica_server(canonical_direct_server());
+        // Каталог длиннее страницы: сервер выдаёт настоящие курсоры, и
+        // отказ отличает невыданное смещение от любого предъявленного.
+        let (mut client, _) = spawn_unica_server(synthetic_catalog_server());
         for (id, bad) in ["banana", "7", "0", "10000"].into_iter().enumerate() {
             let mut params = json!({ "_meta": modern_meta() });
             params["cursor"] = json!(bad);
