@@ -54,7 +54,7 @@ allowed-tools:
 
 ## Формат корня
 
-Образцы сняты с выгрузки пустой конфигурации платформой 8.3.27 в формате 2.20.
+Образцы сняты с рабочей заготовки, выгруженной платформой 8.3.27 в формате 2.20 (`tests/fixtures/platform_8_3_27/template-new-xml/seed/`), без её объектов и с новыми UUID.
 Полное описание свойств, их порядка и состава — в
 [спецификации конфигурации](../../references/specs/1c-configuration-spec.md):
 §2 — `Configuration.xml`, §4.2 — `ClientApplicationInterface.xml`,
@@ -213,7 +213,8 @@ allowed-tools:
   `<Vendor>Фирма 1С</Vendor>`, `<Version>1.0.0.1</Version>`.
 - `CompatibilityMode` в образце — `Version8_3_27`. Другой режим совместимости
   задаётся там же, например `<CompatibilityMode>Version8_3_24</CompatibilityMode>`;
-  `ConfigurationExtensionCompatibilityMode` и прочие режимы описаны в §2.3.
+  `ConfigurationExtensionCompatibilityMode` меняй согласованно с ним (не выше),
+  прочие режимы описаны в §2.3.
 - `ClassId` в `InternalInfo` — константы платформы (§2.2), их не меняй;
   `ObjectId` — новые UUID.
 - Порядок свойств фиксирован (§2.3). `UsedMobileApplicationFunctionalities`
