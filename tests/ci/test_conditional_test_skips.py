@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import functools
 import re
 import unittest
 from pathlib import Path
@@ -45,27 +46,40 @@ ENV_READ = r"(?:std::)?env::var(?:_os)?\((?:[^()]|\([^()]*\))*\)"
 # Тело, которое ничего не делает, кроме печати: пустой выход.
 QUIET = r"(?:\s*(?:eprintln|println)!\([^;]*?\);)*\s*"
 EMPTY = r"(?:\{" + QUIET + r"\}|\(\)|return\b)"
-SILENT_EXITS = (
-    re.compile(r"let\s+(?:Ok|Some)\s*\([^=]*\)\s*=\s*" + ENV_READ + r"[^;{]*else\s*\{" + QUIET + r"return\b[^;]*;\s*\}"),
-    re.compile(r"if\s+" + ENV_READ + r"\s*\.is_(?:err|none)\(\)\s*\{" + QUIET + r"return\b[^;]*;\s*\}"),
-    re.compile(r"if\s+!\s*" + ENV_READ + r"\s*\.is_(?:ok|some)\(\)\s*\{" + QUIET + r"return\b[^;]*;\s*\}"),
-    re.compile(r"if\s+let\s+(?:Err\s*\(\s*_\s*\)|None)\s*=\s*" + ENV_READ + r"[^{]*\{" + QUIET + r"return\b[^;]*;\s*\}"),
-)
+CALL_ARGUMENTS = r"\((?:[^()]|\([^()]*\))*\)"
+
+
+def silent_patterns(source: str) -> tuple[re.Pattern, ...]:
+    """Пустые выходы по отсутствию значения `source` — чтения env или обёртки над ним."""
+    return (
+        re.compile(r"let\s+(?:Ok|Some)\s*\([^=]*\)\s*=\s*" + source + r"[^;{]*else\s*\{" + QUIET + r"return\b[^;]*;\s*\}"),
+        re.compile(r"if\s+" + source + r"\s*\.is_(?:err|none)\(\)\s*\{" + QUIET + r"return\b[^;]*;\s*\}"),
+        re.compile(r"if\s+!\s*" + source + r"\s*\.is_(?:ok|some)\(\)\s*\{" + QUIET + r"return\b[^;]*;\s*\}"),
+        re.compile(r"if\s+let\s+(?:Err\s*\(\s*_\s*\)|None)\s*=\s*" + source + r"[^{]*\{" + QUIET + r"return\b[^;]*;\s*\}"),
+    )
+
+
+def guarded_body_pattern(source: str) -> re.Pattern:
+    """Условие, при ложности которого тест ничего не делает, если под ним всё тело."""
+    return re.compile(
+        r"\A\s*\{\s*if\s+(?:" + source + r"\s*\.is_(?:some|ok)\(\)|let\s+(?:Ok|Some)\s*\([^=]*\)\s*=\s*" + source + r"[^{]*)\s*(?=\{)"
+    )
+
+
 FALLBACK_ARM = re.compile(r"(?:Err\s*\(\s*_\s*\)|None|_)\s*=>\s*" + EMPTY)
-# Условие, при ложности которого тест ничего не делает, если под ним всё тело.
-GUARDED_BODY = re.compile(
-    r"\A\s*\{\s*if\s+(?:" + ENV_READ + r"\s*\.is_(?:some|ok)\(\)|let\s+(?:Ok|Some)\s*\([^=]*\)\s*=\s*" + ENV_READ + r"[^{]*)\s*(?=\{)"
-)
+RETURNS_FALLIBLE = re.compile(r"->\s*(?:[\w:]+::)?(?:Option|Result)\b")
 
 
 def attributes_above(text: str, start: int) -> list[str]:
     """Атрибуты над функцией; комментарии, пустые строки и многострочные
     атрибуты пропускаются, разбор останавливается на первом коде."""
-    lines = text[:start].splitlines()
     attributes: list[str] = []
     pending: list[str] = []
-    while lines:
-        line = lines.pop().strip()
+    end = start
+    while end > 0:
+        line_start = text.rfind("\n", 0, end - 1) + 1
+        line = text[line_start:end].strip()
+        end = line_start
         if pending or (line.endswith("]") and not line.startswith("#[")):
             pending.insert(0, line)
             if line.startswith("#["):
@@ -79,7 +93,8 @@ def attributes_above(text: str, start: int) -> list[str]:
     return attributes
 
 
-def functions(text: str) -> list[dict]:
+@functools.lru_cache(maxsize=None)
+def functions(text: str) -> tuple[dict, ...]:
     """Функции файла с атрибутами и телом до закрывающей скобки того же отступа."""
     found = []
     for match in FUNCTION.finditer(text):
@@ -87,10 +102,11 @@ def functions(text: str) -> list[dict]:
         close = re.compile(r"^" + re.escape(indent) + r"\}[ \t]*$", re.M).search(text, match.end())
         end = close.end() if close else len(text)
         brace = text.find("{", match.end(), end)
+        body_start = brace if brace >= 0 else match.end()
         found.append({"name": match.group("name"), "start": match.start(), "end": end,
                       "attributes": attributes_above(text, match.start()),
-                      "body": text[brace if brace >= 0 else match.end():end]})
-    return found
+                      "signature": text[match.start():body_start], "body": text[body_start:end]})
+    return tuple(found)
 
 
 def block(text: str, start: int) -> str:
@@ -142,9 +158,32 @@ def stand_violations(text: str, label: str) -> list[str]:
     return problems
 
 
-def guarded_whole_body(body: str) -> bool:
-    """Всё тело под `if <есть переменная> { … }` без `else` и без кода после."""
-    head = GUARDED_BODY.match(body)
+def env_wrappers(code: str) -> set[str]:
+    """Функции файла, которые возвращают `Option`/`Result` от чтения env, прямо
+    или через другую такую функцию: их `None`/`Err` значит «переменной нет».
+    Обёртка — тестовый помощник рядом с тестом, поэтому ищется в том же файле."""
+    if "env::var" not in code:
+        return set()
+    items = [item for item in functions(code) if not is_test(item)]
+    wrappers: set[str] = set()
+    while True:
+        source = env_source(wrappers)
+        found = {item["name"] for item in items
+                 if RETURNS_FALLIBLE.search(item["signature"]) and re.search(source, item["body"])}
+        if found <= wrappers:
+            return wrappers
+        wrappers |= found
+
+
+def env_source(wrappers: set[str]) -> str:
+    # Только вызов свободной функции: `.name(` — метод с тем же именем.
+    calls = [rf"(?<![.\w]){re.escape(name)}\s*" + CALL_ARGUMENTS for name in sorted(wrappers)]
+    return "(?:" + "|".join([ENV_READ, *calls]) + ")"
+
+
+def guarded_whole_body(body: str, source: str) -> bool:
+    """Всё тело под `if <есть значение> { … }` без `else` и без кода после."""
+    head = guarded_body_pattern(source).match(body)
     if not head:
         return False
     guarded = block(body, head.end())
@@ -154,12 +193,18 @@ def guarded_whole_body(body: str) -> bool:
 
 def silent_exit_violations(text: str, label: str) -> list[str]:
     problems = []
-    for item in functions(without_comments(text)):
+    code = without_comments(text)
+    wrappers = env_wrappers(code)
+    if "env::var" not in code:
+        return problems
+    source = env_source(wrappers)
+    patterns = silent_patterns(source)
+    for item in functions(code):
         if not is_test(item) or is_ignored(item):
             continue
         body = item["body"]
-        silent = any(pattern.search(body) for pattern in SILENT_EXITS) or guarded_whole_body(body) or any(
-            FALLBACK_ARM.search(block(body, match.end())) for match in re.finditer(r"match\s+" + ENV_READ, body)
+        silent = any(pattern.search(body) for pattern in patterns) or guarded_whole_body(body, source) or any(
+            FALLBACK_ARM.search(block(body, match.end())) for match in re.finditer(r"match\s+" + source, body)
         )
         if silent:
             problems.append(f"{label}: test {item['name']} passes empty without its environment; mark it #[ignore = \"...\"]")
@@ -183,6 +228,11 @@ def launch_violations(sources: dict[str, str]) -> list[str]:
     problems = []
     names = ignored_test_names(sources)
     codes = {label: without_comments(text) for label, text in sources.items()}
+    # Функции, которые сами подставляют `--exact` перед переданным им именем.
+    launchers = {item["name"]: '"--ignored"' in item["body"]
+                 for code in codes.values() for item in functions(code)
+                 if '"--exact"' in item["body"] and re.search(r":\s*&(?:'\w+\s+)?str\b", item["signature"])}
+    launcher_call = re.compile(r"\b(" + "|".join(map(re.escape, launchers)) + r")\s*\(\s*\Z") if launchers else None
     for label, code in codes.items():
         for literal in re.finditer(r'"(?:[\w:]*::)?(\w+)"', code):
             if literal.group(1) not in names:
@@ -200,6 +250,11 @@ def launch_violations(sources: dict[str, str]) -> list[str]:
                 sites = [(label, literal.start())]
             for where, site in sites:
                 text = codes[where]
+                call = launcher_call.search(text, max(0, site - 200), site) if launcher_call else None
+                if call and not launchers[call.group(1)]:
+                    problems.append(f"{where}: launch of ignored test {literal.group(1)} through "
+                                    f"{call.group(1)}() lacks --ignored")
+                    continue
                 arguments = text[text.rfind("[", 0, site):text.find("]", site) + 1]
                 if '"--exact"' in arguments and '"--ignored"' not in arguments:
                     problems.append(f"{where}: launch of ignored test {literal.group(1)} lacks --ignored")
@@ -341,6 +396,16 @@ class SilentExitTests(unittest.TestCase):
         self.assertSilent('    match std::env::var(CHILD) {\n        Ok(v) => run(v),\n        Err(_) => (),\n    }')
         self.assertSilent('    let Ok(v) = std::env::var(format!("{}_X", PREFIX)) else {\n        return;\n    };\n    run(v);')
 
+    def test_an_env_wrapper_returning_option_is_an_env_read(self) -> None:
+        wrapper = "fn corpus_dir() -> Option<PathBuf> {\n    std::env::var_os(\"CORPUS\").map(PathBuf::from)\n}\n"
+        nested = "fn corpus_root() -> Option<PathBuf> {\n    corpus_dir().map(|dir| dir.join(\"root\"))\n}\n"
+        for call in ("corpus_dir()", "corpus_root()"):
+            text = wrapper + nested + "#[test]\nfn t() {\n    let Some(dir) = " + call + " else {\n        return;\n    };\n    run(dir);\n}\n"
+            self.assertEqual(len(silent_exit_violations(text, "fixture")), 1, call)
+        plain = "fn fixture_dir() -> Option<PathBuf> {\n    Some(PathBuf::new())\n}\n"
+        text = plain + "#[test]\nfn t() {\n    let Some(dir) = fixture_dir() else {\n        return;\n    };\n}\n"
+        self.assertEqual(silent_exit_violations(text, "fixture"), [])
+
     def test_an_if_else_self_reexec_is_not_silent(self) -> None:
         text = "#[test]\nfn t() {\n    if std::env::var_os(C).is_some() {\n        a();\n    } else {\n        b();\n    }\n}\n"
         self.assertEqual(silent_exit_violations(text, "fixture"), [])
@@ -388,6 +453,15 @@ class LaunchTests(unittest.TestCase):
         launch = 'use crate::a::CHILD;\nfn parent() {\n' + " " * 300 + '\n    command.args(["--exact", CHILD]);\n}\n'
         self.assertEqual(launch_violations({"a.rs": self.HELPER + declaration, "b.rs": launch}),
                          ["b.rs: launch of ignored test child_helper lacks --ignored"])
+
+    def test_a_launch_through_a_launcher_function_needs_the_flag(self) -> None:
+        launcher = ('pub fn run_exact(test_name: &str, marker: &str) -> Status {\n'
+                    '    command.args(["--exact", test_name, "--nocapture"]);\n}\n')
+        call = 'fn parent() {\n    run_exact(\n        "tests::child_helper",\n        MARKER,\n    );\n}\n'
+        self.assertEqual(launch_violations({"a.rs": self.HELPER + launcher + call}),
+                         ["a.rs: launch of ignored test child_helper through run_exact() lacks --ignored"])
+        fixed = launcher.replace('test_name, "--nocapture"', 'test_name, "--ignored", "--nocapture"')
+        self.assertEqual(launch_violations({"a.rs": self.HELPER + fixed + call}), [])
 
     def test_a_launch_through_a_constant_needs_the_ignored_flag(self) -> None:
         launch = 'const CHILD: &str =\n    "tests::child_helper";\nfn parent() {\n    command.args(["--exact", CHILD, "--nocapture"]);\n}\n'
