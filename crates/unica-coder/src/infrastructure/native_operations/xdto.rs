@@ -1976,7 +1976,12 @@ pub(crate) mod tests {
         invalid["values"]["property"]["objectType"]["properties"][1]["type"] = json!("tns:Missing");
         let invalid =
             parse_xdto_plan_operation("property.add", &invalid, 0, &fixture.binding).unwrap();
-        assert!(plan_admitted_xdto(&admission, &fixture.binding, &[invalid]).is_err());
+        let error = match plan_admitted_xdto(&admission, &fixture.binding, &[invalid]) {
+            Err(error) => error,
+            Ok(_) => panic!("an unresolved child type is refused"),
+        };
+        // The refusal names the field that declares the children.
+        assert_eq!(error.path(), Some("ops[0].args.values.property.objectType"));
         assert_eq!(fs::read(&fixture.package).unwrap(), PACKAGE.as_bytes());
         fixture.cleanup();
     }

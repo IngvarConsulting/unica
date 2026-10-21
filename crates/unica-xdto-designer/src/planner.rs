@@ -508,7 +508,16 @@ fn xdto_validation_error_path(operation: &XdtoPlanOperation, op_index: usize) ->
     match operation {
         XdtoPlanOperation::AddValueType(_) => format!("{base}.values.base"),
         XdtoPlanOperation::AddObjectType(_) => format!("{base}.at"),
-        XdtoPlanOperation::AddProperty(_) => format!("{base}.values.property.type"),
+        // The final package names no child, so an anonymous type answers
+        // at the field that declares its children.
+        XdtoPlanOperation::AddProperty(args) => match args.property.definition {
+            unica_xdto::operations::XdtoPropertyDefinition::Named(_) => {
+                format!("{base}.values.property.type")
+            }
+            unica_xdto::operations::XdtoPropertyDefinition::Object(_) => {
+                format!("{base}.values.property.objectType")
+            }
+        },
         XdtoPlanOperation::RemoveType(_) | XdtoPlanOperation::RemoveProperty(_) => {
             format!("{base}.at")
         }
