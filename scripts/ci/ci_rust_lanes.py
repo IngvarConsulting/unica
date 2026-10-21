@@ -76,6 +76,46 @@ def doctest_command(root: Path = ROOT, target: str | None = None) -> list[str]:
             "--target-dir", str(root / "target")]
 
 
+DOCTEST_OUTPUT_LIMIT = 16_000
+DOCTEST_CASE = {"binary": "rustdoc", "name": "workspace::doctests"}
+
+
+def run_doctests(root: Path, target: str | None) -> dict:
+    """The outcome travels in the lane manifest: the shard turns it into a
+    report record and the union verifier refuses the gate on a failure, so a
+    red doctest is not left behind in the build log alone."""
+    command = doctest_command(root, target)
+    completed, seconds = timed(command, root, capture=True)
+    output = completed.stdout or ""
+    print(output, end="", flush=True)
+    return {"command": command, "exitCode": completed.returncode, "seconds": seconds,
+            "output": output[-DOCTEST_OUTPUT_LIMIT:]}
+
+
+def doctest_problem(manifest: dict) -> str | None:
+    if manifest.get("lane") != "ordinary":
+        return None
+    outcome = manifest.get("doctests")
+    if not isinstance(outcome, dict) or type(outcome.get("exitCode")) is not int:
+        return "missing doctest outcome"
+    if outcome["exitCode"] != 0:
+        return f"workspace doctests failed with exit code {outcome['exitCode']}"
+    return None
+
+
+def doctest_record(manifest: dict, profile: str, host: str) -> dict:
+    outcome = manifest.get("doctests") if isinstance(manifest.get("doctests"), dict) else {}
+    problem = doctest_problem(manifest)
+    return allure_results.record(
+        name=DOCTEST_CASE["name"], full_name=case_id(DOCTEST_CASE),
+        status="failed" if problem else "passed", runner=host,
+        labels={"language": "rust", "framework": "rustdoc", "parentSuite": "rust",
+                "suite": DOCTEST_CASE["binary"], "subSuite": "workspace", "profile": profile,
+                "size": "small", "rust_lane": "ordinary"},
+        message=problem, trace=outcome.get("output") if problem else None,
+    )
+
+
 def reuse_command(action: str, root: Path, archive: Path, lane: str, profile: str, partition: str | None = None, *, candidate: str | None = None) -> list[str]:
     workspace = root / "vendor/ureq" if lane == "vendor" else root
     selected_filters = filters(lane)
@@ -284,9 +324,7 @@ def build(root: Path, destination: Path, lane: str, profile: str, host: str, lin
     completed.check_returncode()
     if prepared_binary.identity(root) != before:
         raise ValueError("source inputs changed while building the test archive")
-    if lane == "ordinary":
-        completed, _ = timed(doctest_command(root, before["target"]), root)
-        completed.check_returncode()
+    doctests = run_doctests(root, before["target"]) if lane == "ordinary" else None
     full_command = reuse_command("list", root, archive, lane, profile)
     completed, list_seconds = timed(full_command, root, capture=True)
     completed.check_returncode()
@@ -312,6 +350,7 @@ def build(root: Path, destination: Path, lane: str, profile: str, host: str, lin
     }
     if lane == "ordinary":
         document["fixtureBinary"] = fixture_binary_descriptor(root, listed, before)
+        document["doctests"] = doctests
     write(destination / "lane.json", document)
     allure_results.write_plan(destination, full)
 
@@ -367,6 +406,8 @@ def run_archive(root: Path, prepared: Path, destination: Path, lane: str, profil
         "attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
     }
     write(destination / "shard.json", status)
+    if lane == "ordinary" and index == 1:
+        allure_results.write(destination, doctest_record(document, profile, host))
     validate_result(document, status, index)
     if shadow is not None:
         decision = json.loads(shadow.read_text())
@@ -470,6 +511,11 @@ def verify_union(directory: Path, profile: str, hosts: list[str], sha: str) -> d
                 raise ValueError("missing or duplicate lane plan")
             manifest = matching[0]
             validate_manifest(manifest, profile=profile, host=host, lane=lane, sha=sha)
+            problem = doctest_problem(manifest)
+            if problem is not None:
+                # Recorded beside the shard checks, which still run: a red
+                # doctest must not hide a test failure in the same lane.
+                (advisory if profile == "large" and host == "windows-latest" else problems).append(f"{host}/{lane}: {problem}")
             if os.environ.get("GITHUB_RUN_ID") and any(manifest.get(key) != os.environ.get(env) for key, env in (("runId", "GITHUB_RUN_ID"), ("attempt", "GITHUB_RUN_ATTEMPT"))):
                 raise ValueError("lane plan belongs to another workflow run or attempt")
             matching_results = [item for item in results if (item.get("runner"), item.get("lane")) == (host, lane)]
