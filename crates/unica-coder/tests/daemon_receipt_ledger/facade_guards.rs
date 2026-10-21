@@ -15,10 +15,18 @@ const FACADE_PRODUCTION_SOURCES: &[(&str, &str)] = &[(
     include_str!("../../src/receipt_ledger_test_support.rs"),
 )];
 
-const OWNER_HELPER_PRODUCTION_SOURCES: &[(&str, &str)] = &[(
-    "../tests/support/receipt_scenario.rs",
-    include_str!("../support/receipt_scenario.rs"),
-)];
+// Бегунок сценариев целиком: корень и диспетчер действий, который корень
+// подключает модулем. Новый файл бегунка добавляется сюда осознанно.
+const OWNER_HELPER_PRODUCTION_SOURCES: &[(&str, &str)] = &[
+    (
+        "../tests/support/receipt_scenario.rs",
+        include_str!("../support/receipt_scenario.rs"),
+    ),
+    (
+        "../tests/support/receipt_scenario/dispatch.rs",
+        include_str!("../support/receipt_scenario/dispatch.rs"),
+    ),
+];
 
 fn facade_forbidden_authority_references(
     source: &str,
