@@ -34022,7 +34022,11 @@
        "contains": {
         "relation": "source",
         "at": "ext:Catalog.ПР_НастройкиВалют",
-        "kind": "Catalog"
+        "kind": "Catalog",
+        "target": {
+         "kind": "object",
+         "metadataPath": "Catalog.ПР_НастройкиВалют"
+        }
        }
       }
      ]
