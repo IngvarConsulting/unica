@@ -234,7 +234,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "invalid_cursor: check cursor is invalid or its source revision changed"
+      "refusal": "invalid_cursor: view cursor is invalid, expired, or belongs to another question"
     },
     {
       "tool": "unica.check",
@@ -246,7 +246,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "invalid_cursor: check cursor is invalid or its source revision changed"
+      "refusal": "invalid_cursor: view cursor is invalid, expired, or belongs to another question"
     },
     {
       "tool": "unica.check",
@@ -258,7 +258,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "invalid_cursor: check cursor is invalid or its source revision changed"
+      "refusal": "invalid_cursor: view cursor is invalid, expired, or belongs to another question"
     },
     {
       "tool": "unica.check",

@@ -2,7 +2,7 @@
   "id": "S-1721-xdto-missing-type",
   "issue": 1721,
   "area": "XDTO",
-  "task": "Отличить отсутствие типа XDTO и потомка отсутствующего типа от сбоя чтения; сохранить чтение существующего типа, not_found свойства и все исходники. Check подтверждает только readable с validators[].",
+  "task": "Отличить отсутствие типа XDTO и потомка отсутствующего типа от сбоя чтения; сохранить чтение существующего типа, not_found свойства и все исходники. Check возвращает находки валидатора xdto (#1591).",
   "workspace": "tests/fixtures/acceptance/workspace",
   "profile": "source",
   "wire": [
@@ -259,8 +259,10 @@
       "expect": [
         "ok"
       ],
-      "status": "readable",
-      "validators": [],
+      "status": "passed",
+      "validators": [
+        "xdto"
+      ],
       "assertions": [
         {
           "pointer": "/at",
