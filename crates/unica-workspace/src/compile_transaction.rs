@@ -133,7 +133,7 @@ fn retained_apply_fail_after_all_postimages() -> Result<(), String> {
     })
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(feature = "test-support")]
 use crate::platform::filesystem::replace_file_atomically;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -147,10 +147,11 @@ use super::single_file_publisher::{
     PublishPhase, PublishRequest,
 };
 
+#[cfg(feature = "test-support")]
+use super::single_file_publisher::with_before_bound_cleanup_hook;
 #[cfg(any(test, feature = "test-support"))]
 use super::single_file_publisher::{
-    with_before_bound_cleanup_hook, with_before_commit_hook,
-    with_publication_lock_contention_signal, with_publication_lock_pause,
+    with_before_commit_hook, with_publication_lock_contention_signal, with_publication_lock_pause,
 };
 
 #[cfg(test)]
@@ -6463,7 +6464,7 @@ pub fn with_commit_failpoint<T>(failpoint: CommitFailpoint, action: impl FnOnce(
     action()
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(feature = "test-support")]
 fn with_registration_recovery_pause<T>(
     ready: std::sync::mpsc::Sender<()>,
     release: std::sync::mpsc::Receiver<()>,
@@ -6522,7 +6523,7 @@ fn with_before_removal_rollback_restore_hook<T>(
     action()
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(feature = "test-support")]
 fn with_before_cleanup_retry_hook<T>(
     hook: impl FnOnce() + 'static,
     action: impl FnOnce() -> T,
@@ -6541,7 +6542,7 @@ fn with_before_cleanup_retry_hook<T>(
     action()
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(feature = "test-support")]
 fn with_before_rollback_quarantine_cleanup_hook<T>(
     hook: impl FnOnce(&Path) + 'static,
     action: impl FnOnce() -> T,
@@ -6561,7 +6562,7 @@ fn with_before_rollback_quarantine_cleanup_hook<T>(
     action()
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(feature = "test-support")]
 fn with_before_rollback_quarantine_restore_rename_hook<T>(
     hook: impl FnOnce(&Path, &Path) + 'static,
     action: impl FnOnce() -> T,
@@ -6581,7 +6582,7 @@ fn with_before_rollback_quarantine_restore_rename_hook<T>(
     action()
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(feature = "test-support")]
 fn with_after_registration_rollback_restore_hook<T>(
     hook: impl FnOnce(&Path, &Path) + 'static,
     action: impl FnOnce() -> T,

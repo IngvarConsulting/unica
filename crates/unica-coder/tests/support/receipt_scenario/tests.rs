@@ -1,5 +1,9 @@
-//! Юнит-тесты обвязки: разбор провода сценария и вспомогательные проверки.
-//! Путь модуля прежний, отбор nextest не меняется.
+//! Проверки самой обвязки: разбор провода сценария и вспомогательные проверки.
+//!
+//! Это не `#[cfg(test)]`-модуль: тестом библиотеки он требовал бы собрать
+//! весь `unica-coder` в тестовом варианте ради тридцати двух проверок.
+//! Тела остаются здесь, рядом с закрытыми типами обвязки, а `#[test]`
+//! разворачивает бинарь `daemon_receipt_ledger` через макрос в конце файла.
 
 use super::*;
 use unica_execution::receipt_ledger::{
@@ -284,7 +288,6 @@ fn cancel_checkpoint_observation_witness(point: &str, held_cancel: bool) -> (Val
     (held.clone(), completed.clone())
 }
 
-#[test]
 fn terminal_projection_wait_covers_cancel_sender_join_before_real_cancel_write() {
     let (held, completed) =
         cancel_checkpoint_observation_witness("before_task_cancel_write", false);
@@ -297,7 +300,6 @@ fn terminal_projection_wait_covers_cancel_sender_join_before_real_cancel_write()
     );
 }
 
-#[test]
 fn terminal_projection_wait_covers_cancel_flag_before_terminal_lifecycle_link() {
     let (held, completed) = cancel_checkpoint_observation_witness(
         "after_task_store_terminal_before_lifecycle_link_terminal",
@@ -314,7 +316,6 @@ fn terminal_projection_wait_covers_cancel_flag_before_terminal_lifecycle_link() 
     );
 }
 
-#[test]
 fn sender_completion_without_a_terminal_hook_cannot_satisfy_the_projection_wait() {
     let control = ReceiptScenarioControl::<CanonicalInvocationHost>::new(Arc::new(
         unica_daemon::transport::test_support::encode_lifecycle_response,
@@ -328,7 +329,6 @@ fn sender_completion_without_a_terminal_hook_cannot_satisfy_the_projection_wait(
     assert!(control.terminal_bound_tasks().is_empty());
 }
 
-#[test]
 fn terminal_projection_action_without_a_terminal_hook_cannot_report_success() {
     let control = Arc::new(ReceiptScenarioControl::<CanonicalInvocationHost>::new(
         Arc::new(unica_daemon::transport::test_support::encode_lifecycle_response),
@@ -348,7 +348,6 @@ fn terminal_projection_action_without_a_terminal_hook_cannot_report_success() {
     assert!(control.runtime().is_none());
 }
 
-#[test]
 fn bulk_key_index_keeps_exact_json_equality_with_collisions_and_missing_digests() {
     let first = json!({"keyDigest": "collision", "invocationId": "first"});
     let collision = json!({"keyDigest": "collision", "invocationId": "second"});
@@ -368,7 +367,6 @@ fn bulk_key_index_keeps_exact_json_equality_with_collisions_and_missing_digests(
     assert_eq!(index, vec![first, missing, non_string, collision]);
 }
 
-#[test]
 fn seeded_promised_and_handoff_states_cross_the_real_actor_store_path() {
     let identity = CoreIdentity::production_v5();
     let cases = [
@@ -463,7 +461,6 @@ fn seeded_promised_and_handoff_states_cross_the_real_actor_store_path() {
     }
 }
 
-#[test]
 fn seeded_direct_and_bound_owners_cross_the_real_durable_stores() {
     let identity = CoreIdentity::production_v5();
     for (seed_state, expected_kind) in [
@@ -561,7 +558,6 @@ fn seeded_direct_and_bound_owners_cross_the_real_durable_stores() {
     }
 }
 
-#[test]
 fn checkpoint_projects_real_task_store_and_lifecycle_link_records() {
     let request = json!({
         "clock": "fake",
@@ -614,7 +610,6 @@ fn checkpoint_projects_real_task_store_and_lifecycle_link_records() {
         Some(1)
     );
 }
-#[test]
 fn receipt_pending_observation_distinguishes_cancel_reservation_phase() {
     let identity = CoreIdentity::production_v5();
     let key = fresh_key(&identity, &Map::new()).expect("construct pending receipt key");
@@ -654,7 +649,6 @@ fn receipt_pending_observation_distinguishes_cancel_reservation_phase() {
     );
 }
 
-#[test]
 fn late_cancel_preserves_the_committed_actor_bound_task_terminal() {
     let request = json!({
         "clock": "fake",
@@ -714,7 +708,6 @@ fn late_cancel_preserves_the_committed_actor_bound_task_terminal() {
     );
 }
 
-#[test]
 fn protocol_ack_loss_retry_and_duplicate_read_the_same_compact_tombstone() {
     let request = json!({
         "clock": "fake",
@@ -841,7 +834,6 @@ fn protocol_ack_loss_retry_and_duplicate_read_the_same_compact_tombstone() {
     );
 }
 
-#[test]
 fn batch_client_failure_stops_and_joins_the_daemon_before_returning() {
     let root = tempfile::tempdir().expect("temporary failed-batch state root");
     let state_root = std::fs::canonicalize(root.path()).expect("physical failed-batch state root");
@@ -869,7 +861,6 @@ fn batch_client_failure_stops_and_joins_the_daemon_before_returning() {
     );
 }
 
-#[test]
 fn snapshot_accounting_and_indexes_cover_the_full_store_catalog() {
     let root = tempfile::tempdir().expect("temporary full-catalog store");
     let receipts = std::fs::canonicalize(root.path())
@@ -947,7 +938,6 @@ fn snapshot_accounting_and_indexes_cover_the_full_store_catalog() {
     }
 }
 
-#[test]
 fn pending_submit_releases_actor_store_before_waiting_for_daemon_exit() {
     let root = tempfile::tempdir().expect("temporary pending-submit store");
     let receipts = std::fs::canonicalize(root.path())
@@ -1013,7 +1003,6 @@ fn pending_submit_releases_actor_store_before_waiting_for_daemon_exit() {
         .expect("actor/store must be released before daemon join");
 }
 
-#[test]
 fn invalid_restart_joins_its_held_operation_before_returning_without_a_successor() {
     struct RedSafetyCleanup {
         control: Arc<ReceiptScenarioControl<CanonicalInvocationHost>>,
@@ -1091,7 +1080,6 @@ fn invalid_restart_joins_its_held_operation_before_returning_without_a_successor
     assert_eq!(elapsed, None);
 }
 
-#[test]
 fn no_elapsed_fail_stop_cannot_rotate_while_its_actual_runtime_is_retained() {
     let state = ScenarioStateRoot::new().expect("retained fail-stop owner state");
     let identity = CoreIdentity::production_v5();
@@ -1120,7 +1108,6 @@ fn no_elapsed_fail_stop_cannot_rotate_while_its_actual_runtime_is_retained() {
     assert_eq!(control.process_exit_elapsed_ms(), None);
 }
 
-#[test]
 fn genuine_no_elapsed_fail_stop_releases_its_owner_before_a_fresh_native_success() {
     let state = ScenarioStateRoot::new().expect("native fail-stop state");
     let workspace = ScenarioWorkspace::new().expect("native fail-stop workspace");
@@ -1252,7 +1239,6 @@ fn genuine_no_elapsed_fail_stop_releases_its_owner_before_a_fresh_native_success
     assert_eq!(control.side_effect_markers(), 1);
 }
 
-#[test]
 fn gated_runtime_registers_its_actual_owner_until_that_runtime_is_released() {
     let state = ScenarioStateRoot::new().expect("gated owner state root");
     let identity = CoreIdentity::production_v5();
@@ -1280,7 +1266,6 @@ fn gated_runtime_registers_its_actual_owner_until_that_runtime_is_released() {
         .expect("released gated runtime no longer owns the process");
 }
 
-#[test]
 fn gated_cancel_after_begun_crash_opens_a_fresh_process_without_explicit_restart() {
     let request = json!({
         "clock": "fake",
@@ -1315,7 +1300,6 @@ fn gated_cancel_after_begun_crash_opens_a_fresh_process_without_explicit_restart
     assert_eq!(snapshot["processExitElapsedMs"], 1);
 }
 
-#[test]
 fn restart_releases_a_joined_gated_operation_runtime_before_opening_its_successor() {
     let request = json!({
         "clock": "fake",
@@ -1343,7 +1327,6 @@ fn restart_releases_a_joined_gated_operation_runtime_before_opening_its_successo
     assert_eq!(snapshot["sideEffectMarkers"], 0);
 }
 
-#[test]
 fn restart_gives_a_fresh_submit_live_process_and_preserves_its_future_barrier() {
     let request = json!({
         "clock": "fake",
@@ -1397,7 +1380,6 @@ fn restart_gives_a_fresh_submit_live_process_and_preserves_its_future_barrier() 
     assert_eq!(completed["processExitElapsedMs"], 1);
 }
 
-#[test]
 fn implicit_successor_submit_after_joined_owner_quiescence_preserves_its_future_barrier() {
     let request = json!({
         "clock": "fake",
@@ -1469,7 +1451,6 @@ fn implicit_successor_submit_after_joined_owner_quiescence_preserves_its_future_
     assert_eq!(completed["processExitElapsedMs"], 1);
 }
 
-#[test]
 fn fresh_task_listener_after_restart_survives_its_prepare_barrier_release() {
     let request = json!({
         "clock": "fake",
@@ -1589,7 +1570,6 @@ fn assert_successor_barrier_configuration(
     assert!(!control.has_unreleased_barriers());
 }
 
-#[test]
 fn future_barriers_after_no_elapsed_fail_stop_belong_to_the_next_process() {
     let control = Arc::new(ReceiptScenarioControl::<CanonicalInvocationHost>::new(
         Arc::new(unica_daemon::transport::test_support::encode_lifecycle_response),
@@ -1601,7 +1581,6 @@ fn future_barriers_after_no_elapsed_fail_stop_belong_to_the_next_process() {
     assert_successor_barrier_configuration(&control, &old, &telemetry);
 }
 
-#[test]
 fn future_barriers_after_permission_close_belong_to_the_next_process() {
     let control = Arc::new(ReceiptScenarioControl::<CanonicalInvocationHost>::new(
         Arc::new(unica_daemon::transport::test_support::encode_lifecycle_response),
@@ -1613,7 +1592,6 @@ fn future_barriers_after_permission_close_belong_to_the_next_process() {
     assert_successor_barrier_configuration(&control, &old, &telemetry);
 }
 
-#[test]
 fn future_barrier_queries_after_exit_select_the_next_process_configuration() {
     let control = Arc::new(ReceiptScenarioControl::<CanonicalInvocationHost>::new(
         Arc::new(unica_daemon::transport::test_support::encode_lifecycle_response),
@@ -1625,7 +1603,6 @@ fn future_barrier_queries_after_exit_select_the_next_process_configuration() {
     assert_successor_barrier_configuration(&control, &old, &telemetry);
 }
 
-#[test]
 fn successor_hooks_keep_old_process_dead_and_future_barriers_owned_by_the_new_life() {
     let control = Arc::new(ReceiptScenarioControl::<CanonicalInvocationHost>::new(
         Arc::new(unica_daemon::transport::test_support::encode_lifecycle_response),
@@ -1705,7 +1682,6 @@ fn successor_hooks_keep_old_process_dead_and_future_barriers_owned_by_the_new_li
     assert_eq!(new.pause(future_point, exact_deadline), Ok(()));
 }
 
-#[test]
 fn successor_gate_permission_does_not_inherit_the_old_process_cancellation_request() {
     let control = Arc::new(ReceiptScenarioControl::<CanonicalInvocationHost>::new(
         Arc::new(unica_daemon::transport::test_support::encode_lifecycle_response),
@@ -1733,7 +1709,6 @@ fn successor_gate_permission_does_not_inherit_the_old_process_cancellation_reque
     assert_eq!(new.wait_for_gate_cancel(deadline), Ok(()));
 }
 
-#[test]
 fn retained_old_hook_cannot_release_the_successor_lifecycle_gate() {
     let control = Arc::new(ReceiptScenarioControl::<CanonicalInvocationHost>::new(
         Arc::new(unica_daemon::transport::test_support::encode_lifecycle_response),
@@ -1759,7 +1734,6 @@ fn retained_old_hook_cannot_release_the_successor_lifecycle_gate() {
     new.release_lifecycle_gate("new-contender");
 }
 
-#[test]
 fn successor_closes_and_joins_old_gate_waiters_without_cancelling_the_new_life() {
     let control = Arc::new(ReceiptScenarioControl::<CanonicalInvocationHost>::new(
         Arc::new(unica_daemon::transport::test_support::encode_lifecycle_response),
@@ -1818,7 +1792,6 @@ fn successor_closes_and_joins_old_gate_waiters_without_cancelling_the_new_life()
     new.release_lifecycle_gate("new-owner");
 }
 
-#[test]
 fn closing_permissions_does_not_claim_process_exit() {
     let control = Arc::new(ReceiptScenarioControl::<CanonicalInvocationHost>::new(
         Arc::new(unica_daemon::transport::test_support::encode_lifecycle_response),
@@ -1846,7 +1819,6 @@ fn closing_permissions_does_not_claim_process_exit() {
     );
 }
 
-#[test]
 fn fail_stop_request_without_exit_belongs_only_to_its_captured_process_life() {
     let control = Arc::new(ReceiptScenarioControl::<CanonicalInvocationHost>::new(
         Arc::new(unica_daemon::transport::test_support::encode_lifecycle_response),
@@ -1872,3 +1844,67 @@ fn fail_stop_request_without_exit_belongs_only_to_its_captured_process_life() {
     assert!(!fresh.process_exited(), "a stop request is not actual exit");
     assert_eq!(control.process_exit_elapsed_ms(), None);
 }
+
+/// Единственный список проверок. Каждая получает вход без аргументов в
+/// [`entry`] и `#[test]` в бинаре `daemon_receipt_ledger`. Проверка вне
+/// списка остаётся мёртвым кодом и роняет ворота clippy (`-D warnings`),
+/// имя вне проверок не компилируется: список не расходится с телами молча.
+macro_rules! harness_checks {
+    ($($check:ident),+ $(,)?) => {
+        pub mod entry {
+            $(
+                pub fn $check() {
+                    super::$check();
+                }
+            )+
+        }
+
+        #[doc(hidden)]
+        #[macro_export]
+        macro_rules! receipt_scenario_harness_tests {
+            () => {
+                $(
+                    #[test]
+                    fn $check() {
+                        $crate::receipt_scenario_harness_checks::$check();
+                    }
+                )+
+            };
+        }
+    };
+}
+
+harness_checks!(
+    terminal_projection_wait_covers_cancel_sender_join_before_real_cancel_write,
+    terminal_projection_wait_covers_cancel_flag_before_terminal_lifecycle_link,
+    sender_completion_without_a_terminal_hook_cannot_satisfy_the_projection_wait,
+    terminal_projection_action_without_a_terminal_hook_cannot_report_success,
+    bulk_key_index_keeps_exact_json_equality_with_collisions_and_missing_digests,
+    seeded_promised_and_handoff_states_cross_the_real_actor_store_path,
+    seeded_direct_and_bound_owners_cross_the_real_durable_stores,
+    checkpoint_projects_real_task_store_and_lifecycle_link_records,
+    receipt_pending_observation_distinguishes_cancel_reservation_phase,
+    late_cancel_preserves_the_committed_actor_bound_task_terminal,
+    protocol_ack_loss_retry_and_duplicate_read_the_same_compact_tombstone,
+    batch_client_failure_stops_and_joins_the_daemon_before_returning,
+    snapshot_accounting_and_indexes_cover_the_full_store_catalog,
+    pending_submit_releases_actor_store_before_waiting_for_daemon_exit,
+    invalid_restart_joins_its_held_operation_before_returning_without_a_successor,
+    no_elapsed_fail_stop_cannot_rotate_while_its_actual_runtime_is_retained,
+    genuine_no_elapsed_fail_stop_releases_its_owner_before_a_fresh_native_success,
+    gated_runtime_registers_its_actual_owner_until_that_runtime_is_released,
+    gated_cancel_after_begun_crash_opens_a_fresh_process_without_explicit_restart,
+    restart_releases_a_joined_gated_operation_runtime_before_opening_its_successor,
+    restart_gives_a_fresh_submit_live_process_and_preserves_its_future_barrier,
+    implicit_successor_submit_after_joined_owner_quiescence_preserves_its_future_barrier,
+    fresh_task_listener_after_restart_survives_its_prepare_barrier_release,
+    future_barriers_after_no_elapsed_fail_stop_belong_to_the_next_process,
+    future_barriers_after_permission_close_belong_to_the_next_process,
+    future_barrier_queries_after_exit_select_the_next_process_configuration,
+    successor_hooks_keep_old_process_dead_and_future_barriers_owned_by_the_new_life,
+    successor_gate_permission_does_not_inherit_the_old_process_cancellation_request,
+    retained_old_hook_cannot_release_the_successor_lifecycle_gate,
+    successor_closes_and_joins_old_gate_waiters_without_cancelling_the_new_life,
+    closing_permissions_does_not_claim_process_exit,
+    fail_stop_request_without_exit_belongs_only_to_its_captured_process_life,
+);

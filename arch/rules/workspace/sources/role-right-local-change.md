@@ -1,9 +1,9 @@
 ---
 id: INV.SOURCE.ROLE-RIGHT-LOCAL-CHANGE
 check:
-  - crates/unica-coder/src/infrastructure/native_operations/role.rs::range_writer_uses_direct_children_and_preserves_unknown_xml_bom_and_eol
-  - crates/unica-coder/src/infrastructure/native_operations/role.rs::range_writer_replaces_only_boolean_text_and_preserves_value_markup
-  - crates/unica-coder/src/infrastructure/native_operations/role.rs::writer_inserts_with_existing_eol_and_data_processor_false_removes_whole_object
+  - crates/unica-roles-designer/src/writer_contract_tests.rs::range_writer_uses_direct_children_and_preserves_unknown_xml_bom_and_eol
+  - crates/unica-roles-designer/src/writer_contract_tests.rs::range_writer_replaces_only_boolean_text_and_preserves_value_markup
+  - crates/unica-roles-designer/src/writer_contract_tests.rs::writer_inserts_with_existing_eol_and_data_processor_false_removes_whole_object
 ---
 
 # Правка права сохраняет остальное описание роли

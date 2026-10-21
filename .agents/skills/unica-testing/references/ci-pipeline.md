@@ -68,6 +68,20 @@ Pull request сверяется с ближайшим проверенным п�
 Тогда в pr сброс объявляет описание проверяемого PR из события, а в queue
 и остальных профилях — PR, названный в теме HEAD.
 
+Pull request исполняет small, а medium затронутых пакетов добавляет
+`run-rust-ordinary-medium`. Она идёт только на Linux и берёт тот же архив
+ordinary: архив уже содержит medium, отсекал его только фильтр профиля.
+Джоба запускает его nextest-профилем `queue` (small и medium, без large),
+сузив отбор до пакетов теневого selector и их обратных потребителей.
+Неизвестный вход, решение full, чужой SHA или сбой selector дают весь
+medium. План и результаты лежат в `medium.json`. `test-rust-platforms`
+пересчитывает отбор по решению selector того же прогона и сверяет
+результаты тем же правилом, что и части. План обязан содержать все
+кейсы выбранных пакетов из плана PR. Пустой план допустим, только если
+в затронутых пакетах нет тестов вне large. С прежним инвентарём эта
+добавка не сравнивается. Очередь по-прежнему исполняет полный набор.
+Lanes receipt и vendor и medium на macOS остаются за очередью.
+
 Сценарий доставки сервисных движков получает путь и SHA256 уже включённого
 в ordinary archive non-test binary `unica`. Producer выбирает его по metadata
 nextest; parent и дочерний тест сверяют hash перед запуском. Вложенной сборки
@@ -80,6 +94,9 @@ Cargo нет. Этот executable — фикстура архива; прове�
 Фактическую работу process/FS-тестов из архива проверяй отдельно от полноты
 разбиения. `ci_rust_lanes.py` сохраняет build/list/execution durations,
 размер архива и identity; download/runner wait доступны в jobs того же run.
+Сводку серии прогонов собирает `ci_run_metrics.py` из jobs, логов и этих
+артефактов. Ручной запуск держит `Unica CI` до конца поставочного хвоста,
+поэтому с очередью его сравнивай по времени до последней непоставочной джобы.
 
 `build-python-product` создаёт ordinary binary до завершения Rust suites.
 Python получает его архив с manifest и проверяет его через `prepared_binary.py`:
@@ -87,7 +104,10 @@ Python получает его архив с manifest и проверяет ег
 режим и состав архива. Только после проверки извлечённые bytes становятся
 доступны по `UNICA_PREPARED_BINARY_MANIFEST`, вне изменяемого Cargo target.
 Test-support и stale binary отвергаются; при заданном manifest возврата
-к локальной сборке нет. Без него локальные consumers сохраняют Cargo fallback.
+к локальной сборке нет. Без него в CI (`GITHUB_ACTIONS=true`) `ensure_binary`
+отказывает; локально собирает одной командой и сообщает об этом в stderr.
+Модуль-потребитель `ensure_binary` объявляется `medium`; это держит
+`tests/ci/test_python_sizes.py`.
 
 `ci_shadow_selector.py` строит кандидата по union base/head Cargo graphs и
 обратным consumers. Общие/неизвестные входы, locks/features, fixtures/specs
@@ -105,8 +125,11 @@ CI/toolchain или неизвестном диапазоне push `warm-rust-ca
 пропускает компиляцию. Прогрев не запускает тесты и не публикует их результаты.
 Lint и warm используют прежний `shared-key`; producers ordinary/Receipt/vendor
 имеют отдельные ключи и то же значение `CARGO_PROFILE_DEV_DEBUG`.
-Artifact producers используют `lookup-only: true`: проверяют ключ, но не
-восстанавливают изменяемый Cargo cache в собираемые binary/test archives.
+Artifact producers восстанавливают свой ключ: в нём только зависимости,
+крейты workspace rust-cache перед записью вычищает, и они компилируются заново.
+Ordinary binary для Python собирается в свой target-dir, и кеш указывает
+на него явно. Пишут ключи push в ветку и ручной запуск (ночью — `large`);
+PR, очередь и тег читают область main.
 Готовые проверенные архивы по-прежнему передаются и используются executor-ами.
 Lint только читает кеш. Кеш зависимостей не передаёт
 готовые бинарные файлы workspace другой job. Релизная ветка, тег и ручной запуск,

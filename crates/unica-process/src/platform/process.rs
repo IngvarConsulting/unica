@@ -3676,6 +3676,56 @@ mod tests {
 
     const HELPER_ENV: &str = "UNICA_MANAGED_CHILD_HELPER";
     const HELPER_PID_FILE_ENV: &str = "UNICA_MANAGED_CHILD_PID_FILE";
+    const HELPER_STARTED_ENV: &str = "UNICA_MANAGED_CHILD_STARTED";
+
+    /// Runtime proof that the helper body ran. Launched without `--ignored`,
+    /// libtest answers `running 0 tests` and exits 0, so a parent that only
+    /// terminates, observes or counts output lines would pass without its
+    /// helper. The helper writes this marker before its mode starts.
+    struct HelperStart {
+        _directory: tempfile::TempDir,
+        marker: PathBuf,
+    }
+
+    impl HelperStart {
+        fn new() -> Self {
+            let directory = tempfile::tempdir().unwrap();
+            let marker = directory.path().join("started");
+            Self {
+                _directory: directory,
+                marker,
+            }
+        }
+
+        fn env(&self) -> (OsString, OsString) {
+            (
+                OsString::from(HELPER_STARTED_ENV),
+                self.marker.clone().into_os_string(),
+            )
+        }
+
+        fn assert_started(&self) {
+            wait_for_helper_start(&self.marker);
+        }
+    }
+
+    fn wait_for_helper_start(marker: &Path) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !marker.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "managed_child_test_helper did not start; was it launched with --ignored?"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Marker of the `process_tree_child` grandchild. The intermediate helper
+    /// waits for it before publishing the grandchild PID, so a descendant
+    /// that never ran cannot pass as one that was killed.
+    fn grandchild_started_marker(pid_file: &std::ffi::OsStr) -> PathBuf {
+        PathBuf::from(format!("{}.started", pid_file.to_string_lossy()))
+    }
     const CONTROLLED_STDERR_SOCKET_ENV: &str = "UNICA_CONTROLLED_STDERR_SOCKET";
     #[cfg(unix)]
     const RUNTIME_SENTINEL_HELPER_ENV: &str = "UNICA_RUNTIME_SENTINEL_HELPER";
@@ -3792,11 +3842,14 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "helper process: spawned by the managed-child tests with HELPER_ENV; not a standalone test"]
     #[allow(clippy::zombie_processes)] // Fixture intentionally exits while its descendant remains alive.
     fn managed_child_test_helper() {
-        let Ok(mode) = std::env::var(HELPER_ENV) else {
-            return;
-        };
+        let mode =
+            std::env::var(HELPER_ENV).expect("helper process: the parent test sets HELPER_ENV");
+        if let Some(marker) = std::env::var_os(HELPER_STARTED_ENV) {
+            std::fs::write(marker, &mode).expect("record helper start");
+        }
 
         match mode.as_str() {
             "success" => {
@@ -3809,9 +3862,11 @@ mod tests {
                     .args([
                         "--exact",
                         "platform::process::tests::managed_child_test_helper",
+                        "--ignored",
                         "--nocapture",
                     ])
                     .env(HELPER_ENV, "success")
+                    .env_remove(HELPER_STARTED_ENV)
                     .stdin(Stdio::null())
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
@@ -3952,18 +4007,23 @@ mod tests {
             }
             "process_tree_immediate_parent" => {
                 let pid_file = std::env::var_os(HELPER_PID_FILE_ENV).unwrap();
+                let grandchild_marker = grandchild_started_marker(&pid_file);
                 let mut child = Command::new(std::env::current_exe().unwrap())
                     .args([
                         "--exact",
                         "platform::process::tests::managed_child_test_helper",
+                        "--ignored",
                         "--nocapture",
                     ])
                     .env(HELPER_ENV, "process_tree_child")
+                    .env(HELPER_STARTED_ENV, &grandchild_marker)
                     .stdin(Stdio::null())
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
                     .spawn()
                     .unwrap();
+                wait_for_helper_start(&grandchild_marker);
+                std::fs::remove_file(&grandchild_marker).unwrap();
                 std::fs::write(
                     pid_file,
                     format!("{}\n{}\n", std::process::id(), child.id()),
@@ -3973,17 +4033,22 @@ mod tests {
             }
             "inherited_pipe_parent" => {
                 let pid_file = std::env::var_os(HELPER_PID_FILE_ENV).unwrap();
+                let grandchild_marker = grandchild_started_marker(&pid_file);
                 let child = Command::new(std::env::current_exe().unwrap())
                     .args([
                         "--exact",
                         "platform::process::tests::managed_child_test_helper",
+                        "--ignored",
                         "--nocapture",
                     ])
                     .env(HELPER_ENV, "process_tree_child")
+                    .env(HELPER_STARTED_ENV, &grandchild_marker)
                     .spawn()
                     .unwrap();
                 print!("inherited-pipe-before-timeout");
                 std::io::Write::flush(&mut std::io::stdout()).unwrap();
+                wait_for_helper_start(&grandchild_marker);
+                std::fs::remove_file(&grandchild_marker).unwrap();
                 std::fs::write(
                     pid_file,
                     format!("{}\n{}\n", std::process::id(), child.id()),
@@ -4005,9 +4070,11 @@ mod tests {
                         .args([
                             "--exact",
                             "platform::process::tests::managed_child_test_helper",
+                            "--ignored",
                             "--nocapture",
                         ])
                         .env(HELPER_ENV, "windows_parked_handoff_client")
+                        .env_remove(HELPER_STARTED_ENV)
                         .stdin(Stdio::null())
                         .stdout(Stdio::null())
                         .stderr(Stdio::null())
@@ -4048,9 +4115,11 @@ mod tests {
                     .args([
                         "--exact",
                         "platform::process::tests::managed_child_test_helper",
+                        "--ignored",
                         "--nocapture",
                     ])
                     .env(HELPER_ENV, "process_tree_child")
+                    .env_remove(HELPER_STARTED_ENV)
                     .stdin(Stdio::null())
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
@@ -4066,9 +4135,11 @@ mod tests {
                     .args([
                         "--exact",
                         "platform::process::tests::managed_child_test_helper",
+                        "--ignored",
                         "--nocapture",
                     ])
                     .env(HELPER_ENV, "process_tree_child")
+                    .env_remove(HELPER_STARTED_ENV)
                     .spawn()
                     .unwrap();
                 print!("{{\"ok\":true,\"pid\":{}}}", grandchild.id());
@@ -4085,14 +4156,17 @@ mod tests {
 
                 install_helper_sigterm_handler();
                 let pid_file = std::env::var_os(HELPER_PID_FILE_ENV).unwrap();
+                let grandchild_marker = grandchild_started_marker(&pid_file);
                 let mut command = Command::new(std::env::current_exe().unwrap());
                 command
                     .args([
                         "--exact",
                         "platform::process::tests::managed_child_test_helper",
+                        "--ignored",
                         "--nocapture",
                     ])
                     .env(HELPER_ENV, "process_tree_child")
+                    .env(HELPER_STARTED_ENV, &grandchild_marker)
                     .stdin(Stdio::null())
                     .stdout(Stdio::null())
                     .stderr(Stdio::null());
@@ -4105,6 +4179,8 @@ mod tests {
                     });
                 }
                 let mut external_child = command.spawn().unwrap();
+                wait_for_helper_start(&grandchild_marker);
+                std::fs::remove_file(&grandchild_marker).unwrap();
                 std::fs::write(
                     pid_file,
                     format!("{}\n{}\n", std::process::id(), external_child.id()),
@@ -4127,18 +4203,23 @@ mod tests {
             }
             "process_tree_detached_leader" => {
                 let pid_file = std::env::var_os(HELPER_PID_FILE_ENV).unwrap();
+                let grandchild_marker = grandchild_started_marker(&pid_file);
                 let child = Command::new(std::env::current_exe().unwrap())
                     .args([
                         "--exact",
                         "platform::process::tests::managed_child_test_helper",
+                        "--ignored",
                         "--nocapture",
                     ])
                     .env(HELPER_ENV, "process_tree_child")
+                    .env(HELPER_STARTED_ENV, &grandchild_marker)
                     .stdin(Stdio::null())
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
                     .spawn()
                     .unwrap();
+                wait_for_helper_start(&grandchild_marker);
+                std::fs::remove_file(&grandchild_marker).unwrap();
                 std::fs::write(
                     pid_file,
                     format!("{}\n{}\n", std::process::id(), child.id()),
@@ -4373,6 +4454,7 @@ mod tests {
             args: vec![
                 "--exact".into(),
                 "platform::process::tests::managed_child_test_helper".into(),
+                "--ignored".into(),
                 "--nocapture".into(),
             ],
             cwd: std::env::current_dir().unwrap(),
@@ -4411,6 +4493,7 @@ mod tests {
             args: vec![
                 "--exact".into(),
                 "platform::process::tests::managed_child_test_helper".into(),
+                "--ignored".into(),
                 "--nocapture".into(),
             ],
             cwd: std::env::current_dir().map_err(|error| error.to_string())?,
@@ -4434,6 +4517,7 @@ mod tests {
                 args: vec![
                     "--exact".into(),
                     "platform::process::tests::managed_child_test_helper".into(),
+                    "--ignored".into(),
                     "--nocapture".into(),
                 ],
                 cwd: std::env::current_dir().map_err(|error| error.to_string())?,
@@ -4472,14 +4556,17 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_runtime_descendant_probe_distinguishes_exited_unreaped_process() {
+        let start = HelperStart::new();
         let mut command = Command::new(std::env::current_exe().unwrap());
         command
             .args([
                 "--exact",
                 "platform::process::tests::managed_child_test_helper",
+                "--ignored",
                 "--nocapture",
             ])
             .env(HELPER_ENV, "echo_stdin_len")
+            .env(HELPER_STARTED_ENV, &start.marker)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -4490,6 +4577,7 @@ mod tests {
         let probe = super::RuntimeProcessTreeTestProbe::capture(pid)
             .expect("capture the live fixture process before releasing stdin");
         assert!(probe.is_alive().expect("observe the held live process"));
+        start.assert_started();
 
         drop(child.child_mut().stdin.take());
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -4798,6 +4886,7 @@ mod tests {
             .args([
                 "--exact",
                 "platform::process::tests::managed_child_test_helper",
+                "--ignored",
                 "--nocapture",
             ])
             .env(HELPER_ENV, "echo_stdin_len")
@@ -4953,6 +5042,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[ignore = "helper process: spawned by runtime_sentinel_preserves_a_meaningful_inherited_fd198 with RUNTIME_SENTINEL_FD198_MARKER_ENV; not a standalone test"]
     #[allow(clippy::zombie_processes)]
     // The parent test owns and reaps the detached descendant after observing
     // sentinel-only lifetime; waiting here would erase the tested boundary.
@@ -4961,9 +5051,8 @@ mod tests {
         use std::os::unix::fs::MetadataExt;
         use std::os::unix::process::CommandExt;
 
-        let Some(marker) = std::env::var_os(RUNTIME_SENTINEL_FD198_MARKER_ENV) else {
-            return;
-        };
+        let marker = std::env::var_os(RUNTIME_SENTINEL_FD198_MARKER_ENV)
+            .expect("helper process: the fd198 harness sets the marker");
         let mut inherited = unsafe { std::fs::File::from_raw_fd(198) };
         let metadata = inherited.metadata().unwrap();
         let mut bytes = Vec::new();
@@ -5068,6 +5157,7 @@ mod tests {
             .args([
                 "--exact",
                 "platform::process::tests::runtime_preexisting_fd198_helper",
+                "--ignored",
                 "--nocapture",
             ])
             .env(RUNTIME_SENTINEL_FD198_MARKER_ENV, &marker)
@@ -5233,6 +5323,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[ignore = "helper process: spawned by the runtime sentinel tests with RUNTIME_SENTINEL_HELPER_ENV; not a standalone test"]
     #[allow(clippy::zombie_processes)]
     // This helper intentionally exits before its detached descendant: the
     // parent test owns the descendant PID, terminates it, and observes sentinel
@@ -5248,6 +5339,7 @@ mod tests {
                     .args([
                         "--exact",
                         "platform::process::tests::runtime_runner_style_sentinel_helper",
+                        "--ignored",
                         "--nocapture",
                     ])
                     .env(RUNTIME_SENTINEL_HELPER_ENV, "descendant")
@@ -5277,7 +5369,7 @@ mod tests {
                 .unwrap();
                 thread::sleep(Duration::from_secs(30));
             }
-            _ => {}
+            other => panic!("helper process: unexpected sentinel mode {other:?}"),
         }
     }
 
@@ -5295,6 +5387,7 @@ mod tests {
             .args([
                 "--exact",
                 "platform::process::tests::runtime_runner_style_sentinel_helper",
+                "--ignored",
                 "--nocapture",
             ])
             .env(RUNTIME_SENTINEL_HELPER_ENV, "runner")
@@ -5360,6 +5453,7 @@ mod tests {
             .args([
                 "--exact",
                 "platform::process::tests::managed_child_test_helper",
+                "--ignored",
                 "--nocapture",
             ])
             .env(HELPER_ENV, "windows_finished_child_parent")
@@ -5423,6 +5517,7 @@ mod tests {
                 .args([
                     "--exact",
                     "platform::process::tests::managed_child_test_helper",
+                    "--ignored",
                     "--nocapture",
                 ])
                 .env(HELPER_ENV, "exit_leaving_detached_grandchild")
@@ -5588,6 +5683,7 @@ mod tests {
             .args([
                 "--exact",
                 "platform::process::tests::managed_child_test_helper",
+                "--ignored",
                 "--nocapture",
             ])
             .env(HELPER_ENV, "exit_leaving_detached_grandchild")
@@ -5646,6 +5742,7 @@ mod tests {
             args: vec![
                 "--exact".into(),
                 "platform::process::tests::managed_child_test_helper".into(),
+                "--ignored".into(),
                 "--nocapture".into(),
             ],
             cwd: std::env::current_dir().unwrap(),
@@ -5917,6 +6014,7 @@ mod tests {
             args: vec![
                 "--exact".into(),
                 "platform::process::tests::managed_child_test_helper".into(),
+                "--ignored".into(),
                 "--nocapture".into(),
             ],
             cwd: std::env::current_dir().unwrap(),
@@ -5948,21 +6046,27 @@ mod tests {
 
     #[test]
     fn managed_child_termination_is_idempotent_and_reaps_direct_child() {
+        let start = HelperStart::new();
         let mut managed = ManagedChild::spawn(ManagedCommand {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
                 "platform::process::tests::managed_child_test_helper".into(),
+                "--ignored".into(),
                 "--nocapture".into(),
             ],
             cwd: std::env::current_dir().unwrap(),
-            env: vec![(OsString::from(HELPER_ENV), OsString::from("sleep"))],
+            env: vec![
+                (OsString::from(HELPER_ENV), OsString::from("sleep")),
+                start.env(),
+            ],
             env_remove: Vec::new(),
             capture_limits: None,
             timeout: None,
             cancellation: CancellationToken::new(),
         })
         .unwrap();
+        start.assert_started();
 
         managed.terminate().unwrap();
         assert_eq!(managed.state, ChildState::Reaped);
@@ -5974,6 +6078,7 @@ mod tests {
 
     #[test]
     fn protected_process_finishes_after_cancellation_on_every_host() {
+        let start = HelperStart::new();
         let cancellation = CancellationToken::new();
         let signal = cancellation.clone();
         let canceller = thread::spawn(move || {
@@ -5989,10 +6094,14 @@ mod tests {
             args: vec![
                 "--exact".into(),
                 "platform::process::tests::managed_child_test_helper".into(),
+                "--ignored".into(),
                 "--nocapture".into(),
             ],
             cwd: std::env::current_dir().unwrap(),
-            env: vec![(OsString::from(HELPER_ENV), OsString::from("short_sleep"))],
+            env: vec![
+                (OsString::from(HELPER_ENV), OsString::from("short_sleep")),
+                start.env(),
+            ],
             env_remove: Vec::new(),
             capture_limits: None,
             timeout: None,
@@ -6000,6 +6109,7 @@ mod tests {
         })
         .unwrap();
         canceller.join().unwrap();
+        start.assert_started();
         assert!(cancellation.protected_process_started());
         assert!(output.status_success, "{output:?}");
         assert!(!output.cancelled);
@@ -6007,15 +6117,20 @@ mod tests {
 
     #[test]
     fn line_consumer_can_stop_and_reap_the_process_before_timeout() {
+        let start = HelperStart::new();
         let mut managed = ManagedChild::spawn(ManagedCommand {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
                 "platform::process::tests::managed_child_test_helper".into(),
+                "--ignored".into(),
                 "--nocapture".into(),
             ],
             cwd: std::env::current_dir().unwrap(),
-            env: vec![(OsString::from(HELPER_ENV), OsString::from("stream_forever"))],
+            env: vec![
+                (OsString::from(HELPER_ENV), OsString::from("stream_forever")),
+                start.env(),
+            ],
             env_remove: Vec::new(),
             capture_limits: None,
             timeout: Some(Duration::from_secs(5)),
@@ -6036,6 +6151,7 @@ mod tests {
             })
             .unwrap();
 
+        start.assert_started();
         assert_eq!(lines, 3);
         assert!(output.stopped_by_consumer);
         assert!(!output.timed_out);
@@ -6050,6 +6166,7 @@ mod tests {
             args: vec![
                 "--exact".into(),
                 "platform::process::tests::managed_child_test_helper".into(),
+                "--ignored".into(),
                 "--nocapture".into(),
             ],
             cwd: std::env::current_dir().unwrap(),
@@ -6108,6 +6225,7 @@ mod tests {
                     .args([
                         "--exact",
                         "platform::process::tests::managed_child_test_helper",
+                        "--ignored",
                         "--nocapture",
                     ])
                     .env(HELPER_ENV, "controlled_stderr_writer")
@@ -6124,6 +6242,7 @@ mod tests {
                 args: vec![
                     "--exact".into(),
                     "platform::process::tests::managed_child_test_helper".into(),
+                    "--ignored".into(),
                     "--nocapture".into(),
                 ],
                 cwd: std::env::current_dir().unwrap(),
@@ -6764,6 +6883,7 @@ mod tests {
                 .args([
                     "--exact",
                     "platform::process::tests::managed_child_test_helper",
+                    "--ignored",
                     "--nocapture",
                 ])
                 .env(HELPER_ENV, mode)
@@ -6804,15 +6924,20 @@ mod tests {
 
     #[test]
     fn managed_child_reaps_already_exited_process_without_tree_kill() {
+        let start = HelperStart::new();
         let mut managed = ManagedChild::spawn(ManagedCommand {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
                 "platform::process::tests::managed_child_test_helper".into(),
+                "--ignored".into(),
                 "--nocapture".into(),
             ],
             cwd: std::env::current_dir().unwrap(),
-            env: vec![(OsString::from(HELPER_ENV), OsString::from("success"))],
+            env: vec![
+                (OsString::from(HELPER_ENV), OsString::from("success")),
+                start.env(),
+            ],
             env_remove: Vec::new(),
             capture_limits: None,
             timeout: None,
@@ -6820,6 +6945,7 @@ mod tests {
         })
         .unwrap();
         thread::sleep(Duration::from_millis(100));
+        start.assert_started();
 
         managed.terminate().unwrap();
         assert_eq!(managed.state, ChildState::Reaped);
@@ -6827,21 +6953,27 @@ mod tests {
 
     #[test]
     fn managed_child_drop_terminates_and_reaps_running_process() {
+        let start = HelperStart::new();
         let managed = ManagedChild::spawn(ManagedCommand {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
                 "platform::process::tests::managed_child_test_helper".into(),
+                "--ignored".into(),
                 "--nocapture".into(),
             ],
             cwd: std::env::current_dir().unwrap(),
-            env: vec![(OsString::from(HELPER_ENV), OsString::from("sleep"))],
+            env: vec![
+                (OsString::from(HELPER_ENV), OsString::from("sleep")),
+                start.env(),
+            ],
             env_remove: Vec::new(),
             capture_limits: None,
             timeout: None,
             cancellation: CancellationToken::new(),
         })
         .unwrap();
+        start.assert_started();
         let pid = managed.id();
         drop(managed);
         assert!(wait_until_dead(pid, Duration::from_secs(2)));
@@ -6864,6 +6996,7 @@ mod tests {
             args: vec![
                 "--exact".into(),
                 "platform::process::tests::managed_child_test_helper".into(),
+                "--ignored".into(),
                 "--nocapture".into(),
             ],
             cwd: std::env::current_dir().unwrap(),
@@ -6970,6 +7103,7 @@ mod tests {
                 .args([
                     "--exact",
                     "platform::process::tests::managed_child_test_helper",
+                    "--ignored",
                     "--nocapture",
                 ])
                 .env(
@@ -7175,6 +7309,7 @@ mod tests {
             args: vec![
                 "--exact".into(),
                 "platform::process::tests::managed_child_test_helper".into(),
+                "--ignored".into(),
                 "--nocapture".into(),
             ],
             cwd: std::env::current_dir().unwrap(),
@@ -7228,6 +7363,7 @@ mod tests {
             args: vec![
                 "--exact".into(),
                 "platform::process::tests::managed_child_test_helper".into(),
+                "--ignored".into(),
                 "--nocapture".into(),
             ],
             cwd: std::env::current_dir().unwrap(),
@@ -7291,6 +7427,7 @@ mod tests {
             .args([
                 "--exact",
                 "platform::process::tests::managed_child_test_helper",
+                "--ignored",
                 "--nocapture",
             ])
             .env(HELPER_ENV, "process_tree_immediate_parent")
@@ -7311,18 +7448,22 @@ mod tests {
 
     #[test]
     fn startup_child_tree_cleanup_uses_only_the_remaining_absolute_budget() {
+        let start = HelperStart::new();
         let mut command = Command::new(std::env::current_exe().unwrap());
         command
             .args([
                 "--exact",
                 "platform::process::tests::managed_child_test_helper",
+                "--ignored",
                 "--nocapture",
             ])
             .env(HELPER_ENV, "success")
+            .env(HELPER_STARTED_ENV, &start.marker)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         let mut startup = ManagedStartupChild::spawn_configured(command).unwrap();
+        start.assert_started();
         let probe = ManualStartupTerminationProbe::new(Duration::from_millis(450));
         startup.install_termination_probe_for_test(&probe);
 
@@ -7340,20 +7481,24 @@ mod tests {
 
     #[test]
     fn startup_child_explicit_timeout_is_not_retried_by_drop() {
+        let start = HelperStart::new();
         let mut command = Command::new(std::env::current_exe().unwrap());
         command
             .args([
                 "--exact",
                 "platform::process::tests::managed_child_test_helper",
+                "--ignored",
                 "--nocapture",
             ])
             .env(HELPER_ENV, "sleep")
+            .env(HELPER_STARTED_ENV, &start.marker)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         let mut startup = ManagedStartupChild::spawn_configured(command).unwrap();
         let pid = startup.id();
         let _cleanup = ProcessCleanupGuard(vec![pid]);
+        start.assert_started();
         let probe = ManualStartupTerminationProbe::new(Duration::from_secs(1));
         startup.install_termination_probe_for_test(&probe);
 
@@ -7370,18 +7515,22 @@ mod tests {
 
     #[test]
     fn startup_child_drop_without_explicit_attempt_keeps_bounded_cleanup() {
+        let start = HelperStart::new();
         let mut command = Command::new(std::env::current_exe().unwrap());
         command
             .args([
                 "--exact",
                 "platform::process::tests::managed_child_test_helper",
+                "--ignored",
                 "--nocapture",
             ])
             .env(HELPER_ENV, "sleep")
+            .env(HELPER_STARTED_ENV, &start.marker)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         let mut startup = ManagedStartupChild::spawn_configured(command).unwrap();
+        start.assert_started();
         let probe = ManualStartupTerminationProbe::new(Duration::from_millis(25));
         startup.install_termination_probe_for_test(&probe);
 
@@ -7408,20 +7557,24 @@ mod tests {
 
     #[test]
     fn startup_child_detach_leaves_process_running() {
+        let start = HelperStart::new();
         let mut command = Command::new(std::env::current_exe().unwrap());
         command
             .args([
                 "--exact",
                 "platform::process::tests::managed_child_test_helper",
+                "--ignored",
                 "--nocapture",
             ])
             .env(HELPER_ENV, "sleep")
+            .env(HELPER_STARTED_ENV, &start.marker)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         let mut startup = ManagedStartupChild::spawn_configured(command).unwrap();
         let pid = startup.id();
         let _cleanup = ProcessCleanupGuard(vec![pid]);
+        start.assert_started();
 
         startup.detach().unwrap();
 
@@ -7431,14 +7584,17 @@ mod tests {
 
     #[test]
     fn startup_child_exposes_exit_status_without_detaching() {
+        let start = HelperStart::new();
         let mut command = Command::new(std::env::current_exe().unwrap());
         command
             .args([
                 "--exact",
                 "platform::process::tests::managed_child_test_helper",
+                "--ignored",
                 "--nocapture",
             ])
             .env(HELPER_ENV, "success")
+            .env(HELPER_STARTED_ENV, &start.marker)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -7454,6 +7610,7 @@ mod tests {
         };
 
         assert!(status.success());
+        start.assert_started();
         child.terminate_bounded(Duration::from_secs(1)).unwrap();
     }
 
@@ -7480,6 +7637,7 @@ mod tests {
             .args([
                 "--exact",
                 "platform::process::tests::managed_child_test_helper",
+                "--ignored",
                 "--nocapture",
             ])
             .env(HELPER_ENV, "write_marker")
@@ -7521,6 +7679,7 @@ mod tests {
             .args([
                 "--exact",
                 "platform::process::tests::managed_child_test_helper",
+                "--ignored",
                 "--nocapture",
             ])
             .env(HELPER_ENV, "write_marker")

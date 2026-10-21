@@ -12,7 +12,7 @@ from tests.ci.test_acceptance_scenarios import run_corpus
 
 class DcsAgentAcceptanceTests(unittest.TestCase):
     def test_agent_uses_current_contract_without_retired_skills(self):
-        ensure_binary(REPO, build_command=["cargo", "build", "--quiet", "--locked", "-p", "unica-coder", "--bin", "unica"])
+        ensure_binary(REPO)
         corpus = select_profile(load_acceptance_corpus(), "agent-evaluation")
         corpus["scenarios"] = [s for s in corpus["scenarios"] if s["evaluation"] == "dcs-contract"]
         proofs = REPO / ".session-temp/acceptance-agent"

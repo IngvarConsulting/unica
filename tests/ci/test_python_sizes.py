@@ -1,8 +1,8 @@
 """Размер тестов Python объявлен вне кода: манифест существует, конструкции покрыты.
 
-Признак `medium` — тест зовёт `cargo` или поднимает сокет: модуль с такими
-конструкциями обязан быть назван в манифесте, а каждая запись манифеста —
-существовать в дереве. Наших имён страж не знает.
+Признак `medium` — тест зовёт `cargo`, берёт продукт через `ensure_binary`
+или поднимает сокет: модуль с такими конструкциями обязан быть назван
+в манифесте, а каждая запись манифеста — существовать в дереве. Наших имён страж не знает.
 """
 
 from __future__ import annotations
@@ -24,6 +24,24 @@ SUITES = ("tests/ci", "tests/dev")
 # Вызов, а не упоминание: `"cargo"` в ожидании мока или в утверждении — не сборка.
 CARGO = re.compile(r'subprocess\.(?:run|Popen|check_output|check_call|call)\(\s*\[\s*"cargo"')
 SOCKET = re.compile(r"^\s*(import socket|from socket import)", re.M)
+PREPARED_BINARY = "scripts.ci.prepared_binary"
+
+
+def uses_ensure_binary(source: str) -> bool:
+    """Без манифеста `ensure_binary` собирает продукт: его потребитель тоже `medium`."""
+    tree = ast.parse(source)
+    module_aliases = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == PREPARED_BINARY:
+            if any(alias.name in ("ensure_binary", "*") for alias in node.names):
+                return True
+        elif isinstance(node, ast.ImportFrom) and node.module == "scripts.ci":
+            module_aliases |= {alias.asname or alias.name for alias in node.names if alias.name == "prepared_binary"}
+        elif isinstance(node, ast.Import):
+            module_aliases |= {alias.asname or alias.name for alias in node.names if alias.name == PREPARED_BINARY}
+    return bool(module_aliases) and any(
+        isinstance(node, ast.Attribute) and node.attr == "ensure_binary" for node in ast.walk(tree)
+    )
 
 
 def load_runner():
@@ -62,14 +80,34 @@ class PythonSizeManifestTests(unittest.TestCase):
                     self.assertIn(rest[1], methods)
 
     def test_modules_that_build_or_connect_are_declared(self) -> None:
-        """Вызов `cargo` или сокет в модуле — продукт собирается или запускается: не `small` молча."""
+        """`cargo`, `ensure_binary` или сокет в модуле — продукт собирается или запускается: не `small` молча."""
         declared = {entry.split(".")[0] for entry in entries()}
         for suite in SUITES:
             for path in sorted((REPO_ROOT / suite).glob("test_*.py")):
                 text = path.read_text(encoding="utf-8", errors="replace")
-                if CARGO.search(text) or SOCKET.search(text):
+                if CARGO.search(text) or uses_ensure_binary(text) or SOCKET.search(text):
                     with self.subTest(module=path.stem):
                         self.assertIn(path.stem, declared)
+
+    def test_ensure_binary_consumers_are_recognised_in_every_import_form(self) -> None:
+        consumers = (
+            "from scripts.ci.prepared_binary import binary_path, ensure_binary\n",
+            "from scripts.ci.prepared_binary import (\n    binary_path,\n    ensure_binary,\n)\n",
+            "from scripts.ci.prepared_binary import *\n",
+            "import scripts.ci.prepared_binary as product\nproduct.ensure_binary(ROOT)\n",
+            "from scripts.ci import prepared_binary\nprepared_binary.ensure_binary(ROOT)\n",
+        )
+        mentions = (
+            "from scripts.ci.prepared_binary import binary_path\n",
+            '"""from scripts.ci.prepared_binary import ensure_binary"""\n',
+            "import scripts.ci.prepared_binary as product\nproduct.binary_path(ROOT)\n",
+        )
+        for source in consumers:
+            with self.subTest(consumer=source):
+                self.assertTrue(uses_ensure_binary(source))
+        for source in mentions:
+            with self.subTest(mention=source):
+                self.assertFalse(uses_ensure_binary(source))
 
     def test_runner_admits_only_the_requested_sizes(self) -> None:
         """Ворота `pr` не видят `medium`: тест исключён из плана, а не пропущен."""

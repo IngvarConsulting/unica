@@ -1,0 +1,96 @@
+{
+  "id": "S-1835-role-right-set-publish",
+  "issue": 1835,
+  "area": "Роли и права",
+  "task": "Разрешить роли SalesReader изменение валют, у которых уже есть чтение: предпросмотр не пишет права, публикация добавляет ровно право Update объекта",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Role.SalesReader"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before": {
+          "file": "src/Roles/SalesReader/Ext/Rights.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Role.SalesReader.Right.Catalog_Валюты",
+        "ops": [
+          {
+            "op": "right.set",
+            "args": {
+              "values": {
+                "right": "Update",
+                "value": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Roles/SalesReader/Ext/Rights.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Roles/SalesReader/Ext/Rights.xml",
+          "kind": "sha256",
+          "eq": "739d45186fde9d9e191660dcfbf0b9fbd2fbb1e1736329fd251221f858ae1224"
+        },
+        {
+          "path": "src/Roles/SalesReader/Ext/Rights.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.2/roles}object[{http://v8.1c.ru/8.2/roles}name='Catalog.Валюты']/{http://v8.1c.ru/8.2/roles}right/{http://v8.1c.ru/8.2/roles}name",
+          "eq": [
+            "Read",
+            "View",
+            "Update"
+          ]
+        }
+      ]
+    }
+  ]
+}

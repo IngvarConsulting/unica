@@ -317,21 +317,52 @@ def names_form(address: str) -> bool | None:
     return None if FORM_KINDS & set(segments[:-2]) else False
 
 
+def pins_published_file(assertion) -> bool:
+    """True when a file assertion fixes what the publication wrote: exact
+    bytes, XML content or a removed path.  `notEq`, a still-present path or
+    the digest of an earlier capture tell nothing about the new state."""
+    if assertion["kind"] == "exists":
+        return assertion.get("eq") is False
+    if assertion["kind"] == "sha256":
+        return isinstance(assertion.get("eq"), str) and not assertion["eq"].startswith("$")
+    return assertion["kind"] in {"xml", "xmlTags"} and ("eq" in assertion or "contains" in assertion)
+
+
 def apply_operation_cases(scenarios, registry) -> dict[tuple[str, str], list[str]]:
-    """Map every registered `(operation, family)` to the scenarios whose
-    `unica.apply` step sends it and freezes exactly `ok`.  A refusal, a gap
-    or an unfinished task names the operation without the finished answer of
-    its planner, so it is not its case.  A name that several families
-    register is told apart by the kind of its target: a form owns its own
-    `attribute.add` and `command.add`."""
+    """Map every registered `(operation, family)` to the scenarios that
+    publish it: an `unica.apply` preview freezes exactly `ok`, and a later
+    step executes its token (`$executionToken` of the last plan or the
+    `$capture` of its `/data/executionToken`), freezes exactly `ok` and pins
+    the published files.  A refusal, a gap, an unfinished task or a preview that
+    nobody publishes does not run the writer, so it is not a case.  A name
+    that several families register is told apart by the kind of its target:
+    a form owns its own `attribute.add` and `command.add`."""
     families: dict[str, list[tuple[str, str]]] = {}
     for operation, family, target, _ in registry:
         families.setdefault(operation, []).append((family, target))
     cases: dict[tuple[str, str], list[str]] = {}
     for scenario in scenarios:
+        # `$executionToken` is the token of the last preview that returned a
+        # plan; a refusal returns none and keeps it.
+        plans: dict[str, list[tuple[str, str]]] = {}
         for step in scenario["wire"]:
-            if step["tool"] != "unica.apply" or step["expect"] != ["ok"]:
+            if step["tool"] != "unica.apply":
                 continue
+            token = step["args"].get("executionToken")
+            if token is not None:
+                # A refused execution leaves the plan and its token in place.
+                if step["expect"] != ["ok"]:
+                    continue
+                planned = plans.pop(token, [])
+                if any(pins_published_file(assertion) for assertion in step.get("fileAssertions") or []):
+                    for key in planned:
+                        ids = cases.setdefault(key, [])
+                        if scenario["id"] not in ids:
+                            ids.append(scenario["id"])
+                continue
+            if step["expect"] != ["ok"]:
+                continue
+            planned = []
             for operation in step["args"].get("ops") or []:
                 name = operation["op"]
                 candidates = families.get(name, [])
@@ -341,10 +372,11 @@ def apply_operation_cases(scenarios, registry) -> dict[tuple[str, str], list[str
                     candidates = [row for row in candidates if (row[1] == "Form") == on_form]
                     if on_form is None or len(candidates) != 1:
                         raise ValueError(f"{scenario['id']}: `{name}` at `{target}` matches no single family")
-                for family, _ in candidates:
-                    ids = cases.setdefault((name, family), [])
-                    if scenario["id"] not in ids:
-                        ids.append(scenario["id"])
+                planned.extend((name, family) for family, _ in candidates)
+            plans["$executionToken"] = planned
+            for name, descriptor in (step.get("captures") or {}).items():
+                if descriptor.get("pointer") == "/data/executionToken":
+                    plans[f"$capture.{name}"] = planned
     return cases
 
 
@@ -1015,11 +1047,11 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         self.assertEqual(registry[114:119], expected["Interface"])
         self.assertEqual(registry[119:121], expected["Code"])
 
-    def test_every_registered_apply_operation_has_an_executed_integration_case(self) -> None:
+    def test_every_registered_apply_operation_has_a_published_integration_case(self) -> None:
         # The inventory is the closed `apply` registry of all typed families
         # against the `source` profile, which `AcceptanceCorpusRunTests`
         # executes in the mandatory queue.  A newly registered operation
-        # without a successful step fails here instead of being skipped.
+        # without a published and checked case fails here, not as a skip.
         with patch("subprocess.Popen", side_effect=AssertionError("the inventory must not launch a process")):
             module = self.renderer()
             registry, _ = module.load_apply_registry()
@@ -1028,46 +1060,76 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         missing = [(operation, family) for operation, family, _, _ in registry if (operation, family) not in cases]
         self.assertEqual(
             missing, [],
-            "a registered apply operation has no `ok` step in the executed acceptance corpus; "
-            "add a scenario under tests/fixtures/acceptance/scenarios/",
+            "a registered apply operation is not published with checked files by the executed acceptance "
+            "corpus; add a scenario under tests/fixtures/acceptance/scenarios/",
         )
 
-    def test_operation_inventory_counts_only_successful_apply_steps_of_their_family(self) -> None:
-        def step(tool, expect, at, *operations):
-            return {"tool": tool, "expect": expect, "args": {"at": at, "ops": [{"op": name} for name in operations]}}
+    def test_operation_inventory_counts_only_published_apply_plans_of_their_family(self) -> None:
+        def preview(expect, at, *operations):
+            return {"tool": "unica.apply", "expect": expect, "args": {"at": at, "ops": [{"op": name} for name in operations]}}
+
+        pinned = {"path": "src/X.xml", "kind": "xml", "select": "./{*}Name", "eq": ["X"]}
+        vague = [{"path": "src/X.xml", "kind": "exists", "eq": True},
+                 {"path": "src/X.xml", "kind": "sha256", "notEq": "$capture.before"},
+                 {"path": "src/X.xml", "kind": "sha256", "eq": "$capture.before"}]
+
+        def publish(expect=("ok",), checked=True, token="$executionToken", assertions=(pinned,)):
+            step = {"tool": "unica.apply", "expect": list(expect), "args": {"executionToken": token}}
+            if checked:
+                step["fileAssertions"] = list(assertions)
+            return step
 
         registry = [
             ("props.set", "Properties", "Metadata", "Values"),
             ("field.add", "Dcs", "DcsField", "Values"),
+            ("item.remove", "Form", "FormItem", "Target"),
             ("attribute.add", "Metadata", "MetadataAttributeContainer", "Items"),
             ("attribute.add", "Form", "Form", "Items"),
         ]
         catalog, form = "main:Catalog.X", "main:Catalog.X.Form.Y"
         scenarios = [
-            {"id": "A", "wire": [
-                step("unica.apply", ["ok"], catalog, "props.set", "field.add", "attribute.add"),
-                {"tool": "unica.apply", "expect": ["ok"], "args": {"executionToken": "$executionToken"}},
-            ]},
+            {"id": "A", "wire": [preview(["ok"], catalog, "props.set", "attribute.add"),
+                                 preview(["refused"], catalog, "field.add"), publish()]},
             {"id": "B", "wire": [
-                step("unica.apply", ["refused"], form, "attribute.add"),
-                step("unica.apply", ["gap"], form, "attribute.add"),
-                step("unica.view", ["ok"], form, "attribute.add"),
-                step("unica.apply", ["ok", "task"], form, "attribute.add"),
-                step("unica.apply", ["ok"], catalog, "props.set", "unregistered.add"),
+                preview(["ok"], catalog, "field.add"),
+                preview(["ok"], form, "attribute.add"), publish(),
+                publish(),
+                preview(["ok"], form, "item.remove"), publish(checked=False),
+                preview(["ok"], form, "item.remove"), publish(token="literal"),
+                preview(["ok"], form, "item.remove"), publish(assertions=vague),
+            ]},
+            {"id": "H", "wire": [
+                preview(["ok"], catalog, "field.add"), publish(expect=("refused",)),
+                publish(assertions=[{"path": "src/X.xml", "kind": "exists", "eq": False}]),
+            ]},
+            {"id": "G", "wire": [
+                preview(["ok", "task"], catalog, "props.set"), publish(),
+                preview(["gap"], catalog, "props.set"), publish(),
+                {"tool": "unica.view", "expect": ["ok"], "args": {"at": catalog, "ops": [{"op": "props.set"}]}},
+                publish(),
             ]},
             {"id": "C", "wire": [{"tool": "unica.apply", "expect": ["ok"], "args": {
-                "at": catalog, "ops": [{"op": "attribute.add", "args": {"at": form}}]}}]},
+                "at": catalog, "ops": [{"op": "attribute.add", "args": {"at": form}}, {"op": "unregistered.add"}]}},
+                publish()]},
+            {"id": "D", "wire": [preview(["ok"], catalog, "props.set")]},
+            {"id": "F", "wire": [
+                {**preview(["ok"], form, "item.remove"), "captures": {"remove": {"pointer": "/data/executionToken"}}},
+                preview(["ok"], catalog, "field.add"),
+                publish(token="$capture.remove"),
+            ]},
         ]
         self.assertEqual(apply_operation_cases(scenarios, registry), {
-            ("props.set", "Properties"): ["A", "B"],
-            ("field.add", "Dcs"): ["A"],
+            ("props.set", "Properties"): ["A"],
             ("attribute.add", "Metadata"): ["A"],
-            ("attribute.add", "Form"): ["C"],
+            ("attribute.add", "Form"): ["B", "C"],
+            ("item.remove", "Form"): ["F"],
+            ("field.add", "Dcs"): ["H"],
         })
+        self.assertTrue(pins_published_file({"path": "a", "kind": "sha256", "eq": "0" * 64}))
         self.assertTrue(names_form("main:CommonForm.Main"))
         self.assertIsNone(names_form("main:Catalog.X.Form.Y.Attribute.Z"))
         self.assertIs(names_form("main:Configuration"), False)
-        nested = [{"id": "D", "wire": [step("unica.apply", ["ok"], "main:Catalog.X.Form.Y.Attribute.Z", "attribute.add")]}]
+        nested = [{"id": "E", "wire": [preview(["ok"], "main:Catalog.X.Form.Y.Attribute.Z", "attribute.add")]}]
         with self.assertRaises(ValueError):
             apply_operation_cases(nested, registry)
         with self.assertRaises(ValueError):
@@ -1759,7 +1821,7 @@ class AcceptanceCorpusRunTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        ensure_binary(REPO_ROOT, build_command=["cargo", "build", "--quiet", "--package", "unica-coder", "--bin", "unica"])
+        ensure_binary(REPO_ROOT)
         cls.corpus = load_acceptance_corpus()
         for scenario in cls.corpus["scenarios"]:
             declared = set()
@@ -2011,7 +2073,7 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cle
 class AcceptanceDeliveryCorpusRunTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        ensure_binary(REPO_ROOT, build_command=["cargo", "build", "--quiet", "--locked", "--package", "unica-coder", "--bin", "unica"])
+        ensure_binary(REPO_ROOT)
         cls.corpus = load_acceptance_corpus()
         for scenario in cls.corpus["scenarios"]:
             declared = set()
@@ -2058,7 +2120,7 @@ class AcceptanceDeliveryCorpusRunTests(unittest.TestCase):
 class AcceptanceFaultCorpusRunTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        ensure_binary(REPO_ROOT, build_command=["cargo", "build", "--quiet", "--locked", "--package", "unica-coder", "--bin", "unica"])
+        ensure_binary(REPO_ROOT)
         cls.corpus = load_acceptance_corpus()
 
     def test_controlled_jsonl_faults_preserve_public_reason_without_provider_input(self):

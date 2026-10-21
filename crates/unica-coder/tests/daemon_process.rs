@@ -70,10 +70,10 @@ fn same_stdio_frontend_spawns_and_retains_successor_anchor() {
 }
 
 #[test]
+#[ignore = "helper process: spawned by the daemon frontend tests with PROCESS_FIXTURE_ENV; not a standalone test"]
 fn daemon_frontend_process_fixture() {
-    if std::env::var_os(PROCESS_FIXTURE_ENV).is_none() {
-        return;
-    }
+    std::env::var_os(PROCESS_FIXTURE_ENV)
+        .expect("helper process: the parent test sets the fixture marker");
     let state_root = PathBuf::from(std::env::var("UNICA_DAEMON_TEST_STATE_ROOT").unwrap());
     let identity = std::env::var("UNICA_DAEMON_TEST_CORE_IDENTITY").unwrap();
     let executable = PathBuf::from(std::env::var("UNICA_DAEMON_TEST_EXECUTABLE").unwrap());
@@ -314,7 +314,12 @@ fn spawn_frontend(
     release: &Path,
 ) -> Child {
     Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "daemon_frontend_process_fixture", "--nocapture"])
+        .args([
+            "--exact",
+            "daemon_frontend_process_fixture",
+            "--ignored",
+            "--nocapture",
+        ])
         .env(PROCESS_FIXTURE_ENV, "1")
         .env("UNICA_DAEMON_TEST_STATE_ROOT", state_root)
         .env("UNICA_DAEMON_TEST_CORE_IDENTITY", identity)

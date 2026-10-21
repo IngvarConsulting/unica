@@ -684,6 +684,7 @@ class PreviousInventoryTests(unittest.TestCase):
                  for lane in lanes.LANES for phase in ("build", "run")}
         names["shadow-component-selection"] = {"result": "success"}
         names["classify-changes"] = {"result": "success"}
+        names["run-rust-ordinary-medium"] = {"result": "success" if profile == "pr" else "skipped"}
         return {name: value for name, value in names.items() if name not in drop}
 
     def collect(self, root, profile="queue", hosts=None, mutate=None):
@@ -695,6 +696,10 @@ class PreviousInventoryTests(unittest.TestCase):
                 lanes.write(root / host / lane / "lane.json", plan)
                 for index in range(1, len(plan["shards"]) + 1):
                     lanes.write(root / host / lane / str(index) / "shard.json", result(plan, index))
+                if profile == "pr" and (host, lane) == ("ubuntu-latest", "ordinary"):
+                    medium = {**result({**plan, "shards": [plan["inventory"]]}, 1), "nextestProfile": "queue",
+                              "reason": "shadow selection is full; all medium tests", "expression": None, "packages": []}
+                    lanes.write(root / host / "medium" / "medium.json", medium)
 
     def previous(self, profile="queue", *, reset=False, removed=(), tests=(), jobs=None, mutate=None, hosts=None):
         with tempfile.TemporaryDirectory() as temporary, \
@@ -845,6 +850,162 @@ class PreviousInventoryTests(unittest.TestCase):
         self.assertTrue(report["mandatoryComplete"])
         self.assertFalse(report["fullMatrixPassed"])
         self.assertTrue(all("windows-latest" in item for item in report["advisoryFailures"]))
+
+
+class PullRequestMediumTests(unittest.TestCase):
+    """A pull request also runs medium tests of affected packages from its own ordinary archive."""
+
+    SHA = "a" * 40
+
+    def decision(self, packages, *, mode="affected", sha=None):
+        return {"mode": mode, "mandatoryMode": "full", "affectedAdmission": False,
+                "headSha": sha or self.SHA, "packages": packages}
+
+    def test_selection_narrows_to_archived_affected_packages_and_falls_back_to_all(self):
+        binaries = ["unica-coder", "unica-coder::cli_contract", "unica-workspace"]
+        self.assertEqual(lanes.medium_selection(self.decision(["unica-workspace", "unica-docs"]), binaries, self.SHA),
+                         ("package(=unica-workspace)", ["unica-workspace"], "affected packages and their reverse consumers"))
+        self.assertEqual(lanes.medium_selection(self.decision(["unica-docs"]), binaries, self.SHA)[:2], ("", []))
+        for decision, reason in ((None, "unavailable"), (self.decision(["unica-coder"], sha="b" * 40), "another revision"),
+                                 (self.decision([], mode="full"), "full"), ({**self.decision(["x"]), "affectedAdmission": True}, "invalid")):
+            with self.subTest(reason=reason):
+                expression, packages, why = lanes.medium_selection(decision, binaries, self.SHA)
+                self.assertIsNone(expression)
+                self.assertEqual(packages, [])
+                self.assertIn(reason, why)
+                self.assertIn("all medium tests", why)
+
+    def run_medium(self, decision, *, failure=False, missing_junit=False, cases=("medium_case",), host="ubuntu-latest"):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(lanes.os.environ, {"GITHUB_RUN_ID": "1", "GITHUB_RUN_ATTEMPT": "1"}):
+            root = Path(temporary).resolve()
+            prepared = root / "prepared"
+            prepared.mkdir()
+            archive = prepared / "tests.tar.zst"
+            archive.write_bytes(b"pr ordinary archive")
+            plan = manifest("ordinary", profile="pr")
+            plan.update(workspace=str(root), nextestVersion="fixture nextest", runId="1", attempt="1",
+                        archiveSha256=lanes.prepared_binary.digest(archive), archiveBytes=archive.stat().st_size)
+            lanes.write(prepared / "lane.json", plan)
+            shadow = root / "decision.json"
+            if decision is not None:
+                lanes.write(shadow, decision)
+            commands = []
+
+            # Without -E the queue profile also lists the small cases the PR planned.
+            small = [case["name"] for case in plan["inventory"]]
+
+            def suites(command):
+                found = {"unica-coder": list(cases)}
+                if "-E" not in command and cases:
+                    found["package-ordinary"] = small
+                return found
+
+            def nextest(command, _root, *, capture=False, **_):
+                commands.append(command)
+                if command[2] == "list":
+                    document = {"rust-suites": {binary: {"binary-id": binary, "testcases": {name: {"ignored": False} for name in names}}
+                                                for binary, names in suites(command).items()}}
+                    return subprocess.CompletedProcess(command, 0, stdout=json.dumps(document)), 0.1
+                if not missing_junit:
+                    junit = root / "target/nextest/queue/junit.xml"
+                    junit.parent.mkdir(parents=True, exist_ok=True)
+                    junit.write_text("<testsuites>" + "".join(
+                        f'<testsuite name="{binary}">' + "".join(f'<testcase name="{name}"/>' for name in names) + "</testsuite>"
+                        for binary, names in suites(command).items()) + "</testsuites>")
+                return subprocess.CompletedProcess(command, 1 if failure else 0), 0.2
+
+            destination = root / "medium"
+            with patch.object(lanes.prepared_binary, "identity", return_value=plan["identity"]), \
+                 patch.object(lanes.prepared_binary, "output", return_value="fixture nextest"), \
+                 patch.object(lanes, "fixture_binary_environment", return_value={}), \
+                 patch.object(lanes, "timed", side_effect=nextest):
+                try:
+                    status = lanes.run_medium(root, prepared, destination, host, shadow)
+                finally:
+                    written = destination / "medium.json"
+                    self.medium = json.loads(written.read_text()) if written.is_file() else None
+            return status, commands
+
+    def test_affected_medium_runs_from_the_same_archive_with_the_queue_profile(self):
+        status, commands = self.run_medium(self.decision(["unica-coder", "unica-docs"]))
+        self.assertEqual(status, 0)
+        self.assertEqual([command[2] for command in commands], ["list", "run"])
+        for command in commands:
+            self.assertEqual(command[command.index("--profile") + 1], "queue")
+            self.assertEqual(command[command.index("-E") + 1], "package(=unica-coder)")
+            self.assertNotIn("build", command)
+        self.assertEqual([record["status"] for record in self.medium["records"]], ["passed"])
+
+    def test_unknown_or_full_selection_runs_every_medium_test(self):
+        for decision in (None, self.decision([], mode="full"), self.decision(["unica-coder"], sha="b" * 40)):
+            with self.subTest(decision=decision):
+                _, commands = self.run_medium(decision)
+                self.assertEqual([command[2] for command in commands], ["list", "run"])
+                self.assertTrue(all("-E" not in command for command in commands))
+                self.assertIn("all medium tests", self.medium["reason"])
+
+    def test_failed_missing_or_unexpectedly_empty_medium_results_fail(self):
+        for decision, options in ((self.decision(["unica-coder"]), {"failure": True}),
+                                  (self.decision(["unica-coder"]), {"missing_junit": True}),
+                                  (None, {"cases": ()})):
+            with self.subTest(options=options), self.assertRaises(ValueError):
+                self.run_medium(decision, **options)
+            self.assertIsNotNone(self.medium)
+        # Narrowed packages may hold no tests outside large: listed, empty, explained.
+        status, commands = self.run_medium(self.decision(["unica-coder"]), cases=())
+        self.assertEqual((status, [command[2] for command in commands], self.medium["reason"]), (0, ["list"], lanes.MEDIUM_NO_TESTS))
+        status, commands = self.run_medium(self.decision(["unica-docs"]))
+        self.assertEqual((status, commands, self.medium["plan"], self.medium["reason"]), (0, [], [], lanes.MEDIUM_NO_TESTS))
+        with self.assertRaisesRegex(ValueError, "Linux only"):
+            self.run_medium(self.decision(["unica-coder"]), host="macos-14")
+
+    def test_recorded_expression_must_match_its_packages(self):
+        plan = manifest("ordinary", profile="pr")
+        medium = {**result(plan, 1), "nextestProfile": "queue", "reason": "x", "expression": "package(=other)",
+                  "packages": ["package-ordinary"]}
+        with self.assertRaisesRegex(ValueError, "differs from its selected packages"):
+            lanes.validate_medium(plan, medium)
+
+    def test_verifier_requires_the_medium_result_of_a_pull_request(self):
+        plan = manifest("ordinary", profile="pr")
+        medium_plan = plan["inventory"] + [{"binary": "package-ordinary", "name": "medium_case", "ignored": False}]
+        medium = {**result({**plan, "shards": [medium_plan]}, 1), "nextestProfile": "queue", "reason": "x",
+                  "expression": None, "packages": []}
+        jobs = {f"{phase}-rust-{lane}": {"result": "success" if lane == "ordinary" else "skipped"}
+                for lane in lanes.LANES for phase in ("build", "run")}
+        jobs.update({"shadow-component-selection": {"result": "success"}, "run-rust-ordinary-medium": {"result": "success"}})
+        cases = {"complete": (medium, jobs, None), "missing": (None, jobs, "missing or duplicate medium result"),
+                 "failed": ({**medium, "exitCode": 1}, jobs, "required shard test failed"),
+                 "skipped job": (medium, {**jobs, "run-rust-ordinary-medium": {"result": "skipped"}}, "did not finish as success"),
+                 "empty": ({**medium, "plan": [], "records": []}, jobs, "unexpectedly empty"),
+                 "truncated": ({**medium, "plan": medium_plan[1:], "records": medium["records"][1:]}, jobs, "omits 1 planned case"),
+                 "foreign expression": ({**medium, "expression": "package(=other)"}, jobs, "differs from"),
+                 "narrowed": ({**medium, "expression": "package(=package-ordinary)", "packages": ["package-ordinary"]}, jobs, None),
+                 "small shard failed": ({**medium, "exitCode": 1}, jobs, r"ubuntu-latest/ordinary medium: a required shard test failed"),
+                 "selection differs": ({**medium, "expression": "", "packages": [], "reason": lanes.MEDIUM_NO_TESTS, "plan": [], "records": []},
+                                       jobs, "differs from the shadow decision")}
+        for name, (document, needs, error) in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary, \
+                 patch.dict(lanes.os.environ, {"CI_LANE_JOB_RESULTS": json.dumps(needs)}, clear=True):
+                root = Path(temporary)
+                lanes.write(root / "ordinary/lane.json", plan)
+                lanes.write(root / "ordinary/1/shard.json", {**result(plan, 1), "exitCode": 1} if name == "small shard failed" else result(plan, 1))
+                if document is not None:
+                    lanes.write(root / "medium/medium.json", document)
+                if name in ("narrowed", "selection differs"):
+                    lanes.write(root / "shadow/selection.json", {"mode": "affected", "mandatoryMode": "full", "affectedAdmission": False,
+                                                                  "headSha": "a" * 40, "packages": ["package-ordinary"]})
+                baseline = {"inventory": None, "explanations": {"reset": True, "removedTargets": []}}
+                if error is None:
+                    report = lanes.verify_union(root, "pr", ["ubuntu-latest"], "a" * 40, baseline)
+                    self.assertEqual(report["medium"][0]["tests"], len(document["plan"]))
+                else:
+                    with self.assertRaisesRegex(ValueError, error):
+                        lanes.verify_union(root, "pr", ["ubuntu-latest"], "a" * 40, baseline)
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(lanes.os.environ, {}, clear=True):
+            lanes.write(Path(temporary) / "medium.json", medium)
+            with self.assertRaisesRegex(ValueError, "outside a pull request"):
+                lanes.verify_union(Path(temporary), "queue", ["ubuntu-latest"], "a" * 40)
 
 
 if __name__ == "__main__":
