@@ -1465,6 +1465,8 @@ fn canonical_apply_refuses_inexact_export_format_and_offers_platform_reexport() 
             message.contains("Catalogs/Products.xml"),
             "{raw}: {message}"
         );
+        // Отказ называет несовместимый формат владельца как он записан.
+        assert!(message.contains(raw), "{raw}: {message}");
         if raw == "2.19" {
             for expected in [
                 "2.19",
