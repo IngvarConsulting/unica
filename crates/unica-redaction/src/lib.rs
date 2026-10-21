@@ -484,3 +484,5 @@ mod tests {
         assert!(output.contains("Pwd=<redacted>"), "{output}");
     }
 }
+
+// Замер обычного PR для #1932; ветка будет удалена.
