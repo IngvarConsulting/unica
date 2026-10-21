@@ -185,9 +185,12 @@ fn run_receipt_scenario_with_control_observer(
                 )
                 .then(|| {
                     let result = domain_result_for_fixture(&terminal)?;
-                    canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-                        result: Box::new(result),
-                    })
+                    canonical_v5_terminal(
+                        &ReceiptTerminalOutcome::Completed {
+                            result: Box::new(result),
+                        },
+                        unica_bootstrap::MAX_RESPONSE_BUDGET,
+                    )
                     .map_err(|error| format!("precompute scenario cutoff terminal: {error}"))
                 })
                 .transpose()?;
@@ -669,9 +672,12 @@ fn run_receipt_scenario_with_control_observer(
                     Arc::clone(&telemetry),
                     Some(Arc::clone(&control)),
                 ));
-                let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-                    result: Box::new(domain_result_for_fixture(&terminal)?),
-                })
+                let terminal = canonical_v5_terminal(
+                    &ReceiptTerminalOutcome::Completed {
+                        result: Box::new(domain_result_for_fixture(&terminal)?),
+                    },
+                    unica_bootstrap::MAX_RESPONSE_BUDGET,
+                )
                 .map_err(|error| format!("encode staged scenario terminal: {error}"))?;
                 control.record_operation_event(&label, "spawned");
                 runtime.stage_bound_handoff_terminal_for_test(
@@ -2244,11 +2250,13 @@ fn run_receipt_scenario_with_control_observer(
                                 .map_err(|error| format!("fill ReservedUnbound pool: {error}"))?;
                         }
                         ScenarioSeedReceiptState::TaskTerminalReceiptBacked => {
-                            let terminal =
-                                canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
+                            let terminal = canonical_v5_terminal(
+                                &ReceiptTerminalOutcome::Completed {
                                     result: Box::new(DomainResult::success("receipt-pool")),
-                                })
-                                .map_err(|error| format!("encode filled Task terminal: {error}"))?;
+                                },
+                                unica_bootstrap::MAX_RESPONSE_BUDGET,
+                            )
+                            .map_err(|error| format!("encode filled Task terminal: {error}"))?;
                             runtime
                                 .seed_receipt_backed_terminal_pool_entry_for_test(
                                     key.clone(),

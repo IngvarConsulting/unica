@@ -742,7 +742,7 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
                     reason: V5SafeFailureReason::InvocationFailed,
                 },
             };
-            let terminal = canonical_v5_terminal(&outcome)
+            let terminal = canonical_v5_terminal(&outcome, 73_728)
                 .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
             terminal_requests.push((
                 begun.key().clone(),
@@ -951,8 +951,9 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
                     if matches!(reserved.phase(), ReservedPhase::ActorBound { .. })
                         && reserved.cancel_requested() =>
                 {
-                    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
-                        .map_err(|error| format!("prepare cancel winner terminal: {error}"))?;
+                    let terminal =
+                        canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled, 73_728)
+                            .map_err(|error| format!("prepare cancel winner terminal: {error}"))?;
                     self.receipt_ledger
                         .publish_direct_terminal(
                             key.clone(),
@@ -1090,9 +1091,12 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
         let ReceiptState::TaskReceiptOwnedActorBound(receipt_owned) = state else {
             return Err("continued Task attempt is not receipt-owned".to_owned());
         };
-        let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-            result: Box::new(result),
-        })
+        let terminal = canonical_v5_terminal(
+            &ReceiptTerminalOutcome::Completed {
+                result: Box::new(result),
+            },
+            73_728,
+        )
         .map_err(|error| format!("encode receipt-owned Task terminal: {error}"))?;
         let committed = self
             .receipt_ledger
@@ -1240,7 +1244,7 @@ pub fn terminal_observation(
     outcome: &ReceiptTerminalOutcome,
     terminal_epoch_ms: u64,
 ) -> Result<Value, String> {
-    let terminal = canonical_v5_terminal(outcome)
+    let terminal = canonical_v5_terminal(outcome, 73_728)
         .map_err(|error| format!("canonicalize protocol-v5 scenario terminal: {error}"))?;
     let mut value = serde_json::to_value(outcome)
         .map_err(|error| format!("encode protocol-v5 scenario terminal: {error}"))?;

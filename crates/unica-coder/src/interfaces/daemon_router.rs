@@ -987,7 +987,8 @@ pub(in crate::interfaces) mod test_support {
         key: ReceiptKey,
         terminal: ReceiptTerminalOutcome,
     ) -> V5ServerResponse {
-        let canonical = canonical_v5_terminal(&terminal).expect("canonical terminal");
+        let canonical = canonical_v5_terminal(&terminal, unica_bootstrap::MAX_RESPONSE_BUDGET)
+            .expect("canonical terminal");
         V5ServerResponse::Invocation {
             outcome: V5InvocationResponse::Direct {
                 receipt: V5PendingDirectReceipt::new(
@@ -1338,7 +1339,7 @@ mod tests {
         );
         assert_eq!(
             terminal_digest,
-            canonical_v5_terminal(&completed("viewed"))
+            canonical_v5_terminal(&completed("viewed"), unica_bootstrap::MAX_RESPONSE_BUDGET)
                 .unwrap()
                 .digest()
         );
@@ -1447,10 +1448,12 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             acknowledged,
-            vec![canonical_v5_terminal(&completed("strict"))
-                .unwrap()
-                .digest()
-                .clone()],
+            vec![
+                canonical_v5_terminal(&completed("strict"), unica_bootstrap::MAX_RESPONSE_BUDGET)
+                    .unwrap()
+                    .digest()
+                    .clone()
+            ],
             "only the strict receipt is acknowledged"
         );
     }

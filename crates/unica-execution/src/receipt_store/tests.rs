@@ -81,7 +81,7 @@ fn direct_terminal_fixture(receipts: &Path) -> (ReceiptLedgerStore, ReceiptKey, 
         .expect("reserve exact receipt")
         .into_reservation()
         .expect("receipt remains reserved");
-    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled, 73_728)
         .expect("canonical direct terminal");
     let terminal_digest = terminal.digest().clone();
     store
@@ -1840,9 +1840,12 @@ fn promised_task_terminal_is_exact_idempotent_and_reopens() {
         )
         .expect("durably promise exact reserved Task");
     let expected = TaskCancellationReceipt::PromisedUnbound(promised.clone());
-    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Failed {
-        reason: V5SafeFailureReason::Interrupted,
-    })
+    let terminal = canonical_v5_terminal(
+        &ReceiptTerminalOutcome::Failed {
+            reason: V5SafeFailureReason::Interrupted,
+        },
+        73_728,
+    )
     .expect("canonical recovery terminal");
 
     let committed = store
@@ -1926,9 +1929,12 @@ fn receipt_backed_task_terminal_is_physically_reclaimed_at_its_absolute_expiry()
             &key,
             TaskCancellationReceipt::PromisedUnbound(promised),
             2_000,
-            canonical_v5_terminal(&ReceiptTerminalOutcome::Failed {
-                reason: V5SafeFailureReason::Interrupted,
-            })
+            canonical_v5_terminal(
+                &ReceiptTerminalOutcome::Failed {
+                    reason: V5SafeFailureReason::Interrupted,
+                },
+                73_728,
+            )
             .expect("canonical terminal"),
             reserve_deadline(),
         )
@@ -2611,9 +2617,12 @@ fn direct_terminal_replace_advances_exact_record_and_generation_once() {
         .expect("reserve exact receipt")
         .into_reservation()
         .expect("receipt remains reserved");
-    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-        result: Box::new(DomainResult::success("direct result")),
-    })
+    let terminal = canonical_v5_terminal(
+        &ReceiptTerminalOutcome::Completed {
+            result: Box::new(DomainResult::success("direct result")),
+        },
+        73_728,
+    )
     .expect("canonical direct terminal");
 
     let committed = store
@@ -2653,9 +2662,12 @@ fn direct_ack_compacts_payload_to_restart_stable_idempotent_tombstone() {
         .expect("reserve exact receipt")
         .into_reservation()
         .expect("receipt remains reserved");
-    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-        result: Box::new(DomainResult::success("direct result to compact")),
-    })
+    let terminal = canonical_v5_terminal(
+        &ReceiptTerminalOutcome::Completed {
+            result: Box::new(DomainResult::success("direct result to compact")),
+        },
+        73_728,
+    )
     .expect("canonical direct terminal");
     let terminal_digest = terminal.digest().clone();
     let committed = store
@@ -2725,7 +2737,7 @@ fn compact_tombstone_fits_512_bytes_at_the_maximum_valid_epoch_and_longest_tool_
     let acknowledged_at_epoch_ms = u64::MAX
         .checked_sub(ACKNOWLEDGED_TOMBSTONE_TTL_MS)
         .expect("bounded epoch");
-    let terminal_digest = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+    let terminal_digest = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled, 73_728)
         .expect("canonical terminal")
         .digest()
         .clone();
@@ -2815,7 +2827,7 @@ fn acknowledged_tombstone_is_physically_reclaimed_at_its_absolute_expiry() {
         .expect("reserve exact receipt")
         .into_reservation()
         .expect("receipt remains reserved");
-    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled, 73_728)
         .expect("canonical direct terminal");
     let terminal_digest = terminal.digest().clone();
     store
@@ -2878,7 +2890,7 @@ fn exact_cancel_request_reclaims_an_expired_tombstone_before_reserving_again() {
         .expect("reserve exact receipt")
         .into_reservation()
         .expect("receipt remains reserved");
-    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled, 73_728)
         .expect("canonical direct terminal");
     let terminal_digest = terminal.digest().clone();
     store
@@ -2938,7 +2950,7 @@ fn exact_ack_reclaims_its_tombstone_at_expiry_and_reports_absence() {
         .expect("reserve exact receipt")
         .into_reservation()
         .expect("receipt remains reserved");
-    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled, 73_728)
         .expect("canonical direct terminal");
     let terminal_digest = terminal.digest().clone();
     store
@@ -2994,7 +3006,7 @@ fn exact_recovery_reclaims_its_tombstone_at_expiry_and_reports_absence() {
         .expect("reserve exact receipt")
         .into_reservation()
         .expect("receipt remains reserved");
-    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled, 73_728)
         .expect("canonical direct terminal");
     let terminal_digest = terminal.digest().clone();
     store
@@ -3104,8 +3116,8 @@ fn expired_tombstone_releases_partial_identity_for_new_admission_only_at_expiry(
         .expect("reserve original receipt")
         .into_reservation()
         .expect("original remains reserved");
-    let terminal =
-        canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled).expect("canonical terminal");
+    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled, 73_728)
+        .expect("canonical terminal");
     let terminal_digest = terminal.digest().clone();
     store
         .publish_direct_terminal(
@@ -3159,7 +3171,7 @@ fn tombstone_pool_does_not_consume_the_sixty_four_live_receipt_slots() {
         .expect("physical temporary root")
         .join("receipts");
     let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
-    let terminal_digest = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+    let terminal_digest = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled, 73_728)
         .expect("canonical terminal")
         .digest()
         .clone();
@@ -3218,8 +3230,8 @@ fn rejected_ack_does_not_reclaim_an_unrelated_expired_tombstone() {
         .expect("reserve original receipt")
         .into_reservation()
         .expect("original remains reserved");
-    let terminal =
-        canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled).expect("canonical terminal");
+    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled, 73_728)
+        .expect("canonical terminal");
     let terminal_digest = terminal.digest().clone();
     store
         .publish_direct_terminal(
@@ -3280,9 +3292,12 @@ fn direct_terminal_reopens_byte_equivalent_with_exact_state() {
         .expect("receipt remains reserved");
     let mut result = DomainResult::success("restart-stable direct result");
     result.data = Some(serde_json::json!({"score": 493.85565185546875}));
-    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-        result: Box::new(result),
-    })
+    let terminal = canonical_v5_terminal(
+        &ReceiptTerminalOutcome::Completed {
+            result: Box::new(result),
+        },
+        73_728,
+    )
     .expect("canonical direct terminal");
     let committed = store
         .publish_direct_terminal(
@@ -3384,9 +3399,12 @@ fn direct_batch_compacts_superseded_envelopes_and_reopens_exact_tombstones() {
             reserve_deadline(),
         )
         .expect("begin direct batch");
-    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-        result: Box::new(DomainResult::success("batch-terminal")),
-    })
+    let terminal = canonical_v5_terminal(
+        &ReceiptTerminalOutcome::Completed {
+            result: Box::new(DomainResult::success("batch-terminal")),
+        },
+        73_728,
+    )
     .expect("canonical direct terminal");
     let committed = store
         .publish_direct_terminal_batch(
@@ -3661,7 +3679,7 @@ fn cancelled_direct_batch_reopens_all_exact_winners_from_one_durable_envelope() 
             )
         })
         .collect();
-    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled, 73_728)
         .expect("canonical cancelled terminal");
     let committed = store
         .publish_cancelled_direct_batch(
@@ -3748,9 +3766,12 @@ fn direct_terminal_expires_at_absolute_boundary_and_releases_exact_quota() {
         .expect("reserve exact receipt")
         .into_reservation()
         .expect("receipt remains reserved");
-    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-        result: Box::new(DomainResult::success("expiry-owned direct result")),
-    })
+    let terminal = canonical_v5_terminal(
+        &ReceiptTerminalOutcome::Completed {
+            result: Box::new(DomainResult::success("expiry-owned direct result")),
+        },
+        73_728,
+    )
     .expect("canonical direct terminal");
     let committed = store
         .publish_direct_terminal(
@@ -3863,7 +3884,7 @@ fn direct_terminal_persists_the_original_cutoff_for_exact_response_identity() {
         .expect("reserve exact receipt")
         .into_reservation()
         .expect("receipt remains reserved");
-    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled, 73_728)
         .expect("canonical direct terminal");
 
     store
@@ -3913,7 +3934,7 @@ fn assert_direct_terminal_preflight_matches_wire(outcome: ReceiptTerminalOutcome
         .expect("reserve exact receipt")
         .into_reservation()
         .expect("receipt remains reserved");
-    let terminal = canonical_v5_terminal(&outcome).expect("canonical direct terminal");
+    let terminal = canonical_v5_terminal(&outcome, 73_728).expect("canonical direct terminal");
     let expected = crate::terminal_codec::prepare_direct_terminal(
         crate::terminal_codec::DirectReceiptWriteSlot::new(
             &key,
@@ -3976,9 +3997,12 @@ fn exact_duplicate_direct_after_reopen_reads_the_existing_lifecycle_without_muta
         .expect("reserve exact receipt")
         .into_reservation()
         .expect("receipt remains reserved");
-    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-        result: Box::new(DomainResult::success("stable duplicate result")),
-    })
+    let terminal = canonical_v5_terminal(
+        &ReceiptTerminalOutcome::Completed {
+            result: Box::new(DomainResult::success("stable duplicate result")),
+        },
+        73_728,
+    )
     .expect("canonical direct terminal");
     let committed = store
         .publish_direct_terminal(
@@ -4040,7 +4064,7 @@ fn reopen_rejects_direct_terminal_at_the_impossible_initial_record_version() {
             &key,
             reserved.record_version(),
             2_000,
-            canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+            canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled, 73_728)
                 .expect("canonical direct terminal"),
             reserve_deadline(),
         )
@@ -4081,9 +4105,12 @@ fn direct_terminal_record_is_strict_canonical_schema_v1() {
         .expect("reserve exact receipt")
         .into_reservation()
         .expect("receipt remains reserved");
-    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-        result: Box::new(DomainResult::success("strict direct result")),
-    })
+    let terminal = canonical_v5_terminal(
+        &ReceiptTerminalOutcome::Completed {
+            result: Box::new(DomainResult::success("strict direct result")),
+        },
+        73_728,
+    )
     .expect("canonical direct terminal");
     let terminal_digest = terminal.digest().clone();
     store
@@ -4161,9 +4188,12 @@ fn direct_terminal_repeat_preserves_first_winner_and_clean_conflicts_do_not_latc
         .expect("reserve exact receipt")
         .into_reservation()
         .expect("receipt remains reserved");
-    let first_terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-        result: Box::new(DomainResult::success("first winner")),
-    })
+    let first_terminal = canonical_v5_terminal(
+        &ReceiptTerminalOutcome::Completed {
+            result: Box::new(DomainResult::success("first winner")),
+        },
+        73_728,
+    )
     .expect("canonical first terminal");
     let first_publication = store
         .publish_direct_terminal_publication(
@@ -4198,7 +4228,7 @@ fn direct_terminal_repeat_preserves_first_winner_and_clean_conflicts_do_not_latc
         winner_bytes
     );
 
-    let foreign_terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+    let foreign_terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled, 73_728)
         .expect("canonical foreign terminal");
     assert_eq!(
         store
@@ -4229,7 +4259,7 @@ fn direct_terminal_repeat_preserves_first_winner_and_clean_conflicts_do_not_latc
         .expect("reserve second receipt")
         .into_reservation()
         .expect("receipt remains reserved");
-    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled, 73_728)
         .expect("canonical second terminal");
     assert_eq!(
         store
@@ -4272,7 +4302,7 @@ fn direct_terminal_catalog_invariant_failure_latches_the_live_writer() {
         .lock()
         .expect("lock receipt catalog fixture")
         .actual_bytes = 0;
-    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled, 73_728)
         .expect("canonical direct terminal");
 
     assert_eq!(
@@ -4310,11 +4340,14 @@ fn direct_terminal_reader_accepts_payload_above_the_legacy_64_kib_bound() {
         .expect("reserve exact receipt")
         .into_reservation()
         .expect("receipt remains reserved");
-    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-        result: Box::new(DomainResult::success(
-            "x".repeat(crate::invocation_store::MAX_CANONICAL_RESULT_BYTES - 4_096),
-        )),
-    })
+    let terminal = canonical_v5_terminal(
+        &ReceiptTerminalOutcome::Completed {
+            result: Box::new(DomainResult::success("x".repeat(
+                unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES - 4_096,
+            ))),
+        },
+        73_728,
+    )
     .expect("canonical near-limit direct terminal");
     let committed = store
         .publish_direct_terminal(
@@ -4362,9 +4395,12 @@ fn direct_terminal_after_rename_sync_failure_is_uncertain_and_reopens_the_winner
         .expect("reserve exact receipt")
         .into_reservation()
         .expect("receipt remains reserved");
-    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-        result: Box::new(DomainResult::success("visible uncertain winner")),
-    })
+    let terminal = canonical_v5_terminal(
+        &ReceiptTerminalOutcome::Completed {
+            result: Box::new(DomainResult::success("visible uncertain winner")),
+        },
+        73_728,
+    )
     .expect("canonical direct terminal");
     inject_receipt_row_directory_sync_failure_for_test();
 
@@ -5005,8 +5041,8 @@ fn no_deadline_row_commit_survives_delayed_sync_and_exact_reopen() {
         .into_reservation()
         .expect("new exact reservation");
     assert!(Instant::now() >= former_boundary);
-    let terminal =
-        canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled).expect("canonical terminal");
+    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled, 73_728)
+        .expect("canonical terminal");
     let direct = store
         .publish_direct_terminal(
             &key,
@@ -5175,7 +5211,7 @@ fn visible_replace_updates_live_catalog_before_the_first_post_rename_hook() {
                 &key,
                 reserved.record_version(),
                 2_000,
-                canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+                canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled, 73_728)
                     .expect("canonical direct terminal"),
                 reserve_deadline(),
             );
@@ -6986,9 +7022,12 @@ fn body_read_hint_survives_receipt_reopen_and_tampering_is_rejected() {
             .unwrap();
         let mut result = DomainResult::success("done");
         result.source_text_read_hint = hint.clone();
-        let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-            result: Box::new(result),
-        })
+        let terminal = canonical_v5_terminal(
+            &ReceiptTerminalOutcome::Completed {
+                result: Box::new(result),
+            },
+            73_728,
+        )
         .unwrap();
         if hint.is_none() {
             assert_eq!(

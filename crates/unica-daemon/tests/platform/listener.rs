@@ -21,6 +21,8 @@ struct TransportOnlyHost;
 struct UnexpectedInvocation;
 
 impl InvocationHost for TransportOnlyHost {
+    const MAX_SUPPORTED_BODY_RESPONSE_BYTES: usize = 73_728;
+
     type Request = V5InvocationRequest;
     type Bound = UnexpectedInvocation;
     type Prepared = UnexpectedInvocation;

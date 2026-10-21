@@ -5,7 +5,6 @@ use crate::coordinator::{
     AuthorityEpoch, CommitRequest, Effect, ExecutionCoordinator, OwnerCapability, RunPermit,
     WriteFailureCause,
 };
-use crate::invocation_store::MAX_CANONICAL_RESULT_BYTES;
 use crate::store::codec::{self, EncodedFrame};
 use crate::store::file::{test_support, OpeningStore, ScanProgress};
 use crate::store::namespace::{hex, AuthorityRoot, NamespaceSpec, ResolvedNamespace};
@@ -14,6 +13,7 @@ use std::ffi::OsStr;
 use std::io::{self, Cursor};
 use std::sync::Arc;
 use unica_execution_contract::invocation::{DomainResult, InvocationId, TaskId};
+use unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES;
 use unica_execution_contract::storage::RecoveryCatalog;
 use unica_execution_contract::{CanonicalOutcome, Key, ObservationWindow, Tool};
 use unica_workspace::state_fs::test_support::{

@@ -2855,7 +2855,18 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
                             }
                         }
                     };
-                    let terminal = canonical_v5_terminal(&outcome).map_err(|error| {
+                    let terminal = match &outcome {
+                        ReceiptTerminalOutcome::Cancelled => {
+                            crate::receipt_ledger::canonical_cancelled_terminal()
+                        }
+                        ReceiptTerminalOutcome::Failed { reason } => {
+                            crate::receipt_ledger::canonical_failed_terminal(*reason)
+                        }
+                        ReceiptTerminalOutcome::Completed { .. } => {
+                            unreachable!("recovery is never success")
+                        }
+                    }
+                    .map_err(|error| {
                         format!("prepare protocol-v5 startup recovery terminal: {error}")
                     })?;
                     self.receipt_ledger
@@ -2879,7 +2890,18 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
                             reason: V5SafeFailureReason::Interrupted,
                         }
                     };
-                    let terminal = canonical_v5_terminal(&outcome).map_err(|error| {
+                    let terminal = match &outcome {
+                        ReceiptTerminalOutcome::Cancelled => {
+                            crate::receipt_ledger::canonical_cancelled_terminal()
+                        }
+                        ReceiptTerminalOutcome::Failed { reason } => {
+                            crate::receipt_ledger::canonical_failed_terminal(*reason)
+                        }
+                        ReceiptTerminalOutcome::Completed { .. } => {
+                            unreachable!("recovery is never success")
+                        }
+                    }
+                    .map_err(|error| {
                         format!("prepare protocol-v5 startup Task recovery terminal: {error}")
                     })?;
                     self.receipt_ledger
@@ -2898,9 +2920,9 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
                 }
                 ReceiptState::TaskReceiptOwnedActorBound(receipt_owned) => {
                     let expected = TaskCancellationReceipt::ReceiptOwnedActorBound(receipt_owned);
-                    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Failed {
-                        reason: V5SafeFailureReason::OutcomeUncertain,
-                    })
+                    let terminal = crate::receipt_ledger::canonical_failed_terminal(
+                        V5SafeFailureReason::OutcomeUncertain,
+                    )
                     .map_err(|error| {
                         format!("prepare protocol-v5 receipt-owned recovery terminal: {error}")
                     })?;
@@ -3464,13 +3486,11 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
                                 // whose terminal epoch it would contest.
                                 let task_id = cancelled.task().task_id();
                                 let reserved_task_id = cancelled.key().reserved_task_id();
-                                let terminal =
-                                    canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
-                                        .map_err(|_| {
-                                            ReceiptLedgerError::Corrupt(
-                                                "canonical v5 terminal failed",
-                                            )
-                                        })?;
+                                let terminal = crate::receipt_ledger::canonical_cancelled_terminal(
+                                )
+                                .map_err(|_| {
+                                    ReceiptLedgerError::Corrupt("canonical v5 terminal failed")
+                                })?;
                                 let committed =
                                     self.receipt_ledger.publish_receipt_backed_task_terminal(
                                         cancelled.key().clone(),
@@ -3990,9 +4010,9 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
         };
         match current {
             ReceiptState::TaskPromisedUnbound(_) => {
-                let published = canonical_v5_terminal(&ReceiptTerminalOutcome::Failed {
-                    reason: V5SafeFailureReason::InvocationFailed,
-                })
+                let published = crate::receipt_ledger::canonical_failed_terminal(
+                    V5SafeFailureReason::InvocationFailed,
+                )
                 .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))
                 .and_then(|terminal| {
                     self.publish_pre_actor_terminal(
@@ -4064,7 +4084,10 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
             }
         }
         if self.hooks.validation_rejects() {
-            let terminal = injected_rejection_terminal("scenario validation rejected invocation")?;
+            let terminal = injected_rejection_terminal(
+                "scenario validation rejected invocation",
+                H::MAX_SUPPORTED_BODY_RESPONSE_BYTES,
+            )?;
             return self.publish_pre_actor_terminal(reservation, epoch_ms, terminal, deadline);
         }
         self.hooks.stage_entered(V5Stage::Admission);
@@ -4126,7 +4149,7 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
                 .receipt_ledger
                 .recover(reservation.key().clone(), deadline)?;
             if reservation_is_still_unbound(&current) {
-                let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+                let terminal = crate::receipt_ledger::canonical_cancelled_terminal()
                     .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
                 return self.publish_pre_actor_terminal(reservation, epoch_ms, terminal, deadline);
             }
@@ -4313,7 +4336,10 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
                 return self.reply_for_existing_state(current, deadline);
             }
             if self.hooks.prepare_rejects() {
-                let terminal = injected_rejection_terminal("scenario prepare rejected invocation")?;
+                let terminal = injected_rejection_terminal(
+                    "scenario prepare rejected invocation",
+                    H::MAX_SUPPORTED_BODY_RESPONSE_BYTES,
+                )?;
                 return self.publish_direct_terminal(begun, epoch_ms, terminal, deadline);
             }
         }
@@ -4347,10 +4373,10 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
         }
         let (prepared, direct_outcome) = match self.drive_inline_invocation(actor_bound, &begun)? {
             InlineDrive::Rejected(result) => {
-                let terminal = crate::receipt_ledger::canonical_v5_terminal(
-                    &crate::receipt_ledger::ReceiptTerminalOutcome::Completed { result },
-                )
-                .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
+                let terminal = rejection_terminal(
+                    &ReceiptTerminalOutcome::Completed { result },
+                    H::MAX_SUPPORTED_BODY_RESPONSE_BYTES,
+                )?;
                 return self.publish_direct_terminal(begun, epoch_ms, terminal, deadline);
             }
             InlineDrive::HandedOff(reply) => return Ok(*reply),
@@ -4480,23 +4506,24 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
         // published: the ledger command gets the serialization margin, not
         // an already spent operation deadline.
         let deadline = deadline.max(Instant::now() + RESPONSE_SERIALIZATION_MARGIN);
-        let (terminal, oversized_result) = match canonical_v5_terminal(&outcome) {
-            Ok(terminal) => (terminal, false),
-            Err(CanonicalTerminalError::ResultTooLarge) => (
-                canonical_v5_terminal(&ReceiptTerminalOutcome::Failed {
-                    reason: V5SafeFailureReason::ResultTooLarge,
-                })
-                .map_err(|_| {
-                    ReceiptLedgerError::Corrupt("canonical result-too-large terminal failed")
-                })?,
-                true,
-            ),
-            Err(CanonicalTerminalError::Serialization) => {
-                return Err(ReceiptLedgerError::Corrupt(
-                    "canonical v5 terminal serialization failed",
-                ))
-            }
-        };
+        let (terminal, oversized_result) =
+            match canonical_v5_terminal(&outcome, H::MAX_SUPPORTED_BODY_RESPONSE_BYTES) {
+                Ok(terminal) => (terminal, false),
+                Err(CanonicalTerminalError::ResultTooLarge) => (
+                    crate::receipt_ledger::canonical_failed_terminal(
+                        V5SafeFailureReason::ResultTooLarge,
+                    )
+                    .map_err(|_| {
+                        ReceiptLedgerError::Corrupt("canonical result-too-large terminal failed")
+                    })?,
+                    true,
+                ),
+                Err(CanonicalTerminalError::Serialization) => {
+                    return Err(ReceiptLedgerError::Corrupt(
+                        "canonical v5 terminal serialization failed",
+                    ))
+                }
+            };
         self.hooks
             .event(V5ReceiptRuntimeEventKind::ResultSerialized, epoch_ms);
         let oversized_candidate = match (&outcome, oversized_result) {
@@ -4838,22 +4865,25 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
             }
         };
         if let Some(outcome) = staged_outcome {
-            let terminal = match canonical_v5_terminal(&outcome) {
-                Ok(terminal) => terminal,
-                Err(CanonicalTerminalError::ResultTooLarge) => {
-                    canonical_v5_terminal(&ReceiptTerminalOutcome::Failed {
-                        reason: V5SafeFailureReason::ResultTooLarge,
-                    })
-                    .map_err(|_| {
-                        ReceiptLedgerError::Corrupt("canonical result-too-large terminal failed")
-                    })?
-                }
-                Err(CanonicalTerminalError::Serialization) => {
-                    return Err(ReceiptLedgerError::Corrupt(
-                        "canonical v5 terminal serialization failed",
-                    ))
-                }
-            };
+            let terminal =
+                match canonical_v5_terminal(&outcome, H::MAX_SUPPORTED_BODY_RESPONSE_BYTES) {
+                    Ok(terminal) => terminal,
+                    Err(CanonicalTerminalError::ResultTooLarge) => {
+                        crate::receipt_ledger::canonical_failed_terminal(
+                            V5SafeFailureReason::ResultTooLarge,
+                        )
+                        .map_err(|_| {
+                            ReceiptLedgerError::Corrupt(
+                                "canonical result-too-large terminal failed",
+                            )
+                        })?
+                    }
+                    Err(CanonicalTerminalError::Serialization) => {
+                        return Err(ReceiptLedgerError::Corrupt(
+                            "canonical v5 terminal serialization failed",
+                        ))
+                    }
+                };
             let reply =
                 self.publish_staged_handoff_terminal_reply(handoff, terminal, epoch_ms, deadline)?;
             return Ok(CutoffCommit::Terminal(reply));
@@ -5089,7 +5119,7 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
             }
         }
         if task_record.cancel_requested {
-            let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+            let terminal = crate::receipt_ledger::canonical_cancelled_terminal()
                 .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
             // The cancel may have reached the Task after this continuation
             // took its epoch: the terminal never precedes it (#1395).
@@ -5173,7 +5203,10 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
         deadline: Instant,
     ) -> Result<ReceiptReply, ReceiptLedgerError> {
         if self.hooks.prepare_rejects() {
-            let terminal = injected_rejection_terminal("scenario prepare rejected invocation")?;
+            let terminal = injected_rejection_terminal(
+                "scenario prepare rejected invocation",
+                H::MAX_SUPPORTED_BODY_RESPONSE_BYTES,
+            )?;
             return self.publish_bound_terminal_reply(
                 &bound,
                 &task_record,
@@ -5185,8 +5218,10 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
         let prepared = match actor_bound.prepare() {
             Ok(prepared) => prepared,
             Err(result) => {
-                let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed { result })
-                    .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
+                let terminal = rejection_terminal(
+                    &ReceiptTerminalOutcome::Completed { result },
+                    H::MAX_SUPPORTED_BODY_RESPONSE_BYTES,
+                )?;
                 return self.publish_bound_terminal_reply(
                     &bound,
                     &task_record,
@@ -5418,12 +5453,12 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
             record.cancel_requested,
             self.active_task_cancellations.outcome_authority(task_id),
         );
-        let terminal = match canonical_v5_terminal(&outcome) {
+        let terminal = match canonical_v5_terminal(&outcome, H::MAX_SUPPORTED_BODY_RESPONSE_BYTES) {
             Ok(terminal) => terminal,
             Err(CanonicalTerminalError::ResultTooLarge) => {
-                canonical_v5_terminal(&ReceiptTerminalOutcome::Failed {
-                    reason: V5SafeFailureReason::ResultTooLarge,
-                })
+                crate::receipt_ledger::canonical_failed_terminal(
+                    V5SafeFailureReason::ResultTooLarge,
+                )
                 .map_err(|_| {
                     ReceiptLedgerError::Corrupt(
                         "canonical background result-too-large terminal failed",
@@ -5738,8 +5773,7 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
         epoch_ms: u64,
         deadline: Instant,
     ) -> Result<ReceiptReply, ReceiptLedgerError> {
-        let terminal = canonical_v5_terminal(&outcome)
-            .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
+        let terminal = rejection_terminal(&outcome, H::MAX_SUPPORTED_BODY_RESPONSE_BYTES)?;
         let reply = self.publish_pre_actor_terminal(reservation, epoch_ms, terminal, deadline);
         if fail_stop {
             self.hooks.restart_requested();
@@ -5762,7 +5796,10 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
     ) -> Result<ReceiptReply, ReceiptLedgerError> {
         let epoch_ms = self.continuation_epoch_ms(epoch_ms, handoff.task());
         if self.hooks.prepare_rejects() {
-            let terminal = injected_rejection_terminal("scenario prepare rejected invocation")?;
+            let terminal = injected_rejection_terminal(
+                "scenario prepare rejected invocation",
+                H::MAX_SUPPORTED_BODY_RESPONSE_BYTES,
+            )?;
             return self
                 .publish_staged_handoff_terminal_reply(handoff, terminal, epoch_ms, deadline);
         }
@@ -6513,7 +6550,7 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
                         && bound.phase() == AttemptPhase::NotBegun
                         && record.cancel_requested
                     {
-                        let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+                        let terminal = crate::receipt_ledger::canonical_cancelled_terminal()
                             .map_err(|_| {
                                 ReceiptLedgerError::Corrupt("canonical v5 terminal failed")
                             })?;
@@ -6577,7 +6614,7 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
             self.receipt_ledger
                 .request_task_cancel(expected.key().clone(), expected, deadline)?;
         if terminalize_without_started_attempt {
-            let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+            let terminal = crate::receipt_ledger::canonical_cancelled_terminal()
                 .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
             let committed = self.receipt_ledger.publish_receipt_backed_task_terminal(
                 cancelled.key().clone(),
@@ -6839,19 +6876,41 @@ impl ReceiptReply {
     }
 }
 
+/// Pre-execution refusals have the same delivery limit as executed outcomes.
+/// An oversized recovery route is a closed size failure, not store corruption.
+fn rejection_terminal(
+    outcome: &ReceiptTerminalOutcome,
+    max_supported_body_response_bytes: usize,
+) -> Result<crate::receipt_ledger::V5CanonicalTerminal, ReceiptLedgerError> {
+    match canonical_v5_terminal(outcome, max_supported_body_response_bytes) {
+        Ok(terminal) => Ok(terminal),
+        Err(CanonicalTerminalError::ResultTooLarge) => {
+            crate::receipt_ledger::canonical_failed_terminal(V5SafeFailureReason::ResultTooLarge)
+                .map_err(|_| ReceiptLedgerError::Corrupt("canonical size refusal failed"))
+        }
+        Err(CanonicalTerminalError::Serialization) => {
+            Err(ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))
+        }
+    }
+}
+
 /// The terminal an injected rejection publishes in place of the real stage.
 fn injected_rejection_terminal(
     summary: &'static str,
+    max_supported_body_response_bytes: usize,
 ) -> Result<crate::receipt_ledger::V5CanonicalTerminal, ReceiptLedgerError> {
-    canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-        result: Box::new(
-            unica_execution_contract::invocation::DomainResult::canonical_rejection(
-                None,
-                RefusalCode::BadValue,
-                summary,
+    canonical_v5_terminal(
+        &ReceiptTerminalOutcome::Completed {
+            result: Box::new(
+                unica_execution_contract::invocation::DomainResult::canonical_rejection(
+                    None,
+                    RefusalCode::BadValue,
+                    summary,
+                ),
             ),
-        ),
-    })
+        },
+        max_supported_body_response_bytes,
+    )
     .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))
 }
 
@@ -7194,7 +7253,7 @@ fn joined_task_snapshot(
 ) -> response::V5DaemonTaskSnapshot {
     use response::V5DaemonTaskSnapshot as Snapshot;
     if let Some(released) = released_at_epoch_ms {
-        let cancelled = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+        let cancelled = crate::receipt_ledger::canonical_cancelled_terminal()
             .expect("the canonical cancelled terminal has a fixed encoding");
         return terminal_task_snapshot(
             TerminalSnapshotIdentity {
@@ -7322,11 +7381,7 @@ pub mod test_support {
     }
 
     pub use super::join_freshness::TIMESTAMP_MARGIN;
-    #[cfg(any(
-        test,
-        feature = "test-support",
-        feature = "receipt-ledger-test-support"
-    ))]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn receipt_owner_identity<H: super::ports::InvocationHost>(
         runtime: &super::V5ReceiptRuntime<H>,
     ) -> unica_workspace::state_fs::FileIdentity {

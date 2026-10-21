@@ -1,15 +1,12 @@
 //! Isolated sole-writer TaskStore for the private protocol-v5 daemon.
 
-use crate::invocation_store::{
-    canonical_result_size, CanonicalResultSizeError, EpochMillisClock, MAX_TASK_RECORD_BYTES,
-};
 use crate::invocation_store_v5::{
     InvocationStoreV5, NewV5InvocationRecord, RecoveryTerminalReason, TaskStoreRecoveryCatalog,
     V5CommitOperation, V5DeleteTerminalOutcome, V5StartWorkingOutcome, V5StoredInvocationRecord,
     V5StoredTask, V5TaskIdentity, V5TaskMismatch, V5TaskRecoveryEntry, V5TaskRetirement,
     V5TaskStatus, V5TaskStoreError, V5TerminalPublication,
 };
-use crate::receipt_ledger::{canonical_v5_terminal, ReceiptTerminalOutcome};
+use crate::receipt_ledger::ReceiptTerminalOutcome;
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::io::{self, Read, Write};
@@ -27,6 +24,12 @@ use unica_workspace::state_fs::{
     verify_state_owner_only, FileIdentity, StateDirectory,
 };
 use uuid::Uuid;
+use {
+    crate::invocation_store::EpochMillisClock,
+    unica_execution_contract::result_size::canonical_result_size,
+    unica_execution_contract::result_size::CanonicalResultSizeError,
+    unica_execution_contract::result_size::MAX_TASK_RECORD_BYTES,
+};
 
 const STORE_LOCK_FILE: &str = ".task-store-v5.lock";
 const STORE_WRITER_WAIT_SLICE: Duration = Duration::from_millis(10);
@@ -874,7 +877,16 @@ impl InvocationStoreV5 for FileInvocationStoreV5 {
                 reason: crate::invocation_store_v5::V5SafeFailureReason::OutcomeUncertain,
             },
         };
-        let terminal = canonical_v5_terminal(&outcome).map_err(|_| {
+        let terminal = match &outcome {
+            ReceiptTerminalOutcome::Cancelled => {
+                crate::receipt_ledger::canonical_cancelled_terminal()
+            }
+            ReceiptTerminalOutcome::Failed { reason } => {
+                crate::receipt_ledger::canonical_failed_terminal(*reason)
+            }
+            ReceiptTerminalOutcome::Completed { .. } => unreachable!("recovery is never success"),
+        }
+        .map_err(|_| {
             V5TaskStoreError::Corrupt("canonical recovery terminal could not be encoded")
         })?;
         record.task = match outcome {
@@ -1752,9 +1764,12 @@ mod tests {
             };
             let mut result = DomainResult::success("Body persisted");
             result.source_text_read_hint = hint;
-            let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-                result: Box::new(result.clone()),
-            })
+            let terminal = canonical_v5_terminal(
+                &ReceiptTerminalOutcome::Completed {
+                    result: Box::new(result.clone()),
+                },
+                73_728,
+            )
             .unwrap();
             let winner = store
                 .publish_terminal_exact(

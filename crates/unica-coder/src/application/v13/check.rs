@@ -3,8 +3,8 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::fmt;
 use unica_address::address::QualifiedAddress;
-use unica_execution::invocation_store::MAX_CANONICAL_RESULT_BYTES;
 use unica_execution_contract::invocation::DomainResult;
+use unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES;
 use unica_navigation::result_store::{ViewCursorBinding, ViewCursorStore};
 use unica_refusal::{RefusalCode, RefusalDetail};
 
@@ -711,7 +711,7 @@ mod tests {
         let node = serde_json::to_value(node_result).unwrap();
         let item = result.data.as_ref().unwrap()["diagnostics"][1].clone();
         let baseline = super::check_page_result(&node, vec![item], None, "bytes");
-        let message_len = unica_execution::invocation_store::MAX_CANONICAL_RESULT_BYTES
+        let message_len = unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES
             - super::serialized_result_size(&baseline);
         result.data.as_mut().unwrap()["diagnostics"][1]["message"] = json!("x".repeat(message_len));
 

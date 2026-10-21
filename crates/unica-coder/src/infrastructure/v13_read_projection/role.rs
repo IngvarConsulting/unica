@@ -1,6 +1,6 @@
 use super::selected_scalar_props;
-use crate::application::v13::view::ViewError;
 use crate::domain::node_view::{BranchRef, CollectionView, NodeView, NodeViewData};
+use unica_execution_contract::view_error::ViewError;
 
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;

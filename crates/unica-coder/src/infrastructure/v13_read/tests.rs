@@ -15,12 +15,15 @@ use super::{
     PLATFORM_XML_8_3_27_FORMAT_2_20,
 };
 use crate::application::v13::find::FindRequest;
-use crate::application::v13::view::{ViewError, ViewReadAuthority, ViewRequest, ViewService};
 use crate::infrastructure::logical_tree::route_logical_address;
 use unica_address::address::QualifiedAddress;
 use unica_bsl::profile::PlatformProfile;
 use unica_navigation::result_store::ViewCursorStore;
 use unica_refusal::RefusalCode;
+use {
+    crate::application::v13::view::ViewReadAuthority, crate::application::v13::view::ViewRequest,
+    crate::application::v13::view::ViewService, unica_execution_contract::view_error::ViewError,
+};
 
 use unica_source_contract::workspace::WorkspaceContext;
 use unica_source_contract::SourceSetKind;
@@ -458,7 +461,7 @@ fn common_module_present_damage_is_not_missing() {
 
 fn configuration_payload(
     reader: &ProviderReadAuthority,
-) -> Result<serde_json::Value, crate::application::v13::view::ViewError> {
+) -> Result<serde_json::Value, unica_execution_contract::view_error::ViewError> {
     reader
         .configuration_payload_with_checkpoint(&mut || Ok(()))
         .map(|payload| payload.as_ref().clone())
@@ -2788,7 +2791,7 @@ fn retained_external_inventory_is_cancellable() {
                 cancellation.cancel();
             }
             if cancellation.is_cancelled() {
-                Err(crate::application::v13::view::ViewError::new(
+                Err(unica_execution_contract::view_error::ViewError::new(
                     RefusalCode::Cancelled,
                     "external inventory cancelled",
                 ))
@@ -3197,7 +3200,7 @@ fn large_support_marker_reads_late_rules_once_for_multiple_owners() {
 
 #[test]
 fn support_marker_stream_preserves_terminal_errors_and_never_memoizes_interruption() {
-    use crate::application::v13::view::ViewError;
+    use unica_execution_contract::view_error::ViewError;
     let fixture = RealReaderFixture::new();
     let marker_path = fixture.source.join("Ext/ParentConfigurations.bin");
     fs::create_dir_all(marker_path.parent().unwrap()).unwrap();

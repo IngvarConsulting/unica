@@ -53,6 +53,9 @@ pub trait BoundInvocation: Send + 'static {
 
 /// The one composition binding to the existing product admission and operation owners.
 pub trait InvocationHost: Send + Sync + 'static {
+    /// Largest supported Body response in bytes, independent of the current client/deadline.
+    const MAX_SUPPORTED_BODY_RESPONSE_BYTES: usize;
+
     type Request: InvocationRequestFacts;
     type Bound: BoundInvocation<Prepared = Self::Prepared>;
     type Prepared: PreparedInvocation;

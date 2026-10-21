@@ -1,9 +1,12 @@
 //! Shared section encoding; the file backend uses one framed aggregate.
-use crate::invocation_store::{MAX_CANONICAL_RESULT_BYTES, MAX_TASK_RECORD_ENVELOPE_BYTES};
 use sha2::{Digest, Sha256};
 use std::io::{self, Read, Write};
 use std::sync::Arc;
 use unica_execution_contract::storage::{codec as raw, StoredRecord};
+use {
+    unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES,
+    unica_execution_contract::result_size::MAX_TASK_RECORD_ENVELOPE_BYTES,
+};
 
 const MAGIC: &[u8; 8] = b"UNICAEX1";
 pub(crate) const HEADER_BYTES: usize = 128;

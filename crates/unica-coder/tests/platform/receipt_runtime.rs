@@ -2534,9 +2534,12 @@ fn staged_startup_crash_fixture() -> StagedStartupCrashFixture {
     let handoff = prepare_staged_startup_handoff(&runtime, &identity, AttemptPhase::Begun);
     let key = handoff.key().clone();
     let deadline = Instant::now() + Duration::from_secs(5);
-    let winner = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-        result: Box::new(DomainResult::success("durable staged winner")),
-    })
+    let winner = canonical_v5_terminal(
+        &ReceiptTerminalOutcome::Completed {
+            result: Box::new(DomainResult::success("durable staged winner")),
+        },
+        unica_bootstrap::MAX_RESPONSE_BUDGET,
+    )
     .expect("canonical saved winner");
     assert!(matches!(
         publish_staged_handoff_terminal_reply_for_fixture(
@@ -2868,9 +2871,12 @@ fn startup_publishes_saved_staged_winner_from_exact_provisional_without_replay()
         )
         .unwrap();
         let handoff = prepare_staged_startup_handoff(&runtime, &identity, phase);
-        let winner = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-            result: Box::new(DomainResult::success("saved before terminal publication")),
-        })
+        let winner = canonical_v5_terminal(
+            &ReceiptTerminalOutcome::Completed {
+                result: Box::new(DomainResult::success("saved before terminal publication")),
+            },
+            unica_bootstrap::MAX_RESPONSE_BUDGET,
+        )
         .unwrap();
         let (staged, provisional, _) =
             materialize_saved_staged_startup_owner(&runtime, handoff, &winner);
@@ -2951,9 +2957,12 @@ fn startup_validates_all_staged_owners_before_completing_any_receipt_or_link() {
     let handoffs = (0..2)
         .map(|_| prepare_staged_startup_handoff(&runtime, &identity, AttemptPhase::Begun))
         .collect::<Vec<_>>();
-    let winner = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-        result: Box::new(DomainResult::success("captured winner before crash")),
-    })
+    let winner = canonical_v5_terminal(
+        &ReceiptTerminalOutcome::Completed {
+            result: Box::new(DomainResult::success("captured winner before crash")),
+        },
+        unica_bootstrap::MAX_RESPONSE_BUDGET,
+    )
     .unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     let provider_deadline = unica_work_control::provider_deadline::ProviderDeadline::new(deadline);
@@ -3077,7 +3086,7 @@ fn assert_staged_handoff_terminal_transfer(phase: AttemptPhase, outcome: Receipt
     } else {
         handoff
     };
-    let terminal = canonical_v5_terminal(&outcome).unwrap();
+    let terminal = canonical_v5_terminal(&outcome, unica_bootstrap::MAX_RESPONSE_BUDGET).unwrap();
     let certificate = canonical_staged_transfer_certificate(
         handoff.key(),
         handoff.key_digest(),
@@ -6299,9 +6308,12 @@ fn materialize_completed_task_key(
         .complete_bound_task_handoff(key.clone(), handoff.record_version(), task_bound, deadline)
         .expect("complete TaskBound ownership");
     clock.set(terminal_epoch_ms);
-    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-        result: Box::new(DomainResult::success(summary)),
-    })
+    let terminal = canonical_v5_terminal(
+        &ReceiptTerminalOutcome::Completed {
+            result: Box::new(DomainResult::success(summary)),
+        },
+        unica_bootstrap::MAX_RESPONSE_BUDGET,
+    )
     .expect("canonical completed terminal");
     publish_bound_task_terminal_for_fixture(
         runtime,
@@ -7778,9 +7790,12 @@ fn staged_handoff_completion_waits_for_the_key_lock() {
     let handoff = prepare_staged_startup_handoff(&runtime, &identity, AttemptPhase::Begun);
     let key = handoff.key().clone();
     let digest = unica_execution::receipt_ledger::receipt_key_digest(&key);
-    let winner = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-        result: Box::new(DomainResult::success("staged winner")),
-    })
+    let winner = canonical_v5_terminal(
+        &ReceiptTerminalOutcome::Completed {
+            result: Box::new(DomainResult::success("staged winner")),
+        },
+        unica_bootstrap::MAX_RESPONSE_BUDGET,
+    )
     .expect("canonical staged winner");
 
     let lock = submit_fence_for_fixture(&runtime, &digest);
@@ -8810,9 +8825,12 @@ fn task_id_cancel_waits_for_the_staged_handoff_completion() {
         );
         let handoff = prepare_staged_startup_handoff(&runtime, &identity, phase);
         let task_id = handoff.key().reserved_task_id();
-        let winner = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-            result: Box::new(DomainResult::success("staged winner")),
-        })
+        let winner = canonical_v5_terminal(
+            &ReceiptTerminalOutcome::Completed {
+                result: Box::new(DomainResult::success("staged winner")),
+            },
+            unica_bootstrap::MAX_RESPONSE_BUDGET,
+        )
         .expect("canonical staged winner");
 
         let publisher = {

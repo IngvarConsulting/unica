@@ -1,7 +1,6 @@
 //! Bounded registration sorting for the root Configuration view. The root
 //! publishes counts, while the owner proof still needs exact set semantics.
 
-use crate::application::v13::view::ViewError;
 use serde_json::{json, Value};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -10,6 +9,7 @@ use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use unica_address::address::NodeKind;
+use unica_execution_contract::view_error::ViewError;
 use unica_metadata_designer::support::SupportState;
 use unica_refusal::RefusalDetail;
 use unica_source_contract::read::{FileStamp, ReadFile, SourceDirectory};

@@ -2580,7 +2580,7 @@ mod tests {
     }
 
     fn cancelled_terminal() -> V5CanonicalTerminal {
-        canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+        canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled, 73_728)
             .expect("cancelled terminal is canonical")
     }
 

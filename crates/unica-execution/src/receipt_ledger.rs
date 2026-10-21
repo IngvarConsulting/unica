@@ -1,4 +1,3 @@
-use crate::invocation_store::{MAX_CANONICAL_RESULT_BYTES, MAX_TASK_RECORD_ENVELOPE_BYTES};
 use crate::invocation_store_v5::V5SafeFailureReason;
 use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
@@ -11,6 +10,10 @@ use unica_execution_contract::invocation::{
     DomainResult, InvocationId, NormalizedArgumentsHash, SafeIdentityHash, TaskId,
 };
 use unica_work_control::operation_deadline::OperationDeadline;
+use {
+    unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES,
+    unica_execution_contract::result_size::MAX_TASK_RECORD_ENVELOPE_BYTES,
+};
 
 const REQUEST_SCOPE_DOMAIN: &[u8] = b"unica.request-scope.v1\0";
 const RECEIPT_KEY_DOMAIN: &[u8] = b"unica.receipt-key.v1\0";
@@ -3224,8 +3227,47 @@ pub fn task_link_digest(identity: &TaskLinkIdentity) -> TaskLinkDigest {
 
 pub fn canonical_v5_terminal(
     outcome: &ReceiptTerminalOutcome,
+    max_supported_body_response_bytes: usize,
 ) -> Result<V5CanonicalTerminal, CanonicalTerminalError> {
+    if let ReceiptTerminalOutcome::Completed { result } = outcome {
+        use unica_execution_contract::result_size::CanonicalResultSizeError;
+        unica_execution_contract::result_delivery::validate_result_delivery(
+            result,
+            max_supported_body_response_bytes,
+        )
+        .map_err(|error| match error {
+            CanonicalResultSizeError::TooLarge => CanonicalTerminalError::ResultTooLarge,
+            CanonicalResultSizeError::Serialization => CanonicalTerminalError::Serialization,
+            CanonicalResultSizeError::Checkpoint(never) => match never {},
+        })?;
+    }
     canonical_v5_terminal_from_shared(Arc::new(outcome.clone()))
+}
+
+/// New control outcomes have no DomainResult and require no Body policy.
+///
+/// ```compile_fail
+/// use unica_execution::receipt_ledger::{canonical_cancelled_terminal, ReceiptTerminalOutcome};
+/// use unica_execution_contract::invocation::DomainResult;
+/// canonical_cancelled_terminal(ReceiptTerminalOutcome::Completed {
+///     result: Box::new(DomainResult::success("a result needs admission")),
+/// });
+/// ```
+pub fn canonical_cancelled_terminal() -> Result<V5CanonicalTerminal, CanonicalTerminalError> {
+    canonical_v5_terminal_from_shared(Arc::new(ReceiptTerminalOutcome::Cancelled))
+}
+
+/// ```compile_fail
+/// use unica_execution::receipt_ledger::{canonical_failed_terminal, ReceiptTerminalOutcome};
+/// use unica_execution_contract::invocation::DomainResult;
+/// canonical_failed_terminal(ReceiptTerminalOutcome::Completed {
+///     result: Box::new(DomainResult::success("a result needs admission")),
+/// });
+/// ```
+pub fn canonical_failed_terminal(
+    reason: V5SafeFailureReason,
+) -> Result<V5CanonicalTerminal, CanonicalTerminalError> {
+    canonical_v5_terminal_from_shared(Arc::new(ReceiptTerminalOutcome::Failed { reason }))
 }
 
 pub fn canonical_v5_terminal_from_shared(
@@ -3511,7 +3553,7 @@ mod tests {
             CancelResolution::ExistingExact(not_due)
         );
 
-        let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+        let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled, 73_728)
             .expect("canonical cancelled terminal");
         let winner = ReceiptState::DirectTerminalUnacked(DirectTerminalUnackedReceipt {
             record: ReceiptRecordHeader::new(
@@ -3621,7 +3663,7 @@ mod tests {
             poll_interval_ms: 100,
             version: 1,
         };
-        let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+        let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled, 73_728)
             .expect("canonical cancelled terminal");
         let terminal_digest = terminal.digest().clone();
         let record = || ReceiptRecordHeader {
@@ -3772,7 +3814,7 @@ mod tests {
             workspace_identity,
         );
         let link_digest = task_link_digest(&link_identity);
-        let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+        let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled, 73_728)
             .expect("canonical cancelled terminal");
         let terminal_digest = terminal.digest().clone();
         let task_publication_cases = [
@@ -3930,11 +3972,14 @@ mod tests {
                 version: 2,
             },
             terminal_epoch_ms: 2_000,
-            terminal: canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-                result: Box::new(DomainResult::success(
-                    "completed despite cancellation request",
-                )),
-            })
+            terminal: canonical_v5_terminal(
+                &ReceiptTerminalOutcome::Completed {
+                    result: Box::new(DomainResult::success(
+                        "completed despite cancellation request",
+                    )),
+                },
+                73_728,
+            )
             .expect("canonical completed terminal"),
             cancel_requested: true,
             reserved_result_bytes: 1_024,
@@ -4009,7 +4054,7 @@ mod tests {
 
     #[test]
     fn canonical_cancelled_terminal_matches_frozen_payload_and_digest() {
-        let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+        let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled, 73_728)
             .expect("canonical cancelled terminal");
 
         assert_eq!(terminal.outcome(), &ReceiptTerminalOutcome::Cancelled);
@@ -4027,13 +4072,16 @@ mod tests {
         // call fail with store_failed when the ledger reopens its own record.
         let mut result = DomainResult::success("docs page");
         result.data = Some(json!({"hits": [{"providerScore": 916.6563720703125}]}));
-        let committed = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-            result: Box::new(result),
-        })
+        let committed = canonical_v5_terminal(
+            &ReceiptTerminalOutcome::Completed {
+                result: Box::new(result),
+            },
+            73_728,
+        )
         .expect("canonical docs terminal");
         let reopened: ReceiptTerminalOutcome =
             serde_json::from_slice(committed.payload()).expect("reopen terminal");
-        let restored = canonical_v5_terminal(&reopened).expect("restore terminal");
+        let restored = canonical_v5_terminal(&reopened, 73_728).expect("restore terminal");
 
         assert_eq!(restored.digest(), committed.digest());
         assert_eq!(restored.payload(), committed.payload());
@@ -4044,7 +4092,8 @@ mod tests {
         let completed = ReceiptTerminalOutcome::Completed {
             result: Box::new(DomainResult::success("done")),
         };
-        let completed = canonical_v5_terminal(&completed).expect("canonical completed terminal");
+        let completed =
+            canonical_v5_terminal(&completed, 73_728).expect("canonical completed terminal");
         assert_eq!(
             completed.payload(),
             br#"{"status":"completed","result":{"ok":true,"summary":"done"}}"#
@@ -4053,7 +4102,7 @@ mod tests {
         let failed = ReceiptTerminalOutcome::Failed {
             reason: V5SafeFailureReason::OutcomeUncertain,
         };
-        let failed = canonical_v5_terminal(&failed).expect("canonical failed terminal");
+        let failed = canonical_v5_terminal(&failed, 73_728).expect("canonical failed terminal");
         assert_eq!(
             failed.payload(),
             br#"{"status":"failed","reason":"outcome_uncertain"}"#
@@ -4078,8 +4127,85 @@ mod tests {
         };
 
         assert_eq!(
-            canonical_v5_terminal(&oversized),
+            canonical_v5_terminal(&oversized, 73_728),
             Err(CanonicalTerminalError::ResultTooLarge)
         );
+    }
+
+    #[test]
+    fn recovery_that_cannot_be_delivered_is_rejected_before_terminal_admission() {
+        let mut result = DomainResult::success("ambiguous target");
+        result.ok = false;
+        result.next = vec![serde_json::json!({
+            "tool": "unica.view", "args": {"at": "x".repeat(4_300_000)}
+        })];
+        assert!(serde_json::to_vec(&result).unwrap().len() < MAX_CANONICAL_RESULT_BYTES);
+        let outcome = ReceiptTerminalOutcome::Completed {
+            result: Box::new(result),
+        };
+        assert_eq!(
+            canonical_v5_terminal(&outcome, 73_728),
+            Err(CanonicalTerminalError::ResultTooLarge)
+        );
+        // Reading an older canonical terminal must not reinterpret its bytes
+        // or digest under a newer delivery policy.
+        assert!(canonical_v5_terminal_from_shared(Arc::new(outcome)).is_ok());
+    }
+
+    #[test]
+    fn recovery_admission_reserves_space_for_task_metadata() {
+        let mut result = DomainResult::success("ambiguous target");
+        result.ok = false;
+        result.next = vec![serde_json::json!({
+            "tool": "unica.view", "args": {"at": "x".repeat(70_000)}
+        })];
+        result.data = Some(serde_json::json!({"padding": ""}));
+        let diagnostic = serde_json::to_string(&serde_json::json!({
+            "summary": result.summary, "diagnostics": []
+        }))
+        .unwrap();
+        let recovery = serde_json::to_string(&serde_json::json!({"next": result.next})).unwrap();
+        let quoted_text_bytes = serde_json::to_vec(&diagnostic).unwrap().len()
+            + serde_json::to_vec(&recovery).unwrap().len();
+        // The bare CallToolResult's 97-byte structure fits, but only 103
+        // bytes remain for the Task, less than even its ordinary metadata.
+        let payload_budget = MAX_CANONICAL_RESULT_BYTES + MAX_TASK_RECORD_ENVELOPE_BYTES - 200;
+        let base = serde_json::to_vec(&result).unwrap().len() + quoted_text_bytes;
+        result.data = Some(serde_json::json!({"padding": "x".repeat(payload_budget - base)}));
+        assert!(serde_json::to_vec(&result).unwrap().len() < MAX_CANONICAL_RESULT_BYTES);
+        let outcome = ReceiptTerminalOutcome::Completed {
+            result: Box::new(result),
+        };
+        assert_eq!(
+            canonical_v5_terminal(&outcome, 73_728),
+            Err(CanonicalTerminalError::ResultTooLarge)
+        );
+    }
+
+    #[test]
+    fn constructive_control_terminals_preserve_the_sole_encoder_bytes_and_digest() {
+        let cancelled: fn() -> Result<V5CanonicalTerminal, CanonicalTerminalError> =
+            canonical_cancelled_terminal;
+        let failed: fn(V5SafeFailureReason) -> Result<V5CanonicalTerminal, CanonicalTerminalError> =
+            canonical_failed_terminal;
+        let actual = cancelled().unwrap();
+        let expected =
+            canonical_v5_terminal_from_shared(Arc::new(ReceiptTerminalOutcome::Cancelled)).unwrap();
+        assert_eq!(actual.payload(), expected.payload());
+        assert_eq!(actual.digest(), expected.digest());
+        for reason in [
+            V5SafeFailureReason::Interrupted,
+            V5SafeFailureReason::OutcomeUncertain,
+            V5SafeFailureReason::ResultTooLarge,
+        ] {
+            let actual = failed(reason).unwrap();
+            let expected =
+                canonical_v5_terminal_from_shared(Arc::new(ReceiptTerminalOutcome::Failed {
+                    reason,
+                }))
+                .unwrap();
+            assert_eq!(actual.payload(), expected.payload());
+            assert_eq!(actual.digest(), expected.digest());
+        }
     }
 }

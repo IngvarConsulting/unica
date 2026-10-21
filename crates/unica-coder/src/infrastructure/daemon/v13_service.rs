@@ -22,9 +22,12 @@ use crate::application::v13::apply::parse_request as parse_apply_request;
 use crate::application::v13::find::{FindIndex, FindRequest};
 use crate::application::v13::resolve::{ResolveRequest, ResolvedLines, ResolvedSource};
 use crate::application::v13::tool_catalog::catalog_for;
-use crate::application::v13::view::{ViewError, ViewReadAuthority, ViewRequest, ViewService};
 use crate::domain::apply::UNWRITABLE_SOURCE_MESSAGE;
 use unica_execution::receipt_runtime::ports::ExecutionClass;
+use {
+    crate::application::v13::view::ViewReadAuthority, crate::application::v13::view::ViewRequest,
+    crate::application::v13::view::ViewService, unica_execution_contract::view_error::ViewError,
+};
 
 use crate::domain::call_graph_identity::{CallGraphIdentity, CallGraphIdentityError};
 use crate::infrastructure::capacity_observation::CapacityObserver;
@@ -1540,7 +1543,7 @@ impl CanonicalV13ReadService {
         extra_data: Map<String, Value>,
     ) -> DomainResult {
         use crate::application::v13::view::PREFERRED_PAGE_BYTES;
-        use unica_execution::invocation_store::MAX_CANONICAL_RESULT_BYTES;
+        use unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES;
 
         let mode = binding.mode.as_str();
         let limit = binding.page_limit;
@@ -2092,7 +2095,7 @@ impl CanonicalV13ReadService {
         extra_data.insert("sourceCoverage".to_owned(), coverage.clone());
         extra_data.insert("approximate".to_owned(), Value::Bool(found.is_nearest()));
         let empty_page_bytes = search_page_probe_bytes("names", &[], &summary, &extra_data, None);
-        if empty_page_bytes > unica_execution::invocation_store::MAX_CANONICAL_RESULT_BYTES {
+        if empty_page_bytes > unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES {
             return error_result(
                 None,
                 RefusalCode::ResultTooLarge,
@@ -2122,7 +2125,7 @@ impl CanonicalV13ReadService {
             // response field and its cursor; adding one JSON array item adds
             // exactly its serialized byte length.
             if empty_page_bytes.saturating_add(bytes.len())
-                > unica_execution::invocation_store::MAX_CANONICAL_RESULT_BYTES
+                > unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES
             {
                 return error_result(
                     None,
@@ -3378,7 +3381,7 @@ where
     ) -> Result<Vec<Map<String, Value>>, ViewError>,
 {
     use crate::application::v13::view::PREFERRED_PAGE_BYTES;
-    use unica_execution::invocation_store::MAX_CANONICAL_RESULT_BYTES;
+    use unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES;
 
     if cancellation.is_cancelled() {
         return error_result(
@@ -5228,7 +5231,7 @@ fn enforce_view_result_limit(result: DomainResult, at: &str) -> DomainResult {
     }
     let bytes =
         serde_json::to_vec(&result).expect("a domain result containing JSON values serializes");
-    if bytes.len() <= unica_execution::invocation_store::MAX_CANONICAL_RESULT_BYTES {
+    if bytes.len() <= unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES {
         result
     } else {
         error_result(
@@ -5253,7 +5256,7 @@ fn error_result_detailed(
 /// исходов, не различая их.
 fn view_error_result(
     at: Option<String>,
-    error: crate::application::v13::view::ViewError,
+    error: unica_execution_contract::view_error::ViewError,
 ) -> DomainResult {
     let mut result = match error.detail() {
         Some(detail) => DomainResult::canonical_rejection_detailed(at, detail, error.to_string()),
@@ -5604,7 +5607,7 @@ mod tests {
                 assert_eq!(changed.diagnostics[0]["code"], "stale_cursor");
                 let mut oversized_change = provider_search_test_execution(75, 8, false);
                 oversized_change.result.sections[0].hits[74].snippet =
-                    "x".repeat(unica_execution::invocation_store::MAX_CANONICAL_RESULT_BYTES);
+                    "x".repeat(unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES);
                 let stale_before_size = super::provider_search_page(
                     &store,
                     ProviderRole::Semantic,
@@ -5665,7 +5668,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         let mut execution = provider_search_test_execution(25, 8, false);
         execution.result.sections[0].hits[24].snippet =
-            "x".repeat(unica_execution::invocation_store::MAX_CANONICAL_RESULT_BYTES);
+            "x".repeat(unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES);
         let result = super::provider_search_page(
             &store,
             ProviderRole::Semantic,
@@ -6754,16 +6757,26 @@ mod tests {
             std::fs::write(&file, source).unwrap();
             let whole = invoke_exact_read(workspace.path(), ToolIdentity::View, json!({"at":body}));
             assert!(!whole.ok, "{whole:?}");
-            let budgeted =
-                crate::application::v13::source_text::apply_response_budget(&whole, 16_384)
-                    .into_owned();
+            let budgeted = unica_execution_contract::source_text_budget::apply_response_budget(
+                &whole,
+                16_384,
+                unica_bootstrap::MAX_RESPONSE_BUDGET,
+            )
+            .into_owned();
             let at = budgeted.next[0]["args"]["at"].as_str().unwrap();
             let address = unica_address::address::QualifiedAddress::parse(at).unwrap();
             let range = address.line_range().unwrap();
             assert_eq!(range.from, first);
             let part = invoke_exact_read(workspace.path(), ToolIdentity::View, json!({"at":at}));
             assert!(part.ok, "{part:?}");
-            assert!(crate::application::v13::source_text::apply_response_budget(&part, 16_384).ok);
+            assert!(
+                unica_execution_contract::source_text_budget::apply_response_budget(
+                    &part,
+                    16_384,
+                    unica_bootstrap::MAX_RESPONSE_BUDGET
+                )
+                .ok
+            );
             let expected = source
                 .split_inclusive('\n')
                 .skip(range.from - 1)
@@ -6780,7 +6793,12 @@ mod tests {
                 invoke_exact_read(workspace.path(), ToolIdentity::View, json!({"at":next}));
             assert!(one_more.ok, "{one_more:?}");
             assert!(
-                !crate::application::v13::source_text::apply_response_budget(&one_more, 16_384).ok,
+                !unica_execution_contract::source_text_budget::apply_response_budget(
+                    &one_more,
+                    16_384,
+                    unica_bootstrap::MAX_RESPONSE_BUDGET
+                )
+                .ok,
                 "one extra complete line must exceed this host budget: {at}"
             );
         }
@@ -8300,7 +8318,7 @@ mod tests {
         result.at = Some(at.to_string());
         result.page = Some(json!({"stoppedBy": "complete"}));
         result.data = Some(json!({"at": at, "items": ["X".repeat(
-            unica_execution::invocation_store::MAX_CANONICAL_RESULT_BYTES
+            unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES
         )]}));
         let checked = super::enforce_view_result_limit(result, at);
         assert!(!checked.ok);

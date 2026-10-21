@@ -1,7 +1,7 @@
 use super::{item_identity, select_named, selected_scalar_props};
-use crate::application::v13::view::ViewError;
 use crate::domain::node_view::{BranchRef, CollectionView, NodeView, NodeViewData};
 use unica_bsl::projection::EventProjection;
+use unica_execution_contract::view_error::ViewError;
 
 use serde_json::{Map, Value};
 use unica_address::address::{AddressSegment, NodeKind, QualifiedAddress};

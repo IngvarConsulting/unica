@@ -11,6 +11,7 @@ test-support = []
 receipt-ledger-test-support = []
 
 [dependencies]
+unica-address = { path = "../unica-address" }
 unica-work-control = { path = "../unica-work-control" }
 unica-refusal = { path = "../unica-refusal" }
 serde.workspace = true

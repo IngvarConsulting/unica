@@ -953,3 +953,8 @@ pub enum Error {
 pub mod adapter_outcome;
 
 pub mod mutation;
+
+pub mod result_delivery;
+pub mod result_size;
+pub mod source_text_budget;
+pub mod view_error;

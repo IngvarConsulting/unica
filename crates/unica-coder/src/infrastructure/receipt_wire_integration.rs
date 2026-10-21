@@ -46,7 +46,7 @@ fn frontend_accepts_the_exact_preflighted_direct_receipt_frame() {
                 &key,
                 reserved.record_version(),
                 2_000,
-                canonical_v5_terminal(&outcome).unwrap(),
+                canonical_v5_terminal(&outcome, unica_bootstrap::MAX_RESPONSE_BUDGET).unwrap(),
                 Instant::now() + Duration::from_secs(2),
             )
             .unwrap();

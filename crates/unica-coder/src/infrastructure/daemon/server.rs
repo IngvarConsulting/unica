@@ -538,6 +538,8 @@ impl CanonicalInvocationHost {
 }
 
 impl unica_execution::receipt_runtime::ports::InvocationHost for CanonicalInvocationHost {
+    const MAX_SUPPORTED_BODY_RESPONSE_BYTES: usize = unica_bootstrap::MAX_RESPONSE_BUDGET;
+
     type Request = unica_daemon::protocol_v5::V5InvocationRequest;
     type Bound = V5ActorBoundCanonicalInvocation;
     type Prepared = V5PreparedCanonicalInvocation;

@@ -1,7 +1,6 @@
 //! Explicit bootstrap and process-owned leases. Missing storage is not fresh.
 use super::OpenError;
 use crate::coordinator::AuthorityEpoch;
-use crate::invocation_store::MAX_TASK_RECORD_ENVELOPE_BYTES;
 use serde::{Deserialize, Serialize};
 use std::any::Any;
 use std::collections::HashMap;
@@ -10,6 +9,7 @@ use std::io::{self, Read, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use unica_execution_contract::digest;
+use unica_execution_contract::result_size::MAX_TASK_RECORD_ENVELOPE_BYTES;
 use unica_workspace::state_fs::{self as platform, PublishMode, StableLock, Stage};
 use unica_workspace::state_fs::{is_file_lock_contended, StateDirectory, StateFile};
 

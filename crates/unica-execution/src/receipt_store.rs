@@ -1,4 +1,3 @@
-use crate::invocation_store::MAX_TASK_RECORD_ENVELOPE_BYTES;
 #[cfg(feature = "receipt-ledger-test-support")]
 use crate::receipt_ledger::RequestIdentity;
 use crate::receipt_ledger::{
@@ -33,6 +32,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use unica_execution_contract::invocation::{InvocationId, SafeIdentityHash, TaskId};
+use unica_execution_contract::result_size::MAX_TASK_RECORD_ENVELOPE_BYTES;
 use unica_work_control::operation_deadline::OperationDeadline;
 use unica_workspace::state_fs::StateHandle as File;
 use unica_workspace::state_fs::{

@@ -78,7 +78,7 @@ pub fn task_link_digest_for_test(
 pub fn canonical_v5_terminal_for_test(terminal_json: &str) -> (Vec<u8>, String) {
     let outcome: ReceiptTerminalOutcome = serde_json::from_str(terminal_json)
         .unwrap_or_else(|error| panic!("invalid strict v5 terminal supplied by test: {error}"));
-    let terminal = canonical_v5_terminal(&outcome)
+    let terminal = canonical_v5_terminal(&outcome, unica_bootstrap::MAX_RESPONSE_BUDGET)
         .unwrap_or_else(|error| panic!("v5 terminal cannot be canonicalized: {error}"));
     (terminal.payload().to_vec(), terminal.digest().to_string())
 }

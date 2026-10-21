@@ -1,7 +1,9 @@
-use crate::receipt_ledger::{
-    canonical_v5_terminal, CancelReservedReceipt, CancelResolution, CanonicalTerminalError,
-    DirectTerminalUnackedReceipt, ReceiptState, ReceiptStateKind, ReceiptTerminalOutcome,
-    ReserveOutcome, ReservedReceipt, V5CanonicalTerminal,
+use {
+    crate::receipt_ledger::CancelReservedReceipt, crate::receipt_ledger::CancelResolution,
+    crate::receipt_ledger::CanonicalTerminalError,
+    crate::receipt_ledger::DirectTerminalUnackedReceipt, crate::receipt_ledger::ReceiptState,
+    crate::receipt_ledger::ReceiptStateKind, crate::receipt_ledger::ReserveOutcome,
+    crate::receipt_ledger::ReservedReceipt, crate::receipt_ledger::V5CanonicalTerminal,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,7 +91,7 @@ pub fn decide_cancel_reserved_submit(
 ) -> Result<CancelReservedSubmitDecision, CanonicalTerminalError> {
     match outcome {
         ReserveOutcome::Created(reservation) if reservation.cancel_requested() => {
-            let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)?;
+            let terminal = crate::receipt_ledger::canonical_cancelled_terminal()?;
             Ok(CancelReservedSubmitDecision::PublishCancelledDirect(
                 CancelledDirectTerminalIntent {
                     reservation,
@@ -103,7 +105,7 @@ pub fn decide_cancel_reserved_submit(
         ReserveOutcome::ExistingExact(ReceiptState::Reserved(reservation))
             if reservation.cancel_requested() =>
         {
-            let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)?;
+            let terminal = crate::receipt_ledger::canonical_cancelled_terminal()?;
             Ok(CancelReservedSubmitDecision::PublishCancelledDirect(
                 CancelledDirectTerminalIntent {
                     reservation,
@@ -183,7 +185,7 @@ mod tests {
             ),
             OriginalCutoffDescriptor::new(1_000, 7_000).expect("valid cutoff"),
             2_000,
-            canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+            canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled, 73_728)
                 .expect("cancelled terminal is canonical"),
             MAX_RECEIPT_ENTITLEMENT_BYTES - 700,
         )

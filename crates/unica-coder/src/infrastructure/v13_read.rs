@@ -1,11 +1,15 @@
 use crate::application::v13::resolve::ResolvedLines;
 use crate::application::v13::source_text::{admit_text, ModuleText};
-use crate::application::v13::view::{ViewError, ViewReadAuthority, ViewSourceSnapshot};
 use unica_bsl::projection::{
     CommonModuleProperties, EventProjection, MethodProjection, ModuleProjectionSet,
     RegionProjection,
 };
 use unica_metadata::{MetaDiagnosticSeverity, MetadataKind};
+use {
+    crate::application::v13::view::ViewReadAuthority,
+    crate::application::v13::view::ViewSourceSnapshot,
+    unica_execution_contract::view_error::ViewError,
+};
 
 use crate::domain::node_view::{
     BranchRef, CollectionView, NodeView, NodeViewData, SourceText, TextView,
@@ -2867,7 +2871,11 @@ fn module_text(
     } else {
         SourceText::Oversized {
             bytes: text.len() as u64,
-            prefix: crate::application::v13::source_text::complete_prefix(text).to_string(),
+            prefix: unica_execution_contract::source_text_budget::complete_prefix(
+                text,
+                unica_bootstrap::MAX_RESPONSE_BUDGET,
+            )
+            .to_string(),
         }
     };
     Ok(NodeViewData::Text(TextView::new(

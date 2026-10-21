@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 fn direct_terminal_identity_without_opening_store() -> (ReceiptKey, TerminalDigest) {
     let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
-    let digest = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+    let digest = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled, 73_728)
         .expect("canonical direct terminal")
         .digest()
         .clone();

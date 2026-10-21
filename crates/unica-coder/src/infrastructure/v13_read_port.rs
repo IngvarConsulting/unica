@@ -1,5 +1,5 @@
 use crate::application::v13::source_text::{ModuleText, ModuleTextAccumulator};
-use crate::application::v13::view::ViewError;
+use unica_execution_contract::view_error::ViewError;
 use unica_metadata::configuration::{CfHomePageData, CfInterfaceData};
 use unica_metadata_designer::configuration::{
     cf_home_page_item_data, parse_cf_command_interface_xml, parse_cf_home_page_xml_strict,

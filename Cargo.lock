@@ -2745,6 +2745,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "unica-address",
  "unica-refusal",
  "unica-work-control",
  "uuid",

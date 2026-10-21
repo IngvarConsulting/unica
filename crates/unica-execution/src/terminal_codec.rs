@@ -345,7 +345,7 @@ mod tests {
     fn cancelled_direct_prepares_exact_record_and_jsonl() {
         let key = exact_key();
         let slot = exact_slot(&key);
-        let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+        let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled, 73_728)
             .expect("canonical cancelled terminal");
 
         let prepared = prepare_direct_terminal(slot, terminal, 2_000)
@@ -415,11 +415,14 @@ mod tests {
     #[test]
     fn legal_direct_payload_cannot_fall_into_a_decimal_entitlement_gap() {
         let key = exact_key();
-        let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-            result: Box::new(unica_execution_contract::invocation::DomainResult::success(
-                "x".repeat(8_353_285),
-            )),
-        })
+        let terminal = canonical_v5_terminal(
+            &ReceiptTerminalOutcome::Completed {
+                result: Box::new(unica_execution_contract::invocation::DomainResult::success(
+                    "x".repeat(8_353_285),
+                )),
+            },
+            73_728,
+        )
         .expect("result remains below the canonical 8 MiB limit");
 
         let prepared = prepare_direct_terminal(exact_slot(&key), terminal, 2_000)
@@ -434,7 +437,7 @@ mod tests {
     #[test]
     fn durable_direct_record_does_not_persist_its_derived_residual_quota() {
         let key = exact_key();
-        let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+        let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled, 73_728)
             .expect("canonical cancelled terminal");
 
         let prepared = prepare_direct_terminal(exact_slot(&key), terminal, 2_000)
@@ -481,7 +484,7 @@ mod tests {
     #[test]
     fn direct_preflight_rejects_terminal_retention_overflow() {
         let key = exact_key();
-        let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+        let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled, 73_728)
             .expect("canonical cancelled terminal");
 
         assert_eq!(
@@ -494,11 +497,14 @@ mod tests {
     #[test]
     fn canonical_terminal_payload_is_spliced_once_into_each_artifact() {
         let key = exact_key();
-        let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-            result: Box::new(unica_execution_contract::invocation::DomainResult::success(
-                "quote=\" slash=\\ newline=\n snowman=☃",
-            )),
-        })
+        let terminal = canonical_v5_terminal(
+            &ReceiptTerminalOutcome::Completed {
+                result: Box::new(unica_execution_contract::invocation::DomainResult::success(
+                    "quote=\" slash=\\ newline=\n snowman=☃",
+                )),
+            },
+            73_728,
+        )
         .expect("canonical escaped terminal");
         let payload = terminal.payload().to_vec();
 
@@ -512,11 +518,14 @@ mod tests {
     #[test]
     fn prepared_debug_is_bounded_and_redacts_terminal_and_artifact_bytes() {
         let key = exact_key();
-        let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-            result: Box::new(unica_execution_contract::invocation::DomainResult::success(
-                "SECRET_SENTINEL".repeat(1_024),
-            )),
-        })
+        let terminal = canonical_v5_terminal(
+            &ReceiptTerminalOutcome::Completed {
+                result: Box::new(unica_execution_contract::invocation::DomainResult::success(
+                    "SECRET_SENTINEL".repeat(1_024),
+                )),
+            },
+            73_728,
+        )
         .expect("canonical bounded terminal");
         let prepared = prepare_direct_terminal(exact_slot(&key), terminal, 2_000)
             .expect("prepare Direct publication");

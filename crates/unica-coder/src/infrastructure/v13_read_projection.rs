@@ -1,6 +1,6 @@
-use crate::application::v13::view::ViewError;
 use crate::domain::node_view::{BranchRef, CollectionView, NodeView, NodeViewData};
 use unica_bsl::projection::EventProjection;
+use unica_execution_contract::view_error::ViewError;
 
 use crate::infrastructure::logical_tree::{LogicalReader, LogicalTreeRoute};
 use serde_json::{json, Map, Value};

@@ -167,7 +167,7 @@ fn page_documentation(
     cancellation: &CancellationToken,
 ) -> DomainResult {
     use crate::application::v13::view::PREFERRED_PAGE_BYTES;
-    use unica_execution::invocation_store::MAX_CANONICAL_RESULT_BYTES;
+    use unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES;
 
     if cancellation.is_cancelled() {
         return DomainResult::canonical_rejection(
@@ -375,7 +375,7 @@ fn page_document_text(
     cancellation: &CancellationToken,
 ) -> DomainResult {
     use crate::application::v13::view::PREFERRED_PAGE_BYTES;
-    use unica_execution::invocation_store::MAX_CANONICAL_RESULT_BYTES;
+    use unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES;
 
     let refuse = |code, message| DomainResult::canonical_rejection(None, code, message);
     if cancellation.is_cancelled() {
@@ -779,7 +779,7 @@ mod tests {
     #[test]
     fn document_over_transport_size_on_one_line_starts_with_a_useful_page() {
         let text =
-            "🙂".repeat(unica_execution::invocation_store::MAX_CANONICAL_RESULT_BYTES / 4 + 1);
+            "🙂".repeat(unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES / 4 + 1);
         let page = page_document_text(
             &SearchCursorStore::default(),
             document_response(&text),
@@ -790,7 +790,7 @@ mod tests {
         assert!(page.ok, "{page:?}");
         assert!(
             serde_json::to_vec(&page).unwrap().len()
-                <= unica_execution::invocation_store::MAX_CANONICAL_RESULT_BYTES
+                <= unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES
         );
         assert_eq!(page.page.as_ref().unwrap()["startByte"], 0);
         assert!(page.page.as_ref().unwrap()["endByte"].as_u64().unwrap() > 0);
@@ -805,7 +805,7 @@ mod tests {
     fn oversized_document_metadata_refuses_before_issuing_a_cursor() {
         let mut result = document_response("текст");
         result.data.as_mut().unwrap()["document"]["title"] =
-            json!("x".repeat(unica_execution::invocation_store::MAX_CANONICAL_RESULT_BYTES));
+            json!("x".repeat(unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES));
         let page = page_document_text(
             &SearchCursorStore::default(),
             result,
@@ -878,9 +878,9 @@ mod tests {
                 );
                 assert_eq!(changed.diagnostics[0]["code"], "stale_cursor");
                 let mut oversized_change = response(9);
-                oversized_change.data.as_mut().unwrap()["sections"][2]["hits"][29]["snippet"] = json!(
-                    "x".repeat(unica_execution::invocation_store::MAX_CANONICAL_RESULT_BYTES)
-                );
+                oversized_change.data.as_mut().unwrap()["sections"][2]["hits"][29]["snippet"] =
+                    json!("x"
+                        .repeat(unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES));
                 let stale_before_size = page_documentation(
                     &store,
                     oversized_change,
@@ -908,7 +908,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         let mut result = response(8);
         result.data.as_mut().unwrap()["sections"][2]["hits"][29]["snippet"] =
-            json!("x".repeat(unica_execution::invocation_store::MAX_CANONICAL_RESULT_BYTES));
+            json!("x".repeat(unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES));
         let page = page_documentation(&store, result, binding(20), None, &cancellation);
         assert!(!page.ok);
         assert_eq!(page.diagnostics[0]["code"], "result_too_large");
@@ -1005,7 +1005,7 @@ mod tests {
                             signature: None,
                             snippet: if request.query == "oversize" && rank == 205 {
                                 "x".repeat(
-                                    unica_execution::invocation_store::MAX_CANONICAL_RESULT_BYTES,
+                                    unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES,
                                 )
                             } else {
                                 "found".into()

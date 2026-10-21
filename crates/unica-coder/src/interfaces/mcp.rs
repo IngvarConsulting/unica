@@ -3800,7 +3800,7 @@ mod tests {
     /// valid or not, and the operation session is closed for reuse.
     fn compatibility_wait_late_payload_case(valid_near_limit: bool) {
         use unica_daemon::protocol_v5::{V5ServerResponse, MAX_V5_RESPONSE_LINE_BYTES};
-        use unica_execution::invocation_store::MAX_CANONICAL_RESULT_BYTES;
+        use unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES;
 
         let task_id = unica_execution_contract::invocation::TaskId::new();
         let response_payload = if valid_near_limit {
@@ -5132,10 +5132,11 @@ mod tests {
 
     async fn tasks_projection_keeps_near_limit_wire_bounded_and_rejects_over_limit_case() {
         use std::sync::atomic::AtomicUsize;
-        use unica_execution::invocation_store::{
-            MAX_CANONICAL_RESULT_BYTES, MAX_TASK_RECORD_ENVELOPE_BYTES,
-        };
         use unica_execution_contract::invocation::{InvocationStatus, TaskId};
+        use {
+            unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES,
+            unica_execution_contract::result_size::MAX_TASK_RECORD_ENVELOPE_BYTES,
+        };
 
         let near = unica_execution_contract::invocation::DomainResult::success(
             "x".repeat(MAX_CANONICAL_RESULT_BYTES - 4_096),
@@ -7215,6 +7216,7 @@ mod tests {
         if let Some(key) = key {
             let cancelled_digest = unica_execution::receipt_ledger::canonical_v5_terminal(
                 &unica_execution::receipt_ledger::ReceiptTerminalOutcome::Cancelled,
+                unica_bootstrap::MAX_RESPONSE_BUDGET,
             )
             .unwrap()
             .digest()
@@ -7518,10 +7520,13 @@ mod tests {
         let reused = client.receive().await;
         drop(cleanup);
         client.shutdown().await;
-        let cancelled_digest = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
-            .unwrap()
-            .digest()
-            .clone();
+        let cancelled_digest = canonical_v5_terminal(
+            &ReceiptTerminalOutcome::Cancelled,
+            unica_bootstrap::MAX_RESPONSE_BUDGET,
+        )
+        .unwrap()
+        .digest()
+        .clone();
         let mut exact_cancelled_terminal = false;
         if let Some(key) = &key {
             let watchdog = Instant::now() + Duration::from_secs(3);

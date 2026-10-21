@@ -233,11 +233,14 @@ fn seed_receipt_backed_task_terminal(
     let ScenarioTerminalFixture::Success { payload } = fixture else {
         return Err("receipt-backed Task seed currently requires a success fixture".to_owned());
     };
-    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-        result: Box::new(unica_execution_contract::invocation::DomainResult::success(
-            payload,
-        )),
-    })
+    let terminal = canonical_v5_terminal(
+        &ReceiptTerminalOutcome::Completed {
+            result: Box::new(unica_execution_contract::invocation::DomainResult::success(
+                payload,
+            )),
+        },
+        unica_bootstrap::MAX_RESPONSE_BUDGET,
+    )
     .map_err(|error| format!("construct receipt-backed Task terminal fixture: {error}"))?;
     let epoch_ms = clock.now_epoch_millis();
     let task = ReceiptTaskProjection::new(
@@ -326,11 +329,14 @@ fn seed_receipt_state(
             let Some(ScenarioTerminalFixture::Success { payload }) = staged_terminal else {
                 return Ok(false);
             };
-            let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-                result: Box::new(unica_execution_contract::invocation::DomainResult::success(
-                    payload,
-                )),
-            })
+            let terminal = canonical_v5_terminal(
+                &ReceiptTerminalOutcome::Completed {
+                    result: Box::new(unica_execution_contract::invocation::DomainResult::success(
+                        payload,
+                    )),
+                },
+                unica_bootstrap::MAX_RESPONSE_BUDGET,
+            )
             .map_err(|error| format!("construct seeded Direct terminal: {error}"))?;
             let reserved = receipt_actor_for_fixture(&runtime)
                 .reserve(key.clone(), cutoff, deadline)
@@ -573,9 +579,12 @@ fn seed_receipt_state(
                     if let Some(ScenarioTerminalFixture::Success { payload }) =
                         staged_terminal.as_ref()
                     {
-                        let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-                            result: Box::new(DomainResult::success(payload.clone())),
-                        })
+                        let terminal = canonical_v5_terminal(
+                            &ReceiptTerminalOutcome::Completed {
+                                result: Box::new(DomainResult::success(payload.clone())),
+                            },
+                            unica_bootstrap::MAX_RESPONSE_BUDGET,
+                        )
                         .map_err(|error| format!("construct staged Task terminal: {error}"))?;
                         stage_bound_handoff_terminal_for_scenario(
                             receipt_actor_for_fixture(&runtime),
@@ -987,9 +996,12 @@ fn seed_staged_cross_store_terminal(
             deadline,
         )
         .map_err(|error| format!("begin staged crash handoff: {error}"))?;
-    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-        result: Box::new(DomainResult::success("staged-cross-store-crash")),
-    })
+    let terminal = canonical_v5_terminal(
+        &ReceiptTerminalOutcome::Completed {
+            result: Box::new(DomainResult::success("staged-cross-store-crash")),
+        },
+        unica_bootstrap::MAX_RESPONSE_BUDGET,
+    )
     .map_err(|error| format!("encode staged crash terminal: {error}"))?;
     control.record_callback_invocation_id(key.invocation_id());
     unica_execution::receipt_runtime::contracts::publish_staged_handoff_terminal_reply(
@@ -1286,9 +1298,12 @@ fn run_direct_load(
             .runtime()
             .ok_or_else(|| "direct load daemon did not publish its runtime owner".to_owned())?;
         let mut retained_keys = Vec::with_capacity(retained_receipt_terminals as usize);
-        let retained_terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-            result: Box::new(DomainResult::success("retained-receipt-terminal")),
-        })
+        let retained_terminal = canonical_v5_terminal(
+            &ReceiptTerminalOutcome::Completed {
+                result: Box::new(DomainResult::success("retained-receipt-terminal")),
+            },
+            unica_bootstrap::MAX_RESPONSE_BUDGET,
+        )
         .map_err(|error| format!("encode retained load terminal: {error}"))?;
         for _ in 0..retained_receipt_terminals {
             let key = fresh_key_for_workspace(identity, arguments, workspace_hint)?;
@@ -1498,8 +1513,11 @@ fn run_lazy_cancel_storm(
             keys.push(key.clone());
             work.push((key, invocation));
         }
-        let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
-            .map_err(|error| format!("encode batched lazy cancel terminal: {error}"))?;
+        let terminal = canonical_v5_terminal(
+            &ReceiptTerminalOutcome::Cancelled,
+            unica_bootstrap::MAX_RESPONSE_BUDGET,
+        )
+        .map_err(|error| format!("encode batched lazy cancel terminal: {error}"))?;
         let started = clock.now_monotonic_millis();
         let operation_deadline = Instant::now() + Duration::from_millis(per_cancel_deadline_ms);
         let receipts = receipt_actor_for_fixture(&runtime)
@@ -2143,20 +2161,29 @@ fn seed_task_record(
     };
     let terminal = match status {
         ScenarioTaskStatus::Completed => Some(
-            canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-                result: Box::new(DomainResult::success("seeded Task terminal")),
-            })
+            canonical_v5_terminal(
+                &ReceiptTerminalOutcome::Completed {
+                    result: Box::new(DomainResult::success("seeded Task terminal")),
+                },
+                unica_bootstrap::MAX_RESPONSE_BUDGET,
+            )
             .map_err(|error| format!("construct seeded completed Task: {error}"))?,
         ),
         ScenarioTaskStatus::Failed => Some(
-            canonical_v5_terminal(&ReceiptTerminalOutcome::Failed {
-                reason: V5SafeFailureReason::InvocationFailed,
-            })
+            canonical_v5_terminal(
+                &ReceiptTerminalOutcome::Failed {
+                    reason: V5SafeFailureReason::InvocationFailed,
+                },
+                unica_bootstrap::MAX_RESPONSE_BUDGET,
+            )
             .map_err(|error| format!("construct seeded failed Task: {error}"))?,
         ),
         ScenarioTaskStatus::Cancelled => Some(
-            canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
-                .map_err(|error| format!("construct seeded cancelled Task: {error}"))?,
+            canonical_v5_terminal(
+                &ReceiptTerminalOutcome::Cancelled,
+                unica_bootstrap::MAX_RESPONSE_BUDGET,
+            )
+            .map_err(|error| format!("construct seeded cancelled Task: {error}"))?,
         ),
         ScenarioTaskStatus::Queued | ScenarioTaskStatus::Working => None,
     };
@@ -2330,9 +2357,12 @@ fn fill_linked_task_pool(
 ) -> Result<(Vec<ReceiptKey>, TaskProjectionObservation), String> {
     let epoch_ms = clock.now_epoch_millis();
     let workspace_identity_hash = scenario_workspace_identity_hash();
-    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-        result: Box::new(DomainResult::success("linked-task-pool")),
-    })
+    let terminal = canonical_v5_terminal(
+        &ReceiptTerminalOutcome::Completed {
+            result: Box::new(DomainResult::success("linked-task-pool")),
+        },
+        unica_bootstrap::MAX_RESPONSE_BUDGET,
+    )
     .map_err(|error| format!("encode bulk linked Task terminal: {error}"))?;
     let mut keys = Vec::with_capacity(count);
     let mut tasks = Vec::with_capacity(count);
@@ -2473,9 +2503,12 @@ fn fill_tombstone_pool(
     let keys = (0..count)
         .map(|_| fresh_key_for_workspace(identity, arguments, workspace_hint))
         .collect::<Result<Vec<_>, _>>()?;
-    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-        result: Box::new(DomainResult::success("tombstone-fixture")),
-    })
+    let terminal = canonical_v5_terminal(
+        &ReceiptTerminalOutcome::Completed {
+            result: Box::new(DomainResult::success("tombstone-fixture")),
+        },
+        unica_bootstrap::MAX_RESPONSE_BUDGET,
+    )
     .map_err(|error| format!("encode tombstone fixture terminal: {error}"))?;
     let state = DaemonStateDirectory::open(state_root, identity)?;
     let receipts = state.create_private_retained_subdirectory("receipts")?;
@@ -3062,9 +3095,12 @@ fn fixture_v5_response(
         }
         ScenarioProtocolMessage::AcknowledgedOutcome => {
             let key = fresh_key(identity, &Map::new())?;
-            let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-                result: Box::new(DomainResult::success("canonical-success")),
-            })
+            let terminal = canonical_v5_terminal(
+                &ReceiptTerminalOutcome::Completed {
+                    result: Box::new(DomainResult::success("canonical-success")),
+                },
+                unica_bootstrap::MAX_RESPONSE_BUDGET,
+            )
             .map_err(|error| format!("construct acknowledged protocol-v5 terminal: {error}"))?;
             let tombstone = AcknowledgedTombstoneReceipt::new(
                 key.clone(),
@@ -3126,8 +3162,11 @@ fn fixture_v5_response(
         }
         ScenarioProtocolMessage::TaskCancelledProjection => {
             let key = fresh_key(identity, &Map::new())?;
-            let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
-                .map_err(|error| format!("construct cancelled protocol-v5 Task: {error}"))?;
+            let terminal = canonical_v5_terminal(
+                &ReceiptTerminalOutcome::Cancelled,
+                unica_bootstrap::MAX_RESPONSE_BUDGET,
+            )
+            .map_err(|error| format!("construct cancelled protocol-v5 Task: {error}"))?;
             Some(V5ServerResponse::Task {
                 snapshot: V5DaemonTaskSnapshot::Cancelled {
                     task_id: key.reserved_task_id(),
@@ -3147,8 +3186,11 @@ fn fixture_v5_response(
         ScenarioProtocolMessage::TaskFailureProjection { reason } => {
             let key = fresh_key(identity, &Map::new())?;
             let reason = fixture_failure_reason(*reason);
-            let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Failed { reason })
-                .map_err(|error| format!("construct failed protocol-v5 Task: {error}"))?;
+            let terminal = canonical_v5_terminal(
+                &ReceiptTerminalOutcome::Failed { reason },
+                unica_bootstrap::MAX_RESPONSE_BUDGET,
+            )
+            .map_err(|error| format!("construct failed protocol-v5 Task: {error}"))?;
             Some(V5ServerResponse::Task {
                 snapshot: V5DaemonTaskSnapshot::Failed {
                     task_id: key.reserved_task_id(),
@@ -3208,7 +3250,7 @@ fn direct_probe_response(
     outcome: ReceiptTerminalOutcome,
 ) -> Result<V5ServerResponse, String> {
     let key = fresh_key(identity, &Map::new())?;
-    let terminal = canonical_v5_terminal(&outcome)
+    let terminal = canonical_v5_terminal(&outcome, unica_bootstrap::MAX_RESPONSE_BUDGET)
         .map_err(|error| format!("construct direct protocol-v5 terminal: {error}"))?;
     Ok(V5ServerResponse::Invocation {
         outcome: V5InvocationResponse::Direct {
@@ -3583,15 +3625,20 @@ fn task_terminal_publication_evidence(
     response_frame: &[u8],
 ) -> Result<Value, String> {
     let canonical = match &record.task {
-        V5StoredTask::Completed { result, .. } => {
-            canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
+        V5StoredTask::Completed { result, .. } => canonical_v5_terminal(
+            &ReceiptTerminalOutcome::Completed {
                 result: result.clone(),
-            })
-        }
-        V5StoredTask::Failed { reason, .. } => {
-            canonical_v5_terminal(&ReceiptTerminalOutcome::Failed { reason: *reason })
-        }
-        V5StoredTask::Cancelled { .. } => canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled),
+            },
+            unica_bootstrap::MAX_RESPONSE_BUDGET,
+        ),
+        V5StoredTask::Failed { reason, .. } => canonical_v5_terminal(
+            &ReceiptTerminalOutcome::Failed { reason: *reason },
+            unica_bootstrap::MAX_RESPONSE_BUDGET,
+        ),
+        V5StoredTask::Cancelled { .. } => canonical_v5_terminal(
+            &ReceiptTerminalOutcome::Cancelled,
+            unica_bootstrap::MAX_RESPONSE_BUDGET,
+        ),
         V5StoredTask::Queued | V5StoredTask::Working => {
             return Err("nonterminal Task cannot expose terminal publication evidence".to_owned())
         }
@@ -3889,9 +3936,12 @@ fn fixture_daemon_error_code(code: ScenarioV5DaemonErrorCodeFixture) -> V5Daemon
 fn completed_probe_task(key: &ReceiptKey, ok: bool) -> Result<V5DaemonTaskSnapshot, String> {
     let mut result = DomainResult::success("canonical-success");
     result.ok = ok;
-    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
-        result: Box::new(result.clone()),
-    })
+    let terminal = canonical_v5_terminal(
+        &ReceiptTerminalOutcome::Completed {
+            result: Box::new(result.clone()),
+        },
+        unica_bootstrap::MAX_RESPONSE_BUDGET,
+    )
     .map_err(|error| format!("construct completed protocol-v5 Task terminal: {error}"))?;
     Ok(V5DaemonTaskSnapshot::Completed {
         task_id: key.reserved_task_id(),
@@ -4157,7 +4207,7 @@ fn seed_direct_probe_terminal(
     outcome: ReceiptTerminalOutcome,
 ) -> Result<(ReceiptKey, TerminalDigest), String> {
     let key = fresh_key(identity, &Map::new())?;
-    let terminal = canonical_v5_terminal(&outcome)
+    let terminal = canonical_v5_terminal(&outcome, unica_bootstrap::MAX_RESPONSE_BUDGET)
         .map_err(|error| format!("construct protocol-v5 probe terminal: {error}"))?;
     let terminal_digest = terminal.digest().clone();
     let state = DaemonStateDirectory::open(state_root, identity)?;
