@@ -26,9 +26,12 @@ from pathlib import Path
 NEXTEST_TOML = Path(__file__).resolve().parents[2] / ".config" / "nextest.toml"
 
 # Причина `#[ignore]` — конструкция языка, а не наше имя: nextest её не отдаёт
-# ни в JUnit, ни в списке, а в атрибуте она есть всегда.
+# ни в JUnit, ни в списке, а в атрибуте она есть всегда. Тест, которому нужна
+# возможность конкретной ОС, игнорируется только на остальных:
+# `#[cfg_attr(not(unix), ignore = "...")]` (#1893).
 IGNORE_ATTRIBUTE = re.compile(
-    r'#\[ignore\s*=\s*"((?:[^"\\]|\\.)*)"\]\s*(?:#\[[^\]]*\]\s*)*fn\s+(\w+)\s*\(', re.S
+    r'#\[(?:cfg_attr\((?:[^\]"]|"[^"]*")*?,\s*)?ignore\s*=\s*"((?:[^"\\]|\\.)*)"\s*\)?\]'
+    r'\s*(?:#\[[^\]]*\]\s*)*fn\s+(\w+)\s*\(', re.S
 )
 # Паника из assert — дефект продукта; любая другая — поломка самого теста.
 # JUnit от nextest этого не различает, различаем по тексту.
@@ -333,7 +336,11 @@ def junit_records(
                 fn = name.rsplit("::", 1)[-1]
                 reason = reasons.get(fn)
                 status = "skipped"
-                message = f"отключён автором: {reason}" if reason else (skipped.get("message") or "пропущен")
+                observed = skipped.get("message") or ""
+                # A runtime host capability skip names its own reason (#1893);
+                # an `#[ignore]` reason of the same function would hide it.
+                message = (observed if observed.startswith("host capability ")
+                           else f"отключён автором: {reason}" if reason else (observed or "пропущен"))
             elif failure is not None or error is not None:
                 node = failure if failure is not None else error
                 err = case.find("system-err")

@@ -339,7 +339,11 @@ class ArchiveFixtureBinaryTests(unittest.TestCase):
             calls = []
 
             def nextest(command, **kwargs):
-                calls.append((command[2], kwargs["env"]))
+                environment = kwargs["env"]
+                if command[2] == "run":
+                    # Every execution gives tests a directory for host capability skips (#1893).
+                    self.assertTrue(Path(environment.pop(lanes.HOST_CAPABILITY_SKIPS_ENV)).is_dir())
+                calls.append((command[2], environment))
                 if command[2] == "list":
                     return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"rust-suites": {case["binary"]: {
                         "binary-id": case["binary"], "testcases": {case["name"]: {"ignored": False}}}}}))
@@ -350,7 +354,7 @@ class ArchiveFixtureBinaryTests(unittest.TestCase):
                     path.write_bytes(payload)
                     self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), kwargs["env"]["UNICA_CANONICAL_DELIVERY_SUCCESS_SHA256"])
                 else:
-                    self.assertIsNone(kwargs["env"])
+                    self.assertNotIn("UNICA_CANONICAL_DELIVERY_SUCCESS_BINARY", kwargs["env"] or {})
                 junit = root / "target/nextest" / plan["nextestProfile"] / "junit.xml"
                 junit.parent.mkdir(parents=True, exist_ok=True)
                 junit.write_text(f'<testsuites><testsuite name="{case["binary"]}"><testcase name="{case["name"]}"/></testsuite></testsuites>')
@@ -376,7 +380,7 @@ class ArchiveFixtureBinaryTests(unittest.TestCase):
         self.assertEqual(calls[0][1], calls[2][1])
         self.assertIsNone(calls[1][1], "listing does not receive fixture execution inputs")
         for lane in ("receipt", "vendor"):
-            self.assertEqual(self.run_fixture(lane), [("run", None)])
+            self.assertEqual(self.run_fixture(lane), [("run", {})])
 
     def test_first_ordinary_shard_reports_the_doctest_outcome(self):
         def records(directory):
@@ -600,7 +604,7 @@ class ShadowArchiveTests(unittest.TestCase):
                                    "headSha": plan["identity"]["sha"], "packages": packages})
             commands = []
 
-            def nextest(command, _root, *, capture=False):
+            def nextest(command, _root, *, capture=False, **_):
                 commands.append(command)
                 expressions = [command[i + 1] for i, arg in enumerate(command) if arg == "-E"]
                 if command[2] == "list":
@@ -1006,6 +1010,112 @@ class PullRequestMediumTests(unittest.TestCase):
             lanes.write(Path(temporary) / "medium.json", medium)
             with self.assertRaisesRegex(ValueError, "outside a pull request"):
                 lanes.verify_union(Path(temporary), "queue", ["ubuntu-latest"], "a" * 40)
+
+
+class HostCapabilitySkipTests(unittest.TestCase):
+    """A missing host capability is a visible skip with its reason, refused where required (#1893)."""
+
+    RUST = Path(__file__).resolve().parents[2] / "crates/unica-process/src/platform/host_capability.rs"
+
+    def test_capability_names_match_the_rust_helper_and_the_runner_table(self):
+        source = self.RUST.read_text(encoding="utf-8")
+        self.assertEqual(set(re.findall(r'=>\s*\{?\s*"([a-z0-9-]+)"', source)), set(lanes.HOST_CAPABILITIES))
+        self.assertIn(f'"{lanes.HOST_CAPABILITY_SKIPS_ENV}"', source)
+        self.assertEqual(set(lanes.REQUIRED_HOST_CAPABILITIES), {"ubuntu-latest", "macos-14", "windows-latest"})
+        for runner, required in lanes.REQUIRED_HOST_CAPABILITIES.items():
+            with self.subTest(runner=runner):
+                self.assertLessEqual(required, lanes.HOST_CAPABILITIES)
+
+    def run_with_skip(self, capability, *, host_status="", missing=False, runner="ubuntu-latest"):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(lanes.os.environ, {}, clear=True):
+            root = Path(temporary).resolve()
+            prepared = root / "prepared"
+            prepared.mkdir()
+            archive = prepared / "tests.tar.zst"
+            archive.write_bytes(b"capability archive")
+            plan = manifest("receipt", host=runner, profile="queue")
+            plan.update(workspace=str(root), nextestVersion="fixture nextest",
+                        archiveSha256=lanes.prepared_binary.digest(archive), archiveBytes=archive.stat().st_size)
+            lanes.write(prepared / "lane.json", plan)
+            case = plan["inventory"][0]
+
+            def nextest(command, _root, *, env=None, **_):
+                skips = Path(env[lanes.HOST_CAPABILITY_SKIPS_ENV])
+                name = "absent_case" if missing else case["name"]
+                (skips / "record.json").write_text(json.dumps({
+                    "binary": case["binary"], "name": name, "attempt": "1",
+                    "capability": capability, "reason": "creating a symlink needs a privilege"}))
+                junit = root / "target/nextest" / plan["nextestProfile"] / "junit.xml"
+                junit.parent.mkdir(parents=True, exist_ok=True)
+                junit.write_text(f'<testsuites><testsuite name="{case["binary"]}"><testcase name="{case["name"]}">'
+                                 f'{host_status}</testcase></testsuite></testsuites>')
+                return subprocess.CompletedProcess(command, 1 if host_status else 0), 0.1
+
+            destination = root / "result"
+            try:
+                with patch.object(lanes.prepared_binary, "identity", return_value=plan["identity"]), \
+                     patch.object(lanes.prepared_binary, "output", return_value="fixture nextest"), \
+                     patch.object(lanes, "signature"), patch.object(lanes.runner, "emit_rust"), \
+                     patch.object(lanes, "timed", side_effect=nextest):
+                    lanes.run_archive(root, prepared, destination, "receipt", "queue", runner, 1, None)
+            finally:
+                written = destination / "shard.json"
+                self.shard = json.loads(written.read_text()) if written.is_file() else None
+                assigned = destination / "junit.assigned.xml"
+                self.junit = assigned.read_text() if assigned.is_file() else ""
+
+    def test_a_capability_the_runner_lacks_turns_pass_into_a_visible_skip(self):
+        self.run_with_skip("symlink", runner="windows-latest")
+        self.assertEqual(self.shard["records"][0]["status"], "skipped")
+        self.assertEqual(self.shard["records"][0]["reason"], "host capability symlink: creating a symlink needs a privilege")
+        self.assertIn('<skipped message="host capability symlink', self.junit)
+
+    def test_a_capability_required_on_the_runner_cannot_be_skipped(self):
+        with self.assertRaisesRegex(ValueError, "host capability symlink is required on ubuntu-latest"):
+            self.run_with_skip("symlink")
+        self.run_with_skip("case-insensitive-filesystem")
+        self.assertEqual(self.shard["records"][0]["status"], "skipped")
+
+    def test_unknown_capability_stray_record_and_failed_test_are_not_skips(self):
+        with self.assertRaisesRegex(ValueError, "malformed host capability skip record"):
+            self.run_with_skip("teleportation", runner="windows-latest")
+        with self.assertRaisesRegex(ValueError, "case missing from JUnit"):
+            self.run_with_skip("symlink", runner="windows-latest", missing=True)
+        with self.assertRaisesRegex(ValueError, "required shard test failed"):
+            self.run_with_skip("symlink", runner="windows-latest", host_status='<failure message="boom"/>')
+        self.assertEqual(self.shard["records"][0]["status"], "failed")
+
+    def test_only_the_final_attempt_decides_a_retried_skip(self):
+        tree = ET.ElementTree(ET.fromstring(
+            '<testsuites><testsuite name="p"><testcase name="t"><flakyFailure message="x"/></testcase>'
+            '<testcase name="u"><flakyFailure message="x"/></testcase></testsuite></testsuites>'))
+        lanes.apply_capability_skips(tree, {"p::t": (1, "host capability symlink: a"), "p::u": (2, "host capability symlink: b")},
+                                     {"p::t", "p::u"})
+        cases = {case.get("name"): case.find("skipped") for case in tree.getroot().iter("testcase")}
+        self.assertIsNone(cases["t"], "the passing retry did not skip")
+        self.assertEqual(cases["u"].get("message"), "host capability symlink: b")
+        # The whole path keeps the retried capability skip: no conflict, one skipped record.
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "junit.xml"
+            source.write_text('<testsuites><testsuite name="p"><testcase name="u"><flakyFailure message="x"/></testcase>'
+                              '</testsuite></testsuites>')
+            plan = manifest("receipt")
+            plan["ignoredInventory"] = []
+            _, records, _ = lanes.assigned_junit(source, Path(temporary) / "out", plan,
+                                                 [{"binary": "p", "name": "u", "ignored": False}],
+                                                 {"p::u": (2, "host capability symlink: b")})
+            self.assertEqual(records, [{"id": "p::u", "status": "skipped", "reason": "host capability symlink: b"}])
+            entries = lanes.allure_results.junit_records(Path(temporary) / "out/junit.assigned.xml", runner="windows-latest",
+                                                         profile="queue", reasons={})
+            self.assertEqual([entry["status"] for entry in entries if entry["name"] == "u"], ["broken", "skipped"])
+
+    def test_only_a_capability_reason_excuses_a_required_case(self):
+        record = {"id": "package::case", "status": "skipped"}
+        self.assertEqual(lanes.capability_skip_refusal({**record, "reason": "flaky"}, "windows-latest"),
+                         "a required shard test did not execute")
+        self.assertIsNone(lanes.capability_skip_refusal({**record, "reason": "host capability symlink: x"}, "windows-latest"))
+        self.assertIn("required on macos-14", lanes.capability_skip_refusal(
+            {**record, "reason": "host capability case-insensitive-filesystem: x"}, "macos-14"))
 
 
 if __name__ == "__main__":
