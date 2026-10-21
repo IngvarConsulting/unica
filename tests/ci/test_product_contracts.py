@@ -9,6 +9,7 @@ import os
 import re
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import tomllib
@@ -360,6 +361,36 @@ def rmcp_dependency_contract_errors(metadata: dict) -> list[str]:
 
 def workspace_rmcp_dependency_errors(repo_root: Path) -> list[str]:
     return rmcp_dependency_contract_errors(cargo_workspace_metadata(repo_root))
+
+
+RMCP_HANDLER_ASSERTION = (
+    b"#[allow(dead_code)]"
+    b"fnassert_unica_server_implements_official_rmcp_server_handler()"
+    b"whereUnicaServer:::rmcp::ServerHandler,{}"
+)
+
+
+def production_rmcp_handler_assertion_errors(source: bytes, owner: str) -> list[str]:
+    # Любая не-тестовая сборка библиотеки проверяет эту границу компилятором;
+    # здесь — только что граница существует вне `#[cfg(test)]` и других cfg.
+    compact = re.sub(rb"\s+", b"", productive_rust_code(source))
+    index = compact.find(RMCP_HANDLER_ASSERTION)
+    if index < 0 or compact.count(RMCP_HANDLER_ASSERTION) != 1:
+        return [f"{owner}: production code must assert UnicaServer: rmcp::ServerHandler once"]
+    if compact[:index].endswith(b"]"):
+        return [f"{owner}: rmcp::ServerHandler assertion must not carry extra attributes"]
+    return []
+
+
+def load_ci_rust_lanes_module():
+    scripts = Path(__file__).resolve().parents[2] / "scripts" / "ci"
+    spec = importlib.util.spec_from_file_location("ci_rust_lanes", scripts / "ci_rust_lanes.py")
+    if spec is None or spec.loader is None:
+        raise RuntimeError("failed to load ci_rust_lanes.py")
+    module = importlib.util.module_from_spec(spec)
+    with patch("sys.path", [str(scripts), *sys.path]):
+        spec.loader.exec_module(module)
+    return module
 
 
 def load_contract_module():
@@ -723,18 +754,53 @@ class ProductContractTests(unittest.TestCase):
     ) -> None:
         self.assertEqual(workspace_rmcp_dependency_errors(REPO_ROOT), [])
 
+    def test_production_rmcp_handler_assertion_rejects_test_only_or_gated_bound(
+        self,
+    ) -> None:
+        owner = RMCP_OWNER
+        bound = (
+            b"#[allow(dead_code)]\n"
+            b"fn assert_unica_server_implements_official_rmcp_server_handler()\n"
+            b"where\n    UnicaServer: ::rmcp::ServerHandler,\n{\n}\n"
+        )
+        missing = [
+            f"{owner}: production code must assert UnicaServer: rmcp::ServerHandler once"
+        ]
+        fixtures = {
+            "production": (b"struct UnicaServer;\n" + bound, []),
+            "absent": (b"struct UnicaServer;\n", missing),
+            "test_only": (b"#[cfg(test)]\n" + bound, missing),
+            "commented": (b"/*\n" + bound + b"*/\n", missing),
+            "feature_gated": (
+                b"#[cfg(feature = \"research\")]\n" + bound,
+                [f"{owner}: rmcp::ServerHandler assertion must not carry extra attributes"],
+            ),
+        }
+        for name, (source, expected) in fixtures.items():
+            with self.subTest(name=name):
+                self.assertEqual(
+                    production_rmcp_handler_assertion_errors(source, owner), expected
+                )
+
     def test_unica_coder_production_library_satisfies_rmcp_handler_bound(
         self,
     ) -> None:
-        result = subprocess.run(
-            ["cargo", "check", "-q", "-p", "unica-coder", "--lib"],
-            cwd=REPO_ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        # Граница — проверка компилятора в production-коде библиотеки. Её
+        # собирает обязательный ordinary-архив Rust: не-тестовый бинарь `unica`
+        # пакета unica-coder с фичами по умолчанию. Python-набор сам не собирает.
+        source = (REPO_ROOT / RMCP_OWNER).read_bytes()
+        self.assertEqual(production_rmcp_handler_assertion_errors(source, RMCP_OWNER), [])
 
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        lanes = load_ci_rust_lanes_module()
+        for profile in ("pr", "queue", "main", "release", "large", "all"):
+            with self.subTest(profile=profile):
+                self.assertIn("ordinary", lanes.lanes(profile))
+        command = lanes.archive_command("ordinary", Path("tests.tar.zst"))
+        self.assertEqual(lanes.selection("ordinary"), ("--workspace",))
+        self.assertFalse(
+            {"--features", "--all-features", "--no-default-features", "--lib", "--tests"}
+            & set(command)
+        )
 
     def test_rmcp_module_preserves_legacy_public_exports_only(self) -> None:
         source = tracked_workspace_production_rust_sources(REPO_ROOT)[RMCP_OWNER]
