@@ -341,9 +341,9 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
                       if job_id not in ("build-tools", "package-thin", "p0-release-proof", "probe-thin-bootstrap",
                                         "release-assessment", "publish-release-assets", "smoke-thin-plugin",
                                         "verify-published-assets", "delivery-ci")}
-        # `Rust lint` — только pull request: у записи очереди её нет.
-        self.assertEqual(set(validation), {"unica-ci", "rust-os", "rust-lint"})
-        self.assertEqual(condition(job(self.release, "rust-lint")), "${{ github.event_name == 'pull_request' }}")
+        # `Lint and Python` — только pull request: у записи очереди её нет.
+        self.assertEqual(set(validation), {"unica-ci", "rust-os", "pr-checks"})
+        self.assertEqual(condition(job(self.release, "pr-checks")), "${{ github.event_name == 'pull_request' }}")
         # Хвост поставки и его итог очередь и pull request не запускают: каждая
         # их джоба сама требует тег или кнопку либо успех такой джобы.
         tail = set(jobs(self.release)) - set(validation)
@@ -591,20 +591,25 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertLess(order.index(step_by_id(gate, "rust-build")), order.index(start))
         self.assertLess(order.index(start), order.index(step_by_id(gate, "rust-run")))
         self.assertLess(order.index(clippy), order.index(step_by_id(gate, "python")))
-        # Pull request линтует отдельной джобой, и `Unica CI` ждёт её исход
-        # после Python: тесты PR не ждут линта.
-        for step in (start, clippy):
+        # Pull request линтует и гоняет Python small второй джобой; `Unica CI`
+        # ждёт исход каждого её шага отдельной записью гейта.
+        for step in (start, clippy, step_by_id(gate, "python"), step_by_id(gate, "python-plan")):
             self.assertIn("github.event_name != 'pull_request'", condition(step))
-        lint_job = step_by_id(gate, "lint-job")
-        self.assertIn("github.event_name == 'pull_request'", condition(lint_job))
-        self.assertIn('--job "Rust lint"', lint_job["run"])
-        self.assertIn("--require-success", lint_job["run"])
-        self.assertLess(order.index(step_by_id(gate, "python")), order.index(lint_job))
-        self.assertLess(order.index(lint_job), order.index(step_by_id(gate, "verify")))
-        lint = job(self.release, "rust-lint")
-        self.assertEqual(lint["name"], "Rust lint")
-        self.assertEqual(step_by_id(lint, "clippy")["run"], "scripts/ci/clippy.sh all")
-        self.assertIs(steps_using(lint, "Swatinem/rust-cache")[0]["with"]["save-if"], False)
+        for step_id, awaited in (("lint-job", "Lint and Python::Clippy"), ("pr-python", "Lint and Python::Python")):
+            waiting = step_by_id(gate, step_id)
+            self.assertIn("github.event_name == 'pull_request'", condition(waiting))
+            self.assertIn(f'--job "{awaited}"', waiting["run"])
+            self.assertIn("--require-success", waiting["run"])
+            self.assertLess(order.index(waiting), order.index(step_by_id(gate, "verify")))
+        self.assertIn("rust_required == 'true'", condition(step_by_id(gate, "lint-job")))
+        checks = job(self.release, "pr-checks")
+        self.assertEqual(checks["name"], "Lint and Python")
+        self.assertEqual(step_by_id(checks, "clippy")["name"], "Clippy")
+        self.assertEqual(step_by_id(checks, "clippy")["run"], "scripts/ci/clippy.sh all")
+        self.assertEqual(step_by_id(checks, "python")["name"], "Python")
+        # Python идёт раньше Clippy: MCP-тесты под нагрузкой сборки падают.
+        self.assertLess(steps(checks).index(step_by_id(checks, "python")), steps(checks).index(step_by_id(checks, "clippy")))
+        self.assertIs(steps_using(checks, "Swatinem/rust-cache")[0]["with"]["save-if"], False)
         self.assertIn("--all-targets --all-features --message-format=json -- -D warnings", CLIPPY_SCRIPT.read_text(encoding="utf-8"))
         # Clippy следует тестам: очередь с одними платформенными каталогами
         # линтует macOS ночью и на теге, остальные контуры — сразу.

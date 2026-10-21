@@ -67,11 +67,13 @@ STEP_GROUPS = {
     "classify-changes": ("classify",),
     "guards": ("guards-compile", "guards-version", "guards-fmt", "guards-zizmor"),
     "build-python-product": ("product",),
-    "test-python": ("python-plan", "python"),
+    "test-python": ("python-plan", "python", "pr-python"),
     "test-rust-platforms": ("shadow", "rust-build", "rust-run", "verify"),
-    RUST_MEDIUM: ("rust-medium",),
-    # Clippy — шаг `clippy` (в фоне, очередь и ветки) или ожидание джобы
-    # `Rust lint` (pull request): идёт ровно одно из них.
+    # Добавки pull request к Rust: medium затронутых пакетов и проверка
+    # объявления снятых тестов (#1938); обе идут только в PR с Rust.
+    RUST_MEDIUM: ("rust-medium", "removed-tests"),
+    # Clippy — шаг `clippy` (в фоне, очередь и ветки) или ожидание шага
+    # джобы `Lint and Python` (pull request).
     "lint-rust-platforms": ("clippy", "lint-job"),
     CACHE_JOB: ("warm",),
 }
@@ -94,9 +96,14 @@ def combined(outcomes: list[str]) -> str:
     return "partial"
 
 
-# Entries whose steps are alternatives by event: the skipped one does not
-# make the group partial; both skipped is still `skipped`.
-ALTERNATIVE_GROUPS = frozenset({"lint-rust-platforms"})
+# Entries whose steps run inside `Unica CI` on most events and in the second
+# pull request job (`Lint and Python`) on a pull request: exactly one of the
+# alternatives runs. The skipped one does not make the entry partial; both
+# running, or a part of one, does.
+ALTERNATIVE_GROUPS = {
+    "lint-rust-platforms": (("clippy",), ("lint-job",)),
+    "test-python": (("python-plan", "python"), ("pr-python",)),
+}
 
 
 def validation_results(steps: Mapping, os_jobs: Mapping[str, str] | None, profile: str | None) -> dict[str, str]:
@@ -108,8 +115,10 @@ def validation_results(steps: Mapping, os_jobs: Mapping[str, str] | None, profil
             details = steps.get(step)
             outcomes.append(details.get("outcome", "missing") if isinstance(details, Mapping) else "missing")
         if entry in ALTERNATIVE_GROUPS:
-            ran = [outcome for outcome in outcomes if outcome != "skipped"]
-            outcomes = ran if len(ran) == 1 else outcomes if not ran else ran + ["partial"]
+            by_step = dict(zip(ids, outcomes))
+            parts = [[by_step[step] for step in part] for part in ALTERNATIVE_GROUPS[entry]]
+            active = [part for part in parts if any(outcome != "skipped" for outcome in part)]
+            outcomes = active[0] if len(active) == 1 else outcomes if not active else [*sum(active, []), "partial"]
         results[entry] = combined(outcomes)
     if os_jobs is None:
         results[OS_JOBS] = "skipped"

@@ -640,7 +640,8 @@ def queue_steps() -> dict[str, str]:
     """Шаги `Unica CI` кодовой очереди: всё обязательное прошло, medium PR и прогрев пропущены."""
     load = load_gate_module()
     outcomes = {step: "success" for ids in load.STEP_GROUPS.values() for step in ids}
-    outcomes.update({"rust-medium": "skipped", "warm": "skipped", "lint-job": "skipped"})
+    outcomes.update({"rust-medium": "skipped", "removed-tests": "skipped", "warm": "skipped", "lint-job": "skipped",
+                     "pr-python": "skipped"})
     return outcomes
 
 
@@ -751,7 +752,10 @@ class StepResultTests(unittest.TestCase):
             if len(ids) < 2 or group in gate.ALTERNATIVE_GROUPS:
                 continue
             with self.subTest(group=group):
-                outcomes = {**queue_steps(), ids[-1]: "skipped"}
+                # One step of the group differs from the rest: skipped among
+                # successes, or ran among skips (a PR-only step in the queue).
+                base = queue_steps()
+                outcomes = {**base, ids[-1]: "success" if base[ids[0]] == "skipped" else "skipped"}
                 results = gate.validation_results(steps(outcomes), {"Rust (macos-14)": "success"}, "queue")
                 self.assertEqual("partial", results[group])
                 evaluation = evaluate(gate, "merge_group", "refs/heads/queue", classification(**ALL_ENABLED),
@@ -770,6 +774,17 @@ class StepResultTests(unittest.TestCase):
         self.assertEqual("partial", lint(clippy="success", **{"lint-job": "success"}))
         self.assertEqual("missing", gate.validation_results(steps({k: v for k, v in queue_steps().items() if k != "lint-job"}),
                                                             {"Rust (macos-14)": "success"}, "queue")["lint-rust-platforms"])
+
+    def test_python_runs_in_unica_ci_or_in_the_pull_request_job_never_partly_both(self) -> None:
+        gate = load_gate_module()
+        def python(**outcomes):
+            return gate.validation_results(steps({**queue_steps(), **outcomes}), {"Rust (macos-14)": "success"}, "queue")["test-python"]
+        self.assertEqual("success", python())
+        self.assertEqual("success", python(**{"python-plan": "skipped", "python": "skipped", "pr-python": "success"}))
+        self.assertEqual("failure", python(**{"python-plan": "skipped", "python": "skipped", "pr-python": "failure"}))
+        self.assertEqual("partial", python(**{"python-plan": "skipped", "python": "success", "pr-python": "skipped"}))
+        self.assertEqual("partial", python(**{"pr-python": "success"}))
+        self.assertEqual("skipped", python(**{"python-plan": "skipped", "python": "skipped"}))
 
     def test_a_missing_step_is_missing_not_skipped(self) -> None:
         gate = load_gate_module()
