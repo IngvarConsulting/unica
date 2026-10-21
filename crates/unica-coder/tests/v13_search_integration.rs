@@ -2197,3 +2197,95 @@ fn broad_text_search_scopes_name_the_module_of_every_hit() {
     );
     mcp.finish();
 }
+
+#[test]
+fn text_search_enumerates_wide_and_aggregate_corpora_without_an_entry_quota() {
+    for distributed in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        body_workspace(
+            root.path(),
+            b"// WideNeedle\n// WideNeedle\n// WideNeedle\n",
+        );
+        for index in 0..16_385 {
+            let directory = if distributed {
+                root.path().join(format!("ZNoise/part{}", index % 8))
+            } else {
+                root.path().join("ZNoise")
+            };
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(directory.join(format!("noise{index:05}.txt")), b"").unwrap();
+        }
+        let mut mcp = McpProcess::start(root.path());
+        initialize_body_mcp(&mut mcp);
+        let first = mcp.completed_tool_call(call_tool(
+            2,
+            "unica.search",
+            json!({
+                "query": "WideNeedle", "scope": "main:Configuration", "limit": 2
+            }),
+        ));
+        assert_eq!(first["ok"], true, "{first:#}");
+        assert_eq!(first["data"]["matches"].as_array().unwrap().len(), 2);
+        assert_eq!(first["page"]["stoppedBy"], "limit");
+        let args = json!({"query":"WideNeedle", "scope":"main:Configuration", "limit":2, "cursor":first["cursor"]});
+        let tail = mcp.completed_tool_call(call_tool(3, "unica.search", args.clone()));
+        assert_eq!(tail["ok"], true, "{tail:#}");
+        assert_eq!(tail["data"]["matches"].as_array().unwrap().len(), 1);
+        assert_eq!(tail["page"]["stoppedBy"], "complete");
+        let replay = mcp.completed_tool_call(call_tool(4, "unica.search", args));
+        assert_eq!(replay, tail);
+        let empty = mcp.completed_tool_call(call_tool(
+            5,
+            "unica.search",
+            json!({"query":"AbsentNeedle", "scope":"main:Configuration"}),
+        ));
+        assert_eq!(empty["ok"], true, "{empty:#}");
+        assert_eq!(empty["data"]["matches"].as_array().unwrap().len(), 0);
+        assert_eq!(empty["page"]["stoppedBy"], "complete");
+        mcp.finish();
+    }
+}
+
+#[test]
+fn text_search_keeps_nested_module_order_across_pages() {
+    let root = tempfile::tempdir().unwrap();
+    body_workspace(root.path(), b"// OrderedNeedle\n");
+    let configuration = root.path().join("Configuration.xml");
+    let source = std::fs::read_to_string(&configuration).unwrap().replace(
+        "<CommonModule>Main</CommonModule>",
+        "<CommonModule>A</CommonModule><CommonModule>Main</CommonModule><CommonModule>Z</CommonModule>",
+    );
+    std::fs::write(configuration, source).unwrap();
+    for name in ["A", "Z"] {
+        let descriptor = std::fs::read_to_string(root.path().join("CommonModules/Main.xml"))
+            .unwrap()
+            .replace("<Name>Main</Name>", &format!("<Name>{name}</Name>"));
+        std::fs::write(
+            root.path().join(format!("CommonModules/{name}.xml")),
+            descriptor,
+        )
+        .unwrap();
+        let ext = root.path().join(format!("CommonModules/{name}/Ext"));
+        std::fs::create_dir_all(&ext).unwrap();
+        std::fs::write(ext.join("Module.bsl"), b"// OrderedNeedle\n").unwrap();
+    }
+    let mut mcp = McpProcess::start(root.path());
+    initialize_body_mcp(&mut mcp);
+    let mut args = json!({"query":"OrderedNeedle", "scope":"main:Configuration", "limit":1});
+    for (index, owner) in ["Z", "Main", "A"].into_iter().enumerate() {
+        let page =
+            mcp.completed_tool_call(call_tool(2 + index as u64, "unica.search", args.clone()));
+        assert_eq!(page["ok"], true, "{page:#}");
+        assert_eq!(page["data"]["matches"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            page["data"]["matches"][0]["at"],
+            format!("main:CommonModule.{owner}.Body#L1")
+        );
+        if index == 2 {
+            assert_eq!(page["page"]["stoppedBy"], "complete");
+        } else {
+            args["cursor"] = page["cursor"].clone();
+        }
+    }
+    mcp.finish();
+}

@@ -1670,6 +1670,13 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cle
             home = root / f"run-{generation}"
             workspace = home / "workspace"
             shutil.copytree(REPO_ROOT / workspace_relative, workspace)
+            if workspace_relative == "tests/fixtures/acceptance/workspace-search-wide":
+                # Reverse directory traversal reaches ZNoise before the BSL.
+                # Generate the capacity probe in the disposable workspace.
+                noise = workspace / "src/ZNoise"
+                noise.mkdir()
+                for index in range(16_385):
+                    (noise / f"noise{index:05}.txt").touch()
             if workspace_relative == "tests/fixtures/acceptance/workspace-external-linked":
                 materialize_external_form_link(workspace)
             if workspace_relative in {"tests/fixtures/acceptance/workspace-external", "tests/fixtures/acceptance/workspace-external-invalid", "tests/fixtures/acceptance/workspace-external-linked", "tests/fixtures/acceptance/workspace-external-missing"}:
@@ -1712,7 +1719,8 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cle
                                 server.input_schema(step["tool"]), arguments
                             )
                         response = (completed_delivery_call(server, step["tool"], arguments, label)
-                                    if plugin else server.call(step["tool"], arguments, label))
+                                    if plugin or wanted == "tests/fixtures/acceptance/workspace-search-wide"
+                                    else server.call(step["tool"], arguments, label))
                     except (TimeoutError, OSError, ValueError) as error:
                         # The session is gone: record the step with the
                         # daemon's own words and continue on a fresh one.

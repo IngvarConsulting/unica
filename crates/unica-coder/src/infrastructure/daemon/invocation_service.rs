@@ -29,7 +29,15 @@ use crate::infrastructure::workspace_actor::{
 use std::io::BufRead;
 use std::sync::Arc;
 
-const CANONICAL_SEARCH_MAX_ENTRIES: usize = 16_384;
+#[path = "invocation_service/ordered_search_names.rs"]
+mod ordered_search_names;
+
+struct SearchDirectoryFrame {
+    relative: std::path::PathBuf,
+    directory: RetainedDirectoryCapability,
+    names: Option<ordered_search_names::OrderedNames>,
+    directories: bool,
+}
 // Regex anchors and Unicode columns require a complete line. Keep that
 // indivisible unit bounded; neither file nor corpus size is a memory budget.
 const CANONICAL_SEARCH_MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
@@ -353,245 +361,271 @@ impl ActorReadSourceCapability {
         };
         let mut owners =
             SearchHitOwners::new(&root, self.binding.source_kind(), &self.registration_cache);
-        let mut stack = vec![(start_relative, start_directory, 0_usize)];
-        let mut visited_entries = 0_usize;
+        let mut stack = vec![SearchDirectoryFrame {
+            relative: start_relative,
+            directory: start_directory,
+            names: None,
+            directories: false,
+        }];
         let mut scan = LiteralSearchScan::complete();
         let mut file_ordinal = 0_usize;
-        while let Some((relative_directory, directory, depth)) = stack.pop() {
-            if cancellation.is_cancelled() {
-                return Err("canonical search was cancelled".to_string());
-            }
-            if self.deadline.is_elapsed() {
-                return Err("canonical search operation deadline elapsed".to_string());
-            }
-            match directory.validate_named_identity() {
-                Ok(()) => {}
-                Err(error) if vanished(&error) => continue,
-                Err(error) => return Err(context("lost a retained directory", error)),
-            }
-            let remaining_entries = CANONICAL_SEARCH_MAX_ENTRIES.saturating_sub(visited_entries);
-            if remaining_entries == 0 {
-                return Err("canonical search exceeded its retained entry limit".to_string());
-            }
-            let mut names = match directory.read_immediate_names_bounded(remaining_entries, || {
+        while !stack.is_empty() {
+            let checkpoint = || {
                 if cancellation.is_cancelled() {
                     Err(std::io::Error::new(
                         std::io::ErrorKind::Interrupted,
                         "canonical search was cancelled",
                     ))
+                } else if self.deadline.is_elapsed() {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "canonical search operation deadline elapsed",
+                    ))
                 } else {
                     Ok(())
                 }
-            }) {
-                Ok(names) => names,
-                Err(error) if vanished(&error) => continue,
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
-                    return Err(error.to_string())
-                }
-                Err(error) => return Err(context("could not list a source directory", error)),
             };
-            names.sort();
-            for name in names {
-                visited_entries = visited_entries.saturating_add(1);
-                if visited_entries > CANONICAL_SEARCH_MAX_ENTRIES {
-                    return Err("canonical search exceeded its retained entry limit".to_string());
+            checkpoint().map_err(|error| error.to_string())?;
+            let depth = stack.len() - 1;
+            let frame = stack.last_mut().expect("active search directory");
+            let directory = &frame.directory;
+            if frame.names.is_none() {
+                match directory.validate_named_identity() {
+                    Ok(()) => {}
+                    Err(error) if vanished(&error) => {
+                        stack.pop();
+                        continue;
+                    }
+                    Err(error) => return Err(context("lost a retained directory", error)),
                 }
-                let relative = relative_directory.join(&name);
-                let child = match directory.retain_immediate_child_nofollow(&name) {
-                    Ok(child) => child,
-                    Err(error) if vanished(&error) => continue,
-                    Err(error) => {
-                        return Err(context("could not open a source directory entry", error))
-                    }
-                };
-                match child {
-                    RetainedChildCapability::Directory(child_directory)
-                        if depth < CANONICAL_SEARCH_MAX_DEPTH =>
-                    {
-                        stack.push((relative, child_directory, depth + 1));
-                    }
-                    RetainedChildCapability::Directory(_) => {
-                        return Err("canonical search exceeded its retained depth limit".to_string())
-                    }
-                    RetainedChildCapability::RegularFile(file)
-                        if relative
+                frame.names =
+                    match ordered_search_names::OrderedNames::collect(directory, checkpoint) {
+                        Ok(names) => Some(names),
+                        Err(error) => {
+                            return Err(context("could not list a source directory", error))
+                        }
+                    };
+            }
+            let names = frame.names.as_mut().expect("enumerated search directory");
+            let name = names
+                .next(frame.directories)
+                .map_err(|error| context("could not read sorted source names", error))?;
+            let Some(name) = name else {
+                if frame.directories {
+                    stack.pop();
+                } else {
+                    frame.directories = true;
+                }
+                continue;
+            };
+            let directories = frame.directories;
+            let relative_directory = &frame.relative;
+            let relative = relative_directory.join(&name);
+            // Files precede subdirectories in the established scan order.
+            // Unrelated names need opening only in the directory pass.
+            if !directories
+                && !relative
+                    .extension()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("bsl"))
+            {
+                continue;
+            }
+            let child = match directory.retain_immediate_child_nofollow(&name) {
+                Ok(child) => child,
+                Err(error) if vanished(&error) => continue,
+                Err(error) => {
+                    return Err(context("could not open a source directory entry", error))
+                }
+            };
+            match child {
+                RetainedChildCapability::Directory(child_directory)
+                    if directories && depth < CANONICAL_SEARCH_MAX_DEPTH =>
+                {
+                    stack.push(SearchDirectoryFrame {
+                        relative,
+                        directory: child_directory,
+                        names: None,
+                        directories: false,
+                    });
+                }
+                RetainedChildCapability::Directory(_) if directories => {
+                    return Err("canonical search exceeded its retained depth limit".to_string())
+                }
+                RetainedChildCapability::RegularFile(file)
+                    if !directories
+                        && relative
                             .extension()
                             .and_then(std::ffi::OsStr::to_str)
                             .is_some_and(|extension| extension.eq_ignore_ascii_case("bsl")) =>
-                    {
-                        file_ordinal += 1;
-                        let opened = match file.open_named_identity_for_read() {
-                            Ok(opened) => opened,
-                            Err(error) if vanished(&error) => continue,
-                            Err(error) => {
-                                return Err(context("lost a retained source file", error))
-                            }
-                        };
-                        let mut reader = std::io::BufReader::new(opened);
-                        let mut raw_line = Vec::new();
-                        let mut line_index = 0_usize;
-                        // Mapped once per file, on its first hit, from the
-                        // path already in hand: no descriptor or module read.
-                        let mut module_at = None::<Result<String, &'static str>>;
-                        loop {
-                            let has_line = read_search_line_bounded(
-                                &mut reader,
-                                &mut raw_line,
-                                CANONICAL_SEARCH_MAX_LINE_BYTES,
-                                || {
-                                    if cancellation.is_cancelled() {
-                                        Err(std::io::Error::new(
-                                            std::io::ErrorKind::Interrupted,
-                                            "canonical search was cancelled",
-                                        ))
-                                    } else if self.deadline.is_elapsed() {
-                                        Err(std::io::Error::new(
-                                            std::io::ErrorKind::TimedOut,
-                                            "canonical search operation deadline elapsed",
-                                        ))
-                                    } else {
-                                        Ok(())
-                                    }
-                                },
-                            );
-                            let has_line = match has_line {
-                                Ok(has_line) => has_line,
-                                Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => {
-                                    scan.mark_uncovered(
-                                        self.binding.source_set_name(),
-                                        file_ordinal,
-                                        "line_too_long",
-                                    );
-                                    break;
+                {
+                    file_ordinal += 1;
+                    let opened = match file.open_named_identity_for_read() {
+                        Ok(opened) => opened,
+                        Err(error) if vanished(&error) => continue,
+                        Err(error) => return Err(context("lost a retained source file", error)),
+                    };
+                    let mut reader = std::io::BufReader::new(opened);
+                    let mut raw_line = Vec::new();
+                    let mut line_index = 0_usize;
+                    // Mapped once per file, on its first hit, from the
+                    // path already in hand: no descriptor or module read.
+                    let mut module_at = None::<Result<String, &'static str>>;
+                    loop {
+                        let has_line = read_search_line_bounded(
+                            &mut reader,
+                            &mut raw_line,
+                            CANONICAL_SEARCH_MAX_LINE_BYTES,
+                            || {
+                                if cancellation.is_cancelled() {
+                                    Err(std::io::Error::new(
+                                        std::io::ErrorKind::Interrupted,
+                                        "canonical search was cancelled",
+                                    ))
+                                } else if self.deadline.is_elapsed() {
+                                    Err(std::io::Error::new(
+                                        std::io::ErrorKind::TimedOut,
+                                        "canonical search operation deadline elapsed",
+                                    ))
+                                } else {
+                                    Ok(())
                                 }
-                                Err(error)
-                                    if matches!(
-                                        error.kind(),
-                                        std::io::ErrorKind::Interrupted
-                                            | std::io::ErrorKind::TimedOut
-                                    ) =>
-                                {
-                                    return Err(error.to_string())
-                                }
-                                Err(error) => {
-                                    return Err(context("could not read a source file", error))
-                                }
-                            };
-                            if !has_line {
-                                break;
-                            }
-                            line_index += 1;
-                            let Ok(text) = std::str::from_utf8(&raw_line) else {
+                            },
+                        );
+                        let has_line = match has_line {
+                            Ok(has_line) => has_line,
+                            Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => {
                                 scan.mark_uncovered(
                                     self.binding.source_set_name(),
                                     file_ordinal,
-                                    "invalid_utf8",
+                                    "line_too_long",
                                 );
                                 break;
-                            };
-                            let line = text.strip_suffix('\n').map_or(text, |without_lf| {
-                                without_lf.strip_suffix('\r').unwrap_or(without_lf)
-                            });
-                            // `view` reads the module without its byte-order
-                            // mark; the hit column and snippet must match it.
-                            let line = if line_index == 1 {
-                                line.strip_prefix('\u{feff}').unwrap_or(line)
-                            } else {
-                                line
-                            };
-                            let mut previous_byte = 0;
-                            let mut column = 1;
-                            let mut snippet = None::<String>;
-                            for byte_column in matcher.match_starts(line) {
-                                if cancellation.is_cancelled() {
-                                    return Err("canonical search was cancelled".to_string());
-                                }
-                                if self.deadline.is_elapsed() {
-                                    return Err(
-                                        "canonical search operation deadline elapsed".to_string()
+                            }
+                            Err(error)
+                                if matches!(
+                                    error.kind(),
+                                    std::io::ErrorKind::Interrupted | std::io::ErrorKind::TimedOut
+                                ) =>
+                            {
+                                return Err(error.to_string())
+                            }
+                            Err(error) => {
+                                return Err(context("could not read a source file", error))
+                            }
+                        };
+                        if !has_line {
+                            break;
+                        }
+                        line_index += 1;
+                        let Ok(text) = std::str::from_utf8(&raw_line) else {
+                            scan.mark_uncovered(
+                                self.binding.source_set_name(),
+                                file_ordinal,
+                                "invalid_utf8",
+                            );
+                            break;
+                        };
+                        let line = text.strip_suffix('\n').map_or(text, |without_lf| {
+                            without_lf.strip_suffix('\r').unwrap_or(without_lf)
+                        });
+                        // `view` reads the module without its byte-order
+                        // mark; the hit column and snippet must match it.
+                        let line = if line_index == 1 {
+                            line.strip_prefix('\u{feff}').unwrap_or(line)
+                        } else {
+                            line
+                        };
+                        let mut previous_byte = 0;
+                        let mut column = 1;
+                        let mut snippet = None::<String>;
+                        for byte_column in matcher.match_starts(line) {
+                            if cancellation.is_cancelled() {
+                                return Err("canonical search was cancelled".to_string());
+                            }
+                            if self.deadline.is_elapsed() {
+                                return Err(
+                                    "canonical search operation deadline elapsed".to_string()
+                                );
+                            }
+                            column += line[previous_byte..byte_column].chars().count();
+                            previous_byte = byte_column;
+                            if *skip > 0 {
+                                *skip -= 1;
+                                continue;
+                            }
+                            let mut item = serde_json::Map::new();
+                            item.insert(
+                                "scope".to_string(),
+                                serde_json::Value::String(scope_at.to_string()),
+                            );
+                            if module_at.is_none() {
+                                let mapped = match platform_profile {
+                                    None => Err("unsupported_source_profile"),
+                                    Some(profile) => match module_address_for_relative(
+                                        self.binding.source_set_name(),
+                                        self.binding.source_kind(),
+                                        profile,
+                                        &relative,
+                                    ) {
+                                        None => Err("outside_module_layout"),
+                                        Some(at) => {
+                                            if owners
+                                                .proves(&at, &owner_checkpoint)
+                                                .map_err(|error| error.to_string())?
+                                            {
+                                                Ok(at.to_string())
+                                            } else {
+                                                Err("owner_unproven")
+                                            }
+                                        }
+                                    },
+                                };
+                                module_at = Some(mapped);
+                            }
+                            match module_at.as_ref() {
+                                Some(Ok(hit_at)) => {
+                                    item.insert(
+                                        "at".to_string(),
+                                        serde_json::Value::String(hit_at.clone()),
                                     );
                                 }
-                                column += line[previous_byte..byte_column].chars().count();
-                                previous_byte = byte_column;
-                                if *skip > 0 {
-                                    *skip -= 1;
-                                    continue;
+                                Some(Err(reason)) => {
+                                    // No proven module owns this file: name
+                                    // it by the scan ordinal, never by path.
+                                    item.insert(
+                                        "fileId".to_string(),
+                                        format!("bsl-{file_ordinal}").into(),
+                                    );
+                                    item.insert("unaddressed".to_string(), (*reason).into());
                                 }
-                                let mut item = serde_json::Map::new();
-                                item.insert(
-                                    "scope".to_string(),
-                                    serde_json::Value::String(scope_at.to_string()),
-                                );
-                                if module_at.is_none() {
-                                    let mapped = match platform_profile {
-                                        None => Err("unsupported_source_profile"),
-                                        Some(profile) => match module_address_for_relative(
-                                            self.binding.source_set_name(),
-                                            self.binding.source_kind(),
-                                            profile,
-                                            &relative,
-                                        ) {
-                                            None => Err("outside_module_layout"),
-                                            Some(at) => {
-                                                if owners
-                                                    .proves(&at, &owner_checkpoint)
-                                                    .map_err(|error| error.to_string())?
-                                                {
-                                                    Ok(at.to_string())
-                                                } else {
-                                                    Err("owner_unproven")
-                                                }
-                                            }
-                                        },
-                                    };
-                                    module_at = Some(mapped);
-                                }
-                                match module_at.as_ref() {
-                                    Some(Ok(hit_at)) => {
-                                        item.insert(
-                                            "at".to_string(),
-                                            serde_json::Value::String(hit_at.clone()),
-                                        );
-                                    }
-                                    Some(Err(reason)) => {
-                                        // No proven module owns this file: name
-                                        // it by the scan ordinal, never by path.
-                                        item.insert(
-                                            "fileId".to_string(),
-                                            format!("bsl-{file_ordinal}").into(),
-                                        );
-                                        item.insert("unaddressed".to_string(), (*reason).into());
-                                    }
-                                    // Mapped just above; a file is never left unmapped.
-                                    None => {}
-                                }
-                                item.insert(
-                                    "line".to_string(),
-                                    serde_json::Value::from(line_index),
-                                );
-                                item.insert("column".to_string(), serde_json::Value::from(column));
-                                item.insert(
-                                    "snippet".to_string(),
-                                    serde_json::Value::String(
-                                        snippet
-                                            .get_or_insert_with(|| {
-                                                line.chars().take(512).collect::<String>()
-                                            })
-                                            .clone(),
-                                    ),
-                                );
-                                scan.matches.push(serde_json::Value::Object(item));
-                                if scan.matches.len() == limit {
-                                    scan.scan_complete = false;
-                                    return Ok(scan);
-                                }
+                                // Mapped just above; a file is never left unmapped.
+                                None => {}
+                            }
+                            item.insert("line".to_string(), serde_json::Value::from(line_index));
+                            item.insert("column".to_string(), serde_json::Value::from(column));
+                            item.insert(
+                                "snippet".to_string(),
+                                serde_json::Value::String(
+                                    snippet
+                                        .get_or_insert_with(|| {
+                                            line.chars().take(512).collect::<String>()
+                                        })
+                                        .clone(),
+                                ),
+                            );
+                            scan.matches.push(serde_json::Value::Object(item));
+                            if scan.matches.len() == limit {
+                                scan.scan_complete = false;
+                                return Ok(scan);
                             }
                         }
                     }
-                    RetainedChildCapability::RegularFile(_)
-                    | RetainedChildCapability::ReparsePoint
-                    | RetainedChildCapability::Unsupported => {}
                 }
+                RetainedChildCapability::Directory(_)
+                | RetainedChildCapability::RegularFile(_)
+                | RetainedChildCapability::ReparsePoint
+                | RetainedChildCapability::Unsupported => {}
             }
         }
         Ok(scan)
