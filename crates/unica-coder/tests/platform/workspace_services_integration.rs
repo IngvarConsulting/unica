@@ -751,6 +751,9 @@ mod tests {
                     source_set: Some("main".into()),
                     path: source_root.clone(),
                 },
+                std::sync::Arc::new(unica_workspace::discovery::ProjectDiscoveryReader::new(
+                    &fixture.context.workspace_root,
+                )),
             );
             let symbol = || {
                 analysis_composition::bsl_provider().search(
@@ -1228,6 +1231,9 @@ mod tests {
                 source_set: Some("main".into()),
                 path: source_root.clone(),
             },
+            std::sync::Arc::new(unica_workspace::discovery::ProjectDiscoveryReader::new(
+                &fixture.context.workspace_root,
+            )),
         );
         let symbol = || {
             analysis_composition::bsl_provider().search(
@@ -2102,6 +2108,9 @@ mod tests {
                 source_set: Some("main".to_string()),
                 path: context.workspace_root.join("src"),
             },
+            std::sync::Arc::new(unica_workspace::discovery::ProjectDiscoveryReader::new(
+                &context.workspace_root,
+            )),
         );
         let deadline = || ProviderDeadline::new(Instant::now() + Duration::from_secs(5));
         let nav = unica_adapter_rlm::navigation::RlmNavigationAdapter::new(client)
@@ -2293,6 +2302,9 @@ mod tests {
                 source_set: Some("main".to_string()),
                 path: workspace.workspace_root.join("src"),
             },
+            std::sync::Arc::new(unica_workspace::discovery::ProjectDiscoveryReader::new(
+                &workspace.workspace_root,
+            )),
         );
         let section = unica_adapter_rlm::provider::RlmProvider::new(
             &client,

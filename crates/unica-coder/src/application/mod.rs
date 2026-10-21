@@ -3614,6 +3614,11 @@ pub(crate) mod tests {
                             source_set: Some("main".to_string()),
                             path: context.workspace_root.join("src"),
                         },
+                        std::sync::Arc::new(
+                            unica_workspace::discovery::ProjectDiscoveryReader::new(
+                                &context.workspace_root,
+                            ),
+                        ),
                     ),
                 );
             }

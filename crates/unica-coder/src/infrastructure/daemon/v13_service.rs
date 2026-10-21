@@ -7815,6 +7815,9 @@ mod tests {
                 source_set: Some("main".into()),
                 path: PathBuf::from("/workspace"),
             },
+            std::sync::Arc::new(unica_workspace::discovery::ProjectDiscoveryReader::new(
+                std::path::Path::new("/workspace"),
+            )),
         )
         .with_search_scope(CodeSearchScope::all(
             "main".into(),

@@ -23,6 +23,7 @@ def manifest(lane="ordinary", host="ubuntu-latest", profile="queue"):
             "archiveSha256": "archive-" + lane, "inventory": sum(parts, []), "ignoredInventory": [], "shards": parts}
     if lane == "ordinary":
         document["fixtureBinary"] = {"path": "x86_64-unknown-linux-gnu/debug/unica", "sha256": "0" * 64, "bytes": 1}
+        document["doctests"] = {"command": ["cargo", "test", "--doc"], "exitCode": 0, "seconds": 0.01, "output": "ok"}
     return document
 
 
@@ -124,6 +125,22 @@ class RustLaneTests(unittest.TestCase):
                 lanes.verify_union(root, "queue", ["ubuntu-latest"], "a" * 40)
             self.assertFalse(json.loads((root / "verification.json").read_text())["mandatoryComplete"])
 
+    def test_large_windows_doctest_failure_is_advisory(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(lanes.os.environ, {}, clear=True):
+            root = Path(temporary)
+            for lane in lanes.LANES:
+                plan = manifest(lane, host="windows-latest", profile="large")
+                if lane == "ordinary":
+                    plan["doctests"].update(exitCode=101)
+                lanes.write(root / lane / "lane.json", plan)
+                for index in range(1, len(plan["shards"]) + 1):
+                    lanes.write(root / lane / str(index) / "shard.json", result(plan, index))
+            report = lanes.verify_union(root, "large", ["windows-latest"], "a" * 40)
+            self.assertTrue(report["mandatoryComplete"])
+            self.assertFalse(report["fullMatrixPassed"])
+            self.assertEqual(report["advisoryFailures"],
+                             ["windows-latest/ordinary: workspace doctests failed with exit code 101"])
+
     def test_windows_advisory_is_visible_and_never_full_matrix_passed(self):
         with tempfile.TemporaryDirectory() as temporary, patch.dict(lanes.os.environ, {}, clear=True):
             report = lanes.verify_union(Path(temporary), "large", ["windows-latest"], "a" * 40)
@@ -171,7 +188,7 @@ class ArchiveFixtureBinaryTests(unittest.TestCase):
                 binary.write_bytes(b"already built non-test executable")
                 calls = []
 
-                def nextest(command, _root, *, capture=False):
+                def nextest(command, _root, *, capture=False, merge_stderr=False):
                     calls.append(command[2])
                     if command[2] == "archive":
                         (root / "prepared/tests.tar.zst").write_bytes(b"same archive")
@@ -182,12 +199,83 @@ class ArchiveFixtureBinaryTests(unittest.TestCase):
                      patch.object(lanes, "signature"), patch.object(lanes, "timed", side_effect=nextest):
                     lanes.build(root, root / "prepared", lane, "pr", "ubuntu-latest", "main")
                 plan = json.loads((root / "prepared/lane.json").read_text())
-                self.assertEqual(calls, ["archive", "list", "list"])
+                self.assertEqual(calls, ["archive", *(["--doc"] if lane == "ordinary" else []), "list", "list"])
                 if lane == "ordinary":
                     self.assertEqual(plan["fixtureBinary"], {"path": "x86_64-unknown-linux-gnu/debug/unica",
                         "sha256": hashlib.sha256(binary.read_bytes()).hexdigest(), "bytes": binary.stat().st_size})
                 else:
                     self.assertNotIn("fixtureBinary", plan)
+
+    def test_ordinary_build_records_workspace_doctests_on_the_archive_target(self):
+        # compile_fail examples guard closed writer constructors; nextest skips them.
+        self.assertEqual(lanes.doctest_command(Path("/w"), "x86_64-unknown-linux-gnu"),
+                         ["cargo", "test", "--doc", "--workspace", "--locked",
+                          "--target", "x86_64-unknown-linux-gnu", "--target-dir", str(Path("/w") / "target")])
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            listed = ArchiveFixtureBinaryTests().listing(root)
+            binary = root / "target/x86_64-unknown-linux-gnu/debug/unica"
+            binary.parent.mkdir(parents=True)
+            binary.write_bytes(b"already built non-test executable")
+            calls = []
+
+            def command(argv, _root, *, capture=False, merge_stderr=False):
+                calls.append(argv[2])
+                if argv[2] == "archive":
+                    (root / "prepared/tests.tar.zst").write_bytes(b"archive")
+                if argv[2] == "--doc":
+                    self.assertTrue(capture and merge_stderr, "the doctest output must reach the report")
+                    return subprocess.CompletedProcess(argv, 101, stdout="test read::ReadFile - compile fail ... FAILED\n"), 0.01
+                return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(listed)), 0.01
+
+            with patch.object(lanes.prepared_binary, "identity", return_value=manifest()["identity"]), \
+                 patch.object(lanes.prepared_binary, "output", return_value="fixture nextest"), \
+                 patch.object(lanes, "signature"), patch.object(lanes, "timed", side_effect=command):
+                lanes.build(root, root / "prepared", "ordinary", "pr", "ubuntu-latest", "main")
+            self.assertEqual(calls, ["archive", "--doc", "list", "list"])
+            doctests = json.loads((root / "prepared/lane.json").read_text())["doctests"]
+            self.assertEqual(doctests["exitCode"], 101)
+            self.assertIn("compile fail ... FAILED", doctests["output"])
+
+    def test_doctest_outcome_reaches_the_report_and_refuses_the_gate(self):
+        passed = manifest()
+        self.assertIsNone(lanes.doctest_problem(passed))
+        self.assertIsNone(lanes.doctest_problem(manifest("receipt")))
+        record = lanes.doctest_record(passed, "queue", "ubuntu-latest")
+        self.assertEqual((record["fullName"], record["status"]), ("rustdoc::workspace::doctests", "passed"))
+        self.assertIn({"name": "rust_lane", "value": "ordinary"}, record["labels"])
+        self.assertIn({"name": "language", "value": "rust"}, record["labels"])
+        failed = manifest()
+        failed["doctests"].update(exitCode=101, output="compile fail ... FAILED")
+        record = lanes.doctest_record(failed, "queue", "ubuntu-latest")
+        self.assertEqual(record["status"], "failed")
+        self.assertEqual(record["stop"] - record["start"], 10)
+        self.assertIn("exit code 101", record["statusDetails"]["message"])
+        self.assertEqual(record["statusDetails"]["trace"], "compile fail ... FAILED")
+        for broken in (lambda plan: plan.pop("doctests"), lambda plan: plan.update(doctests={"exitCode": "0"})):
+            plan = manifest()
+            broken(plan)
+            self.assertEqual(lanes.doctest_problem(plan), "missing doctest outcome")
+        for outcome, mutate in (("failed", lambda plan: plan["doctests"].update(exitCode=101)),
+                                ("missing", lambda plan: plan.pop("doctests"))):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as temporary, \
+                 patch.dict(lanes.os.environ, {}, clear=True):
+                root = Path(temporary)
+                for lane in lanes.LANES:
+                    plan = manifest(lane)
+                    if lane == "ordinary":
+                        mutate(plan)
+                    lanes.write(root / lane / "lane.json", plan)
+                    for index in range(1, len(plan["shards"]) + 1):
+                        if lane == "ordinary" and index == 2:
+                            continue
+                        lanes.write(root / lane / str(index) / "shard.json", result(plan, index))
+                with self.assertRaises(ValueError):
+                    lanes.verify_union(root, "queue", ["ubuntu-latest"], "a" * 40)
+                errors = json.loads((root / "verification.json").read_text())["errors"]
+                self.assertTrue(any("doctest" in error for error in errors), errors)
+                # The shard checks of the same lane still report their own failure.
+                self.assertTrue(any("shard" in error and "doctest" not in error for error in errors), errors)
 
     def test_missing_duplicate_wrong_package_kind_platform_path_and_link_are_refused(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -224,7 +312,7 @@ class ArchiveFixtureBinaryTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 lanes.fixture_binary_descriptor(root, original, identity)
 
-    def run_fixture(self, lane="ordinary", mutate=None, *, shadow=False):
+    def run_fixture(self, lane="ordinary", mutate=None, *, shadow=False, inspect=None):
         with tempfile.TemporaryDirectory() as temporary, patch.dict(lanes.os.environ, {}, clear=True):
             root = Path(temporary).resolve()
             prepared = root / "prepared"
@@ -275,6 +363,8 @@ class ArchiveFixtureBinaryTests(unittest.TestCase):
                     executed.assert_not_called()
                 else:
                     self.assertEqual(lanes.run_archive(root, prepared, root / "result", lane, "pr", "ubuntu-latest", 1, None, decision), 0)
+            if inspect:
+                inspect(root / "result")
             return calls
 
     def test_actual_timed_full_and_shadow_use_the_same_binding_while_other_lanes_are_unchanged(self):
@@ -284,6 +374,17 @@ class ArchiveFixtureBinaryTests(unittest.TestCase):
         self.assertIsNone(calls[1][1], "listing does not receive fixture execution inputs")
         for lane in ("receipt", "vendor"):
             self.assertEqual(self.run_fixture(lane), [("run", None)])
+
+    def test_first_ordinary_shard_reports_the_doctest_outcome(self):
+        def records(directory):
+            return [json.loads(path.read_text()) for path in directory.glob("*-result.json")]
+        seen = {}
+        self.run_fixture(inspect=lambda directory: seen.update(ordinary=records(directory)))
+        self.assertEqual([(entry["fullName"], entry["status"]) for entry in seen["ordinary"]],
+                         [("rustdoc::workspace::doctests", "passed")])
+        for lane in ("receipt", "vendor"):
+            self.run_fixture(lane, inspect=lambda directory, lane=lane: seen.update({lane: records(directory)}))
+            self.assertEqual(seen[lane], [])
 
     def test_missing_half_malformed_escaping_and_wrong_target_descriptors_stop_before_execution(self):
         self.run_fixture(mutate=lambda plan: plan.pop("fixtureBinary"))
@@ -370,7 +471,9 @@ class IgnoredJUnitArchiveTests(unittest.TestCase):
         self.assertEqual(original, copied)
         self.assertEqual(len(record["frameworkAnnotations"]), 3)
         self.assertEqual([row["id"] for row in record["records"]], ["unica-coder::selected"])
-        self.assertEqual(len(allure), 1)
+        # The ordinary lane adds its one doctest record beside the single nextest record.
+        self.assertEqual(sorted(entry["fullName"] for entry in allure),
+                         ["rustdoc::workspace::doctests", "unica-coder::selected"])
 
     def test_raw_listing_retains_ignored_mismatches_separately_from_selected_plan(self):
         listing = {"rust-suites": {"bin": {"binary-id": "unica-coder", "testcases": {
