@@ -208,3 +208,44 @@ fn job_schedule_checkpoints_preserve_cancellation_and_deadline() {
         }
     }
 }
+
+#[test]
+fn job_schedule_resolves_to_its_file_only_while_the_file_exists() {
+    use unica_address::address::QualifiedAddress;
+    use unica_refusal::RefusalCode;
+    let fixture = RealReaderFixture::new();
+    let authority = fixture.read_authority();
+    let owner = QualifiedAddress::parse("main:ScheduledJob.MonthClose").unwrap();
+    let at = QualifiedAddress::parse("main:ScheduledJob.MonthClose.Schedule").unwrap();
+    let file = "ScheduledJobs/MonthClose/Ext/Schedule.xml";
+    // The absent schedule stays a successful view, but no file is located.
+    assert_eq!(
+        read(&fixture, "main:ScheduledJob.MonthClose.Schedule")["props"],
+        json!({"state":"absent"})
+    );
+    for requested in [None, Some(file)] {
+        let error = authority.existing_export_path(&at, requested).unwrap_err();
+        assert_eq!(error.code(), RefusalCode::NotFound, "{requested:?}");
+    }
+    assert_eq!(
+        authority.existing_export_path(&owner, None).unwrap(),
+        "ScheduledJobs/MonthClose.xml"
+    );
+    write(&fixture.source.join(file), SCHEDULE);
+    assert_eq!(authority.existing_export_path(&at, None).unwrap(), file);
+    assert_eq!(
+        authority
+            .existing_export_path(&at, Some("ScheduledJobs/MonthClose.xml"))
+            .unwrap_err()
+            .code(),
+        RefusalCode::NotFound
+    );
+    std::fs::remove_file(fixture.source.join(file)).unwrap();
+    assert_eq!(
+        authority
+            .existing_export_path(&at, None)
+            .unwrap_err()
+            .code(),
+        RefusalCode::NotFound
+    );
+}

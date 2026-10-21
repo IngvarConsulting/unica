@@ -381,6 +381,22 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 ));
             }
         }
+        // An absent schedule is a successful `view` answer (`state: absent`),
+        // but the path its layout names is not a source file to resolve to.
+        if route.reader() == LogicalReader::Metadata
+            && matches!(at.segments(), [owner, schedule]
+                if owner.kind() == NodeKind::ScheduledJob && schedule.kind() == NodeKind::Schedule)
+        {
+            let target = route.reader_metadata_path().ok_or_else(|| {
+                ViewError::new(RefusalCode::NotFound, "schedule route has no target")
+            })?;
+            if !self.read.attached_resource_exists(target, "Schedule.xml")? {
+                return Err(ViewError::new(
+                    RefusalCode::NotFound,
+                    "the local Schedule.xml source file does not exist",
+                ));
+            }
+        }
         if requested_path.is_some_and(|requested| requested != path) {
             return Err(ViewError::new(
                 RefusalCode::NotFound,
