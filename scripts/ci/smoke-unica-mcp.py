@@ -32,6 +32,7 @@ _WIRE_PROBE = _load_wire_probe_module()
 ProcessIdentity = _WIRE_PROBE.ProcessIdentity
 ProcessCleanupResult = _WIRE_PROBE.ProcessCleanupResult
 ProcessOwnership = _WIRE_PROBE.ProcessOwnership
+ProcessObservationError = _WIRE_PROBE.ProcessObservationError
 
 
 TOOL_SURFACE_REVIEW_RELATIVE = Path("tests/fixtures/v013/tool-surface-review.json")
@@ -1223,9 +1224,15 @@ class McpSession(_WIRE_PROBE.JsonRpcSession):
     def observe_workspace_services(self, cache_root: Path) -> None:
         observed = getattr(self, "_service_identities", {})
         unobserved_pids = _workspace_service_pids(cache_root) - set(observed)
-        identities = self._process_ownership().capture_identities(
-            unobserved_pids
-        )
+        try:
+            identities = self._process_ownership().capture_identities(
+                unobserved_pids
+            )
+        except ProcessObservationError:
+            # Unknown is not absent: the PIDs stay unobserved and are read
+            # again after the next request. A service never captured is not
+            # claimed by cleanup, and the service wait reports it alive.
+            return
         for identity in identities:
             observed.setdefault(identity.pid, identity)
         self._service_identities = observed
@@ -1706,9 +1713,16 @@ def _close_session_and_workspace_services(
     # prove that the current process is the service that wrote it.
     service_pids = _workspace_service_pids(cache_root)
     service_identities = _observed_service_identities(session)
-    ownership, owned_processes = _capture_owned_processes(
-        session, service_identities
-    )
+    try:
+        ownership, owned_processes = _capture_owned_processes(
+            session, service_identities
+        )
+    except ProcessObservationError as error:
+        _trace(f"cleanup failed: {_describe_error(error)}")
+        session.terminate_tree(cache_root, service_identities)
+        raise SystemExit(
+            f"Unica MCP owned process snapshot failed before cleanup: {error}"
+        ) from error
     try:
         try:
             # On Windows, a detached workspace service may inherit extra copies of
