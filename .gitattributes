@@ -77,3 +77,6 @@ tests/fixtures/platform_8_3_27/new-xml/native-chart-of-accounts-descriptor.xml -
 # Raw template XML exports and the complete native Report seed retain their bytes.
 /tests/fixtures/platform_8_3_27/template-new-xml/*.xml -text whitespace=cr-at-eol
 /tests/fixtures/platform_8_3_27/template-new-xml/seed/** -text whitespace=cr-at-eol
+
+# DCS codec fixtures: tests splice them by exact text.
+crates/unica-dcs-designer/tests/fixtures/** text eol=lf

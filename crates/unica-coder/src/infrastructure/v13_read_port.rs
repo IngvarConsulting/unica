@@ -635,11 +635,9 @@ impl ProviderReadAuthority {
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<Value, ViewError> {
         let (_, text) = self.dcs_input(target)?;
-        let data = unica_dcs_designer::schema::parse_dcs_info_xml(
-            &text,
-            self.object_support(target, checkpoint)?,
-        )
-        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+        let data = crate::infrastructure::family_codecs::dcs_codec()
+            .read(&text, self.object_support(target, checkpoint)?)
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
         serde_json::to_value(data)
             .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
     }
