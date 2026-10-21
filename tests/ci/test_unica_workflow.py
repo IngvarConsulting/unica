@@ -310,7 +310,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
                 with self.subTest(entry=entry, step=step_id):
                     self.assertIn(step_id, ids)
         # Шаги, которые идут после красного, обязаны идти и после него.
-        for step_id in ("rust-run", "rust-medium", "clippy", "clippy-packages", "python", "os-jobs", "verify"):
+        for step_id in ("rust-run", "rust-medium", "clippy", "lint-job", "python", "os-jobs", "verify"):
             with self.subTest(step=step_id):
                 self.assertIn("!cancelled()", condition(step_by_id(gate, step_id)))
         delivery = job(self.release, "delivery-ci")
@@ -341,7 +341,9 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
                       if job_id not in ("build-tools", "package-thin", "p0-release-proof", "probe-thin-bootstrap",
                                         "release-assessment", "publish-release-assets", "smoke-thin-plugin",
                                         "verify-published-assets", "delivery-ci")}
-        self.assertEqual(set(validation), {"unica-ci", "rust-os"})
+        # `Rust lint` — только pull request: у записи очереди её нет.
+        self.assertEqual(set(validation), {"unica-ci", "rust-os", "rust-lint"})
+        self.assertEqual(condition(job(self.release, "rust-lint")), "${{ github.event_name == 'pull_request' }}")
         # Хвост поставки и его итог очередь и pull request не запускают: каждая
         # их джоба сама требует тег или кнопку либо успех такой джобы.
         tail = set(jobs(self.release)) - set(validation)
@@ -582,15 +584,27 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         # Clippy исполняется в фоне, пока идут тесты; его шаг ждёт конца
         # и несёт его исход. Старт — до прогона, ожидание — до Python.
         start, clippy = step_by_id(gate, "clippy-start"), step_by_id(gate, "clippy")
-        self.assertIn("background_step.py start clippy -- scripts/ci/clippy.sh workspace", start["run"])
-        self.assertIn("background_step.py start clippy-packages -- scripts/ci/clippy.sh packages", start["run"])
+        self.assertEqual(start["run"], "python scripts/ci/background_step.py start clippy -- scripts/ci/clippy.sh all")
         self.assertEqual(clippy["run"], "python scripts/ci/background_step.py wait clippy")
-        self.assertEqual(step_by_id(gate, "clippy-packages")["run"], "python scripts/ci/background_step.py wait clippy-packages")
         self.assertNotIn("continue-on-error", clippy)
         order = steps(gate)
         self.assertLess(order.index(step_by_id(gate, "rust-build")), order.index(start))
         self.assertLess(order.index(start), order.index(step_by_id(gate, "rust-run")))
-        self.assertLess(order.index(step_by_id(gate, "clippy-packages")), order.index(step_by_id(gate, "python")))
+        self.assertLess(order.index(clippy), order.index(step_by_id(gate, "python")))
+        # Pull request линтует отдельной джобой, и `Unica CI` ждёт её исход
+        # после Python: тесты PR не ждут линта.
+        for step in (start, clippy):
+            self.assertIn("github.event_name != 'pull_request'", condition(step))
+        lint_job = step_by_id(gate, "lint-job")
+        self.assertIn("github.event_name == 'pull_request'", condition(lint_job))
+        self.assertIn('--job "Rust lint"', lint_job["run"])
+        self.assertIn("--require-success", lint_job["run"])
+        self.assertLess(order.index(step_by_id(gate, "python")), order.index(lint_job))
+        self.assertLess(order.index(lint_job), order.index(step_by_id(gate, "verify")))
+        lint = job(self.release, "rust-lint")
+        self.assertEqual(lint["name"], "Rust lint")
+        self.assertEqual(step_by_id(lint, "clippy")["run"], "scripts/ci/clippy.sh all")
+        self.assertIs(steps_using(lint, "Swatinem/rust-cache")[0]["with"]["save-if"], False)
         self.assertIn("--all-targets --all-features --message-format=json -- -D warnings", CLIPPY_SCRIPT.read_text(encoding="utf-8"))
         # Clippy следует тестам: очередь с одними платформенными каталогами
         # линтует macOS ночью и на теге, остальные контуры — сразу.
@@ -904,7 +918,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertLess(ids.index("python-plan"), ids.index("python"))
         # Python не идёт параллельно с Rust: MCP-тесты под нагрузкой падают
         # по таймауту. Он идёт после тестов и Clippy и с проверенным продуктом.
-        for step_id in ("product", "rust-run", "clippy", "clippy-packages"):
+        for step_id in ("product", "rust-run", "clippy"):
             self.assertLess(ids.index(step_id), ids.index("python"))
         # Наборы Python идут параллельно друг другу, и каждый ожидается: ни один
         # не остаётся фоновым после шага.

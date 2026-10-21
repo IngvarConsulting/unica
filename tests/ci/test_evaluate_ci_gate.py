@@ -640,7 +640,7 @@ def queue_steps() -> dict[str, str]:
     """Шаги `Unica CI` кодовой очереди: всё обязательное прошло, medium PR и прогрев пропущены."""
     load = load_gate_module()
     outcomes = {step: "success" for ids in load.STEP_GROUPS.values() for step in ids}
-    outcomes.update({"rust-medium": "skipped", "warm": "skipped"})
+    outcomes.update({"rust-medium": "skipped", "warm": "skipped", "lint-job": "skipped"})
     return outcomes
 
 
@@ -748,7 +748,7 @@ class StepResultTests(unittest.TestCase):
     def test_a_step_skipped_inside_a_required_group_is_partial_and_fails_the_gate(self) -> None:
         gate = load_gate_module()
         for group, ids in gate.STEP_GROUPS.items():
-            if len(ids) < 2:
+            if len(ids) < 2 or group in gate.ALTERNATIVE_GROUPS:
                 continue
             with self.subTest(group=group):
                 outcomes = {**queue_steps(), ids[-1]: "skipped"}
@@ -758,6 +758,18 @@ class StepResultTests(unittest.TestCase):
                                       results, runners=QUEUE_RUNNERS, scope="validation")
                 self.assertFalse(evaluation.ok)
                 self.assertEqual("partial", evaluation.unexpected[group][0])
+
+    def test_clippy_is_the_background_step_or_the_pull_request_lint_job_never_both(self) -> None:
+        gate = load_gate_module()
+        def lint(**outcomes):
+            return gate.validation_results(steps({**queue_steps(), **outcomes}), {"Rust (macos-14)": "success"}, "queue")["lint-rust-platforms"]
+        self.assertEqual("success", lint(clippy="success", **{"lint-job": "skipped"}))
+        self.assertEqual("failure", lint(clippy="skipped", **{"lint-job": "failure"}))
+        self.assertEqual("success", lint(clippy="skipped", **{"lint-job": "success"}))
+        self.assertEqual("skipped", lint(clippy="skipped", **{"lint-job": "skipped"}))
+        self.assertEqual("partial", lint(clippy="success", **{"lint-job": "success"}))
+        self.assertEqual("missing", gate.validation_results(steps({k: v for k, v in queue_steps().items() if k != "lint-job"}),
+                                                            {"Rust (macos-14)": "success"}, "queue")["lint-rust-platforms"])
 
     def test_a_missing_step_is_missing_not_skipped(self) -> None:
         gate = load_gate_module()

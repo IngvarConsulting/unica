@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Clippy гейта: `workspace` — весь workspace со всеми признаками и SARIF для
-# Code Scanning, `packages` — каждый пакет со своими признаками.
+# Code Scanning, `packages` — каждый пакет со своими признаками, `all` — оба
+# подряд; отказ первого не отменяет второй, код — худший из двух.
 #
 # Сборка workspace объединяет признаки: dev-зависимость одного пакета
 # включает `test-support` другого, и его код под этим признаком перестаёт
@@ -9,6 +10,12 @@
 set -euo pipefail
 
 case "${1:-}" in
+  all)
+    status=0
+    "$0" workspace || status=$?
+    "$0" packages || status=$?
+    exit "$status"
+    ;;
   workspace)
     mkdir -p .build
     # Pipefail сохраняет отказ Clippy при -D warnings.

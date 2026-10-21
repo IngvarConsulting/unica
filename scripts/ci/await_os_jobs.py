@@ -88,17 +88,19 @@ def wait(expected: list[str], read: Callable[[], list[dict]], *, timeout: float,
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--runners", required=True, help="JSON runners of this gate profile")
+    parser.add_argument("--job", action="append", default=[], help="another job of this run to await by its name")
+    parser.add_argument("--require-success", action="store_true", help="exit 1 unless every awaited job succeeded")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--timeout", type=float, default=3600)
     parser.add_argument("--interval", type=float, default=20)
     args = parser.parse_args()
-    expected = [os_job(host) for host in json.loads(args.runners) if host != LINUX]
+    expected = [os_job(host) for host in json.loads(args.runners) if host != LINUX] + args.job
     repository, run_id = os.environ["GITHUB_REPOSITORY"], os.environ["GITHUB_RUN_ID"]
     result = wait(expected, lambda: list_jobs(repository, run_id), timeout=args.timeout, interval=args.interval) if expected else {}
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(result, separators=(",", ":")) + "\n", encoding="utf-8")
     print(json.dumps(result, separators=(",", ":")))
-    return 0
+    return 1 if args.require_success and any(outcome != "success" for outcome in result.values()) else 0
 
 
 if __name__ == "__main__":
