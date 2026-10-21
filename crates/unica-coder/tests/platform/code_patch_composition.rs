@@ -700,6 +700,12 @@ fn canonical_code_insert_inside_older_source_set_is_refused_without_writes() {
                     ApplyPlanErrorKind::InvalidSource,
                     "{relative} version={version} dryRun={dry_run}: {error}"
                 );
+                // Причина — именно формат владельца, а не любая ошибка исходника.
+                let message = error.to_string();
+                assert!(
+                    message.contains("serialization profile"),
+                    "{relative} version={version} dryRun={dry_run}: {message}"
+                );
             }
             assert_eq!(snapshot_staged_code_tree(&fixture.source), source_before);
             assert_eq!(snapshot_staged_code_tree(&cache), cache_before);
