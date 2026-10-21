@@ -67,6 +67,15 @@ def archive_command(lane: str, archive: Path, root: Path = ROOT, target: str | N
             "--target-dir", str(root / "target"), "--archive-file", str(archive)]
 
 
+def doctest_command(root: Path = ROOT, target: str | None = None) -> list[str]:
+    # Nextest neither archives nor runs doctests, and the `compile_fail` examples
+    # are the guards on closed writer constructors. They run once per runner in
+    # the ordinary build, against the target directory the archive just filled.
+    return ["cargo", "test", "--doc", "--workspace", "--locked",
+            *(["--target", target] if target is not None else []),
+            "--target-dir", str(root / "target")]
+
+
 def reuse_command(action: str, root: Path, archive: Path, lane: str, profile: str, partition: str | None = None, *, candidate: str | None = None) -> list[str]:
     workspace = root / "vendor/ureq" if lane == "vendor" else root
     selected_filters = filters(lane)
@@ -275,6 +284,9 @@ def build(root: Path, destination: Path, lane: str, profile: str, host: str, lin
     completed.check_returncode()
     if prepared_binary.identity(root) != before:
         raise ValueError("source inputs changed while building the test archive")
+    if lane == "ordinary":
+        completed, _ = timed(doctest_command(root, before["target"]), root)
+        completed.check_returncode()
     full_command = reuse_command("list", root, archive, lane, profile)
     completed, list_seconds = timed(full_command, root, capture=True)
     completed.check_returncode()

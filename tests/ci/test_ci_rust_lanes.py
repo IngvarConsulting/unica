@@ -182,12 +182,35 @@ class ArchiveFixtureBinaryTests(unittest.TestCase):
                      patch.object(lanes, "signature"), patch.object(lanes, "timed", side_effect=nextest):
                     lanes.build(root, root / "prepared", lane, "pr", "ubuntu-latest", "main")
                 plan = json.loads((root / "prepared/lane.json").read_text())
-                self.assertEqual(calls, ["archive", "list", "list"])
+                self.assertEqual(calls, ["archive", *(["--doc"] if lane == "ordinary" else []), "list", "list"])
                 if lane == "ordinary":
                     self.assertEqual(plan["fixtureBinary"], {"path": "x86_64-unknown-linux-gnu/debug/unica",
                         "sha256": hashlib.sha256(binary.read_bytes()).hexdigest(), "bytes": binary.stat().st_size})
                 else:
                     self.assertNotIn("fixtureBinary", plan)
+
+    def test_ordinary_build_runs_workspace_doctests_on_the_archive_target_and_fails_closed(self):
+        # compile_fail examples guard closed writer constructors; nextest skips them.
+        self.assertEqual(lanes.doctest_command(Path("/w"), "x86_64-unknown-linux-gnu"),
+                         ["cargo", "test", "--doc", "--workspace", "--locked",
+                          "--target", "x86_64-unknown-linux-gnu", "--target-dir", str(Path("/w") / "target")])
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            calls = []
+
+            def command(argv, _root, **kwargs):
+                calls.append(argv[2])
+                if argv[2] == "archive":
+                    (root / "prepared/tests.tar.zst").write_bytes(b"archive")
+                return subprocess.CompletedProcess(argv, 101 if argv[2] == "--doc" else 0), 0.01
+
+            with patch.object(lanes.prepared_binary, "identity", return_value=manifest()["identity"]), \
+                 patch.object(lanes, "signature"), patch.object(lanes, "timed", side_effect=command):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    lanes.build(root, root / "prepared", "ordinary", "queue", "ubuntu-latest", "main")
+            self.assertEqual(calls, ["archive", "--doc"])
+            self.assertFalse((root / "prepared/lane.json").exists())
+            self.assertFalse((root / "prepared/plan.json").exists())
 
     def test_missing_duplicate_wrong_package_kind_platform_path_and_link_are_refused(self):
         with tempfile.TemporaryDirectory() as temporary:
