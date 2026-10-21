@@ -48,6 +48,9 @@ Cargo нет. Этот executable — фикстура архива; прове�
 Фактическую работу process/FS-тестов из архива проверяй отдельно от полноты
 разбиения. `ci_rust_lanes.py` сохраняет build/list/execution durations,
 размер архива и identity; download/runner wait доступны в jobs того же run.
+Сводку серии прогонов собирает `ci_run_metrics.py` из jobs, логов и этих
+артефактов. Ручной запуск держит `Unica CI` до конца поставочного хвоста,
+поэтому с очередью его сравнивай по времени до последней непоставочной джобы.
 
 `build-python-product` создаёт ordinary binary до завершения Rust suites.
 Python получает его архив с manifest и проверяет его через `prepared_binary.py`:
