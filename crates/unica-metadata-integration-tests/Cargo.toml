@@ -16,6 +16,7 @@ unica-metadata = { path = "../unica-metadata" }
 unica-metadata-designer = { path = "../unica-metadata-designer" }
 unica-workspace = { path = "../unica-workspace", features = ["test-support"] }
 unica-source-contract = { path = "../unica-source-contract" }
+unica-process = { path = "../unica-process", features = ["test-support"] }
 unica-address = { path = "../unica-address" }
 uuid.workspace = true
 tempfile.workspace = true
