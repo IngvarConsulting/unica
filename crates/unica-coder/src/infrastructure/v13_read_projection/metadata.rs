@@ -733,11 +733,17 @@ fn metadata_item_node(
     {
         props.insert("returnType".to_string(), value);
     }
-    if let Some(value) = item
-        .get("type")
-        .and_then(|value| bounded_prop("type", value))
-    {
-        props.insert("type".to_string(), value);
+    if let Some(value) = item.get("type") {
+        if let Some(compact) = bounded_prop("type", value) {
+            props.insert("type".to_string(), compact);
+        } else if matches!(value, Value::Object(_) | Value::Array(_))
+            && serde_json::to_string(value)
+                .is_ok_and(|rendered| rendered.len() > MAX_COMPACT_PROP_BYTES)
+        {
+            limits.push(format!(
+                "metadata type exceeds the compact property limit of {MAX_COMPACT_PROP_BYTES} bytes"
+            ));
+        }
     }
     if let Some(value) = item
         .get("fillValue")
