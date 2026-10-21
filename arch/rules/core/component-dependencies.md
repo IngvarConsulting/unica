@@ -5,6 +5,8 @@ check:
   - tests/ci/test_component_boundaries.py::ComponentBoundaryTests.test_owner_edges_reject_hidden_concrete_dependencies
   - tests/ci/test_component_boundaries.py::ComponentBoundaryTests.test_target_specific_alias_cannot_hide_a_composition_backedge
   - tests/ci/test_component_boundaries.py::ComponentBoundaryTests.test_workspace_inherited_parser_alias_keeps_the_upstream_boundary
+  - tests/ci/test_component_boundaries.py::ComponentBoundaryTests.test_workspace_owner_depends_only_on_a_closed_list
+  - tests/ci/test_component_boundaries.py::ComponentBoundaryTests.test_cycles_through_the_workspace_owner_are_rejected_for_every_edge_kind
 ---
 
 # Компоненты не зависят от продуктовой сборки и реализаций своих портов
@@ -15,7 +17,9 @@ check:
 
 Семейный Designer-кодек использует контракты чтения и предложения изменений,
 своё семейство и общий layout Designer. Полномочия публикации принадлежат
-workspace; сам workspace не зависит от его потребителей и кодеков.
+workspace; сам workspace не зависит от его потребителей и кодеков. Его
+зависимости — закрытый список общих контрактов, процессы допускаются только
+в тестах, и ни один вид зависимости не замыкает цикл через workspace.
 Исполнение вызывает порты движков и не импортирует конкретный адаптер.
 Daemon владеет транспортом и идентичностью процесса, использует execution,
 workspace, process, bootstrap и artifact delivery через их контракты.
