@@ -602,6 +602,7 @@ mod tests {
             panic!("source export must exchange live publication frames")
         }
 
+        /// Drive the fixture publication protocol with configured faults and stop replies.
         fn run_controlled_streaming_staged(
             &self,
             command: &ProcessCommand,
@@ -730,8 +731,8 @@ mod tests {
                     }
                 }
             }
-            if !stopped
-                && !(published && matches!(&self.fault, Some(PublicationFault::MissingTerminal)))
+            if !(stopped
+                || (published && matches!(&self.fault, Some(PublicationFault::MissingTerminal))))
             {
                 if published && matches!(&self.fault, Some(PublicationFault::MalformedTerminal)) {
                     stopped = on_line(3, b"not a JSON frame") == ProcessLineReply::Stop;

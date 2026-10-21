@@ -1,0 +1,624 @@
+{
+  "id": "S-1567-dcs-parameter-expression-read",
+  "issue": 1567,
+  "area": "СКД",
+  "task": "Открыть схему через конфигурацию и отчёт; прочитать выражения параметров напрямую и через DataSet.Parameter с пагинацией, сохранив спецсимволы, отсутствие выражения и остальные свойства; проверить СКД и неизменность исходников.",
+  "workspace": "tests/fixtures/acceptance/workspace-dcs-parameter-expression",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/sourceSets/0/name",
+          "eq": "cf"
+        },
+        {
+          "pointer": "/data/config/state",
+          "eq": "configured"
+        },
+        {
+          "pointer": "/next/0/tool",
+          "eq": "unica.view"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "cf:Configuration"
+        }
+      ],
+      "captures": {
+        "configuration": {
+          "pointer": "/next/0/args/at"
+        },
+        "before0": {
+          "file": "README.md",
+          "kind": "sha256"
+        },
+        "before1": {
+          "file": "src/cf/Configuration.xml",
+          "kind": "sha256"
+        },
+        "before2": {
+          "file": "src/cf/Languages/Русский.xml",
+          "kind": "sha256"
+        },
+        "before3": {
+          "file": "src/cf/Reports/F05Report.xml",
+          "kind": "sha256"
+        },
+        "before4": {
+          "file": "src/cf/Reports/F05Report/Templates/F05Schema.xml",
+          "kind": "sha256"
+        },
+        "before5": {
+          "file": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "before6": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Configuration"
+        },
+        {
+          "pointer": "/data/branches/1/at",
+          "eq": "cf:Report"
+        },
+        {
+          "pointer": "/data/branches/1/count",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "reports": {
+          "pointer": "/data/branches/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.reports"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "cf:Report.F05Report"
+        }
+      ],
+      "captures": {
+        "report": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.report"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0/at",
+          "eq": "cf:Report.F05Report.Template"
+        },
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "templates": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.templates"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "cf:Report.F05Report.Template.F05Schema"
+        }
+      ],
+      "captures": {
+        "schema": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.schema"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/format",
+          "eq": "DataCompositionSchema"
+        },
+        {
+          "pointer": "/data/branches/1/at",
+          "eq": "cf:Report.F05Report.Template.F05Schema.DataSet"
+        },
+        {
+          "pointer": "/data/branches/2/at",
+          "eq": "cf:Report.F05Report.Template.F05Schema.Parameter"
+        },
+        {
+          "pointer": "/data/branches/2/count",
+          "eq": 4
+        }
+      ],
+      "captures": {
+        "parameters": {
+          "pointer": "/data/branches/2/at"
+        },
+        "datasets": {
+          "pointer": "/data/branches/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.parameters",
+        "limit": 2
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "limit"
+        },
+        {
+          "pointer": "/data/items/2",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "cf:Report.F05Report.Template.F05Schema.Parameter.Период"
+        },
+        {
+          "pointer": "/data/items/0/props",
+          "eq": {
+            "type": "StandardPeriod",
+            "value": null,
+            "expression": null,
+            "restricted": false,
+            "availableAsField": null
+          }
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "cf:Report.F05Report.Template.F05Schema.Parameter.НачалоПериода"
+        },
+        {
+          "pointer": "/data/items/1/props",
+          "eq": {
+            "type": "DateTime",
+            "value": "-",
+            "expression": "&Период.ДатаНачала",
+            "restricted": true,
+            "availableAsField": false
+          }
+        }
+      ],
+      "captures": {
+        "parameter0": {
+          "pointer": "/data/items/0/at"
+        },
+        "props0": {
+          "pointer": "/data/items/0/props"
+        },
+        "parameter1": {
+          "pointer": "/data/items/1/at"
+        },
+        "props1": {
+          "pointer": "/data/items/1/props"
+        },
+        "parameterCursor": {
+          "pointer": "/cursor"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}parameter/{http://v8.1c.ru/8.1/data-composition-system/schema}expression",
+          "eq": [
+            "&Период.ДатаНачала",
+            "&Период.ДатаОкончания",
+            "&НачалоПериода < &КонецПериода"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}parameter[{http://v8.1c.ru/8.1/data-composition-system/schema}name=\"Период\"]/{http://v8.1c.ru/8.1/data-composition-system/schema}expression",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.parameters",
+        "limit": 2,
+        "cursor": "$capture.parameterCursor"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "complete"
+        },
+        {
+          "pointer": "/data/items/2",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "cf:Report.F05Report.Template.F05Schema.Parameter.КонецПериода"
+        },
+        {
+          "pointer": "/data/items/0/props",
+          "eq": {
+            "type": "DateTime",
+            "value": "-",
+            "expression": "&Период.ДатаОкончания",
+            "restricted": false,
+            "availableAsField": true
+          }
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "cf:Report.F05Report.Template.F05Schema.Parameter.Условие"
+        },
+        {
+          "pointer": "/data/items/1/props",
+          "eq": {
+            "type": "Boolean",
+            "value": "false",
+            "expression": "&НачалоПериода < &КонецПериода",
+            "restricted": true,
+            "availableAsField": null
+          }
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "parameter2": {
+          "pointer": "/data/items/0/at"
+        },
+        "props2": {
+          "pointer": "/data/items/0/props"
+        },
+        "parameter3": {
+          "pointer": "/data/items/1/at"
+        },
+        "props3": {
+          "pointer": "/data/items/1/props"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.parameter0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Parameter"
+        },
+        {
+          "pointer": "/data/at",
+          "eq": "$capture.parameter0"
+        },
+        {
+          "pointer": "/data/props",
+          "eq": "$capture.props0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.parameter1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Parameter"
+        },
+        {
+          "pointer": "/data/at",
+          "eq": "$capture.parameter1"
+        },
+        {
+          "pointer": "/data/props",
+          "eq": "$capture.props1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.datasets"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data"
+        }
+      ],
+      "captures": {
+        "dataset": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.dataset"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/2/at",
+          "eq": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Parameter"
+        },
+        {
+          "pointer": "/data/branches/2/count",
+          "eq": 4
+        }
+      ],
+      "captures": {
+        "aliasParameters": {
+          "pointer": "/data/branches/2/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.aliasParameters",
+        "limit": 2
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "limit"
+        },
+        {
+          "pointer": "/data/items/2",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Parameter.Период"
+        },
+        {
+          "pointer": "/data/items/0/props",
+          "eq": "$capture.props0"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Parameter.НачалоПериода"
+        },
+        {
+          "pointer": "/data/items/1/props",
+          "eq": "$capture.props1"
+        }
+      ],
+      "captures": {
+        "alias0": {
+          "pointer": "/data/items/0/at"
+        },
+        "alias1": {
+          "pointer": "/data/items/1/at"
+        },
+        "aliasCursor": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.aliasParameters",
+        "limit": 2,
+        "cursor": "$capture.aliasCursor"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "complete"
+        },
+        {
+          "pointer": "/data/items/2",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Parameter.КонецПериода"
+        },
+        {
+          "pointer": "/data/items/0/props",
+          "eq": "$capture.props2"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Parameter.Условие"
+        },
+        {
+          "pointer": "/data/items/1/props",
+          "eq": "$capture.props3"
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.alias0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Parameter"
+        },
+        {
+          "pointer": "/data/at",
+          "eq": "$capture.alias0"
+        },
+        {
+          "pointer": "/data/props",
+          "eq": "$capture.props0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.alias1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Parameter"
+        },
+        {
+          "pointer": "/data/at",
+          "eq": "$capture.alias1"
+        },
+        {
+          "pointer": "/data/props",
+          "eq": "$capture.props1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "$capture.schema"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "dcs"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/diagnostics",
+          "eq": []
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "README.md",
+          "kind": "sha256",
+          "eq": "$capture.before0"
+        },
+        {
+          "path": "src/cf/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1"
+        },
+        {
+          "path": "src/cf/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.before2"
+        },
+        {
+          "path": "src/cf/Reports/F05Report.xml",
+          "kind": "sha256",
+          "eq": "$capture.before3"
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema.xml",
+          "kind": "sha256",
+          "eq": "$capture.before4"
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.before5"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.before6"
+        }
+      ]
+    }
+  ]
+}
