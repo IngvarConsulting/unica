@@ -17,7 +17,7 @@ check:
   - crates/unica-coder/tests/platform/full_dump_integration.rs::unconfirmed_runner_retains_private_stage_for_late_writer
   - crates/unica-coder/tests/platform/full_dump_integration.rs::runner_unwind_retains_private_stage_for_late_writer
   - crates/unica-coder/tests/platform/full_dump_integration.rs::confirmed_spawn_failure_cleans_unused_private_stage
-  - crates/unica-workspace/src/platform/full_dump.rs::windows_pending_writer_scrub_failure_preserves_data_and_retries_without_unlink
+  - crates/unica-coder/tests/platform/full_dump_integration.rs::windows_pending_writer_scrub_failure_preserves_data_and_retries_without_unlink
   - crates/unica-coder/tests/platform/full_dump_integration.rs::confirmed_spawn_failure_preserves_unexpected_staged_output
   - crates/unica-coder/tests/platform/full_dump_integration.rs::invalid_staged_xml_never_changes_visible_target
   - crates/unica-coder/tests/platform/full_dump_integration.rs::platform_executable_or_install_swap_after_runner_prevents_publication
