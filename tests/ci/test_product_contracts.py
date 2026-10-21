@@ -401,9 +401,12 @@ def production_rmcp_handler_assertion_errors(sources: dict[str, bytes]) -> list[
     errors = []
     for path, module in RMCP_HANDLER_MODULE_CHAIN:
         items, gated = top_level_rust_items(sources[path])
-        declarations = [attrs for kind, name, attrs, _ in items if (kind, name) == ("mod_item", module)]
-        if gated or len(declarations) != 1 or any("cfg" in attr for attr in declarations[0]):
-            errors.append(f"{path}: module {module} must be declared once without cfg")
+        # Файловое объявление без атрибутов: ни cfg, ни #[path], ни тела.
+        declarations = [
+            (attrs, text) for kind, name, attrs, text in items if (kind, name) == ("mod_item", module)
+        ]
+        if gated or len(declarations) != 1 or declarations[0][0] or not declarations[0][1].endswith(b";"):
+            errors.append(f"{path}: module {module} must be declared once as a plain file module")
     items, gated = top_level_rust_items(sources[RMCP_OWNER])
     bounds = [
         (attrs, text)
@@ -833,11 +836,22 @@ class ProductContractTests(unittest.TestCase):
                     RMCP_OWNER: bound,
                     "crates/unica-coder/src/lib.rs": cfg + b"pub mod interfaces;\n",
                 },
-                ["crates/unica-coder/src/lib.rs: module interfaces must be declared once without cfg"],
+                ["crates/unica-coder/src/lib.rs: module interfaces must be declared once as a plain file module"],
+            ),
+            "redirected_mcp_module": (
+                {
+                    RMCP_OWNER: bound,
+                    "crates/unica-coder/src/interfaces/mod.rs": b'#[path = "other.rs"]\npub mod mcp;\n',
+                },
+                ["crates/unica-coder/src/interfaces/mod.rs: module mcp must be declared once as a plain file module"],
+            ),
+            "inline_mcp_module": (
+                {RMCP_OWNER: bound, "crates/unica-coder/src/interfaces/mod.rs": b"pub mod mcp {}\n"},
+                ["crates/unica-coder/src/interfaces/mod.rs: module mcp must be declared once as a plain file module"],
             ),
             "missing_mcp_module": (
                 {RMCP_OWNER: bound, "crates/unica-coder/src/interfaces/mod.rs": b"pub mod other;\n"},
-                ["crates/unica-coder/src/interfaces/mod.rs: module mcp must be declared once without cfg"],
+                ["crates/unica-coder/src/interfaces/mod.rs: module mcp must be declared once as a plain file module"],
             ),
         }
         for name, (sources, expected) in fixtures.items():
@@ -852,7 +866,7 @@ class ProductContractTests(unittest.TestCase):
         # Граница — проверка компилятора в production-коде библиотеки. Python-набор
         # её не собирает: в каждом профиле, включая PR, это делает ordinary-архив
         # Rust (не-тестовый бинарь `unica`, фичи объединены с dev-зависимостями
-        # тестов), а в очереди и релизе — `build-python-product` точным
+        # тестов), а вне PR и push в main — `build-python-product` точным
         # production-набором фич (`cargo build -p unica-coder --bin unica`).
         sources = {
             path: (REPO_ROOT / path).read_bytes()

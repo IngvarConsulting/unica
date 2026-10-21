@@ -24,4 +24,5 @@ check:
 `rmcp::ServerHandler`: соответствие SDK не должно существовать только
 в тестовой сборке. Эту сборку выполняет конвейер Rust, а не Python-набор:
 ordinary-архив в каждом профиле и точный production-набор фич
-`build-python-product` в очереди и релизе.
+`build-python-product` во всех кодовых прогонах, кроме pull request
+и push в `main`.
