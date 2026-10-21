@@ -28,6 +28,7 @@ import prepared_binary  # noqa: E402
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 RELEASE_WORKFLOW = WORKFLOWS_DIR / "unica-plugin-release.yml"
+CLIPPY_SCRIPT = REPO_ROOT / "scripts" / "ci" / "clippy.sh"
 NIGHTLY_WORKFLOW = WORKFLOWS_DIR / "unica-nightly.yml"
 PAGES_WORKFLOW = WORKFLOWS_DIR / "unica-pages.yml"
 PUBLISH_WORKFLOW = WORKFLOWS_DIR / "publish-unica-marketplace.yml"
@@ -257,7 +258,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
     def test_source_gate_checks_the_full_rust_and_python_workspace(self) -> None:
         text = all_scripts(self.release)
 
-        self.assertIn("cargo clippy --workspace --all-targets --all-features --message-format=json -- -D warnings", text)
+        self.assertIn("cargo clippy --workspace --all-targets --all-features --message-format=json -- -D warnings", CLIPPY_SCRIPT.read_text(encoding="utf-8"))
         # Наборы гоняет шов; сами команды закреплены тестом `test_run_tests`.
         self.assertIn('python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --phase run --prepared "$LANES" --results "$REPORT"', text)
         self.assertIn('python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$suite" --only-size "$lane" --docs-only "$DOCS_ONLY" --results', text)
@@ -562,9 +563,19 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         # Отчёт в Code Scanning — не проверка: сбой загрузки гейт не красит.
         self.assertIs(sarif["continue-on-error"], True)
         self.assertEqual(gate["permissions"], {"contents": "read", "actions": "read", "pull-requests": "read", "security-events": "write"})
-        clippy = step_by_id(gate, "clippy")
+        # Clippy исполняется в фоне, пока идут тесты; его шаг ждёт конца
+        # и несёт его исход. Старт — до прогона, ожидание — до Python.
+        start, clippy = step_by_id(gate, "clippy-start"), step_by_id(gate, "clippy")
+        self.assertIn("background_step.py start clippy -- scripts/ci/clippy.sh workspace", start["run"])
+        self.assertIn("background_step.py start clippy-packages -- scripts/ci/clippy.sh packages", start["run"])
+        self.assertEqual(clippy["run"], "python scripts/ci/background_step.py wait clippy")
+        self.assertEqual(step_by_id(gate, "clippy-packages")["run"], "python scripts/ci/background_step.py wait clippy-packages")
         self.assertNotIn("continue-on-error", clippy)
-        self.assertIn("--all-targets --all-features --message-format=json -- -D warnings", clippy["run"])
+        order = steps(gate)
+        self.assertLess(order.index(step_by_id(gate, "rust-build")), order.index(start))
+        self.assertLess(order.index(start), order.index(step_by_id(gate, "rust-run")))
+        self.assertLess(order.index(step_by_id(gate, "clippy-packages")), order.index(step_by_id(gate, "python")))
+        self.assertIn("--all-targets --all-features --message-format=json -- -D warnings", CLIPPY_SCRIPT.read_text(encoding="utf-8"))
         # Clippy следует тестам: очередь с одними платформенными каталогами
         # линтует macOS ночью и на теге, остальные контуры — сразу.
         os_clippy = next(step for step in steps(other) if "cargo clippy" in step.get("run", ""))
@@ -719,15 +730,17 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("UNICA_PREPARED_BINARY_MANIFEST=$PWD/.build/ci-product/manifest.json", product["run"])
         self.assertNotIn("target", PurePosixPath(".build/ci-product").parts)
         gate = job(self.release, "unica-ci")
-        per_package = step_by_id(gate, "clippy-packages")
+        script_text = CLIPPY_SCRIPT.read_text(encoding="utf-8")
+        per_package = script_text[script_text.index("  packages)"):]
         # Признаки, объединённые workspace, прячут мёртвый код отдельного пакета.
-        self.assertIn("cargo metadata --no-deps", per_package["run"])
+        self.assertIn("cargo metadata --no-deps", per_package)
         # Отказ подстановки в заголовке `for` даёт ноль итераций и зелёный шаг.
-        self.assertNotRegex(per_package["run"], r"for \w+ in \$\(")
-        self.assertIn('"${#packages[@]}" -eq 0', per_package["run"])
-        self.assertIn("--all-targets --locked -- -D warnings", per_package["run"])
-        self.assertNotIn("--all-features", per_package["run"])
-        self.assertNotIn("--workspace", per_package["run"])
+        self.assertNotRegex(per_package, r"for \w+ in \$\(")
+        self.assertIn('"${#packages[@]}" -eq 0', per_package)
+        self.assertIn("--all-targets --locked -- -D warnings", per_package)
+        self.assertNotIn("--all-features", per_package)
+        self.assertNotIn("--workspace", per_package)
+        self.assertIn("set -euo pipefail", script_text)
         self.assertEqual(
             [step["with"]["tool"] for step in steps_using(gate, "taiki-e/install-action")],
             ["zizmor@1.30.0", "cargo-nextest@0.9.148", "clippy-sarif@0.8.0,sarif-fmt@0.8.0"],

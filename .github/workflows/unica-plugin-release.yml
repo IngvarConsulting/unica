@@ -263,6 +263,17 @@ jobs:
           retention-days: 7
           overwrite: true
           if-no-files-found: ignore
+      # Clippy ждёт своей очереди в конце, а исполняется в фоне, пока идут
+      # тесты: компиляция и исполнение тестов вместе занимают раннер плотнее,
+      # чем подряд. `cargo` здесь один — прогон архивов его не зовёт. Python
+      # с Clippy не пересекается: MCP-тесты под нагрузкой сборки падают по
+      # таймауту, поэтому Python идёт после ожидания Clippy. Поштучный шаг
+      # ждёт блокировки каталога сборки и идёт за линтом workspace.
+      - id: clippy-start
+        if: ${{ !cancelled() && steps.classify.outputs.rust_required == 'true' }}
+        run: |
+          python scripts/ci/background_step.py start clippy -- scripts/ci/clippy.sh workspace
+          python scripts/ci/background_step.py start clippy-packages -- scripts/ci/clippy.sh packages
       - id: rust-run
         if: ${{ !cancelled() && steps.classify.outputs.rust_required == 'true' }}
         env:
@@ -274,41 +285,13 @@ jobs:
       - id: rust-medium
         if: ${{ !cancelled() && github.event_name == 'pull_request' && steps.classify.outputs.rust_required == 'true' }}
         run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --phase medium --prepared "$LANES" --results "$REPORT" --runner ubuntu-latest --shadow "$REPORT/ci-shadow/selection.json"
-      # Отказ Clippy не отменяет тесты: он идёт после них и сам по себе.
-      # #[cfg] требует линта на каждой ОС; macOS и Windows линтуются в ночи
-      # и на теге. Pipefail сохраняет отказ Clippy при -D warnings.
       - id: clippy
         if: ${{ !cancelled() && steps.classify.outputs.rust_required == 'true' }}
-        run: |
-          set -o pipefail
-          cargo clippy --workspace --all-targets --all-features --message-format=json -- -D warnings \
-            | clippy-sarif | tee .build/clippy.sarif | sarif-fmt
-      # Сборка workspace объединяет признаки: dev-зависимость одного пакета
-      # включает `test-support` другого, и его код под этим признаком
-      # перестаёт быть мёртвым. Поштучный линт ловит то, что не собирается или
-      # не используется в самом пакете.
+        run: python scripts/ci/background_step.py wait clippy
       - name: Clippy каждого пакета с его признаками
         id: clippy-packages
         if: ${{ !cancelled() && steps.classify.outputs.rust_required == 'true' }}
-        run: |
-          set -euo pipefail
-          # Подстановка в заголовке `for` скрыла бы отказ cargo metadata.
-          mapfile -t packages < <(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[].name' | sort)
-          wait "$!"
-          if [ "${#packages[@]}" -eq 0 ]; then
-            echo "::error::cargo metadata не вернул ни одного пакета"
-            exit 1
-          fi
-          failed=()
-          for package in "${packages[@]}"; do
-            echo "::group::$package"
-            cargo clippy -p "$package" --all-targets --locked -- -D warnings || failed+=("$package")
-            echo "::endgroup::"
-          done
-          if [ "${#failed[@]}" -ne 0 ]; then
-            echo "::error::Clippy отдельно не проходят: ${failed[*]}"
-            exit 1
-          fi
+        run: python scripts/ci/background_step.py wait clippy-packages
       # Категория сохраняет прежнее имя `clippy-ubuntu-latest`, чтобы не
       # потерять историю оповещений.
       - if: always() && hashFiles('.build/clippy.sarif') != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
