@@ -566,6 +566,16 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIs(steps_using(lint, "Swatinem/rust-cache")[0]["with"]["save-if"], False)
         self.assertEqual(normalized(lint["continue-on-error"]), "${{ matrix.runner == 'windows-latest' }}")
         self.assertEqual(steps_using(lint, "taiki-e/install-action")[0]["with"]["tool"], "clippy-sarif@0.8.0,sarif-fmt@0.8.0")
+        # Признаки, объединённые workspace, прячут мёртвый код отдельного пакета.
+        per_package = next(step for step in steps(lint) if "cargo clippy -p" in step.get("run", ""))
+        self.assertEqual(normalized(per_package["if"]), "matrix.runner == 'ubuntu-latest'")
+        self.assertIn("cargo metadata --no-deps", per_package["run"])
+        # Отказ подстановки в заголовке `for` даёт ноль итераций и зелёный шаг.
+        self.assertNotRegex(per_package["run"], r"for \w+ in \$\(")
+        self.assertIn('"${#packages[@]}" -eq 0', per_package["run"])
+        self.assertIn("--all-targets --locked -- -D warnings", per_package["run"])
+        self.assertNotIn("--all-features", per_package["run"])
+        self.assertNotIn("--workspace", per_package["run"])
         warm = step_by_id(job(self.release, "warm-rust-cache"), "rust-cache")
         self.assertIs(warm["with"]["save-if"], True)
         self.assertIs(warm["with"]["cache-on-failure"], False)

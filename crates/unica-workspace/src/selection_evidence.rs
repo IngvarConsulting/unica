@@ -279,10 +279,10 @@ fn actor_selection_test_budgets() -> Option<ActorSelectionTestBudgets> {
     ACTOR_SELECTION_TEST_BUDGETS.with(std::cell::Cell::get)
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(feature = "test-support")]
 struct PassComparisonTestHookGuard;
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(feature = "test-support")]
 impl Drop for PassComparisonTestHookGuard {
     fn drop(&mut self) {
         PASS_COMPARISON_TEST_HOOK.with(|slot| {
@@ -291,7 +291,7 @@ impl Drop for PassComparisonTestHookGuard {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(feature = "test-support")]
 fn install_pass_comparison_test_hook(hook: impl FnOnce() + 'static) -> PassComparisonTestHookGuard {
     PASS_COMPARISON_TEST_HOOK.with(|slot| {
         assert!(slot.borrow_mut().replace(Box::new(hook)).is_none());
