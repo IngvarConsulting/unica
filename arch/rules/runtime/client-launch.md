@@ -4,6 +4,9 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/server.rs::v5_client_run_binds_before_source_admission_without_a_revision_gate
   - crates/unica-coder/src/application/v13/tool_catalog.rs::v13_client_run_is_implemented_as_a_terminal_operation_with_closed_arguments
   - crates/unica-coder/src/infrastructure/daemon/v13_client_run.rs::arguments_are_closed_and_each_refusal_names_the_fix
+  - crates/unica-coder/src/infrastructure/daemon/v13_client_run.rs::application_parameter_allows_a_bounded_wait_without_execute
+  - crates/unica-coder/src/infrastructure/daemon/v13_client_run.rs::application_parameter_uses_exact_argv_and_private_receipts
+  - crates/unica-coder/src/infrastructure/daemon/v13_client_run.rs::application_parameter_rejects_invalid_inputs_and_wrong_wait_variants
   - crates/unica-coder/src/infrastructure/daemon/v13_client_run.rs::preview_names_the_platform_without_dispatching_or_exposing_the_command
   - crates/unica-coder/src/infrastructure/daemon/v13_client_run.rs::launch_reports_the_session_the_provider_attests
   - crates/unica-coder/src/infrastructure/daemon/v13_client_run.rs::unverified_launch_receipts_discard_owned_processes
@@ -29,9 +32,13 @@ check:
 без запуска; ответ раннера, сообщающий о запуске во время preview,
 отклоняется.
 
-Закрытые аргументы — `clientMode`, `execute`, `waitForExit`, `waitTimeoutMs`.
-Ожидание завершения поддерживается для `thin` с `execute` на `.epf`,
-`waitForExit` и положительным `waitTimeoutMs`. Ответ называет версию и источник
+Закрытые аргументы — `clientMode`, `execute`, `applicationParameter`,
+`waitForExit`, `waitTimeoutMs`. `applicationParameter` — точная строка `/C`
+для enterprise-клиента: пустая строка отличается от отсутствия, NUL и
+`designer` отклоняются. Параметр может сопровождать `execute` и не отражается
+в публичном ответе. Ожидание завершения поддерживается для `thin` с
+`execute` на `.epf` либо явным `applicationParameter`, `waitForExit`
+и положительным `waitTimeoutMs`. Ответ называет версию и источник
 платформы, PID и исход ожидания. Команда раннера, пути установки и журналов,
 вывод клиента и строка соединения в него не переносятся.
 

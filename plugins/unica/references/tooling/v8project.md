@@ -204,7 +204,7 @@ directory named `main` keeps it.
 | Build a `.cf`/`.cfe` from sources | `make`, `output`, optional `sourceSet`, `extension`; `.epf`/`.erf` are not published |
 | Export the whole infobase as `.dt` | `infobase.dump`, `output` |
 | Load a `.dt` | `infobase.restore`, `input`, `mode=create` or `mode=replace` |
-| Launch a 1C client | `launch`, `clientMode`, optional `execute`; `waitForExit` with `waitTimeoutMs` supports `thin` + `.epf`; terminal, no preview required |
+| Launch a 1C client | `launch`, `clientMode`, optional `execute` and `applicationParameter`; `waitForExit` with `waitTimeoutMs` supports `thin` + `.epf` or an explicit application parameter (requires runner #491); terminal, no preview required |
 | Inspect installed extensions | `extensions.list`, empty args; preview/apply opens a platform session |
 | Change installed extension activity | `extensions.set`, `name`, boolean `active`; other properties are unavailable |
 | Apply or discard pending configuration changes | `apply` and `reset` — unavailable until the runner supports them ([#1246](https://github.com/IngvarConsulting/unica/issues/1246)) |

@@ -241,10 +241,15 @@ impl RunOperation {
                 "properties": {
                     "clientMode": {"type": "string", "enum": ["designer", "thin", "thick", "ordinary"], "description": "1C client to launch."},
                     "execute": {"type": "string", "description": "Workspace-relative .epf or .erf external processor to run with /Execute; enterprise clients only."},
-                    "waitForExit": {"type": "boolean", "default": false, "description": "Wait for a thin-client .epf session to exit; requires execute and waitTimeoutMs."},
+                    "applicationParameter": {"type": "string", "description": "Exact /C value for an enterprise client; empty is distinct from omitted, NUL and designer are rejected. May accompany execute."},
+                    "waitForExit": {"type": "boolean", "default": false, "description": "Wait for thin-client completion; requires execute (.epf) or applicationParameter, and waitTimeoutMs."},
                     "waitTimeoutMs": {"type": "integer", "minimum": 1, "maximum": 86400000, "description": "Bound for waitForExit in milliseconds."}
                 },
-                "required": ["clientMode"]
+                "required": ["clientMode"],
+                "allOf": [{
+                    "if": {"required": ["applicationParameter"]},
+                    "then": {"properties": {"clientMode": {"enum": ["thin", "thick", "ordinary"]}}}
+                }]
             })),
         }
     }
@@ -1406,13 +1411,43 @@ mod tests {
                 .unwrap()
                 .keys()
                 .map(String::as_str)
-                .collect::<Vec<_>>(),
-            ["clientMode", "execute", "waitForExit", "waitTimeoutMs"]
+                .collect::<std::collections::BTreeSet<_>>(),
+            [
+                "applicationParameter",
+                "clientMode",
+                "execute",
+                "waitForExit",
+                "waitTimeoutMs"
+            ]
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
         );
         assert_eq!(
             schema["properties"]["clientMode"]["enum"],
             json!(["designer", "thin", "thick", "ordinary"])
         );
+        let validator = jsonschema::validator_for(&schema).expect("valid launch args schema");
+        for mode in ["designer", "thin", "thick", "ordinary"] {
+            assert!(validator.is_valid(&json!({"clientMode": mode})));
+        }
+        for mode in ["thin", "thick", "ordinary"] {
+            for value in ["", "Обновить базу \"точно\"", "--execute=ignored"] {
+                assert!(validator.is_valid(&json!({
+                    "clientMode": mode, "applicationParameter": value
+                })));
+            }
+        }
+        for arguments in [
+            json!({"clientMode": "designer", "applicationParameter": ""}),
+            json!({"clientMode": "designer", "applicationParameter": "update"}),
+            json!({"clientMode": "thin", "applicationParameter": null}),
+            json!({"clientMode": "thin", "applicationParameter": 42}),
+            json!({"clientMode": "thin", "applicationParameter": false}),
+            json!({"clientMode": "thin", "applicationParameter": []}),
+            json!({"clientMode": "thin", "applicationParameter": {}}),
+        ] {
+            assert!(!validator.is_valid(&arguments), "{arguments}");
+        }
     }
 
     #[test]
