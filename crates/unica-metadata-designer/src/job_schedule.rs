@@ -74,6 +74,10 @@ pub fn parse_job_schedule(text: &str) -> Result<Value, String> {
                     .map_err(|_| format!("invalid Schedule.{name}"))?;
                 json!(value)
             }
+            // The platform counts negative month days from the month's end.
+            "WeekDayInMonth" | "DayInMonth" => json!(value
+                .parse::<i32>()
+                .map_err(|_| format!("invalid Schedule.{name}"))?),
             _ => json!(value
                 .parse::<u32>()
                 .map_err(|_| format!("invalid Schedule.{name}"))?),
@@ -111,9 +115,6 @@ pub fn parse_job_schedule(text: &str) -> Result<Value, String> {
                 return Err(format!("invalid Schedule.{name}"));
             }
             values.push(value);
-        }
-        if values.is_empty() {
-            return Err(format!("empty Schedule.{name} is unsupported"));
         }
         props.insert(
             name.into(),

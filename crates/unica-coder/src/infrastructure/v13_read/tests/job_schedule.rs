@@ -82,6 +82,38 @@ fn job_schedule_preserves_complete_lists_split_by_xml_comments() {
 }
 
 #[test]
+fn job_schedule_reads_platform_empty_lists_and_days_from_month_end() {
+    // Платформа пишет пустые `<ent:WeekDays/>` и `<ent:Months/>` у расписания
+    // без фильтра, а отрицательный день отсчитывает от конца месяца.
+    let fixture = RealReaderFixture::new();
+    write(
+        &fixture
+            .source
+            .join("ScheduledJobs/MonthClose/Ext/Schedule.xml"),
+        &SCHEDULE
+            .replace(
+                "<ent:WeekDays>1 2 3 4 5 6 7</ent:WeekDays>",
+                "<ent:WeekDays/>",
+            )
+            .replace(
+                "<ent:Months>1 2 3 4 5 6 7 8 9 10 11 12</ent:Months>",
+                "<ent:Months/>",
+            )
+            .replace(
+                "DayInMonth=\"0\" WeeksPeriod",
+                "DayInMonth=\"-1\" WeeksPeriod",
+            )
+            .replace("WeekDayInMonth=\"0\"", "WeekDayInMonth=\"-2\""),
+    );
+    let props = &read(&fixture, "main:ScheduledJob.MonthClose.Schedule")["props"];
+    assert_eq!(props["state"], "present");
+    assert_eq!(props["WeekDays"], "");
+    assert_eq!(props["Months"], "");
+    assert_eq!(props["DayInMonth"], -1);
+    assert_eq!(props["WeekDayInMonth"], -2);
+}
+
+#[test]
 fn job_schedule_present_damage_never_becomes_absence_or_erases_declarations() {
     for xml in [
         "<broken",
@@ -90,7 +122,6 @@ fn job_schedule_present_damage_never_becomes_absence_or_erases_declarations() {
         &SCHEDULE.replace("RepeatPause=\"3600\"", "RepeatPause=\"no\""),
         &SCHEDULE.replace("http://v8.1c.ru/8.3/xcf/extrnprops", "urn:foreign"),
         &SCHEDULE.replace("</Schedule>", "<Unknown/></Schedule>"),
-        &SCHEDULE.replace("1 2 3 4 5 6 7</ent:WeekDays>", "</ent:WeekDays>"),
         &SCHEDULE.replace("<ent:Months>", "<ent:Months foreign=\"x\">"),
         &SCHEDULE.replace("</Schedule>", "<ent:Months>1</ent:Months></Schedule>"),
         &SCHEDULE.replace("1 2 3 4 5 6 7</ent:WeekDays>", "1 8</ent:WeekDays>"),
