@@ -697,6 +697,7 @@ pub(crate) mod tests {
                 declarations: unica_metadata::MetaInfoDeclarations::default(),
                 predefined_code_type: Some("String".to_string()),
                 relations: unica_metadata::MetaRelationsData {
+                    content: None,
                     owners: Some(Some(Vec::new())),
                     register_records: Some(Some(Vec::new())),
                     based_on: Some(Some(Vec::new())),

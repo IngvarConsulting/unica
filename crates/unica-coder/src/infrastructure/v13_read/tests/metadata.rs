@@ -1200,3 +1200,91 @@ fn metadata_tabular_section_attribute_consumes_the_complete_suffix() {
     assert_eq!(data["kind"], "Attribute");
     assert_eq!(data["title"], "Quantity");
 }
+
+#[test]
+fn exchange_content_relations_preserve_modes_treat_missing_as_empty_and_mark_damage() {
+    for variant in ["full", "missing", "empty", "damaged", "directory"] {
+        let fixture = RealReaderFixture::new();
+        let config_path = fixture.source.join("Configuration.xml");
+        let config = fs::read_to_string(&config_path).unwrap();
+        write(
+            &config_path,
+            &config.replace(
+                "</ChildObjects>",
+                "<ExchangePlan>ExchangeNodes</ExchangePlan></ChildObjects>",
+            ),
+        );
+        write(
+            &fixture.source.join("ExchangePlans/ExchangeNodes.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><ExchangePlan uuid="11223344-5566-7788-99aa-bbccddeeff00"><Properties><Name>ExchangeNodes</Name><DistributedInfoBase>false</DistributedInfoBase></Properties><ChildObjects/></ExchangePlan></MetaDataObject>"#,
+        );
+        let path = fixture
+            .source
+            .join("ExchangePlans/ExchangeNodes/Ext/Content.xml");
+        let good = "<Item><Metadata>Catalog.Items</Metadata><AutoRecord>Deny</AutoRecord></Item>";
+        let contents = match variant {
+            "full" => format!("{good}<Item><Metadata>Document.Order</Metadata><AutoRecord>Allow</AutoRecord></Item>"),
+            "damaged" => format!("{good}<Item><Metadata>Document.Order</Metadata><AutoRecord>Unknown</AutoRecord></Item>"),
+            _ => String::new(),
+        };
+        let xml = format!(
+            r#"<ExchangePlanContent xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20">{contents}</ExchangePlanContent>"#
+        );
+        if variant == "directory" {
+            fs::create_dir_all(&path).unwrap();
+        } else if variant != "missing" {
+            write(&path, &xml);
+        }
+        let service = fixture.view_service();
+        for suffix in ["", ".Relation"] {
+            let result = service.view(
+                ViewRequest::new(&format!("main:ExchangePlan.ExchangeNodes{suffix}")).unwrap(),
+            );
+            assert!(result.ok, "{variant}: {result:?}");
+            let data = result.data.unwrap();
+            let limits = data["limits"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(serde_json::Value::as_str)
+                .filter(|s| s.contains("relations.content"))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                !limits.is_empty(),
+                matches!(variant, "damaged" | "directory"),
+                "{variant}: {data}"
+            );
+            if suffix == ".Relation" {
+                let entries = data["items"].as_array().unwrap();
+                let content = entries
+                    .iter()
+                    .filter(|item| item["relation"] == "content")
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    content.len(),
+                    match variant {
+                        "full" => 2,
+                        "damaged" => 1,
+                        _ => 0,
+                    },
+                    "{data}"
+                );
+                if !content.is_empty() {
+                    assert_eq!(content[0]["at"], "main:Catalog.Items");
+                    assert_eq!(content[0]["autoRecord"], "Deny");
+                }
+                if variant == "full" {
+                    assert_eq!(content[1]["at"], "main:Document.Order");
+                    assert_eq!(content[1]["autoRecord"], "Allow");
+                }
+            }
+        }
+        if variant == "missing" {
+            assert!(!path.exists());
+        } else if variant == "directory" {
+            assert!(path.is_dir());
+        } else {
+            assert_eq!(fs::read_to_string(path).unwrap(), xml);
+        }
+    }
+}

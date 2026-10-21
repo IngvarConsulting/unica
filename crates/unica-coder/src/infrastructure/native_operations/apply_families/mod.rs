@@ -1060,12 +1060,27 @@ pub(crate) fn plan_hidden_v13_apply(
         binding.source_kind(),
         &xdto_operations,
     )?;
+    let exchange_content = unica_metadata_designer::planner::final_exchange_content(
+        &mut staged.proposal(),
+        binding.source_set_name(),
+        binding.source_kind(),
+        parsed.iter().filter_map(|operation| match operation {
+            ParsedApplyOperation::Metadata(operation) => {
+                operation.operation().exchange_content_owner().cloned()
+            }
+            _ => None,
+        }),
+    )?;
     let mut effects = reconcile_effects(staged.planned_changes(), provisional);
+    let detail_error = |error: serde_json::Error| {
+        ApplyPlanError::new(ApplyPlanErrorKind::Postcondition, error.to_string()).at_path("ops")
+    };
     effects
         .set_details(unica_xdto::results::XDTO_OBJECTS, &xdto_objects)
-        .map_err(|error| {
-            ApplyPlanError::new(ApplyPlanErrorKind::Postcondition, error.to_string()).at_path("ops")
-        })?;
+        .map_err(detail_error)?;
+    effects
+        .set_details(unica_metadata::EXCHANGE_CONTENT, &exchange_content)
+        .map_err(detail_error)?;
     effects.set_borrowing(borrowing);
     Ok((staged, effects))
 }

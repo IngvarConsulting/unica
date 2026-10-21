@@ -209,6 +209,7 @@ pub fn typed_relations(
         Err(_) => Default::default(),
     };
     MetaRelationsData {
+        content: (owner_kind == MetadataKind::ExchangePlan).then_some(None),
         owners,
         register_records,
         based_on,

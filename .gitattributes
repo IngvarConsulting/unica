@@ -80,3 +80,6 @@ tests/fixtures/platform_8_3_27/new-xml/native-chart-of-accounts-descriptor.xml -
 
 # DCS codec fixtures: tests splice them by exact text.
 crates/unica-dcs-designer/tests/fixtures/** text eol=lf
+
+# The ExchangePlan composition fixture keeps the platform's BOM and CRLF layout.
+tests/fixtures/acceptance/workspace-exchange-content/src/ExchangePlans/*/Ext/Content.xml -text -whitespace
