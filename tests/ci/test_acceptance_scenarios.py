@@ -308,10 +308,13 @@ def scenario_publishes(scenario) -> bool:
 FORM_KINDS = {"Form", "CommonForm"}
 
 
-def names_form(address: str) -> bool:
-    """True when an address ends on a form: `main:Catalog.X.Form.Y`."""
+def names_form(address: str) -> bool | None:
+    """True when an address ends on a form (`main:Catalog.X.Form.Y`), None
+    when it names a node inside one, False when no form is on its path."""
     segments = re.split(r"(?<!\\)\.", address.partition(":")[2])
-    return len(segments) >= 2 and segments[-2] in FORM_KINDS
+    if len(segments) >= 2 and segments[-2] in FORM_KINDS:
+        return True
+    return None if FORM_KINDS & set(segments[:-2]) else False
 
 
 def apply_operation_cases(scenarios, registry) -> dict[tuple[str, str], list[str]]:
@@ -336,7 +339,7 @@ def apply_operation_cases(scenarios, registry) -> dict[tuple[str, str], list[str
                     target = (operation.get("args") or {}).get("at") or step["args"]["at"]
                     on_form = names_form(target)
                     candidates = [row for row in candidates if (row[1] == "Form") == on_form]
-                    if len(candidates) != 1:
+                    if on_form is None or len(candidates) != 1:
                         raise ValueError(f"{scenario['id']}: `{name}` at `{target}` matches no single family")
                 for family, _ in candidates:
                     ids = cases.setdefault((name, family), [])
@@ -1062,8 +1065,11 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("attribute.add", "Form"): ["C"],
         })
         self.assertTrue(names_form("main:CommonForm.Main"))
-        self.assertFalse(names_form("main:Catalog.X.Form.Y.Item.Z"))
-        self.assertFalse(names_form("main:Configuration"))
+        self.assertIsNone(names_form("main:Catalog.X.Form.Y.Attribute.Z"))
+        self.assertIs(names_form("main:Configuration"), False)
+        nested = [{"id": "D", "wire": [step("unica.apply", ["ok"], "main:Catalog.X.Form.Y.Attribute.Z", "attribute.add")]}]
+        with self.assertRaises(ValueError):
+            apply_operation_cases(nested, registry)
         with self.assertRaises(ValueError):
             apply_operation_cases(scenarios, registry + [("attribute.add", "Xdto", "XdtoType", "Items")])
 
