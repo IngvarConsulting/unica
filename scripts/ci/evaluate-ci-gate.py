@@ -13,6 +13,15 @@ from typing import NamedTuple
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from workflow_routing import CACHE_JOB, RUST_JOBS, python_matrix as routed_python_matrix, rust_route  # noqa: E402
 
+LINUX = "ubuntu-latest"
+# Gate profile → runners. Mirrors `ci_rust_lanes.profile_hosts`; imported
+# lazily there would pull Cargo helpers into the gate, so the table is small
+# and its equality is a test.
+PROFILE_RUNNERS = {
+    "pr": [LINUX, "macos-14"], "queue": [LINUX, "macos-14"], "main": [LINUX, "macos-14"],
+    "release": [LINUX, "macos-14"], "large": [LINUX, "macos-14", "windows-latest"],
+}
+
 
 CLASSIFICATION_OUTPUTS = (
     "rust_changed",
@@ -43,6 +52,62 @@ PUBLISH_JOBS = (
     "smoke-thin-plugin",
     "verify-published-assets",
 )
+# Pull request medium of affected packages and the jobs of the other runners
+# are separate entries: a skip of one must not hide inside another's success.
+RUST_MEDIUM = "rust-medium"
+OS_JOBS = "os-jobs"
+# What the `Unica CI` job proves itself; the delivery tail of a tag or a manual
+# run is judged by `Delivery CI` after it, over the same table.
+DELIVERY_ONLY = (*PACKAGE_JOBS, ASSESSMENT_JOB, P0_PROOF_JOB, "probe-thin-bootstrap", *PUBLISH_JOBS)
+
+# Steps of the `Unica CI` job behind each gate entry. A group is green only
+# when every step of it succeeded and skipped only when every step skipped:
+# a partly skipped group is a wiring defect, not a pass.
+STEP_GROUPS = {
+    "classify-changes": ("classify",),
+    "guards": ("guards-compile", "guards-version", "guards-fmt", "guards-zizmor"),
+    "build-python-product": ("product",),
+    "test-python": ("python",),
+    "test-rust-platforms": ("shadow", "rust-build", "rust-run", "verify"),
+    RUST_MEDIUM: ("rust-medium",),
+    "lint-rust-platforms": ("clippy", "clippy-packages"),
+    CACHE_JOB: ("warm",),
+}
+
+
+def combined(outcomes: list[str]) -> str:
+    if not outcomes or any(outcome == "missing" for outcome in outcomes):
+        return "missing"
+    for verdict in ("failure", "cancelled"):
+        if verdict in outcomes:
+            return verdict
+    if all(outcome == "success" for outcome in outcomes):
+        return "success"
+    if all(outcome == "skipped" for outcome in outcomes):
+        return "skipped"
+    return "partial"
+
+
+def validation_results(steps: Mapping, os_jobs: Mapping[str, str] | None, profile: str | None) -> dict[str, str]:
+    """Gate entries from the step outcomes of `Unica CI` and the other runners' jobs."""
+    results = {}
+    for entry, ids in STEP_GROUPS.items():
+        outcomes = []
+        for step in ids:
+            details = steps.get(step)
+            outcomes.append(details.get("outcome", "missing") if isinstance(details, Mapping) else "missing")
+        results[entry] = combined(outcomes)
+    if os_jobs is None:
+        results[OS_JOBS] = "skipped"
+    else:
+        # Windows stays advisory in the nightly until #1523: any outcome of its
+        # job is accepted there, as `continue-on-error` did, but it must exist.
+        accepted = [
+            "success" if outcome == "success" or (profile == "large" and name == "Rust (windows-latest)" and outcome != "missing")
+            else outcome for name, outcome in sorted(os_jobs.items())
+        ]
+        results[OS_JOBS] = combined(accepted) if accepted else "missing"
+    return results
 
 
 class GateEvaluation(NamedTuple):
@@ -99,6 +164,8 @@ def expected_results(
     *,
     gate_profile: str | None = None,
     python_matrix: str | None = None,
+    runners: str | None = None,
+    scope: str = "delivery",
 ) -> tuple[str, dict[str, str], dict[str, tuple[str, str]]]:
     expected = {job: "success" for job in ALWAYS_JOBS}
     invalid: dict[str, tuple[str, str]] = {}
@@ -176,7 +243,24 @@ def expected_results(
     package_pipeline = (values["release_required"] or values["ci_changed"]) and (is_tag or is_manual)
 
     expected.update({job: "success" if route.required else "skipped" for job in RUST_JOBS})
+    expected[RUST_MEDIUM] = "success" if route.required and is_pr else "skipped"
     expected[CACHE_JOB] = "success" if route.warm_cache else "skipped"
+    # Every non-main-push run starts the other runners' job (it classifies on
+    # its own and may do nothing); a pull request only with `ci:full`.
+    try:
+        runner_list = json.loads(runners) if runners is not None else None
+    except json.JSONDecodeError:
+        runner_list = None
+    allowed = PROFILE_RUNNERS.get(gate_profile or "")
+    if is_main_push:
+        expected[OS_JOBS] = "skipped"
+    elif not isinstance(runner_list, list) or allowed is None or (
+        runner_list != allowed and not (is_pr and runner_list == [LINUX])
+    ):
+        invalid["runners"] = (str(runners), json.dumps(allowed))
+        expected[OS_JOBS] = "success"
+    else:
+        expected[OS_JOBS] = "success" if runner_list != [LINUX] else "skipped"
     expected.update({job: "success" if package_pipeline else "skipped" for job in PACKAGE_JOBS})
     expected[ASSESSMENT_JOB] = (
         "success" if values["assessment_required"] and (is_tag or is_manual) else "skipped"
@@ -186,6 +270,9 @@ def expected_results(
     )
     expected["probe-thin-bootstrap"] = "success" if package_pipeline and is_manual else "skipped"
     expected.update({job: "success" if is_tag else "skipped" for job in PUBLISH_JOBS})
+    if scope == "validation":
+        for job in DELIVERY_ONLY:
+            expected.pop(job)
 
     if is_tag:
         contour = "release"
@@ -225,10 +312,12 @@ def evaluate_gate(
     *,
     gate_profile: str | None = None,
     python_matrix: str | None = None,
+    runners: str | None = None,
+    scope: str = "delivery",
 ) -> GateEvaluation:
     contour, expected, unexpected = expected_results(
         event_name, ref, classification,
-        gate_profile=gate_profile, python_matrix=python_matrix,
+        gate_profile=gate_profile, python_matrix=python_matrix, runners=runners, scope=scope,
     )
     unexpected = dict(unexpected)
 
@@ -298,17 +387,36 @@ def render_summary(evaluation: GateEvaluation) -> str:
 
 
 def main() -> int:
-    needs = json.loads(os.environ["NEEDS_JSON"])
-    classifier = needs.get("classify-changes", {})
-    outputs = classifier.get("outputs", {}) if isinstance(classifier, dict) else {}
+    """`GATE_SCOPE=validation` — the `Unica CI` job over its own steps;
+    `delivery` — `Delivery CI` over those results and the delivery tail."""
+    scope = os.environ.get("GATE_SCOPE", "validation")
+    if scope == "validation":
+        steps = json.loads(os.environ["STEPS_JSON"])
+        os_jobs_path = os.environ.get("OS_JOBS_FILE", "")
+        os_jobs = json.loads(Path(os_jobs_path).read_text(encoding="utf-8")) if os_jobs_path and Path(os_jobs_path).is_file() else None
+        classifier = steps.get("classify", {})
+        outputs = classifier.get("outputs", {}) if isinstance(classifier, dict) else {}
+        results = validation_results(steps, os_jobs, os.environ.get("GATE_PROFILE"))
+    elif scope == "delivery":
+        needs = json.loads(os.environ["NEEDS_JSON"])
+        gate = needs.get("unica-ci", {})
+        outputs = gate.get("outputs", {}) if isinstance(gate, dict) else {}
+        try:
+            results = json.loads(outputs.get("gate_results", ""))
+        except (TypeError, json.JSONDecodeError):
+            results = {}
+        if not isinstance(results, dict):
+            results = {}
+        results.update({
+            job: details.get("result", "missing")
+            for job, details in needs.items()
+            if isinstance(details, dict) and job not in ("unica-ci", "rust-os")
+        })
+    else:
+        raise SystemExit(f"unknown GATE_SCOPE {scope!r}")
     classification = {
         name: outputs.get(name, "") if isinstance(outputs, dict) else ""
         for name in SCOPE_OUTPUTS
-    }
-    results = {
-        job: details.get("result", "missing")
-        for job, details in needs.items()
-        if isinstance(details, dict)
     }
     evaluation = evaluate_gate(
         os.environ.get("GITHUB_EVENT_NAME", ""),
@@ -317,6 +425,8 @@ def main() -> int:
         results,
         gate_profile=os.environ.get("GATE_PROFILE"),
         python_matrix=os.environ.get("PYTHON_MATRIX"),
+        runners=os.environ.get("RUNNERS"),
+        scope=scope,
     )
     summary = render_summary(evaluation)
     print(summary, end="")
@@ -324,6 +434,10 @@ def main() -> int:
     if summary_path:
         with Path(summary_path).open("a", encoding="utf-8") as stream:
             stream.write(summary)
+    output_path = os.environ.get("GITHUB_OUTPUT")
+    if output_path and scope == "validation":
+        with Path(output_path).open("a", encoding="utf-8") as stream:
+            stream.write(f"gate_results={json.dumps(results, separators=(',', ':'))}\n")
     return 0 if evaluation.ok else 1
 
 

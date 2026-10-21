@@ -41,18 +41,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import allure_results  # noqa: E402
 from site_fetch import fetch  # noqa: E402
 
-# Имя Rust-джобы в workflow и шаблоны имён артефактов: сайт читает их отсюда,
-# а страж сверяет с workflow — переименование в одном месте красит тест.
-RUST_JOB = "Rust tests (complete inventory)"
-RUST_BUILD_JOB = "Build Rust {lane} ({runner})"
+# Имена джоб в workflow: сайт читает их отсюда, а страж сверяет с workflow —
+# переименование в одном месте красит тест. Linux исполняет всё в `Unica CI`,
+# остальные ОС — каждая в своей джобе `Rust (<runner>)`.
+GATE_JOB = "Unica CI"
+OS_JOB = "Rust ({runner})"
 RUST_LANES = ("ordinary", "receipt", "vendor")
-PYTHON_JOB = "Python tests ({slug})"
+PYTHON_JOB = GATE_JOB
 
 
-def python_slug(suite: str, lane: str) -> str:
-    """То же правило, что у шва `run-tests.py`: основание набора и полоса."""
-    base = suite.rstrip("/").split("/")[-1]
-    return f"{base}-{lane}" if lane else base
+def runner_job(runner: str) -> str:
+    return GATE_JOB if runner == "ubuntu-latest" else OS_JOB.format(runner=runner)
+
+
 RESULTS_PREFIX = "results-"
 PLAN_PREFIX = "plan-"
 
@@ -130,13 +131,9 @@ def rust_lane(run: dict) -> str | None:
 
 
 def rust_job(run: dict, conclusions: dict[str, str]) -> tuple[str, str]:
-    lane = rust_lane(run)
-    if lane is not None:
-        producer = RUST_BUILD_JOB.format(lane=lane, runner=run.get("runner", ""))
-        outcome = conclusions.get(producer)
-        if outcome is not None and outcome != "success":
-            return producer, outcome
-    return RUST_JOB, conclusions.get(RUST_JOB, "unknown")
+    rust_lane(run)  # a signature with an unknown lane is refused, not attributed
+    job = runner_job(run.get("runner", ""))
+    return job, conclusions.get(job, "unknown")
 
 
 def validate_run_identities(artifacts: list[tuple[Path, dict]], fallback: str) -> None:
@@ -160,7 +157,7 @@ def empty_seen() -> dict[str, set[str]]:
     return {"rust": set(), "python": set()}
 
 
-def scope_skips(results: list[tuple[Path, dict]], plans: list[tuple[Path, dict]], conclusions: dict[str, str], fallback: str) -> dict[tuple[str, str], dict]:
+def scope_skips(results: list[tuple[Path, dict]], plans: list[tuple[Path, dict]], fallback: str) -> dict[tuple[str, str], dict]:
     """Проверить явный пропуск: границы diff, исход джобы и отсутствие исполнения."""
     skips = {}
     planned_rust = {(line_of(run, fallback), run.get("runner", "")) for path, run in [*plans, *results]
@@ -186,13 +183,8 @@ def scope_skips(results: list[tuple[Path, dict]], plans: list[tuple[Path, dict]]
         ):
             raise ValueError(f"scope_skip: malformed or unsupported marker in {path}")
         key = (line_of(run, fallback), runner)
-        job = RUST_JOB
-        conclusion = conclusions.get(job)
-        producers = [conclusions.get(RUST_BUILD_JOB.format(lane=lane, runner=runner)) for lane in RUST_LANES]
-        if any(outcome is not None and outcome != "skipped" for outcome in producers):
-            raise ValueError(f"scope_skip: Rust producer ran for {runner}")
-        if conclusion != "skipped":
-            raise ValueError(f"scope_skip: {job} conclusion is {conclusion!r}, expected skipped")
+        # The runner's job still runs (guards, Python, routing); the skip is
+        # proved by the absence of any Rust plan or result for that runner.
         if key in skips or key in planned_rust or key in configured_rust or (path / "plan.json").exists() or any(path.glob("*-result.json")):
             raise ValueError(f"scope_skip: duplicate marker or execution evidence in {path}")
         for other_path, other in [*results, *plans]:
@@ -369,7 +361,7 @@ def fill_python_gaps(plan_dir: Path, run: dict, seen: set[str], out: Path, concl
     for case in load_json(plan_dir / "plan.json"):
         if case.get("ecosystem") != "python" or case["id"] in seen:
             continue
-        job = PYTHON_JOB.format(slug=python_slug(case["suite"], case.get("lane", "")))
+        job = PYTHON_JOB
         conclusion = conclusions.get(job) or "unknown"
         scoped = "scope_skip" in case
         message = (f"docs-only: Python medium пропущен по области изменения · {job}" if scoped
@@ -546,7 +538,7 @@ def collect(artifacts: Path, out_root: Path, jobs: Path | None, fallback_line: s
         raise SystemExit(f"в {artifacts} нет ни одного results-* или plan-* с подписью: складывать нечего")
     conclusions = job_conclusions(jobs)
     # Scope markers have their own identity checks and diagnostics.
-    skips = scope_skips(results, plans, conclusions, fallback_line)
+    skips = scope_skips(results, plans, fallback_line)
     python_skips = python_scope_skips(results, plans, fallback_line)
     validate_run_identities(signed, fallback_line)
     by_line = {}

@@ -307,8 +307,9 @@ class GateProfileCompositionTests(unittest.TestCase):
         release = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / "unica-plugin-release.yml").read_text(encoding="utf-8"))
         tools = next(
             step["with"]["tool"]
-            for step in release["jobs"]["build-rust-ordinary"]["steps"]
-            if step.get("uses", "").startswith("taiki-e/install-action@")
+            for job in ("unica-ci", "rust-os")
+            for step in release["jobs"][job]["steps"]
+            if step.get("uses", "").startswith("taiki-e/install-action@") and "cargo-nextest@" in step["with"]["tool"]
         )
         installed = next(part.split("@")[1] for part in tools.split(",") if part.startswith("cargo-nextest@"))
 

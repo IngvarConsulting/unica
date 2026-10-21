@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build each Rust configuration once, run archive shards, verify their union."""
+"""Build and run every Rust configuration of a runner in its job; verify their union."""
 from __future__ import annotations
 
 import argparse
@@ -25,7 +25,8 @@ spec = importlib.util.spec_from_file_location("ci_lane_runner", Path(__file__).w
 runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
 LANES = ("ordinary", "receipt", "vendor")
-HOSTS = ("ubuntu-latest", "macos-14", "windows-latest")
+LINUX = "ubuntu-latest"
+HOSTS = (LINUX, "macos-14", "windows-latest")
 # The queue runs the complete suite on Linux and only the platform facades on
 # macOS: OS-specific code lives in the platform directories of
 # INV.PLATFORM.OS-BEHIND-FACADE, and `size-filters.py` derives the
@@ -40,9 +41,23 @@ def platform_only(profile: str, host: str | None) -> bool:
 
 
 def lanes(profile: str, host: str | None = None) -> tuple[str, ...]:
-    if platform_only(profile, host):
+    """Configurations one runner builds and executes for a gate profile.
+
+    Vendor's ureq fault cases run with the complete suites only (nightly,
+    release): the queue keeps ordinary and Receipt (owner's decision, #1813).
+    """
+    if platform_only(profile, host) or not set(ADMITTED[profile]) & {"medium", "large"}:
         return ("ordinary",)
-    return LANES if set(ADMITTED[profile]) & {"medium", "large"} else ("ordinary",)
+    return LANES if "large" in ADMITTED[profile] else ("ordinary", "receipt")
+
+
+def profile_hosts(profile: str, *, full_matrix: bool = True) -> list[str]:
+    """Runners of a gate profile; a pull request adds macOS only with `ci:full`."""
+    if profile == "large":
+        return list(HOSTS)
+    if profile == "pr" and not full_matrix:
+        return [LINUX]
+    return [LINUX, "macos-14"]
 
 
 def selection(lane: str) -> tuple[str, ...]:
@@ -51,28 +66,13 @@ def selection(lane: str) -> tuple[str, ...]:
 
 
 def shards(profile: str, lane: str, host: str | None = None) -> int:
-    # A small starting matrix. Vendor's four fault cases need no extra runner,
-    # and the platform selection is a fifth of the ordinary plan.
-    if platform_only(profile, host):
-        return 1
-    return 2 if lane == "ordinary" and profile != "pr" else 1
+    # One job executes every lane of its runner: a second part would only add
+    # another pass over the same archive on the same machine.
+    return 1
 
 
 def nextest_profile(profile: str, lane: str, host: str | None) -> str:
     return PLATFORM_NEXTEST_PROFILE if platform_only(profile, host) else runner.nextest_profile(profile, selection(lane))
-
-
-def matrix(profile: str, runners: list[str], *, lane: str, run: bool) -> list[dict]:
-    if lane not in lanes(profile):
-        return []
-    return [{"runner": host, "lane": lane, "shard": index, "shards": shards(profile, lane, host)}
-            for host in runners if lane in lanes(profile, host)
-            for index in (range(1, shards(profile, lane, host) + 1) if run else [1])]
-
-
-def lint_runners(profile: str, runners: list[str]) -> list[str]:
-    """Clippy follows the test matrix: a platform-only host lints at night."""
-    return [host for host in runners if not platform_only(profile, host)]
 
 
 def filters(lane: str) -> list[str]:
@@ -397,6 +397,56 @@ def build(root: Path, destination: Path, lane: str, profile: str, host: str, lin
     allure_results.write_plan(destination, full)
 
 
+def plan_directory(report: Path, host: str, lane: str) -> Path:
+    return report / f"plan-rust-{host}-{lane}"
+
+
+def result_directory(report: Path, host: str, lane: str) -> Path:
+    return report / f"results-rust-{host}-{lane}-1"
+
+
+def build_host(root: Path, work: Path, report: Path, profile: str, host: str, line: str | None) -> int:
+    """Build every lane archive of this runner in the job that will run it.
+
+    The archive is not handed to another job: it pins the bytes the plan lists
+    to the bytes the run executes, and a later lane's build (Receipt rebuilds
+    `unica` with its feature) cannot replace them, because the run extracts
+    its own archive. A failed lane still leaves its signed configuration.
+    """
+    failed = []
+    for lane in lanes(profile, host):
+        try:
+            build(root, work / lane, lane, profile, host, line)
+        except (subprocess.CalledProcessError, ValueError) as error:
+            print(f"::error::{host}/{lane}: archive was not built: {error}", flush=True)
+            failed.append(lane)
+        finally:
+            if (work / lane).is_dir():
+                destination = plan_directory(report, host, lane)
+                destination.mkdir(parents=True, exist_ok=True)
+                for path in (work / lane).glob("*.json"):
+                    destination.joinpath(path.name).write_bytes(path.read_bytes())
+    return 1 if failed else 0
+
+
+def run_host(root: Path, work: Path, report: Path, profile: str, host: str, line: str | None, shadow: Path | None) -> int:
+    """Run each built lane; a red lane does not stop the next one."""
+    failed = []
+    for lane in lanes(profile, host):
+        if not (work / lane / "lane.json").is_file():
+            failed.append(lane)
+            continue
+        try:
+            code = run_archive(root, work / lane, result_directory(report, host, lane), lane, profile, host, 1, line,
+                               shadow if shadow is not None and shadow.is_file() else None)
+        except (subprocess.CalledProcessError, ValueError) as error:
+            print(f"::error::{host}/{lane}: {error}", flush=True)
+            code = 1
+        if code != 0:
+            failed.append(lane)
+    return 1 if failed else 0
+
+
 def validate_manifest(document: dict, *, profile: str, host: str, lane: str, sha: str) -> None:
     if document.get("schemaVersion") != 1 or (document.get("profile"), document.get("runner"), document.get("lane"), document.get("identity", {}).get("sha")) != (profile, host, lane, sha):
         raise ValueError("archive or result belongs to another revision, runner, lane or profile")
@@ -688,7 +738,9 @@ def compare_inventory(baseline: dict, current: dict) -> tuple[list[str], list[st
     if previous.get("schemaVersion") != 1 or not isinstance(previous.get("configurations"), list):
         raise ValueError("malformed previous inventory")
     problems, advisory = [], []
-    if previous.get("jobs") is not None and current["jobs"] is not None:
+    # Jobs depend on the profile's runners: a pull request has no macOS job.
+    same_jobs = all(same_selection(previous.get("profile"), current["profile"], host) for host in HOSTS)
+    if same_jobs and previous.get("jobs") is not None and current["jobs"] is not None:
         problems += [f"job {job} disappeared since the previous inventory" for job in sorted(set(previous["jobs"]) - set(current["jobs"]))]
     present = {(item["runner"], item["lane"]): item for item in current["configurations"]}
     for old in previous["configurations"]:
@@ -731,29 +783,35 @@ def read_baseline(path: Path | None) -> dict | None:
     return None if path is None or not path.is_file() else json.loads(path.read_text(encoding="utf-8"))
 
 
+GATE_JOB = "Unica CI"
+
+
+def os_job(host: str) -> str:
+    """Display name of the job that tests one non-Linux runner."""
+    return f"Rust ({host})"
+
+
 def verify_union(directory: Path, profile: str, hosts: list[str], sha: str, baseline: dict | None = None) -> dict:
-    if not hosts or len(hosts) != len(set(hosts)) or any(host not in {"ubuntu-latest", "macos-14", "windows-latest"} for host in hosts):
+    if not hosts or len(hosts) != len(set(hosts)) or any(host not in HOSTS for host in hosts):
         raise ValueError("missing, duplicate or unknown OS inventory")
     manifests = [json.loads(path.read_text()) for path in directory.rglob("lane.json")]
     results = [json.loads(path.read_text()) for path in directory.rglob("shard.json")]
     problems, advisory, verified, job_names = [], [], [], None
-    if os.environ.get("CI_LANE_JOB_RESULTS"):
-        expected_hosts = ["ubuntu-latest", "macos-14", "windows-latest"] if profile == "large" else ["ubuntu-latest", "macos-14"]
-        if hosts != expected_hosts and not (profile == "pr" and hosts == ["ubuntu-latest"]):
+    # The Linux gate job runs this verifier itself; the other runners' jobs
+    # report their conclusions through `await_os_jobs.py`, read from the run.
+    in_ci = bool(os.environ.get("CI_JOB_RESULTS"))
+    if in_ci:
+        if hosts != profile_hosts(profile) and not (profile == "pr" and hosts == [LINUX]):
             problems.append("runner matrix omits an expected operating system")
-        jobs = json.loads(os.environ["CI_LANE_JOB_RESULTS"])
-        job_names = sorted(jobs)
-        for lane in LANES:
-            expected = "success" if lane in lanes(profile) else "skipped"
-            for phase in ("build", "run"):
-                job = f"{phase}-rust-{lane}"
-                if jobs.get(job, {}).get("result") != expected:
-                    problems.append(f"{job} did not finish as {expected}")
-        if jobs.get("shadow-component-selection", {}).get("result") != "success":
-            problems.append("shadow selection did not finish successfully")
-        expected = "success" if profile == "pr" else "skipped"
-        if jobs.get("run-rust-ordinary-medium", {}).get("result") != expected:
-            problems.append(f"run-rust-ordinary-medium did not finish as {expected}")
+        jobs = json.loads(os.environ["CI_JOB_RESULTS"])
+        job_names = sorted({GATE_JOB, *jobs})
+        for host in hosts:
+            if host == LINUX:
+                continue
+            outcome = jobs.get(os_job(host))
+            if outcome != "success":
+                target = advisory if profile == "large" and host == "windows-latest" else problems
+                target.append(f"{os_job(host)} did not finish as success: {outcome or 'missing'}")
     expected_configs = {(host, lane) for host in hosts for lane in lanes(profile, host)}
     if any((item.get("runner"), item.get("lane")) not in expected_configs for item in manifests + results):
         raise ValueError("unexpected runner or lane in the collected inventory")
@@ -784,7 +842,7 @@ def verify_union(directory: Path, profile: str, hosts: list[str], sha: str, base
             target = advisory if profile == "large" and host == "windows-latest" else problems
             target.append(f"{host}/{lane}: {error}")
     mediums = [json.loads(path.read_text()) for path in directory.rglob("medium.json")]
-    if profile == "pr" and (mediums or os.environ.get("CI_LANE_JOB_RESULTS")):
+    if profile == "pr" and (mediums or in_ci):
         try:
             # Any collected ordinary plan: a failed small shard must not hide the medium outcome.
             ordinary = [item for item in manifests if (item.get("runner"), item.get("lane")) == (MEDIUM_RUNNER, "ordinary")]
@@ -810,7 +868,7 @@ def verify_union(directory: Path, profile: str, hosts: list[str], sha: str, base
         lost, lost_advisory, drift = compare_inventory(baseline, summary)
         problems += lost
         advisory += lost_advisory
-    elif os.environ.get("CI_LANE_JOB_RESULTS"):
+    elif in_ci:
         problems.append("the plan was not compared with the previous inventory")
     report = {"sha": sha, "profile": profile, "mandatoryComplete": not problems,
               "fullMatrixPassed": not problems and not advisory, "errors": problems,
@@ -825,33 +883,28 @@ def verify_union(directory: Path, profile: str, hosts: list[str], sha: str, base
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("matrix", "build", "run", "medium", "verify"))
+    parser.add_argument("action", choices=("build", "run", "medium", "verify"))
     parser.add_argument("--repo-root", type=Path, default=ROOT)
     parser.add_argument("--profile", required=True, choices=tuple(ADMITTED))
-    parser.add_argument("--lane", choices=LANES)
     parser.add_argument("--runner")
     parser.add_argument("--runners", default="[]")
-    parser.add_argument("--destination", type=Path)
-    parser.add_argument("--prepared", type=Path)
-    parser.add_argument("--shard", type=int, default=1)
-    parser.add_argument("--run-matrix", action="store_true")
+    parser.add_argument("--destination", type=Path, help="report directory: plan-rust-*, results-rust-*, verification")
+    parser.add_argument("--prepared", type=Path, help="job-local directory of the lane archives")
     parser.add_argument("--sha", default=os.environ.get("GITHUB_SHA"))
     parser.add_argument("--line")
     parser.add_argument("--shadow", type=Path)
     parser.add_argument("--baseline", type=Path, help="previous inventory found by rust_inventory_baseline.py")
     args = parser.parse_args()
-    if args.action == "matrix":
-        print(json.dumps(matrix(args.profile, json.loads(args.runners), lane=args.lane, run=args.run_matrix), separators=(",", ":")))
-    elif args.action == "verify":
+    if args.action == "verify":
         print(json.dumps(verify_union(args.destination, args.profile, json.loads(args.runners), args.sha,
                                       read_baseline(args.baseline)), indent=2))
-    elif args.action == "build":
-        build(args.repo_root.resolve(), args.destination, args.lane, args.profile, args.runner, args.line)
-    elif args.action == "medium":
-        return run_medium(args.repo_root.resolve(), args.prepared, args.destination, args.runner, args.shadow)
-    else:
-        return run_archive(args.repo_root.resolve(), args.prepared, args.destination, args.lane, args.profile, args.runner, args.shard, args.line, args.shadow)
-    return 0
+        return 0
+    root = args.repo_root.resolve()
+    if args.action == "build":
+        return build_host(root, args.prepared, args.destination, args.profile, args.runner, args.line)
+    if args.action == "medium":
+        return run_medium(root, args.prepared / "ordinary", args.destination, args.runner, args.shadow)
+    return run_host(root, args.prepared, args.destination, args.profile, args.runner, args.line, args.shadow)
 
 
 if __name__ == "__main__":
