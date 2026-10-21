@@ -1,9 +1,9 @@
 ---
 id: INV.SOURCE.WRITE-CONTAINMENT
 check:
-  - crates/unica-coder/src/infrastructure/path_policy.rs::rejects_write_escape_outside_workspace_root
-  - crates/unica-coder/src/infrastructure/platform/filesystem.rs::workspace_policy_rejects_lexically_external_symlink_into_workspace
-  - crates/unica-coder/src/infrastructure/platform/filesystem.rs::workspace_policy_rejects_lexically_internal_symlink_outside_workspace
+  - crates/unica-workspace/src/path_policy.rs::rejects_write_escape_outside_workspace_root
+  - crates/unica-workspace/src/platform/filesystem.rs::workspace_policy_rejects_lexically_external_symlink_into_workspace
+  - crates/unica-workspace/src/platform/filesystem.rs::workspace_policy_rejects_lexically_internal_symlink_outside_workspace
 ---
 
 # Путь записи проверяется относительно границ проекта

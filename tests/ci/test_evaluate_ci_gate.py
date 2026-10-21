@@ -50,6 +50,7 @@ def classification(**enabled: bool) -> dict[str, str]:
 def source_results() -> dict[str, str]:
     return {
         **ALWAYS_SUCCESS,
+        "build-python-product": "fixture-default",
         "test-rust-platforms": "skipped",
         "lint-rust-platforms": "skipped",
         "warm-rust-cache": "skipped",
@@ -82,13 +83,14 @@ def evaluate(module, event, ref, outputs, results, **kwargs):
         matrix = DOCS_MATRIX
     elif kwargs["gate_profile"] == "pr":
         matrix = [CODE_MATRIX[0], CODE_MATRIX[-1]]
-    elif kwargs["gate_profile"] == "large":
-        matrix = []
-    elif kwargs["gate_profile"] == "release":
+    elif kwargs["gate_profile"] in ("release", "large"):
         matrix = [*CODE_MATRIX[:2], {"suite": "tests/ci", "lane": "large", "slug": "ci-large"}, CODE_MATRIX[-1]]
     else:
         matrix = CODE_MATRIX
     kwargs.setdefault("python_matrix", json.dumps(matrix))
+    if results.get("build-python-product") == "fixture-default":
+        product_needed = event != "pull_request" and not (event == "push" and ref == "refs/heads/main") and outputs.get("docs_only") != "true"
+        results = {**results, "build-python-product": "success" if product_needed else "skipped"}
     return module.evaluate_gate(event, ref, outputs, results, **kwargs)
 
 
@@ -188,7 +190,7 @@ class EvaluateCiGateTests(unittest.TestCase):
                 self.assertEqual("skipped", expected["test-rust-platforms"])
                 self.assertEqual("skipped", expected["test-python"])
 
-    def test_only_manual_large_with_empty_python_matrix_may_skip_python(self) -> None:
+    def test_full_nightly_requires_python_and_rejects_old_large_only_matrix(self) -> None:
         module = load_gate_module()
         outputs = classification(**{name: True for name in OUTPUT_NAMES})
         results = {
@@ -206,8 +208,12 @@ class EvaluateCiGateTests(unittest.TestCase):
             "workflow_dispatch", "refs/heads/main", outputs, results,
             gate_profile="large", python_matrix="[]",
         )
-        self.assertTrue(large.ok, large.unexpected)
-        self.assertEqual("skipped", large.expected["test-python"])
+        self.assertFalse(large.ok)
+        self.assertIn("python_matrix", large.unexpected)
+        self.assertEqual("success", large.expected["test-python"])
+        full = evaluate(module, "workflow_dispatch", "refs/heads/main", outputs,
+                        {**results, "test-python": "success"}, gate_profile="large")
+        self.assertTrue(full.ok, full.unexpected)
 
         for event, ref, profile, matrix in (
             ("workflow_dispatch", "refs/heads/main", "main", "[]"),
@@ -233,7 +239,7 @@ class EvaluateCiGateTests(unittest.TestCase):
             gate_profile="large", python_matrix="[]",
         )
         self.assertFalse(failed_python.ok)
-        self.assertEqual(("failure", "skipped"), failed_python.unexpected["test-python"])
+        self.assertEqual(("failure", "success"), failed_python.unexpected["test-python"])
 
         skipped_build = evaluate(module,
             "workflow_dispatch", "refs/heads/main", outputs,
@@ -360,6 +366,7 @@ class EvaluateCiGateTests(unittest.TestCase):
         self.assertEqual("full", evaluation.contour)
         self.assertEqual(
             {
+                "build-python-product",
                 "build-tools",
                 "package-thin",
                 "probe-thin-bootstrap",

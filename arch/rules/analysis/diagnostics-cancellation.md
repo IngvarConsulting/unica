@@ -1,7 +1,7 @@
 ---
 id: INV.APP.DIAGNOSTIC-CANCELLATION
 check:
-  - crates/unica-coder/src/application/diagnostics.rs::diagnostics_cancellation_discards_partial_items
+  - crates/unica-diagnostics/src/coordinator.rs::diagnostics_cancellation_discards_partial_items
 ---
 
 # Отмена диагностики не возвращает частичный успех

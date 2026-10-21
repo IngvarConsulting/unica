@@ -1,0 +1,21 @@
+[package]
+name = "unica-metadata-integration-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+autotests = false
+
+[[test]]
+name = "subsystem_topology"
+path = "tests/subsystem_topology.rs"
+
+[dev-dependencies]
+unica-metadata = { path = "../unica-metadata" }
+unica-metadata-designer = { path = "../unica-metadata-designer" }
+unica-workspace = { path = "../unica-workspace", features = ["test-support"] }
+unica-source-contract = { path = "../unica-source-contract" }
+unica-address = { path = "../unica-address" }
+uuid.workspace = true
+tempfile.workspace = true

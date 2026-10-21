@@ -1,0 +1,26 @@
+[package]
+name = "unica-bsl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+test-support = []
+
+[dependencies]
+diffy.workspace = true
+sha2.workspace = true
+unica-xml-format = { path = "../unica-xml-format" }
+unica-metadata = { path = "../unica-metadata" }
+unica-bsl-parser = { path = "../unica-bsl-parser" }
+unica-operations = { path = "../unica-operations" }
+unica-source-contract = { path = "../unica-source-contract" }
+unica-address = { path = "../unica-address" }
+unica-operation-contract = { path = "../unica-operation-contract" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+unica-metadata = { path = "../unica-metadata" }

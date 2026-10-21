@@ -1,7 +1,7 @@
 ---
 id: INV.CACHE.STATE-OUTSIDE-SOURCE
 check:
-  - crates/unica-coder/src/infrastructure/workspace_services.rs::bsl_analyzer_cache_stays_outside_a_workspace_wide_source_root
+  - crates/unica-coder/tests/platform/workspace_services_integration.rs::bsl_analyzer_cache_stays_outside_a_workspace_wide_source_root
 ---
 
 # Каталог кеша анализатора выбирается вне исходников

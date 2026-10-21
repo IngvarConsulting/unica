@@ -6,11 +6,11 @@ check:
   - crates/unica-coder/src/infrastructure/application_ports.rs::select_platform_version_without_a_request_picks_the_numerically_newest_entry
   - crates/unica-coder/src/infrastructure/application_ports.rs::the_projects_platform_path_pin_names_the_installation_directly
   - crates/unica-coder/src/infrastructure/application_ports.rs::version_constraints_still_apply_to_a_path_pinned_installation
-  - crates/unica-coder/src/infrastructure/platform_help/installation.rs::each_corpus_resolves_its_own_locale
-  - crates/unica-coder/src/infrastructure/kb_1ci.rs::kb_a_build_pin_is_answered_by_its_family_guide_with_a_disclosure
-  - crates/unica-coder/src/infrastructure/kb_1ci.rs::kb_a_build_pin_of_an_absent_family_is_still_refused
-  - crates/unica-coder/src/infrastructure/kb_1ci.rs::kb_provider_names_available_versions_when_the_requested_one_is_absent
-  - crates/unica-coder/src/infrastructure/kb_1ci.rs::administrator_default_node_discovers_hidden_versions_and_reads_the_pinned_family
+  - crates/unica-documentation-sources/src/platform_help/installation.rs::each_corpus_resolves_its_own_locale
+  - crates/unica-documentation-sources/src/kb_1ci.rs::kb_a_build_pin_is_answered_by_its_family_guide_with_a_disclosure
+  - crates/unica-documentation-sources/src/kb_1ci.rs::kb_a_build_pin_of_an_absent_family_is_still_refused
+  - crates/unica-documentation-sources/src/kb_1ci.rs::kb_provider_names_available_versions_when_the_requested_one_is_absent
+  - crates/unica-documentation-sources/src/kb_1ci.rs::administrator_default_node_discovers_hidden_versions_and_reads_the_pinned_family
 gap: https://github.com/IngvarConsulting/unica/issues/597
 ---
 

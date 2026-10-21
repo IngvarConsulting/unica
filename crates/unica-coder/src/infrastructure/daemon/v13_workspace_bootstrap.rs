@@ -1,21 +1,10 @@
 use super::protocol::InvocationRequest;
-use crate::application::invocation::InvocationResponseDeadline;
-use crate::application::invocation_store::ToolIdentity;
-use crate::domain::address::QualifiedAddress;
-use crate::domain::cancellation::{cancelled_error, CancellationToken};
-use crate::domain::code_intelligence::ProviderDeadline;
-use crate::domain::invocation::{DomainResult, InvocationFailure, SafeIdentityHash};
-use crate::domain::project_health::evaluate_project_health;
-use crate::domain::project_sources::{ProjectSourceMap, SourceFormat, SourceSetKind};
-use crate::domain::refusal::RefusalCode;
-use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::platform::secure_read::read_root_relative_regular_file;
-use crate::infrastructure::project_health::{
-    inspect_project_health_continued,
-    resources::{ResourceContinuation, ResourceInspectionProgress, RootCheckContinuationStore},
-};
+use unica_execution::invocation::{InvocationResponseDeadline, INVOCATION_HANDOFF_WINDOW};
+use unica_execution::invocation_store::ToolIdentity;
+use unica_project_health::evaluate_project_health;
+use unica_source_contract::{ProjectSourceMap, SourceFormat, SourceSetKind};
+
 use crate::infrastructure::project_sources::discover_project_source_map_controlled;
-use crate::infrastructure::source_roots::normalize_path_identity;
 use crate::infrastructure::workspace::discover_workspace;
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -23,6 +12,19 @@ use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
+use unica_address::address::QualifiedAddress;
+use unica_execution_contract::invocation::{DomainResult, InvocationFailure, SafeIdentityHash};
+use unica_project_health::inspection::{
+    inspect_project_health_continued,
+    resources::{ResourceContinuation, RootCheckContinuationStore},
+};
+use unica_refusal::RefusalCode;
+use unica_source_contract::workspace::WorkspaceContext;
+use unica_work_control::cancellation::{cancelled_error, CancellationToken};
+use unica_work_control::provider_deadline::ProviderDeadline;
+use unica_workspace::discovery::ProjectDiscoveryReader;
+use unica_workspace::paths::normalize_path_identity;
+use unica_workspace::read::read_root_relative_regular_file;
 
 const PROJECT_CONFIG_MAX_BYTES: usize = 8 * 1024 * 1024;
 
@@ -216,7 +218,7 @@ impl PreparedWorkspaceInspection {
             .as_ref()
             .and_then(|state| state.try_lock().ok());
         if let Some(state) = continuation.as_deref_mut() {
-            state.progress = ResourceInspectionProgress::default();
+            state.reset_progress();
         }
         let result = bootstrap_result(
             context,
@@ -243,7 +245,7 @@ fn check_cancellation(cancellation: &CancellationToken) -> Result<(), Invocation
 }
 
 fn bootstrap_result(
-    context: &crate::domain::workspace::WorkspaceContext,
+    context: &unica_source_contract::workspace::WorkspaceContext,
     source_map: ProjectSourceMap,
     infobase: InfobaseTarget,
     question: RootQuestion,
@@ -258,7 +260,9 @@ fn bootstrap_result(
         "autodetected"
     };
     let external_only = matches!(
-        crate::domain::source_roots::select_project_default_source_set(&source_map.source_sets),
+        unica_source_designer::selection::select_project_default_source_set(
+            &source_map.source_sets
+        ),
         Ok(None)
     );
     let discovered_ready = (source_map.effective_source_set.is_some() || external_only)
@@ -266,7 +270,7 @@ fn bootstrap_result(
         && !source_map.source_sets.is_empty()
         && source_map.source_sets.iter().all(|source| {
             source.source_format == SourceFormat::PlatformXml
-                && source.source_state == crate::domain::project_sources::SourceSetState::Supported
+                && source.source_state == unica_source_contract::SourceSetState::Supported
         });
     // `view {}` отвечает фактами. Здоровье проекта (репозиторий, атрибуты,
     // рабочие файлы) принадлежит вердикту `check {}` и для фактов не
@@ -286,6 +290,8 @@ fn bootstrap_result(
             cancellation,
             ProviderDeadline::no_deadline(),
             continuation.as_deref_mut(),
+            &ProjectDiscoveryReader::new(&context.workspace_root),
+            INVOCATION_HANDOFF_WINDOW,
         );
         Some(
             inspection
@@ -525,7 +531,7 @@ fn bootstrap_result(
         let capacity_limited = readiness_state == "incomplete"
             && continuation
                 .as_ref()
-                .is_some_and(|state| state.progress.capacity_limited);
+                .is_some_and(|state| state.progress().capacity_limited);
         if capacity_limited {
             if let Value::Array(items) = &mut diagnostics {
                 items.push(object([
@@ -569,7 +575,7 @@ fn bootstrap_result(
             ("diagnostics", diagnostics),
         ]);
         if readiness_state == "incomplete" {
-            if let Some(progress) = continuation.as_ref().map(|state| state.progress) {
+            if let Some(progress) = continuation.as_ref().map(|state| state.progress()) {
                 if progress.text_resources > 0 {
                     if let Value::Object(fields) = &mut data {
                         fields.insert(
@@ -984,9 +990,7 @@ pub(super) fn project_config_recipe(source_map: &ProjectSourceMap) -> Option<Str
 #[cfg(test)]
 mod tests {
     use super::{inspect_infobase_target, project_config_recipe};
-    use crate::domain::project_sources::{
-        ProjectSourceMap, ProjectSourceSet, SourceFormat, SourceSetKind,
-    };
+    use unica_source_contract::{ProjectSourceMap, ProjectSourceSet, SourceFormat, SourceSetKind};
 
     fn eol_check_fixture() -> (tempfile::TempDir, std::path::PathBuf) {
         let workspace = tempfile::tempdir().unwrap();
@@ -1023,13 +1027,13 @@ mod tests {
     #[test]
     fn root_check_repeats_after_eol_timeout_and_finishes_with_shared_checkpoint() {
         use super::{prepare, Preparation, RootCheckContinuationStore};
-        use crate::application::invocation::InvocationResponseDeadline;
-        use crate::application::invocation_store::ToolIdentity;
-        use crate::application::ports::TokioClock;
-        use crate::domain::cancellation::CancellationToken;
         use crate::infrastructure::daemon::protocol::InvocationRequest;
-        use crate::infrastructure::project_health::resources::stop_staged_eol_after_for_test;
         use std::sync::Arc;
+        use unica_execution::clock::TokioClock;
+        use unica_execution::invocation::InvocationResponseDeadline;
+        use unica_execution::invocation_store::ToolIdentity;
+        use unica_project_health::inspection::resources::stop_staged_eol_after_for_test;
+        use unica_work_control::cancellation::CancellationToken;
 
         let (_workspace, root) = eol_check_fixture();
         let request = InvocationRequest::new(
@@ -1075,13 +1079,13 @@ mod tests {
     #[test]
     fn root_eol_timeout_keeps_earlier_attribute_failure() {
         use super::{prepare, Preparation, RootCheckContinuationStore};
-        use crate::application::invocation::InvocationResponseDeadline;
-        use crate::application::invocation_store::ToolIdentity;
-        use crate::application::ports::TokioClock;
-        use crate::domain::cancellation::CancellationToken;
         use crate::infrastructure::daemon::protocol::InvocationRequest;
-        use crate::infrastructure::project_health::resources::stop_staged_eol_after_for_test;
         use std::sync::Arc;
+        use unica_execution::clock::TokioClock;
+        use unica_execution::invocation::InvocationResponseDeadline;
+        use unica_execution::invocation_store::ToolIdentity;
+        use unica_project_health::inspection::resources::stop_staged_eol_after_for_test;
+        use unica_work_control::cancellation::CancellationToken;
 
         let (_workspace, root) = eol_check_fixture();
         std::fs::write(
@@ -1131,13 +1135,13 @@ mod tests {
     #[test]
     fn root_check_resumes_inside_working_file_without_losing_attribute_failure() {
         use super::{prepare, Preparation, RootCheckContinuationStore};
-        use crate::application::invocation::InvocationResponseDeadline;
-        use crate::application::invocation_store::ToolIdentity;
-        use crate::application::ports::TokioClock;
-        use crate::domain::cancellation::CancellationToken;
         use crate::infrastructure::daemon::protocol::InvocationRequest;
-        use crate::infrastructure::project_health::resources::stop_working_eol_after_block_for_test;
         use std::sync::Arc;
+        use unica_execution::clock::TokioClock;
+        use unica_execution::invocation::InvocationResponseDeadline;
+        use unica_execution::invocation_store::ToolIdentity;
+        use unica_project_health::inspection::resources::stop_working_eol_after_block_for_test;
+        use unica_work_control::cancellation::CancellationToken;
 
         let (_workspace, root) = eol_check_fixture();
         std::fs::write(
@@ -1214,13 +1218,13 @@ mod tests {
     #[test]
     fn root_check_does_not_recommend_repeat_for_fixed_failure_or_full_checkpoint() {
         use super::{prepare, Preparation, RootCheckContinuationStore};
-        use crate::application::invocation::InvocationResponseDeadline;
-        use crate::application::invocation_store::ToolIdentity;
-        use crate::application::ports::TokioClock;
-        use crate::domain::cancellation::CancellationToken;
         use crate::infrastructure::daemon::protocol::InvocationRequest;
-        use crate::infrastructure::project_health::resources::stop_staged_eol_after_for_test;
         use std::sync::Arc;
+        use unica_execution::clock::TokioClock;
+        use unica_execution::invocation::InvocationResponseDeadline;
+        use unica_execution::invocation_store::ToolIdentity;
+        use unica_project_health::inspection::resources::stop_staged_eol_after_for_test;
+        use unica_work_control::cancellation::CancellationToken;
 
         let (_workspace, root) = eol_check_fixture();
         let request = InvocationRequest::new(
@@ -1290,14 +1294,14 @@ mod tests {
     #[test]
     fn root_inspection_discovers_sources_after_response_handoff() {
         use super::{prepare, Preparation, RootCheckContinuationStore};
-        use crate::application::invocation::InvocationResponseDeadline;
-        use crate::application::invocation_store::ToolIdentity;
-        use crate::application::ports::Clock;
-        use crate::domain::cancellation::CancellationToken;
         use crate::infrastructure::daemon::protocol::InvocationRequest;
         use std::sync::atomic::{AtomicU64, Ordering};
         use std::sync::Arc;
         use std::time::{Duration, Instant};
+        use unica_execution::invocation::InvocationResponseDeadline;
+        use unica_execution::invocation_store::ToolIdentity;
+        use unica_work_control::cancellation::CancellationToken;
+        use unica_work_control::clock::Clock;
 
         struct ManualClock {
             start: Instant,
@@ -1375,12 +1379,12 @@ mod tests {
     #[test]
     fn root_inspection_cancellation_prevents_discovery_and_late_publication() {
         use super::{prepare, Preparation, RootCheckContinuationStore};
-        use crate::application::invocation::InvocationResponseDeadline;
-        use crate::application::invocation_store::ToolIdentity;
-        use crate::application::ports::TokioClock;
-        use crate::domain::cancellation::CancellationToken;
         use crate::infrastructure::daemon::protocol::InvocationRequest;
         use std::sync::Arc;
+        use unica_execution::clock::TokioClock;
+        use unica_execution::invocation::InvocationResponseDeadline;
+        use unica_execution::invocation_store::ToolIdentity;
+        use unica_work_control::cancellation::CancellationToken;
 
         let workspace = tempfile::tempdir().unwrap();
         let root = std::fs::canonicalize(workspace.path()).unwrap();
@@ -1431,7 +1435,7 @@ mod tests {
                 kind: SourceSetKind::Configuration,
                 path: "# source: one".to_string(),
                 source_format: SourceFormat::PlatformXml,
-                source_state: crate::domain::project_sources::SourceSetState::Supported,
+                source_state: unica_source_contract::SourceSetState::Supported,
                 format_evidence: Vec::new(),
                 format_probe_error: None,
             }],
@@ -1458,7 +1462,7 @@ mod tests {
                 kind: SourceSetKind::Configuration,
                 path: "src".to_string(),
                 source_format: SourceFormat::Edt,
-                source_state: crate::domain::project_sources::SourceSetState::Unsupported,
+                source_state: unica_source_contract::SourceSetState::Unsupported,
                 format_evidence: Vec::new(),
                 format_probe_error: None,
             }],
@@ -1519,9 +1523,9 @@ mod tests {
     /// корня нет: без корня объяснять нечего.
     #[test]
     fn workspace_origin_is_named_next_to_every_workspace_root() {
-        use crate::domain::invocation::DomainResult;
         use serde_json::Value;
         use unica_bootstrap::{RootsFallback, WorkspaceOrigin};
+        use unica_execution_contract::invocation::DomainResult;
         let annotated = |data: Value, origin: WorkspaceOrigin| {
             let mut result = DomainResult::success("facts");
             result.data = Some(data);

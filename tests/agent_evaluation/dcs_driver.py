@@ -78,11 +78,11 @@ def disabled_skills():
 
 
 def codex_command(workspace, schema, final, skill_paths):
+    """Build the isolated CLI command shared by acceptance agents and reviewers."""
     command = ["codex", "exec", "--ignore-user-config", "--ignore-rules", "--ephemeral",
                "--json", "--skip-git-repo-check", "--sandbox", "read-only",
                "-C", str(workspace), "--output-schema", str(schema),
-               "--output-last-message", str(final), "-c", 'web_search="disabled"',
-               "-c", "tools.view_image=false"]
+               "--output-last-message", str(final), "-c", 'web_search="disabled"']
     command += ["-c", "project_doc_max_bytes=0"]
     command += ["-c", "features.code_mode=false", "-c", "features.code_mode_only=false"]
     for feature in DISABLED:

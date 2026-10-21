@@ -1,7 +1,7 @@
 ---
 id: INV.WIRE.DAEMON-RESPONSE-TIME
 check:
-  - crates/unica-coder/src/infrastructure/daemon/client_v5.rs::partial_v5_response_bytes_cannot_replenish_client_deadline
+  - crates/unica-daemon/src/client_v5.rs::partial_v5_response_bytes_cannot_replenish_client_deadline
 gap: https://github.com/IngvarConsulting/unica/issues/984
 ---
 

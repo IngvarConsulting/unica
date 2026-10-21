@@ -1,11 +1,11 @@
 ---
 id: INV.APP.RUNTIME-ACTIVE-LEASE-JOIN
 check:
-  - crates/unica-coder/src/infrastructure/runtime_jobs.rs::runtime_shared_work_joins_only_the_exact_active_resource_and_lease
-  - crates/unica-coder/src/infrastructure/runtime_jobs.rs::runtime_shared_work_separates_physical_resources_and_distinct_v4_leases
-  - crates/unica-coder/src/infrastructure/runtime_jobs.rs::stale_runtime_shared_work_authority_starts_no_producer_after_lock_replacement
-  - crates/unica-coder/src/infrastructure/runtime_jobs.rs::replaced_jobs_directory_between_lifecycle_lock_and_admission_starts_no_producer
-  - crates/unica-coder/src/infrastructure/runtime_jobs.rs::symlinked_jobs_directory_between_lifecycle_lock_and_admission_starts_no_producer
+  - crates/unica-coder/src/infrastructure/runtime_jobs_integration.rs::runtime_shared_work_joins_only_the_exact_active_resource_and_lease
+  - crates/unica-coder/src/infrastructure/runtime_jobs_integration.rs::runtime_shared_work_separates_physical_resources_and_distinct_v4_leases
+  - crates/unica-coder/src/infrastructure/runtime_jobs_integration.rs::stale_runtime_shared_work_authority_starts_no_producer_after_lock_replacement
+  - crates/unica-coder/src/infrastructure/runtime_jobs_integration.rs::replaced_jobs_directory_between_lifecycle_lock_and_admission_starts_no_producer
+  - crates/unica-coder/src/infrastructure/runtime_jobs_integration.rs::symlinked_jobs_directory_between_lifecycle_lock_and_admission_starts_no_producer
 ---
 
 # Подключение к runtime требует того же активного владельца ресурса

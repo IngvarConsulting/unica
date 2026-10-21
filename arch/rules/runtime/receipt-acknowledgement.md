@@ -1,10 +1,10 @@
 ---
 id: INV.APP.RECEIPT-ACKNOWLEDGEMENT
 check:
-  - crates/unica-coder/src/application/execution/tests.rs::first_acknowledgement_is_immutable_across_duplicates_and_reopen
-  - crates/unica-coder/src/infrastructure/receipt_ledger/tests/crash_process_tests.rs::ack_crash_after_compact_row_rename_reopens_the_same_tombstone
-  - crates/unica-coder/src/infrastructure/receipt_ledger/tests/crash_process_tests.rs::ack_crash_after_witness_row_before_generation_heals_and_compacts_on_reopen
-  - crates/unica-coder/src/infrastructure/receipt_ledger/tests.rs::rejected_ack_does_not_reclaim_an_unrelated_expired_tombstone
+  - crates/unica-execution/src/coordinator/tests.rs::first_acknowledgement_is_immutable_across_duplicates_and_reopen
+  - crates/unica-execution/src/receipt_store/tests/crash_process_tests.rs::ack_crash_after_compact_row_rename_reopens_the_same_tombstone
+  - crates/unica-execution/src/receipt_store/tests/crash_process_tests.rs::ack_crash_after_witness_row_before_generation_heals_and_compacts_on_reopen
+  - crates/unica-execution/src/receipt_store/tests.rs::rejected_ack_does_not_reclaim_an_unrelated_expired_tombstone
   - crates/unica-coder/src/interfaces/daemon_router.rs::live_daemon_executes_once_and_compacts_the_acknowledged_receipt_to_a_tombstone
   - crates/unica-coder/src/interfaces/daemon_router.rs::malformed_direct_receipt_is_recovered_by_key_and_only_the_strict_one_is_acknowledged
 gap: https://github.com/IngvarConsulting/unica/issues/1119

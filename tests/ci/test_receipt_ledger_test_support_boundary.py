@@ -17,7 +17,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "ci" / "check-receipt-ledger-test-support-boundary.py"
-SOURCE_PATH = Path("crates/unica-coder/src/infrastructure/daemon/runtime_v5.rs")
+SOURCE_PATH = Path("crates/unica-execution/src/receipt_runtime.rs")
 
 ATTR = '#[cfg(feature = "receipt-ledger-test-support")]'
 
@@ -38,6 +38,16 @@ def run_guard(root: Path) -> subprocess.CompletedProcess[str]:
 
 
 class ReceiptLedgerTestSupportBoundaryTests(unittest.TestCase):
+    def test_feature_cannot_gate_a_statement_in_another_component(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "crates/unica-execution/src/probe.rs"
+            source.parent.mkdir(parents=True)
+            source.write_text(f"fn run() {{\n{ATTR}\nlet bypass = true;\n}}\n", encoding="utf-8")
+            result = run_guard(root)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("crates/unica-execution/src/probe.rs:2:", result.stdout)
+
     def test_feature_attributes_gate_items_not_statements(self) -> None:
         """Живое дерево: ни одного признака на операторе и ни одного `not(feature)`."""
         result = run_guard(REPO_ROOT)

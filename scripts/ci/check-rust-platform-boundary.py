@@ -22,6 +22,13 @@ WINDOWS_SYS_ROOT_IMPORT = re.compile(
     r"\b(?:use|extern\s+crate)\s+(?:::)?(?P<crate>windows_sys)\b"
 )
 HOST_FACADE_ROOTS = ("crates/unica-bootstrap/src/host/",)
+PLATFORM_FACADE_ROOTS = (
+    "crates/unica-bootstrap/src/platform/",
+    "crates/unica-coder/src/infrastructure/platform/",
+    "crates/unica-process/src/platform/",
+    "crates/unica-workspace/src/platform/",
+    "crates/unica-artifact-delivery/src/platform/",
+)
 HOST_ENVIRONMENT_VARIABLES = (
     "CODEX_HOME", "CLAUDE_PLUGIN_DATA", "CLAUDE_PLUGIN_ROOT", "CLAUDE_PROJECT_DIR",
     "ZCODE_PROJECT_DIR", "ZCODE_PLUGIN_ROOT", "ZCODE_PLUGIN_DATA",
@@ -68,6 +75,22 @@ HOST_MARKER_KINDS = {
     "manifest": "host manifest directory",
     "name": "host name",
 }
+# Semantic packages retain the former domain boundary after physical relocation.
+DOMAIN_COMPONENTS = frozenset({
+    "unica-address", "unica-source-contract", "unica-operation-contract",
+    "unica-metadata", "unica-forms", "unica-roles", "unica-dcs", "unica-xdto",
+    "unica-templates", "unica-bsl", "unica-bindings", "unica-documentation",
+})
+
+
+def _is_domain_source(path: PurePosixPath) -> bool:
+    parts = path.parts
+    return path.as_posix().startswith("crates/unica-coder/src/domain/") or (
+        len(parts) >= 4 and parts[0] == "crates"
+        and parts[2] == "src" and (parts[1] in DOMAIN_COMPONENTS or parts[3] == "model")
+    )
+
+
 FORBIDDEN_DOMAIN_IMPORTS = ("application", "infrastructure", "interfaces")
 FORBIDDEN_APPLICATION_IMPORTS = ("infrastructure", "interfaces")
 # An adapter that reached into `interfaces` could render an MCP response itself
@@ -109,9 +132,7 @@ def _is_platform_test(path: PurePosixPath) -> bool:
 
 def _is_platform_facade(path: PurePosixPath) -> bool:
     normalized = path.as_posix()
-    return normalized.startswith("crates/unica-coder/src/infrastructure/platform/") or normalized.startswith(
-        "crates/unica-bootstrap/src/platform/"
-    )
+    return any(normalized.startswith(root) for root in PLATFORM_FACADE_ROOTS)
 
 
 def _is_host_test(path: PurePosixPath) -> bool:
@@ -285,6 +306,11 @@ def _platform_diagnostics(path: PurePosixPath, source: str, masked: str) -> list
         return []
 
     diagnostics: list[str] = []
+    for match in re.finditer(r"\bpub\s+mod\s+platform\b", masked):
+        diagnostics.append(
+            _diagnostic(path, _line_number(source, match.start()),
+                        "platform implementation module must be private")
+        )
     for match in CFG_INVOCATION.finditer(masked):
         expression_end = _cfg_expression_end(masked, match.end() - 1)
         if OS_CFG_TERM.search(masked[match.start() : expression_end]):
@@ -336,7 +362,7 @@ def _host_diagnostics(path: PurePosixPath, source: str) -> list[str]:
 
 def _forbidden_imports(path: PurePosixPath) -> tuple[str, ...]:
     normalized = path.as_posix()
-    if normalized.startswith("crates/unica-coder/src/domain/"):
+    if _is_domain_source(path):
         return FORBIDDEN_DOMAIN_IMPORTS
     if normalized.startswith("crates/unica-coder/src/application/"):
         return FORBIDDEN_APPLICATION_IMPORTS
@@ -347,6 +373,8 @@ def _forbidden_imports(path: PurePosixPath) -> tuple[str, ...]:
 
 def _layer_name(path: PurePosixPath) -> str:
     normalized = path.as_posix()
+    if _is_domain_source(path):
+        return "domain"
     for layer in ("domain", "application", "infrastructure"):
         if f"/src/{layer}/" in normalized:
             return layer
@@ -659,7 +687,7 @@ def _path_io_ufcs_method_pattern(
 
 
 def _domain_io_diagnostics(path: PurePosixPath, source: str, masked: str) -> list[str]:
-    if not path.as_posix().startswith("crates/unica-coder/src/domain/"):
+    if not _is_domain_source(path):
         return []
 
     diagnostics: list[str] = []

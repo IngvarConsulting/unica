@@ -1,7 +1,7 @@
 ---
 id: INV.RUNTIME.SERVICE-TOKEN
 check:
-  - crates/unica-coder/src/infrastructure/workspace_services.rs::service_protocol_rejects_invalid_token_and_accepts_ping
+  - crates/unica-coder/tests/platform/workspace_services_integration.rs::service_protocol_rejects_invalid_token_and_accepts_ping
 ---
 
 # Внутренний сервис требует токен своего запуска

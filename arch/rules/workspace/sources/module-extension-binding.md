@@ -1,7 +1,7 @@
 ---
 id: INV.SOURCE.MODULE-EXTENSION-BINDING
 check:
-  - crates/unica-coder/src/infrastructure/bsl_module_projection.rs::extension_annotations_resolve_independently_from_compilation_directives
+  - crates/unica-bindings-integration-tests/tests/projection.rs::extension_annotations_resolve_independently_from_compilation_directives
 gap: https://github.com/IngvarConsulting/unica/issues/973
 ---
 

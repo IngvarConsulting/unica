@@ -1,11 +1,11 @@
 ---
 id: INV.CACHE.GENERATION-CUTOVER
 check:
-  - crates/unica-coder/src/infrastructure/workspace_index.rs::legacy_ready_marker_requires_an_isolated_build_before_becoming_active
-  - crates/unica-coder/src/infrastructure/workspace_index.rs::legacy_status_and_lock_do_not_gate_builder_15
-  - crates/unica-coder/src/infrastructure/workspace_index.rs::current_pair_scoped_builder_14_bytes_are_ignored_and_preserved
-  - crates/unica-coder/src/infrastructure/workspace_index.rs::active_build_rejects_db_outside_declared_build_directory
-  - crates/unica-coder/src/infrastructure/workspace_index.rs::builder_17_uses_a_new_generation_and_leaves_older_generations_untouched
+  - crates/unica-adapter-rlm/tests/platform/index.rs::legacy_ready_marker_requires_an_isolated_build_before_becoming_active
+  - crates/unica-adapter-rlm/tests/platform/index.rs::legacy_status_and_lock_do_not_gate_builder_15
+  - crates/unica-adapter-rlm/tests/platform/index.rs::current_pair_scoped_builder_14_bytes_are_ignored_and_preserved
+  - crates/unica-adapter-rlm/tests/platform/index.rs::active_build_rejects_db_outside_declared_build_directory
+  - crates/unica-adapter-rlm/tests/platform/index.rs::builder_17_uses_a_new_generation_and_leaves_older_generations_untouched
 ---
 
 # Несовместимая версия RLM строит отдельный индекс

@@ -67,7 +67,7 @@ description: Выбор, написание, запуск и ревью тест
   отдельного каталога.
 - Изолируй временные файлы, процессы и состояние; освобождай ресурсы и при
   падении. Для unit-тестов `unica-coder` проверь существующие помощники в
-  `crates/unica-coder/src/test_support.rs`: снимок дерева, идентичность пути,
+  `crates/unica-workspace/src/test_support/shared.rs`: снимок дерева, идентичность пути,
   восстановление текущего каталога. Управляй временем и случайностью там,
   где они влияют на результат. Повтор, произвольный sleep или `ignore`
   не устраняет причину нестабильности.
@@ -144,12 +144,21 @@ Rust items: например, функцию, модуль или `impl`. Не �
 и команды `scripts/research/` выбирай только для соответствующей задачи.
 
 `scripts/ci/run-tests.py` выбирает наборы целиком. `--profile pr` допускает
-`small`, `queue`/`main` — `small` и `medium`, `release`/`all` — все размеры.
+`small`, `queue`/`main` — `small` и `medium`, `release`/`all`/`large` — все размеры.
 `--ecosystem rust|python|all` сужает экосистему; `--suite tests/ci|tests/dev`
 и `--only-size` относятся только к Python. `--dry-run` лишь печатает команды.
-Профиль `large` на Linux/macOS выбирает тяжёлые Rust-тесты, а на Windows —
-весь Rust-набор, кроме одного явно исключённого теста; сверяй текущий override
-в `.config/nextest.toml`.
+Ночной профиль ворот `large` выбирает nextest `nightly-full`, полный Rust-набор
+и оба Python suites. На Windows сохраняется явно исключённый тест; сверяй
+override в `.config/nextest.toml`. Nextest-профиль `large` остаётся каталогом
+тяжёлых тестов для классификатора размеров; это другое назначение.
+
+В CI `--phase build` создаёт один архив и полный план для `--rust-lane`
+`ordinary`, `receipt` или `vendor`; `--phase run` исполняет shard из `--prepared`
+без Cargo-компиляции. `--phase verify` сверяет объединение результатов с полным
+планом по ревизии, ОС, конфигурации и попытке workflow. Для локальной точечной
+проверки сохраняй обычный nextest-вызов. Ограничения переносимости архивов,
+подготовленный ordinary binary для Python и теневой selector описаны
+в [конвейере](references/ci-pipeline.md).
 
 При изменении навыков или поверхности, охваченных `tests/agent_evaluation`,
 запускай [приёмку агентом Codex](../../../CONTRIBUTING.md#приёмка-агентом-codex).
