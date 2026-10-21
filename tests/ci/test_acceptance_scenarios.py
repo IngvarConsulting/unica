@@ -1906,7 +1906,6 @@ class AcceptanceCorpusScheduleTests(unittest.TestCase):
                     with self.assertRaisesRegex(AssertionError, "did not cover the corpus exactly once"):
                         run_corpus(self, corpus)
 
-
     def test_a_failing_worker_stops_the_others_and_raises(self) -> None:
         calls = []
 
