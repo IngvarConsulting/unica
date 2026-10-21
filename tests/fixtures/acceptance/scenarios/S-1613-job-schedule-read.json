@@ -25,37 +25,37 @@
         {
           "kind": "sha256",
           "path": "src/Configuration.xml",
-          "eq": "4ecaaea1d1c952429de493022eebb69cdee068c12ddb8e0adcf8237306076e87"
+          "eq": "0752ec883ba9cb3805dff05539c75c0268db1334e93fc828286f5e34a767a1fe"
         },
         {
           "kind": "sha256",
           "path": "src/ScheduledJobs/Market/Ext/Schedule.xml",
-          "eq": "74c532f6c268cec2fb96a39b377eb1c0a3e4eaddfe0caefd16f95f8c2080e139"
+          "eq": "4e53eea081d683d8aa785fc8ed603774f0ca4e42c11a7c975982b9868f88b206"
         },
         {
           "kind": "sha256",
           "path": "src/ScheduledJobs/Market.xml",
-          "eq": "bc374c93b65a5dc3301bbd624fa604175bf432a7c9d2a6a85ff0a70b9412fd48"
+          "eq": "4f3479a95aa376f1536e50044804d29bd412106dc0f399f93f50a220f37f12da"
         },
         {
           "kind": "sha256",
           "path": "src/ScheduledJobs/Missing.xml",
-          "eq": "eb6b7773552f9770504375917a0c1be5a2a1d9eb881cfcf70c1ce72f11145bee"
+          "eq": "87cd2144d521c745ab677a7d2681f280bc4352728174b73cc035e19bfc641e02"
         },
         {
           "kind": "sha256",
           "path": "src/ScheduledJobs/MonthClose/Ext/Schedule.xml",
-          "eq": "2a52c376b9e54f764799457344a0d2cae1b1e2f9a53862bbb309ebe53aa7f31b"
+          "eq": "f7b78663c45f6056fe647a8557ff9d06ad1c7864f8d52b53a5834f9abe2b085b"
         },
         {
           "kind": "sha256",
           "path": "src/ScheduledJobs/MonthClose.xml",
-          "eq": "056175b30fbfc859964daa532c5c04e87aeadd5706ad408e83f8f8fd70e5c74e"
+          "eq": "87c4256747e9b8406726a64c16759b55af9d51f9dfadb9e291739fe063fc2177"
         },
         {
           "kind": "sha256",
           "path": "v8project.yaml",
-          "eq": "6fa50678d415c16f6fc4127bd3e86d1e262428d161c7bc00e3e808f5b69fbe41"
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
         }
       ]
     },
@@ -459,37 +459,37 @@
         {
           "kind": "sha256",
           "path": "src/Configuration.xml",
-          "eq": "4ecaaea1d1c952429de493022eebb69cdee068c12ddb8e0adcf8237306076e87"
+          "eq": "0752ec883ba9cb3805dff05539c75c0268db1334e93fc828286f5e34a767a1fe"
         },
         {
           "kind": "sha256",
           "path": "src/ScheduledJobs/Market/Ext/Schedule.xml",
-          "eq": "74c532f6c268cec2fb96a39b377eb1c0a3e4eaddfe0caefd16f95f8c2080e139"
+          "eq": "4e53eea081d683d8aa785fc8ed603774f0ca4e42c11a7c975982b9868f88b206"
         },
         {
           "kind": "sha256",
           "path": "src/ScheduledJobs/Market.xml",
-          "eq": "bc374c93b65a5dc3301bbd624fa604175bf432a7c9d2a6a85ff0a70b9412fd48"
+          "eq": "4f3479a95aa376f1536e50044804d29bd412106dc0f399f93f50a220f37f12da"
         },
         {
           "kind": "sha256",
           "path": "src/ScheduledJobs/Missing.xml",
-          "eq": "eb6b7773552f9770504375917a0c1be5a2a1d9eb881cfcf70c1ce72f11145bee"
+          "eq": "87cd2144d521c745ab677a7d2681f280bc4352728174b73cc035e19bfc641e02"
         },
         {
           "kind": "sha256",
           "path": "src/ScheduledJobs/MonthClose/Ext/Schedule.xml",
-          "eq": "2a52c376b9e54f764799457344a0d2cae1b1e2f9a53862bbb309ebe53aa7f31b"
+          "eq": "f7b78663c45f6056fe647a8557ff9d06ad1c7864f8d52b53a5834f9abe2b085b"
         },
         {
           "kind": "sha256",
           "path": "src/ScheduledJobs/MonthClose.xml",
-          "eq": "056175b30fbfc859964daa532c5c04e87aeadd5706ad408e83f8f8fd70e5c74e"
+          "eq": "87c4256747e9b8406726a64c16759b55af9d51f9dfadb9e291739fe063fc2177"
         },
         {
           "kind": "sha256",
           "path": "v8project.yaml",
-          "eq": "6fa50678d415c16f6fc4127bd3e86d1e262428d161c7bc00e3e808f5b69fbe41"
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
         },
         {
           "kind": "exists",
