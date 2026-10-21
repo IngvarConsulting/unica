@@ -470,6 +470,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertEqual(sarif["with"]["category"], "clippy-${{ matrix.runner }}")
         self.assertIn("always()", condition(sarif))
         self.assertIn("hashFiles('clippy.sarif') != ''", condition(sarif))
+        self.assertIn("matrix.runner == 'ubuntu-latest'", condition(sarif))
         self.assertEqual(lint["permissions"], {"contents": "read", "security-events": "write"})
         clippy = next(step for step in steps(lint) if "cargo clippy" in step.get("run", ""))
         self.assertNotIn("continue-on-error", clippy)

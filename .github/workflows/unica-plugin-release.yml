@@ -771,7 +771,11 @@ jobs:
             echo "::error::Clippy отдельно не проходят: ${failed[*]}"
             exit 1
           fi
-      - if: always() && hashFiles('clippy.sarif') != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+      # Code Scanning получает SARIF только с Linux: на macOS отказ Clippy
+      # и так валит джобу через -D warnings. Ночной Windows advisory (#1523),
+      # его отказ остаётся только в логе джобы. Категория сохраняет прежнее
+      # имя `clippy-ubuntu-latest`, чтобы не потерять историю оповещений.
+      - if: always() && matrix.runner == 'ubuntu-latest' && hashFiles('clippy.sarif') != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
         uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
           sarif_file: clippy.sarif

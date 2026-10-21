@@ -160,21 +160,29 @@ class SizeGuardTests(unittest.TestCase):
 
     def test_measured_volume_case_is_exact_medium_without_its_layout_neighbor(self) -> None:
         module = load_size_filters()
-        binary_id, binary_name, name = module.MEASURED_MEDIUM_CASES[0]
-        listed = {"rust-suites": {binary_id: {
-            "kind": "lib", "binary-id": binary_id, "binary-name": binary_name,
-            "testcases": {name: {}},
-        }}}
-        terms = module.medium_terms(listed, {})
-        self.assertEqual(terms, [f"(binary({binary_name}) & test(/^{re.escape(name)}$/))"])
-        self.assertIn(terms[0], self.medium)
-        pattern = re.search(r"test\(/(.*?)/\)", terms[0])[1]
-        self.assertIsNotNone(re.fullmatch(pattern, name))
+        suites = {}
+        for binary_id, binary_name, name in module.MEASURED_MEDIUM_CASES:
+            suite = suites.setdefault(binary_id, {
+                "kind": "lib", "binary-id": binary_id, "binary-name": binary_name, "testcases": {},
+            })
+            suite["testcases"][name] = {}
+        terms = module.medium_terms({"rust-suites": suites}, {})
+        expected = sorted(
+            f"(binary({binary_name}) & test(/^{re.escape(name)}$/))"
+            for _, binary_name, name in module.MEASURED_MEDIUM_CASES
+        )
+        self.assertEqual(terms, expected)
         spec = importlib.util.spec_from_file_location("allure_results", REPO_ROOT / "scripts" / "ci" / "allure_results.py")
         results = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(results)
         matcher = results.SizeMatcher.from_toml(NEXTEST_TOML)
-        self.assertEqual(matcher.size(binary_id, name), "medium")
+        for (binary_id, _, name), term in zip(module.MEASURED_MEDIUM_CASES, module.measured_medium_terms({"rust-suites": suites}), strict=True):
+            with self.subTest(name=name):
+                self.assertIn(term, self.medium)
+                self.assertIsNotNone(re.fullmatch(re.search(r"test\(/(.*?)/\)", term)[1], name))
+                self.assertEqual(matcher.size(binary_id, name), "medium")
+        binary_id, binary_name, name = module.MEASURED_MEDIUM_CASES[0]
+        pattern = re.search(r"test\(/(.*?)/\)", module.measured_medium_terms({"rust-suites": suites})[0])[1]
         for neighbor in [name + "_neighbor", name.rsplit("::", 1)[0] + "::malformed_project_config_is_a_typed_incomplete_snapshot"]:
             self.assertIsNone(re.fullmatch(pattern, neighbor))
             self.assertNotIn(f"test(/^{re.escape(neighbor)}$/)", self.medium)
