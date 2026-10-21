@@ -304,7 +304,9 @@ class IgnoredJUnitArchiveTests(unittest.TestCase):
 class ShadowArchiveTests(unittest.TestCase):
     def run_shadow(self, lane, packages, *, listing_failure=False, full_failure=False, ignored_annotation=False):
         """Run the real archive control flow with a bounded nextest CLI oracle."""
-        with tempfile.TemporaryDirectory() as temporary:
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(
+            lanes.os.environ, {"GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2"}
+        ):
             root = Path(temporary)
             prepared = root / "prepared"
             prepared.mkdir()
@@ -313,7 +315,7 @@ class ShadowArchiveTests(unittest.TestCase):
             package = "ureq" if lane == "vendor" else "unica-coder"
             case = {"binary": package, "name": "lane_case", "ignored": False}
             plan = manifest(lane)
-            plan.update(workspace=str(root.resolve()), nextestVersion="fixture nextest",
+            plan.update(workspace=str(root.resolve()), nextestVersion="fixture nextest", runId="123", attempt="2",
                         inventory=[case], shards=[[case]],
                         archiveSha256=lanes.prepared_binary.digest(archive), archiveBytes=archive.stat().st_size)
             if ignored_annotation:

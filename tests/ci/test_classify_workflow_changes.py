@@ -98,14 +98,14 @@ class GitEventClassificationTests(unittest.TestCase):
             self.assertEqual("https://github.com/owner/repo/actions/runs/123", marker["run_url"])
             self.assertEqual("2", marker["run_attempt"])
             self.assertEqual({"reason": "docs_only", "base_sha": base, "head_sha": head}, marker["scope_skip"])
-        # Exercise the artifact handoff, including GitHub's unexpanded name
-        # for a whole skipped matrix. No previous inventory means no test cases.
+        # Exercise the artifact handoff through the skipped inventory aggregate.
+        # No previous inventory means no test cases.
         collector_path = Path(__file__).resolve().parents[2] / "scripts/ci/collect-results.py"
         spec = importlib.util.spec_from_file_location("collect_event_results", collector_path)
         collector = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(collector)
         jobs = repo / "jobs.json"
-        jobs.write_text(json.dumps({"jobs": [{"name": "Rust tests (${{ matrix.runner }})", "conclusion": "skipped"}]}))
+        jobs.write_text(json.dumps({"jobs": [{"name": "Rust tests (complete inventory)", "conclusion": "skipped"}]}))
         collector.collect(repo / "routing", repo / "report", jobs, "", "")
         report = json.loads((repo / "report/main/run.json").read_text())
         self.assertEqual(head, report["sha"])
