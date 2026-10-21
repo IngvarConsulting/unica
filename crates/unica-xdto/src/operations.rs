@@ -225,6 +225,12 @@ pub struct XdtoAddValueTypeArgs {
 pub struct XdtoAddObjectTypeArgs {
     pub at: QualifiedAddress,
     pub name: XmlNcName,
+    /// A local object type the new one extends.
+    pub base: Option<PrefixedXmlQName>,
+    /// The object type the new one is inserted immediately before.
+    pub before: Option<XmlNcName>,
+    /// The object type the new one is inserted immediately after.
+    pub after: Option<XmlNcName>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -315,9 +321,16 @@ impl XdtoOperation {
                 json!({"values":{"name":"AddedValue", "base":"xs:string"}}),
             ),
             Self::AddObjectType => (
-                Some(object(&[("name", ncname())], &["name"])),
+                Some({
+                    let mut values = object(
+                        &[("name", ncname()), ("base", qname()), ("before", ncname()), ("after", ncname())],
+                        &["name"],
+                    );
+                    values["not"] = json!({"required":["before", "after"]});
+                    values
+                }),
                 "The XDTO package: <source-set>:XDTOPackage.<Name>.",
-                "Add a named empty object type.",
+                "Add a named object type with an optional local base, immediately before or after an existing object type or appended, preserving existing bytes and order. The base and its whole chain must resolve to local object types without a cycle; an imported base is not supported. An earlier operation on the same package may create the base or the neighbour.",
                 json!({"values":{"name":"AddedObject"}}),
             ),
             Self::AddProperty => (
@@ -384,9 +397,18 @@ impl XdtoOperation {
                 }))
             })?,
             Self::AddObjectType => reader.required_object("values", |values| {
+                if values.has("before") && values.has("after") {
+                    return Err(invalid(
+                        &format!("{}.after", values.path),
+                        "before and after are mutually exclusive",
+                    ));
+                }
                 Ok(XdtoPlanOperation::AddObjectType(XdtoAddObjectTypeArgs {
                     at,
                     name: values.ncname("name")?,
+                    base: values.optional_qname("base")?,
+                    before: values.optional_ncname("before")?,
+                    after: values.optional_ncname("after")?,
                 }))
             })?,
             Self::AddProperty => reader.required_object("values", |values| {
@@ -574,15 +596,31 @@ impl<'a> ArgumentReader<'a> {
         self.object.contains_key(key)
     }
 
-    fn optional_qname(&mut self, key: &str) -> Result<Option<PrefixedXmlQName>, ContractError> {
-        let value = self.read(key, |value, shape, path| {
+    fn optional_text(&mut self, key: &str) -> Result<Option<String>, ContractError> {
+        self.read(key, |value, shape, path| {
             shape.validate_field(value, path)?;
             value
                 .as_str()
                 .map(str::to_owned)
                 .ok_or_else(|| invalid(path, "expected text"))
-        })?;
-        let Some(value) = value else {
+        })
+    }
+
+    fn optional_ncname(&mut self, key: &str) -> Result<Option<XmlNcName>, ContractError> {
+        let Some(value) = self.optional_text(key)? else {
+            return Ok(None);
+        };
+        if !xml_ncname_is_valid(&value) {
+            return Err(invalid(
+                &format!("{}.{key}", self.path),
+                "value must be an XML NCName",
+            ));
+        }
+        Ok(Some(XmlNcName(value)))
+    }
+
+    fn optional_qname(&mut self, key: &str) -> Result<Option<PrefixedXmlQName>, ContractError> {
+        let Some(value) = self.optional_text(key)? else {
             return Ok(None);
         };
         if !qname_is_valid(&value) {
@@ -816,6 +854,65 @@ mod tests {
                     .unwrap_err()
                     .path,
                 "ops[7].args.ignored"
+            );
+        }
+    }
+
+    #[test]
+    fn xdto_object_contract_publishes_base_and_one_exclusive_position() {
+        let operation = XdtoOperation::AddObjectType;
+        let contract = operation.contract();
+        let schema = jsonschema::validator_for(&contract.schema).unwrap();
+        for value in [
+            json!({"at":"main:XDTOPackage.Sample","values":{"name":"Child","base":"tns:Base","before":"Next"}}),
+            json!({"at":"main:XDTOPackage.Sample","values":{"name":"Child","after":"Previous"}}),
+            json!({"at":"main:XDTOPackage.Sample","values":{"name":"Child"}}),
+        ] {
+            assert!(schema.is_valid(&value), "{value}");
+            operation.decode(&value, "ops[0].args", "main").unwrap();
+        }
+        let XdtoPlanOperation::AddObjectType(args) = operation
+            .decode(
+                &json!({"at":"main:XDTOPackage.Sample","values":{"name":"Child","base":"tns:Base","after":"Previous"}}),
+                "ops[0].args",
+                "main",
+            )
+            .unwrap()
+        else {
+            panic!("objectType.add keeps its typed intent");
+        };
+        assert_eq!(args.base, Some(PrefixedXmlQName("tns:Base".into())));
+        assert_eq!(args.before, None);
+        assert_eq!(args.after, Some(XmlNcName("Previous".into())));
+        for (value, path) in [
+            (
+                json!({"values":{"name":"Child","before":"A","after":"B"}}),
+                "ops[0].args.values.after",
+            ),
+            (
+                json!({"values":{"name":"Child","base":null}}),
+                "ops[0].args.values.base",
+            ),
+            (
+                json!({"values":{"name":"Child","base":"Base"}}),
+                "ops[0].args.values.base",
+            ),
+            (
+                json!({"values":{"name":"Child","unknown":true}}),
+                "ops[0].args.values.unknown",
+            ),
+            (json!({"name":"Child"}), "ops[0].args.name"),
+        ] {
+            let mut value = value;
+            value["at"] = json!("main:XDTOPackage.Sample");
+            assert!(!schema.is_valid(&value), "{value}");
+            assert_eq!(
+                operation
+                    .decode(&value, "ops[0].args", "main")
+                    .unwrap_err()
+                    .path,
+                path,
+                "{value}"
             );
         }
     }

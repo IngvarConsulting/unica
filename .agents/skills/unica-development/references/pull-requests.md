@@ -66,6 +66,10 @@
   никогда перебазированием, и прогоните затронутые проверки локально.
 - Перед push правок Rust: `cargo fmt --all -- --check` и
   `cargo clippy --workspace --all-targets --all-features -- -D warnings`.
+  Если изменение снимает или переименовывает `#[test]`, объявите это строками
+  `Removes-test:` в описании PR и проверьте до push:
+  `python3.12 scripts/ci/removed_tests.py --base origin/main --description-file <описание>`
+  (нужен Python 3.11+).
   Остальные проверки до push выбирайте по
   [unica-testing](../../unica-testing/SKILL.md#что-запускать).
 - Подготовленный коммит проходит проверки и ревью по

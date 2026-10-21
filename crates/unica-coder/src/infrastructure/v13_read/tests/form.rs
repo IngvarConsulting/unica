@@ -1109,3 +1109,214 @@ fn external_form_metadata_uses_the_local_descriptor_without_a_companion() {
         );
     }
 }
+
+fn all_dynamic_event_items<A: ViewReadAuthority>(
+    service: &ViewService<A>,
+    branch: &str,
+) -> Vec<serde_json::Value> {
+    let mut items = Vec::new();
+    let mut cursor = None;
+    loop {
+        let mut request = ViewRequest::new(branch).unwrap().with_limit(50).unwrap();
+        if let Some(saved) = cursor.take() {
+            request = request.with_cursor(saved);
+        }
+        let page = service.view(request);
+        items.extend(view_items(&page));
+        cursor = page.cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    items
+}
+
+fn install_dynamic_list_context_fixture(fixture: &RealReaderFixture) {
+    for relative in [
+        "Catalogs/Items.xml",
+        "Catalogs/Items/Forms/List.xml",
+        "Catalogs/Items/Forms/List/Ext/Form.xml",
+        "Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
+    ] {
+        copy_fixture(
+            &format!("acceptance/workspace-dynamic-list-context/src/{relative}"),
+            &fixture.source.join(relative),
+        );
+    }
+}
+
+#[test]
+fn dynamic_list_no_context_handlers_are_implemented_in_event_collection_and_detail() {
+    for directive in [
+        "&НаСервереБезКонтекста",
+        "&AtServerNoContext",
+        "&НаСервере",
+        "&AtServer",
+    ] {
+        let fixture = RealReaderFixture::new();
+        install_dynamic_list_context_fixture(&fixture);
+        let module = fixture
+            .source
+            .join("Catalogs/Items/Forms/List/Ext/Form/Module.bsl");
+        let source = fs::read_to_string(&module)
+            .unwrap()
+            .replace("&НаСервереБезКонтекста", directive);
+        fs::write(&module, &source).unwrap();
+        let form = fixture
+            .source
+            .join("Catalogs/Items/Forms/List/Ext/Form.xml");
+        let form_before = fs::read(&form).unwrap();
+        let service = fixture.view_service();
+        let branch = "main:Catalog.Items.Form.List.Item.List.Event";
+        let items = all_dynamic_event_items(&service, branch);
+        let listed = items
+            .iter()
+            .find(|event| event["title"] == "OnGetDataAtServer")
+            .unwrap_or_else(|| panic!("dynamic list event absent from page: {items:?}"));
+        let detail = service.view(ViewRequest::new(listed["at"].as_str().unwrap()).unwrap());
+        assert!(detail.ok, "{directive}: {detail:?}");
+        let data = detail.data.unwrap();
+        for value in [listed, &data] {
+            assert_eq!(
+                value["props"]["state"], "implemented",
+                "{directive}: {value}"
+            );
+            assert_eq!(value["props"]["handler"], "ПолучитьДанные");
+            assert_eq!(value["props"]["binding"], "property");
+            assert_eq!(value["props"]["callType"], serde_json::Value::Null);
+            assert_eq!(value["props"]["contexts"], json!(["server"]));
+            assert_eq!(
+                value["props"]["signature"],
+                "Процедура ПриПолученииДанныхНаСервере(ИмяЭлемента, Настройки, Строки)"
+            );
+            assert_eq!(
+                value["props"]["implementationAt"],
+                "main:Catalog.Items.Form.List.Module.Form.Method.ПолучитьДанные"
+            );
+        }
+        assert_eq!(fs::read(&form).unwrap(), form_before);
+        assert_eq!(fs::read_to_string(&module).unwrap(), source);
+    }
+}
+
+#[test]
+fn dynamic_list_no_context_rule_keeps_incompatible_bindings_invalid() {
+    let original_module = fixture_text("acceptance/workspace-dynamic-list-context/src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl");
+    let original_form = fixture_text(
+        "acceptance/workspace-dynamic-list-context/src/Catalogs/Items/Forms/List/Ext/Form.xml",
+    );
+    for variant in [
+        "client",
+        "function",
+        "extra-required",
+        "foreign-signature",
+        "duplicate",
+        "call-type",
+        "shorter-compatible",
+    ] {
+        let fixture = RealReaderFixture::new();
+        install_dynamic_list_context_fixture(&fixture);
+        let source = match variant {
+            "client" => original_module.replacen("&НаСервереБезКонтекста", "&НаКлиенте", 1),
+            "function" => original_module
+                .replacen("Процедура ПолучитьДанные", "Функция ПолучитьДанные", 1)
+                .replacen("КонецПроцедуры", "КонецФункции", 1),
+            "extra-required" => original_module.replace(
+                "ИмяЭлемента, Настройки, Строки)",
+                "ИмяЭлемента, Настройки, Строки, Дополнительный)",
+            ),
+            "foreign-signature" => original_module.replace(
+                "ИмяЭлемента, Настройки, Строки)",
+                "Элемент, ВыбраннаяСтрока, Поле, СтандартнаяОбработка)",
+            ),
+            "shorter-compatible" => original_module
+                .replace("ИмяЭлемента, Настройки, Строки)", "ИмяЭлемента, Настройки)"),
+            _ => original_module.clone(),
+        };
+        let form = match variant {
+            "duplicate" => original_form.replace("<Event name=\"OnGetDataAtServer\">ПолучитьДанные</Event>", "<Event name=\"OnGetDataAtServer\">ПолучитьДанные</Event><Event name=\"OnGetDataAtServer\">ПолучитьДанные</Event>"),
+            "call-type" => original_form.replace("name=\"OnGetDataAtServer\"", "name=\"OnGetDataAtServer\" callType=\"After\""),
+            _ => original_form.clone(),
+        };
+        let module_path = fixture
+            .source
+            .join("Catalogs/Items/Forms/List/Ext/Form/Module.bsl");
+        let form_path = fixture
+            .source
+            .join("Catalogs/Items/Forms/List/Ext/Form.xml");
+        write(&module_path, &source);
+        write(&form_path, &form);
+        let service = fixture.view_service();
+        let branch = "main:Catalog.Items.Form.List.Item.List.Event";
+        let listed = all_dynamic_event_items(&service, branch)
+            .into_iter()
+            .find(|v| v["title"] == "OnGetDataAtServer")
+            .unwrap();
+        let detail = service.view(ViewRequest::new(listed["at"].as_str().unwrap()).unwrap());
+        assert!(detail.ok, "{variant}: {detail:?}");
+        let expected = if variant == "shorter-compatible" {
+            "implemented"
+        } else {
+            "invalid"
+        };
+        for data in [&listed, detail.data.as_ref().unwrap()] {
+            assert_eq!(data["props"]["state"], expected, "{variant}: {data}");
+            if variant == "duplicate" {
+                assert!(data["props"]["implementationAt"].is_null());
+            } else {
+                assert_eq!(
+                    data["props"]["handler"], "ПолучитьДанные",
+                    "{variant}: {data}"
+                );
+                assert!(
+                    data["props"]["implementationAt"].is_string(),
+                    "{variant}: {data}"
+                );
+            }
+            assert_eq!(
+                data["props"]["callType"],
+                if variant == "call-type" {
+                    json!("After")
+                } else {
+                    serde_json::Value::Null
+                }
+            );
+        }
+        assert_eq!(fs::read_to_string(&module_path).unwrap(), source);
+        assert_eq!(fs::read_to_string(&form_path).unwrap(), form);
+    }
+}
+
+#[test]
+fn contextual_form_event_does_not_accept_server_no_context() {
+    for (directive, state) in [
+        ("&НаСервере", "implemented"),
+        ("&AtServer", "implemented"),
+        ("&НаСервереБезКонтекста", "invalid"),
+        ("&AtServerNoContext", "invalid"),
+    ] {
+        let fixture = RealReaderFixture::new();
+        install_dynamic_list_context_fixture(&fixture);
+        let path = fixture
+            .source
+            .join("Catalogs/Items/Forms/List/Ext/Form/Module.bsl");
+        let source = fs::read_to_string(&path).unwrap().replace(
+            "&НаСервере\nПроцедура СоздатьФорму",
+            &format!("{directive}\nПроцедура СоздатьФорму"),
+        );
+        fs::write(&path, &source).unwrap();
+        let service = fixture.view_service();
+        let event_at = "main:Catalog.Items.Form.List.Event.OnCreateAtServer";
+        let detail = service.view(ViewRequest::new(event_at).unwrap());
+        let listed = all_dynamic_event_items(&service, "main:Catalog.Items.Form.List.Event")
+            .into_iter()
+            .find(|v| v["at"] == event_at)
+            .unwrap();
+        assert!(detail.ok, "{directive}: {detail:?}");
+        for data in [&listed, detail.data.as_ref().unwrap()] {
+            assert_eq!(data["props"]["state"], state, "{directive}: {data}");
+            assert_eq!(data["props"]["handler"], "СоздатьФорму");
+        }
+        assert_eq!(fs::read_to_string(&path).unwrap(), source);
+    }
+}

@@ -66,6 +66,20 @@ Donor и fixture доказывают описанные ниже формы, н
 import* → property* → valueType* → objectType*
 ```
 
+`objectType.add` принимает необязательные `base` и взаимоисключающие
+`before` / `after`. Основа передаётся как объявленный `prefix:local`;
+операция доказывает существование всей локальной цепочки объектных типов
+и отсутствие циклов. Сосед задаётся именем непосредственного `objectType`
+пакета. Вставка сохраняет прежние объявления, комментарии и их байты;
+без позиции применяется прежнее добавление в конец группы.
+
+Повтор сравнивает семантический QName основы и, если указана позиция,
+непосредственное соседство среди объектных типов. Эквивалентный повтор
+не пишет файл; конфликтующий дубль отклоняется и не перемещается.
+Предпросмотр `data.xdtoObjects` описывает итоговые основу и соседей после
+всего пакета операций. Контрольная фикстура —
+`tests/fixtures/acceptance/workspace-xdto-inheritance`, сценарий `S-1408-xdto-base-order`.
+
 Внутри каждой группы существующий порядок значим и сохраняется. Writer
 вставляет новый узел в соответствующую группу, но не сортирует соседей и не
 переставляет остальные группы.
@@ -84,6 +98,7 @@ writer-а её не обещает.
 | `supported` | `package/property` | `direct-child` |
 | `supported` | `package/valueType` | `direct-child` |
 | `supported` | `package/objectType` | `direct-child` |
+| `supported` | `objectType/@base` | `local-object-type-chain;acyclic` |
 | `supported` | `objectType/property` | `direct-child` |
 | `supported` | `property/typeDef:ObjectType` | `direct-child` |
 | `supported` | `typeDef:ObjectType/property` | `direct-child` |

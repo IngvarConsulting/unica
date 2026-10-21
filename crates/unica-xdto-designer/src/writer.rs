@@ -90,6 +90,9 @@ pub enum WriterErrorField {
     TypeTarget,
     PropertyPath,
     PropertyName,
+    Base,
+    Before,
+    After,
 }
 
 #[derive(Debug)]
@@ -137,6 +140,9 @@ pub enum TypedWriterOperation<'a> {
     },
     AddObjectType {
         name: &'a str,
+        base: Option<&'a str>,
+        before: Option<&'a str>,
+        after: Option<&'a str>,
     },
     AddProperty {
         type_name: &'a str,
@@ -202,10 +208,25 @@ pub fn plan_typed(
                 )
             }
         }
-        TypedWriterOperation::AddObjectType { name } => {
+        TypedWriterOperation::AddObjectType {
+            name,
+            base,
+            before: preceding,
+            after: following,
+        } => {
+            let desired_base = base.map(|value| desired_qname(root, root, value));
+            if let Some(base) = &desired_base {
+                prove_local_object_base(root, name, &base.semantic)?;
+            }
+            let anchor = object_position_anchor(root, name, preceding, following)?;
             let existing = named_types(root, name);
             if !existing.is_empty() {
-                let exact = existing.len() == 1 && compatible_empty_object_type(existing[0]);
+                let exact = existing.len() == 1
+                    && compatible_object_type(
+                        existing[0],
+                        desired_base.as_ref().map(|base| &base.semantic),
+                    )
+                    && object_position_matches(root, existing[0], anchor);
                 finding = Some(duplicate_finding(
                     "duplicate_type",
                     existing[0],
@@ -216,10 +237,33 @@ pub fn plan_typed(
             } else {
                 let element_name = lexical_xdto_child_name(before, root, "objectType")
                     .map_err(writer_invalid_source)?;
-                let fragment = format!("<{element_name} name=\"{}\"/>", escape_attribute(name));
+                let declaration = desired_base
+                    .as_ref()
+                    .map_or_else(String::new, DesiredQName::namespace_declaration);
+                let base_attribute = desired_base.as_ref().map_or_else(String::new, |base| {
+                    format!(" base=\"{}\"", escape_attribute(&base.raw))
+                });
+                let fragment = format!(
+                    "<{element_name}{declaration} name=\"{}\"{base_attribute}/>",
+                    escape_attribute(name)
+                );
+                let next = anchor.and_then(|(node, before_anchor)| {
+                    if before_anchor {
+                        Some(node)
+                    } else {
+                        root.children()
+                            .skip_while(|sibling| *sibling != node)
+                            .skip(1)
+                            .find(|sibling| sibling.has_tag_name((XDTO_NS, "objectType")))
+                    }
+                });
                 Some(
-                    insert_top_level(before, root, TopLevelInsert::ObjectType, &fragment)
-                        .map_err(writer_invalid_source)?,
+                    if let Some(next) = next {
+                        insert_line_before_node(before, next, &fragment)
+                    } else {
+                        insert_top_level(before, root, TopLevelInsert::ObjectType, &fragment)
+                    }
+                    .map_err(writer_invalid_source)?,
                 )
             }
         }
@@ -360,7 +404,12 @@ pub fn plan(
         }
         "add-object-type" => {
             let name = super::required(args, "name")?;
-            TypedWriterOperation::AddObjectType { name }
+            TypedWriterOperation::AddObjectType {
+                name,
+                base: args.get("base").and_then(Value::as_str),
+                before: args.get("before").and_then(Value::as_str),
+                after: args.get("after").and_then(Value::as_str),
+            }
         }
         "add-property" => {
             let type_name = super::required(args, "typeName")?;
@@ -523,10 +572,136 @@ fn compatible_value_type(node: Node<'_, '_>, base: &SemanticQName) -> bool {
         })
 }
 
-fn compatible_empty_object_type(node: Node<'_, '_>) -> bool {
+fn prove_local_object_base(
+    root: Node<'_, '_>,
+    name: &str,
+    base: &SemanticQName,
+) -> Result<(), WriterError> {
+    let mut visited = BTreeSet::from([name.to_string()]);
+    let mut current = base.clone();
+    loop {
+        if !current.lexical_valid
+            || current.unresolved_prefix.is_some()
+            || current.namespace.as_deref() != root.attribute("targetNamespace")
+        {
+            return Err(WriterError::new(WriterErrorCause::BadValue, WriterErrorField::Base,
+                "base must resolve to a local ObjectType; imported inheritance is not supported for this addition"));
+        }
+        if !visited.insert(current.local.clone()) {
+            return Err(WriterError::new(
+                WriterErrorCause::BadValue,
+                WriterErrorField::Base,
+                "base introduces or reaches an inheritance cycle",
+            ));
+        }
+        let candidates = named_types(root, &current.local);
+        let parent = match candidates.as_slice() {
+            [node] if node.has_tag_name((XDTO_NS, "objectType")) => *node,
+            [] => {
+                return Err(WriterError::new(
+                    WriterErrorCause::NotFound,
+                    WriterErrorField::Base,
+                    "base ObjectType does not exist",
+                ))
+            }
+            [_] => {
+                return Err(WriterError::new(
+                    WriterErrorCause::BadValue,
+                    WriterErrorField::Base,
+                    "base must name an ObjectType, not a ValueType",
+                ))
+            }
+            _ => {
+                return Err(WriterError::new(
+                    WriterErrorCause::AmbiguousTarget,
+                    WriterErrorField::Base,
+                    "base has multiple declarations",
+                ))
+            }
+        };
+        let Some(next) = parent.attribute("base") else {
+            return Ok(());
+        };
+        current = semantic_qname(parent, next);
+    }
+}
+
+fn object_position_anchor<'a>(
+    root: Node<'a, 'a>,
+    name: &str,
+    before: Option<&str>,
+    after: Option<&str>,
+) -> Result<Option<(Node<'a, 'a>, bool)>, WriterError> {
+    let (anchor, is_before, field) = match (before, after) {
+        (None, None) => return Ok(None),
+        (Some(anchor), None) => (anchor, true, WriterErrorField::Before),
+        (None, Some(anchor)) => (anchor, false, WriterErrorField::After),
+        _ => {
+            return Err(WriterError::new(
+                WriterErrorCause::BadValue,
+                WriterErrorField::After,
+                "before and after are mutually exclusive",
+            ))
+        }
+    };
+    if anchor == name {
+        return Err(WriterError::new(
+            WriterErrorCause::BadValue,
+            field,
+            "a new ObjectType cannot use itself as its neighbor",
+        ));
+    }
+    let candidates = named_types(root, anchor);
+    match candidates.as_slice() {
+        [node] if node.has_tag_name((XDTO_NS, "objectType")) => Ok(Some((*node, is_before))),
+        [] => Err(WriterError::new(
+            WriterErrorCause::NotFound,
+            field,
+            "position must name an existing local ObjectType",
+        )),
+        [_] => Err(WriterError::new(
+            WriterErrorCause::BadValue,
+            field,
+            "position must name an ObjectType, not a ValueType",
+        )),
+        _ => Err(WriterError::new(
+            WriterErrorCause::AmbiguousTarget,
+            field,
+            "position names multiple declarations",
+        )),
+    }
+}
+
+fn object_position_matches(
+    root: Node<'_, '_>,
+    existing: Node<'_, '_>,
+    anchor: Option<(Node<'_, '_>, bool)>,
+) -> bool {
+    let Some((anchor, before)) = anchor else {
+        return true;
+    };
+    let objects = root
+        .children()
+        .filter(|node| node.has_tag_name((XDTO_NS, "objectType")))
+        .collect::<Vec<_>>();
+    let existing_index = objects.iter().position(|node| *node == existing);
+    let anchor_index = objects.iter().position(|node| *node == anchor);
+    match (existing_index, anchor_index) {
+        (Some(existing), Some(anchor)) if before => existing + 1 == anchor,
+        (Some(existing), Some(anchor)) => anchor + 1 == existing,
+        _ => false,
+    }
+}
+
+fn compatible_object_type(node: Node<'_, '_>, base: Option<&SemanticQName>) -> bool {
     node.has_tag_name((XDTO_NS, "objectType"))
-        && has_only_plain_attributes(node, &["name"])
+        && has_only_plain_attributes(node, &["name", "base"])
         && has_exact_compatible_content(node)
+        && match (node.attribute("base"), base) {
+            (None, None) => true,
+            (Some(existing), Some(base)) => semantic_qname(node, existing) == *base,
+            _ => false,
+        }
 }
 
 fn compatible_property_tree(
@@ -1220,6 +1395,76 @@ mod tests {
 
     fn package(body: &str) -> String {
         format!("<package {ROOT}>\n{body}</package>")
+    }
+
+    #[test]
+    fn xdto_object_base_position_repeats_aliases_and_rejects_moving_duplicates() {
+        let before = package("\t<objectType name=\"Base\"/>\n\t<objectType name=\"A\"/>\n\t<!-- keep -->\n\t<objectType name=\"C\"/>\n")
+            .replace("xmlns:tns=\"urn:test\"", "xmlns:tns=\"urn:test\" xmlns:same=\"urn:test\"");
+        let request = args(&[
+            ("name", json!("B")),
+            ("base", json!("tns:Base")),
+            ("after", json!("A")),
+        ]);
+        let added = plan(&before, &request, "add-object-type").unwrap();
+        assert_edit_applies(&before, &added);
+        assert_eq!(
+            added
+                .after
+                .replace("\t<objectType name=\"B\" base=\"tns:Base\"/>\n", ""),
+            before
+        );
+        assert!(added.after.find("name=\"A\"").unwrap() < added.after.find("name=\"B\"").unwrap());
+        assert!(added.after.find("name=\"B\"").unwrap() < added.after.find("name=\"C\"").unwrap());
+        let mut alias = request.clone();
+        alias.insert("base".into(), json!("same:Base"));
+        let repeated = plan(&added.after, &alias, "add-object-type").unwrap();
+        assert!(!repeated.blocks());
+        assert!(repeated.edits.is_empty());
+        assert_eq!(repeated.after, added.after);
+        for (key, value) in [("base", json!("tns:A")), ("after", json!("C"))] {
+            let mut conflict = request.clone();
+            conflict.insert(key.into(), value);
+            let refused = plan(&added.after, &conflict, "add-object-type").unwrap();
+            assert!(refused.blocks());
+            assert_eq!(refused.after, added.after);
+        }
+        let tail = plan(
+            &before,
+            &args(&[("name", json!("Tail")), ("after", json!("C"))]),
+            "add-object-type",
+        )
+        .unwrap();
+        assert!(tail.after.find("name=\"C\"").unwrap() < tail.after.find("name=\"Tail\"").unwrap());
+    }
+
+    #[test]
+    fn xdto_object_base_position_refuses_invalid_chain_and_neighbors() {
+        let before = package("\t<valueType name=\"Scalar\" base=\"xs:string\"/>\n\t<objectType name=\"Base\"/>\n\t<objectType name=\"CycleA\" base=\"tns:CycleB\"/>\n\t<objectType name=\"CycleB\" base=\"tns:CycleA\"/>\n\t<objectType name=\"External\" base=\"ext:Unknown\"/>\n");
+        for base in [
+            "tns:Missing",
+            "tns:Scalar",
+            "tns:New",
+            "tns:CycleA",
+            "tns:External",
+            "unknown:Base",
+        ] {
+            let request = args(&[("name", json!("New")), ("base", json!(base))]);
+            assert!(
+                plan(&before, &request, "add-object-type").is_err(),
+                "{base}"
+            );
+        }
+        for fields in [
+            args(&[("before", json!("Missing"))]),
+            args(&[("after", json!("Scalar"))]),
+            args(&[("before", json!("New"))]),
+            args(&[("before", json!("Base")), ("after", json!("Base"))]),
+        ] {
+            let mut request = fields;
+            request.insert("name".into(), json!("New"));
+            assert!(plan(&before, &request, "add-object-type").is_err());
+        }
     }
 
     fn assert_edit_applies(before: &str, plan: &super::WriterPlan) {

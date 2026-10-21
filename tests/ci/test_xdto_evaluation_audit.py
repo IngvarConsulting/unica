@@ -140,7 +140,7 @@ class XdtoEvidenceTests(unittest.TestCase):
         for target in [evidence.OLD_TYPE, evidence.OLD_PROPERTY]:
             call("unica.view", {"at": target}, {"ok": False, "at": target, "diagnostics": [{"code": "not_found"}]}, after, after)
         call("unica.check", {"at": evidence.PACKAGE}, {"ok": True, "at": evidence.PACKAGE,
-             "data": {"status": "readable", "validators": []}}, after, after)
+             "data": {"status": "passed", "validators": ["xdto"]}}, after, after)
         return records
 
     def test_audit_accepts_two_saved_publications_with_contextual_contracts_and_readback(self):
@@ -153,7 +153,7 @@ class XdtoEvidenceTests(unittest.TestCase):
         preview["payload"]["params"]["arguments"]["ops"][0]["args"]["values"]["property"]["minOccurs"] = 0.0
         driver.audit(records)
 
-    def test_audit_accepts_final_readability_check_with_published_limit(self):
+    def test_audit_accepts_final_package_check_with_published_limit(self):
         for optional in [{"limit": 50}, {"limit": 1}, {"limit": None}, {"cursor": ""}, {"cursor": None},
                          {"limit": None, "cursor": ""}, {"limit": 50, "cursor": None}]:
             with self.subTest(optional=optional):
@@ -166,8 +166,8 @@ class XdtoEvidenceTests(unittest.TestCase):
                                 and r["payload"]["id"] == request["payload"]["id"])
                 response["payload"]["result"]["structuredContent"] = {
                     "ok": True, "at": evidence.PACKAGE, "data": {
-                        "at": evidence.PACKAGE, "kind": "XDTOPackage", "status": "readable",
-                        "validators": [], "diagnosticCount": 0, "diagnostics": []},
+                        "at": evidence.PACKAGE, "kind": "XDTOPackage", "status": "passed",
+                        "validators": ["xdto"], "diagnosticCount": 0, "diagnostics": []},
                     "page": {"stoppedBy": "complete"},
                 }
                 driver.audit(records)
@@ -191,7 +191,7 @@ class XdtoEvidenceTests(unittest.TestCase):
                                and r["payload"].get("method") == "tools/call"
                                and r["payload"]["params"]["name"] == "unica.check")
                 request["payload"]["params"]["arguments"] = arguments
-                with self.assertRaisesRegex(ValueError, "readability check"):
+                with self.assertRaisesRegex(ValueError, "final XDTO package check"):
                     driver.audit(records)
 
     def test_audit_rejects_unusable_or_inapplicable_published_can_schemas(self):
@@ -327,7 +327,7 @@ class XdtoEvidenceTests(unittest.TestCase):
     def test_audit_rejects_contract_token_scope_payload_source_and_verdict_mutations(self):
         for mutation in ["missing Can", "token swap", "preview writes", "foreign publication", "inner at",
                          "flat add", "remove values", "string numeric", "boolean numeric", "fraction",
-                         "collection outer", "missing operation", "wrong plan hash", "missing readback", "wrong removed address", "fake validator"]:
+                         "collection outer", "missing operation", "wrong plan hash", "missing readback", "wrong removed address", "missing validator"]:
             with self.subTest(mutation=mutation):
                 records = copy.deepcopy(self.records())
                 requests = [r for r in records if r["direction"] == "request" and r["payload"].get("method") == "tools/call"]
@@ -368,7 +368,7 @@ class XdtoEvidenceTests(unittest.TestCase):
                     response(request)["payload"]["result"]["structuredContent"]["at"] = evidence.OLD_TYPE
                 else:
                     request = next(r for r in requests if r["payload"]["params"]["name"] == "unica.check")
-                    response(request)["payload"]["result"]["structuredContent"]["data"] = {"status": "passed", "validators": ["xdto"]}
+                    response(request)["payload"]["result"]["structuredContent"]["data"] = {"status": "readable", "validators": []}
                 with self.assertRaises(ValueError):
                     driver.audit(records)
 

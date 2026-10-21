@@ -80,7 +80,7 @@ pub struct XdtoPropertyInfo {
     pub type_defs: Vec<XdtoAnonymousTypeInfo>,
     pub location: XdtoLocation,
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct XdtoQNameInfo {
     pub raw: String,
@@ -98,6 +98,9 @@ pub struct XdtoTypeInfo {
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base: Option<XdtoQNameInfo>,
+    /// Address of the base when it is one unambiguous local type of the same kind.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_at: Option<String>,
     pub properties: Vec<XdtoPropertyInfo>,
     pub location: XdtoLocation,
 }
@@ -225,6 +228,25 @@ pub struct XdtoEditData {
     pub location: XdtoLocation,
     pub no_op: bool,
     pub effects: Vec<XdtoOperationEffect>,
+}
+/// Plan details section of object type additions in the apply answer.
+pub const XDTO_OBJECTS: unica_source_contract::proposal::PlanDetailKey =
+    unica_source_contract::proposal::PlanDetailKey::new("xdtoObjects");
+
+/// One object type addition, described by the final staged package of the
+/// plan: whether the type is still present, its base and its neighbours.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct XdtoObjectPlanDetail {
+    pub at: String,
+    pub name: String,
+    pub present: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base: Option<XdtoQNameInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next: Option<String>,
 }
 pub trait XdtoIdentity {
     fn source_set(&self) -> &str;

@@ -15,15 +15,13 @@ check:
   - crates/unica-network/src/lib.rs::a_redirect_from_https_to_plain_http_is_refused_at_any_step
   - crates/unica-coder/src/infrastructure/engine_delivery.rs::an_untrusted_certificate_reaches_the_caller_as_its_own_class_with_the_cure
   - crates/unica-coder/src/infrastructure/platform/network_trust_tests.rs::standards_answer_over_a_root_from_the_os_store
-  - crates/unica-coder/src/infrastructure/platform/network_trust_tests.rs::kb_reads_over_a_root_from_the_os_store_and_through_https_proxy
-  - crates/unica-documentation-sources/src/kb_1ci.rs::kb_over_a_root_the_os_does_not_trust_names_interception
   - crates/unica-documentation-sources/src/standards_documentation.rs::v8std_over_a_root_the_os_does_not_trust_names_interception
 ---
 
 # Сетевые запросы используют общее доверие TLS
 
-Загрузка ядра, доставка движков и сетевые поставщики `unica.docs`
-(`kb-1ci`, `v8std`) используют один HTTP-клиент процесса. Настройки TLS
+Загрузка ядра, доставка движков и сетевой поставщик `unica.docs`
+`v8std` используют один HTTP-клиент процесса. Настройки TLS
 и [прокси](network-proxy-routing.md) задаются только в нём.
 Настройки окружения и конфигурация проверки TLS фиксируются при первом
 успешном создании общего клиента. Неуспешное создание не запоминается:

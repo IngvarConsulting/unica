@@ -1,0 +1,139 @@
+{
+  "id": "S-1565-form-dynamic-list-server-no-context-generation",
+  "issue": 1565,
+  "area": "Метаданные",
+  "task": "Создать обработчик OnGetDataAtServer через preview/token/execute и проверить NoContext, три параметра и implemented.",
+  "workspace": "tests/fixtures/acceptance/workspace-dynamic-list-context",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Form.Generate.Item.List.Event.OnGetDataAtServer"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/state",
+          "eq": "available"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Form.Generate.Item.List.Event.OnGetDataAtServer",
+        "ops": [
+          {
+            "op": "event.implement"
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items/Forms/Generate/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "f449804d715eed23de92599a434b60c18bfb3d5233a57cb206bc3e2f944cd2c7"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Generate/Ext/Form/Module.bsl",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items/Forms/Generate/Ext/Form/Module.bsl",
+          "kind": "exists",
+          "eq": true
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Generate/Ext/Form.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}Table/{http://v8.1c.ru/8.3/xcf/logform}Events/{http://v8.1c.ru/8.3/xcf/logform}Event",
+          "eq": [
+            "ListПриПолученииДанныхНаСервере"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Form.Generate.Item.List.Event.OnGetDataAtServer"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/state",
+          "eq": "implemented"
+        },
+        {
+          "pointer": "/data/props/contexts",
+          "eq": [
+            "server"
+          ]
+        }
+      ],
+      "captures": {
+        "generatedDynamicMethod": {
+          "pointer": "/data/props/implementationAt"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.generatedDynamicMethod"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Method"
+        }
+      ],
+      "captures": {
+        "generatedDynamicBody": {
+          "pointer": "/data/branches/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.generatedDynamicBody"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/sourceText",
+          "contains": "&НаСервереБезКонтекста"
+        },
+        {
+          "pointer": "/sourceText",
+          "contains": "(ИмяЭлемента, Настройки, Строки)"
+        }
+      ]
+    }
+  ]
+}

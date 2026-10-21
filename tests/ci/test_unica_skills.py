@@ -2341,10 +2341,15 @@ Use `.claude/commands/xdto.md` as the execution route.
         blocks = list(re.finditer(r"```json\s*(.*?)```", text, re.DOTALL))
         examples = [json.loads(block.group(1)) for block in blocks]
         calls = [example for example in examples if "method" in example]
-        arguments = [example for example in examples if "method" not in example]
-        self.assertEqual(len(arguments), 1)
-        self.assertEqual(arguments[0]["ops"][0]["op"], "property.add")
-        children = arguments[0]["ops"][0]["args"]["values"]["property"]["objectType"]["properties"]
+        argument_examples = {
+            example["ops"][0]["op"]: example for example in examples if "method" not in example
+        }
+        self.assertEqual(set(argument_examples), {"objectType.add", "property.add"})
+        self.assertEqual(
+            argument_examples["objectType.add"]["ops"][0]["args"]["values"],
+            {"name": "ПримерБ", "base": "tns:Основа", "before": "ПримерВ"},
+        )
+        children = argument_examples["property.add"]["ops"][0]["args"]["values"]["property"]["objectType"]["properties"]
         self.assertEqual([child["name"] for child in children], ["Основание", "Получатель"])
 
         self.assertEqual(len(calls), 4)

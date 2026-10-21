@@ -33,6 +33,9 @@ pub(crate) fn validate_with_availability(
     if availability == ValidatorAvailability::Unavailable {
         return unavailable_dependency();
     }
+    if validator == CheckValidator::Xdto {
+        return NativeCheckOutcome::unavailable("XDTO check requires retained source evidence");
+    }
     validate_with_format_guard(validator, args, context, || match validator {
         CheckValidator::Cf => super::cf::validate_cf(args, context),
         CheckValidator::Cfe => super::cfe::validate_cfe(args, context),
@@ -48,6 +51,7 @@ pub(crate) fn validate_with_availability(
         CheckValidator::Interface => {
             crate::infrastructure::interface_composition::validate_interface(args, context)
         }
+        CheckValidator::Xdto => unreachable!("XDTO requires retained source evidence"),
     })
 }
 

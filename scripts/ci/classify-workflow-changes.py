@@ -82,6 +82,8 @@ CI_CONTRACT_PATHS = {
     "scripts/ci/prepared_binary.py",
     "scripts/ci/ci_shadow_selector.py",
     "scripts/ci/rust_inventory_baseline.py",
+    "scripts/ci/removed_tests.py",
+    "tests/ci/test_removed_tests.py",
     "tests/ci/test_ci_rust_lanes.py",
     "tests/ci/test_rust_inventory_baseline.py",
     "tests/ci/test_ci_prepared_binary.py",

@@ -35,8 +35,8 @@ use unica_address::source_target::{MetadataAddress, SourceTarget, TargetKind};
 use unica_metadata::MetaDiagnosticCode;
 #[cfg(test)]
 use unica_metadata::{
-    MetaCollection, MetaDiagnostic, MetaElementDefinition, MetaFillValue, MetaPublicationAction,
-    MetadataKind, MetadataType,
+    MetaDiagnostic, MetaElementDefinition, MetaFillValue, MetaPublicationAction, MetadataKind,
+    MetadataType,
 };
 use unica_source_contract::workspace::WorkspaceContext;
 use unica_source_designer::format_profile::ACTIVE_FORMAT_PROFILE;
@@ -278,10 +278,6 @@ pub(super) fn parse_typed_metadata_type(
         unica_metadata_designer::info_projection::parse_observed_metadata_type(properties_text)?;
     unica_metadata_designer::edit::narrow_observed_metadata_type(observed)
 }
-
-#[cfg(test)]
-#[path = "edit_empty_child_objects_tests.rs"]
-mod empty_child_objects_tests;
 
 #[cfg(test)]
 pub(crate) mod tests {

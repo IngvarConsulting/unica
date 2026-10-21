@@ -2,7 +2,7 @@
 id: INV.APP.EVENT-SOURCE
 check:
   - crates/unica-coder/src/infrastructure/metadata_operations.rs::meta_add_event_subscription_source_replace_needs_no_catalog_and_round_trips
-  - crates/unica-coder/src/application/metadata.rs::source_parser_accepts_the_closed_nonempty_logical_event_source_algebra
+  - crates/unica-metadata/tests/request_contract.rs::source_parser_accepts_the_closed_nonempty_logical_event_source_algebra
 ---
 
 # Источник подписки задаётся логическим типом
