@@ -21,12 +21,13 @@ const SCENARIO: &str = "UNICA_DOCS_TRUST_SCENARIO";
 const ADDRESS: &str = "UNICA_DOCS_TRUST_ADDRESS";
 
 /// Дочерний процесс: поиск поставщиком со штатным транспортом.
-/// Без переменной сценария — не дочерний процесс, и делать ему нечего.
+/// Сам по себе не тест: помечен `#[ignore]`, родитель запускает его с
+/// `--ignored`, а без переменной сценария он падает, а не проходит пустым.
 #[test]
+#[ignore = "helper process: spawned by the docs network trust tests with UNICA_DOCS_TRUST_SCENARIO; not a standalone test"]
 fn docs_network_trust_child_process() {
-    let Ok(scenario) = std::env::var(SCENARIO) else {
-        return;
-    };
+    let scenario =
+        std::env::var(SCENARIO).expect("helper process: the parent test sets the scenario");
     let address = std::env::var(ADDRESS).expect("address");
     let cancellation = unica_work_control::cancellation::CancellationToken::default();
     let context = DocumentationContext {
@@ -131,7 +132,13 @@ fn run_child(scenario: &str, address: &str, root: &TestRoot, extra: &[(&str, &st
     let trusted = scratch.path().join("roots.pem");
     root.write_pem(&trusted);
     let mut command = Command::new(std::env::current_exe().expect("test binary"));
-    command.args(["--exact", CHILD, "--nocapture", "--test-threads=1"]);
+    command.args([
+        "--exact",
+        CHILD,
+        "--ignored",
+        "--nocapture",
+        "--test-threads=1",
+    ]);
     for name in INHERITED {
         command.env_remove(name);
     }

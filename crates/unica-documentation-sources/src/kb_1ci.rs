@@ -2269,16 +2269,23 @@ mod provider_tests {
         assert_eq!(transport.calls.load(Ordering::SeqCst), 0, "сеть не тронута");
     }
 
-    /// Живой прогон против площадки вендора: включается переменной
-    /// `UNICA_KB1CI_LIVE=1`, в CI не требуется. Первый прогон дорогой —
-    /// обход двухуровневого оглавления руководства с разнесением обращений;
-    /// он же проверяет, что раскладка площадки не уехала в четвёртый раз.
+    /// Включатель живого прогона. Без переменной тест не может исполниться,
+    /// поэтому явный запуск падает, а не проходит пустым.
+    fn live_kb_switch() {
+        std::env::var("UNICA_KB1CI_LIVE")
+            .expect("set UNICA_KB1CI_LIVE=1 to run the live vendor site check");
+    }
+
+    /// Живой прогон против площадки вендора. В CI сети к площадке нет, поэтому
+    /// тест помечен `#[ignore]` и в отчёте очереди виден пропущенным; запуск —
+    /// `UNICA_KB1CI_LIVE=1 cargo nextest run -p unica-documentation-sources --lib --run-ignored only -E 'test(/live_kb_/)'`.
+    /// Первый прогон дорогой — обход двухуровневого оглавления руководства с
+    /// разнесением обращений; он же проверяет, что раскладка площадки не уехала
+    /// в четвёртый раз.
     #[test]
+    #[ignore = "live vendor site: needs UNICA_KB1CI_LIVE=1 and network access to kb.1ci.com; run with --run-ignored only"]
     fn live_kb_answers_url_formats_from_the_developer_guide() {
-        if std::env::var("UNICA_KB1CI_LIVE").is_err() {
-            eprintln!("UNICA_KB1CI_LIVE не задан — живой прогон пропущен");
-            return;
-        }
+        live_kb_switch();
         let _serial = kb_test_lock();
         let provider = Kb1ciProvider {
             base: KB_BASE.to_string(),

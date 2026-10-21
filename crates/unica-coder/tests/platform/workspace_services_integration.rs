@@ -6880,6 +6880,7 @@ fn main() {
             .args([
                 "--exact",
                 "infrastructure::workspace_services::tests::spawn_cleanup_child_fixture",
+                "--ignored",
                 "--nocapture",
             ])
             .env("UNICA_SPAWN_CLEANUP_CHILD_FIXTURE", "1")
@@ -6908,6 +6909,7 @@ fn main() {
             .args([
                 "--exact",
                 "infrastructure::workspace_services::tests::spawn_cleanup_child_fixture",
+                "--ignored",
                 "--nocapture",
             ])
             .env("UNICA_SPAWN_CLEANUP_CHILD_FIXTURE", "1")
@@ -6944,6 +6946,7 @@ fn main() {
             .args([
                 "--exact",
                 "infrastructure::workspace_services::tests::startup_failure_child_fixture",
+                "--ignored",
                 "--nocapture",
             ])
             .env("UNICA_STARTUP_FAILURE_CHILD_FIXTURE", "1")
@@ -7005,6 +7008,7 @@ fn main() {
             .args([
                 "--exact",
                 "infrastructure::workspace_services::tests::spawn_cleanup_child_fixture",
+                "--ignored",
                 "--nocapture",
             ])
             .env("UNICA_SPAWN_CLEANUP_CHILD_FIXTURE", "1")
@@ -7030,23 +7034,25 @@ fn main() {
     }
 
     #[test]
+    #[ignore = "helper process: spawned by the startup failure tests with UNICA_STARTUP_FAILURE_CHILD_FIXTURE; not a standalone test"]
     fn startup_failure_child_fixture() {
-        if std::env::var_os("UNICA_STARTUP_FAILURE_CHILD_FIXTURE").is_some() {
-            eprintln!("issue-339-startup-head-marker");
-            eprintln!(
-                "{}",
-                "x".repeat(SERVICE_STARTUP_STDERR_TAIL_LIMIT as usize + 1024)
-            );
-            eprintln!("issue-339-startup-tail-marker");
-            std::process::exit(23);
-        }
+        std::env::var_os("UNICA_STARTUP_FAILURE_CHILD_FIXTURE")
+            .expect("helper process: the parent test sets the fixture marker");
+        eprintln!("issue-339-startup-head-marker");
+        eprintln!(
+            "{}",
+            "x".repeat(SERVICE_STARTUP_STDERR_TAIL_LIMIT as usize + 1024)
+        );
+        eprintln!("issue-339-startup-tail-marker");
+        std::process::exit(23);
     }
 
     #[test]
+    #[ignore = "helper process: spawned by the spawn cleanup tests with UNICA_SPAWN_CLEANUP_CHILD_FIXTURE; not a standalone test"]
     fn spawn_cleanup_child_fixture() {
-        if std::env::var_os("UNICA_SPAWN_CLEANUP_CHILD_FIXTURE").is_some() {
-            thread::sleep(Duration::from_secs(30));
-        }
+        std::env::var_os("UNICA_SPAWN_CLEANUP_CHILD_FIXTURE")
+            .expect("helper process: the parent test sets the fixture marker");
+        thread::sleep(Duration::from_secs(30));
     }
 
     #[test]

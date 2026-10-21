@@ -3792,11 +3792,11 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "helper process: spawned by the managed-child tests with HELPER_ENV; not a standalone test"]
     #[allow(clippy::zombie_processes)] // Fixture intentionally exits while its descendant remains alive.
     fn managed_child_test_helper() {
-        let Ok(mode) = std::env::var(HELPER_ENV) else {
-            return;
-        };
+        let mode =
+            std::env::var(HELPER_ENV).expect("helper process: the parent test sets HELPER_ENV");
 
         match mode.as_str() {
             "success" => {
@@ -3809,6 +3809,7 @@ mod tests {
                     .args([
                         "--exact",
                         "platform::process::tests::managed_child_test_helper",
+                        "--ignored",
                         "--nocapture",
                     ])
                     .env(HELPER_ENV, "success")
@@ -3956,6 +3957,7 @@ mod tests {
                     .args([
                         "--exact",
                         "platform::process::tests::managed_child_test_helper",
+                        "--ignored",
                         "--nocapture",
                     ])
                     .env(HELPER_ENV, "process_tree_child")
@@ -3977,6 +3979,7 @@ mod tests {
                     .args([
                         "--exact",
                         "platform::process::tests::managed_child_test_helper",
+                        "--ignored",
                         "--nocapture",
                     ])
                     .env(HELPER_ENV, "process_tree_child")
@@ -4005,6 +4008,7 @@ mod tests {
                         .args([
                             "--exact",
                             "platform::process::tests::managed_child_test_helper",
+                            "--ignored",
                             "--nocapture",
                         ])
                         .env(HELPER_ENV, "windows_parked_handoff_client")
@@ -4048,6 +4052,7 @@ mod tests {
                     .args([
                         "--exact",
                         "platform::process::tests::managed_child_test_helper",
+                        "--ignored",
                         "--nocapture",
                     ])
                     .env(HELPER_ENV, "process_tree_child")
@@ -4066,6 +4071,7 @@ mod tests {
                     .args([
                         "--exact",
                         "platform::process::tests::managed_child_test_helper",
+                        "--ignored",
                         "--nocapture",
                     ])
                     .env(HELPER_ENV, "process_tree_child")
@@ -4090,6 +4096,7 @@ mod tests {
                     .args([
                         "--exact",
                         "platform::process::tests::managed_child_test_helper",
+                        "--ignored",
                         "--nocapture",
                     ])
                     .env(HELPER_ENV, "process_tree_child")
@@ -4131,6 +4138,7 @@ mod tests {
                     .args([
                         "--exact",
                         "platform::process::tests::managed_child_test_helper",
+                        "--ignored",
                         "--nocapture",
                     ])
                     .env(HELPER_ENV, "process_tree_child")
@@ -4373,6 +4381,7 @@ mod tests {
             args: vec![
                 "--exact".into(),
                 "platform::process::tests::managed_child_test_helper".into(),
+                "--ignored".into(),
                 "--nocapture".into(),
             ],
             cwd: std::env::current_dir().unwrap(),
@@ -4411,6 +4420,7 @@ mod tests {
             args: vec![
                 "--exact".into(),
                 "platform::process::tests::managed_child_test_helper".into(),
+                "--ignored".into(),
                 "--nocapture".into(),
             ],
             cwd: std::env::current_dir().map_err(|error| error.to_string())?,
@@ -4434,6 +4444,7 @@ mod tests {
                 args: vec![
                     "--exact".into(),
                     "platform::process::tests::managed_child_test_helper".into(),
+                    "--ignored".into(),
                     "--nocapture".into(),
                 ],
                 cwd: std::env::current_dir().map_err(|error| error.to_string())?,
@@ -4477,6 +4488,7 @@ mod tests {
             .args([
                 "--exact",
                 "platform::process::tests::managed_child_test_helper",
+                "--ignored",
                 "--nocapture",
             ])
             .env(HELPER_ENV, "echo_stdin_len")
@@ -4798,6 +4810,7 @@ mod tests {
             .args([
                 "--exact",
                 "platform::process::tests::managed_child_test_helper",
+                "--ignored",
                 "--nocapture",
             ])
             .env(HELPER_ENV, "echo_stdin_len")
@@ -4953,6 +4966,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[ignore = "helper process: spawned by runtime_sentinel_preserves_a_meaningful_inherited_fd198 with RUNTIME_SENTINEL_FD198_MARKER_ENV; not a standalone test"]
     #[allow(clippy::zombie_processes)]
     // The parent test owns and reaps the detached descendant after observing
     // sentinel-only lifetime; waiting here would erase the tested boundary.
@@ -4961,9 +4975,8 @@ mod tests {
         use std::os::unix::fs::MetadataExt;
         use std::os::unix::process::CommandExt;
 
-        let Some(marker) = std::env::var_os(RUNTIME_SENTINEL_FD198_MARKER_ENV) else {
-            return;
-        };
+        let marker = std::env::var_os(RUNTIME_SENTINEL_FD198_MARKER_ENV)
+            .expect("helper process: the fd198 harness sets the marker");
         let mut inherited = unsafe { std::fs::File::from_raw_fd(198) };
         let metadata = inherited.metadata().unwrap();
         let mut bytes = Vec::new();
@@ -5068,6 +5081,7 @@ mod tests {
             .args([
                 "--exact",
                 "platform::process::tests::runtime_preexisting_fd198_helper",
+                "--ignored",
                 "--nocapture",
             ])
             .env(RUNTIME_SENTINEL_FD198_MARKER_ENV, &marker)
@@ -5233,6 +5247,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[ignore = "helper process: spawned by the runtime sentinel tests with RUNTIME_SENTINEL_HELPER_ENV; not a standalone test"]
     #[allow(clippy::zombie_processes)]
     // This helper intentionally exits before its detached descendant: the
     // parent test owns the descendant PID, terminates it, and observes sentinel
@@ -5248,6 +5263,7 @@ mod tests {
                     .args([
                         "--exact",
                         "platform::process::tests::runtime_runner_style_sentinel_helper",
+                        "--ignored",
                         "--nocapture",
                     ])
                     .env(RUNTIME_SENTINEL_HELPER_ENV, "descendant")
@@ -5277,7 +5293,7 @@ mod tests {
                 .unwrap();
                 thread::sleep(Duration::from_secs(30));
             }
-            _ => {}
+            other => panic!("helper process: unexpected sentinel mode {other:?}"),
         }
     }
 
@@ -5295,6 +5311,7 @@ mod tests {
             .args([
                 "--exact",
                 "platform::process::tests::runtime_runner_style_sentinel_helper",
+                "--ignored",
                 "--nocapture",
             ])
             .env(RUNTIME_SENTINEL_HELPER_ENV, "runner")
@@ -5360,6 +5377,7 @@ mod tests {
             .args([
                 "--exact",
                 "platform::process::tests::managed_child_test_helper",
+                "--ignored",
                 "--nocapture",
             ])
             .env(HELPER_ENV, "windows_finished_child_parent")
@@ -5423,6 +5441,7 @@ mod tests {
                 .args([
                     "--exact",
                     "platform::process::tests::managed_child_test_helper",
+                    "--ignored",
                     "--nocapture",
                 ])
                 .env(HELPER_ENV, "exit_leaving_detached_grandchild")
@@ -5588,6 +5607,7 @@ mod tests {
             .args([
                 "--exact",
                 "platform::process::tests::managed_child_test_helper",
+                "--ignored",
                 "--nocapture",
             ])
             .env(HELPER_ENV, "exit_leaving_detached_grandchild")
@@ -5646,6 +5666,7 @@ mod tests {
             args: vec![
                 "--exact".into(),
                 "platform::process::tests::managed_child_test_helper".into(),
+                "--ignored".into(),
                 "--nocapture".into(),
             ],
             cwd: std::env::current_dir().unwrap(),
@@ -5917,6 +5938,7 @@ mod tests {
             args: vec![
                 "--exact".into(),
                 "platform::process::tests::managed_child_test_helper".into(),
+                "--ignored".into(),
                 "--nocapture".into(),
             ],
             cwd: std::env::current_dir().unwrap(),
@@ -5953,6 +5975,7 @@ mod tests {
             args: vec![
                 "--exact".into(),
                 "platform::process::tests::managed_child_test_helper".into(),
+                "--ignored".into(),
                 "--nocapture".into(),
             ],
             cwd: std::env::current_dir().unwrap(),
@@ -5989,6 +6012,7 @@ mod tests {
             args: vec![
                 "--exact".into(),
                 "platform::process::tests::managed_child_test_helper".into(),
+                "--ignored".into(),
                 "--nocapture".into(),
             ],
             cwd: std::env::current_dir().unwrap(),
@@ -6012,6 +6036,7 @@ mod tests {
             args: vec![
                 "--exact".into(),
                 "platform::process::tests::managed_child_test_helper".into(),
+                "--ignored".into(),
                 "--nocapture".into(),
             ],
             cwd: std::env::current_dir().unwrap(),
@@ -6050,6 +6075,7 @@ mod tests {
             args: vec![
                 "--exact".into(),
                 "platform::process::tests::managed_child_test_helper".into(),
+                "--ignored".into(),
                 "--nocapture".into(),
             ],
             cwd: std::env::current_dir().unwrap(),
@@ -6108,6 +6134,7 @@ mod tests {
                     .args([
                         "--exact",
                         "platform::process::tests::managed_child_test_helper",
+                        "--ignored",
                         "--nocapture",
                     ])
                     .env(HELPER_ENV, "controlled_stderr_writer")
@@ -6124,6 +6151,7 @@ mod tests {
                 args: vec![
                     "--exact".into(),
                     "platform::process::tests::managed_child_test_helper".into(),
+                    "--ignored".into(),
                     "--nocapture".into(),
                 ],
                 cwd: std::env::current_dir().unwrap(),
@@ -6764,6 +6792,7 @@ mod tests {
                 .args([
                     "--exact",
                     "platform::process::tests::managed_child_test_helper",
+                    "--ignored",
                     "--nocapture",
                 ])
                 .env(HELPER_ENV, mode)
@@ -6809,6 +6838,7 @@ mod tests {
             args: vec![
                 "--exact".into(),
                 "platform::process::tests::managed_child_test_helper".into(),
+                "--ignored".into(),
                 "--nocapture".into(),
             ],
             cwd: std::env::current_dir().unwrap(),
@@ -6832,6 +6862,7 @@ mod tests {
             args: vec![
                 "--exact".into(),
                 "platform::process::tests::managed_child_test_helper".into(),
+                "--ignored".into(),
                 "--nocapture".into(),
             ],
             cwd: std::env::current_dir().unwrap(),
@@ -6864,6 +6895,7 @@ mod tests {
             args: vec![
                 "--exact".into(),
                 "platform::process::tests::managed_child_test_helper".into(),
+                "--ignored".into(),
                 "--nocapture".into(),
             ],
             cwd: std::env::current_dir().unwrap(),
@@ -6970,6 +7002,7 @@ mod tests {
                 .args([
                     "--exact",
                     "platform::process::tests::managed_child_test_helper",
+                    "--ignored",
                     "--nocapture",
                 ])
                 .env(
@@ -7175,6 +7208,7 @@ mod tests {
             args: vec![
                 "--exact".into(),
                 "platform::process::tests::managed_child_test_helper".into(),
+                "--ignored".into(),
                 "--nocapture".into(),
             ],
             cwd: std::env::current_dir().unwrap(),
@@ -7228,6 +7262,7 @@ mod tests {
             args: vec![
                 "--exact".into(),
                 "platform::process::tests::managed_child_test_helper".into(),
+                "--ignored".into(),
                 "--nocapture".into(),
             ],
             cwd: std::env::current_dir().unwrap(),
@@ -7291,6 +7326,7 @@ mod tests {
             .args([
                 "--exact",
                 "platform::process::tests::managed_child_test_helper",
+                "--ignored",
                 "--nocapture",
             ])
             .env(HELPER_ENV, "process_tree_immediate_parent")
@@ -7316,6 +7352,7 @@ mod tests {
             .args([
                 "--exact",
                 "platform::process::tests::managed_child_test_helper",
+                "--ignored",
                 "--nocapture",
             ])
             .env(HELPER_ENV, "success")
@@ -7345,6 +7382,7 @@ mod tests {
             .args([
                 "--exact",
                 "platform::process::tests::managed_child_test_helper",
+                "--ignored",
                 "--nocapture",
             ])
             .env(HELPER_ENV, "sleep")
@@ -7375,6 +7413,7 @@ mod tests {
             .args([
                 "--exact",
                 "platform::process::tests::managed_child_test_helper",
+                "--ignored",
                 "--nocapture",
             ])
             .env(HELPER_ENV, "sleep")
@@ -7413,6 +7452,7 @@ mod tests {
             .args([
                 "--exact",
                 "platform::process::tests::managed_child_test_helper",
+                "--ignored",
                 "--nocapture",
             ])
             .env(HELPER_ENV, "sleep")
@@ -7436,6 +7476,7 @@ mod tests {
             .args([
                 "--exact",
                 "platform::process::tests::managed_child_test_helper",
+                "--ignored",
                 "--nocapture",
             ])
             .env(HELPER_ENV, "success")
@@ -7480,6 +7521,7 @@ mod tests {
             .args([
                 "--exact",
                 "platform::process::tests::managed_child_test_helper",
+                "--ignored",
                 "--nocapture",
             ])
             .env(HELPER_ENV, "write_marker")
@@ -7521,6 +7563,7 @@ mod tests {
             .args([
                 "--exact",
                 "platform::process::tests::managed_child_test_helper",
+                "--ignored",
                 "--nocapture",
             ])
             .env(HELPER_ENV, "write_marker")
