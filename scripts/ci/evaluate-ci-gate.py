@@ -69,7 +69,9 @@ STEP_GROUPS = {
     "build-python-product": ("product",),
     "test-python": ("python-plan", "python"),
     "test-rust-platforms": ("shadow", "rust-build", "rust-run", "verify"),
-    RUST_MEDIUM: ("rust-medium",),
+    # Добавки pull request к Rust: medium затронутых пакетов и проверка
+    # объявления снятых тестов (#1938); обе идут только в PR с Rust.
+    RUST_MEDIUM: ("rust-medium", "removed-tests"),
     # Clippy — шаг `clippy` (в фоне, очередь и ветки) или ожидание джобы
     # `Rust lint` (pull request): идёт ровно одно из них.
     "lint-rust-platforms": ("clippy", "lint-job"),

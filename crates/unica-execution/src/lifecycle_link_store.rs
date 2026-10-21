@@ -1,5 +1,7 @@
 //! Durable sole-record lifecycle-link pool for protocol-v5 Tasks.
 
+use crate::receipt_ledger_actor::observation;
+
 use crate::receipt_ledger::{
     receipt_key_digest, AttemptPhase, ClosedTerminalStatus, LifecycleLinkRecordHeader, ReceiptKey,
     ReceiptKeyDigest, ReceiptLedgerError, ReceiptTaskProjection, RetainedDualIdAccounting,
@@ -1543,6 +1545,7 @@ impl TaskLifecycleLinkStoreV5 {
         receipt_key_digest: &ReceiptKeyDigest,
         deadline: ProviderDeadline,
     ) -> Result<StoreCatalog, TaskLifecycleLinkStoreError> {
+        observation::mark("link.publish", "enter", deadline.remaining());
         check_deadline(deadline)?;
         self.verify_root_authority()?;
         let temporary_name = format!(
@@ -1566,6 +1569,7 @@ impl TaskLifecycleLinkStoreV5 {
                 error,
             ));
         }
+        observation::mark("link.encode_write", "enter", deadline.remaining());
         let serialized = {
             let mut writer = CheckpointWriter {
                 inner: BufWriter::new(&mut staged),
@@ -1584,6 +1588,8 @@ impl TaskLifecycleLinkStoreV5 {
                 })
         };
         let flushed = serialized.and_then(|()| {
+            observation::mark("link.encode_write", "complete", deadline.remaining());
+            observation::mark("link.stage_sync", "enter", deadline.remaining());
             staged
                 .sync_all()
                 .map_err(|error| storage_error("sync Task lifecycle-link staging file", error))
@@ -1597,9 +1603,11 @@ impl TaskLifecycleLinkStoreV5 {
             );
             return Err(error);
         }
+        observation::mark("link.stage_sync", "complete", deadline.remaining());
         check_deadline(deadline)?;
         self.verify_root_authority()?;
         let target = OsStr::new(STORE_SNAPSHOT_FILE);
+        observation::mark("link.rename", "enter", deadline.remaining());
         let publication = match open_state_regular_child(&self.root_file, target) {
             Ok(existing) => {
                 verify_state_owner_only(&existing).map_err(|error| {
@@ -1626,6 +1634,7 @@ impl TaskLifecycleLinkStoreV5 {
             Err(error) => return Err(storage_error("inspect Task lifecycle-link snapshot", error)),
         };
         if let Err(error) = publication {
+            observation::io_failure("link.rename", &error);
             let _ = remove_state_regular_child(
                 &self.root_file,
                 temporary_name,
@@ -1634,14 +1643,19 @@ impl TaskLifecycleLinkStoreV5 {
             );
             return Err(storage_error("publish Task lifecycle-link snapshot", error));
         }
+        observation::mark("link.rename", "complete", deadline.remaining());
         check_deadline(deadline).map_err(|_| TaskLifecycleLinkStoreError::CommitUncertain {
             receipt_key_digest: receipt_key_digest.clone(),
         })?;
-        sync_state_directory(&self.root_file).map_err(|_| {
+        observation::mark("link.parent_sync", "enter", deadline.remaining());
+        sync_state_directory(&self.root_file).map_err(|error| {
+            observation::io_failure("link.parent_sync", &error);
             TaskLifecycleLinkStoreError::CommitUncertain {
                 receipt_key_digest: receipt_key_digest.clone(),
             }
         })?;
+        observation::mark("link.parent_sync", "complete", deadline.remaining());
+        observation::mark("link.readback", "enter", deadline.remaining());
         let readback = self
             .read_catalog_from_disk(deadline)
             .map_err(|error| match error {
@@ -1657,6 +1671,7 @@ impl TaskLifecycleLinkStoreV5 {
                 "Task lifecycle-link exact durable readback changed the committed catalog",
             ));
         }
+        observation::mark("link.readback", "complete", deadline.remaining());
         Ok(readback)
     }
 
@@ -2091,7 +2106,9 @@ struct CheckpointReader<R> {
 impl<R: Read> Read for CheckpointReader<R> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         checkpoint_io(self.deadline)?;
-        self.inner.read(buffer)
+        self.inner
+            .read(buffer)
+            .inspect_err(|error| observation::io_failure("link.snapshot.read", error))
     }
 }
 
@@ -2103,12 +2120,16 @@ struct CheckpointWriter<W> {
 impl<W: Write> Write for CheckpointWriter<W> {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
         checkpoint_io(self.deadline)?;
-        self.inner.write(buffer)
+        self.inner
+            .write(buffer)
+            .inspect_err(|error| observation::io_failure("link.snapshot.write", error))
     }
 
     fn flush(&mut self) -> io::Result<()> {
         checkpoint_io(self.deadline)?;
-        self.inner.flush()
+        self.inner
+            .flush()
+            .inspect_err(|error| observation::io_failure("link.snapshot.flush", error))
     }
 }
 
@@ -2267,6 +2288,11 @@ fn application_corruption(_: ReceiptLedgerError) -> TaskLifecycleLinkStoreError 
 
 fn check_deadline(deadline: ProviderDeadline) -> Result<(), TaskLifecycleLinkStoreError> {
     if deadline.is_elapsed() {
+        observation::failure(
+            "link.check_deadline",
+            "DeadlineExceeded",
+            Some(Duration::ZERO),
+        );
         Err(TaskLifecycleLinkStoreError::DeadlineExceeded)
     } else {
         Ok(())
@@ -2298,6 +2324,7 @@ impl From<io::Error> for TaskLifecycleLinkStoreError {
 }
 
 fn storage_error(operation: &'static str, error: io::Error) -> TaskLifecycleLinkStoreError {
+    observation::io_failure(operation, &error);
     TaskLifecycleLinkStoreError::Storage {
         operation,
         message: error.to_string(),
@@ -2316,6 +2343,49 @@ fn storage_message(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn causal_observer_keeps_first_typed_io_cause_when_event_buffer_overflows() {
+        let root = tempfile::tempdir().unwrap();
+        let error = std::fs::File::open(root.path().join("absent-snapshot"))
+            .expect_err("actual filesystem NotFound");
+        let original_kind = format!("{:?}", error.kind());
+        let original_errno = error.raw_os_error();
+        let original_message = error.to_string();
+        let observer = super::observation::Context::new_for_test();
+        {
+            let _scope = observer.install();
+            let mapped = super::storage_error("causal test read snapshot", error);
+            assert!(
+                matches!(mapped, super::TaskLifecycleLinkStoreError::Storage {
+                operation: "causal test read snapshot", ref message,
+            } if message == &original_message),
+                "observer changed the storage mapping: {mapped:?}"
+            );
+            for _ in 0..300 {
+                super::observation::mark("later recovery read", "complete", None);
+            }
+            super::observation::failure("later projection mapping", "CommitUncertain", None);
+        }
+        let snapshot = observer.snapshot_for_test();
+        assert_eq!(snapshot["events"].as_array().unwrap().len(), 256);
+        assert_eq!(snapshot["overflow"], 46);
+        assert_eq!(snapshot["complete"], false);
+        assert_eq!(
+            snapshot["firstError"]["operation"],
+            "causal test read snapshot"
+        );
+        assert_eq!(snapshot["firstError"]["cause"]["class"], "Io");
+        assert_eq!(snapshot["firstError"]["cause"]["ioKind"], original_kind);
+        assert_eq!(
+            snapshot["firstError"]["cause"]["osError"],
+            serde_json::json!(original_errno)
+        );
+        // Leaving a scope must not leak its observer into a later operation.
+        super::observation::failure("outside scope", "NotAnObservedFailure", None);
+        assert_eq!(observer.snapshot_for_test(), snapshot);
+    }
+
     use super::*;
     use crate::receipt_ledger::{
         receipt_key_digest, request_scope_hash, AttemptPhase, ClosedTerminalStatus,

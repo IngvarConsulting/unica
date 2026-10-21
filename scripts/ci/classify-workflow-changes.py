@@ -82,6 +82,8 @@ CI_CONTRACT_PATHS = {
     "scripts/ci/prepared_binary.py",
     "scripts/ci/ci_shadow_selector.py",
     "scripts/ci/rust_inventory_baseline.py",
+    "scripts/ci/removed_tests.py",
+    "tests/ci/test_removed_tests.py",
     # Шаги единственной Linux-джобы: ожидание джоб ОС, Clippy в фоне.
     "scripts/ci/await_os_jobs.py",
     "scripts/ci/background_step.py",

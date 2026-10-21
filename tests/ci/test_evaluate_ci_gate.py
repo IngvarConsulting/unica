@@ -640,7 +640,7 @@ def queue_steps() -> dict[str, str]:
     """Шаги `Unica CI` кодовой очереди: всё обязательное прошло, medium PR и прогрев пропущены."""
     load = load_gate_module()
     outcomes = {step: "success" for ids in load.STEP_GROUPS.values() for step in ids}
-    outcomes.update({"rust-medium": "skipped", "warm": "skipped", "lint-job": "skipped"})
+    outcomes.update({"rust-medium": "skipped", "removed-tests": "skipped", "warm": "skipped", "lint-job": "skipped"})
     return outcomes
 
 
@@ -751,7 +751,10 @@ class StepResultTests(unittest.TestCase):
             if len(ids) < 2 or group in gate.ALTERNATIVE_GROUPS:
                 continue
             with self.subTest(group=group):
-                outcomes = {**queue_steps(), ids[-1]: "skipped"}
+                # One step of the group differs from the rest: skipped among
+                # successes, or ran among skips (a PR-only step in the queue).
+                base = queue_steps()
+                outcomes = {**base, ids[-1]: "success" if base[ids[0]] == "skipped" else "skipped"}
                 results = gate.validation_results(steps(outcomes), {"Rust (macos-14)": "success"}, "queue")
                 self.assertEqual("partial", results[group])
                 evaluation = evaluate(gate, "merge_group", "refs/heads/queue", classification(**ALL_ENABLED),
