@@ -96,6 +96,22 @@ class InventoryBaselineTests(unittest.TestCase):
         for profile in ("main", "large", "release"):
             self.assertTrue(self.explain(profile, entry="other entry (#11)")["reset"])
 
+    def test_gh_maps_only_http_404_to_not_found(self):
+        def failed(stderr):
+            return subprocess.CompletedProcess(["gh"], 1, stdout="", stderr=stderr)
+        with patch.object(baseline.subprocess, "run", return_value=failed("gh: Not Found (HTTP 404)")), \
+             self.assertRaises(baseline.NotFound):
+            baseline.gh("api", "repos/owner/unica/pulls/1")
+        for stderr in ("gh: Bad Gateway (HTTP 502)", "gh: Resource not accessible by integration (HTTP 403)"):
+            with self.subTest(stderr=stderr), patch.object(baseline.subprocess, "run", return_value=failed(stderr)):
+                with self.assertRaises(RuntimeError) as raised:
+                    baseline.gh("api", "repos/owner/unica/pulls/1")
+                self.assertNotIsInstance(raised.exception, baseline.NotFound)
+        # A missing gh executable is an environment failure, never an absent pull request.
+        with patch.object(baseline.subprocess, "run", side_effect=FileNotFoundError("gh")), \
+             self.assertRaises(FileNotFoundError):
+            baseline.gh("api", "repos/owner/unica/pulls/1")
+
     def test_crlf_descriptions_declare_like_any_other(self):
         with patch.object(baseline, "gh", return_value="Intro\r\nRemoves-test-target: unica-old\r\nRust-inventory-baseline: reset\r\n"):
             body = baseline.description(REPOSITORY, 5)
