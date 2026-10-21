@@ -305,6 +305,49 @@ def scenario_publishes(scenario) -> bool:
     )
 
 
+FORM_KINDS = {"Form", "CommonForm"}
+
+
+def names_form(address: str) -> bool | None:
+    """True when an address ends on a form (`main:Catalog.X.Form.Y`), None
+    when it names a node inside one, False when no form is on its path."""
+    segments = re.split(r"(?<!\\)\.", address.partition(":")[2])
+    if len(segments) >= 2 and segments[-2] in FORM_KINDS:
+        return True
+    return None if FORM_KINDS & set(segments[:-2]) else False
+
+
+def apply_operation_cases(scenarios, registry) -> dict[tuple[str, str], list[str]]:
+    """Map every registered `(operation, family)` to the scenarios whose
+    `unica.apply` step sends it and freezes exactly `ok`.  A refusal, a gap
+    or an unfinished task names the operation without the finished answer of
+    its planner, so it is not its case.  A name that several families
+    register is told apart by the kind of its target: a form owns its own
+    `attribute.add` and `command.add`."""
+    families: dict[str, list[tuple[str, str]]] = {}
+    for operation, family, target, _ in registry:
+        families.setdefault(operation, []).append((family, target))
+    cases: dict[tuple[str, str], list[str]] = {}
+    for scenario in scenarios:
+        for step in scenario["wire"]:
+            if step["tool"] != "unica.apply" or step["expect"] != ["ok"]:
+                continue
+            for operation in step["args"].get("ops") or []:
+                name = operation["op"]
+                candidates = families.get(name, [])
+                if len(candidates) > 1:
+                    target = (operation.get("args") or {}).get("at") or step["args"]["at"]
+                    on_form = names_form(target)
+                    candidates = [row for row in candidates if (row[1] == "Form") == on_form]
+                    if on_form is None or len(candidates) != 1:
+                        raise ValueError(f"{scenario['id']}: `{name}` at `{target}` matches no single family")
+                for family, _ in candidates:
+                    ids = cases.setdefault((name, family), [])
+                    if scenario["id"] not in ids:
+                        ids.append(scenario["id"])
+    return cases
+
+
 def matches(expected: list[str], actual: str) -> bool:
     if actual in expected:
         return True
@@ -971,6 +1014,64 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         self.assertEqual(registry[107:112], expected["Subsystem"])
         self.assertEqual(registry[114:119], expected["Interface"])
         self.assertEqual(registry[119:121], expected["Code"])
+
+    def test_every_registered_apply_operation_has_an_executed_integration_case(self) -> None:
+        # The inventory is the closed `apply` registry of all typed families
+        # against the `source` profile, which `AcceptanceCorpusRunTests`
+        # executes in the mandatory queue.  A newly registered operation
+        # without a successful step fails here instead of being skipped.
+        with patch("subprocess.Popen", side_effect=AssertionError("the inventory must not launch a process")):
+            module = self.renderer()
+            registry, _ = module.load_apply_registry()
+        self.assertEqual({row[1] for row in registry}, set(module.TYPED_FAMILIES))
+        cases = apply_operation_cases(select_profile(load_acceptance_corpus(), "source")["scenarios"], registry)
+        missing = [(operation, family) for operation, family, _, _ in registry if (operation, family) not in cases]
+        self.assertEqual(
+            missing, [],
+            "a registered apply operation has no `ok` step in the executed acceptance corpus; "
+            "add a scenario under tests/fixtures/acceptance/scenarios/",
+        )
+
+    def test_operation_inventory_counts_only_successful_apply_steps_of_their_family(self) -> None:
+        def step(tool, expect, at, *operations):
+            return {"tool": tool, "expect": expect, "args": {"at": at, "ops": [{"op": name} for name in operations]}}
+
+        registry = [
+            ("props.set", "Properties", "Metadata", "Values"),
+            ("field.add", "Dcs", "DcsField", "Values"),
+            ("attribute.add", "Metadata", "MetadataAttributeContainer", "Items"),
+            ("attribute.add", "Form", "Form", "Items"),
+        ]
+        catalog, form = "main:Catalog.X", "main:Catalog.X.Form.Y"
+        scenarios = [
+            {"id": "A", "wire": [
+                step("unica.apply", ["ok"], catalog, "props.set", "field.add", "attribute.add"),
+                {"tool": "unica.apply", "expect": ["ok"], "args": {"executionToken": "$executionToken"}},
+            ]},
+            {"id": "B", "wire": [
+                step("unica.apply", ["refused"], form, "attribute.add"),
+                step("unica.apply", ["gap"], form, "attribute.add"),
+                step("unica.view", ["ok"], form, "attribute.add"),
+                step("unica.apply", ["ok", "task"], form, "attribute.add"),
+                step("unica.apply", ["ok"], catalog, "props.set", "unregistered.add"),
+            ]},
+            {"id": "C", "wire": [{"tool": "unica.apply", "expect": ["ok"], "args": {
+                "at": catalog, "ops": [{"op": "attribute.add", "args": {"at": form}}]}}]},
+        ]
+        self.assertEqual(apply_operation_cases(scenarios, registry), {
+            ("props.set", "Properties"): ["A", "B"],
+            ("field.add", "Dcs"): ["A"],
+            ("attribute.add", "Metadata"): ["A"],
+            ("attribute.add", "Form"): ["C"],
+        })
+        self.assertTrue(names_form("main:CommonForm.Main"))
+        self.assertIsNone(names_form("main:Catalog.X.Form.Y.Attribute.Z"))
+        self.assertIs(names_form("main:Configuration"), False)
+        nested = [{"id": "D", "wire": [step("unica.apply", ["ok"], "main:Catalog.X.Form.Y.Attribute.Z", "attribute.add")]}]
+        with self.assertRaises(ValueError):
+            apply_operation_cases(nested, registry)
+        with self.assertRaises(ValueError):
+            apply_operation_cases(scenarios, registry + [("attribute.add", "Xdto", "XdtoType", "Items")])
 
     def test_metadata_registration_requires_the_actual_qualified_owner(self) -> None:
         with patch("subprocess.Popen", side_effect=AssertionError("registry inspection must not launch a process")):
@@ -1785,6 +1886,13 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cle
             home = root / f"run-{generation}"
             workspace = home / "workspace"
             shutil.copytree(REPO_ROOT / workspace_relative, workspace)
+            if workspace_relative == "tests/fixtures/acceptance/workspace-search-wide":
+                # Reverse directory traversal reaches ZNoise before the BSL.
+                # Generate the capacity probe in the disposable workspace.
+                noise = workspace / "src/ZNoise"
+                noise.mkdir()
+                for index in range(16_385):
+                    (noise / f"noise{index:05}.txt").touch()
             if workspace_relative == "tests/fixtures/acceptance/workspace-external-linked":
                 materialize_external_form_link(workspace)
             if workspace_relative in {"tests/fixtures/acceptance/workspace-external", "tests/fixtures/acceptance/workspace-external-invalid", "tests/fixtures/acceptance/workspace-external-linked", "tests/fixtures/acceptance/workspace-external-missing"}:
@@ -1827,7 +1935,8 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cle
                                 server.input_schema(step["tool"]), arguments
                             )
                         response = (completed_delivery_call(server, step["tool"], arguments, label)
-                                    if plugin else server.call(step["tool"], arguments, label))
+                                    if plugin or wanted == "tests/fixtures/acceptance/workspace-search-wide"
+                                    else server.call(step["tool"], arguments, label))
                     except (TimeoutError, OSError, ValueError) as error:
                         # The session is gone: record the step with the
                         # daemon's own words and continue on a fresh one.

@@ -1,0 +1,148 @@
+{
+  "id": "S-1835-subsystem-interface-sections",
+  "issue": 1835,
+  "area": "Подсистемы и интерфейс",
+  "task": "Показать команду «Пользователи» в Администрировании, перенести её в обычную группу навигации и развернуть порядок групп одной пачкой: предпросмотр не пишет файл, публикация меняет ровно видимость, размещение этой команды и порядок групп",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.Администрирование.Interface"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before": {
+          "file": "src/Subsystems/Администрирование/Ext/CommandInterface.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Subsystem.Администрирование.Interface",
+        "ops": [
+          {
+            "op": "commandVisibility.set",
+            "args": {
+              "items": [
+                {
+                  "command": "Catalog.Пользователи.StandardCommand.OpenList",
+                  "visible": true
+                }
+              ]
+            }
+          },
+          {
+            "op": "commandPlacement.set",
+            "args": {
+              "items": [
+                {
+                  "command": "Catalog.Пользователи.StandardCommand.OpenList",
+                  "group": "NavigationPanelOrdinary"
+                }
+              ]
+            }
+          },
+          {
+            "op": "groupOrder.set",
+            "args": {
+              "values": {
+                "groups": [
+                  "CommandGroup.НастройкиПрограммы",
+                  "ActionsPanelTools",
+                  "ActionsPanelReports",
+                  "NavigationPanelSeeAlso",
+                  "NavigationPanelOrdinary",
+                  "NavigationPanelImportant"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Subsystems/Администрирование/Ext/CommandInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Subsystems/Администрирование/Ext/CommandInterface.xml",
+          "kind": "sha256",
+          "notEq": "$capture.before"
+        },
+        {
+          "path": "src/Subsystems/Администрирование/Ext/CommandInterface.xml",
+          "kind": "sha256",
+          "eq": "32fa0969c74ed2ea7c0b1e88ac8962c84bd750234292f28326516a39ce876b48"
+        },
+        {
+          "path": "src/Subsystems/Администрирование/Ext/CommandInterface.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/extrnprops}CommandsVisibility/{http://v8.1c.ru/8.3/xcf/extrnprops}Command[@name='Catalog.Пользователи.StandardCommand.OpenList']/{http://v8.1c.ru/8.3/xcf/extrnprops}Visibility/{http://v8.1c.ru/8.3/xcf/readable}Common",
+          "eq": [
+            "true"
+          ]
+        },
+        {
+          "path": "src/Subsystems/Администрирование/Ext/CommandInterface.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/extrnprops}CommandsPlacement/{http://v8.1c.ru/8.3/xcf/extrnprops}Command[@name='Catalog.Пользователи.StandardCommand.OpenList']/{http://v8.1c.ru/8.3/xcf/extrnprops}CommandGroup",
+          "eq": [
+            "NavigationPanelOrdinary"
+          ]
+        },
+        {
+          "path": "src/Subsystems/Администрирование/Ext/CommandInterface.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/extrnprops}GroupsOrder/{http://v8.1c.ru/8.3/xcf/extrnprops}Group",
+          "eq": [
+            "CommandGroup.НастройкиПрограммы",
+            "ActionsPanelTools",
+            "ActionsPanelReports",
+            "NavigationPanelSeeAlso",
+            "NavigationPanelOrdinary",
+            "NavigationPanelImportant"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -5606,7 +5606,6 @@ fn main() {
             for required in [
                 "retained_root",
                 "validate_named_identity",
-                "read_immediate_names_bounded",
                 "retain_immediate_child_nofollow",
                 "open_named_identity_for_read",
                 "is_elapsed",
@@ -5642,7 +5641,6 @@ fn main() {
             }
             let body = tokens(&method.block);
             for bound in [
-                "CANONICAL_SEARCH_MAX_ENTRIES",
                 "CANONICAL_SEARCH_MAX_DEPTH",
                 "CANONICAL_SEARCH_MAX_LINE_BYTES",
                 "read_search_line_bounded",
@@ -5657,6 +5655,17 @@ fn main() {
             )) {
                 return Err(
                     "literal search root must come from the private retained binding".to_string(),
+                );
+            }
+            // Directory width is unbounded: names come only from the retained
+            // directory through the ordered spool audited separately.
+            if !body.contains(&tokens(
+                &syn::parse_str::<syn::Expr>("ordered_search_names::OrderedNames::collect")
+                    .expect("ordered names entry point parses"),
+            )) {
+                return Err(
+                    "literal search must enumerate retained directories through OrderedNames"
+                        .to_string(),
                 );
             }
             Ok(())
@@ -6628,6 +6637,77 @@ fn main() {
         Ok(())
     }
 
+    /// Audit the ordered spool: it may list names only through the retained
+    /// directory it receives and never opens or resolves source paths itself.
+    fn audit_ordered_search_names(source: &str) -> Result<(), String> {
+        #[derive(Default)]
+        struct SpoolCalls {
+            retained_visits: usize,
+            names: std::collections::BTreeSet<String>,
+        }
+
+        impl<'ast> syn::visit::Visit<'ast> for SpoolCalls {
+            fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+                if call.method == "visit_immediate_names"
+                    && matches!(&*call.receiver, syn::Expr::Path(receiver)
+                        if receiver.qself.is_none() && receiver.path.is_ident("directory"))
+                {
+                    self.retained_visits += 1;
+                }
+                self.names.insert(call.method.to_string());
+                syn::visit::visit_expr_method_call(self, call);
+            }
+
+            fn visit_path_segment(&mut self, segment: &'ast syn::PathSegment) {
+                self.names.insert(segment.ident.to_string());
+                syn::visit::visit_path_segment(self, segment);
+            }
+        }
+
+        let file = syn::parse_file(source)
+            .map_err(|error| format!("ordered search names must parse as Rust AST: {error}"))?;
+        let cfg_test = |attributes: &[syn::Attribute]| {
+            attributes.iter().any(|attribute| {
+                attribute.path().is_ident("cfg")
+                    && matches!(&attribute.meta, syn::Meta::List(list)
+                        if list.tokens.to_string() == "test")
+            })
+        };
+        let mut calls = SpoolCalls::default();
+        for item in &file.items {
+            let test_only = match item {
+                syn::Item::Mod(module) => cfg_test(&module.attrs),
+                syn::Item::Fn(function) => cfg_test(&function.attrs),
+                _ => false,
+            };
+            if !test_only {
+                syn::visit::Visit::visit_item(&mut calls, item);
+            }
+        }
+        if calls.retained_visits == 0 {
+            return Err(
+                "ordered search names must list only the retained `directory` it receives"
+                    .to_string(),
+            );
+        }
+        for ambient in [
+            "canonicalize",
+            "read_dir",
+            "read_immediate_names_bounded",
+            "read_to_string",
+            "retain_immediate_child_nofollow",
+            "retain_regular_child",
+            "symlink_metadata",
+        ] {
+            if calls.names.contains(ambient) {
+                return Err(format!(
+                    "ordered search names must not reach sources through `{ambient}`"
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn audited_actor_read_source() -> &'static str {
         let source = include_str!("invocation_service.rs");
         audit_actor_read_source_capability_api(source).unwrap_or_else(|error| {
@@ -6640,6 +6720,10 @@ fn main() {
     pub(crate) fn actor_read_source_capability_is_sealed_after_binding() {
         let source = include_str!("invocation_service.rs");
         audit_actor_read_source_capability_api(source).unwrap_or_else(|error| panic!("{error}"));
+        audit_ordered_search_names(include_str!("ordered_search_names.rs"))
+            .unwrap_or_else(|error| panic!("{error}"));
+        actor_read_source_capability_ast_audit_rejects_unordered_literal_enumeration();
+        ordered_search_names_audit_rejects_ambient_or_foreign_listing();
         actor_read_source_capability_sibling_field_privacy_is_enforced_by_rustc();
         actor_read_source_capability_audit_rejects_sibling_visible_forge_and_mutator();
         actor_read_source_capability_ast_audit_rejects_split_sibling_visibility();
@@ -7985,6 +8069,44 @@ struct ActorLogicalReadLease {"#,
             audit_actor_read_source_capability_api(&hardcoded_profile).is_err(),
             "hardcoded platform profile escaped the authority-construction dataflow audit"
         );
+    }
+
+    fn actor_read_source_capability_ast_audit_rejects_unordered_literal_enumeration() {
+        let source = audited_actor_read_source();
+        let unordered = source.replacen(
+            "ordered_search_names::OrderedNames::collect(directory, checkpoint)",
+            "ordered_search_names::OrderedNames::from_listing(directory, checkpoint)",
+            1,
+        );
+        assert_ne!(unordered, source, "hostile mutation must alter its source");
+        syn::parse_file(&unordered)
+            .expect("hostile capability source must remain valid Rust syntax");
+        assert!(
+            audit_actor_read_source_capability_api(&unordered).is_err(),
+            "literal search escaped the retained ordered enumeration audit"
+        );
+    }
+
+    fn ordered_search_names_audit_rejects_ambient_or_foreign_listing() {
+        let source = include_str!("ordered_search_names.rs");
+        let foreign = source.replacen(
+            "directory.visit_immediate_names(",
+            "foreign.visit_immediate_names(",
+            1,
+        );
+        let ambient = source.replacen(
+            "directory.visit_immediate_names(",
+            "std::fs::read_dir(\".\").map(drop)?;\n        directory.visit_immediate_names(",
+            1,
+        );
+        for hostile in [foreign, ambient] {
+            assert_ne!(hostile, source, "hostile mutation must alter its source");
+            syn::parse_file(&hostile).expect("hostile spool source must remain valid Rust syntax");
+            assert!(
+                audit_ordered_search_names(&hostile).is_err(),
+                "ordered search names escaped the retained listing audit"
+            );
+        }
     }
 
     #[test]

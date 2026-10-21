@@ -67,6 +67,61 @@ def archive_command(lane: str, archive: Path, root: Path = ROOT, target: str | N
             "--target-dir", str(root / "target"), "--archive-file", str(archive)]
 
 
+def doctest_command(root: Path = ROOT, target: str | None = None) -> list[str]:
+    # Nextest neither archives nor runs doctests, and the `compile_fail` examples
+    # are the guards on closed writer constructors. They run once per runner in
+    # the ordinary build, against the target directory the archive just filled.
+    return ["cargo", "test", "--doc", "--workspace", "--locked",
+            *(["--target", target] if target is not None else []),
+            "--target-dir", str(root / "target")]
+
+
+DOCTEST_OUTPUT_LIMIT = 16_000
+DOCTEST_CASE = {"binary": "rustdoc", "name": "workspace::doctests"}
+
+
+def run_doctests(root: Path, target: str | None) -> dict:
+    """The outcome travels in the lane manifest: the shard turns it into a
+    report record and the union verifier refuses the gate on a failure, so a
+    red doctest is not left behind in the build log alone."""
+    command = doctest_command(root, target)
+    # A library that fails to build reports on stderr; the trace needs it too.
+    completed, seconds = timed(command, root, capture=True, merge_stderr=True)
+    output = completed.stdout or ""
+    print(output, end="", flush=True)
+    return {"command": command, "exitCode": completed.returncode, "seconds": seconds,
+            "output": output[-DOCTEST_OUTPUT_LIMIT:]}
+
+
+def doctest_problem(manifest: dict) -> str | None:
+    if manifest.get("lane") != "ordinary":
+        return None
+    outcome = manifest.get("doctests")
+    if not isinstance(outcome, dict) or type(outcome.get("exitCode")) is not int:
+        return "missing doctest outcome"
+    if outcome["exitCode"] != 0:
+        return f"workspace doctests failed with exit code {outcome['exitCode']}"
+    return None
+
+
+def doctest_record(manifest: dict, profile: str, host: str) -> dict:
+    outcome = manifest.get("doctests") if isinstance(manifest.get("doctests"), dict) else {}
+    problem = doctest_problem(manifest)
+    seconds = outcome.get("seconds")
+    stop = allure_results.now_ms()
+    start = stop - int(seconds * 1000) if isinstance(seconds, (int, float)) and seconds >= 0 else stop
+    # One synthetic case per runner: it is not in the nextest size filters,
+    # and it runs in every gate that builds the ordinary lane.
+    return allure_results.record(
+        name=DOCTEST_CASE["name"], full_name=case_id(DOCTEST_CASE),
+        status="failed" if problem else "passed", runner=host,
+        labels={"language": "rust", "framework": "rustdoc", "parentSuite": "rust",
+                "suite": DOCTEST_CASE["binary"], "subSuite": "workspace", "profile": profile,
+                "size": "small", "rust_lane": "ordinary"},
+        message=problem, trace=outcome.get("output") if problem else None, start=start, stop=stop,
+    )
+
+
 def reuse_command(action: str, root: Path, archive: Path, lane: str, profile: str, partition: str | None = None, *, candidate: str | None = None) -> list[str]:
     workspace = root / "vendor/ureq" if lane == "vendor" else root
     selected_filters = filters(lane)
@@ -157,10 +212,12 @@ def signature(directory: Path, *, profile: str, host: str, lane: str, line: str 
     write(path, document)
 
 
-def timed(command: list[str], root: Path, *, capture: bool = False, env: dict[str, str] | None = None):
+def timed(command: list[str], root: Path, *, capture: bool = False, env: dict[str, str] | None = None,
+          merge_stderr: bool = False):
     print("+ " + " ".join(command), flush=True)
     start = time.monotonic()
-    completed = subprocess.run(command, cwd=root, text=True, stdout=subprocess.PIPE if capture else None, env=env)
+    completed = subprocess.run(command, cwd=root, text=True, stdout=subprocess.PIPE if capture else None,
+                               stderr=subprocess.STDOUT if capture and merge_stderr else None, env=env)
     return completed, time.monotonic() - start
 
 
@@ -280,6 +337,7 @@ def build(root: Path, destination: Path, lane: str, profile: str, host: str, lin
     completed.check_returncode()
     if prepared_binary.identity(root) != before:
         raise ValueError("source inputs changed while building the test archive")
+    doctests = run_doctests(root, before["target"]) if lane == "ordinary" else None
     full_command = reuse_command("list", root, archive, lane, profile)
     completed, list_seconds = timed(full_command, root, capture=True)
     completed.check_returncode()
@@ -305,6 +363,7 @@ def build(root: Path, destination: Path, lane: str, profile: str, host: str, lin
     }
     if lane == "ordinary":
         document["fixtureBinary"] = fixture_binary_descriptor(root, listed, before)
+        document["doctests"] = doctests
     write(destination / "lane.json", document)
     allure_results.write_plan(destination, full)
 
@@ -343,6 +402,10 @@ def run_archive(root: Path, prepared: Path, destination: Path, lane: str, profil
     destination.mkdir(parents=True, exist_ok=False)
     allure_results.write_plan(destination, plan)
     signature(destination, profile=profile, host=host, lane=lane, line=line, sha=current["sha"])
+    if lane == "ordinary" and index == 1:
+        # Written before nextest runs, so a later failure in this shard does
+        # not take the doctest outcome out of the report.
+        allure_results.write(destination, doctest_record(document, profile, host))
     nextest_profile = document["nextestProfile"]
     candidates = {root / "target/nextest" / nextest_profile / "junit.xml", root / "vendor/ureq/target/nextest" / nextest_profile / "junit.xml"}
     for path in candidates:
@@ -545,6 +608,11 @@ def verify_union(directory: Path, profile: str, hosts: list[str], sha: str, base
                 raise ValueError("missing or duplicate lane plan")
             manifest = matching[0]
             validate_manifest(manifest, profile=profile, host=host, lane=lane, sha=sha)
+            problem = doctest_problem(manifest)
+            if problem is not None:
+                # Recorded beside the shard checks, which still run: a red
+                # doctest must not hide a test failure in the same lane.
+                (advisory if profile == "large" and host == "windows-latest" else problems).append(f"{host}/{lane}: {problem}")
             if os.environ.get("GITHUB_RUN_ID") and any(manifest.get(key) != os.environ.get(env) for key, env in (("runId", "GITHUB_RUN_ID"), ("attempt", "GITHUB_RUN_ATTEMPT"))):
                 raise ValueError("lane plan belongs to another workflow run or attempt")
             matching_results = [item for item in results if (item.get("runner"), item.get("lane")) == (host, lane)]
@@ -556,6 +624,7 @@ def verify_union(directory: Path, profile: str, hosts: list[str], sha: str, base
                 validate_result(manifest, result, result["shard"])
             verified.append(manifest)
         except (KeyError, TypeError, ValueError) as error:
+            # Windows large is advisory until its known failures (#1523) are fixed.
             target = advisory if profile == "large" and host == "windows-latest" else problems
             target.append(f"{host}/{lane}: {error}")
     summary = inventory_summary(verified, profile=profile, sha=sha, jobs=job_names)

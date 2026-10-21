@@ -1,3 +1,4 @@
+use unica_source_contract::discovery::ProjectDiscoveryRead;
 use unica_source_contract::location::SourceLocation;
 use unica_source_contract::workspace::ResolvedSourceRoot;
 use unica_source_contract::workspace::WorkspaceContext;
@@ -277,6 +278,9 @@ pub struct CodeIntelligenceContext {
     pub workspace: WorkspaceContext,
     pub source_root: ResolvedSourceRoot,
     pub search_scope: Option<CodeSearchScope>,
+    /// Current-source reads go through the workspace owner's read port; this
+    /// package never opens a file itself.
+    source_reader: Arc<dyn ProjectDiscoveryRead + Send + Sync>,
     provider_progress: Arc<dyn ProviderProgressSink>,
 }
 
@@ -347,11 +351,16 @@ impl CodeSearchScope {
 }
 
 impl CodeIntelligenceContext {
-    pub fn new(workspace: WorkspaceContext, source_root: ResolvedSourceRoot) -> Self {
+    pub fn new(
+        workspace: WorkspaceContext,
+        source_root: ResolvedSourceRoot,
+        source_reader: Arc<dyn ProjectDiscoveryRead + Send + Sync>,
+    ) -> Self {
         Self {
             workspace,
             source_root,
             search_scope: None,
+            source_reader,
             provider_progress: Arc::new(NoopProviderProgressSink),
         }
     }
@@ -364,6 +373,10 @@ impl CodeIntelligenceContext {
     pub(crate) fn with_provider_progress(mut self, sink: Arc<dyn ProviderProgressSink>) -> Self {
         self.provider_progress = sink;
         self
+    }
+
+    pub fn source_reader(&self) -> &dyn ProjectDiscoveryRead {
+        self.source_reader.as_ref()
     }
 
     pub fn report_progress(&self, update: ProviderProgressUpdate) {
@@ -1212,6 +1225,9 @@ mod tests {
                 source_set: Some("main".to_string()),
                 path: PathBuf::from("/workspace/src"),
             },
+            std::sync::Arc::new(unica_workspace::discovery::ProjectDiscoveryReader::new(
+                std::path::Path::new("/workspace"),
+            )),
         )
     }
 

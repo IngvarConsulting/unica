@@ -12,8 +12,7 @@ entries = [
   "test_acceptance_scenarios.AcceptanceDeliveryCorpusRunTests",
   "test_acceptance_scenarios.AcceptanceFaultCorpusRunTests",
   "test_whole_template_plan_diff.WholeTemplatePlanDiffWireTests",
-  # два контракта продукта, которые собирают библиотеку и поднимают транспорт
-  "test_product_contracts.ProductContractTests.test_unica_coder_production_library_satisfies_rmcp_handler_bound",
+  # контракт продукта: модуль зовёт `cargo metadata`, страж требует записи
   "test_product_contracts.ProductContractTests.test_rmcp_transport_is_confined_to_mcp_interface",
   # дым MCP: сокет и процесс продукта
   "test_smoke_unica_mcp.SmokeUnicaMcpTests",

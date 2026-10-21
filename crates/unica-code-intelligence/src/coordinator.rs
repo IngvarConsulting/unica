@@ -805,6 +805,9 @@ mod tests {
                 source_set: Some("main".to_string()),
                 path: PathBuf::from("/workspace/src"),
             },
+            std::sync::Arc::new(unica_workspace::discovery::ProjectDiscoveryReader::new(
+                std::path::Path::new("/workspace"),
+            )),
         )
     }
 
