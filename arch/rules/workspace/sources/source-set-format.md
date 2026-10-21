@@ -3,6 +3,7 @@ id: INV.SOURCE.MULTI-FORMAT-WORKSPACE
 check:
   - crates/unica-source-integration-tests/tests/project_sources.rs::a_declared_but_empty_source_set_is_declared_not_observed
   - crates/unica-source-integration-tests/tests/project_sources.rs::a_filled_source_set_is_supported_and_its_evidence_points_at_a_file
+  - crates/unica-coder/src/infrastructure/tool_context.rs::native_platform_xml_source_format_public_gate_is_closed_over_public_operations
   - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_admission_names_why_no_source_set_was_admitted
   - crates/unica-coder/src/domain/apply.rs::classification_fallback_never_grants_writes_or_crosses_source_isolation
   - crates/unica-source-integration-tests/tests/project_sources.rs::detects_edt_configuration_and_platform_external_processor_source_sets
@@ -21,8 +22,9 @@ check:
 
 Канонической операции над XML платформы нужен подходящий формат выбранного
 набора: EDT и неоднозначный формат отклоняются. Такой набор не получает
-записываемого профиля, а вызов по проекту только с EDT отказывает с причиной
-допуска. Состав этого отказа описан [отдельным правилом](../../mcp/admission-refusal.md).
+записываемого профиля, а вызов, которому нужен набор PlatformXml, в проекте
+только с EDT отказывает с причиной допуска. Состав этого отказа описан
+[отдельным правилом](../../mcp/admission-refusal.md).
 
 Объявленный пустой набор остаётся в карте проекта. Его состояние `declared`
 отличает заявленный формат от наблюдённого: доказательство указывает на

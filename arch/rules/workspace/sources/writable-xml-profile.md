@@ -6,6 +6,7 @@ check:
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::canonical_dcs_validation_keeps_exact_versionless_dcs_root_guard
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::canonical_dcs_validation_keeps_captured_owner_format_warnings
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::canonical_dcs_validation_keeps_large_configuration_owner_format_warning
+  - crates/unica-coder/src/infrastructure/format_guard.rs::single_writable_platform_xml_profile_is_exact
   - crates/unica-source-designer/src/format_profile.rs::rejects_numeric_equivalents_of_the_exact_supported_literal
   - crates/unica-coder/src/infrastructure/native_operations/apply_families/dcs_mxl_guard_tests.rs::canonical_dcs_supported_source_still_requires_each_exact_owner_version
   - crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs::platform_xml_object_target_rejects_xml_decoded_version_equality
