@@ -35,6 +35,7 @@ CAPABILITY_PROBES = (
     "short_private_runtime_dir", "unix_runtime_authority_tests_supported", "JobAttachGateForTest",
     "age_tree", "set_modified", "ERROR_PRIVILEGE_NOT_HELD", "WindowsPrivilegeUnavailable",
     "PreventedByRetainedHandle", "MAIN_SEPARATOR", "symlink_file", "symlink_dir", "PermissionDenied",
+    "canonical_delivery_fixture_binary",
 )
 PROBE = re.compile(r"\b(?:" + "|".join(CAPABILITY_PROBES) + r")\b|\bsymlink\s*\(|\b1314\b")
 EXIT = re.compile(r"\b(?:return|continue)\b")

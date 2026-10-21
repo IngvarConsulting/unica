@@ -165,7 +165,10 @@ override в `.config/nextest.toml`. Nextest-профиль `large` остаёт�
 `ordinary`, `receipt` или `vendor`; `--phase run` исполняет shard из `--prepared`
 без Cargo-компиляции. `--phase verify` сверяет объединение результатов с полным
 планом по ревизии, ОС, конфигурации и попытке workflow. Для локальной точечной
-проверки сохраняй обычный nextest-вызов. Ограничения переносимости архивов,
+проверки сохраняй обычный nextest-вызов. Исключение — тесты на подготовленный
+бинарь `unica` из ordinary-архива (возможность `archive-fixture-binary`):
+вне `run-tests.py --rust-lane ordinary --phase build`/`run` они пропускаются
+с этой причиной. Ограничения переносимости архивов,
 подготовленный ordinary binary для Python и теневой selector описаны
 в [конвейере](references/ci-pipeline.md).
 

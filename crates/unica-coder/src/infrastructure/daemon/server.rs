@@ -4364,13 +4364,17 @@ pub(crate) mod actor_capacity_tests {
         assert!(output.status.success(), "{stdout}\n{stderr}");
     }
 
-    fn canonical_delivery_fixture_binary() -> (std::path::PathBuf, String) {
+    const ARCHIVE_FIXTURE_BINARY_SKIP: &str =
+        "the ordinary test archive binds its Unica fixture binary; run through run-tests.py --rust-lane ordinary --phase build/run";
+
+    /// The ordinary archive's prepared `unica`, verified against its producer's
+    /// SHA256. `None` only when no lane runner bound it; a bound but damaged
+    /// fixture fails instead of skipping.
+    fn canonical_delivery_fixture_binary() -> Option<(std::path::PathBuf, String)> {
         use sha2::{Digest, Sha256};
 
-        let binary = std::path::PathBuf::from(
-            std::env::var_os("UNICA_CANONICAL_DELIVERY_SUCCESS_BINARY")
-                .expect("prepare the ordinary test archive and bind its Unica fixture binary"),
-        );
+        let binary =
+            std::path::PathBuf::from(std::env::var_os("UNICA_CANONICAL_DELIVERY_SUCCESS_BINARY")?);
         let expected = std::env::var("UNICA_CANONICAL_DELIVERY_SUCCESS_SHA256")
             .expect("the archive fixture binary requires its producer's SHA256");
         assert!(binary.is_absolute(), "fixture binary path must be absolute");
@@ -4387,7 +4391,7 @@ pub(crate) mod actor_capacity_tests {
             expected,
             "archive fixture binary does not match its producer's SHA256"
         );
-        (binary, expected)
+        Some((binary, expected))
     }
 
     #[test]
@@ -4602,7 +4606,8 @@ fn main() {
             std::env::set_var("UNICA_RUNTIME_MANIFEST", &release_path);
             std::env::set_var("UNICA_TEST_PROVIDER_MARKER_DIR", &root);
             std::env::set_var("UNICA_WORKSPACE_SERVICE_IDLE_SECS", "1");
-            let (server, _) = canonical_delivery_fixture_binary();
+            let (server, _) = canonical_delivery_fixture_binary()
+                .expect("the parent binds the archive fixture binary for its child");
             std::env::set_var("UNICA_TEST_WORKSPACE_SERVICE_EXE", server);
             let downloader = Arc::new(PublishedFixture(
                 assets,
@@ -4775,8 +4780,14 @@ fn main() {
             return;
         }
 
+        let Some((server, digest)) = canonical_delivery_fixture_binary() else {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::ArchiveFixtureBinary,
+                ARCHIVE_FIXTURE_BINARY_SKIP,
+            );
+            return;
+        };
         let root = tempfile::tempdir().unwrap();
-        let (server, digest) = canonical_delivery_fixture_binary();
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",

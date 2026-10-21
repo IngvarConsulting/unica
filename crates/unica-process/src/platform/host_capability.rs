@@ -45,10 +45,14 @@ pub enum HostCapability {
     WindowsJobObject,
     /// Windows verbatim, drive and UNC path syntax.
     WindowsPathSyntax,
+    /// The prepared `unica` binary of the ordinary CI test archive. Only the
+    /// lane runner binds it (`run-tests.py --rust-lane ordinary`), so a plain
+    /// local nextest run lacks it; every CI runner requires it.
+    ArchiveFixtureBinary,
 }
 
 impl HostCapability {
-    pub const ALL: [HostCapability; 12] = [
+    pub const ALL: [HostCapability; 13] = [
         HostCapability::Symlink,
         HostCapability::CaseSensitiveFilesystem,
         HostCapability::CaseInsensitiveFilesystem,
@@ -61,6 +65,7 @@ impl HostCapability {
         HostCapability::UnixPermissionBits,
         HostCapability::WindowsJobObject,
         HostCapability::WindowsPathSyntax,
+        HostCapability::ArchiveFixtureBinary,
     ];
 
     pub const fn name(self) -> &'static str {
@@ -79,6 +84,7 @@ impl HostCapability {
             HostCapability::UnixPermissionBits => "unix-permission-bits",
             HostCapability::WindowsJobObject => "windows-job-object",
             HostCapability::WindowsPathSyntax => "windows-path-syntax",
+            HostCapability::ArchiveFixtureBinary => "archive-fixture-binary",
         }
     }
 }

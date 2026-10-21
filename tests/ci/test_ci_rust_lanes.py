@@ -1070,6 +1070,14 @@ class HostCapabilitySkipTests(unittest.TestCase):
         self.assertEqual(self.shard["records"][0]["reason"], "host capability symlink: creating a symlink needs a privilege")
         self.assertIn('<skipped message="host capability symlink', self.junit)
 
+    def test_the_archive_fixture_binary_cannot_be_skipped_on_any_ci_runner(self):
+        # The lane runner binds the fixture itself; only a plain local nextest run lacks it.
+        for runner in lanes.REQUIRED_HOST_CAPABILITIES:
+            with self.subTest(runner=runner):
+                self.assertIn("archive-fixture-binary", lanes.REQUIRED_HOST_CAPABILITIES[runner])
+                with self.assertRaisesRegex(ValueError, f"host capability archive-fixture-binary is required on {runner}"):
+                    self.run_with_skip("archive-fixture-binary", runner=runner)
+
     def test_a_capability_required_on_the_runner_cannot_be_skipped(self):
         with self.assertRaisesRegex(ValueError, "host capability symlink is required on ubuntu-latest"):
             self.run_with_skip("symlink")
