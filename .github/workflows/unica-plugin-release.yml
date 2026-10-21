@@ -750,7 +750,7 @@ jobs:
       - if: steps.rust-cache.outputs.cache-hit != 'true'
         run: cargo test --workspace --no-run --locked
       - if: steps.rust-cache.outputs.cache-hit != 'true'
-        run: cargo test -p unica-coder --features receipt-ledger-test-support --lib --test daemon_receipt_ledger --no-run --locked
+        run: cargo test -p unica-coder --features receipt-ledger-test-support --test daemon_receipt_ledger --no-run --locked
       - if: steps.rust-cache.outputs.cache-hit != 'true'
         run: cargo check --workspace --all-targets --all-features --locked
 

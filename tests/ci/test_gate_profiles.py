@@ -119,15 +119,14 @@ class GateProfileCompositionTests(unittest.TestCase):
         self.config = tomllib.loads((REPO_ROOT / ".config" / "nextest.toml").read_text(encoding="utf-8"))
         self.run_tests = load_run_tests()
 
-    def test_private_scenario_feature_selection_is_scoped_to_its_library_module(self) -> None:
-        prefix = "infrastructure::receipt_scenario::tests::"
-        # Признак включается одному пакету и двум целям: библиотеке, где фильтр
-        # оставляет только модуль сценариев, и контракту целиком. Один вызов —
-        # одна сборка `unica-coder` с признаком на план и прогон.
+    def test_ledger_feature_selection_builds_no_library_test_target(self) -> None:
+        # Признак включается одному пакету и одной цели — контракту. Проверки
+        # обвязки сценариев идут в его бинаре, поэтому `--lib` (тестовая
+        # сборка всего `unica-coder`) варианту не нужен.
         expected = (
             "-p", "unica-coder", "--features", "receipt-ledger-test-support",
-            "--lib", "--test", "daemon_receipt_ledger",
-            "-E", f"binary(daemon_receipt_ledger) | test(/^{prefix}/)",
+            "--test", "daemon_receipt_ledger",
+            "-E", "binary(daemon_receipt_ledger)",
         )
         self.assertEqual(self.run_tests.LEDGER_FEATURE_SELECTION, expected)
         self.assertEqual(self.run_tests.rust_selections("pr"), [("--workspace",)])
@@ -137,10 +136,44 @@ class GateProfileCompositionTests(unittest.TestCase):
                 self.assertEqual(selections, [("--workspace",), expected, UREQ_SELECTION])
                 self.assertNotIn("--features", selections[0])
                 self.assertNotIn("--workspace", selections[1])
-        source = (REPO_ROOT / "crates/unica-coder/tests/support/receipt_scenario/tests.rs").read_text()
-        declared = attributed_test_functions(source)
-        self.assertIn("fresh_task_listener_after_restart_survives_its_prepare_barrier_release", declared)
-        self.assertIn("successor_closes_and_joins_old_gate_waiters_without_cancelling_the_new_life", declared)
+                self.assertNotIn("--lib", selections[1])
+
+    def test_scenario_harness_checks_are_tests_of_the_contract_binary(self) -> None:
+        # Тела проверок обвязки — в библиотеке без `#[test]`; тест каждой из
+        # них разворачивает бинарь контракта одним макросом. Список в макросе
+        # единственный, и обе известные проверки в нём есть.
+        coder = REPO_ROOT / "crates/unica-coder"
+        harness = (coder / "tests/support/receipt_scenario/tests.rs").read_text(encoding="utf-8")
+        self.assertEqual(attributed_test_functions(harness), set())
+        listed = re.search(r"(?m)^harness_checks!\((.*?)\);", harness, re.S)
+        self.assertIsNotNone(listed)
+        checks = {name.strip() for name in listed[1].split(",") if name.strip()}
+        self.assertEqual(len(checks), 32)
+        self.assertIn("fresh_task_listener_after_restart_survives_its_prepare_barrier_release", checks)
+        self.assertIn("successor_closes_and_joins_old_gate_waiters_without_cancelling_the_new_life", checks)
+        ledger = (coder / "tests/daemon_receipt_ledger.rs").read_text(encoding="utf-8")
+        self.assertIn('#[path = "daemon_receipt_ledger/receipt_scenario_harness.rs"]\nmod receipt_scenario_harness;', ledger)
+        wrapper = (coder / "tests/daemon_receipt_ledger/receipt_scenario_harness.rs").read_text(encoding="utf-8")
+        self.assertIn("unica_coder::receipt_scenario_harness_tests!();", wrapper)
+        # Бинарь контракта — `kind(test)`: размер `medium` идёт из каталога,
+        # особой переразметки у запускателя для обвязки нет.
+        self.assertIn("kind(test)", self.config["profile"]["pr"]["default-filter"])
+        self.assertFalse(hasattr(self.run_tests, "SCENARIO_TEST_PREFIX"))
+        # Под признаком у библиотеки ровно три входа: замороженный фасад,
+        # демон перезапуска и проверки обвязки. Вход проверки — без аргументов:
+        # он только запускает проверку и ничего не передаёт внутрь.
+        lib = (coder / "src/lib.rs").read_text(encoding="utf-8")
+        gated = re.findall(
+            r'#\[cfg\(feature = "receipt-ledger-test-support"\)\]\s*(?:#\[doc\(hidden\)\]\s*)?'
+            r"pub (?:mod (\w+);|use [\w:]+ as (\w+);)",
+            lib,
+        )
+        self.assertEqual(
+            sorted(name for pair in gated for name in pair if name),
+            ["frontend_restart_test_support", "receipt_ledger_test_support", "receipt_scenario_harness_checks"],
+        )
+        self.assertEqual(lib.count("receipt-ledger-test-support"), len(gated))
+        self.assertIn("pub fn $check() {\n                    super::$check();", harness)
 
     def test_every_gate_has_a_nextest_profile_that_admits_its_sizes(self) -> None:
         profiles = self.config["profile"]

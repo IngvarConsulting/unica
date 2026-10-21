@@ -52,7 +52,17 @@ CONTRACT_FILES = (
     "wire.rs",
 )
 # Освобождённые файлы — с причиной, а не молча.
-EXEMPT_FILES = {"tests.rs": "юнит-тесты хранилища, а не обвязка"}
+EXEMPT_FILES = {
+    "tests.rs": "проверки обвязки: их исполняет только `#[test]` бинаря контракта, "
+    "бегунок их не вызывает",
+}
+# Проверки обвязки — код библиотеки под признаком, а не `#[cfg(test)]`. Их
+# освобождение держится, пока читаемые файлы обвязки называют модуль
+# проверок только объявлением: вызов оттуда сделал бы проверку частью бегунка.
+EXEMPT_CHECKS_MODULE = "harness_checks"
+EXEMPT_CHECKS_DECLARATION = re.compile(
+    rf"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+{EXEMPT_CHECKS_MODULE}\s*;\s*$"
+)
 DISPATCHER = "run_supported_receipt_scenario_for_test"
 
 # Durable-переходы квитанции: пишущая поверхность актора ledger (одиночная и
@@ -289,6 +299,17 @@ def offenders(path: Path, source: str) -> list[str]:
     return found
 
 
+def exempt_check_references(path: Path, source: str) -> list[str]:
+    """Читаемый файл обвязки называет модуль проверок только объявлением."""
+    return [
+        f"{path.as_posix()}:{index}: the scenario runner reaches the exempt "
+        f"`{EXEMPT_CHECKS_MODULE}`; checks are run only by the contract tests"
+        for index, line in enumerate(source.split("\n"), start=1)
+        if re.search(rf"\b{EXEMPT_CHECKS_MODULE}\b", line)
+        and not EXEMPT_CHECKS_DECLARATION.match(line)
+    ]
+
+
 def scan(root: Path) -> list[str]:
     sources = (
         [HARNESS_ROOT, CONTRACT_ROOT]
@@ -301,7 +322,10 @@ def scan(root: Path) -> list[str]:
         if not path.is_file():
             found.append(f"{source.as_posix()}: harness source is missing")
             continue
-        found.extend(offenders(source, path.read_text(encoding="utf-8")))
+        text = path.read_text(encoding="utf-8")
+        found.extend(offenders(source, text))
+        if source == HARNESS_ROOT or source.parent == HARNESS_DIR:
+            found.extend(exempt_check_references(source, text))
 
     for relative_directory, known in (
         (HARNESS_DIR, set(SCANNED_FILES) | set(EXEMPT_FILES)),

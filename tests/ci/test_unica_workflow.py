@@ -523,7 +523,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             [normalized(step["run"]) for step in compile_steps],
             [
                 "cargo test --workspace --no-run --locked",
-                "cargo test -p unica-coder --features receipt-ledger-test-support --lib --test daemon_receipt_ledger --no-run --locked",
+                "cargo test -p unica-coder --features receipt-ledger-test-support --test daemon_receipt_ledger --no-run --locked",
                 "cargo check --workspace --all-targets --all-features --locked",
             ],
         )
