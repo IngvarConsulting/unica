@@ -1720,6 +1720,9 @@ fn node_from_value(
     NodeView::new(address.to_string(), kind.as_str(), title, props)
 }
 
+/// Отбирает публичные свойства из внутренних фактов читателя.
+/// Новый факт становится доступен в `view` только после включения
+/// в профиль соответствующего вида узла; ограничения размера сохраняются.
 fn reader_node_props(reader: LogicalReader, kind: NodeKind, value: &Value) -> Map<String, Value> {
     if reader == LogicalReader::Form {
         return form::node_props(kind, value);
@@ -1727,9 +1730,13 @@ fn reader_node_props(reader: LogicalReader, kind: NodeKind, value: &Value) -> Ma
     let keys: &[&str] = match (reader, kind) {
         (LogicalReader::Dcs, NodeKind::DataSet) => &["kind", "objectName", "dataSource"],
         (LogicalReader::Dcs, NodeKind::Field) => &["field", "title"],
-        (LogicalReader::Dcs, NodeKind::Parameter) => {
-            &["type", "value", "restricted", "availableAsField"]
-        }
+        (LogicalReader::Dcs, NodeKind::Parameter) => &[
+            "type",
+            "value",
+            "expression",
+            "restricted",
+            "availableAsField",
+        ],
         (LogicalReader::Dcs, NodeKind::Setting) => &["presentation", "filters"],
         (LogicalReader::Dcs, NodeKind::DataSource) => &["kind"],
         (LogicalReader::Dcs, NodeKind::CalculatedField) => &["expression", "title"],
