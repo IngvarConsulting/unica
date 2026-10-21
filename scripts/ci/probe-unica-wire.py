@@ -212,6 +212,8 @@ class ProcessOwnership:
             else:
                 # ActiveProcesses drops before an exiting process is signaled,
                 # so member handles are held across termination and waited on.
+                # The second hold catches members spawned after the first one
+                # unless they already left the job's process list.
                 incomplete.extend(job.hold_members())
                 termination_error = job.terminate()
                 if termination_error is not None:
@@ -1014,7 +1016,8 @@ class _WindowsApi:
             ):
                 count = int(information.NumberOfProcessIdsInList)
                 return tuple(int(pid) for pid in information.ProcessIdList[:count])
-            if self.ctypes.get_last_error() != 234 or capacity >= 65536:
+            error_more_data = 234
+            if self.ctypes.get_last_error() != error_more_data or capacity >= 65536:
                 raise self._failure("QueryInformationJobObject(ProcessIdList)")
             capacity = max(
                 capacity * 2, int(information.NumberOfAssignedProcesses) + 16
@@ -1023,9 +1026,15 @@ class _WindowsApi:
     def open_job_member(self, job: object, pid: int) -> object | None:
         """Open a waitable handle to ``pid`` only while it belongs to ``job``."""
 
-        handle = self.kernel32.OpenProcess(0x00100000 | 0x1000, False, pid)
+        synchronize = 0x00100000
+        process_query_limited_information = 0x1000
+        handle = self.kernel32.OpenProcess(
+            synchronize | process_query_limited_information, False, pid
+        )
         if not handle:
-            if self.ctypes.get_last_error() == 87:
+            # Same "process is gone" codes as _windows_process_state; access
+            # denied is the PID reused by a privileged process after exit.
+            if self.ctypes.get_last_error() in {0, 5, 87, 1168}:
                 return None
             raise self._failure(f"OpenProcess({pid})")
         in_job = self.wintypes.BOOL()
