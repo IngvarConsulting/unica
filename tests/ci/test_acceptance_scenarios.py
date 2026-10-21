@@ -1857,6 +1857,10 @@ class AcceptanceCorpusScheduleTests(unittest.TestCase):
 
     def test_a_failing_worker_stops_the_others_and_raises(self) -> None:
         calls = []
+        lock = threading.Lock()
+        failed = threading.Event()
+        stopped = threading.Event()
+        failing_worker = []
 
         class Server:
             provider_failure_cache_is_default = False
@@ -1865,17 +1869,32 @@ class AcceptanceCorpusScheduleTests(unittest.TestCase):
                 self.workspace = workspace
 
             def call(self, *_):
-                calls.append(None)
+                with lock:
+                    calls.append(None)
                 return {}
 
             def close(self):
-                pass
+                # `run_batch` sets `stop` before it closes the failing
+                # worker's server: from here on the stop is observable.
+                if failing_worker == [threading.get_ident()]:
+                    stopped.set()
 
         def classify_or_fail(response, context):
-            if len(calls) == 1:
+            with lock:
+                first = not failed.is_set()
+                if first:
+                    failed.set()
+                    failing_worker.append(threading.get_ident())
+            if first:
                 raise RuntimeError("worker sentinel")
+            # The other worker finishes its scenario only once the failure is
+            # recorded, so its next scenario boundary must see the stop.
+            self.assertTrue(stopped.wait(10), "the failing worker never closed its server")
             return "ok", ""
 
+        # Every scenario switches the workspace, so each is its own segment and
+        # each of the two workers holds twenty of them: without the stop the
+        # other worker would make all twenty calls.
         corpus = self.corpus(*[(f"S{index}", "ab"[index % 2], False, 1) for index in range(40)])
         with (patch.dict(os.environ, {"UNICA_ACCEPTANCE_WORKERS": "2"}),
               patch(f"{__name__}.AcceptanceServer", Server),
@@ -1885,7 +1904,9 @@ class AcceptanceCorpusScheduleTests(unittest.TestCase):
               patch(f"{__name__}.capture_values", return_value={})):
             with self.assertRaisesRegex(RuntimeError, "worker sentinel"):
                 run_corpus(self, corpus)
-        self.assertLess(len(calls), 40, "the other worker must stop at its next scenario")
+        # The failing call plus at most the one call the other worker had
+        # already started; a run without the stop makes twenty-one.
+        self.assertLessEqual(len(calls), 2, "the other worker must stop at its next scenario")
 
 
 class AcceptanceCorpusRunTests(unittest.TestCase):
