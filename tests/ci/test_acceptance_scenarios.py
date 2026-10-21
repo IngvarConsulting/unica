@@ -305,6 +305,22 @@ def scenario_publishes(scenario) -> bool:
     )
 
 
+def apply_operation_cases(scenarios) -> dict[str, list[str]]:
+    """Map every operation an `unica.apply` step sends and freezes as `ok` to
+    the scenarios that do so.  A refusal or a documented gap names the
+    operation without the answer of its planner, so it is not its case."""
+    cases: dict[str, list[str]] = {}
+    for scenario in scenarios:
+        for step in scenario["wire"]:
+            if step["tool"] != "unica.apply" or "ok" not in step["expect"]:
+                continue
+            for operation in step["args"].get("ops") or []:
+                ids = cases.setdefault(operation["op"], [])
+                if scenario["id"] not in ids:
+                    ids.append(scenario["id"])
+    return cases
+
+
 def matches(expected: list[str], actual: str) -> bool:
     if actual in expected:
         return True
@@ -971,6 +987,41 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         self.assertEqual(registry[107:112], expected["Subsystem"])
         self.assertEqual(registry[114:119], expected["Interface"])
         self.assertEqual(registry[119:121], expected["Code"])
+
+    def test_every_registered_apply_operation_has_an_executed_integration_case(self) -> None:
+        # The inventory is the closed `apply` registry of all typed families
+        # against the `source` profile, which `AcceptanceCorpusRunTests`
+        # executes in the mandatory queue.  A newly registered operation
+        # without a successful step fails here instead of being skipped.
+        with patch("subprocess.Popen", side_effect=AssertionError("the inventory must not launch a process")):
+            module = self.renderer()
+            registry, _ = module.load_apply_registry()
+        self.assertEqual({row[1] for row in registry}, set(module.TYPED_FAMILIES))
+        cases = apply_operation_cases(select_profile(load_acceptance_corpus(), "source")["scenarios"])
+        missing = [operation for operation in dict.fromkeys(row[0] for row in registry) if operation not in cases]
+        self.assertEqual(
+            missing, [],
+            "a registered apply operation has no `ok` step in the executed acceptance corpus; "
+            "add a scenario under tests/fixtures/acceptance/scenarios/",
+        )
+
+    def test_operation_inventory_counts_only_successful_apply_steps(self) -> None:
+        def step(tool, expect, *operations):
+            return {"tool": tool, "expect": expect, "args": {"ops": [{"op": name} for name in operations]}}
+
+        scenarios = [
+            {"id": "A", "wire": [
+                step("unica.apply", ["ok"], "props.set", "field.add"),
+                {"tool": "unica.apply", "expect": ["ok"], "args": {"executionToken": "$executionToken"}},
+            ]},
+            {"id": "B", "wire": [
+                step("unica.apply", ["refused"], "groupOrder.set"),
+                step("unica.apply", ["gap"], "commandPlacement.set"),
+                step("unica.view", ["ok"], "commandVisibility.set"),
+                step("unica.apply", ["ok", "task"], "props.set"),
+            ]},
+        ]
+        self.assertEqual(apply_operation_cases(scenarios), {"props.set": ["A", "B"], "field.add": ["A"]})
 
     def test_metadata_registration_requires_the_actual_qualified_owner(self) -> None:
         with patch("subprocess.Popen", side_effect=AssertionError("registry inspection must not launch a process")):
