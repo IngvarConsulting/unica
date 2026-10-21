@@ -89,7 +89,7 @@ pub(crate) fn applied_patch_returns_typed_data_and_repeated_apply_is_noop_with_s
         .join("src/CommonModules/Sample/Ext/Module.bsl");
     fs::create_dir_all(module.parent().unwrap()).unwrap();
     let before = b"\xef\xbb\xbfProcedure Run()\r\nEndProcedure\r\n// untouched suffix\r\n";
-    let expected = b"\xef\xbb\xbfProcedure Run()\r\nEndProcedure\r\nProcedure Added()\r\nEndProcedure\r\n// untouched suffix\r\n";
+    let expected = b"\xef\xbb\xbfProcedure Run()\r\nEndProcedure\r\n\r\nProcedure Added()\r\nEndProcedure\r\n// untouched suffix\r\n";
     fs::write(&module, before).unwrap();
     let args = patch_args(
         "main",
@@ -153,7 +153,7 @@ fn code_patch_configuration_and_extension_preview_apply_preserve_unrelated_bytes
         workspace_epoch: 1,
     };
     let before = b"\xef\xbb\xbfProcedure Run()\r\nEndProcedure\r\n// untouched\r\n";
-    let expected = b"\xef\xbb\xbfProcedure Run()\r\nEndProcedure\r\nProcedure Added()\r\nEndProcedure\r\n// untouched\r\n";
+    let expected = b"\xef\xbb\xbfProcedure Run()\r\nEndProcedure\r\n\r\nProcedure Added()\r\nEndProcedure\r\n// untouched\r\n";
     let mut protected = Vec::new();
     for source_root in ["cfg", "ext"] {
         let source_root = root.join(source_root);
@@ -223,7 +223,7 @@ fn code_patch_data_has_an_exact_stable_serialization_contract() {
     fs::create_dir_all(module.parent().unwrap()).unwrap();
     let before = "Procedure Run()\nEndProcedure\n";
     let inserted = "Procedure Added()\nEndProcedure\n";
-    let after = format!("{before}{inserted}");
+    let after = format!("{before}\n{inserted}");
     fs::write(&module, before).unwrap();
     let args = patch_args(
         "main",
@@ -241,9 +241,10 @@ fn code_patch_data_has_an_exact_stable_serialization_contract() {
     let diff = concat!(
         "--- a/CommonModule.Sample.Module\n",
         "+++ b/CommonModule.Sample.Module\n",
-        "@@ -1,2 +1,4 @@\n",
+        "@@ -1,2 +1,5 @@\n",
         " Procedure Run()\n",
         " EndProcedure\n",
+        "+\n",
         "+Procedure Added()\n",
         "+EndProcedure\n",
     );
@@ -261,7 +262,7 @@ fn code_patch_data_has_an_exact_stable_serialization_contract() {
                 "endByte": after.len(),
                 "startLine": 3,
                 "startColumn": 1,
-                "endLine": 5,
+                "endLine": 6,
                 "endColumn": 1
             }],
             "diff": diff,
@@ -429,7 +430,7 @@ fn method_after_at_eof_inserts_a_separator_and_is_idempotent() {
     assert!(applied.outcome.ok, "{:?}", applied.outcome.errors);
     assert_eq!(
         fs::read_to_string(&module).unwrap(),
-        "Procedure Run()\nEndProcedure\nProcedure Added()\nEndProcedure\n"
+        "Procedure Run()\nEndProcedure\n\nProcedure Added()\nEndProcedure\n"
     );
     let repeated = patch_inner(&args, &context, PatchMode::Apply);
     assert!(repeated.outcome.ok);
@@ -553,7 +554,7 @@ fn code_patch_without_any_source_eol_uses_lf_for_preview_apply_and_repeat_noop()
         .join("src/CommonModules/Sample/Ext/Module.bsl");
     fs::create_dir_all(module.parent().unwrap()).unwrap();
     let before = "Процедура Тест() КонецПроцедуры";
-    let expected = "Процедура Тест() КонецПроцедуры\nПроцедура Добавлена() КонецПроцедуры\n";
+    let expected = "Процедура Тест() КонецПроцедуры\n\nПроцедура Добавлена() КонецПроцедуры\n";
     fs::write(&module, before).unwrap();
     let args = patch_args(
         "main",
@@ -586,7 +587,7 @@ fn code_patch_preserves_two_leading_boms_for_preview_apply_and_repeat_noop() {
     fs::create_dir_all(module.parent().unwrap()).unwrap();
     let before = b"\xef\xbb\xbf\xef\xbb\xbfProcedure Run()\nEndProcedure\n";
     let expected =
-        b"\xef\xbb\xbf\xef\xbb\xbfProcedure Run()\nEndProcedure\nProcedure Added()\nEndProcedure\n";
+        b"\xef\xbb\xbf\xef\xbb\xbfProcedure Run()\nEndProcedure\n\nProcedure Added()\nEndProcedure\n";
     fs::write(&module, before).unwrap();
     let args = patch_args(
         "main",
@@ -631,7 +632,7 @@ fn mixed_eol_apply_preserves_untouched_bytes_and_uses_target_eol() {
     assert!(applied.outcome.ok, "{:?}", applied.outcome.errors);
     assert_eq!(
             fs::read(&module).unwrap(),
-            b"Procedure First()\r\nEndProcedure\r\nProcedure Second()\nEndProcedure\nProcedure Added()\nEndProcedure\n"
+            b"Procedure First()\r\nEndProcedure\r\nProcedure Second()\nEndProcedure\n\nProcedure Added()\nEndProcedure\n"
         );
     fs::remove_dir_all(&context.workspace_root).unwrap();
 }
@@ -978,7 +979,7 @@ pub(crate) fn code_patch_without_a_selector_appends_to_the_end_and_proves_the_re
 
     let applied = patch_inner(&args, &context, PatchMode::Apply);
     assert!(applied.outcome.ok, "{:?}", applied.outcome.errors);
-    let expected = "Procedure Run()\nEndProcedure\nProcedure Added()\nEndProcedure\n";
+    let expected = "Procedure Run()\nEndProcedure\n\nProcedure Added()\nEndProcedure\n";
     assert_eq!(fs::read(&module).unwrap(), expected.as_bytes());
 
     // The end of the module is still addressable afterwards, so the repeat
@@ -1112,7 +1113,7 @@ fn code_patch_separates_an_appended_method_from_a_module_without_a_trailing_eol(
     assert!(applied.outcome.ok, "{:?}", applied.outcome.errors);
     assert_eq!(
         fs::read(&module).unwrap(),
-        b"Procedure Run()\nEndProcedure\nProcedure Added()\nEndProcedure\n"
+        b"Procedure Run()\nEndProcedure\n\nProcedure Added()\nEndProcedure\n"
     );
     fs::remove_dir_all(&context.workspace_root).unwrap();
 }
@@ -1376,6 +1377,89 @@ fn code_patch_rolls_back_if_absent_support_state_appears_before_commit() {
 }
 
 #[test]
+fn inserted_method_spacing_covers_positions_eol_eof_and_repeat() {
+    for eol in ["\n", "\r\n"] {
+        for terminal in ["", eol] {
+            for separator in [eol, &eol.repeat(2), &format!("{eol} \t{eol}")] {
+                let before = format!("Procedure First(){eol}EndProcedure{separator}// Second docs.{eol}&AtServer{eol}Procedure Second(){eol}EndProcedure{terminal}");
+                for (selector, position, expected) in [
+                    (Some("First"), Some(CodePosition::Before), format!("Procedure Added(){eol}EndProcedure{eol}{eol}{before}")),
+                    (Some("First"), Some(CodePosition::After), format!("Procedure First(){eol}EndProcedure{eol}{eol}Procedure Added(){eol}EndProcedure{separator}{}// Second docs.{eol}&AtServer{eol}Procedure Second(){eol}EndProcedure{terminal}", if separator == eol { eol } else { "" })),
+                    (Some("Second"), Some(CodePosition::Before), format!("Procedure First(){eol}EndProcedure{separator}{}Procedure Added(){eol}EndProcedure{eol}{eol}// Second docs.{eol}&AtServer{eol}Procedure Second(){eol}EndProcedure{terminal}", if separator == eol { eol } else { "" })),
+                    (None, None, format!("{before}{}Procedure Added(){eol}EndProcedure{eol}", if terminal.is_empty() { eol.repeat(2) } else { eol.to_string() })),
+                ] {
+                    let operation = staged_insert("main:CommonModule.Sample", "Procedure Added()\nEndProcedure", selector.map(|name| CodeSelector::Method(name.to_string())), position);
+                    let post = plan_code_postimage(before.as_bytes(), &operation, 0).unwrap();
+                    assert_eq!(post.after, expected.as_bytes(), "{eol:?} {terminal:?} {separator:?} {selector:?} {position:?}");
+                    let repeated = plan_code_postimage(&post.after, &operation, 0).unwrap();
+                    assert!(repeated.no_op);
+                    assert_eq!(repeated.after, post.after);
+                }
+            }
+        }
+    }
+}
+
+/// Модуль, где метод уже стоит вплотную к соседу (написан вручную или прежней
+/// версией вставки), повтор той же вставки не дублирует: проверка присутствия
+/// принимает и текст без добавленных разделителей.
+#[test]
+fn inserted_method_spacing_recognizes_an_existing_method_without_separators() {
+    for eol in ["\n", "\r\n"] {
+        let added = format!("Procedure Added(){eol}EndProcedure{eol}");
+        let first = format!("Procedure First(){eol}EndProcedure{eol}");
+        let second = format!("Procedure Second(){eol}EndProcedure{eol}");
+        for (before, selector, position) in [
+            (
+                format!("{first}{added}{second}"),
+                "Second",
+                CodePosition::Before,
+            ),
+            (
+                format!("{first}{added}{second}"),
+                "First",
+                CodePosition::After,
+            ),
+            (format!("{added}{first}"), "First", CodePosition::Before),
+            (format!("{first}{added}"), "First", CodePosition::After),
+        ] {
+            let operation = staged_insert(
+                "main:CommonModule.Sample",
+                "Procedure Added()\nEndProcedure",
+                Some(CodeSelector::Method(selector.to_string())),
+                Some(position),
+            );
+            let post = plan_code_postimage(before.as_bytes(), &operation, 0).unwrap();
+            assert!(post.no_op, "{eol:?} {selector} {position:?}");
+            assert_eq!(
+                post.after,
+                before.as_bytes(),
+                "{eol:?} {selector} {position:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn inserted_method_spacing_preserves_empty_bom_payload_and_mixed_bytes() {
+    for (before, content, selector, expected) in [
+        ("", "Procedure Added()\nEndProcedure", None, "Procedure Added()\nEndProcedure\n"),
+        ("\u{feff}", "Procedure Added()\nEndProcedure", None, "\u{feff}Procedure Added()\nEndProcedure\n"),
+        ("Procedure First()\nEndProcedure", "\nProcedure Added()\nEndProcedure\n\n", None, "Procedure First()\nEndProcedure\n\nProcedure Added()\nEndProcedure\n\n"),
+        ("Procedure First()\nEndProcedure\n\n", "Procedure Added()\nEndProcedure\n\n", None, "Procedure First()\nEndProcedure\n\nProcedure Added()\nEndProcedure\n\n"),
+        ("\u{feff}Procedure First()\r\nEndProcedure\r\n// Second.\n&AtServer\nProcedure Second()\nEndProcedure", "// Added.\n&AtServer\nProcedure Added()\nEndProcedure", Some("First"), "\u{feff}Procedure First()\r\nEndProcedure\r\n\r\n// Added.\r\n&AtServer\r\nProcedure Added()\r\nEndProcedure\r\n\r\n// Second.\n&AtServer\nProcedure Second()\nEndProcedure"),
+    ] {
+        let operation = staged_insert("main:CommonModule.Sample", content,
+            selector.map(|name| CodeSelector::Method(name.to_string())), selector.map(|_| CodePosition::After));
+        let post = plan_code_postimage(before.as_bytes(), &operation, 0).unwrap();
+        assert_eq!(std::str::from_utf8(&post.after).unwrap(), expected);
+        let repeated = plan_code_postimage(&post.after, &operation, 0).unwrap();
+        assert!(repeated.no_op);
+        assert_eq!(repeated.after, post.after);
+    }
+}
+
+#[test]
 fn staged_code_insert_then_replace_reads_prior_postimage() {
     let fixture = staged_code_fixture("insert-then-replace", b"Procedure Base()\nEndProcedure\n");
     let operations = vec![
@@ -1400,7 +1484,7 @@ fn staged_code_insert_then_replace_reads_prior_postimage() {
             .read(Path::new("CommonModules/Sample/Ext/Module.bsl"))
             .unwrap()
             .unwrap(),
-        b"Procedure Base()\nEndProcedure\nProcedure Final()\nEndProcedure\n"
+        b"Procedure Base()\nEndProcedure\n\nProcedure Final()\nEndProcedure\n"
     );
     assert_eq!(
         effects.events(),
@@ -1876,7 +1960,7 @@ fn a_comment_inserted_before_a_method_joins_its_head_and_repeats_as_noop() {
             ),
             (
                 "Procedure Added()\nEndProcedure\n// Описание Target.\n",
-                "Procedure Other()\nEndProcedure\n\nProcedure Added()\nEndProcedure\n// Описание Target.\n// Документ.\n&НаСервере\nProcedure Target()\nEndProcedure\n",
+                "Procedure Other()\nEndProcedure\n\nProcedure Added()\nEndProcedure\n\n// Описание Target.\n// Документ.\n&НаСервере\nProcedure Target()\nEndProcedure\n",
             ),
         ] {
             let operation = parse_code_plan_operation(
@@ -2339,66 +2423,66 @@ fn insertion_around_a_method_keeps_its_head_together_and_respects_its_preprocess
                 "// О блоке.\n#Если Сервер Тогда\n#Если НЕ ВебКлиент Тогда\nProcedure Target()\nEndProcedure\n#КонецЕсли\n#КонецЕсли\n",
                 "Target",
                 "before",
-                "Procedure Added()\nEndProcedure\n// О блоке.\n#Если Сервер Тогда\n#Если НЕ ВебКлиент Тогда\nProcedure Target()\nEndProcedure\n#КонецЕсли\n#КонецЕсли\n",
+                "Procedure Added()\nEndProcedure\n\n// О блоке.\n#Если Сервер Тогда\n#Если НЕ ВебКлиент Тогда\nProcedure Target()\nEndProcedure\n#КонецЕсли\n#КонецЕсли\n",
             ),
             // Пустая строка между условием и головой оставляет вставку внутри.
             (
                 "#Если Сервер Тогда\n\nProcedure Target()\nEndProcedure\n#КонецЕсли\n",
                 "Target",
                 "before",
-                "#Если Сервер Тогда\n\nProcedure Added()\nEndProcedure\nProcedure Target()\nEndProcedure\n#КонецЕсли\n",
+                "#Если Сервер Тогда\n\nProcedure Added()\nEndProcedure\n\nProcedure Target()\nEndProcedure\n#КонецЕсли\n",
             ),
             // Комментарий и директива остаются со своим методом.
             (
                 "// Документ.\n&НаСервере\nProcedure Target()\nEndProcedure\n",
                 "Target",
                 "before",
-                "Procedure Added()\nEndProcedure\n// Документ.\n&НаСервере\nProcedure Target()\nEndProcedure\n",
+                "Procedure Added()\nEndProcedure\n\n// Документ.\n&НаСервере\nProcedure Target()\nEndProcedure\n",
             ),
             (
                 "// Документ.\n&НаСервере\nProcedure Target()\nEndProcedure\n",
                 "Target",
                 "after",
-                "// Документ.\n&НаСервере\nProcedure Target()\nEndProcedure\nProcedure Added()\nEndProcedure\n",
+                "// Документ.\n&НаСервере\nProcedure Target()\nEndProcedure\n\nProcedure Added()\nEndProcedure\n",
             ),
             // Аннотация расширения — тоже голова метода.
             (
                 "&Перед(\"Base\")\nProcedure Target()\nEndProcedure\n",
                 "Target",
                 "before",
-                "Procedure Added()\nEndProcedure\n&Перед(\"Base\")\nProcedure Target()\nEndProcedure\n",
+                "Procedure Added()\nEndProcedure\n\n&Перед(\"Base\")\nProcedure Target()\nEndProcedure\n",
             ),
             (
                 "Procedure Other()\nEndProcedure\n// Документ.\n&Перед(\"Base\")\nProcedure Target()\nEndProcedure\n",
                 "Target",
                 "before",
-                "Procedure Other()\nEndProcedure\nProcedure Added()\nEndProcedure\n// Документ.\n&Перед(\"Base\")\nProcedure Target()\nEndProcedure\n",
+                "Procedure Other()\nEndProcedure\n\nProcedure Added()\nEndProcedure\n\n// Документ.\n&Перед(\"Base\")\nProcedure Target()\nEndProcedure\n",
             ),
             // Условие только вокруг метода обходится целиком.
             (
                 "#Если Сервер Тогда\n// Документ.\nProcedure Target()\nEndProcedure\n#КонецЕсли\n",
                 "Target",
                 "before",
-                "Procedure Added()\nEndProcedure\n#Если Сервер Тогда\n// Документ.\nProcedure Target()\nEndProcedure\n#КонецЕсли\n",
+                "Procedure Added()\nEndProcedure\n\n#Если Сервер Тогда\n// Документ.\nProcedure Target()\nEndProcedure\n#КонецЕсли\n",
             ),
             (
                 "#Если Сервер Тогда\n// Документ.\nProcedure Target()\nEndProcedure\n#КонецЕсли\n",
                 "Target",
                 "after",
-                "#Если Сервер Тогда\n// Документ.\nProcedure Target()\nEndProcedure\n#КонецЕсли\nProcedure Added()\nEndProcedure\n",
+                "#Если Сервер Тогда\n// Документ.\nProcedure Target()\nEndProcedure\n#КонецЕсли\n\nProcedure Added()\nEndProcedure\n",
             ),
             // В условии с другим методом вставка остаётся внутри него.
             (
                 "#Если Сервер Тогда\nProcedure Target()\nEndProcedure\nProcedure Other()\nEndProcedure\n#КонецЕсли\n",
                 "Target",
                 "before",
-                "#Если Сервер Тогда\nProcedure Added()\nEndProcedure\nProcedure Target()\nEndProcedure\nProcedure Other()\nEndProcedure\n#КонецЕсли\n",
+                "#Если Сервер Тогда\nProcedure Added()\nEndProcedure\n\nProcedure Target()\nEndProcedure\nProcedure Other()\nEndProcedure\n#КонецЕсли\n",
             ),
             (
                 "#Если Сервер Тогда\nProcedure Other()\nEndProcedure\nProcedure Target()\nEndProcedure\n#КонецЕсли\n",
                 "Target",
                 "after",
-                "#Если Сервер Тогда\nProcedure Other()\nEndProcedure\nProcedure Target()\nEndProcedure\nProcedure Added()\nEndProcedure\n#КонецЕсли\n",
+                "#Если Сервер Тогда\nProcedure Other()\nEndProcedure\nProcedure Target()\nEndProcedure\n\nProcedure Added()\nEndProcedure\n#КонецЕсли\n",
             ),
         ];
     for (before, method, position, expected) in cases {

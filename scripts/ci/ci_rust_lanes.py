@@ -715,23 +715,41 @@ def same_selection(first: str, second: str) -> bool:
     return shape(first) == shape(second)
 
 
+def binary_of(case: str, binaries: list[str]) -> str | None:
+    # Binary ids nest (`unica-coder`, `unica-coder::daemon_receipt_ledger`):
+    # a case belongs to the longest id it starts with.
+    return max((binary for binary in binaries if case.startswith(binary + "::")), key=len, default=None)
+
+
+def explained_case(case: str, binaries: list[str], gone: set[str], tests: list[str]) -> bool:
+    """A lost case is explained by its own vanished target or a declaration naming that target."""
+    binary = binary_of(case, binaries)
+    if binary is None or binary in gone:
+        return binary is not None
+    return any(binary_of(pattern, binaries) == binary
+               and (case.startswith(pattern[:-1]) if pattern.endswith("*") else case == pattern)
+               for pattern in tests)
+
+
 def compare_inventory(baseline: dict, current: dict) -> tuple[list[str], list[str], dict]:
-    """Return blocking losses, Windows-advisory losses and the visible case drift."""
+    """Return blocking losses, Windows-advisory losses and the explained drift."""
     explanations = baseline.get("explanations")
     if (not isinstance(explanations, dict) or not isinstance(explanations.get("reset"), bool)
-        or not isinstance(explanations.get("removedTargets"), list)
-        or any(not isinstance(item, str) or not item for item in explanations["removedTargets"])):
+        or any(not isinstance(explanations.get(key), list)
+               or any(not isinstance(item, str) or not item for item in explanations[key])
+               for key in ("removedTargets", "removedTests"))):
         raise ValueError("malformed previous inventory explanations")
     previous = baseline.get("inventory")
     removed = set(explanations["removedTargets"])
+    tests = list(explanations["removedTests"])
     drift = {"source": baseline.get("source"), "reset": explanations["reset"],
-             "removedTargets": sorted(removed), "removedCases": {}}
+             "declaredBy": explanations.get("declaredBy", {}), "removedTargets": sorted(removed),
+             "removedTests": sorted(tests), "removedCases": {}}
     if previous is None:
-        # The main line always has a verified ancestor; release lines and
-        # manual runs may outlive the artifact retention and only report it.
-        if explanations["reset"] or current["profile"] not in ("pr", "queue"):
+        if explanations["reset"]:
             return [], [], drift
-        return ["no previous inventory of this configuration; declare 'Rust-inventory-baseline: reset' in a commit message"], [], drift
+        return ["no previous inventory of this configuration; declare 'Rust-inventory-baseline: reset' "
+                "in the description of the pull request under test (for a push or tag: the one named by HEAD)"], [], drift
     if previous.get("schemaVersion") != 1 or not isinstance(previous.get("configurations"), list):
         raise ValueError("malformed previous inventory")
     problems, advisory = [], []
@@ -741,21 +759,31 @@ def compare_inventory(baseline: dict, current: dict) -> tuple[list[str], list[st
     present = {(item["runner"], item["lane"]): item for item in current["configurations"]}
     for old in previous["configurations"]:
         key = (old["runner"], old["lane"])
+        label = f"{key[0]}/{key[1]}"
         target = advisory if current["profile"] == "large" and old["runner"] == "windows-latest" else problems
         new = present.get(key)
         if new is None:
             if same_profile or old["lane"] not in lanes(previous["profile"]):
-                target.append(f"{key[0]}/{key[1]}: configuration and its results disappeared since the previous inventory")
+                target.append(f"{label}: configuration and its results disappeared since the previous inventory")
             continue
+        gone = (set(old["binaries"]) - set(new["binaries"])) & removed
         for binary in sorted(set(old["binaries"]) - set(new["binaries"]) - removed):
-            target.append(f"{key[0]}/{key[1]}: test target {binary} disappeared; declare 'Removes-test-target: {binary}' if intended")
-        if same_profile:
-            for binary, count in sorted(old["selected"].items()):
-                if count and binary in new["binaries"] and not new["selected"].get(binary) and binary not in removed:
-                    target.append(f"{key[0]}/{key[1]}: selection of test target {binary} became empty")
-            lost = sorted(set(old["cases"]) - set(new["cases"]))
-            if lost:
-                drift["removedCases"][f"{key[0]}/{key[1]}"] = lost
+            target.append(f"{label}: test target {binary} disappeared; declare 'Removes-test-target: {binary}' "
+                          "in the pull request description if intended")
+        if not same_profile:
+            continue
+        lost = sorted(set(old["cases"]) - set(new["cases"]))
+        unexplained = [case for case in lost if not explained_case(case, old["binaries"], gone, tests)]
+        if lost:
+            drift["removedCases"][label] = lost
+        for binary, count in sorted(old["selected"].items()):
+            if (count and binary in new["binaries"] and not new["selected"].get(binary)
+                and any(binary_of(case, old["binaries"]) == binary for case in unexplained)):
+                target.append(f"{label}: selection of test target {binary} became empty")
+        if unexplained:
+            shown = ", ".join(unexplained[:20]) + (f" and {len(unexplained) - 20} more" if len(unexplained) > 20 else "")
+            target.append(f"{label}: {len(unexplained)} test result(s) disappeared: {shown}; "
+                          "declare 'Removes-test: <binary-id>::<name or prefix*>' in the pull request description if intended")
     if explanations["reset"]:
         drift["resetSuppressed"] = problems + advisory
         return [], [], drift

@@ -63,6 +63,8 @@ pub mod extension;
 
 pub mod info_read;
 
+pub mod style_item_read;
+
 pub mod external;
 
 pub mod borrowed_enum_value;
