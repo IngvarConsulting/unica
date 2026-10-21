@@ -34,7 +34,7 @@
           "eq": true
         },
         {
-          "pointer": "/data/props/contract/argsSchema/anyOf/0/properties/values/properties/base/type",
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/base/type",
           "eq": "string"
         }
       ]
