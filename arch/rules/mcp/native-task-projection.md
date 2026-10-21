@@ -14,6 +14,7 @@ check:
   - crates/unica-coder/tests/v13_search_integration.rs::public_view_refuses_bsl_text_over_the_default_budget_whole_with_structural_next
   - crates/unica-coder/tests/v13_search_integration.rs::oversized_error_recovery_is_a_closed_size_refusal_without_poisoning_the_daemon
   - crates/unica-coder/src/application/receipt_ledger.rs::recovery_that_cannot_be_delivered_is_rejected_before_terminal_admission
+  - crates/unica-coder/src/infrastructure/daemon/protocol_v5.rs::strict_v5_direct_receipt_restores_a_legacy_result_without_new_delivery_admission
   - crates/unica-coder/src/application/v13/source_text.rs::admission_refusal_bounds_client_specific_range_hints
   - crates/unica-coder/src/interfaces/mcp.rs::v13_compatibility_task_tools_are_profile_gated_durable_and_replay_free
   - crates/unica-coder/src/interfaces/task_projection.rs::v5_failed_and_cancelled_terminals_answer_only_the_closed_vocabulary

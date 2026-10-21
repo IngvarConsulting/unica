@@ -5,9 +5,9 @@ use crate::application::invocation_store::{
 };
 use crate::application::invocation_store_v5::V5SafeFailureReason;
 use crate::application::receipt_ledger::{
-    canonical_v5_terminal, receipt_key_digest, request_scope_hash, AcknowledgedTombstoneReceipt,
-    ReceiptKey, ReceiptKeyDigest, ReceiptTerminalOutcome, RequestIdentity, TerminalDigest,
-    V5ToolIdentity, MAX_REQUEST_SCOPE_BYTES,
+    canonical_v5_terminal_from_shared, receipt_key_digest, request_scope_hash,
+    AcknowledgedTombstoneReceipt, ReceiptKey, ReceiptKeyDigest, ReceiptTerminalOutcome,
+    RequestIdentity, TerminalDigest, V5ToolIdentity, MAX_REQUEST_SCOPE_BYTES,
 };
 use crate::domain::invocation::{DomainResult, InvocationId, InvocationStatus, TaskId};
 use serde::{Deserialize, Serialize};
@@ -1298,8 +1298,11 @@ pub(crate) fn decode_v5_server_response(bytes: &[u8]) -> Result<V5ServerResponse
         outcome: V5InvocationResponse::Direct { receipt },
     } = &response
     {
-        let terminal = canonical_v5_terminal(receipt.terminal())
-            .map_err(|_| "v5 daemon direct receipt terminal is not canonical".to_string())?;
+        // This receipt already owns a saved terminal. Recheck its canonical
+        // bytes and digest without applying the current admission policy.
+        let terminal =
+            canonical_v5_terminal_from_shared(std::sync::Arc::new(receipt.terminal().clone()))
+                .map_err(|_| "v5 daemon direct receipt terminal is not canonical".to_string())?;
         if terminal.digest() != receipt.terminal_digest() {
             return Err("v5 daemon direct receipt terminal digest does not match".to_string());
         }
@@ -1600,6 +1603,75 @@ mod tests {
             decode_v5_server_response(frame.as_bytes()).is_err(),
             "strict decoder accepted a digest that does not bind the terminal"
         );
+    }
+
+    #[test]
+    fn strict_v5_direct_receipt_rejects_an_over_limit_canonical_result() {
+        let mut result = DomainResult::success("");
+        let overhead = serde_json::to_vec(&result).unwrap().len();
+        result.summary = "x".repeat(MAX_CANONICAL_RESULT_BYTES - overhead + 1);
+        assert_eq!(
+            serde_json::to_vec(&result).unwrap().len(),
+            MAX_CANONICAL_RESULT_BYTES + 1
+        );
+        let response = V5ServerResponse::Invocation {
+            outcome: V5InvocationResponse::Direct {
+                receipt: V5PendingDirectReceipt::new(
+                    serde_json::from_str(&receipt_key_json()).unwrap(),
+                    ReceiptTerminalOutcome::Completed {
+                        result: Box::new(result),
+                    },
+                    serde_json::from_value(serde_json::json!(ZERO_DIGEST)).unwrap(),
+                    1_700_000_000_000,
+                ),
+            },
+        };
+        let frame = serde_json::to_vec(&response).unwrap();
+        assert!(frame.len() < MAX_V5_RESPONSE_LINE_BYTES);
+        assert_eq!(
+            decode_v5_server_response(&frame).unwrap_err(),
+            "v5 daemon direct receipt terminal is not canonical",
+            "restore must enforce the canonical limit before comparing the digest"
+        );
+    }
+
+    #[test]
+    fn strict_v5_direct_receipt_restores_a_legacy_result_without_new_delivery_admission() {
+        use crate::application::receipt_ledger::{canonical_v5_terminal, CanonicalTerminalError};
+        use std::sync::Arc;
+
+        let mut result = DomainResult::success("ambiguous target");
+        result.ok = false;
+        result.next = vec![serde_json::json!({
+            "tool": "unica.view", "args": {"at": "x".repeat(4_300_000)}
+        })];
+        assert!(serde_json::to_vec(&result).unwrap().len() < MAX_CANONICAL_RESULT_BYTES);
+        let outcome = ReceiptTerminalOutcome::Completed {
+            result: Box::new(result),
+        };
+        assert_eq!(
+            canonical_v5_terminal(&outcome),
+            Err(CanonicalTerminalError::ResultTooLarge),
+            "new terminals must fit the current duplicated error projection"
+        );
+        let terminal = canonical_v5_terminal_from_shared(Arc::new(outcome.clone()))
+            .expect("the saved terminal still fits its canonical size bound");
+        let response = V5ServerResponse::Invocation {
+            outcome: V5InvocationResponse::Direct {
+                receipt: V5PendingDirectReceipt::new(
+                    serde_json::from_str(&receipt_key_json()).unwrap(),
+                    outcome,
+                    terminal.digest().clone(),
+                    1_700_000_000_000,
+                ),
+            },
+        };
+        let frame = serde_json::to_vec(&response).unwrap();
+        assert!(frame.len() < MAX_V5_RESPONSE_LINE_BYTES);
+        let restored = decode_v5_server_response(&frame)
+            .expect("decoding an existing terminal must not readmit its delivery projection");
+        assert_eq!(restored, response);
+        assert_eq!(serde_json::to_vec(&restored).unwrap(), frame);
     }
 
     fn valid_request_frames() -> Vec<(V5ClientRequestKind, String)> {
