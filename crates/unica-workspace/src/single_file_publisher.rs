@@ -1684,8 +1684,8 @@ mod tests {
         PublishErrorKind, PublishMode, PublishPhase, PublishRequest,
     };
     use crate::platform::filesystem::{
-        create_dir_symlink_for_test, hard_link_count, metadata_is_link_or_reparse_point,
-        portable_permissions, prepare_file_for_removal,
+        hard_link_count, metadata_is_link_or_reparse_point, portable_permissions,
+        prepare_file_for_removal,
     };
     use crate::platform::testing::{
         can_rename_parent_with_retained_cleanup_child_for_test, create_file_link_fixture_for_test,
@@ -1767,13 +1767,20 @@ mod tests {
         let real = root.join("real");
         let link = root.join("link");
         fs::create_dir(&real).unwrap();
-        let Some(link_result) = create_dir_symlink_for_test(&real, &link) else {
-            fs::remove_dir_all(root).unwrap();
-            return;
-        };
-        if link_result.is_err() {
-            fs::remove_dir_all(root).unwrap();
-            return;
+        // Only an explicit privilege refusal skips; any other link error fails.
+        match crate::platform::testing::create_directory_link_fixture_for_test(&real, &link)
+            .expect("create a directory link fixture")
+        {
+            crate::platform::testing::FileLinkFixtureOutcome::Created => {}
+            crate::platform::testing::FileLinkFixtureOutcome::Unsupported
+            | crate::platform::testing::FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                fs::remove_dir_all(root).unwrap();
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "creating a directory link needs the symlink privilege",
+                );
+                return;
+            }
         }
         let marker = link.join("missing/Configuration.mdo");
 
@@ -2072,6 +2079,10 @@ mod tests {
         let target = root.join("existing.bin");
         fs::write(&target, b"original").unwrap();
         if !set_unix_mode_for_test(&target, 0o640).unwrap() {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::UnixPermissionBits,
+                "the test sets Unix permission bits",
+            );
             fs::remove_dir_all(root).unwrap();
             return;
         }
@@ -2235,6 +2246,10 @@ mod tests {
     #[test]
     fn bound_cleanup_cannot_be_redirected_after_the_last_route_check() {
         if !can_rename_parent_with_retained_cleanup_child_for_test() {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+                "the platform keeps an open handle from being renamed or replaced",
+            );
             return;
         }
         let root = unique_temp_root("bound-cleanup-final-route-swap");
@@ -2502,6 +2517,10 @@ mod tests {
         let referent_permissions = portable_permissions(&fs::metadata(&referent).unwrap());
         if !create_file_link_fixture(&referent, &target) {
             fs::remove_dir_all(root).unwrap();
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
             return;
         }
         let original_link = fs::read_link(&target).unwrap();
@@ -2539,10 +2558,11 @@ mod tests {
         let original = b"original";
         fs::write(&target, original).unwrap();
         if !set_unix_mode_for_test(&target, 0o600).unwrap() {
-            eprintln!(
-                "[SKIPPED FIXTURE] this host cannot represent a writable 0600-to-0640 permission change"
-            );
             fs::remove_dir_all(root).unwrap();
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::UnixPermissionBits,
+                "the test sets Unix permission bits",
+            );
             return;
         }
         assert_eq!(unix_mode_for_test(&target).unwrap(), Some(0o600));

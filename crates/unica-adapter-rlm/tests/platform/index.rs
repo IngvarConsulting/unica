@@ -158,10 +158,8 @@ fn safe_root_failure_is_unavailable_at_the_start_boundary() {
     fs::create_dir_all(&source_root).unwrap();
     let first = context.workspace_root.join("provider-state-cycle-a");
     let second = context.workspace_root.join("provider-state-cycle-b");
-    let Some(first_link) = testing::create_dir_symlink_for_test(&second, &first) else {
-        cleanup(&context);
-        return;
-    };
+    let first_link = testing::create_dir_symlink_for_test(&second, &first)
+        .expect("symlink fixtures exist on Unix and Windows");
     first_link.unwrap();
     testing::create_dir_symlink_for_test(&first, &second)
         .expect("the platform that created the first link must expose the second fixture")
@@ -268,6 +266,10 @@ fn rlm_provider_state_identity_preserves_unix_path_case() {
         testing::case_distinct_provider_paths_for_test(parent)
     else {
         cleanup(&fixture);
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::CaseSensitiveFilesystem,
+            "case-distinct provider paths need a case-sensitive host",
+        );
         return;
     };
     let context_for = |workspace_root: PathBuf| WorkspaceContext {
@@ -302,6 +304,10 @@ fn rlm_provider_state_identity_preserves_distinct_non_utf8_unix_paths() {
         testing::distinct_non_utf8_provider_paths_for_test(&fixture.workspace_root)
     else {
         cleanup(&fixture);
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::NonUtf8FileNames,
+            "this host cannot hold two distinct non-UTF-8 paths",
+        );
         return;
     };
     fs::create_dir_all(&first_workspace).unwrap();
@@ -745,6 +751,10 @@ fn active_build_collects_an_idle_previous_generation_but_not_the_current_one() {
         cleanup(&context);
         // Windows cannot open a directory this way to set its time: the
         // wiring is proven on Unix only.
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::DirectoryMtime,
+            "this host cannot set a directory's modification time",
+        );
         return;
     }
 
@@ -768,6 +778,10 @@ fn builder_generation_environment_preserves_native_path_bytes() {
     let mut context = test_context("native-generation-environment");
     let Some(invalid_component) = testing::non_utf8_relative_path_for_test() else {
         cleanup(&context);
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::NonUtf8FileNames,
+            "this host has no file names outside UTF-8",
+        );
         return;
     };
     context.cache_root = context.workspace_root.join(invalid_component);
@@ -798,6 +812,10 @@ fn builder_command_preserves_native_source_root_argument_bytes() {
     let context = test_context("native-source-argument");
     let Some(invalid_component) = testing::non_utf8_relative_path_for_test() else {
         cleanup(&context);
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::NonUtf8FileNames,
+            "this host has no file names outside UTF-8",
+        );
         return;
     };
     let source_root = context.workspace_root.join(invalid_component);
@@ -823,10 +841,8 @@ fn builder_15_rejects_a_generation_alias_to_builder_14_storage() {
     fs::write(&legacy_db, b"builder-14-db").unwrap();
     let alias = pair_root.join("rlm-bsl/index-v17");
     fs::create_dir_all(alias.parent().unwrap()).unwrap();
-    let Some(link) = testing::create_dir_symlink_for_test(&legacy, &alias) else {
-        cleanup(&context);
-        return;
-    };
+    let link = testing::create_dir_symlink_for_test(&legacy, &alias)
+        .expect("symlink fixtures exist on Unix and Windows");
     link.unwrap();
 
     let error =
@@ -1059,12 +1075,9 @@ fn incomplete_info_is_retryable_but_never_readable() {
 fn path_normalization_failures_do_not_match_index_identity() {
     let context = test_context("invalid-path-identity");
     let dangling = context.workspace_root.join("dangling");
-    let Some(symlink) =
+    let symlink =
         testing::create_file_symlink_for_test(context.workspace_root.join("missing"), &dangling)
-    else {
-        cleanup(&context);
-        return;
-    };
+            .expect("symlink fixtures exist on Unix and Windows");
     symlink.unwrap();
     let dangling_text = dangling.display().to_string();
 
@@ -2162,12 +2175,8 @@ fn candidate_symlink_route_never_replaces_last_usable_marker() {
     let outside = context.workspace_root.join("foreign-db");
     fs::create_dir_all(&candidate_directory).unwrap();
     fs::create_dir_all(&outside).unwrap();
-    let Some(link) =
-        testing::create_dir_symlink_for_test(&outside, candidate_directory.join("sub"))
-    else {
-        cleanup(&context);
-        return;
-    };
+    let link = testing::create_dir_symlink_for_test(&outside, candidate_directory.join("sub"))
+        .expect("symlink fixtures exist on Unix and Windows");
     link.unwrap();
     fs::write(outside.join("index.db"), b"foreign DB").unwrap();
     let escaped_db = candidate_directory.join("sub/index.db");
