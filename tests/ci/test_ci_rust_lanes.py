@@ -995,7 +995,7 @@ class PullRequestMediumTests(unittest.TestCase):
                 if name in ("narrowed", "selection differs"):
                     lanes.write(root / "shadow/selection.json", {"mode": "affected", "mandatoryMode": "full", "affectedAdmission": False,
                                                                   "headSha": "a" * 40, "packages": ["package-ordinary"]})
-                baseline = {"inventory": None, "explanations": {"reset": True, "removedTargets": []}}
+                baseline = {"inventory": None, "explanations": {"reset": True, "removedTargets": [], "removedTests": []}}
                 if error is None:
                     report = lanes.verify_union(root, "pr", ["ubuntu-latest"], "a" * 40, baseline)
                     self.assertEqual(report["medium"][0]["tests"], len(document["plan"]))
