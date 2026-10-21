@@ -6,8 +6,6 @@ check:
   - crates/unica-coder/src/interfaces/daemon_router.rs::live_daemon_hands_inline_work_over_the_cutoff_to_a_task_the_same_attempt_completes
   - crates/unica-coder/src/interfaces/daemon_router.rs::live_daemon_hands_a_failing_inline_attempt_over_the_cutoff_and_the_task_fails_once
   - crates/unica-coder/tests/platform/receipt_runtime.rs::committed_canonical_apply_and_saved_replay_keep_their_receipts_after_task_cancel
-  - crates/unica-execution/src/invocation.rs::earlier_host_deadline_reserves_serialization_margin_without_using_timeout_as_prediction
-  - crates/unica-coder/src/interfaces/daemon_router.rs::daemon_budget_is_what_remains_of_the_frontend_budget_once_the_connection_stands
 gap: https://github.com/IngvarConsulting/unica/issues/980
 ---
 

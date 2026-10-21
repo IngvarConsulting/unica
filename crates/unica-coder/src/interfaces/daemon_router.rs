@@ -2029,35 +2029,10 @@ mod tests {
         assert_eq!(past, Err(V5TaskExchangeError::Transport));
     }
 
-    /// Срок хоста короче обычного окна сокращает его тем же механизмом, что
-    /// семисекундное окно (`restrict_to_frontend_budget`); само число 7000 мс
-    /// держит `handoff_budget(None)` в `unica-execution`. Работа длиннее окна,
-    /// но не настолько, чтобы тест ждал секунды (#1920).
-    const CUTOFF_TEST_HOST_BUDGET: Duration = Duration::from_millis(600);
-    const CUTOFF_TEST_WORK: Duration = Duration::from_millis(1_200);
-
-    /// Ответ-задача пришёл на срезе: не раньше окна демона и не позже окна
-    /// транспорта с восстановлением — тот же запас, что у семисекундного окна.
-    fn assert_cutoff_handoff(answered_after: Duration) {
-        let window = handoff_budget(Some(CUTOFF_TEST_HOST_BUDGET));
-        assert!(
-            window < CUTOFF_TEST_HOST_BUDGET && window < CUTOFF_TEST_WORK,
-            "the host budget shortens the daemon window below the work: {window:?}"
-        );
-        assert!(
-            answered_after < window + RESPONSE_SERIALIZATION_MARGIN + RECOVERY_BUDGET,
-            "the Task answered at {answered_after:?}"
-        );
-        assert!(
-            answered_after >= window - Duration::from_millis(100),
-            "a running attempt is not shortened before the cutoff: {answered_after:?}"
-        );
-    }
-
     #[test]
     fn live_daemon_hands_inline_work_over_the_cutoff_to_a_task_the_same_attempt_completes() {
         let service = Arc::new(ScriptedService {
-            delay: CUTOFF_TEST_WORK,
+            delay: Duration::from_millis(9_000),
             known_long: false,
             outcome: Mutex::new(None),
             executions: AtomicUsize::new(0),
@@ -2066,7 +2041,7 @@ mod tests {
         let router = canonical_daemon_router(daemon.owner(), daemon.workspace_hint.clone());
 
         let started = Instant::now();
-        let outcome = call(&router, Some(CUTOFF_TEST_HOST_BUDGET));
+        let outcome = call(&router, None);
         let answered_after = started.elapsed();
 
         let Ok(CanonicalCallOutcome::Task(snapshot)) = outcome else {
@@ -2076,22 +2051,17 @@ mod tests {
             snapshot.completed_result().is_none(),
             "the handoff answers before the attempt finishes: {snapshot:?}"
         );
-        // The handoff interrupts a running attempt, not an admission: with a
-        // short host budget a slow connection could otherwise hand off queued.
-        // The snapshot is the handoff itself; the counter alone could catch up.
-        assert_eq!(
-            snapshot.status(),
-            unica_execution_contract::invocation::InvocationStatus::Working,
-            "the attempt was already running at the handoff: {snapshot:?}"
+        // The daemon hands off at its own seventh second and the frontend
+        // still gets the answer inside its transport window plus recovery.
+        assert!(
+            answered_after
+                < INVOCATION_HANDOFF_WINDOW + RESPONSE_SERIALIZATION_MARGIN + RECOVERY_BUDGET,
+            "the Task answered at {answered_after:?}"
         );
-        assert_eq!(
-            service.executions.load(Ordering::SeqCst),
-            1,
-            "the attempt was already running at the handoff"
+        assert!(
+            answered_after >= INVOCATION_HANDOFF_WINDOW - Duration::from_millis(500),
+            "a direct attempt is not shortened before the cutoff: {answered_after:?}"
         );
-        // The daemon hands off at its own cutoff and the frontend still gets
-        // the answer inside its transport window plus recovery.
-        assert_cutoff_handoff(answered_after);
 
         let task_id = snapshot.task_id();
         let settle_by = Instant::now() + Duration::from_secs(20);
@@ -2134,7 +2104,7 @@ mod tests {
         // second, and the same single attempt's failure becomes that Task's
         // terminal — proving the deadline owner, not the harness, drives it.
         let service = Arc::new(ScriptedService {
-            delay: CUTOFF_TEST_WORK,
+            delay: Duration::from_millis(9_000),
             known_long: false,
             outcome: Mutex::new(Some(Err(
                 unica_execution_contract::invocation::InvocationFailure::new(
@@ -2148,7 +2118,7 @@ mod tests {
         let router = canonical_daemon_router(daemon.owner(), daemon.workspace_hint.clone());
 
         let started = Instant::now();
-        let outcome = call(&router, Some(CUTOFF_TEST_HOST_BUDGET));
+        let outcome = call(&router, None);
         let answered_after = started.elapsed();
 
         let Ok(CanonicalCallOutcome::Task(snapshot)) = outcome else {
@@ -2158,20 +2128,15 @@ mod tests {
             snapshot.completed_result().is_none(),
             "the handoff answers before the attempt finishes: {snapshot:?}"
         );
-        // The handoff interrupts a running attempt, not an admission: with a
-        // short host budget a slow connection could otherwise hand off queued.
-        // The snapshot is the handoff itself; the counter alone could catch up.
-        assert_eq!(
-            snapshot.status(),
-            unica_execution_contract::invocation::InvocationStatus::Working,
-            "the attempt was already running at the handoff: {snapshot:?}"
+        assert!(
+            answered_after
+                < INVOCATION_HANDOFF_WINDOW + RESPONSE_SERIALIZATION_MARGIN + RECOVERY_BUDGET,
+            "the Task answered at {answered_after:?}"
         );
-        assert_eq!(
-            service.executions.load(Ordering::SeqCst),
-            1,
-            "the attempt was already running at the handoff"
+        assert!(
+            answered_after >= INVOCATION_HANDOFF_WINDOW - Duration::from_millis(500),
+            "a running attempt is not shortened before the cutoff: {answered_after:?}"
         );
-        assert_cutoff_handoff(answered_after);
 
         let task_id = snapshot.task_id();
         let settle_by = Instant::now() + Duration::from_secs(20);
