@@ -31,7 +31,6 @@ use unica_workspace::actor::{
 };
 use unica_workspace::selection_evidence::SourceSelectionEvidenceErrorKind;
 
-#[path = "invocation_service/ordered_search_names.rs"]
 mod ordered_search_names;
 
 struct SearchDirectoryFrame {
