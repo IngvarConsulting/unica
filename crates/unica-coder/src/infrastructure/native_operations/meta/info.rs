@@ -171,7 +171,10 @@ pub(crate) fn read_typed_meta_info(
         &MetadataDependencyReadAdapter::new(context),
         resolved,
         descriptor_preimage,
-        source_set,
+        unica_metadata_designer::info_read::MetadataInfoSourceSet {
+            name: source_set,
+            kind: resolved.handle.source_set_kind(),
+        },
         target,
         unica_metadata_designer::info_read::MetadataInfoControl {
             deadline,

@@ -2005,3 +2005,94 @@ fn canonical_wire_apply_refuses_removing_the_last_required_register_field_withou
         "the refused direct execution changes no source byte"
     );
 }
+
+/// #1941, INV.SOURCE.METADATA-OBJECT-FACTS: повреждённое свойство табличной
+/// части и её реквизита из профиля их свойств `check` называет ошибкой у поля
+/// элемента так же, как `view` называет её в пределах узла.
+#[test]
+fn canonical_check_reports_a_duplicated_tabular_attribute_property() {
+    let runtime = runtime();
+    let fixture = catalog_and_constant(&runtime);
+    publish(
+        &runtime,
+        &fixture,
+        json!({"at":"main:Catalog.Products","ops":[{"op":"tabularSection.add","args":{"items":[{"name":"Goods"}]}}]}),
+    );
+    publish(
+        &runtime,
+        &fixture,
+        json!({"at":"main:Catalog.Products.TabularSection.Goods","ops":[{"op":"attribute.add","args":{"items":[
+            {"name":"Price","type":{"variants":[{"kind":"string","length":10,"allowedLength":"variable"}]}}
+        ]}}]}),
+    );
+    let (status, diagnostics) = check(&runtime, &fixture, "main:Catalog.Products");
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic["severity"] != "error"),
+        "{status}: {diagnostics:?}"
+    );
+
+    let catalog = fixture.source.join("Catalogs/Products.xml");
+    let text = std::fs::read_to_string(&catalog).unwrap();
+    let section = text
+        .find("<TabularSection uuid=")
+        .expect("the tabular section");
+    let attribute = text[section..]
+        .find("<Attribute uuid=")
+        .expect("its attribute")
+        + section;
+    let indexing = text[attribute..]
+        .find("<Indexing>")
+        .expect("attribute Indexing")
+        + attribute;
+    let end = text[indexing..].find("</Indexing>").unwrap() + indexing + "</Indexing>".len();
+    let line_number = text[section..]
+        .find("<LineNumberLength>")
+        .expect("section LineNumberLength")
+        + section;
+    assert!(
+        line_number < attribute,
+        "the section property precedes its attributes"
+    );
+    let line_end = text[line_number..].find("</LineNumberLength>").unwrap()
+        + line_number
+        + "</LineNumberLength>".len();
+    let mut duplicated = text.clone();
+    duplicated.insert_str(end, &text[indexing..end]);
+    duplicated.insert_str(line_end, &text[line_number..line_end]);
+    std::fs::write(&catalog, duplicated).unwrap();
+
+    let section_field = "collections.tabularSections[0].properties.LineNumberLength";
+    let field = "collections.tabularSections[0].attributes[0].properties.Indexing";
+    let (status, diagnostics) = check(&runtime, &fixture, "main:Catalog.Products");
+    assert_eq!(status, "failed", "{diagnostics:?}");
+    assert_eq!(
+        finding(&diagnostics, "validation_failed", field)["severity"],
+        "error"
+    );
+    assert_eq!(
+        finding(&diagnostics, "validation_failed", section_field)["severity"],
+        "error"
+    );
+    let section_view = view(
+        &runtime,
+        &fixture,
+        "main:Catalog.Products.TabularSection.Goods",
+    );
+    assert!(
+        limits(&section_view)
+            .iter()
+            .any(|limit| limit.contains(section_field)),
+        "{section_view}"
+    );
+    let viewed = view(
+        &runtime,
+        &fixture,
+        "main:Catalog.Products.TabularSection.Goods.Attribute.Price",
+    );
+    assert!(
+        limits(&viewed).iter().any(|limit| limit.contains(field)),
+        "{viewed}"
+    );
+}
