@@ -316,29 +316,28 @@ class GateProfileCompositionTests(unittest.TestCase):
             self.run_tests.python_commands("all", suite="tests/agent_evaluation")
 
 
-
 # Стражи фасада ReceiptLedger test-support: заморозка ABI и отрицательные
 # проверки полномочий. До #1895 они жили `#[cfg(test)]` в библиотеке и не
 # исполнялись ни одним вариантом. Список закрыт: пропавший страж роняет
 # эту проверку, а не сужает отбор молча.
 FACADE_GUARDS = (
-        "authority_wrappers_match_the_frozen_application_vectors",
-        "crash_is_a_staged_control_and_does_not_mint_receipt_transition_evidence",
-        "every_malformed_envelope_case_is_routed_individually_through_the_production_pipeline",
-        "facade_and_non_owner_helpers_have_no_direct_receipt_ledger_authority",
-        "facade_authority_guard_audits_mixed_cfg_subtrees",
-        "facade_authority_guard_does_not_concatenate_unrelated_macro_literals",
-        "facade_authority_guard_fails_closed_on_dynamic_string_construction",
-        "facade_authority_guard_ignores_exact_cfg_test_associated_items",
-        "facade_authority_guard_ignores_only_exact_cfg_test_subtrees",
-        "facade_authority_guard_reconstructs_nested_concat_literals",
-        "facade_authority_guard_reconstructs_split_concat_literals",
-        "facade_authority_guard_rejects_production_string_literals",
-        "facade_authority_guard_scans_every_named_production_source",
-        "facade_source_keeps_the_exact_abi_and_has_no_production_authority",
-        "rust_authority_guard_finds_store_identifiers_inside_formatting_macros",
-        "scenario_driver_cannot_mint_runtime_telemetry_events",
-        "scenario_wire_is_closed_at_the_scenario_and_action_levels",
+    "authority_wrappers_match_the_frozen_application_vectors",
+    "crash_is_a_staged_control_and_does_not_mint_receipt_transition_evidence",
+    "every_malformed_envelope_case_is_routed_individually_through_the_production_pipeline",
+    "facade_and_non_owner_helpers_have_no_direct_receipt_ledger_authority",
+    "facade_authority_guard_audits_mixed_cfg_subtrees",
+    "facade_authority_guard_does_not_concatenate_unrelated_macro_literals",
+    "facade_authority_guard_fails_closed_on_dynamic_string_construction",
+    "facade_authority_guard_ignores_exact_cfg_test_associated_items",
+    "facade_authority_guard_ignores_only_exact_cfg_test_subtrees",
+    "facade_authority_guard_reconstructs_nested_concat_literals",
+    "facade_authority_guard_reconstructs_split_concat_literals",
+    "facade_authority_guard_rejects_production_string_literals",
+    "facade_authority_guard_scans_every_named_production_source",
+    "facade_source_keeps_the_exact_abi_and_has_no_production_authority",
+    "rust_authority_guard_finds_store_identifiers_inside_formatting_macros",
+    "scenario_driver_cannot_mint_runtime_telemetry_events",
+    "scenario_wire_is_closed_at_the_scenario_and_action_levels",
 )
 
 
@@ -347,8 +346,17 @@ class FacadeGuardInventoryTests(unittest.TestCase):
         coder = REPO_ROOT / "crates/unica-coder"
         guards = (coder / "tests/daemon_receipt_ledger/facade_guards.rs").read_text(encoding="utf-8")
         self.assertEqual(sorted(attributed_test_functions(guards)), sorted(FACADE_GUARDS))
+        # Страж исполняется, а не только объявлен: ни `#[ignore]`, ни `cfg`
+        # не выключают его молча — у каждого ровно один атрибут `#[test]`.
+        for name in FACADE_GUARDS:
+            with self.subTest(guard=name):
+                attributes = re.search(rf"((?:^[ \t]*#\[[^\n]*\]\n)*)fn {name}\(", guards, re.M)
+                self.assertIsNotNone(attributes)
+                self.assertEqual(attributes[1].strip(), "#[test]")
         ledger = (coder / "tests/daemon_receipt_ledger.rs").read_text(encoding="utf-8")
-        self.assertIn('#[path = "daemon_receipt_ledger/facade_guards.rs"]\nmod facade_guards;', ledger)
+        module = re.search(r'((?:^#\[[^\n]*\]\n)*)mod facade_guards;', ledger, re.M)
+        self.assertIsNotNone(module)
+        self.assertEqual(module[1].strip(), '#[path = "daemon_receipt_ledger/facade_guards.rs"]')
         # Тестовый модуль в самом фасаде снова собирался бы только в
         # тестовой библиотеке, которую вариант Receipt не исполняет.
         facade = (coder / "src/receipt_ledger_test_support.rs").read_text(encoding="utf-8")
