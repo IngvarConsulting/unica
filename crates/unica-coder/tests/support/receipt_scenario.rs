@@ -4954,12 +4954,10 @@ fn submit_and_disconnect_after_write(
     finish_with_daemon_cleanup(result, cleanup)
 }
 
-#[cfg(test)]
 enum ScenarioWireRequest {
     InjectedClientFailure,
 }
 
-#[cfg(test)]
 fn exchange_batch(
     state_root: &Path,
     identity: &CoreIdentity,
@@ -7455,6 +7453,5 @@ pub(crate) use dispatch::run_supported_receipt_scenario_for_test;
 
 use unica_execution::receipt_runtime::contracts::wire::*;
 
-#[cfg(test)]
 #[path = "receipt_scenario/tests.rs"]
-mod tests;
+pub(crate) mod harness_checks;

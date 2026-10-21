@@ -1,0 +1,23 @@
+[package]
+name = "unica-dcs-integration-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+autotests = false
+
+[[test]]
+name = "dcs_stage"
+path = "tests/stage.rs"
+
+[dev-dependencies]
+roxmltree.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+unica-dcs = { path = "../unica-dcs", features = ["test-support"] }
+unica-dcs-designer = { path = "../unica-dcs-designer" }
+unica-source-contract = { path = "../unica-source-contract" }
+unica-source-designer = { path = "../unica-source-designer" }
+unica-work-control = { path = "../unica-work-control", features = ["test-support"] }
+unica-workspace = { path = "../unica-workspace" }
