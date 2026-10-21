@@ -131,8 +131,32 @@ def inline_test_modules(source: bytes) -> tuple[set[str], bool]:
 
 
 
-def module_files(root_file: Path, logical_root: tuple[str, ...] = ()) -> dict[tuple[str, ...], Path]:
-    """Файлы модулей одной цели от её корня, включая перенесённые `#[path]`."""
+def crate_root(path: Path) -> Path:
+    for parent in path.parents:
+        if (parent / "Cargo.toml").is_file():
+            return parent
+    raise ValueError(f"no Cargo.toml above {path}")
+
+
+def included_file(text: str, file_dir: Path) -> Path | None:
+    """Файл `include!`: литерал от каталога файла или от `CARGO_MANIFEST_DIR`."""
+    compact = re.sub(r"\s+", "", text)
+    literal = re.fullmatch(r'include!\("([^"]+)"\);?', compact)
+    if literal:
+        return file_dir / literal[1]
+    manifest = re.fullmatch(r'include!\(concat!\(env!\("CARGO_MANIFEST_DIR"\),"([^"]+)"\)\);?', compact)
+    if manifest:
+        return crate_root(file_dir / "x") / manifest[1].lstrip("/")
+    return None
+
+
+def module_files(root_file: Path, logical_root: tuple[str, ...] = (),
+                 includes: list[tuple[tuple[str, ...], Path]] | None = None) -> dict[tuple[str, ...], Path]:
+    """Файлы модулей одной цели от её корня, включая перенесённые `#[path]`.
+
+    Файлы `include!` вставляются в модуль, где стоит макрос: в `includes`
+    уходит пара (модуль, файл).
+    """
     modules: dict[tuple[str, ...], Path] = {}
     parser = Parser(Language(tree_sitter_rust.language()))
 
@@ -142,19 +166,24 @@ def module_files(root_file: Path, logical_root: tuple[str, ...] = ()) -> dict[tu
         source = path.read_bytes()
         modules[logical] = path
         base = path.parent if path.stem in {"lib", "main", "mod"} or logical == logical_root else path.with_suffix("")
-        walk(parser.parse(source).root_node, source, logical, base, path.parent)
+        walk(parser.parse(source).root_node, source, logical, base, path.parent, path.parent)
 
-    def walk(node, source, logical, default_base, explicit_base):
+    def walk(node, source, logical, default_base, explicit_base, file_dir):
         attributes = []
         for child in node.named_children:
             if child.type == "attribute_item":
                 attributes.append(source[child.start_byte:child.end_byte].decode())
                 continue
+            macro = child.named_children[0] if child.type == "expression_statement" and child.named_children else child
+            if includes is not None and macro.type == "macro_invocation":
+                target = included_file(source[macro.start_byte:macro.end_byte].decode(), file_dir)
+                if target is not None:
+                    includes.append((logical, target))
             if child.type == "mod_item":
                 name = child.child_by_field_name("name").text.decode()
                 body = child.child_by_field_name("body")
                 if body is not None:
-                    walk(body, source, (*logical, name), default_base / name, default_base / name)
+                    walk(body, source, (*logical, name), default_base / name, default_base / name, file_dir)
                 else:
                     override = next((m[1] for attr in attributes if (m := re.fullmatch(
                         r'\s*#\[\s*path\s*=\s*"([^"]+)"\s*\]\s*', attr))), None)
@@ -214,6 +243,38 @@ def test_targets(crate: Path) -> tuple[str, dict[str, Path]]:
     return package, targets
 
 
+def bin_targets(crate: Path, package: str) -> dict[str, Path]:
+    """Бинарные цели пакета по правилам Cargo: `src/main.rs`, `src/bin/*` и `[[bin]]`."""
+    manifest = tomllib.loads((crate / "Cargo.toml").read_text(encoding="utf-8"))
+    targets: dict[str, Path] = {}
+    if manifest["package"].get("autobins", True):
+        if (crate / "src" / "main.rs").is_file():
+            targets[package] = crate / "src" / "main.rs"
+        targets.update({path.stem: path for path in sorted((crate / "src" / "bin").glob("*.rs"))})
+        targets.update({path.parent.name: path for path in sorted((crate / "src" / "bin").glob("*/main.rs"))})
+    for target in manifest.get("bin", []):
+        targets[target["name"]] = crate / target.get("path", f"src/bin/{target['name']}.rs")
+    return targets
+
+
+def test_items(source: bytes) -> tuple[set[str], set[str]]:
+    """Встроенные модули с тестами и тесты верхнего уровня одного файла."""
+    named, _ = inline_test_modules(source)
+    tree = Parser(Language(tree_sitter_rust.language())).parse(source)
+    children = tree.root_node.named_children
+    top_level = set()
+    for index, child in enumerate(children):
+        if child.type != "function_item":
+            continue
+        back = index - 1
+        while back >= 0 and children[back].type in ("attribute_item", "line_comment", "block_comment"):
+            node = children[back]
+            if node.type == "attribute_item" and TEST_ATTRIBUTE.fullmatch(re.sub(r"\s+", "", node.text.decode())):
+                top_level.add(child.child_by_field_name("name").text.decode())
+            back -= 1
+    return named, top_level
+
+
 def platform_terms(root: Path) -> list[str]:
     """Тесты платформенных фасадов: модули, чей файл лежит в каталоге фасада.
 
@@ -223,8 +284,19 @@ def platform_terms(root: Path) -> list[str]:
     """
     terms = set()
 
-    def collect(binary: str, files: dict[tuple[str, ...], Path]) -> None:
+    def collect(binary: str, files: dict[tuple[str, ...], Path], includes: list[tuple[tuple[str, ...], Path]]) -> None:
         platform = {logical for logical, path in files.items() if is_platform_source(root, path)}
+        # `include!` вставляет платформенный файл в чужой модуль: выбор — его
+        # собственные тесты, по точному имени или встроенному модулю.
+        for logical, path in includes:
+            if not path.is_file() or not is_platform_source(root, path) or any(logical[:n] in platform for n in range(len(logical) + 1)):
+                continue
+            prefix = "".join(f"{part}::" for part in logical)
+            named, top_level_names = test_items(path.read_bytes())
+            for name in sorted(named):
+                terms.add(f"({binary} & test(/^{re.escape(prefix + name)}::/))")
+            for name in sorted(top_level_names):
+                terms.add(f"({binary} & test(/^{re.escape(prefix + name)}$/))")
         for logical in platform:
             if any(logical[:n] in platform for n in range(len(logical))):
                 continue
@@ -237,11 +309,14 @@ def platform_terms(root: Path) -> list[str]:
     for crate in sorted((root / "crates").iterdir()):
         if not (crate / "Cargo.toml").is_file():
             continue
-        if (crate / "src" / "lib.rs").is_file():
-            collect(f"binary({crate.name.replace('-', '_')})", module_files(crate / "src" / "lib.rs"))
         package, targets = test_targets(crate)
-        for name, path in sorted(targets.items()):
-            collect(f"binary_id({package}::{name})", module_files(path))
+        roots = [(f"binary({crate.name.replace('-', '_')})", crate / "src" / "lib.rs")]
+        roots += [(f"binary_id({package}::bin/{name})", path) for name, path in bin_targets(crate, package).items()]
+        roots += [(f"binary_id({package}::{name})", path) for name, path in sorted(targets.items())]
+        for binary, path in roots:
+            if path.is_file():
+                includes: list[tuple[tuple[str, ...], Path]] = []
+                collect(binary, module_files(path, includes=includes), includes)
     return sorted(terms)
 
 

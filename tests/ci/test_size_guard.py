@@ -251,15 +251,28 @@ class SizeGuardTests(unittest.TestCase):
                 "crates/other/src/lib.rs": "",
                 "crates/other/src/platform.rs": "#[test] fn not_a_facade() {}\n",
                 "crates/other/tests/platform/whole.rs": "#[test] fn e() {}\n",
+                "crates/other/tests/spliced.rs": "include!(\"platform/spliced.rs\");\nmod local { #[test] fn f() {} }\n",
+                "crates/other/tests/platform/spliced.rs": "#[test] fn g() {}\nmod nested { #[test] fn h() {} }\nfn helper() {}\n",
+                "crates/other/src/shared.rs": "#[cfg(test)] mod tests { include!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/tests/platform/windows.rs\")); }\n",
+                "crates/other/tests/platform/windows.rs": "#[test] fn i() {}\n",
             }
             for relative, text in files.items():
                 (root / relative).parent.mkdir(parents=True, exist_ok=True)
                 (root / relative).write_text(text, encoding="utf-8")
-            (root / "crates/other/src/lib.rs").write_text("mod platform;\n", encoding="utf-8")
+            (root / "crates/other/src/lib.rs").write_text("mod platform;\nmod shared;\n", encoding="utf-8")
+            (root / "crates/other/Cargo.toml").write_text(
+                '[package]\nname = "other"\nautotests = false\n[[test]]\nname = "whole"\npath = "tests/platform/whole.rs"\n'
+                '[[test]]\nname = "spliced"\npath = "tests/spliced.rs"\n', encoding="utf-8")
+            (root / "crates/owner/src/main.rs").write_text("#[path = \"../tests/platform/cli.rs\"]\nmod cli;\n", encoding="utf-8")
+            (root / "crates/owner/tests/platform/cli.rs").write_text("#[test] fn j() {}\n", encoding="utf-8")
             self.assertEqual(module.platform_terms(root), [
+                "(binary(other) & test(/^shared::tests::i$/))",
                 "(binary(owner) & test(/^moved::/))",
                 "(binary(owner) & test(/^platform::/))",
+                "(binary_id(other::spliced) & test(/^g$/))",
+                "(binary_id(other::spliced) & test(/^nested::/))",
                 "(binary_id(other::whole))",
+                "(binary_id(owner::bin/owner) & test(/^cli::/))",
                 "(binary_id(owner::contract) & test(/^checks::/))",
             ])
 
