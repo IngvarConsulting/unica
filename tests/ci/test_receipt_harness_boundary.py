@@ -359,6 +359,8 @@ class ReceiptHarnessBoundaryTests(unittest.TestCase):
             for name, source in [
                 ("root", "use self::harness_checks::check;\n"),
                 ("dispatch.rs", "fn run_supported_receipt_scenario_for_test() {\n    super::harness_checks::check();\n}\n"),
+                ("dispatch.rs", "fn run_supported_receipt_scenario_for_test() {\n    crate::receipt_scenario_harness_checks::check();\n}\n"),
+                ("dispatch.rs", "unica_coder::receipt_scenario_harness_tests!();\n"),
             ]:
                 with self.subTest(source=name):
                     if name == "root":
@@ -368,6 +370,7 @@ class ReceiptHarnessBoundaryTests(unittest.TestCase):
                     result = run_guard(root)
                     self.assertEqual(result.returncode, 1, result.stdout)
                     self.assertIn("reaches the exempt `harness_checks`", result.stdout)
+                    write_harness(root, '#[path = "receipt_scenario/tests.rs"]\npub(crate) mod harness_checks;\n')
 
     def test_the_exempt_unit_tests_are_not_the_harness(self) -> None:
         """Проверки обвязки освобождены: им актор не предписан."""

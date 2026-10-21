@@ -173,7 +173,7 @@ class GateProfileCompositionTests(unittest.TestCase):
             ["frontend_restart_test_support", "receipt_ledger_test_support", "receipt_scenario_harness_checks"],
         )
         self.assertEqual(lib.count("receipt-ledger-test-support"), len(gated))
-        self.assertIn("pub fn $check() {\n                    super::$check();", harness)
+        self.assertRegex(harness, r"pub fn \$check\(\)\s*\{\s*super::\$check\(\);\s*\}")
 
     def test_every_gate_has_a_nextest_profile_that_admits_its_sizes(self) -> None:
         profiles = self.config["profile"]

@@ -60,6 +60,10 @@ EXEMPT_FILES = {
 # освобождение держится, пока читаемые файлы обвязки называют модуль
 # проверок только объявлением: вызов оттуда сделал бы проверку частью бегунка.
 EXEMPT_CHECKS_MODULE = "harness_checks"
+# Тот же модуль снаружи: реэкспорт из `lib.rs` и макрос `#[test]`-обёрток.
+EXEMPT_CHECKS_NAMES = re.compile(
+    r"\b(?:receipt_scenario_harness_checks|receipt_scenario_harness_tests|harness_checks)\b"
+)
 EXEMPT_CHECKS_DECLARATION = re.compile(
     rf"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+{EXEMPT_CHECKS_MODULE}\s*;\s*$"
 )
@@ -305,7 +309,7 @@ def exempt_check_references(path: Path, source: str) -> list[str]:
         f"{path.as_posix()}:{index}: the scenario runner reaches the exempt "
         f"`{EXEMPT_CHECKS_MODULE}`; checks are run only by the contract tests"
         for index, line in enumerate(source.split("\n"), start=1)
-        if re.search(rf"\b{EXEMPT_CHECKS_MODULE}\b", line)
+        if EXEMPT_CHECKS_NAMES.search(line)
         and not EXEMPT_CHECKS_DECLARATION.match(line)
     ]
 
