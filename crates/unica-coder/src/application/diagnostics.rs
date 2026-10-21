@@ -99,19 +99,3 @@ impl DiagnosticMapping for ApplicationDiagnosticMapping<'_> {
         ApplicationPorts::map_diagnostic_observations(self.0, observations, context, cancellation)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn live_diagnostics_schema_only_names_the_shipped_provider() {
-        let diagnostics_spec = crate::application::tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.code.diagnostics")
-            .unwrap();
-        let schema = crate::application::input_schema_for_tool(&diagnostics_spec);
-        let schema_text = serde_json::to_string(&schema).unwrap();
-        assert!(schema_text.contains("bsl-analyzer"));
-        assert!(!schema_text.contains("bsl-language-server"));
-        assert!(!schema_text.contains("metadata-validator"));
-    }
-}

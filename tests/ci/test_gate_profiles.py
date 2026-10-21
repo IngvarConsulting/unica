@@ -148,7 +148,7 @@ class GateProfileCompositionTests(unittest.TestCase):
         listed = re.search(r"(?m)^harness_checks!\((.*?)\);", harness, re.S)
         self.assertIsNotNone(listed)
         checks = {name.strip() for name in listed[1].split(",") if name.strip()}
-        self.assertEqual(len(checks), 32)
+        self.assertEqual(len(checks), 34)
         self.assertIn("fresh_task_listener_after_restart_survives_its_prepare_barrier_release", checks)
         self.assertIn("successor_closes_and_joins_old_gate_waiters_without_cancelling_the_new_life", checks)
         ledger = (coder / "tests/daemon_receipt_ledger.rs").read_text(encoding="utf-8")
