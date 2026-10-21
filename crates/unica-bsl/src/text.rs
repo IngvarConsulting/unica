@@ -586,7 +586,12 @@ pub fn locate_addressed_replacement(
             } else {
                 method.start
             };
-            let end = if text[method.end..line_end].trim().is_empty() {
+            // A full Method.Body roundtrip includes an inline closing comment,
+            // but executable code on that line belongs outside this method.
+            let closing_tail = text[method.end..line_end].trim();
+            let end = if closing_tail.is_empty()
+                || (target.with_doc_comment && closing_tail.starts_with("//"))
+            {
                 line_end
             } else {
                 method.end
