@@ -6731,7 +6731,10 @@ fn xdto_check_refuses_linked_descriptor_and_package_resources() {
         fs::remove_file(&path).unwrap();
         let outcome = create_file_link_fixture_for_test(&foreign, &path).unwrap();
         if outcome != FileLinkFixtureOutcome::Created {
-            eprintln!("[SKIPPED FIXTURE] file-link fixture unavailable: {outcome:?}");
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a file link needs the symlink privilege",
+            );
             return;
         }
         let at = QualifiedAddress::parse("main:XDTOPackage.Control").unwrap();
