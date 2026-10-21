@@ -12,7 +12,7 @@ check:
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::specialized_relation_limits_distinguish_absence_empty_and_damage
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::missing_relation_preserves_known_targets_and_reports_incompleteness
   - crates/unica-coder/src/infrastructure/native_operations/meta/info_tests.rs::missing_write_mode_does_not_claim_complete_registrar_evidence
-  - crates/unica-coder/src/infrastructure/native_operations/meta/info_projection_tests.rs::property_observation_distinguishes_missing_false_empty_nil_and_damage
+  - crates/unica-metadata-designer/tests/platform/info_projection.rs::property_observation_distinguishes_missing_false_empty_nil_and_damage
   - crates/unica-coder/src/infrastructure/native_operations/meta/info_tests.rs::platform_incomplete_borrowed_metadata_keeps_local_observations
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::missing_or_damaged_code_type_limits_only_dependent_predefined_read
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::platform_borrowed_common_module_preserves_unknown_contexts_and_independent_facts

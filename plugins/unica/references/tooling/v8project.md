@@ -155,9 +155,9 @@ Within one source-set the format cannot be mixed: conflicting platform XML and
 EDT markers mean the source-set is invalid/ambiguous and must be fixed or
 converted before XML metadata tools are used.
 
-Format discovery remains per source-set, but `unica.epf.init` and
-`unica.erf.init` specifically require the global `format` value to be exact
-`DESIGNER` or omitted. v8-runner selects the external-project layout from that
+Format discovery remains per source-set, but external processor and report
+scaffolds written by the `epf-init` and `erf-init` skills specifically require
+the global `format` value to be exact `DESIGNER` or omitted. v8-runner selects the external-project layout from that
 global value; use a separate Designer workspace/config when the active config
 has global `format: EDT`.
 

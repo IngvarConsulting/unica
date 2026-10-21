@@ -1082,7 +1082,8 @@ impl<'a> LogicalViewReadAuthority<'a> {
             .filter(|diagnostic| diagnostic.severity == MetaDiagnosticSeverity::Error)
             .filter_map(|diagnostic| {
                 let field = diagnostic.field.as_deref()?;
-                (field.starts_with("details.")
+                ((field.starts_with("collections.") && field.ends_with(".type"))
+                    || field.starts_with("details.")
                     || field.starts_with("properties.")
                     || field.starts_with("relations.")
                     || [

@@ -1,5 +1,0 @@
-[network]
-default = "deny"
-
-[providers.kb-1ci]
-network = "allow"

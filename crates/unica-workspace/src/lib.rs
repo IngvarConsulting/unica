@@ -24,7 +24,6 @@ pub mod state_scope;
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
-    #[cfg(feature = "test-support")]
     pub use crate::platform::filesystem_contract_tests::{
         saved_source_diff_keeps_literal_backslash_and_nested_paths_distinct,
         saved_source_diff_keeps_native_names_and_replacement_character_distinct,

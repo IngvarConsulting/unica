@@ -10,6 +10,10 @@ pub use super::process::{
     JobAttachGateForTest, RuntimeProcessTreeTestProbe, RuntimeProcessTreeTestScenario,
 };
 
+pub use super::host_capability::{
+    skip_without_host_capability, HostCapability, HOST_CAPABILITY_SKIPS_ENV,
+};
+
 /// Availability of the existing Unix process-authority fixture.
 pub fn unix_runtime_authority_tests_supported() -> bool {
     cfg!(unix)
