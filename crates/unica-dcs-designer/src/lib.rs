@@ -1,6 +1,10 @@
-//! Existing Designer DCS codecs without workspace publication authority.
-pub mod planner;
-pub mod primitives;
-pub mod recovery;
+//! Designer-кодек СКД: реализует семейный порт [`unica_dcs::codec::DcsCodec`]
+//! без полномочий публикации workspace.
+pub mod codec;
+mod planner;
+mod primitives;
+mod recovery;
 pub mod schema;
-pub mod xml;
+mod xml;
+
+pub use codec::DesignerDcsCodec;

@@ -20,7 +20,10 @@ def manifest(lane="ordinary", host="ubuntu-latest", profile="queue"):
     parts = [[{"binary": f"package-{lane}", "name": f"case_{i}", "ignored": False}] for i in range(lanes.shards(profile, lane))]
     document = {"schemaVersion": 1, "identity": {"sha": "a" * 40, "target": "x86_64-unknown-linux-gnu", "os": "Linux"}, "profile": profile, "runner": host,
             "lane": lane, "selection": list(lanes.selection(lane)), "nextestProfile": lanes.runner.nextest_profile(profile, lanes.selection(lane)),
-            "archiveSha256": "archive-" + lane, "inventory": sum(parts, []), "ignoredInventory": [], "shards": parts}
+            "archiveSha256": "archive-" + lane, "inventory": sum(parts, []), "ignoredInventory": [], "shards": parts,
+            # Archive binaries independent of the profile filter; later fixtures
+            # narrow the inventory to the product packages listed here.
+            "binaries": sorted({f"package-{lane}", "unica-coder", "ureq"})}
     if lane == "ordinary":
         document["fixtureBinary"] = {"path": "x86_64-unknown-linux-gnu/debug/unica", "sha256": "0" * 64, "bytes": 1}
         document["doctests"] = {"command": ["cargo", "test", "--doc"], "exitCode": 0, "seconds": 0.01, "output": "ok"}
@@ -669,6 +672,146 @@ class ShadowArchiveTests(unittest.TestCase):
             self.run_shadow("vendor", ["ureq"], listing_failure=True)
         with self.assertRaisesRegex(ValueError, "required shard test failed"):
             self.run_shadow("vendor", ["unica-dcs"], full_failure=True)
+
+
+class PreviousInventoryTests(unittest.TestCase):
+    """The plan is red when a test target, job, result or selection vanished since the last verified run."""
+
+    HOSTS = ["ubuntu-latest", "macos-14"]
+
+    def jobs(self, profile="queue", drop=()):
+        names = {f"{phase}-rust-{lane}": {"result": "success" if lane in lanes.lanes(profile) else "skipped"}
+                 for lane in lanes.LANES for phase in ("build", "run")}
+        names["shadow-component-selection"] = {"result": "success"}
+        names["classify-changes"] = {"result": "success"}
+        return {name: value for name, value in names.items() if name not in drop}
+
+    def collect(self, root, profile="queue", hosts=None, mutate=None):
+        for host in hosts or self.HOSTS:
+            for lane in lanes.lanes(profile):
+                plan = manifest(lane, host, profile)
+                if mutate:
+                    mutate(plan)
+                lanes.write(root / host / lane / "lane.json", plan)
+                for index in range(1, len(plan["shards"]) + 1):
+                    lanes.write(root / host / lane / str(index) / "shard.json", result(plan, index))
+
+    def previous(self, profile="queue", *, reset=False, removed=(), jobs=None, mutate=None, hosts=None):
+        with tempfile.TemporaryDirectory() as temporary, \
+             patch.dict(lanes.os.environ, {"CI_LANE_JOB_RESULTS": json.dumps(jobs or self.jobs(profile))}, clear=True):
+            root = Path(temporary)
+            self.collect(root, profile, hosts, mutate)
+            lanes.verify_union(root, profile, hosts or self.HOSTS, "a" * 40, self.baseline(None, reset=True))
+            inventory = json.loads((root / "inventory.json").read_text())
+        return self.baseline(inventory, reset=reset, removed=removed)
+
+    def baseline(self, inventory, *, reset=False, removed=()):
+        return {"schemaVersion": 1, "source": None if inventory is None else {"headSha": "b" * 40},
+                "inventory": inventory, "explanations": {"range": "b..HEAD", "reset": reset, "removedTargets": list(removed)}}
+
+    def verify(self, baseline, profile="queue", *, jobs=None, mutate=None, hosts=None):
+        with tempfile.TemporaryDirectory() as temporary, \
+             patch.dict(lanes.os.environ, {"CI_LANE_JOB_RESULTS": json.dumps(jobs or self.jobs(profile))}, clear=True):
+            root = Path(temporary)
+            self.collect(root, profile, hosts, mutate)
+            try:
+                return lanes.verify_union(root, profile, hosts or self.HOSTS, "a" * 40, baseline)
+            except ValueError as error:
+                report = root / "verification.json"
+                self.report = json.loads(report.read_text()) if report.is_file() else None
+                raise error
+
+    @staticmethod
+    def without_target(binary):
+        def mutate(plan):
+            plan["binaries"] = [item for item in plan["binaries"] if item != binary]
+        return mutate
+
+    def test_unchanged_inventory_passes_and_records_the_source(self):
+        report = self.verify(self.previous())
+        self.assertTrue(report["mandatoryComplete"])
+        self.assertEqual(report["previousInventory"]["source"], {"headSha": "b" * 40})
+
+    def test_vanished_test_target_fails_unless_a_commit_declares_its_removal(self):
+        with self.assertRaisesRegex(ValueError, "test target unica-coder disappeared"):
+            self.verify(self.previous(), mutate=self.without_target("unica-coder"))
+        self.assertFalse(self.report["mandatoryComplete"])
+        report = self.verify(self.previous(removed=["unica-coder"]), mutate=self.without_target("unica-coder"))
+        self.assertEqual(report["previousInventory"]["removedTargets"], ["unica-coder"])
+
+    def test_target_loss_is_found_across_profiles_but_selection_only_within_one(self):
+        # A pull request runs ordinary small tests only; its archive still has every target.
+        with self.assertRaisesRegex(ValueError, "ubuntu-latest/ordinary: test target ureq disappeared"):
+            self.verify(self.previous("queue"), "pr", jobs=self.jobs("pr"), hosts=["ubuntu-latest"],
+                        mutate=self.without_target("ureq"))
+        self.assertTrue(self.verify(self.previous("queue"), "pr", jobs=self.jobs("pr"), hosts=["ubuntu-latest"])["mandatoryComplete"])
+
+    def test_vanished_job_fails(self):
+        with self.assertRaisesRegex(ValueError, "job shadow-component-selection disappeared"):
+            # The in-run check names the missing shadow too; the comparison names the vanished job.
+            self.verify(self.previous(), jobs=self.jobs(drop=("shadow-component-selection",)))
+        with self.assertRaisesRegex(ValueError, "job classify-changes disappeared"):
+            self.verify(self.previous(), jobs=self.jobs(drop=("classify-changes",)))
+
+    def test_vanished_configuration_and_its_results_fail_within_one_profile(self):
+        previous = self.previous()
+        with self.assertRaisesRegex(ValueError, "macos-14/receipt: configuration and its results disappeared"):
+            with patch.object(lanes, "lanes", side_effect=lambda profile: ("ordinary",) if profile == "queue" else lanes.LANES):
+                self.verify(previous, jobs={**self.jobs(), **{f"{phase}-rust-{lane}": {"result": "skipped"}
+                                                   for lane in ("receipt", "vendor") for phase in ("build", "run")}})
+
+    def test_unexpectedly_empty_selection_fails(self):
+        def empty(plan):
+            # The target is still archived, but the profile filter now selects nothing from it.
+            kept = [case for case in plan["inventory"] if case["binary"] != "package-receipt"]
+            plan["inventory"] = kept + [{"binary": "unica-coder", "name": "other", "ignored": False}]
+            plan["shards"] = [plan["inventory"]]
+        with self.assertRaisesRegex(ValueError, "selection of test target package-receipt became empty"):
+            self.verify(self.previous(), mutate=lambda plan: empty(plan) if plan["lane"] == "receipt" else None)
+        with self.assertRaisesRegex(ValueError, "nonempty complete plan"):
+            self.verify(self.previous(), mutate=lambda plan: plan.update(inventory=[], shards=[[]] * len(plan["shards"])))
+
+    def test_removed_cases_are_reported_without_failing(self):
+        def rename(plan):
+            for part in plan["shards"]:
+                for case in part:
+                    case["name"] += "_renamed"
+            plan["inventory"] = sum(plan["shards"], [])
+        report = self.verify(self.previous(), mutate=rename)
+        self.assertIn("ubuntu-latest/ordinary", report["previousInventory"]["removedCases"])
+
+    def test_missing_baseline_requires_an_explicit_reset_and_ci_requires_the_comparison(self):
+        with self.assertRaisesRegex(ValueError, "Rust-inventory-baseline: reset"):
+            self.verify(self.baseline(None))
+        self.assertTrue(self.verify(self.baseline(None, reset=True))["mandatoryComplete"])
+        # Release lines and manual runs may outlive the artifact retention.
+        self.assertIsNone(self.verify(self.baseline(None), "main", jobs=self.jobs("main"))["previousInventory"]["source"])
+        report = self.verify(self.previous(reset=True), mutate=self.without_target("unica-coder"))
+        self.assertTrue(report["previousInventory"]["resetSuppressed"])
+        with self.assertRaisesRegex(ValueError, "not compared with the previous inventory"):
+            self.verify(None)
+        with self.assertRaises(ValueError):
+            self.verify({**self.baseline(None), "explanations": {"reset": "yes", "removedTargets": []}})
+
+    def test_equivalent_profiles_compare_selection_and_configurations(self):
+        self.assertTrue(lanes.same_selection("queue", "main"))
+        self.assertFalse(lanes.same_selection("queue", "pr"))
+        self.assertFalse(lanes.same_selection("queue", "large"))
+        def drop_receipt_case(plan):
+            if plan["lane"] == "receipt":
+                plan["inventory"] = [{"binary": "unica-coder", "name": "other", "ignored": False}]
+                plan["shards"] = [plan["inventory"]]
+        with self.assertRaisesRegex(ValueError, "selection of test target package-receipt became empty"):
+            self.verify(self.previous("queue"), "main", jobs=self.jobs("main"), mutate=drop_receipt_case)
+
+    def test_windows_losses_in_large_stay_advisory(self):
+        hosts = ["ubuntu-latest", "macos-14", "windows-latest"]
+        previous = self.previous("large", jobs=self.jobs("large"), hosts=hosts)
+        report = self.verify(previous, "large", jobs=self.jobs("large"), hosts=hosts,
+                             mutate=lambda plan: self.without_target("ureq")(plan) if plan["runner"] == "windows-latest" else None)
+        self.assertTrue(report["mandatoryComplete"])
+        self.assertFalse(report["fullMatrixPassed"])
+        self.assertTrue(all("windows-latest" in item for item in report["advisoryFailures"]))
 
 
 if __name__ == "__main__":

@@ -14,7 +14,7 @@ thread_local! {
     static TEST_AFTER_DEADLINE_ERROR_HOOK: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(feature = "test-support")]
 pub(super) fn set_after_deadline_error_hook_for_test(hook: impl FnOnce() + 'static) {
     TEST_AFTER_DEADLINE_ERROR_HOOK.with(|slot| slot.replace(Some(Box::new(hook))));
 }

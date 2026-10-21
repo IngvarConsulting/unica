@@ -51,7 +51,6 @@ pub(super) fn run_receipt_scenario_with_completion_observer(
     run_receipt_scenario_with_control_observer(request, None, completion_observer)
 }
 
-#[cfg(test)]
 pub(super) fn run_receipt_scenario_with_control_for_test(
     request: &str,
     control: Arc<ReceiptScenarioControl<CanonicalInvocationHost>>,

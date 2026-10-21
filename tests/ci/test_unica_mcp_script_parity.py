@@ -348,7 +348,7 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        ensure_binary(REPO_ROOT, build_command=["cargo", "build", "--quiet", "--package", "unica-coder", "--bin", "unica"])
+        ensure_binary(REPO_ROOT)
         cls.unica_bin = binary_path(REPO_ROOT)
         if not cls.unica_bin.is_file():
             raise AssertionError(f"built unica binary not found: {cls.unica_bin}")

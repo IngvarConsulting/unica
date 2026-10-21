@@ -62,17 +62,14 @@ def nextest_junit(profile: str, selection: tuple[str, ...] | None = None) -> Pat
 # только `small`, второго вызова не получают, потому что пустой отбор у
 # nextest — отказ, а не зелёный ноль.
 #
-# Тем же вызовом идут приватные сценарии библиотеки: они гоняют демона через
-# помощники, и классификатор исходников их сокетов не видит, поэтому признак
-# включается только этому модулю. Один вызов на обе цели — одна сборка
-# `unica-coder` с признаком: план собирает её, прогон берёт готовой. Фильтр
-# nextest пересекается с `default-filter` профиля, как и прежде у каждого
-# из двух вызовов.
-SCENARIO_TEST_PREFIX = "infrastructure::receipt_scenario::tests::"
+# Проверки обвязки сценариев идут в том же бинаре: их тела живут в библиотеке
+# под признаком, а `#[test]` им приставляет контракт. Поэтому вызову не нужен
+# `--lib` — тестовая сборка всего `unica-coder` ради них. Библиотека
+# собирается один раз, обычной, для контракта и бинаря `unica`.
 LEDGER_FEATURE_SELECTION = (
     "-p", "unica-coder", "--features", "receipt-ledger-test-support",
-    "--lib", "--test", "daemon_receipt_ledger",
-    "-E", f"binary(daemon_receipt_ledger) | test(/^{SCENARIO_TEST_PREFIX}/)",
+    "--test", "daemon_receipt_ledger",
+    "-E", "binary(daemon_receipt_ledger)",
 )
 
 # A dependency's cfg(test) is not compiled by workspace tests. Its pinned
@@ -120,8 +117,8 @@ def surviving_product_report(os_name: str = os.name):
 
 def rust_selections(profile: str) -> list[tuple[str, ...]]:
     """Что отбирает каждый вызов nextest: весь workspace и, если ворота
-    принимают `medium` или `large`, одним вызовом контракт и приватные
-    сценарии ReceiptLedger."""
+    принимают `medium` или `large`, одним вызовом контракт ReceiptLedger
+    вместе с проверками его обвязки."""
     selections = [("--workspace",)]
     if set(ADMITTED[profile]) & {"medium", "large"}:
         selections.append(LEDGER_FEATURE_SELECTION)
@@ -255,14 +252,8 @@ def write_python_plan(profile: str, results: Path, runner: str, suite: str | Non
     return sum(1 for entry in entries if entry.get("ecosystem") == "python")
 
 
-def scenario_library_medium(selection: tuple[str, ...] | None, binary: str, name: str) -> bool:
-    return selection == LEDGER_FEATURE_SELECTION and binary == "unica-coder" and name.startswith(SCENARIO_TEST_PREFIX)
-
-
 def rust_case_medium(selection: tuple[str, ...] | None, binary: str, name: str) -> bool:
-    return scenario_library_medium(selection, binary, name) or (
-        selection == UREQ_RECYCLING_SELECTION and binary == "ureq" and name.startswith(UREQ_RECYCLING_PREFIX)
-    )
+    return selection == UREQ_RECYCLING_SELECTION and binary == "ureq" and name.startswith(UREQ_RECYCLING_PREFIX)
 
 
 def emit_rust(
@@ -322,6 +313,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--shard", type=int, default=1)
     parser.add_argument("--runners", default="[]", help="JSON runner matrix for complete inventory verification")
     parser.add_argument("--shadow", type=Path, help="shadow decision; mandatory selection remains full")
+    parser.add_argument("--baseline", type=Path, help="previous Rust inventory of the same configuration")
     parser.add_argument("--rust-matrix", choices=("build", "run"), help="print a lane matrix without compiling")
     args = parser.parse_args(argv)
     args.docs_only = args.docs_only == "true"
@@ -337,7 +329,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.phase == "verify":
             if args.results is None or args.sha is None:
                 parser.error("--phase verify requires --results and --sha")
-            print(json.dumps(ci_rust_lanes.verify_union(args.results, args.profile, json.loads(args.runners), args.sha), indent=2))
+            print(json.dumps(ci_rust_lanes.verify_union(args.results, args.profile, json.loads(args.runners), args.sha,
+                                                         ci_rust_lanes.read_baseline(args.baseline)), indent=2))
             return 0
         if args.rust_lane is None or args.prepared is None:
             parser.error("--phase build/run requires --rust-lane and --prepared")

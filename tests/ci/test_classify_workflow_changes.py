@@ -488,6 +488,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
         module = load_classifier_module()
         for path in (
             "scripts/ci/ci_rust_lanes.py", "scripts/ci/prepared_binary.py", "scripts/ci/ci_shadow_selector.py",
+            "scripts/ci/rust_inventory_baseline.py", "tests/ci/test_rust_inventory_baseline.py",
             "tests/ci/test_ci_rust_lanes.py", "tests/ci/test_ci_prepared_binary.py", "tests/ci/test_ci_shadow_selector.py",
         ):
             with self.subTest(path=path):

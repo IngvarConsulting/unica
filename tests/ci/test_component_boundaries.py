@@ -88,6 +88,58 @@ class ComponentBoundaryTests(unittest.TestCase):
             with self.subTest(owner=owner, target=target):
                 self.assertEqual(checker.edge_errors(owner, target, "dependencies"), [])
 
+    def test_dcs_family_and_its_codec_keep_their_own_boundary(self) -> None:
+        # Пилот семейного порта (#1826): семейство не видит свой кодек, раскладку,
+        # workspace, другие семейства и composition; кодек — только своё
+        # семейство и нейтральные порты. Workspace и кодек вместе видит лишь
+        # пакет межкомпонентных тестов семьи.
+        refused = (
+            ("unica-dcs", "unica-dcs-designer"),
+            ("unica-dcs", "unica-source-designer"),
+            ("unica-dcs", "unica-workspace"),
+            ("unica-dcs", "unica-coder"),
+            ("unica-dcs", "unica-forms"),
+            ("unica-templates", "unica-dcs"),
+            ("unica-dcs-designer", "unica-workspace"),
+            ("unica-dcs-designer", "unica-templates-designer"),
+            ("unica-dcs-designer", "unica-coder"),
+            ("unica-dcs-integration-tests", "unica-coder"),
+        )
+        for kind in ("dependencies", "build-dependencies", "dev-dependencies"):
+            for owner, target in refused:
+                with self.subTest(kind=kind, owner=owner, target=target):
+                    self.assertTrue(checker.edge_errors(owner, target, kind))
+        for owner, target, kind in (
+            ("unica-dcs", "unica-templates", "dependencies"),
+            ("unica-dcs-designer", "unica-dcs", "dependencies"),
+            ("unica-dcs-designer", "unica-source-designer", "dependencies"),
+            ("unica-coder", "unica-dcs-designer", "dependencies"),
+            ("unica-dcs-integration-tests", "unica-workspace", "dev-dependencies"),
+            ("unica-dcs-integration-tests", "unica-dcs-designer", "dev-dependencies"),
+        ):
+            with self.subTest(owner=owner, target=target, kind=kind):
+                self.assertEqual(checker.edge_errors(owner, target, kind), [])
+
+    def test_composition_selects_the_dcs_codec_in_one_place(self) -> None:
+        call = "let data = unica_dcs_designer::schema::parse_dcs_info_xml(&text, support)?;\n"
+        for path in (
+            "crates/unica-coder/src/infrastructure/native_operations/dcs.rs",
+            "crates/unica-coder/tests/dcs.rs",
+            "crates/unica-workspace/src/apply.rs",
+            "crates/unica-dcs/src/codec.rs",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(checker.codec_selection_errors(path, call))
+        for path in (
+            checker.CODEC_SELECTION,
+            "crates/unica-dcs-designer/src/codec.rs",
+            "crates/unica-dcs-integration-tests/tests/stand/mod.rs",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(checker.codec_selection_errors(path, call), [])
+        self.assertEqual(checker.codec_selection_errors(
+            "crates/unica-coder/src/lib.rs", "use unica_dcs::codec::DcsCodec;\n"), [])
+
     def test_target_specific_alias_cannot_hide_a_composition_backedge(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

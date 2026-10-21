@@ -2344,7 +2344,6 @@ fn storage_message(
 #[cfg(test)]
 mod tests {
 
-    #[cfg(feature = "receipt-ledger-test-support")]
     #[test]
     fn causal_observer_keeps_first_typed_io_cause_when_event_buffer_overflows() {
         let root = tempfile::tempdir().unwrap();

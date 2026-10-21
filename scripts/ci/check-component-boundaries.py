@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import re
 import tomllib
 
 FAMILIES = frozenset({"metadata", "forms", "roles", "dcs", "xdto", "templates", "bsl"})
@@ -19,6 +20,10 @@ ABSTRACTIONS = frozenset({"address", "source-contract", "operation-contract", "w
 WORKSPACE_DEPENDENCIES = frozenset({"address", "source-contract", "operation-contract", "work-control", "refusal", "execution-contract", "xml-format", "redaction"})
 COORDINATORS = frozenset({"operations", "bindings", "navigation", "code-intelligence", "diagnostics", "documentation"})
 CODEC_DEPENDENCIES = {"xdto": frozenset({"metadata-designer"})}
+# Families whose codec sits behind the family port (#1826). Product composition
+# selects the implementation in one module; everyone else calls the trait.
+PORTED_FAMILIES = frozenset({"dcs"})
+CODEC_SELECTION = "crates/unica-coder/src/infrastructure/family_codecs.rs"
 
 
 def edge_errors(owner: str, dependency: str, kind: str) -> list[str]:
@@ -98,6 +103,22 @@ def cycle_errors(graph: dict[str, set[str]], owner: str) -> list[str]:
     return errors
 
 
+def codec_selection_errors(path: str, text: str) -> list[str]:
+    """Rust source outside a family's codec and its integration tests names the
+    concrete codec only at the composition's selection point."""
+    if path == CODEC_SELECTION:
+        return []
+    errors = []
+    for family in sorted(PORTED_FAMILIES):
+        if path.startswith((f"crates/unica-{family}-designer/", f"crates/unica-{family}-integration-tests/")):
+            continue
+        crate = f"unica_{family}_designer"
+        for number, line in enumerate(text.splitlines(), 1):
+            if re.search(rf"\b{crate}\b", line):
+                errors.append(f"{path}:{number}: {crate} is selected only in {CODEC_SELECTION}; call the family port")
+    return errors
+
+
 def manifests(root: Path) -> dict[str, tuple[Path, dict]]:
     document = tomllib.loads((root / "Cargo.toml").read_text())
     result: dict[str, tuple[Path, dict]] = {}
@@ -140,6 +161,10 @@ def check(root: Path) -> list[str]:
                         graph[owner].add(name)
                     diagnostics.extend(edge_errors(owner, name, kind))
     diagnostics.extend(cycle_errors(graph, "unica-workspace"))
+    for source in sorted((root / "crates").glob("*/**/*.rs")):
+        relative = source.relative_to(root).as_posix()
+        if "/target/" not in relative:
+            diagnostics.extend(codec_selection_errors(relative, source.read_text(encoding="utf-8")))
     return sorted(set(diagnostics))
 
 
