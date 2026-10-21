@@ -2679,6 +2679,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "unica-dcs-integration-tests"
+version = "0.14.0-rc.1"
+dependencies = [
+ "roxmltree",
+ "serde_json",
+ "tempfile",
+ "unica-dcs",
+ "unica-dcs-designer",
+ "unica-source-contract",
+ "unica-source-designer",
+ "unica-work-control",
+ "unica-workspace",
+]
+
+[[package]]
 name = "unica-diagnostics"
 version = "0.14.0-rc.1"
 dependencies = [
@@ -2707,10 +2722,12 @@ dependencies = [
  "percent-encoding",
  "rust-stemmers",
  "serde_json",
+ "sha2",
  "tempfile",
  "toml",
  "unica-configuration",
  "unica-documentation",
+ "unica-metadata",
  "unica-network",
  "unica-work-control",
  "zip",
@@ -3002,6 +3019,7 @@ name = "unica-source-integration-tests"
 version = "0.14.0-rc.1"
 dependencies = [
  "tempfile",
+ "unica-metadata-designer",
  "unica-source-contract",
  "unica-source-designer",
  "unica-work-control",

@@ -6722,40 +6722,52 @@ fn main() {
         audit_actor_read_source_capability_api(source).unwrap_or_else(|error| panic!("{error}"));
         audit_ordered_search_names(include_str!("ordered_search_names.rs"))
             .unwrap_or_else(|error| panic!("{error}"));
-        actor_read_source_capability_ast_audit_rejects_unordered_literal_enumeration();
-        ordered_search_names_audit_rejects_ambient_or_foreign_listing();
-        actor_read_source_capability_sibling_field_privacy_is_enforced_by_rustc();
-        actor_read_source_capability_audit_rejects_sibling_visible_forge_and_mutator();
-        actor_read_source_capability_ast_audit_rejects_split_sibling_visibility();
-        actor_read_source_capability_ast_audit_rejects_multiline_derive_clone();
-        actor_read_source_capability_ast_audit_rejects_multiline_manual_clone();
-        actor_read_source_capability_ast_audit_rejects_multiline_extra_inherent_impl();
-        actor_read_source_capability_ast_audit_rejects_macro_generated_api();
-        actor_read_source_capability_ast_audit_rejects_opaque_item_macro_invocation();
-        actor_read_source_capability_ast_audit_rejects_opaque_const_expression_macro();
-        actor_read_source_capability_ast_audit_rejects_no_arg_opaque_const_expression_macro();
-        actor_read_source_capability_ast_audit_rejects_opaque_static_and_statement_macros();
-        actor_read_source_capability_ast_audit_rejects_opaque_macro_nested_in_inert_allowlist();
-        actor_read_source_capability_ast_audit_rejects_inert_macro_import_rename_or_glob_shadow();
-        review_audit_rejects_opaque_attribute_macro_invocation();
-        actor_read_source_capability_ast_audit_rejects_custom_derive_macro();
-        actor_read_source_capability_ast_audit_rejects_attribute_macro_evasion_shapes();
-        actor_read_source_capability_procedural_macros_can_reopen_sibling_api();
-        actor_read_source_capability_ast_audit_rejects_type_alias_impl();
-        actor_read_source_capability_ast_audit_rejects_defaulted_generic_alias_impl();
-        actor_read_source_capability_ast_audit_rejects_sibling_visible_free_factory();
-        actor_read_source_capability_ast_audit_rejects_nested_production_factory();
-        actor_read_source_capability_ast_audit_rejects_foreign_impl_signature_escape();
-        actor_read_source_capability_ast_audit_rejects_associated_type_escape();
-        actor_read_source_capability_ast_audit_rejects_item_field_escape();
-        actor_read_source_capability_ast_audit_rejects_hardcoded_platform_profile();
-        actor_read_source_capability_ast_audit_rejects_hardcoded_source_kind();
-        actor_read_source_capability_ast_audit_rejects_replenished_deadline();
-        actor_read_source_capability_ast_audit_rejects_side_effecting_profile_error_closure();
-        actor_read_source_capability_ast_audit_rejects_substituted_construction_fields();
-        actor_read_source_capability_ast_audit_rejects_issuance_visibility_and_lazy_substitution();
-        actor_read_source_capability_issuer_privacy_is_enforced_by_rustc();
-        actor_read_source_capability_ast_audit_skips_only_exact_cfg_test_scope();
+        // Проверки независимы и в сумме идут секунды: каждая разбирает
+        // исходник заново, часть зовёт rustc. Параллельно, с той же паникой (#1920).
+        let checks: [fn(); 34] = [
+            actor_read_source_capability_ast_audit_rejects_unordered_literal_enumeration,
+            ordered_search_names_audit_rejects_ambient_or_foreign_listing,
+            actor_read_source_capability_sibling_field_privacy_is_enforced_by_rustc,
+            actor_read_source_capability_audit_rejects_sibling_visible_forge_and_mutator,
+            actor_read_source_capability_ast_audit_rejects_split_sibling_visibility,
+            actor_read_source_capability_ast_audit_rejects_multiline_derive_clone,
+            actor_read_source_capability_ast_audit_rejects_multiline_manual_clone,
+            actor_read_source_capability_ast_audit_rejects_multiline_extra_inherent_impl,
+            actor_read_source_capability_ast_audit_rejects_macro_generated_api,
+            actor_read_source_capability_ast_audit_rejects_opaque_item_macro_invocation,
+            actor_read_source_capability_ast_audit_rejects_opaque_const_expression_macro,
+            actor_read_source_capability_ast_audit_rejects_no_arg_opaque_const_expression_macro,
+            actor_read_source_capability_ast_audit_rejects_opaque_static_and_statement_macros,
+            actor_read_source_capability_ast_audit_rejects_opaque_macro_nested_in_inert_allowlist,
+            actor_read_source_capability_ast_audit_rejects_inert_macro_import_rename_or_glob_shadow,
+            review_audit_rejects_opaque_attribute_macro_invocation,
+            actor_read_source_capability_ast_audit_rejects_custom_derive_macro,
+            actor_read_source_capability_ast_audit_rejects_attribute_macro_evasion_shapes,
+            actor_read_source_capability_procedural_macros_can_reopen_sibling_api,
+            actor_read_source_capability_ast_audit_rejects_type_alias_impl,
+            actor_read_source_capability_ast_audit_rejects_defaulted_generic_alias_impl,
+            actor_read_source_capability_ast_audit_rejects_sibling_visible_free_factory,
+            actor_read_source_capability_ast_audit_rejects_nested_production_factory,
+            actor_read_source_capability_ast_audit_rejects_foreign_impl_signature_escape,
+            actor_read_source_capability_ast_audit_rejects_associated_type_escape,
+            actor_read_source_capability_ast_audit_rejects_item_field_escape,
+            actor_read_source_capability_ast_audit_rejects_hardcoded_platform_profile,
+            actor_read_source_capability_ast_audit_rejects_hardcoded_source_kind,
+            actor_read_source_capability_ast_audit_rejects_replenished_deadline,
+            actor_read_source_capability_ast_audit_rejects_side_effecting_profile_error_closure,
+            actor_read_source_capability_ast_audit_rejects_substituted_construction_fields,
+            actor_read_source_capability_ast_audit_rejects_issuance_visibility_and_lazy_substitution,
+            actor_read_source_capability_issuer_privacy_is_enforced_by_rustc,
+            actor_read_source_capability_ast_audit_skips_only_exact_cfg_test_scope,
+        ];
+        std::thread::scope(|scope| {
+            let running: Vec<_> = checks.iter().map(|check| scope.spawn(check)).collect();
+            for check in running {
+                if let Err(panic) = check.join() {
+                    std::panic::resume_unwind(panic);
+                }
+            }
+        });
     }
 
     #[test]
@@ -17885,7 +17897,14 @@ mod finite_deadline_guard {
                 if is_test_source(&relative) {
                     continue;
                 }
-                let calls = finite_deadline_calls(&std::fs::read_to_string(&path).unwrap());
+                let source = std::fs::read_to_string(&path).unwrap();
+                // Вызов возможен только через `ProviderDeadline` или его
+                // псевдоним из `use` того же файла: без этого имени разбирать
+                // файл нечего, а разбор всего workspace стоил секунды (#1920).
+                if !source.contains("ProviderDeadline") {
+                    continue;
+                }
+                let calls = finite_deadline_calls(&source);
                 if calls > 0 {
                     found.insert(relative, calls);
                 }

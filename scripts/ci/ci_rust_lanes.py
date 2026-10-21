@@ -384,7 +384,7 @@ def validate_manifest(document: dict, *, profile: str, host: str, lane: str, sha
         raise ValueError("missing or malformed archive test binary inventory")
 
 
-def run_archive(root: Path, prepared: Path, destination: Path, lane: str, profile: str, host: str, index: int, line: str | None, shadow: Path | None = None) -> int:
+def prepared_archive(root: Path, prepared: Path, lane: str, profile: str, host: str) -> tuple[dict, dict, Path]:
     document = json.loads((prepared / "lane.json").read_text())
     current = prepared_binary.identity(root)
     validate_manifest(document, profile=profile, host=host, lane=lane, sha=current["sha"])
@@ -395,6 +395,11 @@ def run_archive(root: Path, prepared: Path, destination: Path, lane: str, profil
     archive = prepared / "tests.tar.zst"
     if prepared_binary.digest(archive) != document["archiveSha256"] or archive.stat().st_size != document["archiveBytes"]:
         raise ValueError("test archive hash or size mismatch")
+    return document, current, archive
+
+
+def run_archive(root: Path, prepared: Path, destination: Path, lane: str, profile: str, host: str, index: int, line: str | None, shadow: Path | None = None) -> int:
+    document, current, archive = prepared_archive(root, prepared, lane, profile, host)
     run_options = {"env": fixture_binary_environment(root, document)} if lane == "ordinary" else {}
     if not 1 <= index <= len(document["shards"]):
         raise ValueError("invalid shard index")
@@ -479,6 +484,94 @@ def run_archive(root: Path, prepared: Path, destination: Path, lane: str, profil
     return completed.returncode
 
 
+# A pull request runs only small tests; medium first ran in the queue. The PR's
+# ordinary archive already holds medium tests, so a Linux job runs them from
+# the same bytes with the queue's nextest profile (small and medium, never
+# large), narrowed to the shadow's affected packages. The queue keeps the full
+# mandatory set; this is an addition, never a replacement.
+MEDIUM_PROFILE = "queue"
+MEDIUM_RUNNER = "ubuntu-latest"
+MEDIUM_NO_TESTS = "affected packages have no tests in the ordinary archive"
+
+
+def medium_selection(decision: dict | None, binaries: list[str], sha: str) -> tuple[str | None, list[str], str]:
+    """Return the nextest expression (None: every medium test), packages and reason."""
+    if decision is None:
+        return None, [], "shadow selection unavailable; all medium tests"
+    if decision.get("headSha") != sha:
+        return None, [], "shadow selection belongs to another revision; all medium tests"
+    try:
+        expression = ci_shadow_selector.filterset(decision)
+    except ValueError as error:
+        return None, [], f"invalid shadow selection ({error}); all medium tests"
+    if expression is None:
+        return None, [], "shadow selection is full; all medium tests"
+    available = {binary.split("::", 1)[0] for binary in binaries}
+    packages = sorted(available.intersection(decision["packages"]))
+    if not packages:
+        return "", [], MEDIUM_NO_TESTS
+    return ci_shadow_selector.filterset({**decision, "packages": packages}), packages, "affected packages and their reverse consumers"
+
+
+def run_medium(root: Path, prepared: Path, destination: Path, host: str, shadow: Path | None) -> int:
+    if host != MEDIUM_RUNNER:
+        raise ValueError("medium tests of a pull request run on Linux only")
+    document, current, archive = prepared_archive(root, prepared, "ordinary", "pr", host)
+    decision = json.loads(shadow.read_text()) if shadow is not None and shadow.is_file() else None
+    expression, packages, reason = medium_selection(decision, document["binaries"], current["sha"])
+    destination.mkdir(parents=True, exist_ok=False)
+    plan: list[dict] = []
+    if expression != "":
+        listed, _ = timed(reuse_command("list", root, archive, "ordinary", MEDIUM_PROFILE, candidate=expression), root, capture=True)
+        listed.check_returncode()
+        plan = inventory(json.loads(listed.stdout))
+        if not plan and expression is not None:
+            reason = MEDIUM_NO_TESTS  # archived binaries of these packages hold only large tests
+    status = {
+        "schemaVersion": 1, "sha": current["sha"], "profile": "pr", "runner": host, "lane": "ordinary",
+        "shard": 1, "archiveSha256": document["archiveSha256"], "nextestProfile": MEDIUM_PROFILE,
+        "expression": expression, "packages": packages, "reason": reason, "plan": plan,
+        "records": [], "frameworkAnnotations": [], "exitCode": 0, "executionSeconds": 0,
+        "runId": os.environ.get("GITHUB_RUN_ID"), "attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+    }
+    if any(not case["ignored"] for case in plan):
+        junit = root / "target/nextest" / MEDIUM_PROFILE / "junit.xml"
+        junit.unlink(missing_ok=True)
+        command = reuse_command("run", root, archive, "ordinary", MEDIUM_PROFILE, candidate=expression)
+        completed, seconds = timed(command, root, env=fixture_binary_environment(root, document))
+        status.update(exitCode=completed.returncode, executionSeconds=seconds)
+        if junit.is_file():
+            _, status["records"], status["frameworkAnnotations"] = assigned_junit(junit, destination, document, plan)
+    write(destination / "medium.json", status)
+    validate_medium(document, status)
+    return status["exitCode"]
+
+
+def validate_medium(manifest: dict, medium: dict) -> None:
+    if medium.get("runner") != MEDIUM_RUNNER or medium.get("nextestProfile") != MEDIUM_PROFILE:
+        raise ValueError("medium tests ran on another runner or nextest profile")
+    expression, packages, plan = medium.get("expression"), medium.get("packages"), medium.get("plan")
+    if not isinstance(packages, list) or not isinstance(plan, list):
+        raise ValueError("malformed medium selection")
+    # The recorded expression must be the one the packages imply: all medium
+    # (None, no packages), nothing archived (""), or exactly these packages.
+    implied = None if not packages and expression is None else "" if not packages else \
+        ci_shadow_selector.filterset({"mode": "affected", "mandatoryMode": "full", "affectedAdmission": False, "packages": packages})
+    if expression != implied:
+        raise ValueError("medium expression differs from its selected packages")
+    if not plan and not (medium.get("reason") == MEDIUM_NO_TESTS and expression is not None):
+        raise ValueError("medium plan is unexpectedly empty")
+    # The queue profile includes the pr profile: every small case of the
+    # selected packages that the pull request planned must be in the medium plan.
+    selected = None if expression is None else set(packages)
+    planned = {case_id(case) for case in plan}
+    missing = [case_id(case) for case in manifest["inventory"]
+               if (selected is None or case["binary"].split("::", 1)[0] in selected) and case_id(case) not in planned]
+    if missing:
+        raise ValueError(f"medium plan omits {len(missing)} planned case(s) of its packages, e.g. {missing[0]}")
+    validate_result({**manifest, "shards": [plan]}, medium, 1)
+
+
 def validate_result(manifest: dict, result: dict, index: int) -> None:
     expected = (manifest["identity"]["sha"], manifest["profile"], manifest["runner"], manifest["lane"], index, manifest["archiveSha256"])
     actual = tuple(result.get(key) for key in ("sha", "profile", "runner", "lane", "shard", "archiveSha256"))
@@ -526,23 +619,41 @@ def same_selection(first: str, second: str) -> bool:
     return shape(first) == shape(second)
 
 
+def binary_of(case: str, binaries: list[str]) -> str | None:
+    # Binary ids nest (`unica-coder`, `unica-coder::daemon_receipt_ledger`):
+    # a case belongs to the longest id it starts with.
+    return max((binary for binary in binaries if case.startswith(binary + "::")), key=len, default=None)
+
+
+def explained_case(case: str, binaries: list[str], gone: set[str], tests: list[str]) -> bool:
+    """A lost case is explained by its own vanished target or a declaration naming that target."""
+    binary = binary_of(case, binaries)
+    if binary is None or binary in gone:
+        return binary is not None
+    return any(binary_of(pattern, binaries) == binary
+               and (case.startswith(pattern[:-1]) if pattern.endswith("*") else case == pattern)
+               for pattern in tests)
+
+
 def compare_inventory(baseline: dict, current: dict) -> tuple[list[str], list[str], dict]:
-    """Return blocking losses, Windows-advisory losses and the visible case drift."""
+    """Return blocking losses, Windows-advisory losses and the explained drift."""
     explanations = baseline.get("explanations")
     if (not isinstance(explanations, dict) or not isinstance(explanations.get("reset"), bool)
-        or not isinstance(explanations.get("removedTargets"), list)
-        or any(not isinstance(item, str) or not item for item in explanations["removedTargets"])):
+        or any(not isinstance(explanations.get(key), list)
+               or any(not isinstance(item, str) or not item for item in explanations[key])
+               for key in ("removedTargets", "removedTests"))):
         raise ValueError("malformed previous inventory explanations")
     previous = baseline.get("inventory")
     removed = set(explanations["removedTargets"])
+    tests = list(explanations["removedTests"])
     drift = {"source": baseline.get("source"), "reset": explanations["reset"],
-             "removedTargets": sorted(removed), "removedCases": {}}
+             "declaredBy": explanations.get("declaredBy", {}), "removedTargets": sorted(removed),
+             "removedTests": sorted(tests), "removedCases": {}}
     if previous is None:
-        # The main line always has a verified ancestor; release lines and
-        # manual runs may outlive the artifact retention and only report it.
-        if explanations["reset"] or current["profile"] not in ("pr", "queue"):
+        if explanations["reset"]:
             return [], [], drift
-        return ["no previous inventory of this configuration; declare 'Rust-inventory-baseline: reset' in a commit message"], [], drift
+        return ["no previous inventory of this configuration; declare 'Rust-inventory-baseline: reset' "
+                "in the description of the pull request under test (for a push or tag: the one named by HEAD)"], [], drift
     if previous.get("schemaVersion") != 1 or not isinstance(previous.get("configurations"), list):
         raise ValueError("malformed previous inventory")
     problems, advisory = [], []
@@ -552,21 +663,31 @@ def compare_inventory(baseline: dict, current: dict) -> tuple[list[str], list[st
     present = {(item["runner"], item["lane"]): item for item in current["configurations"]}
     for old in previous["configurations"]:
         key = (old["runner"], old["lane"])
+        label = f"{key[0]}/{key[1]}"
         target = advisory if current["profile"] == "large" and old["runner"] == "windows-latest" else problems
         new = present.get(key)
         if new is None:
             if same_profile or old["lane"] not in lanes(previous["profile"]):
-                target.append(f"{key[0]}/{key[1]}: configuration and its results disappeared since the previous inventory")
+                target.append(f"{label}: configuration and its results disappeared since the previous inventory")
             continue
+        gone = (set(old["binaries"]) - set(new["binaries"])) & removed
         for binary in sorted(set(old["binaries"]) - set(new["binaries"]) - removed):
-            target.append(f"{key[0]}/{key[1]}: test target {binary} disappeared; declare 'Removes-test-target: {binary}' if intended")
-        if same_profile:
-            for binary, count in sorted(old["selected"].items()):
-                if count and binary in new["binaries"] and not new["selected"].get(binary) and binary not in removed:
-                    target.append(f"{key[0]}/{key[1]}: selection of test target {binary} became empty")
-            lost = sorted(set(old["cases"]) - set(new["cases"]))
-            if lost:
-                drift["removedCases"][f"{key[0]}/{key[1]}"] = lost
+            target.append(f"{label}: test target {binary} disappeared; declare 'Removes-test-target: {binary}' "
+                          "in the pull request description if intended")
+        if not same_profile:
+            continue
+        lost = sorted(set(old["cases"]) - set(new["cases"]))
+        unexplained = [case for case in lost if not explained_case(case, old["binaries"], gone, tests)]
+        if lost:
+            drift["removedCases"][label] = lost
+        for binary, count in sorted(old["selected"].items()):
+            if (count and binary in new["binaries"] and not new["selected"].get(binary)
+                and any(binary_of(case, old["binaries"]) == binary for case in unexplained)):
+                target.append(f"{label}: selection of test target {binary} became empty")
+        if unexplained:
+            shown = ", ".join(unexplained[:20]) + (f" and {len(unexplained) - 20} more" if len(unexplained) > 20 else "")
+            target.append(f"{label}: {len(unexplained)} test result(s) disappeared: {shown}; "
+                          "declare 'Removes-test: <binary-id>::<name or prefix*>' in the pull request description if intended")
     if explanations["reset"]:
         drift["resetSuppressed"] = problems + advisory
         return [], [], drift
@@ -598,6 +719,9 @@ def verify_union(directory: Path, profile: str, hosts: list[str], sha: str, base
                     problems.append(f"{job} did not finish as {expected}")
         if jobs.get("shadow-component-selection", {}).get("result") != "success":
             problems.append("shadow selection did not finish successfully")
+        expected = "success" if profile == "pr" else "skipped"
+        if jobs.get("run-rust-ordinary-medium", {}).get("result") != expected:
+            problems.append(f"run-rust-ordinary-medium did not finish as {expected}")
     expected_configs = {(host, lane) for host in hosts for lane in lanes(profile)}
     if any((item.get("runner"), item.get("lane")) not in expected_configs for item in manifests + results):
         raise ValueError("unexpected runner or lane in the collected inventory")
@@ -627,6 +751,26 @@ def verify_union(directory: Path, profile: str, hosts: list[str], sha: str, base
             # Windows large is advisory until its known failures (#1523) are fixed.
             target = advisory if profile == "large" and host == "windows-latest" else problems
             target.append(f"{host}/{lane}: {error}")
+    mediums = [json.loads(path.read_text()) for path in directory.rglob("medium.json")]
+    if profile == "pr" and (mediums or os.environ.get("CI_LANE_JOB_RESULTS")):
+        try:
+            # Any collected ordinary plan: a failed small shard must not hide the medium outcome.
+            ordinary = [item for item in manifests if (item.get("runner"), item.get("lane")) == (MEDIUM_RUNNER, "ordinary")]
+            if len(mediums) != 1 or len(ordinary) != 1:
+                raise ValueError("missing or duplicate medium result or its ordinary plan")
+            # Recompute the selection from the shadow decision this run published:
+            # a wrong intersection must not pass as "no tests".
+            decisions = [json.loads(path.read_text()) for path in directory.rglob("selection.json")]
+            if len(decisions) > 1:
+                raise ValueError("duplicate shadow selection")
+            expected = medium_selection(decisions[0] if decisions else None, ordinary[0]["binaries"], sha)
+            if (mediums[0].get("expression"), mediums[0].get("packages")) != expected[:2]:
+                raise ValueError("medium selection differs from the shadow decision of this run")
+            validate_medium(ordinary[0], mediums[0])
+        except (KeyError, TypeError, ValueError) as error:
+            problems.append(f"{MEDIUM_RUNNER}/ordinary medium: {error}")
+    elif mediums:
+        raise ValueError("medium results outside a pull request")
     summary = inventory_summary(verified, profile=profile, sha=sha, jobs=job_names)
     write(directory / "inventory.json", summary)
     drift = None
@@ -638,7 +782,9 @@ def verify_union(directory: Path, profile: str, hosts: list[str], sha: str, base
         problems.append("the plan was not compared with the previous inventory")
     report = {"sha": sha, "profile": profile, "mandatoryComplete": not problems,
               "fullMatrixPassed": not problems and not advisory, "errors": problems,
-              "advisoryFailures": advisory, "affectedAdmission": False, "previousInventory": drift}
+              "advisoryFailures": advisory, "affectedAdmission": False, "previousInventory": drift,
+              "medium": [{key: item.get(key) for key in ("reason", "packages", "exitCode")} | {"tests": len(item.get("plan", []))}
+                         for item in mediums]}
     write(directory / "verification.json", report)
     if problems:
         raise ValueError("; ".join(problems))
@@ -647,7 +793,7 @@ def verify_union(directory: Path, profile: str, hosts: list[str], sha: str, base
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("matrix", "build", "run", "verify"))
+    parser.add_argument("action", choices=("matrix", "build", "run", "medium", "verify"))
     parser.add_argument("--repo-root", type=Path, default=ROOT)
     parser.add_argument("--profile", required=True, choices=tuple(ADMITTED))
     parser.add_argument("--lane", choices=LANES)
@@ -669,6 +815,8 @@ def main() -> int:
                                       read_baseline(args.baseline)), indent=2))
     elif args.action == "build":
         build(args.repo_root.resolve(), args.destination, args.lane, args.profile, args.runner, args.line)
+    elif args.action == "medium":
+        return run_medium(args.repo_root.resolve(), args.prepared, args.destination, args.runner, args.shadow)
     else:
         return run_archive(args.repo_root.resolve(), args.prepared, args.destination, args.lane, args.profile, args.runner, args.shard, args.line, args.shadow)
     return 0

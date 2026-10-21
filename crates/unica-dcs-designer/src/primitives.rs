@@ -431,15 +431,7 @@ fn remove_ranges(xml_text: &mut String, mut ranges: Vec<Range<usize>>) {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Target {
-    pub datasets: Vec<String>,
-    pub variant: String,
-    /// Цепочка имён элементов структуры варианта: `Setting.V.Item.A.Item.B`
-    /// даёт `["A", "B"]` (#1357).
-    pub structure: Vec<String>,
-    pub terminal: Option<String>,
-}
+pub use unica_dcs::edit::Target;
 /// Набор данных, который называет адрес: `DataSet.D[.DataSet.M]`.
 fn dataset<'a, 'i>(root: Node<'a, 'i>, target: &Target) -> Result<Node<'a, 'i>, String> {
     let path = &target.datasets;

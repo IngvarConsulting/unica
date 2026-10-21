@@ -117,6 +117,39 @@ pub(crate) struct XdtoExecution<T> {
     pub(crate) data: Option<T>,
 }
 
+/// Writer findings retain their original severity. Only the read-only check
+/// distinguishes the limits of Unica's profile from schema defects.
+pub(crate) fn xdto_check_outcome(
+    data: unica_xdto::results::XdtoInfoData,
+) -> crate::application::v13::check::NativeCheckOutcome {
+    use unica_xdto::results::XdtoLocation;
+    crate::application::v13::check::NativeCheckOutcome::from_source_findings(
+        data.findings.into_iter().map(|finding| {
+            let limitation = finding.code == "unsupported_node";
+            let position = match finding.location {
+                XdtoLocation::Unaddressable {
+                    body_byte_range, ..
+                } => format!(
+                    "byte offset {} (0-based, BOM excluded)",
+                    body_byte_range.start
+                ),
+                XdtoLocation::Addressed { metadata_path, .. } => metadata_path,
+            };
+            let message = format!(
+                "{}{}: {}",
+                if limitation {
+                    "Unica profile limitation; "
+                } else {
+                    ""
+                },
+                position,
+                finding.message
+            );
+            (!limitation, finding.code, message)
+        }),
+    )
+}
+
 pub(crate) fn invoke_read(
     operation: &str,
     _tool: &str,

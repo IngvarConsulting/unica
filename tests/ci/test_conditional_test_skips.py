@@ -1,9 +1,9 @@
 """Тест без своего стенда или родителя виден пропущенным, а не пройденным.
 
-Раньше тесты против справки платформы (`UNICA_PLATFORM_HELP_DIR`), живой
-площадки вендора (`UNICA_KB1CI_LIVE`) и дочерние процессы-помощники при
-отсутствии переменной печатали строку или молча выходили через `return`,
-и очередь записывала их PASS, ничего не проверив (#1838). Теперь такой тест
+Раньше тесты против справки платформы (`UNICA_PLATFORM_HELP_DIR`) и дочерние
+процессы-помощники при отсутствии переменной печатали строку или молча
+выходили через `return`, и очередь записывала их PASS, ничего не проверив
+(#1838). Теперь такой тест
 помечен `#[ignore = "..."]`: в отчёте очереди он `skipped` с причиной, а
 исполняется на стенде или из родителя через `--ignored`. Без переменной он
 падает, а не проходит пустым.
@@ -33,7 +33,6 @@ SOURCE_ROOT = REPO_ROOT / "crates"
 # Переменная стенда → единственный helper, который её читает.
 STAND_SWITCHES = {
     "UNICA_PLATFORM_HELP_DIR": "platform_help_dir",
-    "UNICA_KB1CI_LIVE": "live_kb_switch",
 }
 
 FUNCTION = re.compile(
@@ -348,14 +347,14 @@ fn bypass() {
         self.assertTrue(any("bypass passes empty" in problem for problem in problems), problems)
         wrapper = IGNORED + '''
 fn installed() -> Option<String> {
-    option_env!("UNICA_KB1CI_LIVE").map(str::to_string)
+    option_env!("UNICA_PLATFORM_HELP_DIR").map(str::to_string)
 }
 '''
         self.assertEqual(violations(wrapper, "fixture"),
-                         ["fixture: UNICA_KB1CI_LIVE is named outside live_kb_switch()"])
+                         ["fixture: UNICA_PLATFORM_HELP_DIR is named outside platform_help_dir()"])
 
     def test_comments_and_ignore_reasons_may_name_the_variable(self) -> None:
-        text = "// UNICA_KB1CI_LIVE enables the live check\n" + IGNORED
+        text = "// UNICA_PLATFORM_HELP_DIR enables the stand check\n" + IGNORED
         self.assertEqual(violations(text, "fixture"), [])
 
 
@@ -492,7 +491,6 @@ class RepositoryTests(unittest.TestCase):
                 if is_ignored(item) and re.search(r"env::var(?:_os)?\(", item["body"]):
                     ignored_helpers += 1
         self.assertGreaterEqual(callers["platform_help_dir"], 8)
-        self.assertGreaterEqual(callers["live_kb_switch"], 1)
         self.assertGreaterEqual(ignored_helpers, 10)
 
 

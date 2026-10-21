@@ -22,6 +22,8 @@ import tempfile
 from pathlib import Path
 
 MANIFEST_ENV = "UNICA_PREPARED_BINARY_MANIFEST"
+# Cargo target directory of the CI product build; the workflow caches this path.
+PRODUCT_TARGET = Path(".build/ci-product-target")
 SCHEMA = 1
 ORDINARY_FEATURES = ["default"]
 # One local build per process and checkout; CI never reaches it.
@@ -142,7 +144,7 @@ def build(root: Path, destination: Path) -> Path:
         raise ValueError(f"prepared destination already exists: {destination}")
     before = identity(root)
     # This target directory belongs exclusively to the ordinary producer.
-    target = root / ".build" / "ci-product-target"
+    target = root / PRODUCT_TARGET
     command = ["cargo", "build", "--locked", "-p", "unica-coder", "--bin", "unica",
                "--target", before["target"], "--target-dir", str(target), "--message-format", "json"]
     completed = subprocess.run(command, cwd=root, text=True, stdout=subprocess.PIPE, check=True)

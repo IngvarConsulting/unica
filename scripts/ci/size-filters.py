@@ -51,6 +51,31 @@ MEASURED_MEDIUM_CASES = (
         "unica_project_health",
         "inspection::layout::tests::health_source_layout_keeps_all_defaulted_rows_and_their_real_ambiguity",
     ),
+    # Библиотечные проверки от 3 с в ворота `pr`: PR-прогон 39649205116,
+    # ubuntu, 21.10.2026. Вместе ~150 с из ~330 с суммарного (не настенного)
+    # времени тестов PR; настенная фаза исполнения тогда шла 92 с.
+    ("unica-coder", "unica_coder", "infrastructure::daemon::v13_can_honesty_tests::honest_can_on_the_main_corpus_workspace"),
+    ("unica-coder", "unica_coder", "infrastructure::daemon::v13_can_honesty_tests::honest_can_on_the_resolve_workspace"),
+    ("unica-coder", "unica_coder", "infrastructure::daemon::v13_can_honesty_tests::honest_can_on_the_code_and_extension_workspace"),
+    ("unica-coder", "unica_coder", "infrastructure::daemon::v13_can_honesty_tests::honest_can_on_the_dcs_workspace"),
+    ("unica-coder", "unica_coder", "infrastructure::daemon::v13_can_honesty_tests::honest_can_on_the_mxl_workspace"),
+    ("unica-coder", "unica_coder", "infrastructure::daemon::v13_can_honesty_tests::honest_can_on_the_predefined_workspace"),
+    ("unica-coder", "unica_coder", "infrastructure::daemon::v13_can_honesty_tests::honest_can_on_external_sources"),
+    ("unica-execution", "unica_execution", "receipt_store::tests::default_recovery_completes_after_former_automatic_timeout"),
+    ("unica-coder", "unica_coder", "infrastructure::native_operations::apply_families::metadata::tests::contract_shape_tests::nested_type_and_position_shapes_reach_each_typed_member_reader"),
+    ("unica-execution", "unica_execution", "lifecycle_link_store::tests::real_snapshot_over_8mib_can_reopen_mutate"),
+    ("unica-coder", "unica_coder", "infrastructure::native_operations::apply_families::metadata::tests::member_operation_contracts_and_the_planner_agree_on_structure"),
+    ("unica-coder", "unica_coder", "interfaces::task_projection::tests::error_fallback_is_bounded_without_losing_structured_diagnostics"),
+    ("unica-coder", "unica_coder", "infrastructure::native_operations::apply_families::metadata::tests::contract_shape_tests::all_twenty_one_member_shapes_match_the_productive_parser_without_source_writes"),
+    ("unica-execution", "unica_execution", "store::file_tests::raw_frame_exact_result_bound_reopens_and_rejects_corruption"),
+    ("unica-coder", "unica_coder", "application::v13::view::tests::actual_cursor_size_is_reserved_for_late_items_and_metadata"),
+    ("unica-coder", "unica_coder", "infrastructure::native_operations::apply_families::metadata::tests::contract_shape_tests::fill_shape_uses_the_same_owner_and_tabular_context_as_the_productive_reader"),
+    ("unica-coder", "unica_coder", "infrastructure::daemon::server::invocation_service::registration_cache_tests::logical_read_retains_root_artifacts_across_calls_and_isolates_sources"),
+    ("unica-coder", "unica_coder", "infrastructure::daemon::tests::canonical_invocation_authority_keeps_root_capabilities_without_a_tree_revision"),
+    ("unica-execution", "unica_execution", "lifecycle_link_store::tests::production_links_reserve_and_materialize_past_4096_and_reopen"),
+    ("unica-coder", "unica_coder", "infrastructure::v13_read::tests::named_external_owner_view_has_no_hidden_eight_mib_descriptor_fallback"),
+    ("unica-coder", "unica_coder", "infrastructure::daemon::tests::injected_hidden_v13_service_executes_real_view_and_find_through_actor_capabilities"),
+    ("unica-coder", "unica_coder", "infrastructure::daemon::tests::daemon_executes_one_canonical_invocation_and_poll_cancel_never_relaunches_it"),
 )
 
 

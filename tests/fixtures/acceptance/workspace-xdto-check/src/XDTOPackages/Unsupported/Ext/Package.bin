@@ -1,0 +1,5 @@
+﻿<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:p="urn:sample" targetNamespace="urn:sample">
+<valueType name="Код" base="xs:string" variety="Atomic"><enumeration value="a"/><enumeration value="b"/></valueType>
+<objectType name="Record" mystery="yes"><property name="Code" type="p:Код" lowerBound="0" upperBound="3"/><property name="Nested"><typeDef xsi:type="ObjectType"><property name="Value" type="xs:string"/></typeDef></property></objectType>
+<objectType name="Envelope"><property name="Payload"><typeDef xsi:type="ValueType" base="xs:string"><enumeration value="x"/></typeDef></property></objectType>
+</package>
