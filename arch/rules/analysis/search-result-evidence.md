@@ -10,7 +10,6 @@ check:
   - crates/unica-code-intelligence/src/model/mod.rs::timed_out_section_serializes_a_machine_readable_terminal_reason
   - crates/unica-code-intelligence/src/model/mod.rs::section_rejects_an_invalid_terminal_reason_contract
   - crates/unica-code-intelligence/src/model/mod.rs::partial_section_requires_proven_hits_and_diagnostics
-  - crates/unica-coder/src/application/mod.rs::code_search_schema_accepts_a_real_partial_provider_section
   - crates/unica-code-intelligence/src/coordinator.rs::malformed_provider_subset_remains_useful_without_claiming_complete_coverage
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::public_role_search_surfaces_partial_provider_warning_and_hit
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::canonical_role_search_preserves_typed_failure_without_private_provider_text

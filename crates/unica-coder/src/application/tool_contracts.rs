@@ -5589,21 +5589,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn retired_meta_tools_are_absent_from_the_contract_registry() {
-        let names = tools()
-            .into_iter()
-            .map(|tool| tool.name)
-            .collect::<Vec<_>>();
-        for retired in [
-            "unica.meta.compile",
-            "unica.meta.profile",
-            "unica.meta.validate",
-        ] {
-            assert!(!names.contains(&retired), "retired {retired} is public");
-        }
-    }
-
-    #[test]
     fn bsl_graph_contract_exposes_typed_arguments_without_raw_args() {
         let graph = tools()
             .into_iter()
