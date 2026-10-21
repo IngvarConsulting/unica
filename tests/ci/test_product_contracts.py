@@ -363,23 +363,64 @@ def workspace_rmcp_dependency_errors(repo_root: Path) -> list[str]:
     return rmcp_dependency_contract_errors(cargo_workspace_metadata(repo_root))
 
 
-RMCP_HANDLER_ASSERTION = (
-    b"#[allow(dead_code)]"
-    b"fnassert_unica_server_implements_official_rmcp_server_handler()"
-    b"whereUnicaServer:::rmcp::ServerHandler,{}"
+RMCP_HANDLER_ASSERTION = "assert_unica_server_implements_official_rmcp_server_handler"
+RMCP_HANDLER_MODULE_CHAIN = (
+    ("crates/unica-coder/src/lib.rs", "interfaces"),
+    ("crates/unica-coder/src/interfaces/mod.rs", "mcp"),
 )
 
 
-def production_rmcp_handler_assertion_errors(source: bytes, owner: str) -> list[str]:
+def top_level_rust_items(source: bytes) -> tuple[list[tuple[str, str, list[str], bytes]], bool]:
+    """Top-level items with their outer attributes, and whether a file-level cfg gates them."""
+    code = productive_rust_code(source)
+    tree = Parser(Language(tree_sitter_rust.language())).parse(code)
+    items, attributes, gated = [], [], False
+    for node in tree.root_node.named_children:
+        text = re.sub(rb"\s+", b"", code[node.start_byte : node.end_byte])
+        if node.type == "inner_attribute_item":
+            gated = gated or text.startswith(b"#![cfg")
+        elif node.type == "attribute_item":
+            attributes.append(text.decode())
+        elif node.type.endswith("comment"):
+            continue
+        else:
+            name = node.child_by_field_name("name")
+            items.append((
+                node.type,
+                code[name.start_byte : name.end_byte].decode() if name else "",
+                attributes,
+                text,
+            ))
+            attributes = []
+    return items, gated
+
+
+def production_rmcp_handler_assertion_errors(sources: dict[str, bytes]) -> list[str]:
     # Любая не-тестовая сборка библиотеки проверяет эту границу компилятором;
-    # здесь — только что граница существует вне `#[cfg(test)]` и других cfg.
-    compact = re.sub(rb"\s+", b"", productive_rust_code(source))
-    index = compact.find(RMCP_HANDLER_ASSERTION)
-    if index < 0 or compact.count(RMCP_HANDLER_ASSERTION) != 1:
-        return [f"{owner}: production code must assert UnicaServer: rmcp::ServerHandler once"]
-    if compact[:index].endswith(b"]"):
-        return [f"{owner}: rmcp::ServerHandler assertion must not carry extra attributes"]
-    return []
+    # здесь — только что граница и путь модулей к ней не закрыты cfg.
+    errors = []
+    for path, module in RMCP_HANDLER_MODULE_CHAIN:
+        items, gated = top_level_rust_items(sources[path])
+        declarations = [attrs for kind, name, attrs, _ in items if (kind, name) == ("mod_item", module)]
+        if gated or len(declarations) != 1 or any("cfg" in attr for attr in declarations[0]):
+            errors.append(f"{path}: module {module} must be declared once without cfg")
+    items, gated = top_level_rust_items(sources[RMCP_OWNER])
+    bounds = [
+        (attrs, text)
+        for kind, name, attrs, text in items
+        if (kind, name) == ("function_item", RMCP_HANDLER_ASSERTION)
+    ]
+    if (
+        gated
+        or len(bounds) != 1
+        or bounds[0][0] != ["#[allow(dead_code)]"]
+        or not bounds[0][1].endswith(b"whereUnicaServer:::rmcp::ServerHandler,{}")
+    ):
+        errors.append(
+            f"{RMCP_OWNER}: production code must assert UnicaServer: rmcp::ServerHandler "
+            "once at module level without cfg"
+        )
+    return errors
 
 
 def load_ci_rust_lanes_module():
@@ -757,39 +798,67 @@ class ProductContractTests(unittest.TestCase):
     def test_production_rmcp_handler_assertion_rejects_test_only_or_gated_bound(
         self,
     ) -> None:
-        owner = RMCP_OWNER
         bound = (
             b"#[allow(dead_code)]\n"
             b"fn assert_unica_server_implements_official_rmcp_server_handler()\n"
             b"where\n    UnicaServer: ::rmcp::ServerHandler,\n{\n}\n"
         )
-        missing = [
-            f"{owner}: production code must assert UnicaServer: rmcp::ServerHandler once"
+        chain = {
+            "crates/unica-coder/src/lib.rs": b"pub mod interfaces;\n",
+            "crates/unica-coder/src/interfaces/mod.rs": b"pub mod mcp;\n",
+        }
+        owner_error = [
+            f"{RMCP_OWNER}: production code must assert UnicaServer: rmcp::ServerHandler "
+            "once at module level without cfg"
         ]
+        cfg = b'#[cfg(feature = "research")]\n'
         fixtures = {
-            "production": (b"struct UnicaServer;\n" + bound, []),
-            "absent": (b"struct UnicaServer;\n", missing),
-            "test_only": (b"#[cfg(test)]\n" + bound, missing),
-            "commented": (b"/*\n" + bound + b"*/\n", missing),
-            "feature_gated": (
-                b"#[cfg(feature = \"research\")]\n" + bound,
-                [f"{owner}: rmcp::ServerHandler assertion must not carry extra attributes"],
+            "production": ({RMCP_OWNER: b"struct UnicaServer;\n" + bound}, []),
+            "absent": ({RMCP_OWNER: b"struct UnicaServer;\n"}, owner_error),
+            "test_only": ({RMCP_OWNER: b"#[cfg(test)]\n" + bound}, owner_error),
+            "commented": ({RMCP_OWNER: b"/*\n" + bound + b"*/\n"}, owner_error),
+            "duplicated": ({RMCP_OWNER: bound + bound}, owner_error),
+            "feature_gated": ({RMCP_OWNER: cfg + bound}, owner_error),
+            "nested_gated_module": (
+                {RMCP_OWNER: cfg + b"mod gated {\n" + bound + b"}\n"},
+                owner_error,
+            ),
+            "file_gated": ({RMCP_OWNER: b'#![cfg(feature = "research")]\n' + bound}, owner_error),
+            "weakened_bound": (
+                {RMCP_OWNER: bound.replace(b"::rmcp::ServerHandler", b"Clone")},
+                owner_error,
+            ),
+            "gated_interfaces": (
+                {
+                    RMCP_OWNER: bound,
+                    "crates/unica-coder/src/lib.rs": cfg + b"pub mod interfaces;\n",
+                },
+                ["crates/unica-coder/src/lib.rs: module interfaces must be declared once without cfg"],
+            ),
+            "missing_mcp_module": (
+                {RMCP_OWNER: bound, "crates/unica-coder/src/interfaces/mod.rs": b"pub mod other;\n"},
+                ["crates/unica-coder/src/interfaces/mod.rs: module mcp must be declared once without cfg"],
             ),
         }
-        for name, (source, expected) in fixtures.items():
+        for name, (sources, expected) in fixtures.items():
             with self.subTest(name=name):
                 self.assertEqual(
-                    production_rmcp_handler_assertion_errors(source, owner), expected
+                    production_rmcp_handler_assertion_errors({**chain, **sources}), expected
                 )
 
     def test_unica_coder_production_library_satisfies_rmcp_handler_bound(
         self,
     ) -> None:
-        # Граница — проверка компилятора в production-коде библиотеки. Её
-        # собирает обязательный ordinary-архив Rust: не-тестовый бинарь `unica`
-        # пакета unica-coder с фичами по умолчанию. Python-набор сам не собирает.
-        source = (REPO_ROOT / RMCP_OWNER).read_bytes()
-        self.assertEqual(production_rmcp_handler_assertion_errors(source, RMCP_OWNER), [])
+        # Граница — проверка компилятора в production-коде библиотеки. Python-набор
+        # её не собирает: в каждом профиле, включая PR, это делает ordinary-архив
+        # Rust (не-тестовый бинарь `unica`, фичи объединены с dev-зависимостями
+        # тестов), а в очереди и релизе — `build-python-product` точным
+        # production-набором фич (`cargo build -p unica-coder --bin unica`).
+        sources = {
+            path: (REPO_ROOT / path).read_bytes()
+            for path in (RMCP_OWNER, *(path for path, _ in RMCP_HANDLER_MODULE_CHAIN))
+        }
+        self.assertEqual(production_rmcp_handler_assertion_errors(sources), [])
 
         lanes = load_ci_rust_lanes_module()
         for profile in ("pr", "queue", "main", "release", "large", "all"):
@@ -801,6 +870,7 @@ class ProductContractTests(unittest.TestCase):
             {"--features", "--all-features", "--no-default-features", "--lib", "--tests"}
             & set(command)
         )
+        self.assertEqual(lanes.prepared_binary.ORDINARY_FEATURES, ["default"])
 
     def test_rmcp_module_preserves_legacy_public_exports_only(self) -> None:
         source = tracked_workspace_production_rust_sources(REPO_ROOT)[RMCP_OWNER]
