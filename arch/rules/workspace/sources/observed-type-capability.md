@@ -7,6 +7,7 @@ check:
   - crates/unica-coder/src/application/meta_info_surface_tests.rs::info_localizes_an_unmodelled_constant_type_with_the_warning_code
   - crates/unica-coder/src/application/meta_info_surface_tests.rs::info_keeps_a_broken_qualifier_in_the_error_severity_branch
   - crates/unica-metadata-designer/tests/platform/info_projection.rs::observed_type_reads_an_extension_type_id_as_a_read_only_variant
+gap: https://github.com/IngvarConsulting/unica/issues/1933
 ---
 
 # Распознанный тип не обязательно доступен для изменения
@@ -20,6 +21,7 @@ UUID доступен для записи и возвращается чтени
 квалификатор типа остаётся ошибкой, а не превращается в предупреждение
 о неподдерживаемой возможности.
 
-Запись и чтение UUID проверяют канонические `apply` и `view`; предупреждение
-и ошибка типа пока доказаны только моделью типов и внутренним маршрутом
-чтения (#1933). Все представления `unica.view` проверки не доказывают.
+Запись и чтение UUID проверяют канонические `apply` и `view`. Предупреждение
+и ошибка типа доказаны моделью типов и внутренним читателем, ответ там
+собирает тест; канонические `check` и `view` их пока не передают — это разрыв.
+Все представления `unica.view` проверки не доказывают.
