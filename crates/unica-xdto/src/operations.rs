@@ -421,37 +421,32 @@ fn property_spec<'a>(
     property: &mut ArgumentReader<'a>,
     definition: ArgumentShape<'a>,
 ) -> Result<XdtoPropertySpec, ContractError> {
+    let min_occurs = property.min_occurs("minOccurs")?;
+    let max_occurs = property.max_occurs("maxOccurs")?;
+    let name = property.ncname("name")?;
     if property.has("type") == property.has("objectType") {
         return Err(invalid(
             &property.path,
             "property requires exactly one of type or objectType",
         ));
     }
-    let min_occurs = property.min_occurs("minOccurs")?;
-    let max_occurs = property.max_occurs("maxOccurs")?;
-    let name = property.ncname("name")?;
     let type_ref = property.optional_qname("type")?;
     let children = property.optional_object("objectType", |object| {
+        let mut names = HashSet::new();
         object.required_items("properties", definition, |child, path| {
-            Ok((property_spec(child, definition)?, format!("{path}.name")))
+            let spec = property_spec(child, definition)?;
+            if !names.insert(spec.name.as_str().to_string()) {
+                return Err(invalid(
+                    &format!("{path}.name"),
+                    "duplicate anonymous ObjectType property name",
+                ));
+            }
+            Ok(spec)
         })
     })?;
     let definition = match (type_ref, children) {
         (Some(type_ref), None) => XdtoPropertyDefinition::Named(type_ref),
-        (None, Some(children)) => {
-            let mut names = HashSet::new();
-            let mut properties = Vec::with_capacity(children.len());
-            for (child, name_path) in children {
-                if !names.insert(child.name.as_str().to_string()) {
-                    return Err(invalid(
-                        &name_path,
-                        "duplicate anonymous ObjectType property name",
-                    ));
-                }
-                properties.push(child);
-            }
-            XdtoPropertyDefinition::Object(properties)
-        }
+        (None, Some(children)) => XdtoPropertyDefinition::Object(children),
         _ => unreachable!("exactly one definition was checked above"),
     };
     Ok(XdtoPropertySpec {
@@ -634,14 +629,22 @@ impl<'a> ArgumentReader<'a> {
     }
 
     fn max_occurs(&mut self, key: &str) -> Result<Option<i64>, ContractError> {
-        self.read(key, |value, _shape, path| {
-            if let Some(number) = value.as_f64() {
-                if number.is_finite() && number.fract() == 0.0 && (number == -1.0 || number >= 1.0)
-                {
-                    return Ok(number as i64);
+        self.read(key, |value, shape, path| {
+            // An integral decimal or exponent spelling denotes the same integer;
+            // the conversion is exact or the value is refused.
+            let parsed = value.as_i64().or_else(|| {
+                value.as_f64().and_then(|number| {
+                    let integer = number as i64;
+                    (number.fract() == 0.0 && integer as f64 == number).then_some(integer)
+                })
+            });
+            match parsed {
+                Some(parsed) if parsed == -1 || parsed >= 1 => {
+                    shape.validate_field(&json!(parsed), path)?;
+                    Ok(parsed)
                 }
+                _ => Err(invalid(path, "maxOccurs must be -1 or a positive integer")),
             }
-            Err(invalid(path, "maxOccurs must be -1 or a positive integer"))
         })
     }
 
@@ -894,12 +897,75 @@ mod tests {
         let mut duplicate = valid.clone();
         duplicate["values"]["property"]["objectType"]["properties"][1] =
             json!({"name":"Recipient","type":"xs:string"});
+        duplicate["values"]["property"]["objectType"]["properties"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"name":"Broken","type":"unprefixed"}));
         assert_eq!(
             operation
                 .decode(&duplicate, "ops[0].args", "main")
                 .unwrap_err()
                 .path,
             "ops[0].args.values.property.objectType.properties[1].name"
+        );
+
+        // Bounds and the name keep the established diagnostic order even
+        // when the definition is missing.
+        let at = "main:XDTOPackage.Sample.Type.Target";
+        for (property, path) in [
+            (
+                json!({"name":"X","minOccurs":2}),
+                "ops[0].args.values.property.minOccurs",
+            ),
+            (
+                json!({"name":"bad:name"}),
+                "ops[0].args.values.property.name",
+            ),
+            (json!({"name":"X"}), "ops[0].args.values.property"),
+        ] {
+            let args = json!({"at":at,"values":{"property":property}});
+            assert_eq!(
+                operation
+                    .decode(&args, "ops[0].args", "main")
+                    .unwrap_err()
+                    .path,
+                path,
+                "{args}"
+            );
+        }
+
+        // An integral spelling is exact; a value beyond the integer range is refused.
+        let bound = |value: Value| {
+            let args = json!({"at":at,"values":{"property":{"name":"X","type":"xs:string","maxOccurs":value}}});
+            match operation.decode(&args, "ops[0].args", "main") {
+                Ok(XdtoPlanOperation::AddProperty(args)) => Ok(args.property.max_occurs),
+                Ok(other) => panic!("{other:?}"),
+                Err(error) => Err(error.path),
+            }
+        };
+        assert_eq!(
+            bound(json!(9007199254740993_i64)),
+            Ok(Some(9007199254740993))
+        );
+        assert_eq!(bound(json!(2.0)), Ok(Some(2)));
+        assert_eq!(bound(json!(-1.0)), Ok(Some(-1)));
+        assert_eq!(
+            bound(json!(1e19)),
+            Err("ops[0].args.values.property.maxOccurs".to_string())
+        );
+
+        // A narrowed declaration of maxOccurs is honoured by the decoder.
+        let mut narrowed = operation.contract();
+        narrowed.schema["properties"]["values"]["properties"]["property"]["properties"]
+            ["maxOccurs"]["enum"] = json!([-1]);
+        let args =
+            json!({"at":at,"values":{"property":{"name":"X","type":"xs:string","maxOccurs":5}}});
+        assert_eq!(
+            operation
+                .decode_with_contract(&narrowed, &args, "ops[0].args", "main")
+                .unwrap_err()
+                .path,
+            "ops[0].args.values.property.maxOccurs"
         );
     }
 
