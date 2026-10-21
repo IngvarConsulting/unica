@@ -281,8 +281,8 @@ impl XdtoOperation {
                     values
                 }),
                 "The XDTO package: <source-set>:XDTOPackage.<Name>.",
-                "Add a named object type with an optional local base, immediately before or after an existing object type or appended, preserving existing bytes and order.",
-                json!({"values":{"name":"AddedObject", "base":"tns:Base", "before":"Next"}}),
+                "Add a named object type with an optional local base, immediately before or after an existing object type or appended, preserving existing bytes and order. The base and its whole chain must resolve to local object types without a cycle; an imported base is not supported. An earlier operation on the same package may create the base or the neighbour.",
+                json!({"values":{"name":"AddedObject"}}),
             ),
             Self::AddProperty => (
                 Some(object(&[("property", object(&[

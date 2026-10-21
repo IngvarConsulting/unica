@@ -2293,6 +2293,49 @@ fn xdto_object_view_follows_local_base_to_inherited_property_without_flattening(
 }
 
 #[test]
+fn xdto_object_view_follows_dotted_local_base_address() {
+    let fixture = RealReaderFixture::new();
+    let package = fixture
+        .source
+        .join("XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin");
+    let original = fs::read_to_string(&package).unwrap();
+    let xml = original.replace(
+        "</package>",
+        r#"<objectType name="Base.WithDot"><property name="Код" type="xs:string"/></objectType>
+<objectType xmlns:tns="http://v8.1c.ru/edi/edi_stnd/EnterpriseData/1.17.3" name="Наследник" base="tns:Base.WithDot"/>
+<objectType xmlns:tns="http://v8.1c.ru/edi/edi_stnd/EnterpriseData/1.17.3" name="НетОсновы" base="tns:НеСуществует"/>
+</package>"#,
+    );
+    fs::write(&package, &xml).unwrap();
+    let service = fixture.view_service();
+    let result = service
+        .view(ViewRequest::new("main:XDTOPackage.EnterpriseData_1_17_3.Type.Наследник").unwrap());
+    assert!(result.ok, "{result:?}");
+    let data = result.data.unwrap();
+    let base = data["props"]["baseAt"]
+        .as_str()
+        .expect("local base must be navigable");
+    assert_eq!(
+        base,
+        "main:XDTOPackage.EnterpriseData_1_17_3.Type.Base\\.WithDot"
+    );
+    let qname: serde_json::Value =
+        serde_json::from_str(data["props"]["base"].as_str().unwrap()).unwrap();
+    assert_eq!(qname["local"], "Base.WithDot");
+    let inherited = service.view(ViewRequest::new(&format!("{base}.Property.Код")).unwrap());
+    assert!(inherited.ok, "{inherited:?}");
+    let props = inherited.data.unwrap();
+    let type_info: serde_json::Value =
+        serde_json::from_str(props["props"]["type"].as_str().unwrap()).unwrap();
+    assert_eq!(type_info["local"], "string");
+    let missing = service
+        .view(ViewRequest::new("main:XDTOPackage.EnterpriseData_1_17_3.Type.НетОсновы").unwrap());
+    assert!(missing.ok, "{missing:?}");
+    assert!(missing.data.unwrap()["props"].get("baseAt").is_none());
+    assert_eq!(fs::read_to_string(package).unwrap(), xml);
+}
+
+#[test]
 fn xdto_property_view_preserves_type_identity_and_explicit_and_effective_bounds() {
     let fixture = RealReaderFixture::new();
     let package = fixture

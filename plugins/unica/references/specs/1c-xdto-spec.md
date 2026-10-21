@@ -78,7 +78,7 @@ import* → property* → valueType* → objectType*
 не пишет файл; конфликтующий дубль отклоняется и не перемещается.
 Предпросмотр `data.xdtoObjects` описывает итоговые основу и соседей после
 всего пакета операций. Контрольная фикстура —
-`tests/fixtures/acceptance/workspace-xdto-inheritance`, сценарий S421.
+`tests/fixtures/acceptance/workspace-xdto-inheritance`, сценарий `S-1408-xdto-base-order`.
 
 Внутри каждой группы существующий порядок значим и сохраняется. Writer
 вставляет новый узел в соответствующую группу, но не сортирует соседей и не
