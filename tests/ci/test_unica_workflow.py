@@ -598,8 +598,8 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             self.assertEqual(Path(archive[archive.index("--target-dir") + 1]), lanes.ROOT / "target")
             # nextest ставится до восстановления: rust-cache исключает уже
             # лежащие в ~/.cargo/bin файлы из записи и не подменяет их.
-            steps = producer["steps"]
-            self.assertLess(steps.index(steps_using(producer, "taiki-e/install-action")[0]), steps.index(cache))
+            order = producer["steps"]
+            self.assertLess(order.index(steps_using(producer, "taiki-e/install-action")[0]), order.index(cache))
             self.assertEqual(producer["env"]["CARGO_PROFILE_DEV_DEBUG"], executor["env"]["CARGO_PROFILE_DEV_DEBUG"])
             for found in (producer, executor):
                 self.assertEqual(steps_using(found, "taiki-e/install-action")[0]["with"]["tool"], "cargo-nextest@0.9.148")
