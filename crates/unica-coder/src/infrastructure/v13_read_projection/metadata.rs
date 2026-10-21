@@ -764,6 +764,9 @@ fn metadata_item_node(
                 (count > 0).then(|| BranchRef::new(format!("{}.{}", address, kind.as_str()), count))
             }),
     );
+    // Пределы элемента приходят от читателя: профиль свойств переносит их
+    // вместе со своими, а без профиля они переносятся как есть, иначе узел
+    // отвечал бы `incomplete` без причины (#1933).
     let (member_props, member_limits) = member_profile
         .and_then(|profile| {
             profile
@@ -771,7 +774,17 @@ fn metadata_item_node(
                 .map(|context| (profile, context))
         })
         .map_or_else(
-            || (Map::new(), Vec::new()),
+            || {
+                let limits = item
+                    .get("propertyLimits")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect();
+                (Map::new(), limits)
+            },
             |(profile, context)| member_properties::project(profile, context, item),
         );
     props.extend(member_props);

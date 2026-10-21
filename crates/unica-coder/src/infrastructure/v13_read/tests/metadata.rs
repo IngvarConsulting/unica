@@ -381,7 +381,23 @@ fn metadata_missing_empty_and_malformed_types_do_not_claim_a_size_limit() {
         assert!(detail.ok, "{detail:?}");
         let data = detail.data.unwrap();
         assert!(data["props"].get("type").is_none(), "{data}");
-        assert!(data.get("limits").is_none());
+        // Отсутствующий, пустой и повреждённый тип не заявляют предел размера;
+        // причина повреждения названа у самого реквизита (#1933).
+        let item_limits = data["limits"].as_array().cloned().unwrap_or_default();
+        assert!(
+            item_limits.iter().all(|limit| {
+                let limit = limit.as_str().unwrap();
+                !limit.contains("2048") && !limit.contains("compact property limit")
+            }),
+            "{data}"
+        );
+        assert_eq!(
+            item_limits
+                .iter()
+                .any(|limit| limit.as_str().unwrap().starts_with("collections.attributes[0].type: ")),
+            damaged,
+            "{data}"
+        );
         assert_eq!(data["props"].get("incomplete").and_then(serde_json::Value::as_bool).unwrap_or(false), damaged);
         let root = service.view(ViewRequest::new("main:Catalog.Items").unwrap());
         assert!(root.ok, "{root:?}");

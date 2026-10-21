@@ -3,6 +3,7 @@ id: INV.APP.META-OBSERVATION
 check:
   - crates/unica-coder/src/infrastructure/daemon/metadata_can_tests.rs::canonical_foreign_form_file_keeps_catalog_structure_and_reports_provider_unavailable
   - crates/unica-coder/src/application/meta_info_surface_tests.rs::info_preserves_local_structure_when_child_resource_evidence_is_unavailable
+gap: https://github.com/IngvarConsulting/unica/issues/1939
 ---
 
 # Ошибка дочернего ресурса не скрывает прочитанную структуру
