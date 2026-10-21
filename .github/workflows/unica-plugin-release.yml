@@ -66,6 +66,7 @@ jobs:
       cache_required: ${{ steps.scope.outputs.cache_required }}
       line: ${{ steps.line.outputs.line }}
       runners: ${{ steps.runners.outputs.runners }}
+      lint_runners: ${{ steps.rust-matrices.outputs.lint_runners }}
       python_matrix: ${{ steps.python-matrix.outputs.python_matrix }}
       ordinary_build_matrix: ${{ steps.rust-matrices.outputs.ordinary_build_matrix }}
       ordinary_run_matrix: ${{ steps.rust-matrices.outputs.ordinary_run_matrix }}
@@ -132,6 +133,7 @@ jobs:
               echo "${lane}_${phase}_matrix=$matrix" >> "$GITHUB_OUTPUT"
             done
           done
+          echo "lint_runners=$(python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --rust-lint-runners --runners "$RUNNERS")" >> "$GITHUB_OUTPUT"
       - if: steps.scope.outputs.docs_only == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -776,10 +778,12 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
     # Ночной Windows остаётся advisory, как у тестов на той же платформе (#1523).
     continue-on-error: ${{ matrix.runner == 'windows-latest' }}
+    # Матрица линта следует тестам: в очереди macOS проверяет только
+    # платформенные фасады, его Clippy идёт ночью и в релизе.
     strategy:
       fail-fast: false
       matrix:
-        runner: ${{ fromJSON(needs.classify-changes.outputs.runners) }}
+        runner: ${{ fromJSON(needs.classify-changes.outputs.lint_runners) }}
     defaults:
       run:
         shell: bash

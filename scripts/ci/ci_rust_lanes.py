@@ -25,9 +25,23 @@ spec = importlib.util.spec_from_file_location("ci_lane_runner", Path(__file__).w
 runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
 LANES = ("ordinary", "receipt", "vendor")
+HOSTS = ("ubuntu-latest", "macos-14", "windows-latest")
+# The queue runs the complete suite on Linux and only the platform facades on
+# macOS: OS-specific code lives in the platform directories of
+# INV.PLATFORM.OS-BEHIND-FACADE, and `size-filters.py` derives the
+# `queue-platform` nextest profile from them. Nightly `large` and release keep
+# the complete macOS matrix; pull requests do not run macOS by default.
+PLATFORM_ONLY = {("queue", "macos-14")}
+PLATFORM_NEXTEST_PROFILE = "queue-platform"
 
 
-def lanes(profile: str) -> tuple[str, ...]:
+def platform_only(profile: str, host: str | None) -> bool:
+    return (profile, host) in PLATFORM_ONLY
+
+
+def lanes(profile: str, host: str | None = None) -> tuple[str, ...]:
+    if platform_only(profile, host):
+        return ("ordinary",)
     return LANES if set(ADMITTED[profile]) & {"medium", "large"} else ("ordinary",)
 
 
@@ -36,16 +50,29 @@ def selection(lane: str) -> tuple[str, ...]:
             "vendor": runner.UREQ_RECYCLING_SELECTION}[lane]
 
 
-def shards(profile: str, lane: str) -> int:
-    # A small starting matrix. Vendor's four fault cases need no extra runner.
+def shards(profile: str, lane: str, host: str | None = None) -> int:
+    # A small starting matrix. Vendor's four fault cases need no extra runner,
+    # and the platform selection is a fifth of the ordinary plan.
+    if platform_only(profile, host):
+        return 1
     return 2 if lane == "ordinary" and profile != "pr" else 1
+
+
+def nextest_profile(profile: str, lane: str, host: str | None) -> str:
+    return PLATFORM_NEXTEST_PROFILE if platform_only(profile, host) else runner.nextest_profile(profile, selection(lane))
 
 
 def matrix(profile: str, runners: list[str], *, lane: str, run: bool) -> list[dict]:
     if lane not in lanes(profile):
         return []
-    return [{"runner": host, "lane": lane, "shard": index, "shards": shards(profile, lane)}
-            for host in runners for index in (range(1, shards(profile, lane) + 1) if run else [1])]
+    return [{"runner": host, "lane": lane, "shard": index, "shards": shards(profile, lane, host)}
+            for host in runners if lane in lanes(profile, host)
+            for index in (range(1, shards(profile, lane, host) + 1) if run else [1])]
+
+
+def lint_runners(profile: str, runners: list[str]) -> list[str]:
+    """Clippy follows the test matrix: a platform-only host lints at night."""
+    return [host for host in runners if not platform_only(profile, host)]
 
 
 def filters(lane: str) -> list[str]:
@@ -94,7 +121,8 @@ def run_doctests(root: Path, target: str | None) -> dict:
 
 
 def doctest_problem(manifest: dict) -> str | None:
-    if manifest.get("lane") != "ordinary":
+    # Doctests are not platform facade tests; a platform-only host skips them.
+    if manifest.get("lane") != "ordinary" or platform_only(manifest.get("profile"), manifest.get("runner")):
         return None
     outcome = manifest.get("doctests")
     if not isinstance(outcome, dict) or type(outcome.get("exitCode")) is not int:
@@ -122,7 +150,7 @@ def doctest_record(manifest: dict, profile: str, host: str) -> dict:
     )
 
 
-def reuse_command(action: str, root: Path, archive: Path, lane: str, profile: str, partition: str | None = None, *, candidate: str | None = None) -> list[str]:
+def reuse_command(action: str, root: Path, archive: Path, lane: str, profile: str, partition: str | None = None, *, candidate: str | None = None, host: str | None = None) -> list[str]:
     workspace = root / "vendor/ureq" if lane == "vendor" else root
     selected_filters = filters(lane)
     if candidate is not None:
@@ -135,7 +163,7 @@ def reuse_command(action: str, root: Path, archive: Path, lane: str, profile: st
         selected_filters = ["-E", candidate]
     command = ["cargo", "nextest", action, "--archive-file", str(archive),
                "--extract-to", str(root), "--extract-overwrite", "--workspace-remap", str(workspace),
-               "--profile", runner.nextest_profile(profile, selection(lane)), *selected_filters]
+               "--profile", nextest_profile(profile, lane, host), *selected_filters]
     if lane == "vendor":
         command += ["--config-file", str(workspace / ".config/nextest.toml")]
     if partition:
@@ -207,7 +235,7 @@ def signature(directory: Path, *, profile: str, host: str, lane: str, line: str 
     path = allure_results.write_run(directory, profile=profile, runner=host, ecosystem="rust", line=line, sha=sha)
     document = json.loads(path.read_text())
     document.update(inventoryScope="full-nightly-v1" if profile == "large" else "gate-profile",
-                    configuration={"lane": lane, "nextestProfile": runner.nextest_profile(profile, selection(lane)),
+                    configuration={"lane": lane, "nextestProfile": nextest_profile(profile, lane, host),
                                    "selection": list(selection(lane))})
     write(path, document)
 
@@ -337,15 +365,15 @@ def build(root: Path, destination: Path, lane: str, profile: str, host: str, lin
     completed.check_returncode()
     if prepared_binary.identity(root) != before:
         raise ValueError("source inputs changed while building the test archive")
-    doctests = run_doctests(root, before["target"]) if lane == "ordinary" else None
-    full_command = reuse_command("list", root, archive, lane, profile)
+    doctests = run_doctests(root, before["target"]) if lane == "ordinary" and not platform_only(profile, host) else None
+    full_command = reuse_command("list", root, archive, lane, profile, host=host)
     completed, list_seconds = timed(full_command, root, capture=True)
     completed.check_returncode()
     listed = json.loads(completed.stdout)
     full = inventory(listed)
     parts = []
-    for index in range(1, shards(profile, lane) + 1):
-        command = reuse_command("list", root, archive, lane, profile, f"hash:{index}/{shards(profile, lane)}")
+    for index in range(1, shards(profile, lane, host) + 1):
+        command = reuse_command("list", root, archive, lane, profile, f"hash:{index}/{shards(profile, lane, host)}", host=host)
         completed, _ = timed(command, root, capture=True)
         completed.check_returncode()
         parts.append(inventory(json.loads(completed.stdout)))
@@ -353,7 +381,7 @@ def build(root: Path, destination: Path, lane: str, profile: str, host: str, lin
     document = {
         "schemaVersion": 1, "identity": before, "workspace": str(root.resolve()),
         "runner": host, "profile": profile, "lane": lane,
-        "nextestProfile": runner.nextest_profile(profile, selection(lane)),
+        "nextestProfile": nextest_profile(profile, lane, host),
         "nextestVersion": prepared_binary.output(root, ["cargo", "nextest", "--version"]),
         "selection": list(selection(lane)), "archiveSha256": prepared_binary.digest(archive),
         "archiveBytes": archive.stat().st_size, "inventory": full, "shards": parts,
@@ -363,7 +391,8 @@ def build(root: Path, destination: Path, lane: str, profile: str, host: str, lin
     }
     if lane == "ordinary":
         document["fixtureBinary"] = fixture_binary_descriptor(root, listed, before)
-        document["doctests"] = doctests
+        if doctests is not None:
+            document["doctests"] = doctests
     write(destination / "lane.json", document)
     allure_results.write_plan(destination, full)
 
@@ -371,9 +400,9 @@ def build(root: Path, destination: Path, lane: str, profile: str, host: str, lin
 def validate_manifest(document: dict, *, profile: str, host: str, lane: str, sha: str) -> None:
     if document.get("schemaVersion") != 1 or (document.get("profile"), document.get("runner"), document.get("lane"), document.get("identity", {}).get("sha")) != (profile, host, lane, sha):
         raise ValueError("archive or result belongs to another revision, runner, lane or profile")
-    if document.get("selection") != list(selection(lane)) or document.get("nextestProfile") != runner.nextest_profile(profile, selection(lane)):
+    if document.get("selection") != list(selection(lane)) or document.get("nextestProfile") != nextest_profile(profile, lane, host):
         raise ValueError("archive has an unexpected feature or test selection")
-    if len(document.get("shards", [])) != shards(profile, lane):
+    if len(document.get("shards", [])) != shards(profile, lane, host):
         raise ValueError("archive has an unexpected shard count")
     validate_partition(document["inventory"], document["shards"])
     ignored_ids(document)
@@ -407,7 +436,7 @@ def run_archive(root: Path, prepared: Path, destination: Path, lane: str, profil
     destination.mkdir(parents=True, exist_ok=False)
     allure_results.write_plan(destination, plan)
     signature(destination, profile=profile, host=host, lane=lane, line=line, sha=current["sha"])
-    if lane == "ordinary" and index == 1:
+    if lane == "ordinary" and index == 1 and not platform_only(profile, host):
         # Written before nextest runs, so a later failure in this shard does
         # not take the doctest outcome out of the report.
         allure_results.write(destination, doctest_record(document, profile, host))
@@ -415,7 +444,7 @@ def run_archive(root: Path, prepared: Path, destination: Path, lane: str, profil
     candidates = {root / "target/nextest" / nextest_profile / "junit.xml", root / "vendor/ureq/target/nextest" / nextest_profile / "junit.xml"}
     for path in candidates:
         path.unlink(missing_ok=True)
-    command = reuse_command("run", root, archive, lane, profile, f"hash:{index}/{len(document['shards'])}")
+    command = reuse_command("run", root, archive, lane, profile, f"hash:{index}/{len(document['shards'])}", host=host)
     if not any(not case["ignored"] for case in plan):
         command.append("--no-tests=pass")
     completed, seconds = timed(command, root, **run_options)
@@ -453,7 +482,7 @@ def run_archive(root: Path, prepared: Path, destination: Path, lane: str, profil
                 write(destination / "shadow.json", comparison)
                 return completed.returncode
             expression = ci_shadow_selector.filterset({**decision, "packages": selected_packages})
-            listing = reuse_command("list", root, archive, lane, profile, f"hash:{index}/{len(document['shards'])}", candidate=expression)
+            listing = reuse_command("list", root, archive, lane, profile, f"hash:{index}/{len(document['shards'])}", candidate=expression, host=host)
             listed, _ = timed(listing, root, capture=True)
             listed.check_returncode()
             affected = inventory(json.loads(listed.stdout))
@@ -464,7 +493,7 @@ def run_archive(root: Path, prepared: Path, destination: Path, lane: str, profil
             if any(not case["ignored"] for case in affected):
                 for path in candidates:
                     path.unlink(missing_ok=True)
-                shadow_command = reuse_command("run", root, archive, lane, profile, f"hash:{index}/{len(document['shards'])}", candidate=expression)
+                shadow_command = reuse_command("run", root, archive, lane, profile, f"hash:{index}/{len(document['shards'])}", candidate=expression, host=host)
                 shadow_run, shadow_seconds = timed(shadow_command, root, **run_options)
                 comparison.update(shadowNotRun=False, affectedSeconds=shadow_seconds, exitCode=shadow_run.returncode)
                 shadow_reports = [path for path in candidates if path.is_file()]
@@ -610,12 +639,14 @@ def inventory_summary(manifests: list[dict], *, profile: str, sha: str, jobs: li
             "attempt": os.environ.get("GITHUB_RUN_ATTEMPT"), "jobs": jobs, "configurations": configurations}
 
 
-def same_selection(first: str, second: str) -> bool:
-    """Profiles with one size admission, lane set and partition select the same plan."""
+def same_selection(first: str, second: str, host: str | None = None) -> bool:
+    """Profiles with one size admission, lane set, nextest profile and
+    partition on this host select the same plan there."""
     if first not in ADMITTED or second not in ADMITTED:
         return False
     def shape(profile):
-        return ADMITTED[profile], lanes(profile), tuple(shards(profile, lane) for lane in lanes(profile))
+        return (ADMITTED[profile], lanes(profile, host),
+                tuple((shards(profile, lane, host), platform_only(profile, host)) for lane in lanes(profile, host)))
     return shape(first) == shape(second)
 
 
@@ -657,17 +688,18 @@ def compare_inventory(baseline: dict, current: dict) -> tuple[list[str], list[st
     if previous.get("schemaVersion") != 1 or not isinstance(previous.get("configurations"), list):
         raise ValueError("malformed previous inventory")
     problems, advisory = [], []
-    same_profile = same_selection(previous.get("profile"), current["profile"])
     if previous.get("jobs") is not None and current["jobs"] is not None:
         problems += [f"job {job} disappeared since the previous inventory" for job in sorted(set(previous["jobs"]) - set(current["jobs"]))]
     present = {(item["runner"], item["lane"]): item for item in current["configurations"]}
     for old in previous["configurations"]:
         key = (old["runner"], old["lane"])
         label = f"{key[0]}/{key[1]}"
+        # Comparable per host: the queue narrows macOS, not Linux.
+        same_profile = same_selection(previous.get("profile"), current["profile"], key[0])
         target = advisory if current["profile"] == "large" and old["runner"] == "windows-latest" else problems
         new = present.get(key)
         if new is None:
-            if same_profile or old["lane"] not in lanes(previous["profile"]):
+            if same_profile or old["lane"] not in lanes(previous["profile"], key[0]):
                 target.append(f"{label}: configuration and its results disappeared since the previous inventory")
             continue
         gone = (set(old["binaries"]) - set(new["binaries"])) & removed
@@ -722,7 +754,7 @@ def verify_union(directory: Path, profile: str, hosts: list[str], sha: str, base
         expected = "success" if profile == "pr" else "skipped"
         if jobs.get("run-rust-ordinary-medium", {}).get("result") != expected:
             problems.append(f"run-rust-ordinary-medium did not finish as {expected}")
-    expected_configs = {(host, lane) for host in hosts for lane in lanes(profile)}
+    expected_configs = {(host, lane) for host in hosts for lane in lanes(profile, host)}
     if any((item.get("runner"), item.get("lane")) not in expected_configs for item in manifests + results):
         raise ValueError("unexpected runner or lane in the collected inventory")
     for host, lane in sorted(expected_configs):
