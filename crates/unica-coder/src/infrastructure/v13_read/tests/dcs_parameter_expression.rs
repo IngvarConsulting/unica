@@ -1,5 +1,5 @@
 use super::*;
-use crate::test_support::tree_snapshot;
+use unica_workspace::test_support::tree_snapshot;
 
 const SCHEMA: &str = "main:Report.ParityReport.Template.MainSchema";
 
