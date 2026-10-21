@@ -206,9 +206,9 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Кэш зависимостей ordinary binary # zizmor: ignore[cache-poisoning] только зависимости; пишут push в ветку и ручной запуск, PR и очередь читают область main; архивы тестовые, поставку собирает build-tools
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          lookup-only: true
           shared-key: ci-python-ordinary
           save-if: ${{ github.ref_type == 'branch' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
       - run: python scripts/ci/prepared_binary.py build --destination .build/ci-product --archive .build/ci-product.tar.gz
@@ -341,9 +341,9 @@ jobs:
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-nextest@0.9.148
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Кэш зависимостей Rust ordinary # zizmor: ignore[cache-poisoning] только зависимости; пишут push в ветку и ручной запуск, PR и очередь читают область main; архивы тестовые, поставку собирает build-tools
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          lookup-only: true
           shared-key: ci-rust-ordinary
           save-if: ${{ github.ref_type == 'branch' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
           cache-on-failure: true
@@ -451,9 +451,9 @@ jobs:
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-nextest@0.9.148
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Кэш зависимостей Rust receipt # zizmor: ignore[cache-poisoning] только зависимости; пишут push в ветку и ручной запуск, PR и очередь читают область main; архивы тестовые, поставку собирает build-tools
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          lookup-only: true
           shared-key: ci-rust-receipt
           save-if: ${{ github.ref_type == 'branch' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
           cache-on-failure: true
@@ -561,9 +561,9 @@ jobs:
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-nextest@0.9.148
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Кэш зависимостей Rust vendor # zizmor: ignore[cache-poisoning] только зависимости; пишут push в ветку и ручной запуск, PR и очередь читают область main; архивы тестовые, поставку собирает build-tools
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          lookup-only: true
           shared-key: ci-rust-vendor
           save-if: ${{ github.ref_type == 'branch' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
           cache-on-failure: true

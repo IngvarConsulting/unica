@@ -573,14 +573,18 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             producer, executor = job(self.release, "build-rust-" + lane), job(self.release, "run-rust-" + lane)
             cache = steps_using(producer, "Swatinem/rust-cache")[0]
             self.assertEqual(cache["with"]["shared-key"], "ci-rust-" + lane)
-            self.assertIs(cache["with"].get("lookup-only"), True, "artifact producers must not restore mutable Cargo cache")
+            # Producer восстанавливает только зависимости: крейты workspace
+            # rust-cache вычищает перед записью и не включает их обратно.
+            self.assertNotIn("lookup-only", cache["with"])
+            self.assertNotIn("cache-workspace-crates", cache["with"])
             self.assertEqual(producer["env"]["CARGO_PROFILE_DEV_DEBUG"], executor["env"]["CARGO_PROFILE_DEV_DEBUG"])
             for found in (producer, executor):
                 self.assertEqual(steps_using(found, "taiki-e/install-action")[0]["with"]["tool"], "cargo-nextest@0.9.148")
         self.assertFalse(steps_using(job(self.release, "test-rust-platforms"), "Swatinem/rust-cache"))
         product_cache = steps_using(job(self.release, "build-python-product"), "Swatinem/rust-cache")
         self.assertEqual(len(product_cache), 1)
-        self.assertIs(product_cache[0]["with"].get("lookup-only"), True)
+        self.assertNotIn("lookup-only", product_cache[0]["with"])
+        self.assertNotIn("cache-workspace-crates", product_cache[0]["with"])
 
     def test_release_assessment_uses_affected_mechanism_contour(self) -> None:
         assessment = job(self.release, "release-assessment")
