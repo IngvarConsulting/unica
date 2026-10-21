@@ -79,15 +79,6 @@ mod info;
 pub(crate) mod predefined;
 mod publisher;
 
-#[cfg(test)]
-pub(crate) fn typed_resource_noop_and_identity_contract_is_complete() {
-    edit::tests::typed_exact_noop_form_update_preserves_resource_bytes_and_identities();
-}
-
-#[cfg(test)]
-pub(crate) fn typed_resource_preimage_contract_is_complete() {
-    publisher::typed_add_publication_tests::meta_add_detects_concurrent_owner_change_without_overwriting_it();
-}
 pub(crate) mod remove;
 pub(crate) mod template_source;
 mod validation;

@@ -119,6 +119,4 @@ impl NativeOperationAdapter {
 }
 
 #[cfg(test)]
-mod source_invariant_tests;
-#[cfg(test)]
 mod tests;

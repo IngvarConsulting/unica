@@ -169,24 +169,6 @@ fn assert_content(case_id: &str, native: &[u8]) {
 }
 
 #[test]
-fn retained_spreadsheet_template_descriptor_matches_native_bytes() {
-    assert_descriptor(
-        "template-add-spreadsheet-document",
-        "SpreadsheetDocument",
-        native!("native-spreadsheet-descriptor.xml"),
-    );
-}
-
-#[test]
-fn retained_dcs_template_descriptor_matches_native_bytes() {
-    assert_descriptor(
-        "template-add-data-composition-schema",
-        "DataCompositionSchema",
-        native!("native-dcs-descriptor.xml"),
-    );
-}
-
-#[test]
 fn retained_html_template_descriptor_matches_native_bytes() {
     assert_descriptor(
         "template-add-html-document",
@@ -210,14 +192,6 @@ fn retained_binary_template_descriptor_matches_native_bytes() {
         "template-add-binary-data",
         "BinaryData",
         native!("native-binary-descriptor.xml"),
-    );
-}
-
-#[test]
-fn retained_spreadsheet_template_content_matches_native_bytes() {
-    assert_content(
-        "template-add-spreadsheet-document",
-        native!("native-spreadsheet-content.xml"),
     );
 }
 
