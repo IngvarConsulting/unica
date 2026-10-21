@@ -258,7 +258,11 @@ def bin_targets(crate: Path, package: str) -> dict[str, Path]:
 
 
 def test_items(source: bytes) -> tuple[set[str], set[str]]:
-    """Встроенные модули с тестами и тесты верхнего уровня одного файла."""
+    """Встроенные модули с тестами и тесты верхнего уровня одного файла.
+
+    Файл `include!` разбирается на одну глубину: его `mod x;` и вложенные
+    `include!` не прослеживаются; сегодня таких нет.
+    """
     named, _ = inline_test_modules(source)
     tree = Parser(Language(tree_sitter_rust.language())).parse(source)
     children = tree.root_node.named_children
