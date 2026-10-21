@@ -475,6 +475,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertEqual(sarif["with"]["category"], "clippy-${{ matrix.runner }}")
         self.assertIn("always()", condition(sarif))
         self.assertIn("hashFiles('clippy.sarif') != ''", condition(sarif))
+        self.assertIn("matrix.runner == 'ubuntu-latest'", condition(sarif))
         self.assertEqual(lint["permissions"], {"contents": "read", "security-events": "write"})
         clippy = next(step for step in steps(lint) if "cargo clippy" in step.get("run", ""))
         self.assertNotIn("continue-on-error", clippy)
@@ -539,6 +540,23 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertNotIn("run-tests.py", script(warm))
         self.assertEqual(uploads(warm), [])
         self.assertEqual(steps_using(warm, "taiki-e/install-action"), [])
+
+    def test_pull_request_runs_affected_medium_from_its_ordinary_archive(self) -> None:
+        medium = job(self.release, "run-rust-ordinary-medium")
+        self.assertEqual(needs(medium), ["classify-changes", "build-rust-ordinary", "shadow-component-selection"])
+        for clause in ("!cancelled()", "github.event_name == 'pull_request'", "rust_required == 'true'",
+                       "needs.build-rust-ordinary.result == 'success'"):
+            self.assertIn(clause, condition(medium))
+        self.assertEqual(medium["runs-on"], "ubuntu-latest")
+        self.assertEqual(medium["timeout-minutes"], 30)
+        self.assertIn("--phase medium", script(medium))
+        self.assertNotIn("cargo", script(medium))
+        downloads = [step["with"].get("name") for step in steps_using(medium, "actions/download-artifact")]
+        self.assertEqual(downloads, ["ci-rust-archive-ubuntu-latest-ordinary", "ci-shadow-selection"])
+        self.assertEqual([upload["name"] for upload in uploads(medium)], ["ci-rust-medium-ubuntu-latest"])
+        aggregate = job(self.release, "test-rust-platforms")
+        self.assertIn("run-rust-ordinary-medium", needs(aggregate))
+        self.assertIn("ci-rust-medium-*", [step["with"].get("pattern") for step in steps_using(aggregate, "actions/download-artifact")])
 
     def test_lint_and_test_failures_cannot_cancel_other_validation_jobs(self) -> None:
         for job_id in ("test-python", "lint-rust-platforms", "build-rust-ordinary", "build-rust-receipt", "build-rust-vendor", "run-rust-ordinary", "run-rust-receipt", "run-rust-vendor"):

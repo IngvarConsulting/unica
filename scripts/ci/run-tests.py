@@ -308,7 +308,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--docs-only", nargs="?", const="true", default="false", choices=("true", "false"),
                         help="только Python small для подтверждённого изменения прозы")
     parser.add_argument("--rust-lane", choices=("ordinary", "receipt", "vendor"))
-    parser.add_argument("--phase", choices=("build", "run", "verify"), help="archive producer, shard executor, or inventory verifier")
+    parser.add_argument("--phase", choices=("build", "run", "medium", "verify"),
+                        help="archive producer, shard executor, PR medium executor, or inventory verifier")
     parser.add_argument("--prepared", type=Path, help="immutable lane archive and manifest directory")
     parser.add_argument("--shard", type=int, default=1)
     parser.add_argument("--runners", default="[]", help="JSON runner matrix for complete inventory verification")
@@ -338,7 +339,9 @@ def main(argv: list[str] | None = None) -> int:
             ci_rust_lanes.build(REPO_ROOT, args.prepared, args.rust_lane, args.profile, args.runner, args.line)
             return 0
         if args.results is None:
-            parser.error("--phase run requires --results")
+            parser.error("--phase run/medium requires --results")
+        if args.phase == "medium":
+            return ci_rust_lanes.run_medium(REPO_ROOT, args.prepared, args.results, args.runner, args.shadow)
         return ci_rust_lanes.run_archive(REPO_ROOT, args.prepared, args.results, args.rust_lane, args.profile, args.runner, args.shard, args.line, args.shadow)
 
     if args.python_matrix:
