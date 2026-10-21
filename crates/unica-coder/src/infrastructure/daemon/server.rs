@@ -4365,7 +4365,7 @@ pub(crate) mod actor_capacity_tests {
     }
 
     const ARCHIVE_FIXTURE_BINARY_SKIP: &str =
-        "the ordinary test archive binds its Unica fixture binary; run through run-tests.py --rust-lane ordinary --phase build/run";
+        "the ordinary test archive binds its Unica fixture binary; run through run-tests.py --rust-lane ordinary (phase run or medium over the build archive)";
 
     /// The ordinary archive's prepared `unica`, verified against its producer's
     /// SHA256. `None` only when no lane runner bound it; a bound but damaged

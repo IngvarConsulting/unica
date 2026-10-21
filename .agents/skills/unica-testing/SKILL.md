@@ -167,8 +167,8 @@ override в `.config/nextest.toml`. Nextest-профиль `large` остаёт�
 планом по ревизии, ОС, конфигурации и попытке workflow. Для локальной точечной
 проверки сохраняй обычный nextest-вызов. Исключение — тесты на подготовленный
 бинарь `unica` из ordinary-архива (возможность `archive-fixture-binary`):
-вне `run-tests.py --rust-lane ordinary --phase build`/`run` они пропускаются
-с этой причиной. Ограничения переносимости архивов,
+вне `run-tests.py --rust-lane ordinary` (фазы `run` и `medium` по архиву
+из `build`) они пропускаются с этой причиной. Ограничения переносимости архивов,
 подготовленный ordinary binary для Python и теневой selector описаны
 в [конвейере](references/ci-pipeline.md).
 
