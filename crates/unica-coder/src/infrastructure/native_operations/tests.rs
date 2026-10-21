@@ -1,12 +1,12 @@
 use super::NativeOperationAdapter;
-use crate::domain::cancellation::CancellationToken;
-use crate::domain::code_intelligence::ProviderDeadline;
 use crate::infrastructure::native_operations::typed_result::NativeInvocationContext;
 use crate::infrastructure::workspace::discover_workspace;
 use serde_json::{json, Map};
 use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use unica_work_control::cancellation::CancellationToken;
+use unica_work_control::provider_deadline::ProviderDeadline;
 
 #[test]
 fn missing_native_mutation_handler_is_contract_error() {
@@ -54,8 +54,10 @@ fn subsystem_info_cannot_use_the_uncontrolled_plain_dispatch_path() {
     let descriptor = root.join("Sales.xml");
     fs::write(
         &descriptor,
-        crate::infrastructure::native_operations::subsystem::child_subsystem_stub_xml(
-            "Sales", "2.20",
+        unica_metadata_designer::subsystem::child_subsystem_stub_xml(
+            "Sales",
+            "2.20",
+            crate::infrastructure::source_ids::fresh_uuid,
         ),
     )
     .unwrap();

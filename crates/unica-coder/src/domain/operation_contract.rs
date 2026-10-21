@@ -1,505 +1,45 @@
-//! Argument contracts shared by the operation hint and the apply boundary.
-//! The closed operation registry owns names and applicability; this module
-//! describes and normalizes the arguments consumed by supported planners.
+//! Cross-family contract integration coverage; implementations live with families.
+use serde_json::{json, Value};
+use unica_dcs::contracts::DcsContractExt;
+use unica_forms::contracts::form_move;
+use unica_metadata::contracts::*;
 
-use serde_json::{json, Map, Value};
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use unica_operation_contract::OperationContract;
 
-mod dcs;
-mod event;
-mod form;
-mod metadata;
-mod mxl;
-#[cfg(test)]
-pub(crate) use form::{form_element_enum, FORM_ELEMENT_KINDS};
-pub(crate) use form::{FORM_DYNAMIC_LIST_KEYS, FORM_ELEMENT_EVENT_KEYS, FORM_ELEMENT_NESTED_KEYS};
-#[cfg(test)]
-use metadata::IDENTIFIER_PATTERN;
-pub(crate) use metadata::{
-    metadata_borrow_input_schema, metadata_element_input_schema, metadata_help_create_input_schema,
-    metadata_host_element_schema, metadata_object_create_input_schema,
-    metadata_object_remove_input_schema, metadata_predefined_element_input_schema,
-    metadata_relation_input_schema, MetadataSite,
-};
-
-pub(crate) const MXL_MAX_ROW: i64 = 10_000;
-pub(crate) const MXL_MAX_COLUMN: i64 = 1_000;
-
-/// Preserve the existing integer spelling accepted at the apply boundary,
-/// including leading zeros and a leading plus; hints and planner share it.
-pub(crate) fn parse_mxl_cell_address(key: &str) -> Option<(i64, i64)> {
-    let rest = key.strip_prefix('R')?;
-    let (row, column) = rest.split_once('C')?;
-    let row = row.parse::<i64>().ok()?;
-    let column = column.parse::<i64>().ok()?;
-    ((1..=MXL_MAX_ROW).contains(&row) && (1..=MXL_MAX_COLUMN).contains(&column))
-        .then_some((row, column))
-}
-
-pub(crate) struct OperationContract {
-    pub(crate) schema: Value,
-    pub(crate) target: &'static str,
-    pub(crate) effect: &'static str,
-    pub(crate) notes: &'static str,
-    pub(crate) example_args: Value,
-    /// Plugin reference that explains the use case of the operation.
-    pub(crate) help: &'static str,
-}
-
-const REPORTS_HELP: &str = "references/use-cases/reports-printing.md";
-
-#[derive(Debug, PartialEq)]
-pub(crate) struct ContractError {
-    pub(crate) path: String,
-    pub(crate) message: String,
-}
-
-/// A borrowed part of an existing argument contract. Decoders visit it in
-/// their established diagnostic order, rather than normalizing an entire
-/// request before choosing its target or converting domain values.
-#[derive(Clone, Copy)]
-pub(crate) struct ArgumentShape<'a> {
-    schema: &'a Value,
-}
-
-impl<'a> ArgumentShape<'a> {
-    pub(crate) fn new(schema: &'a Value) -> Self {
-        Self { schema }
-    }
-
-    pub(crate) fn property(self, name: &str) -> Option<Self> {
-        self.schema["properties"]
-            .get(name)
-            .map(Self::new)
-            .or_else(|| {
-                ["oneOf", "anyOf"].into_iter().find_map(|choice| {
-                    self.schema[choice]
-                        .as_array()?
-                        .iter()
-                        .find_map(|schema| Self::new(schema).property(name))
-                })
-            })
-    }
-
-    pub(crate) fn requires(self, name: &str) -> bool {
-        self.required_names().any(|key| key == name)
-    }
-
-    pub(crate) fn property_names(self) -> std::vec::IntoIter<&'a str> {
-        let mut names: Vec<_> = self.schema["properties"]
-            .as_object()
-            .into_iter()
-            .flat_map(|properties| properties.keys().map(String::as_str))
-            .collect();
-        for choice in ["oneOf", "anyOf"] {
-            for branch in self.schema[choice].as_array().into_iter().flatten() {
-                names.extend(Self::new(branch).property_names());
-            }
-        }
-        names.into_iter()
-    }
-
-    pub(crate) fn aliases(self) -> impl Iterator<Item = &'a str> {
-        self.schema["x-unica-aliases"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-    }
-
-    pub(crate) fn alias_groups(self) -> impl Iterator<Item = Vec<&'a str>> {
-        self.schema["x-unica-alias-groups"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .map(|group| {
-                group
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(Value::as_str)
-                    .collect()
-            })
-    }
-
-    pub(crate) fn minimum_properties(self) -> Option<u64> {
-        self.schema["minProperties"].as_u64()
-    }
-
-    pub(crate) fn has_default(self) -> bool {
-        self.schema.get("default").is_some()
-    }
-
-    pub(crate) fn required_names(self) -> impl Iterator<Item = &'a str> {
-        self.schema["required"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-    }
-
-    pub(crate) fn items(self) -> Option<Self> {
-        self.schema.get("items").map(Self::new)
-    }
-
-    pub(crate) fn additional_properties(self) -> Option<Self> {
-        self.schema
-            .get("additionalProperties")
-            .filter(|schema| schema.is_object())
-            .map(Self::new)
-    }
-
-    pub(crate) fn variant(self, discriminator: &str, value: &str) -> Option<Self> {
-        self.schema["oneOf"].as_array()?.iter().find_map(|schema| {
-            schema["properties"][discriminator]["enum"]
-                .as_array()
-                .is_some_and(|values| {
-                    values
-                        .iter()
-                        .any(|candidate| candidate.as_str() == Some(value))
-                })
-                .then(|| Self::new(schema))
-        })
-    }
-
-    /// Uses the existing validator's supported primitive/key constraints.
-    /// Compound Metadata invariants remain with their typed converters;
-    /// this is deliberately not a full JSON Schema interpreter.
-    pub(crate) fn validate_field(self, value: &Value, path: &str) -> Result<(), ContractError> {
-        if value.is_object() || value.is_array() {
-            // The typed converter visits the members and checks compound
-            // constraints in its established order. Check only the container
-            // type here, so a later domain error cannot overtake an earlier
-            // conversion error in another item.
-            self.validate_type(value, path)
-        } else {
-            validate(self.schema, value, path)
-        }
-    }
-
-    pub(crate) fn validate_type(self, value: &Value, path: &str) -> Result<(), ContractError> {
-        let schema = json!({"type": self.schema["type"]});
-        // Metadata's existing typed numeric conversion accepts integral JSON
-        // spellings such as 1.0 and 1e0. Checking their shape must not impose
-        // the legacy normalizer's narrower integer serialization spelling.
-        if self.schema["type"] == "integer"
-            && value
-                .as_f64()
-                .is_some_and(|number| number.is_finite() && number.fract() == 0.0)
-        {
-            return Ok(());
-        }
-        validate(&schema, value, path)
-    }
-}
-
-pub(super) fn text(nonempty: bool) -> Value {
-    if nonempty {
-        json!({"type":"string", "pattern":r"\S"})
-    } else {
-        json!({"type":"string"})
-    }
-}
-
-pub(super) fn object(fields: &[(&str, Value)], required: &[&str]) -> Value {
-    json!({"type":"object", "additionalProperties":false,
-        "properties":fields.iter().map(|(key,value)| (key.to_string(),value.clone())).collect::<Map<_,_>>(),
-        "required":required})
-}
-
-impl OperationContract {
-    pub(crate) fn form_move() -> Self {
-        Self {
-            schema: object(&[("at", text(true)), ("values", object(&[("into", json!({"anyOf":[text(true), {"type":"null"}]})), ("after", text(true))], &["into"]))], &["values"]),
-            target: "The existing Item at its full current path: Owner.Name.Form.F.Item.A[.Item.B…]. The address alone selects the source.",
-            effect: "Move an existing XML subtree, preserving IDs, properties, events and contained companions. Incompatible placements are refused without conversion.",
-            notes: "Names are exact. into is required: use a container name, or null for the form root. Omit after for the end. after must be a direct child of the destination and cannot name the source. Exact placement is a no-op. A failure publishes nothing.",
-            example_args: json!({"values":{"into":"Destination"}}),
-            help: "skills/form-edit/SKILL.md",
-        }
-    }
-
-    pub(crate) fn normalize(&self, args: &Value, path: &str) -> Result<Value, ContractError> {
-        validate(&self.schema, args, path)?;
-        let mut args = args.clone();
-        defaults(&self.schema, &mut args);
-        normalize_aliases(&self.schema, &mut args);
-        Ok(args)
-    }
-
-    pub(crate) fn details(&self) -> Value {
-        json!({"argsSchema":self.schema,"target":self.target,"effect":self.effect,
-            "notes":self.notes,"exampleArgs":self.example_args,
-            "exampleUse":"Read existing targets and required names through view. For creation, choose a new unused name. These argument examples do not establish that their names exist in this workspace.",
-            "help":{"scope":"plugin","path":self.help},
-            "execution":"Preview with at/ops; execute only data.executionToken from the successful plan, then read the post-image and check. Observe the same Task to terminal state; never repeat a mutation to wait for it."})
-    }
-}
-
-/// Compiled grammar of an owned contract pattern. Every pattern comes from a
-/// schema built in this crate, so the set is closed and the cache is bounded.
-/// Compiling the Unicode identifier class anew for each validated argument
-/// dominated apply preflight (#1441).
-///
-/// The shared `Arc` keeps one match cache warm across calls: cloning `Regex`
-/// would start each validation with an empty one.
-fn contract_pattern(pattern: &str) -> Arc<regex::Regex> {
-    static COMPILED: OnceLock<Mutex<HashMap<String, Arc<regex::Regex>>>> = OnceLock::new();
-    let mut compiled = COMPILED
-        .get_or_init(Mutex::default)
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
-    if let Some(regex) = compiled.get(pattern) {
-        return Arc::clone(regex);
-    }
-    let regex = Arc::new(regex::Regex::new(pattern).expect("owned contract pattern"));
-    compiled.insert(pattern.to_owned(), Arc::clone(&regex));
-    regex
-}
-
-fn error(path: &str, message: impl Into<String>) -> ContractError {
-    ContractError {
-        path: path.into(),
-        message: message.into(),
-    }
-}
-
-fn validate(schema: &Value, value: &Value, path: &str) -> Result<(), ContractError> {
-    if schema
-        .get("not")
-        .is_some_and(|excluded| validate(excluded, value, path).is_ok())
-    {
-        return Err(error(path, "argument selects an excluded alternative"));
-    }
-    let valid_type = match schema["type"].as_str() {
-        Some("object") => value.is_object(),
-        Some("array") => value.is_array(),
-        Some("string") => value.is_string(),
-        Some("boolean") => value.is_boolean(),
-        Some("number") => value.is_number(),
-        Some("integer") => value.as_i64().is_some(),
-        Some("null") => value.is_null(),
-        None => true,
-        other => unreachable!("unsupported internal schema type: {other:?}"),
-    };
-    if !valid_type {
-        return Err(error(path, format!("expected {}", schema["type"])));
-    }
-    if let Some(minimum) = schema["minimum"].as_i64() {
-        if value.as_i64().is_none_or(|number| number < minimum) {
-            return Err(error(path, "integer is below the supported minimum"));
-        }
-    }
-    if schema["format"] == "unica-mxl-cell-address"
-        && value
-            .as_str()
-            .is_none_or(|key| parse_mxl_cell_address(key).is_none())
-    {
-        return Err(error(
-            path,
-            format!("expected area-local R<row>C<column>, up to R{MXL_MAX_ROW}C{MXL_MAX_COLUMN}"),
-        ));
-    }
-    if let Some(pattern) = schema["pattern"].as_str() {
-        if !value
-            .as_str()
-            .is_some_and(|text| contract_pattern(pattern).is_match(text))
-        {
-            return Err(error(
-                path,
-                "text does not match the supported argument grammar",
-            ));
-        }
-    }
-    if let Some(values) = schema["enum"].as_array() {
-        if !values.contains(value) {
-            return Err(error(
-                path,
-                "value is not one of the supported alternatives",
-            ));
-        }
-    }
-    // Различитель выбирает вариант по значению ключа (вид элемента формы):
-    // ошибка варианта называет точный путь, а не «ни одна альтернатива».
-    // Без ключа выбирается вариант, у которого различитель имеет `default`.
-    if let (Some(alternatives), Some(key), Some(object)) = (
-        schema["anyOf"].as_array(),
-        schema["x-unica-discriminator"].as_str(),
-        value.as_object(),
-    ) {
-        let selected = object.get(key);
-        let variant = alternatives.iter().find(|variant| {
-            let discriminator = &variant["properties"][key];
-            match selected {
-                Some(selected) => discriminator["enum"]
-                    .as_array()
-                    .is_some_and(|values| values.contains(selected)),
-                None => discriminator.get("default").is_some(),
-            }
-        });
-        return match variant {
-            Some(variant) => validate(variant, value, path),
-            None => Err(error(
-                &format!("{path}.{key}"),
-                "value is not one of the supported alternatives",
-            )),
-        };
-    }
-    if let Some(alternatives) = schema["anyOf"].as_array() {
-        if !alternatives
-            .iter()
-            .any(|choice| validate(choice, value, path).is_ok())
-        {
-            return Err(error(
-                path,
-                "one of the supported argument alternatives must match",
-            ));
-        }
-    }
-    if let Some(object) = value.as_object() {
-        if schema["minProperties"]
-            .as_u64()
-            .is_some_and(|minimum| (object.len() as u64) < minimum)
-        {
-            return Err(error(path, "object must not be empty"));
-        }
-        if let Some(names) = schema.get("propertyNames") {
-            for key in object.keys() {
-                validate(names, &Value::String(key.clone()), &format!("{path}.{key}"))?;
-            }
-        }
-        if schema["additionalProperties"].is_object() {
-            for (key, value) in object {
-                if schema["properties"].get(key).is_none() {
-                    validate(
-                        &schema["additionalProperties"],
-                        value,
-                        &format!("{path}.{key}"),
-                    )?;
-                }
-            }
-        }
-        if let Some(required) = schema["required"].as_array() {
-            for key in required.iter().filter_map(Value::as_str) {
-                if !object.contains_key(key) {
-                    return Err(error(
-                        &format!("{path}.{key}"),
-                        "required argument is missing",
-                    ));
-                }
-            }
-        }
-        if let Some(properties) = schema["properties"].as_object() {
-            for (key, value) in object {
-                match properties.get(key) {
-                    Some(child) => validate(child, value, &format!("{path}.{key}"))?,
-                    None if schema["additionalProperties"] == false => {
-                        return Err(error(&format!("{path}.{key}"), "unknown argument"))
-                    }
-                    None => {}
-                }
-            }
-        }
-    }
-    if let Some(values) = value.as_array() {
-        if schema["minItems"]
-            .as_u64()
-            .is_some_and(|minimum| (values.len() as u64) < minimum)
-        {
-            return Err(error(path, "array must not be empty"));
-        }
-    }
-    if let (Some(items), Some(values)) = (schema.get("items"), value.as_array()) {
-        for (index, value) in values.iter().enumerate() {
-            validate(items, value, &format!("{path}[{index}]"))?;
-        }
-    }
-    Ok(())
-}
-
-fn defaults(schema: &Value, value: &mut Value) {
-    if let (Some(properties), Some(object)) =
-        (schema["properties"].as_object(), value.as_object_mut())
-    {
-        for (key, child) in properties {
-            if !object.contains_key(key) {
-                if let Some(default) = child.get("default") {
-                    object.insert(key.clone(), default.clone());
-                }
-            }
-            if let Some(value) = object.get_mut(key) {
-                defaults(child, value);
-            }
-        }
-    }
-    if let (Some(items), Some(values)) = (schema.get("items"), value.as_array_mut()) {
-        for value in values {
-            defaults(items, value);
-        }
-    }
-}
-
-fn normalize_aliases(schema: &Value, value: &mut Value) {
-    if let Some(object) = value.as_object_mut() {
-        if let Some(names) = schema["x-unica-aliases"].as_array() {
-            let names: Vec<_> = names.iter().filter_map(Value::as_str).collect();
-            let selected = names.iter().find_map(|name| object.get(*name).cloned());
-            for name in &names {
-                object.remove(*name);
-            }
-            if let (Some(canonical), Some(selected)) = (names.first(), selected) {
-                object.insert((*canonical).to_string(), selected);
-            }
-        }
-        if let Some(properties) = schema["properties"].as_object() {
-            for (key, child) in properties {
-                if let Some(value) = object.get_mut(key) {
-                    normalize_aliases(child, value);
-                }
-            }
-        }
-    }
-    if let (Some(items), Some(values)) = (schema.get("items"), value.as_array_mut()) {
-        for value in values {
-            normalize_aliases(items, value);
-        }
-    }
-}
-
+use unica_templates::contracts::parse_mxl_cell_address;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::apply::{OperationFamily, OperationRegistry, IMPLEMENTED_APPLY_OPERATIONS};
-    use crate::domain::role_operation::RoleOperation;
+    use crate::domain::apply::IMPLEMENTED_APPLY_OPERATIONS;
+
+    use unica_operations::OperationFamily;
+    use unica_roles::operations::RoleOperation;
 
     fn dcs_contract(name: &str) -> Option<OperationContract> {
-        crate::domain::dcs_operation::Primitive::named(name)
-            .map(crate::domain::dcs_operation::Primitive::contract)
+        unica_dcs::operations::Primitive::named(name)
+            .map(unica_dcs::operations::Primitive::contract)
     }
 
     #[test]
     fn typed_metadata_contracts_cover_each_registered_identity_and_site() {
-        let sites = std::iter::once(None).chain(
-            crate::domain::metadata::MetadataKind::ALL
-                .iter()
-                .flat_map(|owner| {
-                    [false, true].map(|in_section| {
-                        Some(MetadataSite {
-                            owner: *owner,
-                            in_section,
-                        })
+        let sites = std::iter::once(None).chain(unica_metadata::MetadataKind::ALL.iter().flat_map(
+            |owner| {
+                [false, true].map(|in_section| {
+                    Some(MetadataSite {
+                        owner: *owner,
+                        in_section,
                     })
-                }),
-        );
+                })
+            },
+        ));
         for site in sites {
-            for descriptor in OperationRegistry::closed()
+            for descriptor in crate::domain::apply::operation_registry()
                 .descriptors()
                 .iter()
                 .filter(|descriptor| descriptor.family() == OperationFamily::Metadata)
             {
                 let operation = descriptor
-                    .metadata_operation()
+                    .operation::<unica_metadata::apply_operations::MetadataOperation>()
                     .expect("every Metadata registration is typed");
                 let contract = operation.contract_at(site);
                 assert_eq!(contract.schema["type"], "object", "{}", operation.name());
@@ -510,23 +50,9 @@ mod tests {
         }
     }
 
-    /// Скомпилированная грамматика берётся из кеша по своему шаблону: повторная
-    /// проверка не подменяет одну грамматику другой (#1441).
-    #[test]
-    fn a_contract_pattern_keeps_its_own_grammar_on_repeated_validation() {
-        let identifier = json!({"type": "string", "pattern": IDENTIFIER_PATTERN});
-        let non_blank = json!({"type": "string", "pattern": r"\S"});
-        for _ in 0..2 {
-            assert!(validate(&identifier, &json!("Реквизит_1"), "args").is_ok());
-            assert!(validate(&identifier, &json!("1Реквизит"), "args").is_err());
-            assert!(validate(&non_blank, &json!("1Реквизит"), "args").is_ok());
-            assert!(validate(&non_blank, &json!(" "), "args").is_err());
-        }
-    }
-
     #[test]
     fn mxl_and_template_contracts_cover_examples_and_keep_legacy_value_grammar() {
-        let registry = OperationRegistry::closed();
+        let registry = crate::domain::apply::operation_registry();
         for name in ["mxl.set", "area.add", "template.add"] {
             let descriptor = registry
                 .descriptors()
@@ -543,7 +69,7 @@ mod tests {
     /// ограничение, объект записи прав не аргумент `right.set`.
     #[test]
     fn role_contracts_publish_the_entry_shape() {
-        let registry = OperationRegistry::closed();
+        let registry = crate::domain::apply::operation_registry();
         for descriptor in registry
             .descriptors()
             .iter()
@@ -639,7 +165,7 @@ mod tests {
 
     #[test]
     fn mxl_contract_checks_dynamic_keys_scalars_and_exact_integer_values() {
-        let contract = crate::domain::mxl_operation::MxlOperation::Set.contract();
+        let contract = unica_templates::operations::MxlOperation::Set.contract();
         for key in ["R1C1", "R01C01", "R+1C+1", "R10000C1000"] {
             assert!(
                 contract
@@ -689,7 +215,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.path, "args.values.area");
         // `area.add` называет новую область и её начальные ячейки.
-        let area = crate::domain::mxl_operation::MxlOperation::AreaAdd.contract();
+        let area = unica_templates::operations::MxlOperation::AreaAdd.contract();
         assert!(area
             .normalize(
                 &json!({"items":[{"name":"A","cells":{"R1C1":"x"},"columns":2}]}),
@@ -704,7 +230,7 @@ mod tests {
         ] {
             assert!(area.normalize(&args, "args").is_err(), "{args}");
         }
-        let creation = OperationContract::metadata_template_add();
+        let creation = metadata_template_add();
         for kind in [
             Value::Null,
             json!(7),
@@ -751,7 +277,7 @@ mod tests {
             (json!({"values":{"into":"G","after":null}}), false),
             (json!({"values":{"into":"G","before":"A"}}), false),
         ] {
-            let contract = OperationContract::form_move();
+            let contract = form_move();
             let validator = jsonschema::validator_for(&contract.schema).unwrap();
             assert_eq!(validator.is_valid(&args), accepted, "{args}");
             let normalized = contract.normalize(&args, "ops[3].args");
@@ -760,7 +286,7 @@ mod tests {
                 assert_eq!(normalized.unwrap(), args);
             }
         }
-        let error = OperationContract::form_move()
+        let error = form_move()
             .normalize(&json!({"values":{"into":false}}), "ops[3].args")
             .unwrap_err();
         assert_eq!(error.path, "ops[3].args.values.into");
@@ -768,7 +294,7 @@ mod tests {
 
     #[test]
     fn every_implemented_dcs_operation_has_a_valid_example_and_small_contract() {
-        let registry = OperationRegistry::closed();
+        let registry = crate::domain::apply::operation_registry();
         let mut count = 0;
         for descriptor in registry.descriptors().iter().filter(|descriptor| {
             descriptor.family() == OperationFamily::Dcs

@@ -1,24 +1,23 @@
 // Local, fixed-schema observations of capacity pressure. A lower bound from a
 // refused operation is never a measured size of the full workspace.
 
-use crate::application::result_store::ViewCapacityObserver;
-use crate::infrastructure::daemon::identity::DaemonStateDirectory;
-use crate::infrastructure::platform::filesystem::{
-    create_owner_only_file_child, file_identity, open_absolute_directory_path_nofollow,
-    open_directory_child_nofollow, open_directory_ownership_lock, open_regular_child_nofollow,
-    remove_identity_bound_regular_child, replace_identity_bound_regular_child,
-    restrict_stage_to_owner, sync_directory, verify_owner_only_acl, RetainedDirectoryCapability,
-};
-use crate::infrastructure::platform::process_peak_rss_bytes;
-use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
-use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::Path;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use unica_daemon::identity::DaemonStateDirectory;
+use unica_navigation::result_store::ViewCapacityObserver;
+use unica_process::process_peak_rss_bytes;
+use unica_workspace::state_fs::StateHandle as File;
+use unica_workspace::state_fs::{
+    create_state_file_child, open_state_directory_child, open_state_directory_nofollow,
+    open_state_ownership_lock, open_state_regular_child, remove_state_regular_child,
+    replace_state_regular_child, restrict_state_stage_to_owner, state_file_identity,
+    sync_state_directory, verify_state_owner_only, StateDirectory,
+};
 
 const DIRECTORY_NAME: &str = "capacity-observation";
 const SNAPSHOT_NAME: &str = "snapshot-v1.json";
@@ -196,12 +195,12 @@ fn encode_snapshot(snapshot: &CapacitySnapshot) -> io::Result<Vec<u8>> {
 }
 
 fn read_snapshot(directory: &File) -> io::Result<Option<CapacitySnapshot>> {
-    let file = match open_regular_child_nofollow(directory, OsStr::new(SNAPSHOT_NAME)) {
+    let file = match open_state_regular_child(directory, OsStr::new(SNAPSHOT_NAME)) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
-    verify_owner_only_acl(&file)?;
+    verify_state_owner_only(&file)?;
     let mut bytes = Vec::new();
     file.take((MAX_SNAPSHOT_BYTES + 1) as u64)
         .read_to_end(&mut bytes)?;
@@ -231,18 +230,18 @@ fn read_snapshot(directory: &File) -> io::Result<Option<CapacitySnapshot>> {
 pub(crate) fn read_existing_snapshot(
     daemon_identity_path: &Path,
 ) -> io::Result<Option<CapacitySnapshot>> {
-    let identity = match open_absolute_directory_path_nofollow(daemon_identity_path) {
+    let identity = match open_state_directory_nofollow(daemon_identity_path) {
         Ok(directory) => directory,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
-    verify_owner_only_acl(&identity)?;
-    let directory = match open_directory_child_nofollow(&identity, OsStr::new(DIRECTORY_NAME)) {
+    verify_state_owner_only(&identity)?;
+    let directory = match open_state_directory_child(&identity, OsStr::new(DIRECTORY_NAME)) {
         Ok(directory) => directory,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
-    verify_owner_only_acl(&directory)?;
+    verify_state_owner_only(&directory)?;
     read_snapshot(&directory)
 }
 
@@ -258,27 +257,27 @@ pub(crate) fn read_existing_snapshot_json(
 }
 
 fn remove_stale_stage(directory: &File) -> io::Result<()> {
-    let file = match open_regular_child_nofollow(directory, OsStr::new(STAGING_NAME)) {
+    let file = match open_state_regular_child(directory, OsStr::new(STAGING_NAME)) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error),
     };
-    verify_owner_only_acl(&file)?;
-    let identity = file_identity(&file)?;
-    remove_identity_bound_regular_child(directory, OsStr::new(STAGING_NAME), identity, &file)?;
+    verify_state_owner_only(&file)?;
+    let identity = state_file_identity(&file)?;
+    remove_state_regular_child(directory, OsStr::new(STAGING_NAME), identity, &file)?;
     Ok(())
 }
 
 fn persist_snapshot(directory: &File, snapshot: &CapacitySnapshot) -> io::Result<()> {
     let bytes = encode_snapshot(snapshot)?;
     remove_stale_stage(directory)?;
-    let mut file = create_owner_only_file_child(directory, OsStr::new(STAGING_NAME))?;
-    let identity = file_identity(&file)?;
-    if let Err(error) = restrict_stage_to_owner(&file)
+    let mut file = create_state_file_child(directory, OsStr::new(STAGING_NAME))?;
+    let identity = state_file_identity(&file)?;
+    if let Err(error) = restrict_state_stage_to_owner(&file)
         .and_then(|()| file.write_all(&bytes))
         .and_then(|()| file.sync_all())
         .and_then(|()| {
-            replace_identity_bound_regular_child(
+            replace_state_regular_child(
                 directory,
                 OsStr::new(STAGING_NAME),
                 identity,
@@ -286,14 +285,9 @@ fn persist_snapshot(directory: &File, snapshot: &CapacitySnapshot) -> io::Result
                 OsStr::new(SNAPSHOT_NAME),
             )
         })
-        .and_then(|()| sync_directory(directory))
+        .and_then(|()| sync_state_directory(directory))
     {
-        let _ = remove_identity_bound_regular_child(
-            directory,
-            OsStr::new(STAGING_NAME),
-            identity,
-            &file,
-        );
+        let _ = remove_state_regular_child(directory, OsStr::new(STAGING_NAME), identity, &file);
         return Err(error);
     }
     Ok(())
@@ -349,13 +343,13 @@ fn start_background_writer_inner(
     let retained = state
         .create_private_retained_subdirectory(DIRECTORY_NAME)
         .map_err(io::Error::other)?;
-    let directory = retained.try_clone_directory()?;
+    let directory = retained.open_retained_handle()?;
     // The receipt owner starts this writer only after it has published and
     // revalidated its endpoint. Keep a separate physical lock for the entire
     // observation lifetime, including the final flush, so a replacement
     // receipt owner cannot write the same aggregate concurrently.
-    let writer_lock = open_directory_ownership_lock(&directory, OsStr::new(WRITER_LOCK_NAME))?;
-    verify_owner_only_acl(&writer_lock)?;
+    let writer_lock = open_state_ownership_lock(&directory, OsStr::new(WRITER_LOCK_NAME))?;
+    verify_state_owner_only(&writer_lock)?;
     writer_lock.try_lock_exclusive()?;
     if let Some(prior) = read_snapshot(&directory)? {
         observer.restore(prior);
@@ -387,7 +381,7 @@ fn start_background_writer_inner(
 }
 
 fn background_flush_loop(
-    retained: RetainedDirectoryCapability,
+    retained: StateDirectory,
     observer: Arc<CapacityObserver>,
     authority_valid: Arc<dyn Fn() -> bool + Send + Sync>,
     writer_lock: File,
@@ -432,14 +426,11 @@ fn background_flush_loop(
     }
 }
 
-fn flush_snapshot(
-    retained: &RetainedDirectoryCapability,
-    observer: &CapacityObserver,
-) -> io::Result<()> {
+fn flush_snapshot(retained: &StateDirectory, observer: &CapacityObserver) -> io::Result<()> {
     retained
         .validate_named_identity()
         .map_err(io::Error::other)?;
-    let directory = retained.try_clone_directory()?;
+    let directory = retained.open_retained_handle()?;
     let mut snapshot = observer.snapshot();
     snapshot.snapshot_captured_unix_ms = Some(
         u64::try_from(
@@ -503,7 +494,7 @@ mod tests {
 
     #[test]
     fn snapshot_replacement_is_atomic_and_bounded() {
-        use crate::infrastructure::daemon::identity::CoreIdentity;
+        use unica_daemon::identity::CoreIdentity;
 
         let root = tempfile::tempdir().unwrap();
         let root = root.path().canonicalize().unwrap();
@@ -567,8 +558,8 @@ mod tests {
 
     #[test]
     fn report_reader_rejects_symlink_without_following_it() {
-        use crate::infrastructure::daemon::identity::CoreIdentity;
-        use crate::infrastructure::platform::testing::{
+        use unica_daemon::identity::CoreIdentity;
+        use unica_workspace::test_support::{
             create_directory_link_fixture_for_test, FileLinkFixtureOutcome,
         };
 
@@ -596,8 +587,8 @@ mod tests {
 
     #[test]
     fn report_reader_rejects_linked_snapshot_and_storage_failure_is_fail_open() {
-        use crate::infrastructure::daemon::identity::CoreIdentity;
-        use crate::infrastructure::platform::testing::{
+        use unica_daemon::identity::CoreIdentity;
+        use unica_workspace::test_support::{
             create_file_link_fixture_for_test, FileLinkFixtureOutcome,
         };
 
@@ -628,7 +619,7 @@ mod tests {
 
     #[test]
     fn short_lived_daemon_flushes_on_shutdown() {
-        use crate::infrastructure::daemon::identity::CoreIdentity;
+        use unica_daemon::identity::CoreIdentity;
 
         let root = tempfile::tempdir().unwrap();
         let root = root.path().canonicalize().unwrap();
@@ -645,7 +636,7 @@ mod tests {
 
     #[test]
     fn shutdown_without_authority_preserves_snapshot_and_reports_unauthorized() {
-        use crate::infrastructure::daemon::identity::CoreIdentity;
+        use unica_daemon::identity::CoreIdentity;
 
         let root = tempfile::tempdir().unwrap();
         let root = root.path().canonicalize().unwrap();
@@ -653,12 +644,12 @@ mod tests {
         let retained = state
             .create_private_retained_subdirectory(DIRECTORY_NAME)
             .unwrap();
-        let directory = retained.try_clone_directory().unwrap();
+        let directory = retained.open_retained_handle().unwrap();
         let prior = CapacitySnapshot::default();
         persist_snapshot(&directory, &prior).unwrap();
         let before = std::fs::read(state.path().join(DIRECTORY_NAME).join(SNAPSHOT_NAME)).unwrap();
         let writer_lock =
-            open_directory_ownership_lock(&directory, OsStr::new(WRITER_LOCK_NAME)).unwrap();
+            open_state_ownership_lock(&directory, OsStr::new(WRITER_LOCK_NAME)).unwrap();
         writer_lock.try_lock_exclusive().unwrap();
 
         let observer = Arc::new(CapacityObserver::default());
@@ -690,7 +681,7 @@ mod tests {
 
     #[test]
     fn one_state_directory_admits_only_one_capacity_writer() {
-        use crate::infrastructure::daemon::identity::CoreIdentity;
+        use unica_daemon::identity::CoreIdentity;
 
         let root = tempfile::tempdir().unwrap();
         let root = root.path().canonicalize().unwrap();
@@ -718,7 +709,7 @@ mod tests {
 
     #[test]
     fn acknowledged_shutdown_releases_ownership_before_the_worker_returns() {
-        use crate::infrastructure::daemon::identity::CoreIdentity;
+        use unica_daemon::identity::CoreIdentity;
 
         for expected in [
             CapacityFlushResult::Saved,
@@ -773,7 +764,7 @@ mod tests {
 
     #[test]
     fn unsupported_snapshot_version_is_preserved_and_disables_observation() {
-        use crate::infrastructure::daemon::identity::CoreIdentity;
+        use unica_daemon::identity::CoreIdentity;
 
         let root = tempfile::tempdir().unwrap();
         let root = root.path().canonicalize().unwrap();
@@ -782,7 +773,7 @@ mod tests {
         let mut future = CapacitySnapshot::default();
         future.schema_version += 1;
         let bytes = encode_snapshot(&future).unwrap();
-        let mut file = create_owner_only_file_child(&directory, OsStr::new(SNAPSHOT_NAME)).unwrap();
+        let mut file = create_state_file_child(&directory, OsStr::new(SNAPSHOT_NAME)).unwrap();
         file.write_all(&bytes).unwrap();
         file.sync_all().unwrap();
 

@@ -2,18 +2,22 @@ use super::operation_descriptors::{
     diagnostic_action_descriptor, native_operation_descriptor, native_path_alias_groups,
     DIAGNOSTIC_ACTION_DESCRIPTORS,
 };
-use super::source_navigation::SOURCE_NAVIGATION_LIMIT_MAX;
 #[cfg(test)]
 use super::ToolExecution;
 use super::{CodeIntelligenceOperation, InvocationMode, RuntimeJobAction, ToolHandler, ToolSpec};
-use crate::domain::diagnostics::{DiagnosticAction, LIVE_DIAGNOSTIC_PROVIDERS};
-use crate::domain::form_edit::{form_edit_definition_schema, validate_form_edit_definition};
-use crate::domain::role::{
+use serde_json::{json, Map, Value};
+use std::collections::BTreeSet;
+pub(crate) use unica_diagnostics::deadlines::{
+    DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS, DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS,
+};
+use unica_diagnostics::model::DiagnosticAction;
+use unica_diagnostics::model::LIVE_DIAGNOSTIC_PROVIDERS;
+use unica_forms::{form_edit_definition_schema, validate_form_edit_definition};
+use unica_navigation::source_navigation::SOURCE_NAVIGATION_LIMIT_MAX;
+use unica_roles::{
     all_role_right_names, parse_role_edit_request, ROLE_METADATA_PATH_PATTERN,
     ROLE_OBJECT_NAME_PATTERN,
 };
-use serde_json::{json, Map, Value};
-use std::collections::BTreeSet;
 use uuid::Uuid;
 
 const COMMON_ARGS: &[&str] = &["cwd", "confirm"];
@@ -101,8 +105,6 @@ const XDTO_EDIT_OPS: &[&str] = &[
 const RUNTIME_JOB_STATUS_ARGS: &[&str] = &["jobId"];
 const RUNTIME_JOB_WAIT_ARGS: &[&str] = &["jobId", "timeoutSeconds"];
 const RUNTIME_JOB_LOGS_ARGS: &[&str] = &["jobId", "tailChars"];
-pub(crate) const DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS: u64 = 30;
-pub(crate) const DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS: u64 = 3600;
 
 const CFE_PATCH_METHOD_CONTEXTS: &[&str] = &["НаСервере", "НаКлиенте", "НаСервереБезКонтекста"];
 const CFE_PATCH_METHOD_INTERCEPTOR_TYPES: &[&str] = &["Before", "After"];
@@ -574,7 +576,7 @@ pub fn input_schema_for_tool(tool: &ToolSpec) -> Value {
         return diagnostics_input_schema();
     }
     if let ToolHandler::Metadata { operation } = tool.handler {
-        return super::metadata::metadata_input_schema(operation);
+        return unica_metadata::request::metadata_input_schema(operation);
     }
     let mut property_names = allowed_args(tool);
     if let ToolHandler::NativeOperation { operation, .. } = tool.handler {
@@ -961,7 +963,7 @@ pub fn validate_tool_argument_shape(
     args: &Map<String, Value>,
 ) -> Result<(), String> {
     if let ToolHandler::Metadata { operation } = tool.handler {
-        return super::metadata::validate_metadata_argument_shape(operation, args).map_err(
+        return unica_metadata::request::validate_metadata_argument_shape(operation, args).map_err(
             |failure| {
                 let detail = failure
                     .diagnostics
@@ -997,7 +999,7 @@ pub fn validate_tool_argument_semantics(
     mode: InvocationMode,
 ) -> Result<(), String> {
     if let ToolHandler::Metadata { operation } = tool.handler {
-        return super::metadata::parse_metadata_request_after_shape(operation, args)
+        return unica_metadata::request::parse_metadata_request_after_shape(operation, args)
             .map(|_| ())
             .map_err(|failure| {
                 let detail = failure
@@ -2258,8 +2260,8 @@ fn allowed_args(tool: &ToolSpec) -> Vec<&'static str> {
             }
             // the deferred-capable readers publish the continuation
             // vocabulary alongside their own arguments.
-            if super::deferred_delivery::supports_operation(operation) {
-                names.extend(super::deferred_delivery::CONTINUATION_ARGS);
+            if unica_navigation::deferred_delivery::supports_operation(operation) {
+                names.extend(unica_navigation::deferred_delivery::CONTINUATION_ARGS);
             }
         }
         ToolHandler::BuildRuntime { command, .. } => {
@@ -3136,7 +3138,7 @@ fn description_for_arg(name: &str) -> Option<&'static str> {
 
 fn property_schema_for_tool(tool: &ToolSpec, name: &str) -> Value {
     if let ToolHandler::NativeOperation { operation, .. } = tool.handler {
-        if super::deferred_delivery::supports_operation(operation) {
+        if unica_navigation::deferred_delivery::supports_operation(operation) {
             match name {
                 "resultRef" => return json!({"type": "string", "minLength": 1}),
                 "section" => return json!({"type": "string", "minLength": 1}),
@@ -3552,7 +3554,7 @@ fn expected_scalar_type(key: &str) -> Option<&'static str> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::application::metadata::MetadataOperation;
+
     use crate::application::{tools, ResultContract, ToolExecution};
 
     #[test]
@@ -3598,21 +3600,21 @@ pub(crate) mod tests {
         );
     }
 
-    fn metadata_tool(operation: MetadataOperation) -> ToolSpec {
+    fn metadata_tool(operation: unica_metadata::request::MetadataOperation) -> ToolSpec {
         ToolSpec {
             name: match operation {
-                MetadataOperation::Info => "unica.meta.info",
-                MetadataOperation::Add => "unica.meta.add",
-                MetadataOperation::Edit => "unica.meta.edit",
+                unica_metadata::request::MetadataOperation::Info => "unica.meta.info",
+                unica_metadata::request::MetadataOperation::Add => "unica.meta.add",
+                unica_metadata::request::MetadataOperation::Edit => "unica.meta.edit",
             },
             description: "direct metadata contract test",
-            execution: if matches!(operation, MetadataOperation::Info) {
+            execution: if matches!(operation, unica_metadata::request::MetadataOperation::Info) {
                 ToolExecution::Read
             } else {
                 ToolExecution::Mutation
             },
             result_contract: ResultContract::Typed,
-            cache_access: crate::domain::cache::CacheAccess::default(),
+            cache_access: unica_workspace::cache::CacheAccess::default(),
             handler: ToolHandler::Metadata { operation },
         }
     }
@@ -4201,7 +4203,10 @@ pub(crate) mod tests {
         // context before the caller supplies any task data. Kind correlation
         // once expanded the response to 2.4 MB, so keep each standalone schema
         // below the reviewed compact-JSON budget while retaining closed shapes.
-        for operation in [MetadataOperation::Add, MetadataOperation::Edit] {
+        for operation in [
+            unica_metadata::request::MetadataOperation::Add,
+            unica_metadata::request::MetadataOperation::Edit,
+        ] {
             let schema = input_schema_for_tool(&metadata_tool(operation));
             let compact_bytes = serde_json::to_vec(&schema)
                 .expect("metadata input schema must serialize as compact JSON")

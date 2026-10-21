@@ -5,16 +5,16 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/v13_extensions.rs::only_mutating_extension_calls_detach_from_cancellation
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs::cancellation_after_create_keeps_the_confirmation_probe_and_receipt
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::restore_detaches_only_its_mutating_call
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::protected_mutation_preserves_success_and_failure_after_cancel_request
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::noncooperative_cancel_keeps_only_its_task_while_the_daemon_serves_others
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::protected_mutation_preserves_success_and_failure_after_cancel_request
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::noncooperative_cancel_keeps_only_its_task_while_the_daemon_serves_others
   - crates/unica-coder/src/infrastructure/daemon/server.rs::mutating_runner_cancel_keeps_the_factual_receipt_over_the_v5_daemon_wire
   - crates/unica-coder/src/interfaces/mcp.rs::public_task_cancel_and_result_preserve_a_started_infobase_create_receipt
   - crates/unica-coder/src/interfaces/mcp.rs::public_native_cancel_waits_for_slow_job_attach_before_answering
   - crates/unica-coder/src/interfaces/mcp.rs::native_task_get_reports_late_cancel_request_without_claiming_cancellation
-  - crates/unica-coder/src/infrastructure/platform/process.rs::protected_process_finishes_after_cancellation_on_every_host
-  - crates/unica-coder/src/infrastructure/platform/process.rs::slow_job_attach_delays_cancel_without_starting_the_mutation_early
-  - crates/unica-coder/src/domain/cancellation.rs::cancellation_waits_for_in_flight_protected_dispatch
-  - crates/unica-coder/src/infrastructure/task_store_v5.rs::completed_provider_receipt_survives_a_late_task_cancel_request
+  - crates/unica-process/src/platform/process.rs::protected_process_finishes_after_cancellation_on_every_host
+  - crates/unica-process/src/platform/process.rs::slow_job_attach_delays_cancel_without_starting_the_mutation_early
+  - crates/unica-work-control/src/cancellation.rs::cancellation_waits_for_in_flight_protected_dispatch
+  - crates/unica-execution/src/task_store.rs::completed_provider_receipt_survives_a_late_task_cancel_request
 ---
 
 # Отмена не обрывает начатое изменение информационной базы

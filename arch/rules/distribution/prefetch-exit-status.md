@@ -1,7 +1,7 @@
 ---
 id: INV.PKG.PREFETCH-EXIT-STATUS
 check:
-  - crates/unica-bootstrap/tests/runtime_install.rs::prefetch_cli_reports_success_and_artifact_disk_failures
+  - crates/unica-bootstrap/tests/prefetch_cli.rs::prefetch_cli_reports_success_and_artifact_disk_failures
 gap: https://github.com/IngvarConsulting/unica/issues/952
 ---
 

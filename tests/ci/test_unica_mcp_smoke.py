@@ -13,6 +13,8 @@ import unittest
 from contextlib import contextmanager
 from pathlib import Path
 
+from scripts.ci.prepared_binary import ensure_binary
+
 
 MCP_HANDSHAKE_ID = "unica-ci-handshake"
 MCP_INITIALIZE_PARAMS = {
@@ -110,7 +112,7 @@ class UnicaMcpSmokeTests(unittest.TestCase):
         if cache_dir is not None:
             env["UNICA_CACHE_DIR"] = str(cache_dir)
         process = subprocess.Popen(
-            ["cargo", "run", "--quiet", "--bin", "unica", "--"],
+            [str(ensure_binary(self.repo_root()))],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -202,16 +204,7 @@ class UnicaMcpSmokeTests(unittest.TestCase):
             env.update(extra_env)
         process = subprocess.Popen(
             command
-            or [
-                "cargo",
-                "run",
-                "--quiet",
-                "--manifest-path",
-                str(self.repo_root() / "Cargo.toml"),
-                "--bin",
-                "unica",
-                "--",
-            ],
+            or [str(ensure_binary(self.repo_root()))],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -381,27 +374,7 @@ class UnicaMcpSmokeTests(unittest.TestCase):
             )
             bootstrap.chmod(0o755)
             subprocess.run(["git", "init", "--quiet"], cwd=launch_dir, check=True)
-            build = subprocess.run(
-                [
-                    "cargo",
-                    "build",
-                    "--quiet",
-                    "--bin",
-                    "unica",
-                    "--message-format=json-render-diagnostics",
-                ],
-                cwd=self.repo_root(),
-                check=True,
-                text=True,
-                stdout=subprocess.PIPE,
-            )
-            core = next(
-                Path(message["executable"])
-                for line in build.stdout.splitlines()
-                if (message := json.loads(line)).get("reason") == "compiler-artifact"
-                and message["target"]["name"] == "unica"
-                and message.get("executable")
-            )
+            core = ensure_binary(self.repo_root())
             command = [server["command"], *server["args"]]
             entry_env = {
                 **server.get("env", {}),

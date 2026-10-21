@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use crate::error::{BootstrapError, Result};
+use unica_artifact_delivery::{BootstrapError, Result};
 
 /// Что загрузчик передаёт рантайму при запуске.
 ///

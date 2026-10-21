@@ -5,10 +5,10 @@ check:
   - crates/unica-coder/src/infrastructure/v13_read/tests/catalog_attribute_tooltip.rs::catalog_attribute_tooltip_absence_and_explicit_empty_values_remain_distinct
   - crates/unica-coder/src/infrastructure/v13_read/tests/catalog_attribute_properties.rs::catalog_attribute_profile_damage_limits_only_the_named_fact_in_owner_row_and_detail
   - crates/unica-coder/src/infrastructure/v13_read/tests/catalog_attribute_properties.rs::catalog_attribute_profile_absence_is_not_filled_from_parent_sibling_or_template
-  - crates/unica-coder/src/domain/metadata/member_read_profile/tests.rs::member_profile_owns_only_exact_context_property_diagnostics
+  - crates/unica-metadata/src/member_read_profile/tests.rs::member_profile_owns_only_exact_context_property_diagnostics
   - crates/unica-coder/src/infrastructure/v13_read/tests/catalog_tabular_properties.rs::catalog_tabular_profile_damage_is_local_to_the_observed_fact
   - crates/unica-coder/src/infrastructure/v13_read/tests/catalog_tabular_properties.rs::catalog_tabular_profile_missing_facts_are_not_filled_from_sibling_or_template
-  - crates/unica-coder/src/infrastructure/native_operations/meta/form_metadata.rs::form_use_purposes_preserves_absence_empty_and_malformed_observations
+  - crates/unica-metadata-designer/src/form_metadata.rs::form_use_purposes_preserves_absence_empty_and_malformed_observations
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::specialized_relation_limits_distinguish_absence_empty_and_damage
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::missing_relation_preserves_known_targets_and_reports_incompleteness
   - crates/unica-coder/src/infrastructure/native_operations/meta/info_tests.rs::missing_write_mode_does_not_claim_complete_registrar_evidence

@@ -2,10 +2,10 @@
 id: INV.SOURCE.PORTABLE-GIT
 check:
   - crates/unica-coder/tests/platform/project_health.rs::portable_git_readiness_contract_is_a_closed_positive_and_negative_matrix
-  - crates/unica-coder/src/infrastructure/project_health/git.rs::project_health_git_untracked_gitignore_is_local_only
-  - crates/unica-coder/src/infrastructure/project_health/git.rs::project_health_git_ignore_uses_staged_empty_file_not_valid_worktree_file
-  - crates/unica-coder/src/domain/project_health.rs::project_health_serializes_independent_source_and_repository_readiness
-  - crates/unica-coder/src/domain/project_health.rs::incomplete_repository_fact_serializes_its_check_as_not_run
+  - crates/unica-project-health/tests/platform/project_health_git.rs::project_health_git_untracked_gitignore_is_local_only
+  - crates/unica-project-health/tests/platform/project_health_git.rs::project_health_git_ignore_uses_staged_empty_file_not_valid_worktree_file
+  - crates/unica-project-health/src/model/mod.rs::project_health_serializes_independent_source_and_repository_readiness
+  - crates/unica-project-health/src/model/mod.rs::incomplete_repository_fact_serializes_its_check_as_not_run
   - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_view_bootstrap_separates_source_and_repository_readiness
 ---
 

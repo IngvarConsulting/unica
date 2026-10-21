@@ -1,7 +1,7 @@
-use crate::application::invocation_store_v5::V5SafeFailureReason;
-use crate::domain::invocation::{DomainResult, InvocationStatus, TaskId};
-use crate::domain::refusal::{RefusalCode, RefusalDetail};
 use serde_json::{json, Map, Value};
+use unica_execution::invocation_store_v5::V5SafeFailureReason;
+use unica_execution_contract::invocation::{DomainResult, InvocationStatus, TaskId};
+use unica_refusal::{RefusalCode, RefusalDetail};
 
 pub(crate) const DEFAULT_TASK_RESULT_WAIT_MS: u64 = 7_000;
 
@@ -366,10 +366,10 @@ mod tests {
         task_tool_error_result, CompatibilityProjection, CompatibilityTaskSnapshot, TaskToolAction,
         TaskToolError,
     };
-    use crate::application::invocation_store_v5::V5SafeFailureReason;
-    use crate::domain::invocation::{DomainResult, InvocationStatus, TaskId};
-    use crate::domain::refusal::RefusalDetail;
     use serde_json::{json, Map, Value};
+    use unica_execution::invocation_store_v5::V5SafeFailureReason;
+    use unica_execution_contract::invocation::{DomainResult, InvocationStatus, TaskId};
+    use unica_refusal::RefusalDetail;
 
     fn arguments(value: Value) -> Map<String, Value> {
         value.as_object().expect("argument object").clone()

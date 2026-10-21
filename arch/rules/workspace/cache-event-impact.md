@@ -1,11 +1,11 @@
 ---
 id: INV.CACHE.EVENT-IMPACT-CLOSED
 check:
-  - crates/unica-coder/src/domain/cache.rs::the_kind_list_covers_the_whole_enum
-  - crates/unica-coder/src/domain/cache.rs::every_event_invalidates_at_least_one_cache
-  - crates/unica-coder/src/domain/cache.rs::no_event_refreshes_a_cache_it_did_not_invalidate
-  - crates/unica-coder/src/domain/cache.rs::from_events_unions_the_impact_of_every_event
-  - crates/unica-coder/src/domain/cache.rs::no_events_leave_the_impact_empty
+  - crates/unica-workspace/src/cache.rs::the_kind_list_covers_the_whole_enum
+  - crates/unica-workspace/src/cache.rs::every_event_invalidates_at_least_one_cache
+  - crates/unica-workspace/src/cache.rs::no_event_refreshes_a_cache_it_did_not_invalidate
+  - crates/unica-workspace/src/cache.rs::from_events_unions_the_impact_of_every_event
+  - crates/unica-workspace/src/cache.rs::no_events_leave_the_impact_empty
 gap: https://github.com/IngvarConsulting/unica/issues/978
 ---
 

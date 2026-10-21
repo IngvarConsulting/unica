@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import unittest
 from pathlib import Path
 from typing import Any
@@ -84,10 +85,10 @@ Prose resembling JSON: `"SubsystemPath": "Subsystems/Ложная/Subsystems"`.
 
     def test_address_is_separate_from_metadata_address(self) -> None:
         subsystem = (
-            REPO_ROOT / "crates/unica-coder/src/domain/subsystem.rs"
+            REPO_ROOT / "crates/unica-metadata/src/subsystem.rs"
         ).read_text(encoding="utf-8")
         source_target = (
-            REPO_ROOT / "crates/unica-coder/src/domain/source_target.rs"
+            REPO_ROOT / "crates/unica-address/src/source_target.rs"
         ).read_text(encoding="utf-8")
 
         self.assertIn("pub struct SubsystemAddress", subsystem)
@@ -100,19 +101,29 @@ Prose resembling JSON: `"SubsystemPath": "Subsystems/Ложная/Subsystems"`.
     def test_subsystem_result_owns_structure_not_object_memberships(self) -> None:
         runtime = (
             REPO_ROOT
-            / "crates/unica-coder/src/infrastructure/native_operations/subsystem.rs"
+            / "crates/unica-metadata/src/subsystem.rs"
         ).read_text(encoding="utf-8")
         application = (
             REPO_ROOT / "crates/unica-coder/src/application/mod.rs"
         ).read_text(encoding="utf-8")
 
-        answer = runtime.split("pub(crate) enum SubsystemInfoAnswer", 1)[1].split(
-            "pub(crate) struct SubsystemGroupData", 1
-        )[0]
+        answer_item = re.search(
+            r"^pub enum SubsystemInfoAnswer \{(.*?)^\}",
+            runtime,
+            re.MULTILINE | re.DOTALL,
+        )
+        self.assertIsNotNone(answer_item, "SubsystemInfoAnswer enum not found")
+        answer = answer_item.group(1)
+        result_item = re.search(
+            r"^pub struct SubsystemInfoResult \{(.*?)^\}",
+            runtime,
+            re.MULTILINE | re.DOTALL,
+        )
+        self.assertIsNotNone(result_item, "SubsystemInfoResult struct not found")
         self.assertIn("Tree { tree: Vec<SubsystemTreeNode> }", answer)
         self.assertNotIn("functional_subsystems", answer)
         self.assertNotIn("interface_subsystems", answer)
-        self.assertIn("pub(crate) tree: Option<Vec<SubsystemTreeNode>>", runtime)
+        self.assertIn("pub tree: Option<Vec<SubsystemTreeNode>>", result_item.group(1))
         self.assertNotIn("full or focused registered tree", application)
 
         tool_contracts = (

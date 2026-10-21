@@ -1,7 +1,7 @@
 ---
 id: INV.APP.PROVIDER-NEUTRAL
 check:
-  - crates/unica-coder/src/domain/code_intelligence.rs::registry_resolves_an_executable_provider_for_read_capabilities
+  - crates/unica-code-intelligence/src/model/mod.rs::registry_resolves_an_executable_provider_for_read_capabilities
 ---
 
 # Чтение кода получает поставщик с нужной возможностью

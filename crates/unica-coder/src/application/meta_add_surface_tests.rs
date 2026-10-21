@@ -2,10 +2,10 @@ use super::{OperationResult, UnicaApplication};
 use crate::composition::testing::{
     with_meta_add_after_authorization_hook, with_meta_edit_before_reauthorization_hook,
 };
-use crate::domain::cancellation::CancellationToken;
-use crate::test_support::{tree_snapshot, ProcessCwdGuard};
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
+use unica_work_control::cancellation::CancellationToken;
+use unica_workspace::test_support::{tree_snapshot, ProcessCwdGuard};
 use uuid::Uuid;
 
 const METADATA_KINDS: &[&str] = &[

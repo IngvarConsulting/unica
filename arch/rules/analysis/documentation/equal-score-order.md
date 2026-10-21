@@ -1,7 +1,7 @@
 ---
 id: INV.APP.SEARCH-TIE-ORDER
 check:
-  - crates/unica-coder/src/infrastructure/documentation_retrieval.rs::ties_break_by_document_index_deterministically
+  - crates/unica-documentation-sources/src/documentation_retrieval.rs::ties_break_by_document_index_deterministically
 ---
 
 # Равные оценки поиска сохраняют порядок документов в корпусе

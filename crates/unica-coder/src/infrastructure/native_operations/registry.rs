@@ -1,10 +1,8 @@
-use crate::application::AdapterOutcome;
-use crate::domain::workspace::WorkspaceContext;
 use serde_json::{Map, Value};
+use unica_execution_contract::adapter_outcome::AdapterOutcome;
+use unica_source_contract::workspace::WorkspaceContext;
 
-use super::{
-    cf, cfe, dcs, external, form, interface, mxl, role, subsystem, support, template, xdto,
-};
+use super::{cf, cfe, dcs, external, mxl_composition, role, xdto};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TypedMutationHandler {
@@ -92,12 +90,23 @@ pub(crate) fn invoke_read(
 ) -> Option<Result<AdapterOutcome, String>> {
     cf::invoke_read(operation, tool_name, args, context)
         .or_else(|| cfe::invoke_read(operation, tool_name, args, context))
-        .or_else(|| form::invoke_read(operation, tool_name, args, context))
-        .or_else(|| interface::invoke_read(operation, tool_name, args, context))
-        .or_else(|| subsystem::invoke_read(operation, tool_name, args, context))
-        .or_else(|| template::invoke_read(operation, tool_name, args, context))
+        .or_else(|| {
+            crate::infrastructure::form_composition::invoke_read(
+                operation, tool_name, args, context,
+            )
+        })
+        .or_else(|| {
+            crate::infrastructure::interface_composition::invoke_read(
+                operation, tool_name, args, context,
+            )
+        })
+        .or_else(|| {
+            crate::infrastructure::subsystem_composition::invoke_read(
+                operation, tool_name, args, context,
+            )
+        })
         .or_else(|| dcs::invoke_read(operation, tool_name, args, context))
-        .or_else(|| mxl::invoke_read(operation, tool_name, args, context))
+        .or_else(|| mxl_composition::invoke_read(operation, tool_name, args, context))
         .or_else(|| role::invoke_read(operation, tool_name, args, context))
         .or_else(|| xdto::invoke_read(operation, tool_name, args, context))
 }
@@ -111,12 +120,12 @@ pub(crate) fn invoke_preview(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> Option<PreviewInvocation> {
-    if operation != "form-compile" || !form::has_compile_payload(args) {
+    if operation != "form-compile" || !unica_forms_designer::codec::has_compile_payload(args) {
         return None;
     }
-    Some(PreviewInvocation::Planned(form::preview_form_compile(
-        args, context,
-    )))
+    Some(PreviewInvocation::Planned(
+        crate::infrastructure::form_composition::preview_form_compile(args, context),
+    ))
 }
 
 pub(crate) fn invoke_mutation(
@@ -128,10 +137,26 @@ pub(crate) fn invoke_mutation(
     cf::invoke_mutation(operation, tool_name, args, context)
         .or_else(|| cfe::invoke_mutation(operation, tool_name, args, context))
         .or_else(|| external::apply(operation, tool_name, args, context))
-        .or_else(|| form::invoke_mutation(operation, tool_name, args, context))
-        .or_else(|| interface::invoke_mutation(operation, tool_name, args, context))
-        .or_else(|| subsystem::invoke_mutation(operation, tool_name, args, context))
-        .or_else(|| support::invoke_mutation(operation, tool_name, args, context))
+        .or_else(|| {
+            crate::infrastructure::form_composition::invoke_mutation(
+                operation, tool_name, args, context,
+            )
+        })
+        .or_else(|| {
+            crate::infrastructure::interface_composition::invoke_mutation(
+                operation, tool_name, args, context,
+            )
+        })
+        .or_else(|| {
+            crate::infrastructure::subsystem_composition::invoke_mutation(
+                operation, tool_name, args, context,
+            )
+        })
+        .or_else(|| {
+            crate::infrastructure::support_composition::invoke_mutation(
+                operation, tool_name, args, context,
+            )
+        })
 }
 
 #[cfg(test)]
@@ -141,9 +166,9 @@ mod tests {
         NativeMutationFileInputContract, TopLevelJsonInput,
     };
     use crate::application::{tools, ToolHandler};
-    use crate::domain::workspace::WorkspaceContext;
     use serde_json::Map;
     use std::collections::BTreeMap;
+    use unica_source_contract::workspace::WorkspaceContext;
 
     #[test]
     fn mutating_native_tools_have_registered_mutation_handlers() {

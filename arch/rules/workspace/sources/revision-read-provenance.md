@@ -1,11 +1,11 @@
 ---
 id: INV.SOURCE.REVISION-READ-PROVENANCE
 check:
-  - crates/unica-coder/src/infrastructure/workspace_actor.rs::retained_binding_rejects_a_same_path_directory_replacement
-  - crates/unica-coder/src/infrastructure/workspace_actor.rs::retained_binding_rejects_a_root_replaced_by_another_source_set_link
-  - crates/unica-coder/src/infrastructure/workspace_actor.rs::prepared_apply_root_and_actor_capabilities_cannot_be_redirected_or_replayed
-  - crates/unica-coder/src/infrastructure/workspace_actor.rs::prepared_apply_dry_run_rejects_root_replacement_before_result
-  - crates/unica-coder/src/infrastructure/workspace_actor.rs::prepared_apply_root_replacement_during_commit_rolls_back_before_result
+  - crates/unica-workspace/src/actor_local_tests.rs::retained_binding_rejects_a_same_path_directory_replacement
+  - crates/unica-workspace/src/actor_local_tests.rs::retained_binding_rejects_a_root_replaced_by_another_source_set_link
+  - crates/unica-coder/src/infrastructure/workspace_actor_contract_tests.rs::prepared_apply_root_and_actor_capabilities_cannot_be_redirected_or_replayed
+  - crates/unica-coder/src/infrastructure/workspace_actor_contract_tests.rs::prepared_apply_dry_run_rejects_root_replacement_before_result
+  - crates/unica-coder/src/infrastructure/workspace_actor_contract_tests.rs::prepared_apply_root_replacement_during_commit_rolls_back_before_result
 ---
 
 # Чтение и применение связаны с одним физическим источником

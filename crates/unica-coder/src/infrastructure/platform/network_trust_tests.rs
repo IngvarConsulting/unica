@@ -11,11 +11,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::domain::documentation::{
+use unica_documentation::model::{
     DocumentationContext, DocumentationProvider, DocumentationSearchRequest,
     DocumentationSectionStatus, SourceKind,
 };
-use crate::infrastructure::documentation_policy::NetworkAccess;
+use unica_documentation_sources::documentation_policy::NetworkAccess;
 
 const SCENARIO: &str = "UNICA_DOCS_TRUST_SCENARIO";
 const ADDRESS: &str = "UNICA_DOCS_TRUST_ADDRESS";
@@ -28,7 +28,7 @@ fn docs_network_trust_child_process() {
         return;
     };
     let address = std::env::var(ADDRESS).expect("address");
-    let cancellation = crate::domain::cancellation::CancellationToken::default();
+    let cancellation = unica_work_control::cancellation::CancellationToken::default();
     let context = DocumentationContext {
         platform_version: Some("8.3.27".to_string()),
         installation_root: None,
@@ -36,10 +36,10 @@ fn docs_network_trust_child_process() {
     match scenario.as_str() {
         "v8std" => {
             let provider =
-                crate::infrastructure::standards_documentation::V8StdDocumentationProvider {
+                unica_documentation_sources::standards_documentation::V8StdDocumentationProvider {
                     endpoint: address,
                     network: NetworkAccess::Allow,
-                    http: crate::infrastructure::internal_adapters::shared_http_client(),
+                    http: unica_documentation_sources::standards_transport::shared_http_client(),
                     cancellation,
                     search_cache_ttl: Duration::from_secs(60),
                     revalidate_search: false,
@@ -59,13 +59,15 @@ fn docs_network_trust_child_process() {
             assert_eq!(sections[0].hits[0].document_id, "https://v8std.ru/std/702/");
         }
         "kb" => {
-            let provider = crate::infrastructure::kb_1ci::Kb1ciProvider {
+            let provider = unica_documentation_sources::kb_1ci::Kb1ciProvider {
                 base: address,
                 network: NetworkAccess::Allow,
-                transport: Arc::new(crate::infrastructure::kb_1ci::NetworkKbTransport::default()),
+                transport: Arc::new(
+                    unica_documentation_sources::kb_1ci::NetworkKbTransport::default(),
+                ),
                 cancellation,
                 cache_ttl: Duration::from_secs(60),
-                lexicon: Arc::new(crate::infrastructure::kb_1ci::InstallationLexiconSource),
+                lexicon: Arc::new(unica_documentation_sources::kb_1ci::InstallationLexiconSource),
             };
             let request = DocumentationSearchRequest {
                 query: "URL".to_string(),
@@ -97,7 +99,7 @@ fn docs_network_trust_child_process() {
 use std::process::Command;
 
 #[cfg(target_os = "linux")]
-use unica_bootstrap::network::test_support::{ConnectProxy, TestRoot, TlsStand};
+use unica_network::test_support::{ConnectProxy, TestRoot, TlsStand};
 
 #[cfg(target_os = "linux")]
 const CHILD: &str =

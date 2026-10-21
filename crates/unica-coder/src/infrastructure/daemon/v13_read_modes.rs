@@ -1,12 +1,13 @@
-use crate::domain::address::{NodeKind, QualifiedAddress};
-use crate::domain::apply::{
-    FormItemRole, OperationRegistry, OperationSite, RetiredOperation, SourceSetTraits,
-    TemplateFormat, IMPLEMENTED_APPLY_OPERATIONS,
-};
-use crate::domain::refusal::RefusalCode;
-use crate::infrastructure::metadata_kinds::metadata_kind;
+use crate::domain::apply::OperationDescriptorExt;
+use crate::domain::apply::RetiredOperationExt;
+use crate::domain::apply::IMPLEMENTED_APPLY_OPERATIONS;
 use serde_json::{json, Map, Value};
 use std::fmt;
+use unica_address::address::{NodeKind, QualifiedAddress};
+use unica_forms::FormItemRole;
+use unica_refusal::RefusalCode;
+use unica_source_designer::layout::metadata_kind;
+use unica_templates::TemplateFormat;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ReadModeError {
@@ -87,13 +88,13 @@ impl SearchMatcher {
 
 /// Where `can` of a read node is computed: the traits of its source set —
 /// the one owner of whether the source is written at all.
-pub(super) type CanContext = SourceSetTraits;
+pub(super) type CanContext = unica_source_contract::context::SourceSetTraits;
 
 #[cfg(test)]
 pub(super) fn configuration_context() -> CanContext {
-    SourceSetTraits::read(
-        crate::domain::project_sources::SourceSetKind::Configuration,
-        crate::domain::platform_profile::PlatformProfile::v8_3_27(),
+    crate::domain::apply::source_set_traits_for_read(
+        unica_source_contract::SourceSetKind::Configuration,
+        unica_bsl::profile::PlatformProfile::v8_3_27(),
     )
 }
 
@@ -110,7 +111,7 @@ fn node_site(
 )> {
     NodeKind::parse(data.get("kind")?.as_str()?).ok()?;
     let at = QualifiedAddress::parse(data.get("at")?.as_str()?).ok()?;
-    OperationSite::new(&at, context)?;
+    crate::domain::apply::operation_site(&at, context)?;
     let prop = |key: &str| {
         data.get("props")
             .and_then(|props| props.get(key))
@@ -138,13 +139,13 @@ fn inherited_node(data: &Map<String, Value>) -> bool {
 /// may be empty (`[]`): nothing applies at this node, which is an answer.
 fn computed_can_entries(data: &Map<String, Value>, context: CanContext) -> Option<Vec<Value>> {
     let (at, format, item) = node_site(data, context)?;
-    let site = OperationSite::new(&at, context)?;
+    let site = crate::domain::apply::operation_site(&at, context)?;
     // Содержимое заимствованного узла без своего файла принадлежит
     // родителю: операции, которые пишут это содержимое, `apply` отвергнет,
     // и словарь их не предлагает.
     let inherited = inherited_node(data);
     Some(
-        OperationRegistry::closed()
+        crate::domain::apply::operation_registry()
             .descriptors()
             .iter()
             .filter(|descriptor| descriptor.applies_to_node(&site, format, item))
@@ -203,8 +204,10 @@ pub(super) fn operation_node_with(
             "the operation dictionary is not computed for kind `{kind}` yet"
         ))
     })?;
-    let site = OperationSite::new(&owner, context).expect("node_site proved the operation site");
-    let Some(descriptor) = OperationRegistry::closed().lookup_at(operation, &site) else {
+    let site = crate::domain::apply::operation_site(&owner, context)
+        .expect("node_site proved the operation site");
+    let Some(descriptor) = crate::domain::apply::operation_registry().lookup_at(operation, &site)
+    else {
         return Err(retired_operation_contract(
             operation,
             &site,
@@ -236,12 +239,11 @@ pub(super) fn operation_node_with(
         .and_then(|props| props.get("tag"))
         .and_then(Value::as_str)
         .is_some_and(|tag| tag.starts_with("[AutoCommandBar") || tag.starts_with("[CmdBar"));
-    if descriptor.form_operation() == Some(crate::domain::form_operation::FormOperation::ItemAdd)
+    if descriptor.operation::<unica_forms::operations::FormOperation>()
+        == Some(unica_forms::operations::FormOperation::ItemAdd)
         && command_bar
     {
-        contract = Some(
-            crate::domain::operation_contract::OperationContract::form_item_add_in_command_bar(),
-        );
+        contract = Some(unica_forms::contracts::form_item_add_in_command_bar());
     }
     if implemented && contract.is_none() {
         return Err(ReadModeError::unsupported_section(format!(
@@ -267,12 +269,12 @@ pub(super) fn operation_node_with(
 /// (#1465); an unknown name leads to the node's own dictionary.
 fn retired_operation_contract(
     operation: &str,
-    site: &OperationSite<'_>,
+    site: &unica_source_contract::context::OperationSite<'_>,
     (format, item): (Option<TemplateFormat>, Option<FormItemRole>),
     inherited: bool,
     ancestor_role: &dyn Fn(&QualifiedAddress) -> Option<FormItemRole>,
 ) -> ReadModeError {
-    let Some(retired) = RetiredOperation::lookup(operation) else {
+    let Some(retired) = crate::domain::apply::retired_operation(operation) else {
         return ReadModeError::bad_value(format!(
             "unknown operation `{operation}`; inspect the node can dictionary"
         ));
@@ -285,7 +287,7 @@ fn retired_operation_contract(
     if inherited && writes_inherited {
         return ReadModeError::bad_value(format!(
             "operation `{operation}` is retired: `{}` replaces it, but it writes content this borrowed node inherits from the parent; read the parent named by props.extends",
-            retired.replacement
+            retired.replacement()
         ));
     }
     // Формат известен только у прочитанного узла; роль предка-элемента
@@ -299,19 +301,19 @@ fn retired_operation_contract(
             ancestor_role(at)
         }
     };
-    match retired.replacement_target(site, &format_of, &role_of) {
+    match retired.replacement_target(site, crate::domain::apply::operation_registry().context(), &format_of, &role_of) {
         Some(target) => {
-            let contract = format!("{target}.Can.{}", retired.replacement);
+            let contract = format!("{target}.Can.{}", retired.replacement());
             let mut error = ReadModeError::bad_value(format!(
                 "operation `{operation}` is retired: read `{}` at `{contract}`; {}",
-                retired.replacement, retired.arguments
+                retired.replacement(), retired.arguments
             ));
             error.next = Some(contract);
             error
         }
         None => ReadModeError::bad_value(format!(
             "operation `{operation}` is retired: `{}` replaces it and does not apply here; inspect the node can dictionary",
-            retired.replacement
+            retired.replacement()
         )),
     }
 }
@@ -329,8 +331,8 @@ pub(super) fn source_backed(data: &mut Value) {
 #[cfg(test)]
 mod operation_dictionary_tests {
     use super::{attach_can, operation_node};
-    use crate::domain::refusal::RefusalCode;
     use serde_json::{json, Value};
+    use unica_refusal::RefusalCode;
 
     fn can_of(mut data: Value) -> Value {
         attach_can(&mut data, super::configuration_context());
@@ -342,8 +344,8 @@ mod operation_dictionary_tests {
     /// контракт писателя формы, у объекта — члена метаданных.
     #[test]
     fn a_shared_operation_name_publishes_the_contract_of_the_addressed_node() {
-        use crate::domain::apply::{OperationFamily, OperationRegistry, OperationSite};
-        use crate::domain::form_operation::FormOperation;
+        use unica_forms::operations::FormOperation;
+        use unica_operations::OperationFamily;
         let context = super::configuration_context();
         for operation in [FormOperation::AttributeAdd, FormOperation::CommandAdd] {
             let op = operation.name();
@@ -368,9 +370,9 @@ mod operation_dictionary_tests {
             let data = json!({"at": owner, "kind": "Catalog"});
             let answer = operation_node(&data, op, &format!("{owner}.Can.{op}"), context)
                 .unwrap_or_else(|error| panic!("{op} at the catalog: {error}"));
-            let address = crate::domain::address::QualifiedAddress::parse(owner).unwrap();
-            let site = OperationSite::new(&address, context).unwrap();
-            let metadata = OperationRegistry::closed()
+            let address = unica_address::address::QualifiedAddress::parse(owner).unwrap();
+            let site = crate::domain::apply::operation_site(&address, context).unwrap();
+            let metadata = crate::domain::apply::operation_registry()
                 .named(op)
                 .find(|descriptor| descriptor.family() == OperationFamily::Metadata)
                 .unwrap();
@@ -402,8 +404,8 @@ mod operation_dictionary_tests {
     /// ведёт к словарю узла, а не к контракту, который там не исполним.
     #[test]
     fn a_retired_operation_route_follows_roles_and_inherited_content() {
-        use crate::domain::address::QualifiedAddress;
-        use crate::domain::apply::FormItemRole;
+        use unica_address::address::QualifiedAddress;
+        use unica_forms::FormItemRole;
         let form = "cf:Catalog.Items.Form.Choice";
         let field = format!("{form}.Item.Header.Item.Code");
         let bar = format!("{form}.Item.List.Item.ListCommandBar");
@@ -673,7 +675,7 @@ mod operation_dictionary_tests {
 pub(super) fn search_scope_prefix(
     scope: &QualifiedAddress,
 ) -> Result<Option<String>, ReadModeError> {
-    let concrete_module = crate::domain::platform_profile::PlatformProfile::v8_3_27()
+    let concrete_module = unica_bsl::profile::PlatformProfile::v8_3_27()
         .module_capability(scope)
         .is_some();
     let common_module =
@@ -713,7 +715,7 @@ pub(super) fn search_scope_prefix(
 #[cfg(test)]
 mod tests {
     use super::search_scope_prefix;
-    use crate::domain::address::QualifiedAddress;
+    use unica_address::address::QualifiedAddress;
 
     #[test]
     fn logical_scope_maps_to_a_retained_relative_prefix_without_accepting_paths() {
@@ -744,13 +746,12 @@ mod tests {
 #[cfg(test)]
 mod inherited_can_tests {
     use super::{attach_can, operation_node};
-    use crate::domain::apply::SourceSetTraits;
     use serde_json::{json, Value};
 
     fn extension() -> super::CanContext {
-        SourceSetTraits::read(
-            crate::domain::project_sources::SourceSetKind::Extension,
-            crate::domain::platform_profile::PlatformProfile::v8_3_27(),
+        crate::domain::apply::source_set_traits_for_read(
+            unica_source_contract::SourceSetKind::Extension,
+            unica_bsl::profile::PlatformProfile::v8_3_27(),
         )
     }
 

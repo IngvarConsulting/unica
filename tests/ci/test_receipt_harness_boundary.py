@@ -20,19 +20,21 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "ci" / "check-receipt-harness-boundary.py"
 HARNESS_ROOT = Path(
-    "crates/unica-coder/src/infrastructure/daemon/runtime_v5/receipt_scenario_v5.rs"
+    "crates/unica-coder/tests/support/receipt_scenario.rs"
 )
 HARNESS_DIR = Path(
-    "crates/unica-coder/src/infrastructure/daemon/runtime_v5/receipt_scenario_v5"
+    "crates/unica-coder/tests/support/receipt_scenario"
 )
-SCANNED_FILES = (
-    "control.rs",
-    "dispatch.rs",
-    "scenario_hooks.rs",
-    "scenario_probes.rs",
-    "wire.rs",
-)
-PORT_PATH = Path("crates/unica-coder/src/infrastructure/receipt_ledger/port.rs")
+CONTRACT_ROOT = Path("crates/unica-execution/src/receipt_runtime/contracts.rs")
+CONTRACT_DIR = Path("crates/unica-execution/src/receipt_runtime/contracts")
+SCANNED_SOURCES = {
+    "dispatch.rs": HARNESS_DIR / "dispatch.rs",
+    "contracts.rs": CONTRACT_ROOT,
+    "control.rs": CONTRACT_DIR / "control.rs",
+    "scenario_hooks.rs": CONTRACT_DIR / "scenario_hooks.rs",
+    "wire.rs": CONTRACT_DIR / "wire.rs",
+}
+PORT_PATH = Path("crates/unica-execution/src/receipt_store/port.rs")
 # Чтения порта: не переходы, поэтому их нет в описи писателей. Список закрытый —
 # новый метод порта обязан быть назван либо здесь, либо писателем.
 PORT_READS = frozenset(
@@ -57,8 +59,10 @@ def write_harness(root: Path, source: str = "", scanned: dict[str, str] | None =
     path.write_text(source, encoding="utf-8")
     directory = root / HARNESS_DIR
     directory.mkdir(parents=True, exist_ok=True)
-    for name in SCANNED_FILES:
-        (directory / name).write_text((scanned or {}).get(name, ""), encoding="utf-8")
+    for name, relative in SCANNED_SOURCES.items():
+        source_path = root / relative
+        source_path.parent.mkdir(parents=True, exist_ok=True)
+        source_path.write_text((scanned or {}).get(name, ""), encoding="utf-8")
 
 
 def run_guard(root: Path) -> subprocess.CompletedProcess[str]:
@@ -71,6 +75,42 @@ def run_guard(root: Path) -> subprocess.CompletedProcess[str]:
 
 
 class ReceiptHarnessBoundaryTests(unittest.TestCase):
+    def test_host_cannot_impersonate_execution_transition_entrypoints(self) -> None:
+        guard = load_guard()
+        for name in ("complete_bound_task_handoff", "publish_staged_handoff_terminal_reply"):
+            with self.subTest(owner=name):
+                source = f"fn {name}() {{\n    runtime.{name}(key, deadline)?;\n}}\n"
+                self.assertTrue(guard.offenders(HARNESS_ROOT, source))
+                self.assertEqual(guard.offenders(CONTRACT_ROOT, source), [])
+
+    def test_execution_contract_source_cannot_hide_a_writer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_harness(root)
+            source = root / "crates/unica-execution/src/receipt_runtime/contracts.rs"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text(
+                "fn quietly_advances() {\n"
+                "    actor.reserve_batch(work, deadline)?;\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            result = run_guard(root)
+            self.assertEqual(result.returncode, 1, result.stdout)
+            self.assertIn("`quietly_advances` writes", result.stdout)
+
+    def test_unclassified_execution_contract_module_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_harness(root)
+            nested = root / "crates/unica-execution/src/receipt_runtime/contracts/rogue"
+            nested.mkdir(parents=True, exist_ok=True)
+            (nested / "mod.rs").write_text("fn hidden() {}\n", encoding="utf-8")
+            result = run_guard(root)
+            self.assertEqual(result.returncode, 1, result.stdout)
+            self.assertIn("unclassified harness file", result.stdout)
+            self.assertIn("contracts/rogue/mod.rs", result.stdout)
+
     def test_live_tree_keeps_the_harness_observing(self) -> None:
         """Живое дерево: диспетчер не пишет, писатели только у владельцев."""
         result = run_guard(REPO_ROOT)
@@ -130,10 +170,13 @@ class ReceiptHarnessBoundaryTests(unittest.TestCase):
             "bind_promised_task_actor",
             "bind_reserved_actor",
             "complete_bound_task_handoff",
+            "complete_bound_task_handoff_for_fixture",
             "complete_staged_task_handoff",
             "expire_cancel_reserved",
             "mark_reserved_begun",
             "publish_cancelled_direct_batch",
+            "publish_staged_handoff_terminal_reply",
+            "publish_staged_handoff_terminal_reply_for_fixture",
             "reclaim_expired_tombstones",
             "request_task_cancel",
             "retain_begun_task_after_link_capacity",
@@ -200,7 +243,7 @@ class ReceiptHarnessBoundaryTests(unittest.TestCase):
             write_harness(
                 root,
                 scanned={
-                    "scenario_probes.rs": "impl V5ReceiptRuntime {\n"
+                    "contracts.rs": "impl V5ReceiptRuntime {\n"
                     "    fn bind_task_under_gate_for_test(&self) {\n"
                     "        self.receipt_ledger.begin_bound_task_handoff(key, deadline)?;\n"
                     "    }\n"
@@ -217,7 +260,7 @@ class ReceiptHarnessBoundaryTests(unittest.TestCase):
             write_harness(
                 root,
                 scanned={
-                    "scenario_probes.rs": "impl V5ReceiptRuntime {\n"
+                    "contracts.rs": "impl V5ReceiptRuntime {\n"
                     "    fn unnamed_probe(&self) {\n"
                     "        self.receipt_ledger.reserve_batch(work, deadline)?;\n"
                     "    }\n"

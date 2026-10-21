@@ -1,23 +1,22 @@
-use crate::domain::project_sources::{SourceFormat, SourceSetKind};
-use crate::domain::source_target::{ResolvedTarget, SourceTarget, TargetKind};
-use crate::domain::support_state::{
-    ConfigurationSupportData, ConfigurationSupportState, ObjectSupportData, ObjectSupportState,
-    ResolvedSubsystemTarget, SupportCounts, SupportReadError, SupportReadErrorCode,
-    SupportStateReader,
-};
-use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::native_operations::common::{
-    read_support_state_strict, support_root_uuid_from_bytes, SupportState,
-};
+use unica_source_contract::{SourceFormat, SourceSetKind};
+
+use crate::infrastructure::native_operations::common::read_support_state_strict;
 use crate::infrastructure::platform_xml_source_targets::{
     platform_xml_resource_evidence, resolve_platform_xml_target_in, TargetKindPolicy,
 };
 use crate::infrastructure::source_roots::{resolve_named_source_set, ResolvedNamedSourceSet};
-use crate::infrastructure::subsystem_topology::{
-    capture_registered_subsystem_topology, SubsystemTopologyNode,
-};
+use crate::infrastructure::subsystem_composition::capture_registered_subsystem_topology;
 use std::fs;
 use std::path::{Path, PathBuf};
+use unica_address::source_target::{ResolvedTarget, SourceTarget, TargetKind};
+use unica_metadata::subsystem_topology::SubsystemTopologyNode;
+use unica_metadata::support_state::{
+    ConfigurationSupportData, ConfigurationSupportState, ObjectSupportData, ObjectSupportState,
+    ResolvedSubsystemTarget, SupportCounts, SupportReadError, SupportReadErrorCode,
+    SupportStateReader,
+};
+use unica_metadata_designer::support::{support_root_uuid_from_bytes, SupportState};
+use unica_source_contract::workspace::WorkspaceContext;
 
 pub(crate) trait SupportStateReaderFactory: Send + Sync {
     fn create<'a>(&'a self, context: &'a WorkspaceContext) -> Box<dyn SupportStateReader + 'a>;
@@ -101,7 +100,7 @@ impl<'a> WorkspaceSupportStateReader<'a> {
 
     fn support_state(
         &self,
-        evidence: &crate::infrastructure::platform_xml_source_targets::PlatformXmlResourceEvidence,
+        evidence: &unica_source_designer::owner::PlatformXmlResourceEvidence,
     ) -> Result<Option<SupportState>, SupportReadError> {
         self.support_state_at(&evidence.source_root)
     }
@@ -299,20 +298,20 @@ impl SupportStateReader for WorkspaceSupportStateReader<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::source_target::{
-        MetadataAddress, ResolvedTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
-    };
-    use crate::domain::support_state::{
-        ConfigurationSupportState, ObjectSupportState, SupportReadErrorCode, SupportStateReader,
-    };
-    use crate::domain::workspace::WorkspaceContext;
-    use crate::infrastructure::platform::testing::{
-        create_directory_link_fixture_for_test, remove_dir_symlink_for_test, FileLinkFixtureOutcome,
-    };
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+    use unica_address::source_target::{
+        MetadataAddress, ResolvedTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
+    };
+    use unica_metadata::support_state::{
+        ConfigurationSupportState, ObjectSupportState, SupportReadErrorCode, SupportStateReader,
+    };
+    use unica_source_contract::workspace::WorkspaceContext;
+    use unica_workspace::test_support::{
+        create_directory_link_fixture_for_test, remove_dir_symlink_for_test, FileLinkFixtureOutcome,
+    };
 
     static TEMP_NONCE: AtomicU64 = AtomicU64::new(0);
     const ROLE_UUID: &str = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";

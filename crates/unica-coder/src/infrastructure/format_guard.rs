@@ -2,14 +2,10 @@ use crate::application::operation_descriptors::{
     native_operation_descriptor, FormatGuardPolicy, FormatPathPolicy,
 };
 use crate::application::ports::{FormatGuardCheck, FormatGuardError};
-use crate::application::{AdapterOutcome, ToolHandler, ToolSpec};
-use crate::domain::format_profile::{
-    classify_root_version, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
-};
-use crate::domain::workspace::WorkspaceContext;
+use crate::application::{ToolHandler, ToolSpec};
+use crate::infrastructure::form_composition::resolve_form_read_path;
 use crate::infrastructure::native_operations::cf::{
-    cf_edit_format_dependency_paths, cf_init_planned_xml, cf_init_post_validation_dependency_paths,
-    cf_read_format_dependency_paths,
+    cf_edit_format_dependency_paths, cf_init_planned_xml, cf_read_format_dependency_paths,
 };
 use crate::infrastructure::native_operations::cfe::{
     cfe_borrow_format_dependency_inspection, cfe_borrow_resolve_path, cfe_init_planned_xml,
@@ -17,41 +13,52 @@ use crate::infrastructure::native_operations::cfe::{
 };
 use crate::infrastructure::native_operations::common::{
     find_support_config_dir, resolve_cf_edit_config_path, resolve_cf_read_config_path,
-    resolve_cfe_validate_config_path, resolve_code_patch_guard_path, resolve_form_add_object_path,
-    resolve_role_read_rights_path, resolve_subsystem_edit_xml, support_uuid_dependency_paths,
+    resolve_cfe_validate_config_path, resolve_code_patch_guard_path, resolve_role_read_rights_path,
+    support_uuid_dependency_paths,
 };
+use unica_metadata_designer::configuration::cf_init_post_validation_dependency_paths;
+
+use crate::infrastructure::interface_composition::resolve_interface_validate_path;
 use crate::infrastructure::native_operations::dcs::{
     dcs_info_format_dependency_paths, resolve_dcs_validate_path,
 };
 use crate::infrastructure::native_operations::external::external_init_planned_xml_paths;
-use crate::infrastructure::native_operations::form::{
-    form_compile_infer_from_object_target, form_compile_normalize_from_object_output_label,
-    form_parent_metadata_owner_candidate, resolve_form_read_path,
-};
-use crate::infrastructure::native_operations::interface::{
-    interface_metadata_owner_path, resolve_interface_validate_path,
-};
-use crate::infrastructure::native_operations::mxl::{
+use crate::infrastructure::native_operations::mxl_composition::{
     resolve_mxl_info_path, resolve_mxl_validate_path,
 };
 use crate::infrastructure::native_operations::role::resolve_role_edit_guard_path;
 use crate::infrastructure::native_operations::role::role_read_format_dependency_paths;
-use crate::infrastructure::native_operations::subsystem::{
-    subsystem_edit_operations, subsystem_read_format_dependency_paths,
-    subsystem_validation_format_dependency_paths, SubsystemInfoFormatDocument,
-};
-use crate::infrastructure::native_operations::support::support_edit_reads_uuid_dependency;
 use crate::infrastructure::native_operations::xdto::resolve_xdto_guard_path;
 use crate::infrastructure::platform_xml_owner::{
     resolve_existing_platform_xml_owners_for_new_output, resolve_platform_xml_owners,
-    resolve_platform_xml_owners_for_exact_root, root_version_literal, PlatformXmlOwner,
-    PlatformXmlOwnerKind, PlatformXmlRootExpectation, DCS_ROOT, MANAGED_FORM_ROOT, MXL_ROOT,
+    resolve_platform_xml_owners_for_exact_root,
 };
+use crate::infrastructure::subsystem_composition::subsystem_read_format_dependency_paths;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use unica_execution_contract::adapter_outcome::AdapterOutcome;
+use unica_forms_designer::codec::{
+    form_compile_infer_from_object_target, form_compile_normalize_from_object_output_label,
+    form_parent_metadata_owner_candidate,
+};
+use unica_metadata::subsystem::SubsystemInfoFormatDocument;
+use unica_metadata::support_edit::support_edit_reads_uuid_dependency;
+use unica_metadata_designer::interface::interface_metadata_owner_path;
+use unica_metadata_designer::subsystem::{
+    subsystem_edit_operations, subsystem_validation_format_dependency_paths,
+};
+use unica_source_contract::workspace::WorkspaceContext;
+use unica_source_designer::format_profile::{
+    classify_root_version, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
+};
+use unica_source_designer::owner::{
+    PlatformXmlOwner, PlatformXmlOwnerKind, PlatformXmlRootExpectation, DCS_ROOT,
+    MANAGED_FORM_ROOT, MXL_ROOT,
+};
+use unica_source_designer::roots::root_version_literal;
 
 pub(crate) fn evaluate_format_guard(
     spec: ToolSpec,
@@ -89,11 +96,7 @@ pub(crate) fn evaluate_retained_dcs_format_guard(
     artifact: &Path,
     text: &str,
     wrapper: (PathBuf, Vec<u8>),
-    source_owner: (
-        PathBuf,
-        Vec<u8>,
-        crate::domain::project_sources::SourceSetKind,
-    ),
+    source_owner: (PathBuf, Vec<u8>, unica_source_contract::SourceSetKind),
 ) -> Result<FormatGuardCheck, FormatGuardError> {
     evaluate_retained_template_format_guard(
         "dcs-validate",
@@ -113,11 +116,7 @@ pub(crate) fn evaluate_retained_template_format_guard(
     artifact: &Path,
     text: &str,
     wrapper: (PathBuf, Vec<u8>),
-    source_owner: (
-        PathBuf,
-        Vec<u8>,
-        crate::domain::project_sources::SourceSetKind,
-    ),
+    source_owner: (PathBuf, Vec<u8>, unica_source_contract::SourceSetKind),
 ) -> Result<FormatGuardCheck, FormatGuardError> {
     use crate::infrastructure::platform_xml_owner::{
         source_set_owner_from_bytes, version_owning_target_from_bytes,
@@ -305,7 +304,7 @@ fn evaluate_resolved_format_owners(
     tool_name: &str,
     mutating: bool,
     owners: Vec<PlatformXmlOwner>,
-    invalid_expected_root: Option<crate::infrastructure::platform_xml_owner::PlatformXmlOwnerError>,
+    invalid_expected_root: Option<unica_source_designer::owner::PlatformXmlOwnerError>,
 ) -> Result<FormatGuardCheck, FormatGuardError> {
     let mut older = None;
     let mut newer = None;
@@ -842,7 +841,10 @@ fn add_interface_format_dependencies(
     else {
         return;
     };
-    if let Ok(owner) = interface_metadata_owner_path(&absolutize(raw, &context.cwd)) {
+    if let Ok(owner) = interface_metadata_owner_path(
+        &unica_workspace::discovery::ProjectDiscoveryReader::new(&context.cwd),
+        &absolutize(raw, &context.cwd),
+    ) {
         paths.push(owner);
     }
 }
@@ -880,7 +882,9 @@ fn add_subsystem_edit_format_dependencies(
     let operation = ["operation", "Operation"]
         .iter()
         .find_map(|name| args.get(*name).and_then(Value::as_str));
-    let Ok(operations) = subsystem_edit_operations(args, &context.cwd, operation, definition_file)
+    let reader = unica_workspace::discovery::ProjectDiscoveryReader::new(&context.cwd);
+    let Ok(operations) =
+        subsystem_edit_operations(&reader, args, &context.cwd, operation, definition_file)
     else {
         return Ok(());
     };
@@ -988,14 +992,22 @@ fn handler_resolved_format_paths(
         "cf-edit" => resolve_cf_edit_config_path(args, context).ok(),
         "cf-info" | "cf-validate" => resolve_cf_read_config_path(args, context).ok(),
         "cfe-validate" => resolve_cfe_validate_config_path(args, context).ok(),
-        "form-add" => {
-            raw.and_then(|path| resolve_form_add_object_path(absolutize(path, &context.cwd)).ok())
-        }
+        "form-add" => raw.and_then(|path| {
+            unica_forms_designer::read::resolve_form_add_object_path(
+                &unica_workspace::discovery::ProjectDiscoveryReader::new(&context.cwd),
+                absolutize(path, &context.cwd),
+            )
+            .ok()
+        }),
         "form-info" | "form-validate" => resolve_form_read_path(args, context).ok(),
         "interface-validate" => resolve_interface_validate_path(args, context).ok(),
-        "subsystem-edit" => {
-            raw.and_then(|path| resolve_subsystem_edit_xml(absolutize(path, &context.cwd)).ok())
-        }
+        "subsystem-edit" => raw.and_then(|path| {
+            unica_metadata_designer::subsystem::resolve_subsystem_edit_xml(
+                &unica_workspace::discovery::ProjectDiscoveryReader::new(&context.cwd),
+                absolutize(path, &context.cwd),
+            )
+            .ok()
+        }),
         "dcs-validate" => resolve_dcs_validate_path(args, context).ok(),
         // Without these two arms the guard falls back to the raw path
         // argument, which a logical call does not carry — the format
@@ -1058,8 +1070,11 @@ fn form_compile_format_paths(
                 object.set_extension("xml");
             }
             paths.push(object);
-        } else if let (Some(inferred), _) = form_compile_infer_from_object_target(&output, context)
-        {
+        } else if let (Some(inferred), _) = form_compile_infer_from_object_target(
+            &output,
+            &unica_workspace::discovery::ProjectDiscoveryReader::new(&context.cwd),
+            &context.cwd,
+        ) {
             paths.push(inferred);
         }
     }
@@ -1084,16 +1099,16 @@ mod tests {
     use crate::application::operation_descriptors::native_operation_descriptor;
     use crate::application::ports::{ApplicationPorts, FormatGuardCheck, XdtoPublicErrorCode};
     use crate::application::{tools, InvocationMode, ToolHandler};
-    use crate::domain::cancellation::CancellationToken;
-    use crate::domain::code_intelligence::ProviderDeadline;
-    use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::application_ports::InfrastructureApplicationPorts;
     use crate::infrastructure::native_operations::cfe::cfe_borrow_format_dependency_inspection;
+    use unica_source_contract::workspace::WorkspaceContext;
+    use unica_work_control::cancellation::CancellationToken;
+    use unica_work_control::provider_deadline::ProviderDeadline;
 
-    use crate::infrastructure::source_roots::normalize_path_identity;
     use serde_json::{Map, Value};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
+    use unica_workspace::paths::normalize_path_identity;
 
     static TEST_ROOT_NONCE: AtomicU64 = AtomicU64::new(0);
 
@@ -2767,11 +2782,11 @@ mod tests {
     #[test]
     fn single_writable_platform_xml_profile_is_exact() {
         assert_eq!(
-            crate::domain::format_profile::ACTIVE_FORMAT_PROFILE.platform_line,
+            unica_source_designer::format_profile::ACTIVE_FORMAT_PROFILE.platform_line,
             "8.3.27"
         );
         assert_eq!(
-            crate::domain::format_profile::ACTIVE_FORMAT_PROFILE.export_format,
+            unica_source_designer::format_profile::ACTIVE_FORMAT_PROFILE.export_format,
             "2.20"
         );
         older_dump_blocks_mutation_and_recommends_platform_reexport();
@@ -2933,8 +2948,10 @@ mod tests {
         std::fs::create_dir_all(subsystem.parent().unwrap()).unwrap();
         std::fs::write(
             &subsystem,
-            crate::infrastructure::native_operations::subsystem::child_subsystem_stub_xml(
-                "Sales", "2.20",
+            unica_metadata_designer::subsystem::child_subsystem_stub_xml(
+                "Sales",
+                "2.20",
+                crate::infrastructure::source_ids::fresh_uuid,
             ),
         )
         .unwrap();
@@ -2970,9 +2987,9 @@ mod tests {
 mod staged_root_tests {
     use super::{classify_staged_platform_xml_root, evaluate_read_format_guard};
     use crate::application::ports::FormatGuardCheck;
-    use crate::domain::workspace::WorkspaceContext;
     use serde_json::{Map, Value};
     use std::path::Path;
+    use unica_source_contract::workspace::WorkspaceContext;
 
     #[test]
     fn newer_metadata_root_is_a_platform_version_finding() {

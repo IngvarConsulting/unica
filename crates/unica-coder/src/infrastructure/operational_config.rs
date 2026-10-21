@@ -1,13 +1,15 @@
-use crate::domain::operational_config::{
-    OperationalConfig, OperationalConfigDiagnostic, OperationalConfigDiagnosticCode,
-    OperationalConfigDiagnosticSource, OperationalConfigField, OperationalConfigLayer,
-};
-use crate::infrastructure::workspace_config::{
-    parse_workspace_config_root, WorkspaceConfigRootError, WorkspaceConfigRootErrorKind,
-};
 use std::fs;
 use std::path::Path;
 use toml::{Table, Value};
+use unica_configuration::operational::OperationalConfig;
+use unica_configuration::operational::OperationalConfigDiagnostic;
+use unica_configuration::operational::OperationalConfigDiagnosticCode;
+use unica_configuration::operational::OperationalConfigDiagnosticSource;
+use unica_configuration::operational::OperationalConfigField;
+use unica_configuration::operational::OperationalConfigLayer;
+use unica_configuration::{
+    parse_workspace_config_root, WorkspaceConfigRootError, WorkspaceConfigRootErrorKind,
+};
 
 const SHARED_CONFIG_FILENAME: &str = "unica.toml";
 const LOCAL_CONFIG_FILENAME: &str = "unica.local.toml";
@@ -211,11 +213,11 @@ fn parse_timeout(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::infrastructure::platform::testing::{
-        create_file_link_fixture_for_test, FileLinkFixtureOutcome,
-    };
     use std::time::Duration;
     use tempfile::{tempdir, TempDir};
+    use unica_workspace::test_support::{
+        create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+    };
 
     fn write_config(workspace: &TempDir, filename: &str, contents: &str) {
         fs::write(workspace.path().join(filename), contents).expect("write config fixture");

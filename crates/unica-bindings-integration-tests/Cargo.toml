@@ -1,0 +1,29 @@
+[package]
+name = "unica-bindings-integration-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+autotests = false
+
+[[test]]
+name = "bindings_projection"
+path = "tests/projection.rs"
+
+[[test]]
+name = "event_implementation"
+path = "tests/event_implementation.rs"
+
+[dev-dependencies]
+unica-bindings = { path = "../unica-bindings", features = ["test-support"] }
+unica-address = { path = "../unica-address" }
+unica-bsl = { path = "../unica-bsl" }
+unica-bsl-parser = { path = "../unica-bsl-parser" }
+unica-forms = { path = "../unica-forms", features = ["test-support"] }
+unica-forms-designer = { path = "../unica-forms-designer" }
+unica-metadata = { path = "../unica-metadata", features = ["test-support"] }
+unica-source-contract = { path = "../unica-source-contract" }
+serde.workspace = true
+serde_json.workspace = true
+roxmltree.workspace = true

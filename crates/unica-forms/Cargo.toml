@@ -1,0 +1,20 @@
+[package]
+name = "unica-forms"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+test-support = []
+
+[dependencies]
+serde.workspace = true
+unica-execution-contract = { path = "../unica-execution-contract" }
+unica-metadata = { path = "../unica-metadata" }
+unica-operation-contract = { path = "../unica-operation-contract" }
+unica-address = { path = "../unica-address" }
+unica-source-contract = { path = "../unica-source-contract" }
+unica-operations = { path = "../unica-operations" }
+serde_json.workspace = true

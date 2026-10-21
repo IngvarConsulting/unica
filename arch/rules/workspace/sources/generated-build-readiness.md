@@ -1,8 +1,8 @@
 ---
 id: INV.SOURCE.GENERATED-BUILD-READINESS
 check:
-  - crates/unica-coder/src/infrastructure/project_health/layout.rs::build_and_cache_are_independent_facts_for_a_nested_root
-  - crates/unica-coder/src/domain/project_health.rs::project_health_serializes_independent_source_and_repository_readiness
+  - crates/unica-project-health/tests/platform/project_health_layout.rs::build_and_cache_are_independent_facts_for_a_nested_root
+  - crates/unica-project-health/src/model/mod.rs::project_health_serializes_independent_source_and_repository_readiness
 ---
 
 # Каталог .build внутри исходников делает проект неготовым

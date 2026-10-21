@@ -1,12 +1,12 @@
-pub(crate) mod client_v5;
-pub(crate) mod identity;
 pub(crate) mod protocol;
-#[allow(dead_code)]
-pub(crate) mod protocol_v5;
-pub(crate) mod runtime_v5;
+#[cfg(test)]
+#[path = "../../../tests/platform/receipt_join_freshness.rs"]
+mod receipt_join_freshness_tests;
+#[cfg(test)]
+#[path = "../../../tests/platform/receipt_runtime.rs"]
+mod receipt_runtime_tests;
 pub(crate) mod server;
-pub(crate) mod state_collection;
-pub(crate) mod terminal_codec_v5;
+
 mod v13_artifact_build;
 mod v13_call_graph;
 #[cfg(test)]
@@ -28,58 +28,23 @@ mod v13_source_import;
 mod v13_source_set_name;
 mod v13_workspace_bootstrap;
 
-use identity::CoreIdentity;
-use std::path::Path;
-use std::process::{Command, Stdio};
-use std::time::Duration;
-
-fn daemon_process_command(
-    executable: &Path,
-    state_root: &Path,
-    core_identity: &CoreIdentity,
-    idle_grace: Duration,
-) -> Command {
-    let mut command = Command::new(executable);
-    command
-        .arg("--daemon")
-        .arg("--state-root")
-        .arg(state_root)
-        .arg("--core-identity")
-        .arg(core_identity.as_str())
-        .arg("--idle-grace-ms")
-        .arg(idle_grace.as_millis().to_string())
-        .current_dir(state_root)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    for key in unica_bootstrap::host_workspace_environment_keys() {
-        command.env_remove(key);
-    }
-    command
-}
-
 #[cfg(test)]
 mod tests {
-    use super::identity::{CoreIdentity, DaemonStateDirectory};
     use super::protocol::InvocationRequest;
     use super::server::actor_capacity_tests::{
         ensure_platform_xml_workspace, LiveV5Daemon, V5Submission,
     };
     use super::server::{ActorBoundExecution, ActorBoundInvocation, CanonicalInvocationService};
     use super::v13_service::CanonicalV13ReadService;
-    use crate::application::invocation_store::ToolIdentity;
-    use crate::application::invocation_store_v5::V5SafeFailureReason;
-    use crate::application::operation_descriptors::{ExecutionClass, KnownLongReason};
-    use crate::domain::cancellation::CancellationToken;
-    use crate::domain::invocation::{DomainResult, InvocationFailure, InvocationStatus};
-    use crate::infrastructure::platform::testing::{
-        create_directory_link_fixture_for_test, set_unix_mode_for_test, unix_mode_for_test,
-        FileLinkFixtureOutcome,
-    };
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{mpsc, Arc, Mutex};
     use std::time::Duration;
+    use unica_execution::invocation_store::ToolIdentity;
+    use unica_execution::invocation_store_v5::V5SafeFailureReason;
+    use unica_execution::receipt_runtime::ports::{ExecutionClass, KnownLongReason};
+    use unica_execution_contract::invocation::{DomainResult, InvocationFailure, InvocationStatus};
+    use unica_work_control::cancellation::CancellationToken;
 
     // These waits only bound native thread coordination in integration tests.
     // They exceed the actor's seven-second operation budget so parallel
@@ -89,77 +54,6 @@ mod tests {
 
     fn physical_root(root: &std::path::Path) -> PathBuf {
         std::fs::canonicalize(root).unwrap()
-    }
-
-    #[test]
-    fn daemon_process_is_anchored_outside_the_caller_workspace() {
-        let state_root = std::env::temp_dir().join("unica-daemon-command-state");
-        let command = super::daemon_process_command(
-            PathBuf::from("unica").as_path(),
-            &state_root,
-            &CoreIdentity::production(),
-            Duration::from_secs(30),
-        );
-
-        assert_eq!(command.get_current_dir(), Some(state_root.as_path()));
-        for key in unica_bootstrap::host_workspace_environment_keys() {
-            assert!(command
-                .get_envs()
-                .any(|(name, value)| name == key && value.is_none()));
-        }
-    }
-
-    #[test]
-    fn world_readable_identity_directory_is_rejected() {
-        let root = tempfile::tempdir().unwrap();
-        let physical = physical_root(root.path());
-        let identity = CoreIdentity::production();
-        let path = DaemonStateDirectory::path_for(&physical, &identity);
-        std::fs::create_dir_all(&path).unwrap();
-        if !set_unix_mode_for_test(&path, 0o755).unwrap() {
-            return;
-        }
-
-        let error = DaemonStateDirectory::open(&physical, &identity).unwrap_err();
-        assert!(error.contains("owner-only"), "{error}");
-        assert_eq!(unix_mode_for_test(&path).unwrap(), Some(0o755));
-    }
-
-    #[test]
-    fn symlinked_provider_state_root_is_rejected_before_creating_identity_state() {
-        let fixture = tempfile::tempdir().unwrap();
-        let target = fixture.path().join("redirected-parent");
-        std::fs::create_dir(&target).unwrap();
-        let routed_parent = fixture.path().join("provider-parent-link");
-        match create_directory_link_fixture_for_test(&target, &routed_parent).unwrap() {
-            FileLinkFixtureOutcome::Created => {}
-            FileLinkFixtureOutcome::Unsupported
-            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
-        }
-        let routed = routed_parent.join("provider-state-created-through-link");
-        let identity = CoreIdentity::production();
-
-        assert!(DaemonStateDirectory::open(&routed, &identity).is_err());
-        assert!(
-            !target.join("provider-state-created-through-link").exists(),
-            "rejected ambient symlink must not receive even the provider-state directory"
-        );
-    }
-
-    #[test]
-    fn missing_provider_state_root_is_created_before_private_identity_child() {
-        let fixture = tempfile::tempdir().unwrap();
-        let physical_fixture = std::fs::canonicalize(fixture.path()).unwrap();
-        let state_root = physical_fixture.join("cold").join("provider-state");
-        let identity = CoreIdentity::production();
-
-        let state = DaemonStateDirectory::open(&state_root, &identity).unwrap();
-
-        assert!(state_root.is_dir());
-        assert_eq!(
-            state.path(),
-            DaemonStateDirectory::path_for(&state_root, &identity)
-        );
     }
 
     #[test]
@@ -562,7 +456,10 @@ mod tests {
     }
 
     struct BoundReadingService {
-        observed: mpsc::Sender<(crate::domain::invocation::SafeIdentityHash, Vec<u8>)>,
+        observed: mpsc::Sender<(
+            unica_execution_contract::invocation::SafeIdentityHash,
+            Vec<u8>,
+        )>,
     }
 
     impl CanonicalInvocationService for BoundReadingService {

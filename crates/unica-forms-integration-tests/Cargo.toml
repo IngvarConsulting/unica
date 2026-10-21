@@ -1,0 +1,29 @@
+[package]
+name = "unica-forms-integration-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+autotests = false
+
+[[test]]
+name = "form_event_registry"
+path = "tests/event_registry.rs"
+
+[[test]]
+name = "form_handler_parameters"
+path = "tests/handler_parameters.rs"
+
+[dev-dependencies]
+sha2.workspace = true
+unica-workspace = { path = "../unica-workspace" }
+unica-source-contract = { path = "../unica-source-contract" }
+unica-execution-contract = { path = "../unica-execution-contract" }
+unica-address = { path = "../unica-address" }
+unica-bsl = { path = "../unica-bsl" }
+unica-forms = { path = "../unica-forms", features = ["test-support"] }
+unica-forms-designer = { path = "../unica-forms-designer" }
+unica-metadata = { path = "../unica-metadata", features = ["test-support"] }
+roxmltree.workspace = true
+serde_json.workspace = true
