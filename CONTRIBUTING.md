@@ -327,11 +327,14 @@ Rust-тестов. `UNICA_PREPARED_BINARY_MANIFEST` указывает на пр
 исходников, SHA, target, toolchain, cfg/features, hash и режим файла.
 Receipt-сборка и устаревший артефакт отвергаются. В CI без этой переменной
 Python-тест отказывает, а не собирает продукт. Локально без неё
-`ensure_binary` собирает `cargo build --locked -p unica-coder --bin unica`
-и пишет об этом в stderr. Чтобы не собирать повторно, подготовьте манифест
-командой `python scripts/ci/prepared_binary.py build --destination DIR --archive FILE`
-и задайте `UNICA_PREPARED_BINARY_MANIFEST=DIR/manifest.json`. Манифест
-действует, пока не изменились исходники.
+`ensure_binary` один раз на процесс собирает продукт командой `LOCAL_BUILD`
+из `scripts/ci/prepared_binary.py` и пишет об этом в stderr. Для повторных
+прогонов на неизменном дереве можно один раз подготовить манифест:
+`python scripts/ci/prepared_binary.py build --destination DIR --archive FILE`
+(отдельная сборка в `.build/ci-product-target`, `DIR` не должен существовать)
+и задать `UNICA_PREPARED_BINARY_MANIFEST=DIR/manifest.json`. После правки
+исходников, включая неотслеживаемые файлы, манифест отвергается; переменную
+тогда снимите.
 
 Компонентный selector работает в тени полной очереди: сравнивает графы Cargo
 на base/head и выбирает изменённые packages с обратными потребителями.

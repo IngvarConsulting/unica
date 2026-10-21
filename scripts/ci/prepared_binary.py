@@ -24,6 +24,8 @@ from pathlib import Path
 MANIFEST_ENV = "UNICA_PREPARED_BINARY_MANIFEST"
 SCHEMA = 1
 ORDINARY_FEATURES = ["default"]
+# One local build per process and checkout; CI never reaches it.
+_LOCAL_BUILDS: dict[Path, Path] = {}
 LOCAL_BUILD = ["cargo", "build", "--quiet", "--locked", "-p", "unica-coder", "--bin", "unica"]
 
 
@@ -119,15 +121,20 @@ def ensure_binary(root: Path) -> Path:
     # without the manifest is a wiring defect, not a reason to compile again.
     if os.environ.get("GITHUB_ACTIONS") == "true":
         raise ValueError(f"{MANIFEST_ENV} is unset in CI; Python suites never build the product")
-    print(f"prepared_binary: {MANIFEST_ENV} is unset, building the product: {' '.join(LOCAL_BUILD)}\n"
-          f"prepared_binary: to skip it, run `python scripts/ci/prepared_binary.py build --destination DIR "
-          f"--archive FILE` and set {MANIFEST_ENV}=DIR/manifest.json (valid for the unchanged source tree)",
-          file=sys.stderr)
-    subprocess.run(LOCAL_BUILD, cwd=root, check=True)
-    binary = binary_path(root)
-    if not binary.is_file():
-        raise ValueError(f"Cargo did not produce {binary}")
-    return binary
+    key = root.resolve()
+    if key not in _LOCAL_BUILDS:
+        print(f"prepared_binary: {MANIFEST_ENV} is unset, building the product: {' '.join(LOCAL_BUILD)}\n"
+              f"prepared_binary: to reuse one verified build across runs of an unchanged tree, run "
+              f"`python scripts/ci/prepared_binary.py build --destination DIR --archive FILE` (a separate "
+              f"build into .build/ci-product-target) and set {MANIFEST_ENV}=DIR/manifest.json; unset it "
+              f"after editing sources, the manifest then refuses",
+              file=sys.stderr)
+        subprocess.run(LOCAL_BUILD, cwd=root, check=True)
+        binary = binary_path(root)
+        if not binary.is_file():
+            raise ValueError(f"Cargo did not produce {binary}")
+        _LOCAL_BUILDS[key] = binary
+    return _LOCAL_BUILDS[key]
 
 
 def build(root: Path, destination: Path) -> Path:

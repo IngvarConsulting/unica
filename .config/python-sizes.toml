@@ -20,7 +20,7 @@ entries = [
   "test_smoke_unica_mcp.SmokeUnicaMcpTests",
   # паритет скриптов: собирает и запускает исполняемый файл
   "test_unica_mcp_script_parity.UnicaMcpScriptParityTests",
-  # дым MCP через `cargo run` и реестр поверхности инструментов через `cargo build`
+  # дым MCP и реестр поверхности инструментов: продукт через `ensure_binary`
   "test_unica_mcp_smoke.UnicaMcpSmokeTests",
   "test_tool_surface_ledger.ToolSurfaceLedgerTests",
   # наблюдатель адресов: процесс продукта и страница на 127.0.0.1

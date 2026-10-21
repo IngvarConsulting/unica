@@ -61,7 +61,9 @@ class PreparedBinaryTests(unittest.TestCase):
         binary.parent.mkdir(parents=True)
         binary.write_bytes(b"local build")
         stderr = io.StringIO()
-        with patch.dict(os.environ, environment, clear=True), patch.object(product.subprocess, "run") as build, patch.object(sys, "stderr", stderr):
+        with patch.dict(os.environ, environment, clear=True), patch.dict(product._LOCAL_BUILDS, clear=True), \
+             patch.object(product.subprocess, "run") as build, patch.object(sys, "stderr", stderr):
+            self.assertEqual(product.ensure_binary(self.root), binary.resolve())
             self.assertEqual(product.ensure_binary(self.root), binary.resolve())
         build.assert_called_once_with(product.LOCAL_BUILD, cwd=self.root, check=True)
         self.assertEqual(product.LOCAL_BUILD, ["cargo", "build", "--quiet", "--locked", "-p", "unica-coder", "--bin", "unica"])
