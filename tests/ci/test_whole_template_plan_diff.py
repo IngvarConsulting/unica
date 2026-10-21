@@ -1,6 +1,8 @@
 """Whole-template removal is inspectable through the same saved plan that is applied."""
 from __future__ import annotations
 
+from scripts.ci.prepared_binary import binary_path, ensure_binary
+
 import base64
 import os
 from pathlib import Path
@@ -65,11 +67,7 @@ def workspace_image(root: Path):
 class WholeTemplatePlanDiffWireTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        subprocess.run(
-            ["cargo", "build", "--quiet", "--package", "unica-coder", "--bin", "unica"],
-            cwd=REPO_ROOT,
-            check=True,
-        )
+        ensure_binary(REPO_ROOT, build_command=["cargo", "build", "--quiet", "--package", "unica-coder", "--bin", "unica"])
 
     def _start(self):
         temporary = tempfile.TemporaryDirectory(prefix="unica-whole-template-plan-")

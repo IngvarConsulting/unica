@@ -1,0 +1,24 @@
+[package]
+name = "unica-templates-designer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+test-support = []
+
+[dependencies]
+serde_json.workspace = true
+unica-operation-contract = { path = "../unica-operation-contract" }
+unica-metadata = { path = "../unica-metadata" }
+unica-xml-format = { path = "../unica-xml-format" }
+unica-address = { path = "../unica-address" }
+unica-source-contract = { path = "../unica-source-contract" }
+unica-source-designer = { path = "../unica-source-designer" }
+unica-templates = { path = "../unica-templates" }
+roxmltree.workspace = true
+
+[dev-dependencies]
+unica-templates = { path = "../unica-templates" }

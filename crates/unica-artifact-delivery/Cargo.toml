@@ -1,0 +1,25 @@
+[package]
+name = "unica-artifact-delivery"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+test-support = []
+
+[dependencies]
+unica-work-control = { path = "../unica-work-control" }
+unica-network = { path = "../unica-network" }
+flate2.workspace = true
+fs2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tar.workspace = true
+uuid.workspace = true
+zip.workspace = true
+
+[dev-dependencies]
+unica-network = { path = "../unica-network", features = ["test-support"] }

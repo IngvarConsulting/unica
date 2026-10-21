@@ -2030,12 +2030,13 @@ class ProductContractTests(unittest.TestCase):
         """
         repo_root = Path(__file__).resolve().parents[2]
         dictionary = (
-            repo_root / "crates" / "unica-coder" / "src" / "domain" / "refusal.rs"
+            repo_root / "crates" / "unica-refusal" / "src" / "lib.rs"
         )
         sources = [
             path
-            for path in (repo_root / "crates" / "unica-coder" / "src").rglob("*.rs")
-            if path.name != "refusal.rs"
+            for crate in (repo_root / "crates").iterdir()
+            for path in (crate / "src").rglob("*.rs")
+            if path != dictionary
         ]
         corpus = "".join(path.read_text(encoding="utf-8") for path in sources)
         detail_names = re.findall(
@@ -2920,7 +2921,7 @@ fn test_only() { std::process::Command::new("git"); }
             encoding="utf-8"
         )
         validator = (
-            repo_root / "crates/unica-bootstrap/src/manifest.rs"
+            repo_root / "crates/unica-artifact-delivery/src/manifest.rs"
         ).read_text(encoding="utf-8")
 
         approved = {

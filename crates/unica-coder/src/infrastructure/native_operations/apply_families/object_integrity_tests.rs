@@ -1,19 +1,21 @@
 use super::plan_hidden_v13_apply;
 use crate::domain::apply::ApplyRequest;
-use crate::domain::cancellation::CancellationToken;
-use crate::domain::code_intelligence::ProviderDeadline;
-use crate::domain::invocation::DomainResult;
-use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
-use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::native_operations::apply::{ApplyPlanErrorKind, StagedFileState};
-use crate::infrastructure::workspace_actor::{
-    ApplyAdmission, PreparedApplyBatch, ProviderRootBinding, WorkspaceActor, WorkspaceIdentity,
-    WorkspaceSourceSetInput,
-};
-use crate::test_support::tree_snapshot;
+use unica_source_contract::{SourceFormat, SourceProfile, SourceSetKind};
+
+use crate::infrastructure::source_workspace::WorkspaceActor;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use unica_execution_contract::invocation::DomainResult;
+use unica_source_contract::proposal::{ApplyPlanErrorKind, StagedFileState};
+use unica_source_contract::workspace::WorkspaceContext;
+use unica_work_control::cancellation::CancellationToken;
+use unica_work_control::provider_deadline::ProviderDeadline;
+use unica_workspace::actor::{
+    ApplyAdmission, PreparedApplyBatch, ProviderRootBinding, WorkspaceIdentity,
+    WorkspaceSourceSetInput,
+};
+use unica_workspace::test_support::tree_snapshot;
 
 const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
 
@@ -99,7 +101,7 @@ impl Fixture {
             "final-object-integrity-test",
         )
         .unwrap();
-        let actor = WorkspaceActor::new(identity, context).unwrap();
+        let actor = crate::infrastructure::source_workspace::new_actor(identity, context).unwrap();
         let binding = actor.bind_provider_root("main", &source).unwrap();
         Self {
             _root: root,
@@ -139,7 +141,16 @@ impl Fixture {
                 &CancellationToken::new(),
             )
             .unwrap();
-        admission.bind_request(request);
+        admission.bind_request_identity(
+            &request.at().to_string(),
+            request.ops().iter().map(|operation| {
+                (
+                    operation.name(),
+                    operation.at().to_string(),
+                    operation.args(),
+                )
+            }),
+        );
         admission
     }
 

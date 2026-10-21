@@ -9,6 +9,13 @@ check:
   - crates/unica-coder/src/interfaces/task_projection.rs::task_result_with_source_text_follows_the_client_budget
   - crates/unica-coder/src/interfaces/task_projection.rs::error_fallback_is_bounded_without_losing_structured_diagnostics
   - crates/unica-coder/src/interfaces/task_projection.rs::error_without_diagnostics_still_has_readable_summary
+  - crates/unica-coder/src/interfaces/task_projection.rs::error_recovery_preserves_all_hints_beyond_the_diagnostic_text_budget
+  - crates/unica-coder/src/interfaces/task_projection.rs::error_recovery_that_exceeds_the_total_projection_limit_is_refused_whole
+  - crates/unica-coder/tests/v13_search_integration.rs::public_view_refuses_bsl_text_over_the_default_budget_whole_with_structural_next
+  - crates/unica-coder/tests/v13_search_integration.rs::oversized_error_recovery_is_a_closed_size_refusal_without_poisoning_the_daemon
+  - crates/unica-execution/src/receipt_ledger.rs::recovery_that_cannot_be_delivered_is_rejected_before_terminal_admission
+  - crates/unica-daemon/src/protocol_v5.rs::strict_v5_direct_receipt_restores_a_legacy_result_without_new_delivery_admission
+  - crates/unica-execution-contract/src/source_text_budget.rs::admission_refusal_bounds_client_specific_range_hints
   - crates/unica-coder/src/interfaces/mcp.rs::v13_compatibility_task_tools_are_profile_gated_durable_and_replay_free
   - crates/unica-coder/src/interfaces/task_projection.rs::v5_failed_and_cancelled_terminals_answer_only_the_closed_vocabulary
 ---
@@ -43,9 +50,17 @@ check:
 поэтому конверт и текст идут одним каналом. Сохранённый результат задания
 и его дайджест включают текст. При `isError: true` `content` содержит текстовое
 представление `summary` и `diagnostics`, чтобы клиент мог показать причину
-отказа, даже если не читает `structuredContent`. Текст занимает не более
-4096 байт UTF-8 вместе с явным маркером усечения; полные данные остаются
-в `structuredContent`. Поле `data` в текст не копируется.
+отказа, даже если не читает `structuredContent`. Этот блок диагностики
+занимает не более 4096 байт UTF-8 вместе с явным маркером усечения;
+полные данные остаются в `structuredContent`. Непустой `next` передаётся
+дополнительным текстовым JSON-блоком целиком: все варианты продолжения,
+их аргументы и пояснения сохраняются без усечения. Поле `data` в текст
+не копируется. Полные подсказки учитываются в общем пределе MCP ниже;
+превышение отказывает всему ответу, а не выдаёт часть подсказок.
+До сохранения нового результата проверяется и эта текстовая форма с запасом
+для служебных полей Task. Проверка учитывает добавляемый диапазон Body для
+любого поддерживаемого бюджета клиента; сам сохранённый результат от бюджета
+клиента не зависит.
 `isError`, `_meta` и `resultType` сохраняются.
 Сериализованные `CallToolResult` и `DetailedTask` не превышают
 8 MiB + 64 KiB; превышение даёт `result_too_large`.

@@ -22,15 +22,15 @@
 //! lives elsewhere, so every such path is made absolute against the workspace
 //! root before the copy is written.
 use super::v13_workspace_bootstrap::read_yaml_config;
-use crate::domain::cancellation::CancellationToken;
-use crate::infrastructure::internal_adapters::{
-    ProcessCommand, ProcessOutput, ProcessRunner, ProcessStreamFailure, SystemProcessRunner,
-};
-use crate::infrastructure::platform::full_dump_publication::RunnerProjectStore;
-use crate::infrastructure::platform::PendingProcessHandoff;
-use crate::infrastructure::source_roots::normalize_path_identity;
 use serde_yaml::{Mapping, Value};
 use std::path::{Path, PathBuf};
+use unica_process::runner::{
+    ProcessCommand, ProcessOutput, ProcessRunner, ProcessStreamFailure, SystemProcessRunner,
+};
+use unica_process::PendingProcessHandoff;
+use unica_work_control::cancellation::CancellationToken;
+use unica_workspace::full_dump::RunnerProjectStore;
+use unica_workspace::paths::normalize_path_identity;
 
 pub(super) const VERSION: &str = "0.15.2";
 pub(super) fn check_version(version: &str) -> Result<(), String> {
@@ -126,10 +126,7 @@ fn with_projected_config<T>(
 pub(super) fn lock_project(
     root: &Path,
     cancellation: &CancellationToken,
-) -> Result<
-    RunnerProjectStore,
-    crate::infrastructure::platform::full_dump_publication::RunnerProjectLockFailure,
-> {
+) -> Result<RunnerProjectStore, unica_workspace::full_dump::RunnerProjectLockFailure> {
     let root = normalize_path_identity(root).map_err(refuse)?;
     RunnerProjectStore::open_and_lock(&projection_directory(&root), cancellation)
 }
@@ -177,7 +174,7 @@ fn with_projected_config_in_store<T>(
     let (base, local) = project(base, local, &root)?;
     let directory = store.directory().to_path_buf();
     let config = directory.join(BASE_NAME);
-    store.write_projection(&base, local.as_ref())?;
+    unica_adapter_v8_runner::full_dump::write_projection(store, &base, local.as_ref())?;
     let mut projected = command.clone();
     projected.args[position] = config.display().to_string();
     store.verify()?;
@@ -756,7 +753,7 @@ mod tests {
             env_remove: vec![],
             capture_limits: None,
             timeout: None,
-            cancellation: crate::domain::cancellation::CancellationToken::new(),
+            cancellation: unica_work_control::cancellation::CancellationToken::new(),
         }
     }
 
@@ -955,7 +952,7 @@ mod tests {
         let local: Value =
             serde_yaml::from_slice(&std::fs::read(directory.join(LOCAL_NAME)).unwrap()).unwrap();
         assert_eq!(local["infobases"]["origin"]["user"], "Tester");
-        assert!(crate::infrastructure::platform::directory_is_owner_only(&directory).unwrap());
+        assert!(unica_workspace::test_support::directory_is_owner_only(&directory).unwrap());
 
         // Без местного слоя прежняя копия местного слоя не остаётся.
         std::fs::remove_file(root.path().join(LOCAL_NAME)).unwrap();

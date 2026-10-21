@@ -2,11 +2,12 @@ use super::{
     bounded_prop, member_properties, safe_prop, select_named, selected_scalar_props,
     MAX_COMPACT_PROP_BYTES,
 };
-use crate::application::v13::view::ViewError;
-use crate::domain::address::{AddressSegment, NodeKind, QualifiedAddress};
 use crate::domain::node_view::{BranchRef, CollectionView, NodeView, NodeViewData};
-use crate::domain::refusal::{RefusalCode, RefusalDetail};
+use unica_execution_contract::view_error::ViewError;
+
 use serde_json::{json, Map, Value};
+use unica_address::address::{AddressSegment, NodeKind, QualifiedAddress};
+use unica_refusal::{RefusalCode, RefusalDetail};
 
 pub(super) const PAYLOAD_KEYS: &[&str] = &[
     "name",
@@ -35,10 +36,10 @@ pub(super) fn project_metadata_for_source(
     address: &QualifiedAddress,
     payload: &Value,
     suffix: &[AddressSegment],
-    source_kind: Option<crate::domain::project_sources::SourceSetKind>,
+    source_kind: Option<unica_source_contract::SourceSetKind>,
 ) -> Result<NodeViewData, ViewError> {
     let profile = source_kind
-        .filter(|kind| *kind == crate::domain::project_sources::SourceSetKind::Configuration)
+        .filter(|kind| *kind == unica_source_contract::SourceSetKind::Configuration)
         .filter(|_| {
             address
                 .segments()
@@ -80,7 +81,7 @@ fn project_metadata(
     address: &QualifiedAddress,
     payload: &Value,
     suffix: &[AddressSegment],
-    member_profile: Option<crate::domain::metadata::MetaMemberReadProfile>,
+    member_profile: Option<unica_metadata::MetaMemberReadProfile>,
 ) -> Result<NodeViewData, ViewError> {
     if suffix.is_empty() {
         let mut props = selected_scalar_props(
@@ -573,7 +574,7 @@ fn metadata_items(
     kind: NodeKind,
     value: &Value,
     payload: &Value,
-    member_profile: Option<crate::domain::metadata::MetaMemberReadProfile>,
+    member_profile: Option<unica_metadata::MetaMemberReadProfile>,
 ) -> Vec<Value> {
     value
         .as_array()
@@ -599,7 +600,7 @@ fn metadata_item_with_context(
     kind: NodeKind,
     item: &Value,
     payload: &Value,
-    member_profile: Option<crate::domain::metadata::MetaMemberReadProfile>,
+    member_profile: Option<unica_metadata::MetaMemberReadProfile>,
 ) -> NodeView {
     let node = metadata_item_node(address, kind, item, member_profile);
     if kind == NodeKind::TabularSection {
@@ -638,7 +639,7 @@ fn metadata_item_node(
     address: &QualifiedAddress,
     kind: NodeKind,
     item: &Value,
-    member_profile: Option<crate::domain::metadata::MetaMemberReadProfile>,
+    member_profile: Option<unica_metadata::MetaMemberReadProfile>,
 ) -> NodeView {
     let mut limits = Vec::new();
     let mut props = selected_scalar_props(
@@ -679,7 +680,7 @@ fn metadata_item_node(
             .nth(1)
             .is_some_and(|segment| segment.kind() == NodeKind::TabularSection);
         let allowed = if tabular {
-            crate::domain::metadata::META_STANDARD_ATTRIBUTE_PROPERTY_NAMES
+            unica_metadata::META_STANDARD_ATTRIBUTE_PROPERTY_NAMES
         } else {
             &["Synonym", "ToolTip", "FillChecking"]
         };
@@ -853,7 +854,7 @@ fn metadata_property_props(payload: &Value) -> Map<String, Value> {
 }
 
 pub(crate) fn borrowing_props(
-    borrowing: &crate::infrastructure::native_operations::meta::MetaBorrowing,
+    borrowing: &unica_metadata_designer::xml_model::MetaBorrowing,
 ) -> Map<String, Value> {
     let mut props = Map::new();
     props.insert(

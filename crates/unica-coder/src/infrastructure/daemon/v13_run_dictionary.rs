@@ -1,10 +1,10 @@
 use super::protocol::InvocationRequest;
-use crate::application::invocation_store::ToolIdentity;
 use crate::application::tool_contracts::SurfaceRelease;
 use crate::application::v13::tool_catalog::{catalog_for, RunIntent};
-use crate::domain::invocation::DomainResult;
-use crate::domain::refusal::RefusalCode;
 use serde_json::{json, Value};
+use unica_execution::invocation_store::ToolIdentity;
+use unica_execution_contract::invocation::DomainResult;
+use unica_refusal::RefusalCode;
 
 /// Словарь операций `run` и отказ по неизвестному имени.
 ///

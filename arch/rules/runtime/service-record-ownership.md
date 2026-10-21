@@ -1,9 +1,9 @@
 ---
 id: INV.RUNTIME.SERVICE-RECORD-OWNERSHIP
 check:
-  - crates/unica-coder/src/infrastructure/workspace_services.rs::workspace_service_cleanup_preserves_replacement_record
-  - crates/unica-coder/src/infrastructure/workspace_services.rs::workspace_service_record_cleanup_serializes_concurrent_replacement
-  - crates/unica-coder/src/infrastructure/workspace_services.rs::workspace_service_last_access_update_cannot_overwrite_replacement
+  - crates/unica-coder/tests/platform/workspace_services_integration.rs::workspace_service_cleanup_preserves_replacement_record
+  - crates/unica-coder/tests/platform/workspace_services_integration.rs::workspace_service_record_cleanup_serializes_concurrent_replacement
+  - crates/unica-coder/tests/platform/workspace_services_integration.rs::workspace_service_last_access_update_cannot_overwrite_replacement
 ---
 
 # Старый сервис не меняет запись своего преемника

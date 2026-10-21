@@ -51,9 +51,9 @@ fn verified_public_mutator_idempotence_cases_are_exact() {
     let cases: [(&str, fn()); 7] = [
         ("unica.cf.edit", crate::application::tests::cf_edit_equal_serialized_result_is_a_public_noop_and_preserves_identity),
         ("unica.cfe.borrow", super::cfe::tests::borrow_cfe_preserves_object_and_file_identity_on_repeated_borrow),
-        ("unica.code.patch", super::code::tests::applied_patch_returns_typed_data_and_repeated_apply_is_noop_with_stable_identity),
-        ("unica.form.edit", super::form::tests::edit_form_identical_event_is_byte_and_identity_exact_idempotent_noop),
-        ("unica.interface.edit", super::interface::tests::repeated_interface_edit_preserves_identity_but_reports_attempted_update),
+        ("unica.code.patch", super::code_patch_composition::tests::applied_patch_returns_typed_data_and_repeated_apply_is_noop_with_stable_identity),
+        ("unica.form.edit", crate::infrastructure::form_composition::tests::edit_form_identical_event_is_byte_and_identity_exact_idempotent_noop),
+        ("unica.interface.edit", crate::infrastructure::interface_composition::tests::repeated_interface_edit_preserves_identity_but_reports_attempted_update),
         ("unica.meta.edit", super::meta::typed_resource_noop_and_identity_contract_is_complete),
         ("unica.role.edit", super::role::role_edit_contract_tests::role_edit_without_vendor_support_is_logically_addressed_and_preserves_identity),
     ];
@@ -82,16 +82,16 @@ fn public_platform_xml_mutator_preimage_contract_is_complete() {
         ("unica.cfe.borrow", super::cfe::tests::borrow_cfe_rejects_concurrent_base_format_owner_change),
         ("unica.cfe.init", super::cfe::tests::cfe_init_rejects_concurrent_base_format_owner_change),
         ("unica.cfe.patch_method", super::cfe::tests::cfe_patch_method_binds_exact_existing_bsl_preimage),
-        ("unica.code.patch", super::code::tests::code_patch_rolls_back_if_owner_descriptor_changes_before_commit),
+        ("unica.code.patch", super::code_patch_composition::tests::code_patch_rolls_back_if_owner_descriptor_changes_before_commit),
         ("unica.epf.init", super::external::tests::external_init_reauthorizes_containing_owner_immediately_before_publication),
         ("unica.erf.init", super::external::tests::external_init_reauthorizes_containing_owner_immediately_before_publication),
-        ("unica.form.compile", super::form::tests::form_compile_rolls_back_if_unchanged_parent_owner_changes_during_publication),
-        ("unica.form.edit", super::form::tests::edit_form_rejects_stale_preimage_without_overwriting_concurrent_change),
-        ("unica.interface.edit", super::interface::tests::interface_edit_rolls_back_if_unchanged_metadata_owner_changes_during_publication),
+        ("unica.form.compile", crate::infrastructure::form_composition::tests::form_compile_rolls_back_if_unchanged_parent_owner_changes_during_publication),
+        ("unica.form.edit", crate::infrastructure::form_composition::tests::edit_form_rejects_stale_preimage_without_overwriting_concurrent_change),
+        ("unica.interface.edit", crate::infrastructure::interface_composition::tests::interface_edit_rolls_back_if_unchanged_metadata_owner_changes_during_publication),
         ("unica.meta.add", super::meta::typed_resource_preimage_contract_is_complete),
         ("unica.meta.edit", crate::infrastructure::metadata_operations::tests::typed_edit_concurrency_and_rollback_preserve_exact_external_or_preimage_bytes),
         ("unica.role.edit", super::role::role_edit_contract_tests::rights_drift_in_the_staging_window_is_classified_as_concurrent),
-        ("unica.subsystem.edit", super::subsystem::tests::subsystem_edit_exact_binds_a_reused_existing_child),
+        ("unica.subsystem.edit", crate::infrastructure::subsystem_composition::tests::subsystem_edit_exact_binds_a_reused_existing_child),
     ];
     let inventory = public_platform_xml_mutator_inventory();
     let actual = cases
@@ -110,7 +110,7 @@ fn public_platform_xml_mutator_preimage_contract_is_complete() {
 
 #[test]
 fn repeated_interface_mutation_preserves_file_identity_but_reports_attempted_update() {
-    super::interface::tests::repeated_interface_edit_preserves_identity_but_reports_attempted_update();
+    crate::infrastructure::interface_composition::tests::repeated_interface_edit_preserves_identity_but_reports_attempted_update();
 }
 
 #[test]
@@ -125,8 +125,8 @@ fn mutation_idempotence_scope_decision_is_fully_realized() {
 #[test]
 fn tail_insert_public_and_write_contract_is_complete() {
     crate::application::tool_contracts::tests::code_patch_tail_insert_public_contract_is_closed();
-    super::code::tests::code_patch_without_a_selector_appends_to_the_end_and_proves_the_repeat();
-    super::code::tests::code_patch_writes_the_first_body_of_an_empty_or_bom_only_module();
-    super::code::tests::code_patch_creates_a_module_file_the_platform_never_exported();
-    super::code::tests::code_patch_refuses_a_module_role_the_metadata_kind_never_owns();
+    super::code_patch_composition::tests::code_patch_without_a_selector_appends_to_the_end_and_proves_the_repeat();
+    super::code_patch_composition::tests::code_patch_writes_the_first_body_of_an_empty_or_bom_only_module();
+    super::code_patch_composition::tests::code_patch_creates_a_module_file_the_platform_never_exported();
+    super::code_patch_composition::tests::code_patch_refuses_a_module_role_the_metadata_kind_never_owns();
 }

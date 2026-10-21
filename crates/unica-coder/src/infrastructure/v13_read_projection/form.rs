@@ -1,10 +1,11 @@
 use super::{item_identity, select_named, selected_scalar_props};
-use crate::application::v13::view::ViewError;
-use crate::domain::address::{AddressSegment, NodeKind, QualifiedAddress};
-use crate::domain::module_projection::EventProjection;
 use crate::domain::node_view::{BranchRef, CollectionView, NodeView, NodeViewData};
-use crate::domain::refusal::RefusalCode;
+use unica_bsl::projection::EventProjection;
+use unica_execution_contract::view_error::ViewError;
+
 use serde_json::{Map, Value};
+use unica_address::address::{AddressSegment, NodeKind, QualifiedAddress};
+use unica_refusal::RefusalCode;
 
 pub(super) const PAYLOAD_KEYS: &[&str] = &[
     "name",

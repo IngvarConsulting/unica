@@ -1,15 +1,13 @@
-use crate::domain::metadata::{metadata_kind_collections, MetaCollection, MetadataKind};
-use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
-use crate::infrastructure::metadata_kinds::{supports_nested_form_or_command, METADATA_KINDS};
+use unica_metadata::{metadata_kind_collections, MetaCollection, MetadataKind};
+use unica_source_contract::{SourceFormat, SourceProfile, SourceSetKind};
+
+use crate::infrastructure::metadata_kinds::supports_nested_form_or_command;
+
 use std::ffi::OsStr;
 use std::path::Path;
+use unica_source_designer::layout::METADATA_KINDS;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RevisionArtifactDisposition {
-    Content,
-    Presence,
-    Ignored,
-}
+use unica_source_contract::read::RevisionArtifactDisposition;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PlatformXmlSerializationFormat {

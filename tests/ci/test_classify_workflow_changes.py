@@ -98,14 +98,14 @@ class GitEventClassificationTests(unittest.TestCase):
             self.assertEqual("https://github.com/owner/repo/actions/runs/123", marker["run_url"])
             self.assertEqual("2", marker["run_attempt"])
             self.assertEqual({"reason": "docs_only", "base_sha": base, "head_sha": head}, marker["scope_skip"])
-        # Exercise the artifact handoff, including GitHub's unexpanded name
-        # for a whole skipped matrix. No previous inventory means no test cases.
+        # Exercise the artifact handoff through the skipped inventory aggregate.
+        # No previous inventory means no test cases.
         collector_path = Path(__file__).resolve().parents[2] / "scripts/ci/collect-results.py"
         spec = importlib.util.spec_from_file_location("collect_event_results", collector_path)
         collector = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(collector)
         jobs = repo / "jobs.json"
-        jobs.write_text(json.dumps({"jobs": [{"name": "Rust tests (${{ matrix.runner }})", "conclusion": "skipped"}]}))
+        jobs.write_text(json.dumps({"jobs": [{"name": "Rust tests (complete inventory)", "conclusion": "skipped"}]}))
         collector.collect(repo / "routing", repo / "report", jobs, "", "")
         report = json.loads((repo / "report/main/run.json").read_text())
         self.assertEqual(head, report["sha"])
@@ -385,6 +385,25 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
                     assessment_required=True,
                 )
 
+    def test_extracted_analysis_owners_keep_their_real_search_consumers(self) -> None:
+        for path in (
+            "crates/unica-code-intelligence/src/coordinator.rs",
+            "crates/unica-code-intelligence/src/model.rs",
+            "crates/unica-configuration/src/operational.rs",
+            "crates/unica-source-contract/src/location.rs",
+            "crates/unica-source-contract/src/workspace.rs",
+        ):
+            with self.subTest(path=path):
+                self.assert_classification(
+                    [path], rust_changed=True, search_integration_changed=True,
+                    release_required=True, assessment_required=True,
+                )
+        self.assert_classification(["crates/unica-code-intelligence/README.md"])
+        self.assert_classification(
+            ["crates/unica-code-intelligence-extra/src/model.rs"],
+            rust_changed=True, release_required=True,
+        )
+
     def test_package_contract_changes_require_package_contour(self) -> None:
         for path in (
             "plugins/unica/.codex-plugin/plugin.json",
@@ -464,6 +483,23 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             ["scripts/dev/install-local-unica.sh"],
             ci_changed=True,
         )
+
+    def test_archive_prepared_and_shadow_changes_cannot_take_the_prose_or_source_route(self) -> None:
+        module = load_classifier_module()
+        for path in (
+            "scripts/ci/ci_rust_lanes.py", "scripts/ci/prepared_binary.py", "scripts/ci/ci_shadow_selector.py",
+            "tests/ci/test_ci_rust_lanes.py", "tests/ci/test_ci_prepared_binary.py", "tests/ci/test_ci_shadow_selector.py",
+        ):
+            with self.subTest(path=path):
+                classification = module.classify_paths([path])
+                self.assertTrue(classification.ci_changed)
+                self.assertFalse(module.is_prose_path(path))
+                flags = classification._asdict()
+                self.assertTrue(module.rust_route("pull_request", "refs/pull/1/merge", flags, docs_only=False).required)
+                self.assertTrue(module.rust_route("merge_group", "refs/heads/queue", flags, docs_only=False).required)
+        prose = module.classify_paths(["CONTRIBUTING.md"])
+        self.assertFalse(prose.ci_changed)
+        self.assertFalse(module.rust_route("pull_request", "refs/pull/1/merge", prose._asdict(), docs_only=True).required)
 
     def test_the_test_seam_and_its_guard_require_the_ci_contour(self) -> None:
         """Шов решает, что гоняет каждая джоба: его правка — правка конвейера.

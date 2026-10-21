@@ -1,9 +1,9 @@
 ---
 id: INV.SOURCE.BOUND-PREIMAGES
 check:
-  - crates/unica-coder/src/infrastructure/native_operations/code.rs::staged_code_preserves_module_owner_support_format_and_preimage_guards
-  - crates/unica-coder/src/infrastructure/native_operations/code.rs::staged_code_reuses_actor_revision_and_race_fences
-  - crates/unica-coder/src/infrastructure/native_operations/code.rs::code_patch_rolls_back_if_owner_descriptor_changes_before_commit
+  - crates/unica-coder/tests/platform/code_patch_composition.rs::staged_code_preserves_module_owner_support_format_and_preimage_guards
+  - crates/unica-coder/tests/platform/code_patch_composition.rs::staged_code_reuses_actor_revision_and_race_fences
+  - crates/unica-coder/tests/platform/code_patch_composition.rs::code_patch_rolls_back_if_owner_descriptor_changes_before_commit
 gap: https://github.com/IngvarConsulting/unica/issues/954
 ---
 

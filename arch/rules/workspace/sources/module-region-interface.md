@@ -1,7 +1,7 @@
 ---
 id: INV.SOURCE.MODULE-REGION-INTERFACE
 check:
-  - crates/unica-coder/src/infrastructure/bsl_module_projection.rs::nested_regions_interface_projections_and_ambiguity_are_exact
+  - crates/unica-bindings-integration-tests/tests/projection.rs::nested_regions_interface_projections_and_ambiguity_are_exact
 ---
 
 # Области определяют программные интерфейсы без новых адресов методов

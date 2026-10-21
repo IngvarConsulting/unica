@@ -1,0 +1,30 @@
+[package]
+name = "unica-adapter-v8-runner"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+test-support = ["unica-process/test-support", "unica-execution/test-support", "unica-workspace/test-support"]
+
+[dependencies]
+unica-source-designer = { path = "../unica-source-designer" }
+unica-runner = { path = "../unica-runner" }
+unica-execution = { path = "../unica-execution" }
+unica-execution-contract = { path = "../unica-execution-contract" }
+unica-process = { path = "../unica-process" }
+unica-source-contract = { path = "../unica-source-contract" }
+unica-workspace = { path = "../unica-workspace" }
+unica-artifact-delivery = { path = "../unica-artifact-delivery" }
+unica-work-control = { path = "../unica-work-control" }
+unica-redaction = { path = "../unica-redaction" }
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+sha2.workspace = true
+
+
+[dev-dependencies]
+unica-workspace = { path = "../unica-workspace", features = ["test-support"] }

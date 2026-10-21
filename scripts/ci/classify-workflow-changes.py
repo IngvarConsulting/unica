@@ -69,6 +69,8 @@ PACKAGE_PATHS = {
     "scripts/ci/verify-release-assets.py",
 }
 CI_CONTRACT_PATHS = {
+    "scripts/ci/check-component-boundaries.py",
+    "tests/ci/test_component_boundaries.py",
     "scripts/ci/workflow_routing.py",
     "scripts/dev/install-local-unica.sh",
     "scripts/ci/classify-workflow-changes.py",
@@ -76,6 +78,12 @@ CI_CONTRACT_PATHS = {
     # Шов прогона решает, что именно гоняет каждая джоба; его правка — правка
     # конвейера, а не исходников, и обязана ехать полным контуром.
     "scripts/ci/run-tests.py",
+    "scripts/ci/ci_rust_lanes.py",
+    "scripts/ci/prepared_binary.py",
+    "scripts/ci/ci_shadow_selector.py",
+    "tests/ci/test_ci_rust_lanes.py",
+    "tests/ci/test_ci_prepared_binary.py",
+    "tests/ci/test_ci_shadow_selector.py",
     "scripts/ci/run-unittest.py",
     "scripts/ci/allure_results.py",
     "scripts/ci/collect-results.py",
@@ -111,6 +119,11 @@ PLATFORM_SOURCE_PATHS = {
 PLATFORM_PREFIXES = (
     "crates/unica-coder/src/infrastructure/platform/",
     "crates/unica-bootstrap/src/platform/",
+)
+SEARCH_INTEGRATION_OWNER_PREFIXES = (
+    "crates/unica-code-intelligence/",
+    "crates/unica-configuration/",
+    "crates/unica-source-contract/",
 )
 SEARCH_INTEGRATION_PATHS = {
     "crates/unica-coder/src/application/code_intelligence.rs",
@@ -261,6 +274,7 @@ def classify_paths(paths: Iterable[str], *, force_full: bool = False) -> Classif
         toolchain_changed |= _is_toolchain_path(path)
         search_integration_changed |= (
             path in SEARCH_INTEGRATION_PATHS
+            or (_is_rust_path(path) and path.startswith(SEARCH_INTEGRATION_OWNER_PREFIXES))
             or _is_toolchain_path(path)
         )
         package_changed |= path in PACKAGE_PATHS or _is_toolchain_path(path)

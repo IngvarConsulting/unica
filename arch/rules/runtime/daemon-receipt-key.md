@@ -2,8 +2,8 @@
 id: INV.WIRE.DAEMON-RECEIPT-KEY
 check:
   - crates/unica-coder/tests/daemon_receipt_ledger.rs::receipt_key_is_canonicalized_identically_by_client_and_server
-  - crates/unica-coder/src/infrastructure/daemon/protocol_v5.rs::strict_decoded_submit_derives_the_frozen_application_receipt_key
-  - crates/unica-coder/src/infrastructure/daemon/protocol_v5.rs::strict_v5_direct_receipt_rejects_a_terminal_digest_mismatch
+  - crates/unica-daemon/src/protocol_v5.rs::strict_decoded_submit_derives_the_frozen_application_receipt_key
+  - crates/unica-daemon/src/protocol_v5.rs::strict_v5_direct_receipt_rejects_a_terminal_digest_mismatch
 ---
 
 # Frontend и демон одинаково определяют квитанцию вызова

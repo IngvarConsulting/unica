@@ -1,42 +1,28 @@
-use crate::application::metadata::{MetaAddRequest, MetaEditRequest, MetaFailure};
-use crate::application::ports::{
-    MetaPublishReport, MetadataResourceImage, MetadataResourceRole, MetadataValidationSubject,
-    PreparedMetadataMutation,
-};
+use unica_metadata_designer::relations::TypedOperationDependencyScope;
+use unica_metadata_designer::resource_plan::ResolvedMetadataObject;
+use unica_metadata_designer::resource_plan::{TypedChildResourcePlan, TypedOperationPostImage};
+
+use crate::application::ports::{MetaPublishReport, PreparedMetadataMutation};
 use crate::application::SupportGuardRequirement;
-use crate::domain::cache::{CacheAccess, CacheReport};
-use crate::domain::cancellation::CancellationToken;
-use crate::domain::events::{DomainEvent, DomainEventKind};
-use crate::domain::metadata::{
-    metadata_identifier_is_valid, MetaDiagnostic, MetaDiagnosticCode, MetaEditOperation,
-    MetaMutationData, MetaMutationEffect, MetaPropertyKey, MetaPublicationAction,
-    MetaPublicationPlanEntry, MetaPublicationResource, MetaRelation, MetaValidationData,
-    MetaValidationStatus, RelationEditMode,
-};
-use crate::domain::source_target::MetadataAddress;
-use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::metadata_kinds::metadata_layout;
-use roxmltree::Document;
 #[cfg(test)]
 use serde_json::Map;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use unica_address::source_target::MetadataAddress;
+use unica_metadata::{
+    MetaDiagnostic, MetaDiagnosticCode, MetaEditOperation, MetaMutationData, MetaMutationEffect,
+    MetaPropertyKey, MetaPublicationAction, MetaPublicationPlanEntry, MetaPublicationResource,
+    MetaRelation, MetaValidationData, MetaValidationStatus, RelationEditMode,
+};
+use unica_metadata_designer::layout::metadata_layout;
+use unica_source_contract::events::{DomainEvent, DomainEventKind};
+use unica_source_contract::workspace::WorkspaceContext;
+use unica_work_control::cancellation::CancellationToken;
+use unica_workspace::cache::{CacheAccess, CacheReport};
 
 use super::super::common::guard_resolved_platform_xml_target_dependencies;
-use super::super::compile_transaction::{
-    snapshot_directory_membership, CommitFailure, CommitFailureKind, CompileTransaction,
-    DirectoryMembershipSelector, DirectoryMembershipSnapshot, PlannedChangeKind,
-    RegistrationStatus,
-};
-use super::edit::{
-    build_typed_operation_post_image, ResolvedMetadataObject, TypedChildResourcePlan,
-    TypedOperationDependencyScope, TypedOperationPostImage,
-};
-use super::template_catalog::{
-    MetadataTemplateCatalog, MetadataTemplateFileMode, MetadataTemplateFileRole,
-    MetadataTemplateOperationOverrides, PlatformMetadataTemplateCatalog,
-};
+
 use crate::infrastructure::platform_xml_source_targets::{
     bind_metadata_add_source_evidence, resolve_metadata_add_source, revalidate_metadata_add_source,
     revalidate_platform_xml_target, ClosedPlatformXmlTarget, ResolvedSourceSet,
@@ -45,9 +31,12 @@ use crate::infrastructure::support_guard::{
     bind_resolved_support_guard_evidence, evaluate_resolved_support_guard,
     ResolvedSupportGuardCheck,
 };
-use crate::infrastructure::workspace_state::WorkspaceStateRepository;
-
-const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
+use unica_source_contract::proposal::{DirectoryMembershipSelector, DirectoryMembershipSnapshot};
+use unica_workspace::compile_transaction::{
+    snapshot_directory_membership, CommitFailure, CommitFailureKind, CompileTransaction,
+    PlannedChangeKind, RegistrationStatus,
+};
+use unica_workspace::state::WorkspaceStateRepository;
 
 fn metadata_cleanup_warnings(target: &str, cleanup_warnings: &[String]) -> Vec<String> {
     if cleanup_warnings.is_empty() {
@@ -63,7 +52,7 @@ fn stage_metadata_publication_state(
     transaction: &mut CompileTransaction,
     context: &WorkspaceContext,
     data: &MetaMutationData,
-) -> Result<(Vec<DomainEvent>, Option<CacheReport>), MetaFailure> {
+) -> Result<(Vec<DomainEvent>, Option<CacheReport>), unica_metadata::request::MetaFailure> {
     if !data.changed {
         return Ok((Vec::new(), None));
     }
@@ -83,7 +72,7 @@ fn stage_metadata_publication_state(
             },
         )
         .map_err(|_| {
-            MetaFailure::from(
+            unica_metadata::request::MetaFailure::from(
                 MetaDiagnostic::error(
                     MetaDiagnosticCode::ProviderUnavailable,
                     "metadata cache state could not join the publication transaction",
@@ -162,7 +151,7 @@ fn run_meta_edit_before_reauthorization_hook() {
 
 pub(crate) struct PreparedMetaAdd {
     preview: MetaMutationData,
-    validation_subject: MetadataValidationSubject,
+    validation_subject: unica_metadata::validation_subject::MetadataValidationSubject,
     transaction: CompileTransaction,
     context: WorkspaceContext,
     source: ResolvedSourceSet,
@@ -172,24 +161,24 @@ pub(crate) struct PreparedMetaAdd {
 
 pub(crate) struct PreparedMetaEdit {
     preview: MetaMutationData,
-    validation_subject: MetadataValidationSubject,
+    validation_subject: unica_metadata::validation_subject::MetadataValidationSubject,
     transaction: CompileTransaction,
     context: WorkspaceContext,
-    resolved: ResolvedMetadataObject,
+    resolved: ResolvedMetadataObject<ClosedPlatformXmlTarget>,
     expected_post_images: Vec<(PathBuf, Vec<u8>)>,
     relation_dependency_handles: Vec<ClosedPlatformXmlTarget>,
 }
 
 impl PreparedMetaEdit {
     pub(super) fn prepare(
-        request: &MetaEditRequest,
-        resolved: ResolvedMetadataObject,
+        request: &unica_metadata::request::MetaEditRequest,
+        resolved: ResolvedMetadataObject<ClosedPlatformXmlTarget>,
         context: &WorkspaceContext,
         post_image: Vec<u8>,
         mut diagnostics: Vec<MetaDiagnostic>,
-        child_resources: TypedChildResourcePlan,
+        child_resources: TypedChildResourcePlan<ClosedPlatformXmlTarget>,
         effects: Vec<MetaMutationEffect>,
-    ) -> Result<Box<dyn PreparedMetadataMutation>, MetaFailure> {
+    ) -> Result<Box<dyn PreparedMetadataMutation>, unica_metadata::request::MetaFailure> {
         let target = request.metadata_path.clone();
         let mut expected_post_images = child_resources.expected_post_images.clone();
         expected_post_images.push((resolved.descriptor_path.clone(), post_image.clone()));
@@ -285,12 +274,12 @@ impl PreparedMetaEdit {
             }
         }
         let mut validation_resources = vec![
-            MetadataResourceImage {
-                role: MetadataResourceRole::Descriptor,
+            unica_metadata::validation_subject::MetadataResourceImage {
+                role: unica_metadata::validation_subject::MetadataResourceRole::Descriptor,
                 bytes: post_image.clone(),
             },
-            MetadataResourceImage {
-                role: MetadataResourceRole::Registration,
+            unica_metadata::validation_subject::MetadataResourceImage {
+                role: unica_metadata::validation_subject::MetadataResourceRole::Registration,
                 bytes: resolved.owner_preimage.clone(),
             },
         ];
@@ -317,15 +306,17 @@ impl PreparedMetaEdit {
                     .guard_or_verify_exact_preimage(&module.path, &module.bytes)
                     .map_err(|message| provider_failure(&target, message))?;
                 relation_dependency_handles.push(module.handle);
-                validation_resources.push(MetadataResourceImage {
-                    role: MetadataResourceRole::Module {
-                        owner: dependency.target.clone(),
+                validation_resources.push(
+                    unica_metadata::validation_subject::MetadataResourceImage {
+                        role: unica_metadata::validation_subject::MetadataResourceRole::Module {
+                            owner: dependency.target.clone(),
+                        },
+                        bytes: module.bytes,
                     },
-                    bytes: module.bytes,
-                });
+                );
             }
-            validation_resources.push(MetadataResourceImage {
-                role: MetadataResourceRole::Dependency {
+            validation_resources.push(unica_metadata::validation_subject::MetadataResourceImage {
+                role: unica_metadata::validation_subject::MetadataResourceRole::Dependency {
                     target: dependency.target,
                 },
                 bytes: dependency.bytes,
@@ -334,20 +325,24 @@ impl PreparedMetaEdit {
 
         validation_resources.extend(child_resources.validation_resources);
         for (dependency_path, dependency_target, bytes) in
-            registered_language_images(&resolved.source_root, &resolved.owner_preimage)
-                .map_err(|message| provider_failure(&target, message))?
+            unica_metadata_designer::info_read::registered_language_images(
+                &unica_workspace::discovery::ProjectDiscoveryReader::new(&context.cwd),
+                &resolved.source_root,
+                &resolved.owner_preimage,
+            )
+            .map_err(|message| provider_failure(&target, message))?
         {
             transaction
                 .guard_or_verify_exact_preimage(dependency_path, &bytes)
                 .map_err(|message| provider_failure(&target, message))?;
-            validation_resources.push(MetadataResourceImage {
-                role: MetadataResourceRole::Dependency {
+            validation_resources.push(unica_metadata::validation_subject::MetadataResourceImage {
+                role: unica_metadata::validation_subject::MetadataResourceRole::Dependency {
                     target: dependency_target,
                 },
                 bytes,
             });
         }
-        let validation_subject = MetadataValidationSubject {
+        let validation_subject = unica_metadata::validation_subject::MetadataValidationSubject {
             target: target.clone(),
             resources: validation_resources,
             child_footprints: child_resources.validation_footprints,
@@ -391,14 +386,14 @@ impl PreparedMetadataMutation for PreparedMetaEdit {
         &self.preview
     }
 
-    fn validation_subject(&self) -> &MetadataValidationSubject {
+    fn validation_subject(&self) -> &unica_metadata::validation_subject::MetadataValidationSubject {
         &self.validation_subject
     }
 
     fn publish(
         mut self: Box<Self>,
         cancellation: &CancellationToken,
-    ) -> Result<MetaPublishReport, MetaFailure> {
+    ) -> Result<MetaPublishReport, unica_metadata::request::MetaFailure> {
         if cancellation.is_cancelled() {
             return Err(MetaDiagnostic::error(
                 MetaDiagnosticCode::ProviderUnavailable,
@@ -409,7 +404,7 @@ impl PreparedMetadataMutation for PreparedMetaEdit {
         }
         let target = self.preview.metadata_path.clone();
         revalidate_platform_xml_target(&self.context, &self.resolved.handle).map_err(|_| {
-            MetaFailure::from(
+            unica_metadata::request::MetaFailure::from(
                 MetaDiagnostic::error(
                     MetaDiagnosticCode::ConcurrentModification,
                     format!("metadata source changed while publishing `{target}`"),
@@ -419,7 +414,7 @@ impl PreparedMetadataMutation for PreparedMetaEdit {
         })?;
         for dependency in &self.relation_dependency_handles {
             revalidate_platform_xml_target(&self.context, dependency).map_err(|_| {
-                MetaFailure::from(
+                unica_metadata::request::MetaFailure::from(
                     MetaDiagnostic::error(
                         MetaDiagnosticCode::ConcurrentModification,
                         "metadata relation dependency topology changed after editing was prepared",
@@ -473,10 +468,10 @@ impl PreparedMetadataMutation for PreparedMetaEdit {
 }
 
 pub(crate) fn prepare_meta_add(
-    request: &MetaAddRequest,
+    request: &unica_metadata::request::MetaAddRequest,
     context: &WorkspaceContext,
     cancellation: &CancellationToken,
-) -> Result<Box<dyn PreparedMetadataMutation>, MetaFailure> {
+) -> Result<Box<dyn PreparedMetadataMutation>, unica_metadata::request::MetaFailure> {
     if cancellation.is_cancelled() {
         return Err(MetaDiagnostic::error(
             MetaDiagnosticCode::ProviderUnavailable,
@@ -513,39 +508,46 @@ pub(crate) fn prepare_meta_add(
         matches!(operation, MetaEditOperation::SetProperties { values }
             if values.entries().iter().any(|(key, _)| *key == MetaPropertyKey::Handler))
     });
-    let language = super::edit::source_set_text_language(&source.owner_preimage, |relative| {
-        let path = source.source_root.join(relative);
-        match fs::read(&path) {
-            Ok(bytes) => Ok(Some(bytes)),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(format!("failed to read {}: {error}", path.display())),
-        }
-    })
-    .map_err(MetaFailure::from)?;
-    let mut post_image = PlatformMetadataTemplateCatalog.minimal_object(
-        &source,
+    let language = unica_metadata_designer::image_plan::source_set_text_language(
+        &source.owner_preimage,
+        |relative| {
+            let path = source.source_root.join(relative);
+            match fs::read(&path) {
+                Ok(bytes) => Ok(Some(bytes)),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(error) => Err(format!("failed to read {}: {error}", path.display())),
+            }
+        },
+    )
+    .map_err(unica_metadata::request::MetaFailure::from)?;
+    let template_reader =
+        super::template_source::MetadataTemplateReadAdapter::new(&source, context, None);
+    let mut post_image = unica_metadata_designer::template_catalog::minimal_object(
+        &template_reader.source(),
         request.kind,
         &request.name,
-        MetadataTemplateOperationOverrides {
+        unica_metadata_designer::template_catalog::MetadataTemplateOperationOverrides {
             source: source_is_replaced_by_operation,
             handler: handler_is_replaced_by_operation,
         },
         &request.source_set,
-        context,
         &language,
     )?;
     let target = post_image.metadata_path.clone();
     let descriptor_file = post_image
         .files
         .iter_mut()
-        .find(|file| file.role == MetadataTemplateFileRole::Descriptor)
+        .find(|file| {
+            file.role
+                == unica_metadata_designer::template_catalog::MetadataTemplateFileRole::Descriptor
+        })
         .expect("every metadata template has one descriptor");
     let descriptor_path = source.source_root.join(&descriptor_file.relative_path);
     let TypedOperationPostImage {
         descriptor,
         child_resources,
         effects,
-    } = build_typed_operation_post_image(
+    } = unica_metadata_designer::image_plan::build_typed_operation_post_image(
         TypedOperationDependencyScope::new(
             &request.source_set,
             &source.source_root,
@@ -553,11 +555,22 @@ pub(crate) fn prepare_meta_add(
             &source.owner_preimage,
             handler_is_replaced_by_operation,
         ),
-        &descriptor_path,
-        &target,
+        unica_metadata_designer::resource_plan::MetadataDescriptorTarget {
+            path: &descriptor_path,
+            address: &target,
+        },
         &descriptor_file.bytes,
         &request.operations,
-        context,
+        &super::template_source::MetadataDependencyReadAdapter::new(context),
+        unica_metadata_designer::image_plan::MetadataImageBindings {
+            resources: unica_metadata_designer::child_resources::ChildResourceBindings {
+                observe_membership:
+                    unica_workspace::compile_transaction::snapshot_directory_membership,
+                templates: super::edit::template_seed_emitters(),
+                form_seed: unica_forms_designer::planner::minimal_typed_form_content,
+            },
+            fresh_uuid: crate::infrastructure::source_ids::fresh_uuid,
+        },
     )?;
     descriptor_file.bytes = descriptor;
     let mut mutation_effects = vec![MetaMutationEffect {
@@ -580,7 +593,7 @@ pub(crate) fn prepare_meta_add(
     let mut transaction = CompileTransaction::new();
     bind_resolved_support_guard_evidence(&mut transaction, &source.owner_path, context).map_err(
         |_| {
-            MetaFailure::from(MetaDiagnostic::error(
+            unica_metadata::request::MetaFailure::from(MetaDiagnostic::error(
                 MetaDiagnosticCode::ProviderUnavailable,
                 "metadata support-policy evidence could not be bound",
             ))
@@ -616,7 +629,10 @@ pub(crate) fn prepare_meta_add(
         post_image
             .files
             .iter()
-            .filter(|file| file.mode != MetadataTemplateFileMode::Guard)
+            .filter(|file| {
+                file.mode
+                    != unica_metadata_designer::template_catalog::MetadataTemplateFileMode::Guard
+            })
             .map(|file| {
                 (
                     source.source_root.join(&file.relative_path),
@@ -665,22 +681,28 @@ pub(crate) fn prepare_meta_add(
         }
         let path = source.source_root.join(&file.relative_path);
         match file.mode {
-            MetadataTemplateFileMode::Create => transaction
-                .create_bytes(path, file.bytes.clone())
-                .map_err(|_| already_exists(&target))?,
-            MetadataTemplateFileMode::Guard => transaction
-                .guard_or_verify_exact_preimage(
-                    path,
-                    file.preimage.as_deref().unwrap_or(&file.bytes),
-                )
-                .map_err(|message| provider_failure(&target, message))?,
-            MetadataTemplateFileMode::Replace => transaction
-                .replace_bytes(
-                    path,
-                    file.preimage.as_deref().unwrap_or(&file.bytes),
-                    file.bytes.clone(),
-                )
-                .map_err(|message| provider_failure(&target, message))?,
+            unica_metadata_designer::template_catalog::MetadataTemplateFileMode::Create => {
+                transaction
+                    .create_bytes(path, file.bytes.clone())
+                    .map_err(|_| already_exists(&target))?
+            }
+            unica_metadata_designer::template_catalog::MetadataTemplateFileMode::Guard => {
+                transaction
+                    .guard_or_verify_exact_preimage(
+                        path,
+                        file.preimage.as_deref().unwrap_or(&file.bytes),
+                    )
+                    .map_err(|message| provider_failure(&target, message))?
+            }
+            unica_metadata_designer::template_catalog::MetadataTemplateFileMode::Replace => {
+                transaction
+                    .replace_bytes(
+                        path,
+                        file.preimage.as_deref().unwrap_or(&file.bytes),
+                        file.bytes.clone(),
+                    )
+                    .map_err(|message| provider_failure(&target, message))?
+            }
         }
     }
     for mutation in child_resources.file_mutations {
@@ -698,7 +720,12 @@ pub(crate) fn prepare_meta_add(
         }
     }
     let registration = transaction
-        .register_canonical_child(&source.owner_path, request.kind.as_str(), &request.name)
+        .register_canonical_child(
+            &source.owner_path,
+            request.kind.as_str(),
+            &request.name,
+            unica_source_designer::registration::cf_edit_add_child_object_text,
+        )
         .map_err(|message| provider_failure(&target, message))?;
     if registration != RegistrationStatus::Added {
         return Err(already_exists(&target));
@@ -707,7 +734,7 @@ pub(crate) fn prepare_meta_add(
         let Some(handle) = &file.guard_handle else {
             continue;
         };
-        if file.mode != MetadataTemplateFileMode::Guard {
+        if file.mode != unica_metadata_designer::template_catalog::MetadataTemplateFileMode::Guard {
             return Err(provider_failure(
                 &target,
                 "resolved metadata prerequisite must be a read guard".to_string(),
@@ -740,63 +767,63 @@ pub(crate) fn prepare_meta_add(
             prerequisite_handles.push(handle);
         }
         let (validation_role, publication_resource, publication_target) = match file.role {
-            MetadataTemplateFileRole::Descriptor => (
-                Some(MetadataResourceRole::Descriptor),
+            unica_metadata_designer::template_catalog::MetadataTemplateFileRole::Descriptor => (
+                Some(unica_metadata::validation_subject::MetadataResourceRole::Descriptor),
                 MetaPublicationResource::Descriptor,
                 target.clone(),
             ),
-            MetadataTemplateFileRole::Module => (
-                Some(MetadataResourceRole::Module {
+            unica_metadata_designer::template_catalog::MetadataTemplateFileRole::Module => (
+                Some(unica_metadata::validation_subject::MetadataResourceRole::Module {
                     owner: target.clone(),
                 }),
                 MetaPublicationResource::Module,
                 target.clone(),
             ),
-            MetadataTemplateFileRole::AuxiliaryXml(kind) => (
-                Some(MetadataResourceRole::AuxiliaryXml {
+            unica_metadata_designer::template_catalog::MetadataTemplateFileRole::AuxiliaryXml(kind) => (
+                Some(unica_metadata::validation_subject::MetadataResourceRole::AuxiliaryXml {
                     owner: target.clone(),
                     kind,
                 }),
                 MetaPublicationResource::Dependency,
                 target.clone(),
             ),
-            MetadataTemplateFileRole::Dependency(dependency) => {
+            unica_metadata_designer::template_catalog::MetadataTemplateFileRole::Dependency(dependency) => {
                 let publication_target = dependency.clone();
                 (
-                    Some(MetadataResourceRole::Dependency { target: dependency }),
+                    Some(unica_metadata::validation_subject::MetadataResourceRole::Dependency { target: dependency }),
                     MetaPublicationResource::Dependency,
                     publication_target,
                 )
             }
-            MetadataTemplateFileRole::DependencyModule(dependency) => {
+            unica_metadata_designer::template_catalog::MetadataTemplateFileRole::DependencyModule(dependency) => {
                 let publication_target = dependency.clone();
                 (
-                    Some(MetadataResourceRole::Module { owner: dependency }),
+                    Some(unica_metadata::validation_subject::MetadataResourceRole::Module { owner: dependency }),
                     MetaPublicationResource::Dependency,
                     publication_target,
                 )
             }
         };
         if let Some(role) = validation_role {
-            validation_resources.push(MetadataResourceImage {
+            validation_resources.push(unica_metadata::validation_subject::MetadataResourceImage {
                 role,
                 bytes: file.bytes,
             });
         }
-        if file.mode != MetadataTemplateFileMode::Guard {
+        if file.mode != unica_metadata_designer::template_catalog::MetadataTemplateFileMode::Guard {
             publication_plan.push(MetaPublicationPlanEntry {
                 action: match file.mode {
-                    MetadataTemplateFileMode::Create => MetaPublicationAction::Create,
-                    MetadataTemplateFileMode::Replace => MetaPublicationAction::Update,
-                    MetadataTemplateFileMode::Guard => unreachable!(),
+                    unica_metadata_designer::template_catalog::MetadataTemplateFileMode::Create => MetaPublicationAction::Create,
+                    unica_metadata_designer::template_catalog::MetadataTemplateFileMode::Replace => MetaPublicationAction::Update,
+                    unica_metadata_designer::template_catalog::MetadataTemplateFileMode::Guard => unreachable!(),
                 },
                 resource: publication_resource,
                 metadata_path: Some(publication_target),
             });
         }
     }
-    validation_resources.push(MetadataResourceImage {
-        role: MetadataResourceRole::Registration,
+    validation_resources.push(unica_metadata::validation_subject::MetadataResourceImage {
+        role: unica_metadata::validation_subject::MetadataResourceRole::Registration,
         bytes: registration_image,
     });
     for dependency in child_resources.relation_dependencies {
@@ -821,29 +848,33 @@ pub(crate) fn prepare_meta_add(
                 .guard_or_verify_exact_preimage(&module.path, &module.bytes)
                 .map_err(|message| provider_failure(&target, message))?;
             prerequisite_handles.push(module.handle);
-            validation_resources.push(MetadataResourceImage {
-                role: MetadataResourceRole::Module {
+            validation_resources.push(unica_metadata::validation_subject::MetadataResourceImage {
+                role: unica_metadata::validation_subject::MetadataResourceRole::Module {
                     owner: dependency.target.clone(),
                 },
                 bytes: module.bytes,
             });
         }
-        validation_resources.push(MetadataResourceImage {
-            role: MetadataResourceRole::Dependency {
+        validation_resources.push(unica_metadata::validation_subject::MetadataResourceImage {
+            role: unica_metadata::validation_subject::MetadataResourceRole::Dependency {
                 target: dependency.target,
             },
             bytes: dependency.bytes,
         });
     }
     for (dependency_path, language_target, bytes) in
-        registered_language_images(&source.source_root, &source.owner_preimage)
-            .map_err(|message| provider_failure(&target, message))?
+        unica_metadata_designer::info_read::registered_language_images(
+            &unica_workspace::discovery::ProjectDiscoveryReader::new(&context.cwd),
+            &source.source_root,
+            &source.owner_preimage,
+        )
+        .map_err(|message| provider_failure(&target, message))?
     {
         transaction
             .guard_or_verify_exact_preimage(dependency_path, &bytes)
             .map_err(|message| provider_failure(&target, message))?;
-        validation_resources.push(MetadataResourceImage {
-            role: MetadataResourceRole::Dependency {
+        validation_resources.push(unica_metadata::validation_subject::MetadataResourceImage {
+            role: unica_metadata::validation_subject::MetadataResourceRole::Dependency {
                 target: language_target,
             },
             bytes,
@@ -869,7 +900,7 @@ pub(crate) fn prepare_meta_add(
             },
             diagnostics: preparation_diagnostics,
         },
-        validation_subject: MetadataValidationSubject {
+        validation_subject: unica_metadata::validation_subject::MetadataValidationSubject {
             target,
             resources: validation_resources,
             child_footprints: child_resources.validation_footprints,
@@ -889,7 +920,7 @@ fn bind_prerequisite_ancestor_topology(
     source_root: &Path,
     prerequisite: &Path,
     target: &MetadataAddress,
-) -> Result<(), MetaFailure> {
+) -> Result<(), unica_metadata::request::MetaFailure> {
     if !prerequisite.starts_with(source_root) {
         return Err(provider_failure(
             target,
@@ -918,78 +949,19 @@ fn bind_prerequisite_ancestor_topology(
     Ok(())
 }
 
-fn registered_language_images(
-    source_root: &Path,
-    owner_preimage: &[u8],
-) -> Result<
-    Vec<(
-        PathBuf,
-        crate::domain::source_target::MetadataAddress,
-        Vec<u8>,
-    )>,
-    String,
-> {
-    let xml = std::str::from_utf8(owner_preimage)
-        .map_err(|_| "metadata owner image is not UTF-8".to_string())?
-        .trim_start_matches('\u{feff}');
-    let document =
-        Document::parse(xml).map_err(|_| "metadata owner image is not valid XML".to_string())?;
-    let configuration = document.root_element().children().find(|node| {
-        node.is_element()
-            && node.tag_name().namespace() == Some(MD_CLASSES_NS)
-            && node.tag_name().name() == "Configuration"
-    });
-    let child_objects = configuration.and_then(|configuration| {
-        configuration.children().find(|node| {
-            node.is_element()
-                && node.tag_name().namespace() == Some(MD_CLASSES_NS)
-                && node.tag_name().name() == "ChildObjects"
-        })
-    });
-    let mut images = Vec::new();
-    for node in child_objects
-        .into_iter()
-        .flat_map(|node| node.children())
-        .filter(|node| {
-            node.is_element()
-                && node.tag_name().namespace() == Some(MD_CLASSES_NS)
-                && node.tag_name().name() == "Language"
-        })
-    {
-        let Some(name) = node.text().map(str::trim).filter(|name| !name.is_empty()) else {
-            continue;
-        };
-        if !metadata_identifier_is_valid(name) {
-            return Err(format!(
-                "registered language `{name}` is not a valid 1C identifier"
-            ));
-        }
-        let target = crate::domain::source_target::MetadataAddress::parse(
-            crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-            &format!("Language.{name}"),
-        )
-        .map_err(|_| "registered language has an invalid logical identity".to_string())?;
-        let path = source_root.join("Languages").join(format!("{name}.xml"));
-        let bytes = fs::read(&path)
-            .map_err(|_| format!("registered language `{name}` image is unavailable"))?;
-        images.push((path, target, bytes));
-    }
-    Ok(images)
-}
-
 impl PreparedMetadataMutation for PreparedMetaAdd {
     fn preview(&self) -> &MetaMutationData {
         &self.preview
     }
 
-    fn validation_subject(&self) -> &MetadataValidationSubject {
+    fn validation_subject(&self) -> &unica_metadata::validation_subject::MetadataValidationSubject {
         &self.validation_subject
     }
 
     fn publish(
         mut self: Box<Self>,
         cancellation: &CancellationToken,
-    ) -> Result<MetaPublishReport, MetaFailure> {
+    ) -> Result<MetaPublishReport, unica_metadata::request::MetaFailure> {
         if cancellation.is_cancelled() {
             return Err(MetaDiagnostic::error(
                 MetaDiagnosticCode::ProviderUnavailable,
@@ -1002,7 +974,7 @@ impl PreparedMetadataMutation for PreparedMetaAdd {
         let target = self.preview.metadata_path.clone();
         for handle in &self.prerequisite_handles {
             revalidate_platform_xml_target(&self.context, handle).map_err(|_| {
-                MetaFailure::from(
+                unica_metadata::request::MetaFailure::from(
                     MetaDiagnostic::error(
                         MetaDiagnosticCode::ConcurrentModification,
                         "metadata prerequisite topology changed after creation was prepared",
@@ -1049,7 +1021,9 @@ impl PreparedMetadataMutation for PreparedMetaAdd {
     }
 }
 
-fn already_exists(target: &crate::domain::source_target::MetadataAddress) -> MetaFailure {
+fn already_exists(
+    target: &unica_address::source_target::MetadataAddress,
+) -> unica_metadata::request::MetaFailure {
     MetaDiagnostic::error(
         MetaDiagnosticCode::AlreadyExists,
         format!("metadata object `{target}` already exists or has a partial footprint"),
@@ -1063,14 +1037,14 @@ fn already_exists(target: &crate::domain::source_target::MetadataAddress) -> Met
 pub(super) fn transaction_changed_paths(
     transaction: &CompileTransaction,
     workspace_root: &std::path::Path,
-) -> Vec<crate::domain::metadata::MetaChangedPath> {
+) -> Vec<unica_metadata::MetaChangedPath> {
     let canonical_root = workspace_root
         .canonicalize()
         .unwrap_or_else(|_| workspace_root.to_path_buf());
     transaction
         .planned_changes()
         .into_iter()
-        .map(|(kind, path)| crate::domain::metadata::MetaChangedPath {
+        .map(|(kind, path)| unica_metadata::MetaChangedPath {
             action: match kind {
                 PlannedChangeKind::Create => MetaPublicationAction::Create,
                 PlannedChangeKind::Update => MetaPublicationAction::Update,
@@ -1088,9 +1062,9 @@ pub(super) fn transaction_changed_paths(
 }
 
 fn provider_failure(
-    target: &crate::domain::source_target::MetadataAddress,
+    target: &unica_address::source_target::MetadataAddress,
     _internal: String,
-) -> MetaFailure {
+) -> unica_metadata::request::MetaFailure {
     MetaDiagnostic::error(
         MetaDiagnosticCode::ProviderUnavailable,
         format!("metadata provider could not prepare `{target}`"),
@@ -1100,9 +1074,9 @@ fn provider_failure(
 }
 
 fn concurrent_preparation_failure(
-    target: &crate::domain::source_target::MetadataAddress,
+    target: &unica_address::source_target::MetadataAddress,
     _internal: String,
-) -> MetaFailure {
+) -> unica_metadata::request::MetaFailure {
     MetaDiagnostic::error(
         MetaDiagnosticCode::ConcurrentModification,
         format!("metadata source changed while preparing `{target}`"),
@@ -1112,9 +1086,9 @@ fn concurrent_preparation_failure(
 }
 
 fn publication_failure(
-    target: &crate::domain::source_target::MetadataAddress,
+    target: &unica_address::source_target::MetadataAddress,
     kind: CommitFailureKind,
-) -> MetaFailure {
+) -> unica_metadata::request::MetaFailure {
     let code = match kind {
         CommitFailureKind::ConcurrentModification => MetaDiagnosticCode::ConcurrentModification,
         CommitFailureKind::ProviderUnavailable => MetaDiagnosticCode::ProviderUnavailable,
@@ -1136,7 +1110,7 @@ fn publication_failure(
     .into()
 }
 
-fn commit_failure_from_meta(failure: &MetaFailure) -> CommitFailure {
+fn commit_failure_from_meta(failure: &unica_metadata::request::MetaFailure) -> CommitFailure {
     let message = failure
         .diagnostics
         .first()
@@ -1154,27 +1128,33 @@ fn commit_failure_from_meta(failure: &MetaFailure) -> CommitFailure {
     }
 }
 
-pub(crate) fn fresh_metadata_uuid() -> String {
-    uuid::Uuid::new_v4().to_string()
+#[cfg(test)]
+fn registered_language_images(
+    source_root: &Path,
+    owner_preimage: &[u8],
+) -> Result<Vec<(PathBuf, MetadataAddress, Vec<u8>)>, String> {
+    unica_metadata_designer::info_read::registered_language_images(
+        &unica_workspace::discovery::ProjectDiscoveryReader::new(source_root),
+        source_root,
+        owner_preimage,
+    )
 }
 
 #[cfg(test)]
 pub(crate) mod typed_add_publication_tests {
     use super::*;
-    use crate::application::metadata::MetaAddRequest;
-    use crate::domain::metadata::{
+
+    use crate::infrastructure::native_operations::cf::create_configuration_scaffold;
+    use serde_json::json;
+    use std::collections::BTreeMap;
+    use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    use unica_metadata::{
         EventSourceClass, MetaCollection, MetaEditOperation, MetaElementInput, MetaEventSource,
         MetaPredefinedFields, MetaPredefinedItemAdd, MetaPropertyChanges, MetaPropertyInput,
         MetaPropertyValue, MetaRelation, MetaRelationTarget, MetadataKind, MetadataReference,
         RelationEditMode,
     };
-    use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
-    use crate::infrastructure::native_operations::cf::create_configuration_scaffold;
-    use crate::infrastructure::native_operations::compile_transaction::{
-        with_commit_failpoint, CommitFailpoint,
-    };
-    use serde_json::json;
-    use std::collections::BTreeMap;
+    use unica_workspace::compile_transaction::{with_commit_failpoint, CommitFailpoint};
 
     #[test]
     fn publication_failure_code_is_selected_by_typed_commit_kind() {
@@ -1238,8 +1218,8 @@ pub(crate) mod typed_add_publication_tests {
             Self { root, context }
         }
 
-        fn request(&self, name: &str) -> MetaAddRequest {
-            MetaAddRequest {
+        fn request(&self, name: &str) -> unica_metadata::request::MetaAddRequest {
+            unica_metadata::request::MetaAddRequest {
                 source_set: "main".to_string(),
                 kind: MetadataKind::Catalog,
                 name: name.to_string(),
@@ -1249,11 +1229,12 @@ pub(crate) mod typed_add_publication_tests {
         }
 
         fn seed_common_module(&self, name: &str, module: &[u8]) {
-            let (xml, _) = super::super::template_catalog::minimal_metadata_xml_for_tests(
-                MetadataKind::CommonModule,
-                name,
-            )
-            .unwrap();
+            let (xml, _) =
+                unica_metadata_designer::template_catalog::minimal_metadata_xml_for_tests(
+                    MetadataKind::CommonModule,
+                    name,
+                )
+                .unwrap();
             let descriptor = self
                 .root
                 .join("src/CommonModules")
@@ -1274,6 +1255,7 @@ pub(crate) mod typed_add_publication_tests {
                         self.root.join("src/Configuration.xml"),
                         "CommonModule",
                         name,
+                        unica_source_designer::registration::cf_edit_add_child_object_text,
                     )
                     .unwrap(),
                 RegistrationStatus::Added
@@ -1283,7 +1265,7 @@ pub(crate) mod typed_add_publication_tests {
 
         fn source_snapshot(&self) -> BTreeMap<PathBuf, Vec<u8>> {
             let source = self.root.join("src");
-            crate::test_support::tree_snapshot(&source)
+            unica_workspace::test_support::tree_snapshot(&source)
         }
     }
 
@@ -1351,7 +1333,7 @@ pub(crate) mod typed_add_publication_tests {
     fn meta_add_code_type_change_guards_an_absent_predefined_companion() {
         let fixture = Fixture::new("concurrent-predefined-companion");
         let cancellation = CancellationToken::new();
-        let request = MetaAddRequest {
+        let request = unica_metadata::request::MetaAddRequest {
             operations: vec![MetaEditOperation::SetProperties {
                 values: MetaPropertyChanges::convert(
                     MetadataKind::Catalog,
@@ -1425,7 +1407,7 @@ pub(crate) mod typed_add_publication_tests {
     fn predefined_add_cache_planning_failure_leaves_all_source_bytes_unchanged() {
         let fixture = Fixture::new("predefined-cache-planning-failure");
         let cancellation = CancellationToken::new();
-        let request = MetaAddRequest {
+        let request = unica_metadata::request::MetaAddRequest {
             operations: vec![MetaEditOperation::add_predefined_items(vec![
                 MetaPredefinedItemAdd {
                     id: "a7d2e6fc-3824-4b56-b4be-ae6be4944c0e".to_string(),
@@ -1460,7 +1442,7 @@ pub(crate) mod typed_add_publication_tests {
     fn meta_add_physical_form_footprint_commits_and_rolls_back_as_one_transaction() {
         let fixture = Fixture::new("physical-form-footprint");
         let cancellation = CancellationToken::new();
-        let with_form = |name: &str| MetaAddRequest {
+        let with_form = |name: &str| unica_metadata::request::MetaAddRequest {
             operations: vec![MetaEditOperation::add(
                 MetaCollection::Forms,
                 None,
@@ -1479,7 +1461,7 @@ pub(crate) mod typed_add_publication_tests {
             .any(|resource| {
                 matches!(
                     &resource.role,
-                    MetadataResourceRole::Form { owner, name }
+                    unica_metadata::validation_subject::MetadataResourceRole::Form { owner, name }
                         if owner.as_str() == "Catalog.WithForm" && name == "Main"
                 )
             }));
@@ -1533,7 +1515,7 @@ pub(crate) mod typed_add_publication_tests {
             .unwrap();
         let parent_address =
             MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Parent").unwrap();
-        let request = MetaAddRequest {
+        let request = unica_metadata::request::MetaAddRequest {
             operations: vec![MetaEditOperation::edit_relations(
                 MetaRelation::Owners,
                 RelationEditMode::Add,
@@ -1546,7 +1528,7 @@ pub(crate) mod typed_add_publication_tests {
         };
         let prepared = prepare_meta_add(&request, &fixture.context, &cancellation).unwrap();
         assert!(prepared.validation_subject().resources.iter().any(|resource| {
-            matches!(&resource.role, MetadataResourceRole::Dependency { target } if target == &parent_address)
+            matches!(&resource.role, unica_metadata::validation_subject::MetadataResourceRole::Dependency { target } if target == &parent_address)
         }));
         let owner_before = fs::read(fixture.root.join("src/Configuration.xml")).unwrap();
         let parent_path = fixture.root.join("src/Catalogs/Parent.xml");
@@ -1614,7 +1596,7 @@ pub(crate) mod typed_add_publication_tests {
         fixture.seed_common_module("Proof", b"Procedure Run() Export\nEndProcedure\n");
         let cancellation = CancellationToken::new();
         let prepared = prepare_meta_add(
-            &MetaAddRequest {
+            &unica_metadata::request::MetaAddRequest {
                 source_set: "main".to_string(),
                 kind: MetadataKind::ScheduledJob,
                 name: "Nightly".to_string(),
@@ -1662,7 +1644,7 @@ pub(crate) mod typed_add_publication_tests {
         let outside_directory = fixture.root.join("outside-handler");
         let module_directory_for_hook = module_directory.clone();
         let outside_directory_for_hook = outside_directory.clone();
-        let request = MetaAddRequest {
+        let request = unica_metadata::request::MetaAddRequest {
             source_set: "main".to_string(),
             kind: MetadataKind::EventSubscription,
             name: "Events".to_string(),
@@ -1680,7 +1662,7 @@ pub(crate) mod typed_add_publication_tests {
         let result = with_meta_add_after_authorization_hook(
             move || {
                 fs::rename(&module_directory_for_hook, &outside_directory_for_hook).unwrap();
-                crate::infrastructure::platform::testing::create_dir_symlink_for_test(
+                unica_workspace::test_support::create_dir_symlink_for_test(
                     &outside_directory_for_hook,
                     &module_directory_for_hook,
                 )
@@ -1718,7 +1700,7 @@ pub(crate) mod typed_add_publication_tests {
         let owner = fixture.root.join("src/Configuration.xml");
         let owner_before = fs::read(&owner).unwrap();
         let prepared = prepare_meta_add(
-            &MetaAddRequest {
+            &unica_metadata::request::MetaAddRequest {
                 source_set: "main".to_string(),
                 kind: MetadataKind::EventSubscription,
                 name: "Events".to_string(),
@@ -1739,7 +1721,7 @@ pub(crate) mod typed_add_publication_tests {
         let module_directory = fixture.root.join("src/CommonModules/Proof");
         let outside_directory = fixture.root.join("outside-handler");
         fs::rename(&module_directory, &outside_directory).unwrap();
-        crate::infrastructure::platform::testing::create_dir_symlink_for_test(
+        unica_workspace::test_support::create_dir_symlink_for_test(
             &outside_directory,
             &module_directory,
         )
@@ -1914,7 +1896,7 @@ pub(crate) mod typed_add_publication_tests {
         let fixture = Fixture::new("complete-post-image");
         let cancellation = CancellationToken::new();
         let exchange = prepare_meta_add(
-            &MetaAddRequest {
+            &unica_metadata::request::MetaAddRequest {
                 source_set: "main".to_string(),
                 kind: MetadataKind::ExchangePlan,
                 name: "Sync".to_string(),
@@ -1934,8 +1916,8 @@ pub(crate) mod typed_add_publication_tests {
                 .any(|resource| {
                     matches!(
                 resource.role,
-                MetadataResourceRole::AuxiliaryXml {
-                    kind: crate::application::ports::MetadataAuxiliaryXmlKind::ExchangePlanContent,
+                unica_metadata::validation_subject::MetadataResourceRole::AuxiliaryXml {
+                    kind: unica_metadata::validation_subject::MetadataAuxiliaryXmlKind::ExchangePlanContent,
                     ..
                 }
             )
@@ -1944,7 +1926,7 @@ pub(crate) mod typed_add_publication_tests {
 
         fixture.seed_common_module("Proof", b"Procedure Run() Export\nEndProcedure\n");
         let scheduled = prepare_meta_add(
-            &MetaAddRequest {
+            &unica_metadata::request::MetaAddRequest {
                 source_set: "main".to_string(),
                 kind: MetadataKind::ScheduledJob,
                 name: "Nightly".to_string(),
@@ -1963,7 +1945,7 @@ pub(crate) mod typed_add_publication_tests {
             .any(|resource| {
                 matches!(
                     &resource.role,
-                    MetadataResourceRole::Module { owner }
+                    unica_metadata::validation_subject::MetadataResourceRole::Module { owner }
                         if owner.as_str() == "CommonModule.Proof"
                 )
             }));

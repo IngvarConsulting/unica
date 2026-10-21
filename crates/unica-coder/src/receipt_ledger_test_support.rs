@@ -4,16 +4,18 @@
 //! production scenario runner, and a shape or action the runner does not know
 //! is a scenario error, never evidence of anything.
 
-use crate::application::receipt_ledger::{
+use crate::infrastructure::receipt_scenario::run_supported_receipt_scenario_for_test;
+use serde::de::DeserializeOwned;
+use std::fmt;
+use std::str::FromStr;
+use unica_execution::receipt_ledger::{
     canonical_v5_terminal, receipt_key_digest, request_scope_hash, task_link_digest,
     CoreIdentityDigest, ReceiptKey, ReceiptKeyDigest, ReceiptTerminalOutcome, RequestIdentity,
     RequestScopeHash, TaskLinkIdentity, V5ToolIdentity,
 };
-use crate::domain::invocation::{InvocationId, NormalizedArgumentsHash, SafeIdentityHash, TaskId};
-use crate::infrastructure::daemon::runtime_v5::run_supported_receipt_scenario_for_test;
-use serde::de::DeserializeOwned;
-use std::fmt;
-use std::str::FromStr;
+use unica_execution_contract::invocation::{
+    InvocationId, NormalizedArgumentsHash, SafeIdentityHash, TaskId,
+};
 
 pub fn execute_scenario_json(request: &str) -> Result<String, String> {
     run_supported_receipt_scenario_for_test(request)
@@ -76,7 +78,7 @@ pub fn task_link_digest_for_test(
 pub fn canonical_v5_terminal_for_test(terminal_json: &str) -> (Vec<u8>, String) {
     let outcome: ReceiptTerminalOutcome = serde_json::from_str(terminal_json)
         .unwrap_or_else(|error| panic!("invalid strict v5 terminal supplied by test: {error}"));
-    let terminal = canonical_v5_terminal(&outcome)
+    let terminal = canonical_v5_terminal(&outcome, unica_bootstrap::MAX_RESPONSE_BUDGET)
         .unwrap_or_else(|error| panic!("v5 terminal cannot be canonicalized: {error}"));
     (terminal.payload().to_vec(), terminal.digest().to_string())
 }
@@ -113,8 +115,8 @@ mod tests {
     )];
 
     const OWNER_HELPER_PRODUCTION_SOURCES: &[(&str, &str)] = &[(
-        "infrastructure/daemon/runtime_v5/receipt_scenario_v5.rs",
-        include_str!("infrastructure/daemon/runtime_v5/receipt_scenario_v5.rs"),
+        "../tests/support/receipt_scenario.rs",
+        include_str!("../tests/support/receipt_scenario.rs"),
     )];
 
     fn facade_forbidden_authority_references(
@@ -807,10 +809,10 @@ mod tests {
             (
                 "synthetic/helper_with_store_authority.rs",
                 r#"
-                    use crate::application::receipt_ledger::ReceiptLedgerPort;
-                    use crate::application::receipt_ledger_actor::ReceiptLedgerActor;
-                    use crate::infrastructure::daemon::identity::DaemonStateDirectory;
-                    use crate::infrastructure::receipt_ledger::ReceiptLedgerStore;
+                    use unica_execution::receipt_ledger::ReceiptLedgerPort;
+                    use unica_execution::receipt_ledger_actor::ReceiptLedgerActor;
+                    use unica_daemon::identity::DaemonStateDirectory;
+                    use unica_execution::receipt_store::ReceiptLedgerStore;
 
                     fn bypass_the_owner() {}
                 "#,

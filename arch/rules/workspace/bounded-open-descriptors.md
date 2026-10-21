@@ -1,10 +1,10 @@
 ---
 id: INV.APP.BOUNDED-OPEN-DESCRIPTORS
 check:
-  - crates/unica-coder/src/infrastructure/native_operations/apply.rs::reference_scan_descriptor_count_does_not_grow_with_inputs
-  - crates/unica-coder/src/infrastructure/native_operations/apply.rs::reference_guard_without_descriptors_rejects_nested_input_substitution
-  - crates/unica-coder/src/infrastructure/workspace_actor.rs::saved_apply_plans_do_not_retain_per_change_descriptors
-  - crates/unica-coder/src/infrastructure/workspace_actor.rs::saved_apply_rechecks_same_inode_same_length_hash_before_first_write
+  - crates/unica-workspace/src/apply.rs::reference_scan_descriptor_count_does_not_grow_with_inputs
+  - crates/unica-workspace/src/apply.rs::reference_guard_without_descriptors_rejects_nested_input_substitution
+  - crates/unica-coder/src/infrastructure/workspace_actor_contract_tests.rs::saved_apply_plans_do_not_retain_per_change_descriptors
+  - crates/unica-coder/src/infrastructure/workspace_actor_contract_tests.rs::saved_apply_rechecks_same_inode_same_length_hash_before_first_write
 ---
 
 # Число открытых дескрипторов не растёт с размером конфигурации

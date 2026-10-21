@@ -1,9 +1,9 @@
 ---
 id: INV.PKG.CACHE-PREFETCH
 check:
-  - crates/unica-bootstrap/tests/runtime_install.rs::prefetch_delivers_every_artifact_the_target_needs
-  - crates/unica-bootstrap/tests/runtime_install.rs::a_warm_cache_makes_prefetch_download_nothing
-  - crates/unica-bootstrap/tests/runtime_install.rs::an_invalid_ready_marker_makes_prefetch_report_a_download
+  - crates/unica-artifact-delivery/tests/runtime_install.rs::prefetch_delivers_every_artifact_the_target_needs
+  - crates/unica-artifact-delivery/tests/runtime_install.rs::a_warm_cache_makes_prefetch_download_nothing
+  - crates/unica-artifact-delivery/tests/runtime_install.rs::an_invalid_ready_marker_makes_prefetch_report_a_download
 ---
 
 # Предварительный прогрев доставляет все артефакты выбранной платформы

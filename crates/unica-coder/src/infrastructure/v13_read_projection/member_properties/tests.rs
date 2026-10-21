@@ -1,9 +1,9 @@
 use super::super::{project_typed_payload, project_typed_payload_for_source};
-use crate::domain::address::QualifiedAddress;
-use crate::domain::platform_profile::PlatformProfile;
-use crate::domain::project_sources::SourceSetKind;
 use crate::infrastructure::logical_tree::route_logical_address;
 use serde_json::{json, Value};
+use unica_address::address::QualifiedAddress;
+use unica_bsl::profile::PlatformProfile;
+use unica_source_contract::SourceSetKind;
 
 mod catalog_attribute;
 
