@@ -6,8 +6,12 @@ use std::time::Duration;
 
 use unica_bootstrap::{
     launch_runtime, provider_state_root, runtime_cache_root, verify_installed_skill_package,
-    verify_mcp_runtime, AttemptLog, HostTarget, HttpDownloader, Result, RuntimeHandoff,
-    RuntimeInstaller, RuntimeManifest, UnfinishedAttempt,
+    verify_mcp_runtime, RuntimeHandoff,
+};
+
+use unica_artifact_delivery::{
+    AttemptLog, HostTarget, HttpDownloader, Result, RuntimeInstaller, RuntimeManifest,
+    UnfinishedAttempt,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -75,8 +79,8 @@ fn prefetch_runtime(plugin_root: &Path) -> Result<i32> {
     if manifest.development {
         // Молчаливый успех соврал бы: образ уехал бы без инструментов, и
         // выяснилось бы это уже там, где сети нет.
-        return Err(unica_bootstrap::BootstrapError::of(
-            unica_bootstrap::Failure::Configuration,
+        return Err(unica_artifact_delivery::BootstrapError::of(
+            unica_artifact_delivery::Failure::Configuration,
             format!(
                 "{} is a development manifest: it publishes no artifacts, \
                  so there is nothing to prefetch",
@@ -113,7 +117,7 @@ fn prefetch_runtime(plugin_root: &Path) -> Result<i32> {
 /// повисшего.
 struct ReportProgress;
 
-impl unica_bootstrap::DownloadObserver for ReportProgress {
+impl unica_artifact_delivery::DownloadObserver for ReportProgress {
     fn transferred(&self, received: u64, total: Option<u64>) {
         match total {
             Some(total) if total > 0 => eprintln!(
@@ -149,7 +153,7 @@ impl KilledStartups {
     /// Готовит сообщение и сразу помечает попытки как переданные.
     /// При сбое до инициализации MCP сообщение пока теряется (issue #925).
     fn notice(&self) -> Option<String> {
-        let notice = unica_bootstrap::diagnose(&self.found);
+        let notice = unica_artifact_delivery::diagnose(&self.found);
         if notice.is_some() {
             let _ = self.log.report(&self.found);
         }
@@ -157,7 +161,7 @@ impl KilledStartups {
     }
 }
 
-fn install_runtime(plugin_root: &Path) -> Result<unica_bootstrap::RuntimeInstallation> {
+fn install_runtime(plugin_root: &Path) -> Result<unica_artifact_delivery::RuntimeInstallation> {
     let manifest = RuntimeManifest::load(&plugin_root.join("runtime-manifest.json"))?;
     let host = HostTarget::current()?;
     let cache_root = runtime_cache_root()?;
@@ -192,7 +196,7 @@ enum Command {
 
 fn parse_command(args: &[String]) -> Result<(Command, PathBuf)> {
     if args.len() != 3 || args[1] != "--plugin-root" {
-        return Err(unica_bootstrap::BootstrapError::new(
+        return Err(unica_artifact_delivery::BootstrapError::new(
             "usage: unica-bootstrap <run|verify|prefetch> --plugin-root <path>",
         ));
     }
@@ -201,7 +205,7 @@ fn parse_command(args: &[String]) -> Result<(Command, PathBuf)> {
         "verify" => Command::Verify,
         "prefetch" => Command::Prefetch,
         command => {
-            return Err(unica_bootstrap::BootstrapError::new(format!(
+            return Err(unica_artifact_delivery::BootstrapError::new(format!(
                 "unknown bootstrap command: {command}"
             )))
         }

@@ -1,78 +1,23 @@
-use super::cf::cf_validate_identifier;
-use super::common::{
-    escape_xml, guard_active_format_containing_owner_for_new_output, path_arg, string_arg,
-    MutationData,
-};
-use super::compile_transaction::CompileTransaction;
-use super::form::{
-    form_add_content_xml, form_add_metadata_xml, form_add_module_bsl, validate_form,
-};
+use super::common::guard_active_format_containing_owner_for_new_output;
 use super::meta::validate_metadata_owner_shape_8_3_27;
-use crate::application::AdapterOutcome;
-use crate::domain::format_profile::ACTIVE_FORMAT_PROFILE;
-use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::form_composition::validate_form;
 use serde_json::{Map, Value};
-use std::path::{Component, Path, PathBuf};
+use std::path::PathBuf;
+use unica_execution_contract::adapter_outcome::AdapterOutcome;
+use unica_forms_designer::codec::{
+    form_add_content_xml, form_add_metadata_xml, form_add_module_bsl,
+};
+use unica_metadata_designer::external::{
+    descriptor_xml, plan_scaffold, validate_xml, ExternalArtifactKind, ScaffoldPlan,
+};
+use unica_source_contract::workspace::WorkspaceContext;
+use unica_source_designer::format_profile::ACTIVE_FORMAT_PROFILE;
+use unica_workspace::compile_transaction::CompileTransaction;
+#[cfg(test)]
 use uuid::Uuid;
 
 const FORMAT_VERSION: &str = ACTIVE_FORMAT_PROFILE.export_format;
 const OBJECT_MODULE_STUB: &str = "#Область ПрограммныйИнтерфейс\r\n\r\n#КонецОбласти\r\n";
-
-#[derive(Debug, Clone, Copy)]
-enum ExternalArtifactKind {
-    Processor,
-    Report,
-}
-
-impl ExternalArtifactKind {
-    fn from_operation(operation: &str) -> Option<Self> {
-        match operation {
-            "epf-init" => Some(Self::Processor),
-            "erf-init" => Some(Self::Report),
-            _ => None,
-        }
-    }
-
-    fn root_tag(self) -> &'static str {
-        match self {
-            Self::Processor => "ExternalDataProcessor",
-            Self::Report => "ExternalReport",
-        }
-    }
-
-    fn class_id(self) -> &'static str {
-        match self {
-            Self::Processor => "c3831ec8-d8d5-4f93-8a22-f9bfae07327f",
-            Self::Report => "e41aff26-25cf-4bb6-b6c1-3f478a75f374",
-        }
-    }
-
-    fn object_type(self) -> &'static str {
-        match self {
-            Self::Processor => "ExternalDataProcessorObject",
-            Self::Report => "ExternalReportObject",
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::Processor => "EPF",
-            Self::Report => "ERF",
-        }
-    }
-}
-
-#[derive(Debug)]
-struct ScaffoldPlan {
-    kind: ExternalArtifactKind,
-    name: String,
-    synonym: String,
-    form_name: Option<String>,
-    output_dir: PathBuf,
-    descriptor: PathBuf,
-    object_dir: PathBuf,
-    artifacts: Vec<PathBuf>,
-}
 
 struct ScaffoldContent {
     descriptor: String,
@@ -110,7 +55,10 @@ pub(crate) fn apply_with_data(
     tool_name: &str,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
-) -> Option<(AdapterOutcome, Option<MutationData>)> {
+) -> Option<(
+    AdapterOutcome,
+    Option<unica_execution_contract::mutation::MutationData>,
+)> {
     let kind = ExternalArtifactKind::from_operation(operation)?;
     Some(match prepare_plan(kind, args, context) {
         Ok(plan) => match create_scaffold(&plan, context) {
@@ -151,75 +99,18 @@ fn prepare_plan(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> Result<ScaffoldPlan, String> {
-    let plan = plan_scaffold(kind, args, context)?;
+    let plan = plan_scaffold(
+        kind,
+        args,
+        &context.cwd,
+        &unica_workspace::discovery::ProjectDiscoveryReader::new(&context.workspace_root),
+    )?;
     for target in [&plan.descriptor, &plan.object_dir] {
         if target.exists() {
             return Err(format!("target already exists: {}", target.display()));
         }
     }
     Ok(plan)
-}
-
-fn plan_scaffold(
-    kind: ExternalArtifactKind,
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-) -> Result<ScaffoldPlan, String> {
-    let name =
-        string_arg(args, &["Name"]).ok_or_else(|| "missing required Name argument".to_string())?;
-    validate_identifier("Name", name)?;
-    let synonym = string_arg(args, &["Synonym"]).unwrap_or(name);
-    let form_name = string_arg(args, &["FormName"])
-        .map(str::to_string)
-        .filter(|value| !value.is_empty());
-    if let Some(form_name) = form_name.as_deref() {
-        validate_identifier("FormName", form_name)?;
-    } else if args.get("FormName").is_some() {
-        return Err("FormName must be a non-empty 1C identifier".to_string());
-    }
-
-    let output_dir = path_arg(args, &["OutputDir"])
-        .ok_or_else(|| "missing required OutputDir argument".to_string())?;
-    let output_dir = if output_dir.is_absolute() {
-        output_dir
-    } else {
-        context.cwd.join(output_dir)
-    };
-    let output_dir = normalize_lexical_path(&output_dir);
-    if output_dir.exists() && !output_dir.is_dir() {
-        return Err(format!(
-            "OutputDir is not a directory: {}",
-            output_dir.display()
-        ));
-    }
-    let descriptor = output_dir.join(format!("{name}.xml"));
-    let object_dir = output_dir.join(name);
-
-    let mut artifacts = vec![descriptor.clone(), object_dir.join("Ext/ObjectModule.bsl")];
-    if let Some(form_name) = form_name.as_deref() {
-        artifacts.extend([
-            object_dir.join("Forms").join(format!("{form_name}.xml")),
-            object_dir
-                .join("Forms")
-                .join(form_name)
-                .join("Ext/Form.xml"),
-            object_dir
-                .join("Forms")
-                .join(form_name)
-                .join("Ext/Form/Module.bsl"),
-        ]);
-    }
-
-    Ok(ScaffoldPlan {
-        kind,
-        name: name.to_string(),
-        synonym: synonym.to_string(),
-        form_name,
-        output_dir,
-        descriptor,
-        object_dir,
-        artifacts,
-    })
 }
 
 pub(crate) fn external_init_planned_xml_paths(
@@ -229,36 +120,17 @@ pub(crate) fn external_init_planned_xml_paths(
 ) -> Result<Vec<PathBuf>, String> {
     let kind = ExternalArtifactKind::from_operation(operation)
         .ok_or_else(|| format!("unsupported external init operation: {operation}"))?;
-    let plan = plan_scaffold(kind, args, context)?;
+    let plan = plan_scaffold(
+        kind,
+        args,
+        &context.cwd,
+        &unica_workspace::discovery::ProjectDiscoveryReader::new(&context.workspace_root),
+    )?;
     Ok(plan
         .artifacts
         .into_iter()
         .filter(|path| path.extension().and_then(|extension| extension.to_str()) == Some("xml"))
         .collect())
-}
-
-fn validate_identifier(argument: &str, value: &str) -> Result<(), String> {
-    if cf_validate_identifier(value) {
-        Ok(())
-    } else {
-        Err(format!(
-            "{argument} must be a valid 1C identifier: {value:?}"
-        ))
-    }
-}
-
-fn normalize_lexical_path(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                normalized.pop();
-            }
-            other => normalized.push(other.as_os_str()),
-        }
-    }
-    normalized
 }
 
 fn create_scaffold(plan: &ScaffoldPlan, context: &WorkspaceContext) -> Result<Vec<String>, String> {
@@ -312,7 +184,7 @@ fn create_scaffold(plan: &ScaffoldPlan, context: &WorkspaceContext) -> Result<Ve
 }
 
 fn build_content(plan: &ScaffoldPlan) -> Result<ScaffoldContent, String> {
-    let descriptor = descriptor_xml(plan);
+    let descriptor = descriptor_xml(plan, crate::infrastructure::source_ids::fresh_uuid);
     let (form_metadata, form_content) = match plan.form_name.as_deref() {
         Some(form_name) => (
             Some(form_add_metadata_xml(
@@ -320,9 +192,9 @@ fn build_content(plan: &ScaffoldPlan) -> Result<ScaffoldContent, String> {
                 form_name,
                 plan.kind.root_tag(),
                 FORMAT_VERSION,
-                &Uuid::new_v4().to_string(),
+                &crate::infrastructure::source_ids::fresh_uuid(),
                 // External processors have no language profile of their own.
-                crate::infrastructure::native_operations::meta::EXTERNAL_SOURCE_TEXT_LANGUAGE,
+                unica_source_designer::language::EXTERNAL_SOURCE_TEXT_LANGUAGE,
             )),
             Some(form_add_content_xml(
                 plan.kind.root_tag(),
@@ -375,90 +247,13 @@ fn require_validation(label: &str, outcome: AdapterOutcome) -> Result<(), String
     Err(format!("{label} validation failed: {details}"))
 }
 
-fn descriptor_xml(plan: &ScaffoldPlan) -> String {
-    let root_tag = plan.kind.root_tag();
-    let default_form = plan.form_name.as_deref().map_or_else(
-        || "\t\t\t<DefaultForm/>".to_string(),
-        |form_name| {
-            format!(
-                "\t\t\t<DefaultForm>{}.{}.Form.{}</DefaultForm>",
-                root_tag,
-                escape_xml(&plan.name),
-                escape_xml(form_name)
-            )
-        },
-    );
-    let child_objects = plan.form_name.as_deref().map_or_else(
-        || "\t\t<ChildObjects/>".to_string(),
-        |form_name| {
-            format!(
-                "\t\t<ChildObjects>\n\t\t\t<Form>{}</Form>\n\t\t</ChildObjects>",
-                escape_xml(form_name)
-            )
-        },
-    );
-    let report_properties = match plan.kind {
-        ExternalArtifactKind::Processor => String::new(),
-        ExternalArtifactKind::Report => concat!(
-            "\n\t\t\t<MainDataCompositionSchema/>",
-            "\n\t\t\t<DefaultSettingsForm/>",
-            "\n\t\t\t<AuxiliarySettingsForm/>",
-            "\n\t\t\t<DefaultVariantForm/>",
-            "\n\t\t\t<VariantsStorage/>",
-            "\n\t\t\t<SettingsStorage/>"
-        )
-        .to_string(),
-    };
-    let root_uuid = Uuid::new_v4();
-    let object_id = Uuid::new_v4();
-    let type_id = Uuid::new_v4();
-    let value_id = Uuid::new_v4();
-
-    format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="{FORMAT_VERSION}">
-	<{root_tag} uuid="{root_uuid}">
-		<InternalInfo>
-			<xr:ContainedObject>
-				<xr:ClassId>{class_id}</xr:ClassId>
-				<xr:ObjectId>{object_id}</xr:ObjectId>
-			</xr:ContainedObject>
-			<xr:GeneratedType name="{object_type}.{name}" category="Object">
-				<xr:TypeId>{type_id}</xr:TypeId>
-				<xr:ValueId>{value_id}</xr:ValueId>
-			</xr:GeneratedType>
-		</InternalInfo>
-		<Properties>
-			<Name>{name}</Name>
-			<Synonym>
-				<v8:item>
-					<v8:lang>ru</v8:lang>
-					<v8:content>{synonym}</v8:content>
-				</v8:item>
-			</Synonym>
-			<Comment/>
-{default_form}
-			<AuxiliaryForm/>{report_properties}
-		</Properties>
-{child_objects}
-	</{root_tag}>
-</MetaDataObject>"#,
-        class_id = plan.kind.class_id(),
-        object_type = plan.kind.object_type(),
-        name = escape_xml(&plan.name),
-        synonym = escape_xml(&plan.synonym),
-    )
-}
-
-fn validate_xml(label: &str, text: &str) -> Result<(), String> {
-    roxmltree::Document::parse(text)
-        .map(|_| ())
-        .map_err(|error| format!("generated {label} is invalid XML: {error}"))
-}
-
 /// The scaffold's answer is the set of files it created (ADR-0023).
-fn scaffold_mutation(plan: &ScaffoldPlan, mode: ScaffoldMode) -> MutationData {
-    let mut mutation = MutationData::new(matches!(mode, ScaffoldMode::Apply));
+fn scaffold_mutation(
+    plan: &ScaffoldPlan,
+    mode: ScaffoldMode,
+) -> unica_execution_contract::mutation::MutationData {
+    let mut mutation =
+        unica_execution_contract::mutation::MutationData::new(matches!(mode, ScaffoldMode::Apply));
     for path in &plan.artifacts {
         mutation = mutation.created(path);
     }
@@ -526,18 +321,16 @@ fn failure_outcome(tool_name: &str, error: String) -> AdapterOutcome {
 pub(crate) mod tests {
     use super::*;
     use crate::application::UnicaApplication;
-    use crate::infrastructure::native_operations::compile_transaction::{
-        with_commit_failpoint, CommitFailpoint,
-    };
-    use crate::infrastructure::native_operations::single_file_publisher::with_before_commit_hook;
     use crate::infrastructure::native_operations::NativeOperationAdapter;
-    use crate::infrastructure::platform::testing;
     use crate::infrastructure::workspace::discover_workspace;
     use serde_json::{json, Map, Value};
     use std::collections::BTreeSet;
     use std::fs;
     use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
+    use unica_workspace::compile_transaction::{with_commit_failpoint, CommitFailpoint};
+    use unica_workspace::single_file_publisher::with_before_commit_hook;
+    use unica_workspace::test_support as testing;
 
     #[test]
     fn epf_init_creates_make_ready_layout_with_optional_managed_form() {

@@ -1,84 +1,70 @@
 use crate::application::ports::{FormatGuardError, XdtoPublicErrorCode};
-use crate::application::source_navigation::{
-    authenticate_cursor, page_bounds_from_offset, SOURCE_NAVIGATION_LIMIT_DEFAULT,
-    SOURCE_NAVIGATION_LIMIT_MAX,
-};
-use crate::application::{AdapterOutcome, SupportGuardRequirement};
-use crate::domain::address::{NodeKind, QualifiedAddress};
-use crate::domain::events::{DomainEvent, DomainEventKind};
-use crate::domain::project_sources::SourceSetKind;
-use crate::domain::source_target::{
-    MetadataAddress, SourceTarget, SourceTargetError, SourceTargetErrorCode,
-    SourceTargetErrorReason, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
-};
-use crate::domain::workspace::WorkspaceContext;
-#[cfg(test)]
-use crate::domain::xdto_operation::{
-    PrefixedXmlQName, XdtoAddObjectTypeArgs, XdtoAddPropertyArgs, XdtoAddValueTypeArgs,
-    XdtoPropertySpec, XdtoRemovePropertyArgs, XdtoRemoveTypeArgs, XmlNcName,
-};
-use crate::domain::xdto_operation::{XdtoOperation, XdtoPlanOperation, XdtoPropertyPath};
-use crate::infrastructure::logical_event_source::{
-    attached_resource_relative, metadata_descriptor_relative,
-};
-use crate::infrastructure::native_operations::apply::{
-    ApplyPlanError, ApplyPlanErrorKind, ApplyStagedState,
-};
-use crate::infrastructure::native_operations::apply_families::{
-    IndexedPlanOperation, ProvisionalApplyEffect,
-};
-use crate::infrastructure::native_operations::common::{
-    guard_resolved_platform_xml_target_dependencies, parse_support_state_compat_bytes,
-    support_root_uuid_from_bytes,
-};
-use crate::infrastructure::native_operations::compile_transaction::CompileTransaction;
-use crate::infrastructure::path_policy::WorkspacePathPolicy;
-use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
-use crate::infrastructure::platform_xml_owner::{
-    prove_already_read_metadata_owner, prove_already_read_source_set_owner,
-    PlatformXmlSourceSetOwnerEvidence,
-};
+use crate::application::SupportGuardRequirement;
+use crate::infrastructure::native_operations::common::guard_resolved_platform_xml_target_dependencies;
 use crate::infrastructure::platform_xml_source_targets::{
     platform_xml_resource_evidence, resolve_platform_xml_target, ClosedPlatformXmlTarget,
-    PlatformXmlResourceEvidence, TargetKindPolicy,
+    TargetKindPolicy,
 };
-use crate::infrastructure::source_roots::normalize_path_identity;
 use crate::infrastructure::support_guard::{
     evaluate_resolved_support_guard, ResolvedSupportGuardCheck,
 };
-use crate::infrastructure::workspace_actor::{ProviderRootBinding, XdtoApplyAuthority};
-use roxmltree::Document;
-use serde::Serialize;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use unica_address::source_target::{
+    MetadataAddress, SourceTarget, SourceTargetError, SourceTargetErrorCode,
+    SourceTargetErrorReason, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
+};
+use unica_execution_contract::adapter_outcome::AdapterOutcome;
+use unica_navigation::source_navigation::{
+    authenticate_cursor, page_bounds_from_offset, SOURCE_NAVIGATION_LIMIT_DEFAULT,
+    SOURCE_NAVIGATION_LIMIT_MAX,
+};
+#[cfg(test)]
+use unica_source_contract::proposal::{
+    ApplyPlanError, ApplyPlanErrorKind, IndexedPlanOperation, ProvisionalApplyEffect,
+};
+use unica_source_contract::workspace::WorkspaceContext;
+use unica_source_designer::owner::PlatformXmlResourceEvidence;
+#[cfg(test)]
+use unica_workspace::actor::ProviderRootBinding;
+use unica_workspace::compile_transaction::CompileTransaction;
+use unica_workspace::path_policy::WorkspacePathPolicy;
+use unica_workspace::paths::metadata_is_link_or_reparse_point;
+use unica_workspace::paths::normalize_path_identity;
+#[cfg(test)]
+use unica_xdto::operations::{
+    PrefixedXmlQName, XdtoAddObjectTypeArgs, XdtoAddPropertyArgs, XdtoAddValueTypeArgs,
+    XdtoPropertySpec, XdtoRemovePropertyArgs, XdtoRemoveTypeArgs, XmlNcName,
+};
+#[cfg(test)]
+use unica_xdto::operations::{XdtoOperation, XdtoPlanOperation, XdtoPropertyPath};
+use unica_xdto::results::*;
+use unica_xdto_designer::descriptor::descriptor_fields;
 
-mod model;
-mod validation;
-mod writer;
+use unica_xdto_designer::edit_plan::{plan_xdto_edit_operations, PlanningFailure};
+#[cfg(test)]
+use unica_xdto_designer::info::parse_xdto_info_bytes;
+use unica_xdto_designer::info::{
+    build_xdto_info, model_error, parse_xdto_info_model, validate_xdto_type_name,
+};
+#[cfg(test)]
+use unica_xdto_designer::planner::{
+    decode_xdto_plan_operation, plan_xdto_batch, validate_final_xdto_resources,
+    XdtoValidationLedger,
+};
+#[cfg(test)]
+use unica_xdto_designer::planner::{staged_writer_error, staged_writer_operation};
 
-use model::{PackageModel, XDTO_NS};
-use validation::{validate, Finding, FindingSeverity, FindingState, ValidationDiff};
+use unica_xdto_designer::{decode, model, required};
+#[cfg(test)]
+use unica_xdto_designer::{validation, writer};
 
-const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
-
-pub(crate) fn decode_xdto_plan_operation(
-    operation: XdtoOperation,
-    value: &Value,
-    op_index: usize,
-    binding: &ProviderRootBinding,
-) -> Result<XdtoPlanOperation, ApplyPlanError> {
-    operation
-        .decode(
-            value,
-            &format!("ops[{op_index}].args"),
-            binding.source_set_name(),
-        )
-        .map_err(|error| bad_xdto_argument(&error.path, error.message))
-}
+use model::PackageModel;
+#[cfg(test)]
+use validation::validate;
 
 #[cfg(test)]
 fn parse_xdto_plan_operation(
@@ -88,145 +74,24 @@ fn parse_xdto_plan_operation(
     binding: &ProviderRootBinding,
 ) -> Result<XdtoPlanOperation, ApplyPlanError> {
     let operation = XdtoOperation::named(operation).ok_or_else(|| {
-        bad_xdto_argument(
-            &format!("ops[{op_index}].args"),
-            "unsupported XDTO operation",
-        )
+        ApplyPlanError::new(ApplyPlanErrorKind::BadValue, "unsupported XDTO operation")
+            .at_path(format!("ops[{op_index}].args"))
     })?;
-    decode_xdto_plan_operation(operation, value, op_index, binding)
-}
-
-fn bad_xdto_argument(path: &str, message: impl Into<String>) -> ApplyPlanError {
-    ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(path)
-}
-
-pub(crate) fn plan_xdto_batch(
-    mut staged: ApplyStagedState,
-    authority: &XdtoApplyAuthority<'_>,
-    operations: &[IndexedPlanOperation<XdtoPlanOperation>],
-    validation_ledger: &mut XdtoValidationLedger,
-) -> Result<(ApplyStagedState, Vec<ProvisionalApplyEffect>), ApplyPlanError> {
-    if !authority.owns_staged_state(&staged) {
-        return Err(ApplyPlanError::new(
-            ApplyPlanErrorKind::InvalidState,
-            "staged source belongs to another apply admission",
-        ));
-    }
-    if operations.is_empty() {
-        return Err(bad_xdto_argument(
-            "ops",
-            "XDTO batch must contain at least one operation",
-        ));
-    }
-
-    let mut package: Option<StagedXdtoPackage> = None;
-    let mut provisional_effects = Vec::new();
-    for indexed in operations {
-        let op_index = indexed.index();
-        let operation = indexed.operation();
-        let at_path = format!("ops[{op_index}].args.at");
-        let selected = staged_xdto_package(
-            operation,
-            authority.source_set_name(),
-            authority.source_kind(),
-            &at_path,
-        )?;
-        if package
-            .as_ref()
-            .is_some_and(|current| current.owner_at != selected.owner_at)
-        {
-            return Err(bad_xdto_argument(
-                &at_path,
-                "one XDTO batch cannot address more than one package",
-            ));
-        }
-        package.get_or_insert_with(|| selected.clone());
-
-        let descriptor_namespace =
-            prove_staged_xdto_owner(&mut staged, authority, &selected, &at_path)?;
-        prove_staged_xdto_support(
-            &mut staged,
-            authority.support_policy_mode(),
-            &selected,
-            &at_path,
-        )?;
-        let before = staged
-            .read(&selected.resource_relative)
-            .map_err(|error| ApplyPlanError::staging(error, &at_path))?
-            .ok_or_else(|| {
-                ApplyPlanError::new(
-                    ApplyPlanErrorKind::NotFound,
-                    "XDTO package resource is absent",
-                )
-                .at_path(&at_path)
-            })?;
-        let before_text = decode(&before).map_err(|_| invalid_staged_xdto(&at_path))?;
-        let before_model =
-            PackageModel::parse(&before_text).map_err(|_| invalid_staged_xdto(&at_path))?;
-        if before_model.target_namespace() != Some(descriptor_namespace.as_str()) {
-            return Err(invalid_staged_xdto(&at_path));
-        }
-        validation_ledger.retain_original_baseline(
-            &staged,
-            &selected,
-            &before_model,
-            &before,
-            op_index,
-            &at_path,
-        )?;
-        let writer_operation = staged_writer_operation(operation);
-        let writer_plan = writer::plan_typed(&before_text, writer_operation)
-            .map_err(|error| staged_writer_error(error, operation, op_index))?;
-        let after_model = PackageModel::parse(&writer_plan.after)
-            .map_err(|_| postcondition_xdto(&at_path, "writer produced an invalid XDTO package"))?;
-        if after_model.target_namespace() != Some(descriptor_namespace.as_str()) {
-            return Err(postcondition_xdto(
-                &at_path,
-                "writer changed the admitted XDTO namespace identity",
-            ));
-        }
-        if writer_plan.blocks() {
-            return Err(ApplyPlanError::new(
-                ApplyPlanErrorKind::InvalidState,
-                "XDTO operation conflicts with the package postimage",
-            )
-            .at_path(xdto_operation_identity_path(operation, op_index)));
-        }
-        let after = encode_like(&before, &writer_plan.after);
-        if before != after {
-            staged
-                .replace(&selected.resource_relative, &before, after.clone())
-                .map_err(|error| ApplyPlanError::staging(error, &at_path))?;
-            if staged
-                .read(&selected.resource_relative)
-                .map_err(|error| ApplyPlanError::staging(error, &at_path))?
-                .as_deref()
-                != Some(after.as_slice())
-            {
-                return Err(postcondition_xdto(
-                    &at_path,
-                    "staged XDTO postimage did not remain exact",
-                ));
-            }
-            provisional_effects.push(ProvisionalApplyEffect::single(
-                selected.resource_relative.clone(),
-                DomainEvent::new(DomainEventKind::MetadataChanged, selected.owner_at.clone()),
-                op_index,
-            ));
-        }
-        prove_staged_xdto_addition_repeat(&writer_plan.after, operation, &at_path)?;
-        validation_ledger.record_postimage(&selected, validate(&after_model), &after, op_index);
-    }
-
-    Ok((staged, provisional_effects))
+    decode_xdto_plan_operation(operation, value, op_index, binding.source_set_name())
 }
 
 #[cfg(test)]
 fn plan_unindexed_xdto_batch(
-    staged: ApplyStagedState,
-    authority: XdtoApplyAuthority<'_>,
+    staged: unica_workspace::apply::ApplyStagedState,
+    authority: unica_workspace::actor::XdtoApplyAuthority<'_>,
     operations: &[XdtoPlanOperation],
-) -> Result<(ApplyStagedState, super::apply::PlannedApplyEffects), ApplyPlanError> {
+) -> Result<
+    (
+        unica_workspace::apply::ApplyStagedState,
+        unica_source_contract::proposal::PlannedApplyEffects,
+    ),
+    ApplyPlanError,
+> {
     let indexed = operations
         .iter()
         .cloned()
@@ -235,755 +100,21 @@ fn plan_unindexed_xdto_batch(
         .collect::<Vec<_>>();
     let mut validation_ledger = XdtoValidationLedger::default();
     let (mut staged, provisional) =
-        plan_xdto_batch(staged, &authority, &indexed, &mut validation_ledger)?;
-    validate_final_xdto_resources(&mut staged, &authority, &validation_ledger, indexed.iter())?;
-    let effects = super::apply_families::reconcile_effects(&staged, provisional);
+        plan_xdto_batch_owned_for_test(staged, &authority, &indexed, &mut validation_ledger)?;
+    validate_final_xdto_resources(
+        &mut staged.proposal(),
+        &authority,
+        &validation_ledger,
+        indexed.iter(),
+    )?;
+    let effects =
+        unica_source_contract::proposal::reconcile_effects(staged.planned_changes(), provisional);
     Ok((staged, effects))
-}
-
-#[derive(Clone)]
-struct StagedXdtoPackage {
-    owner_at: String,
-    package_name: String,
-    descriptor_relative: PathBuf,
-    resource_relative: PathBuf,
-}
-
-/// Request-local provenance for the package's final semantic validation. This
-/// survives separate XDTO runs within the same admitted public batch.
-#[derive(Default)]
-pub(crate) struct XdtoValidationLedger {
-    resources: BTreeMap<PathBuf, XdtoResourceValidation>,
-}
-
-struct XdtoResourceValidation {
-    package: StagedXdtoPackage,
-    baseline: Vec<Finding>,
-    origins: HashMap<(String, String), VecDeque<Option<usize>>>,
-    postimage_digest: [u8; 32],
-    last_operation_index: usize,
-}
-
-impl XdtoValidationLedger {
-    pub(crate) fn is_empty(&self) -> bool {
-        self.resources.is_empty()
-    }
-
-    fn retain_original_baseline(
-        &mut self,
-        staged: &ApplyStagedState,
-        package: &StagedXdtoPackage,
-        before_model: &PackageModel,
-        before: &[u8],
-        op_index: usize,
-        at_path: &str,
-    ) -> Result<(), ApplyPlanError> {
-        if self.resources.contains_key(&package.resource_relative) {
-            return Ok(());
-        }
-        let baseline = match staged.original_image(&package.resource_relative) {
-            Some(original) => {
-                let text = decode(original).map_err(|_| invalid_staged_xdto(at_path))?;
-                let model = PackageModel::parse(&text).map_err(|_| invalid_staged_xdto(at_path))?;
-                validate(&model)
-            }
-            None => Vec::new(),
-        };
-        let mut origins = HashMap::<_, VecDeque<_>>::new();
-        for finding in validate(before_model) {
-            origins
-                .entry((finding.code, finding.location.key))
-                .or_default()
-                .push_back(None);
-        }
-        self.resources.insert(
-            package.resource_relative.clone(),
-            XdtoResourceValidation {
-                package: package.clone(),
-                baseline,
-                origins,
-                postimage_digest: Sha256::digest(before).into(),
-                last_operation_index: op_index,
-            },
-        );
-        Ok(())
-    }
-
-    fn record_postimage(
-        &mut self,
-        package: &StagedXdtoPackage,
-        findings: Vec<Finding>,
-        after: &[u8],
-        op_index: usize,
-    ) {
-        let resource = self
-            .resources
-            .get_mut(&package.resource_relative)
-            .expect("the XDTO preimage retained its original baseline");
-        let mut prior = std::mem::take(&mut resource.origins);
-        for finding in findings {
-            let key = (finding.code, finding.location.key);
-            let origin = prior
-                .get_mut(&key)
-                .and_then(VecDeque::pop_front)
-                .unwrap_or(Some(op_index));
-            resource.origins.entry(key).or_default().push_back(origin);
-        }
-        resource.postimage_digest = Sha256::digest(after).into();
-        resource.last_operation_index = op_index;
-    }
-}
-
-/// Semantic references may be completed or removed by later operations. Only
-/// the whole admitted batch postimage is compared with the retained original.
-pub(crate) fn validate_final_xdto_resources<'a>(
-    staged: &mut ApplyStagedState,
-    authority: &XdtoApplyAuthority<'_>,
-    ledger: &XdtoValidationLedger,
-    operations: impl Iterator<Item = &'a IndexedPlanOperation<XdtoPlanOperation>>,
-) -> Result<(), ApplyPlanError> {
-    if !authority.owns_staged_state(staged) {
-        return Err(ApplyPlanError::new(
-            ApplyPlanErrorKind::InvalidState,
-            "staged source belongs to another apply admission",
-        ));
-    }
-    let operations = operations
-        .map(|indexed| (indexed.index(), indexed.operation()))
-        .collect::<HashMap<_, _>>();
-    let mut first_conflict: Option<(usize, ApplyPlanError)> = None;
-    for resource in ledger.resources.values() {
-        let at_path = format!("ops[{}].args.at", resource.last_operation_index);
-        let namespace = prove_staged_xdto_owner(staged, authority, &resource.package, &at_path)?;
-        prove_staged_xdto_support(
-            staged,
-            authority.support_policy_mode(),
-            &resource.package,
-            &at_path,
-        )?;
-        let after = staged
-            .read(&resource.package.resource_relative)
-            .map_err(|error| ApplyPlanError::staging(error, &at_path))?
-            .ok_or_else(|| postcondition_xdto(&at_path, "final XDTO package is absent"))?;
-        let digest: [u8; 32] = Sha256::digest(&after).into();
-        if digest != resource.postimage_digest {
-            return Err(postcondition_xdto(
-                &at_path,
-                "final XDTO package has no operation provenance",
-            ));
-        }
-        let text = decode(&after).map_err(|_| invalid_staged_xdto(&at_path))?;
-        let model = PackageModel::parse(&text).map_err(|_| invalid_staged_xdto(&at_path))?;
-        if model.target_namespace() != Some(namespace.as_str()) {
-            return Err(invalid_staged_xdto(&at_path));
-        }
-        let validation = ValidationDiff::between(&resource.baseline, validate(&model));
-        let mut origins = resource.origins.clone();
-        for finding in validation.findings {
-            let key = (finding.code, finding.location.key);
-            let origin = origins
-                .get_mut(&key)
-                .and_then(VecDeque::pop_front)
-                .ok_or_else(|| {
-                    postcondition_xdto(&at_path, "final XDTO finding has no provenance")
-                })?;
-            if finding.state != FindingState::Introduced
-                || finding.severity != FindingSeverity::Error
-            {
-                continue;
-            }
-            let index = origin.ok_or_else(|| {
-                postcondition_xdto(
-                    &at_path,
-                    "introduced XDTO finding has no operation provenance",
-                )
-            })?;
-            let operation = operations.get(&index).ok_or_else(|| {
-                postcondition_xdto(
-                    &at_path,
-                    "XDTO finding origin is outside the admitted batch",
-                )
-            })?;
-            if first_conflict
-                .as_ref()
-                .is_none_or(|(first, _)| index < *first)
-            {
-                first_conflict = Some((
-                    index,
-                    ApplyPlanError::new(
-                        ApplyPlanErrorKind::InvalidState,
-                        "XDTO operation conflicts with the package postimage",
-                    )
-                    .at_path(xdto_validation_error_path(operation, index)),
-                ));
-            }
-        }
-    }
-    match first_conflict {
-        Some((_, error)) => Err(error),
-        None => Ok(()),
-    }
-}
-
-fn xdto_operation_at(operation: &XdtoPlanOperation) -> &QualifiedAddress {
-    match operation {
-        XdtoPlanOperation::AddValueType(args) => &args.at,
-        XdtoPlanOperation::AddObjectType(args) => &args.at,
-        XdtoPlanOperation::AddProperty(args) => &args.at,
-        XdtoPlanOperation::RemoveType(args) => &args.at,
-        XdtoPlanOperation::RemoveProperty(args) => &args.at,
-    }
-}
-
-fn staged_xdto_package(
-    operation: &XdtoPlanOperation,
-    source_set: &str,
-    source_kind: SourceSetKind,
-    at_path: &str,
-) -> Result<StagedXdtoPackage, ApplyPlanError> {
-    let at = xdto_operation_at(operation);
-    if at.source_set() != source_set {
-        return Err(bad_xdto_argument(
-            at_path,
-            "at belongs to another actor-admitted source set",
-        ));
-    }
-    let type_target = matches!(
-        operation,
-        XdtoPlanOperation::AddProperty(_)
-            | XdtoPlanOperation::RemoveType(_)
-            | XdtoPlanOperation::RemoveProperty(_)
-    );
-    let package_name = match (type_target, at.segments()) {
-        (false, [package]) if package.kind() == NodeKind::XdtoPackage => package.name(),
-        (true, [package, type_segment])
-            if package.kind() == NodeKind::XdtoPackage
-                && type_segment.kind() == NodeKind::Type
-                && type_segment.name().is_some() =>
-        {
-            package.name()
-        }
-        _ => None,
-    }
-    .ok_or_else(|| bad_xdto_argument(at_path, "at does not identify the required XDTO node"))?;
-    let metadata = MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("XDTOPackage.{package_name}"),
-    )
-    .map_err(|_| {
-        ApplyPlanError::new(
-            ApplyPlanErrorKind::Postcondition,
-            "logical XDTO address did not map to a metadata identity",
-        )
-        .at_path(at_path)
-    })?;
-    let descriptor_relative =
-        metadata_descriptor_relative(&metadata, source_kind).map_err(|_| {
-            ApplyPlanError::new(
-                ApplyPlanErrorKind::ProviderUnavailable,
-                "XDTO descriptor layout is unavailable for the admitted source",
-            )
-            .at_path(at_path)
-        })?;
-    let resource_relative = attached_resource_relative(&metadata, "Package.bin", source_kind)
-        .map_err(|_| {
-            ApplyPlanError::new(
-                ApplyPlanErrorKind::ProviderUnavailable,
-                "XDTO package layout is unavailable for the admitted source",
-            )
-            .at_path(at_path)
-        })?;
-    Ok(StagedXdtoPackage {
-        owner_at: format!("{source_set}:XDTOPackage.{package_name}"),
-        package_name: package_name.to_string(),
-        descriptor_relative,
-        resource_relative,
-    })
-}
-
-fn prove_staged_xdto_owner(
-    staged: &mut ApplyStagedState,
-    authority: &XdtoApplyAuthority<'_>,
-    package: &StagedXdtoPackage,
-    at_path: &str,
-) -> Result<String, ApplyPlanError> {
-    let root_relative = Path::new("Configuration.xml");
-    let root = staged
-        .read(root_relative)
-        .map_err(|error| ApplyPlanError::staging(error, at_path))?
-        .ok_or_else(|| {
-            ApplyPlanError::new(
-                ApplyPlanErrorKind::NotFound,
-                "source-set owner descriptor is absent",
-            )
-            .at_path(at_path)
-        })?;
-    let root_evidence =
-        prove_already_read_source_set_owner(root_relative, &root, authority.source_kind())
-            .map_err(|_| invalid_staged_xdto(at_path))?;
-    require_staged_xdto_format(&root_evidence, authority.expected_format(), at_path)?;
-    if !root_evidence.registers("XDTOPackage", &package.package_name) {
-        return Err(ApplyPlanError::new(
-            ApplyPlanErrorKind::NotFound,
-            "XDTO package is not registered by its source-set owner",
-        )
-        .at_path(at_path));
-    }
-    let descriptor = staged
-        .read(&package.descriptor_relative)
-        .map_err(|error| ApplyPlanError::staging(error, at_path))?
-        .ok_or_else(|| {
-            ApplyPlanError::new(ApplyPlanErrorKind::NotFound, "XDTO descriptor is absent")
-                .at_path(at_path)
-        })?;
-    let descriptor_evidence =
-        prove_already_read_metadata_owner(&package.descriptor_relative, &descriptor)
-            .map_err(|_| invalid_staged_xdto(at_path))?;
-    require_staged_xdto_format(&descriptor_evidence, authority.expected_format(), at_path)?;
-    if descriptor_evidence.artifact_kind() != "XDTOPackage"
-        || descriptor_evidence.artifact_name() != Some(package.package_name.as_str())
-        || support_root_uuid_from_bytes(&descriptor).is_none()
-    {
-        return Err(invalid_staged_xdto(at_path));
-    }
-    descriptor_fields(&descriptor)
-        .map(|fields| fields.namespace)
-        .map_err(|_| invalid_staged_xdto(at_path))
-}
-
-fn require_staged_xdto_format(
-    evidence: &PlatformXmlSourceSetOwnerEvidence,
-    expected_format: &str,
-    at_path: &str,
-) -> Result<(), ApplyPlanError> {
-    if evidence.version() == Some(expected_format) {
-        Ok(())
-    } else {
-        Err(invalid_staged_xdto(at_path))
-    }
-}
-
-fn prove_staged_xdto_support(
-    staged: &mut ApplyStagedState,
-    support_policy: crate::infrastructure::support_policy_evidence::SupportPolicyMode,
-    package: &StagedXdtoPackage,
-    at_path: &str,
-) -> Result<(), ApplyPlanError> {
-    let marker = staged
-        .read(Path::new("Ext/ParentConfigurations.bin"))
-        .map_err(|error| ApplyPlanError::staging(error, at_path))?;
-    if support_policy != crate::infrastructure::support_policy_evidence::SupportPolicyMode::Deny {
-        return Ok(());
-    }
-    let Some(state) = parse_support_state_compat_bytes(marker.as_deref()) else {
-        return Ok(());
-    };
-    if state.removed() {
-        return Ok(());
-    }
-    if !state.global_editing_enabled() {
-        return Err(ApplyPlanError::new(
-            ApplyPlanErrorKind::InvalidState,
-            "actor support policy denies editing this protected source",
-        )
-        .at_path(at_path));
-    }
-    let descriptor = staged
-        .read(&package.descriptor_relative)
-        .map_err(|error| ApplyPlanError::staging(error, at_path))?;
-    if descriptor
-        .as_deref()
-        .and_then(support_root_uuid_from_bytes)
-        .and_then(|uuid| state.object_rule(&uuid))
-        == Some(0)
-    {
-        return Err(ApplyPlanError::new(
-            ApplyPlanErrorKind::InvalidState,
-            "actor support policy denies editing this protected XDTO package",
-        )
-        .at_path(at_path));
-    }
-    Ok(())
-}
-
-fn staged_writer_operation(operation: &XdtoPlanOperation) -> writer::TypedWriterOperation<'_> {
-    match operation {
-        XdtoPlanOperation::AddValueType(args) => writer::TypedWriterOperation::AddValueType {
-            name: args.name.as_str(),
-            base: args.base.as_str(),
-        },
-        XdtoPlanOperation::AddObjectType(args) => writer::TypedWriterOperation::AddObjectType {
-            name: args.name.as_str(),
-        },
-        XdtoPlanOperation::AddProperty(args) => writer::TypedWriterOperation::AddProperty {
-            type_name: args.at.segments()[1]
-                .name()
-                .expect("closed XDTO type target has a name"),
-            name: args.property.name.as_str(),
-            type_ref: args.property.type_ref.as_str(),
-            min_occurs: args.property.min_occurs.map(u64::from),
-            property_path: args.property_path.as_ref().map(XdtoPropertyPath::as_str),
-        },
-        XdtoPlanOperation::RemoveType(args) => writer::TypedWriterOperation::RemoveType {
-            name: args.at.segments()[1]
-                .name()
-                .expect("closed XDTO type target has a name"),
-        },
-        XdtoPlanOperation::RemoveProperty(args) => writer::TypedWriterOperation::RemoveProperty {
-            type_name: args.at.segments()[1]
-                .name()
-                .expect("closed XDTO type target has a name"),
-            name: args.name.as_str(),
-            property_path: args.property_path.as_ref().map(XdtoPropertyPath::as_str),
-        },
-    }
-}
-
-fn staged_writer_error(
-    error: writer::WriterError,
-    operation: &XdtoPlanOperation,
-    op_index: usize,
-) -> ApplyPlanError {
-    let kind = match error.cause() {
-        writer::WriterErrorCause::BadValue => ApplyPlanErrorKind::BadValue,
-        writer::WriterErrorCause::NotFound => ApplyPlanErrorKind::NotFound,
-        writer::WriterErrorCause::AmbiguousTarget => ApplyPlanErrorKind::InvalidState,
-        writer::WriterErrorCause::InvalidSource => ApplyPlanErrorKind::InvalidSource,
-        writer::WriterErrorCause::Postcondition => ApplyPlanErrorKind::Postcondition,
-    };
-    let base = format!("ops[{op_index}].args");
-    let path = match error.field() {
-        writer::WriterErrorField::Source | writer::WriterErrorField::TypeTarget => {
-            format!("{base}.at")
-        }
-        // Цепочка свойств и имя удаляемого свойства задаются адресом.
-        writer::WriterErrorField::PropertyPath => format!("{base}.at"),
-        writer::WriterErrorField::PropertyName => match operation {
-            XdtoPlanOperation::AddProperty(_) => format!("{base}.values.property.name"),
-            _ => format!("{base}.at"),
-        },
-    };
-    // Цепочка свойств адреса не дошла до вложенного типа: узел есть, но
-    // свойства в него не кладутся — это говорится прямо, а не общим отказом.
-    let message = if matches!(error.field(), writer::WriterErrorField::PropertyPath) {
-        "the addressed XDTO property chain does not reach a single nested anonymous type (typeDef); address a type or a property that declares one"
-    } else {
-        "XDTO writer rejected the typed operation"
-    };
-    ApplyPlanError::new(kind, message).at_path(path)
-}
-
-fn xdto_operation_identity_path(operation: &XdtoPlanOperation, op_index: usize) -> String {
-    let base = format!("ops[{op_index}].args");
-    match operation {
-        XdtoPlanOperation::AddValueType(_) | XdtoPlanOperation::AddObjectType(_) => {
-            format!("{base}.values.name")
-        }
-        XdtoPlanOperation::AddProperty(_) => format!("{base}.values.property.name"),
-        XdtoPlanOperation::RemoveType(_) | XdtoPlanOperation::RemoveProperty(_) => {
-            format!("{base}.at")
-        }
-    }
-}
-
-fn xdto_validation_error_path(operation: &XdtoPlanOperation, op_index: usize) -> String {
-    let base = format!("ops[{op_index}].args");
-    match operation {
-        XdtoPlanOperation::AddValueType(_) => format!("{base}.values.base"),
-        XdtoPlanOperation::AddObjectType(_) => format!("{base}.at"),
-        XdtoPlanOperation::AddProperty(_) => format!("{base}.values.property.type"),
-        XdtoPlanOperation::RemoveType(_) | XdtoPlanOperation::RemoveProperty(_) => {
-            format!("{base}.at")
-        }
-    }
-}
-
-fn prove_staged_xdto_addition_repeat(
-    after: &str,
-    operation: &XdtoPlanOperation,
-    at_path: &str,
-) -> Result<(), ApplyPlanError> {
-    if !matches!(
-        operation,
-        XdtoPlanOperation::AddValueType(_)
-            | XdtoPlanOperation::AddObjectType(_)
-            | XdtoPlanOperation::AddProperty(_)
-    ) {
-        return Ok(());
-    }
-    let repeated = writer::plan_typed(after, staged_writer_operation(operation))
-        .map_err(|_| postcondition_xdto(at_path, "XDTO addition cannot be repeated safely"))?;
-    if repeated.after != after || !repeated.edits.is_empty() || repeated.blocks() {
-        return Err(postcondition_xdto(
-            at_path,
-            "XDTO addition did not prove an exact repeat no-op",
-        ));
-    }
-    Ok(())
-}
-
-fn invalid_staged_xdto(path: &str) -> ApplyPlanError {
-    ApplyPlanError::new(
-        ApplyPlanErrorKind::InvalidSource,
-        "admitted XDTO owner or package evidence is invalid",
-    )
-    .at_path(path)
-}
-
-fn postcondition_xdto(path: &str, message: impl Into<String>) -> ApplyPlanError {
-    ApplyPlanError::new(ApplyPlanErrorKind::Postcondition, message).at_path(path)
 }
 
 pub(crate) struct XdtoExecution<T> {
     pub(crate) outcome: AdapterOutcome,
     pub(crate) data: Option<T>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase"
-)]
-pub(crate) enum XdtoLocation {
-    Addressed {
-        source_set: String,
-        metadata_path: String,
-        target_kind: TargetKind,
-    },
-    Unaddressable {
-        source_set: String,
-        owner_metadata_path: String,
-        node_key: String,
-        body_byte_range: XdtoByteRange,
-    },
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct XdtoByteRange {
-    /// UTF-8 byte offset in the decoded XML body. A leading BOM is excluded.
-    start: usize,
-    /// Exclusive UTF-8 byte offset in the decoded XML body.
-    end: usize,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct XdtoTypeCounts {
-    total: usize,
-    value_types: usize,
-    object_types: usize,
-    global_properties: usize,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct XdtoImportInfo {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    namespace: Option<String>,
-    location: XdtoLocation,
-}
-
-#[derive(Clone, Copy, Debug, Serialize)]
-pub(crate) enum XdtoTypeKind {
-    #[serde(rename = "valueType")]
-    Value,
-    #[serde(rename = "objectType")]
-    Object,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct XdtoBoundsInfo {
-    lower: String,
-    upper: String,
-    lower_explicit: bool,
-    upper_explicit: bool,
-    unbounded: bool,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct XdtoAnonymousTypeInfo {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    discriminator: Option<String>,
-    properties: Vec<XdtoPropertyInfo>,
-    location: XdtoLocation,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct XdtoPropertyInfo {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reference: Option<XdtoQNameInfo>,
-    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
-    type_name: Option<XdtoQNameInfo>,
-    bounds: XdtoBoundsInfo,
-    type_defs: Vec<XdtoAnonymousTypeInfo>,
-    location: XdtoLocation,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct XdtoQNameInfo {
-    raw: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    prefix: Option<String>,
-    local: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    namespace: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct XdtoTypeInfo {
-    kind: XdtoTypeKind,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    base: Option<XdtoQNameInfo>,
-    properties: Vec<XdtoPropertyInfo>,
-    location: XdtoLocation,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct XdtoTypeSummary {
-    kind: XdtoTypeKind,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    base: Option<XdtoQNameInfo>,
-    location: XdtoLocation,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct XdtoInfoData {
-    source_set: String,
-    metadata_path: String,
-    location: XdtoLocation,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    target_namespace: Option<String>,
-    imports: Vec<XdtoImportInfo>,
-    counts: XdtoTypeCounts,
-    global_properties: Vec<XdtoPropertyInfo>,
-    types: Vec<XdtoTypeSummary>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    type_detail: Option<XdtoTypeInfo>,
-    findings: Vec<XdtoFinding>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    next_cursor: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) enum XdtoEditOperation {
-    AddValueType,
-    AddObjectType,
-    AddProperty,
-    RemoveType,
-    RemoveProperty,
-}
-
-impl XdtoEditOperation {
-    fn parse(value: &str) -> Result<Self, String> {
-        match value {
-            "addValueType" => Ok(Self::AddValueType),
-            "addObjectType" => Ok(Self::AddObjectType),
-            "addProperty" => Ok(Self::AddProperty),
-            "removeType" => Ok(Self::RemoveType),
-            "removeProperty" => Ok(Self::RemoveProperty),
-            _ => Err("unsupported_node: supported operations are addValueType, addObjectType, addProperty, removeType, removeProperty".to_string()),
-        }
-    }
-
-    /// The writer uses kebab-case dispatch keys for the same operations
-    /// that the typed payload names with camelCase tags.
-    fn writer_key(self) -> &'static str {
-        match self {
-            Self::AddValueType => "add-value-type",
-            Self::AddObjectType => "add-object-type",
-            Self::AddProperty => "add-property",
-            Self::RemoveType => "remove-type",
-            Self::RemoveProperty => "remove-property",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum XdtoFindingSeverity {
-    Info,
-    Error,
-}
-
-#[derive(Clone, Copy, Debug, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum XdtoFindingState {
-    PreExisting,
-    Introduced,
-}
-
-#[derive(Clone, Copy, Debug, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum XdtoFindingPhase {
-    Before,
-    After,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct XdtoFinding {
-    code: String,
-    severity: XdtoFindingSeverity,
-    state: XdtoFindingState,
-    phase: XdtoFindingPhase,
-    message: String,
-    location: XdtoLocation,
-}
-
-#[derive(Clone, Copy, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) enum XdtoChangeKind {
-    PackageTextEdit,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct XdtoProjectedChange {
-    kind: XdtoChangeKind,
-    location: XdtoLocation,
-    body_byte_range: XdtoByteRange,
-    removed_byte_count: usize,
-    replacement_byte_count: usize,
-}
-
-/// The effect of one element of the `operations` array. Byte
-/// ranges in `change` are relative to the document state the operation was
-/// applied to — operations are sequential, so element `i` sees the text
-/// produced by element `i - 1`.
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct XdtoOperationEffect {
-    operation_index: usize,
-    op: XdtoEditOperation,
-    no_op: bool,
-    change: Option<XdtoProjectedChange>,
-    findings: Vec<XdtoFinding>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct XdtoEditData {
-    source_set: String,
-    metadata_path: String,
-    location: XdtoLocation,
-    no_op: bool,
-    effects: Vec<XdtoOperationEffect>,
 }
 
 pub(crate) fn invoke_read(
@@ -1062,167 +193,6 @@ fn info(
     Ok(xdto_info_execution(&package, data))
 }
 
-/// Selection absence remains distinct from failures to read an XDTO source.
-#[derive(Debug)]
-pub(crate) enum XdtoInfoError {
-    TypeNotFound(String),
-    Source(String),
-}
-
-impl std::fmt::Display for XdtoInfoError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::TypeNotFound(name) => {
-                write!(
-                    formatter,
-                    "target_not_found: XDTO type `{name}` was not found"
-                )
-            }
-            Self::Source(message) => formatter.write_str(message),
-        }
-    }
-}
-
-impl std::error::Error for XdtoInfoError {}
-
-impl From<String> for XdtoInfoError {
-    fn from(message: String) -> Self {
-        Self::Source(message)
-    }
-}
-
-/// Parse the exact XDTO bytes admitted by a caller-owned read capability.
-///
-/// This is the shared construction core for the V12 filesystem wrapper and
-/// retained V13 readers. It deliberately accepts no workspace or path, so it
-/// cannot re-resolve a source set after admission.
-pub(crate) fn parse_xdto_info_bytes(
-    package_bytes: &[u8],
-    descriptor_bytes: &[u8],
-    source_set: &str,
-    metadata_address: &MetadataAddress,
-    type_name: Option<&str>,
-) -> Result<XdtoInfoData, XdtoInfoError> {
-    if source_set.trim().is_empty() || source_set != source_set.trim() {
-        return Err("source_set_unknown: sourceSet must be a non-empty string"
-            .to_string()
-            .into());
-    }
-    let identity = AdmittedXdtoIdentity {
-        source_set,
-        metadata_path: metadata_address.as_str(),
-    };
-    let model = parse_xdto_info_model(package_bytes, descriptor_bytes, &identity)?;
-    build_xdto_info(&identity, &model, type_name, None)
-}
-
-fn parse_xdto_info_model(
-    package_bytes: &[u8],
-    descriptor_bytes: &[u8],
-    identity: &impl XdtoIdentity,
-) -> Result<PackageModel, String> {
-    let expected_name = xdto_metadata_name(identity.metadata_path())?;
-    let text = decode(package_bytes)?;
-    let model = PackageModel::parse(&text).map_err(model_error)?;
-    let descriptor = descriptor_identity(descriptor_bytes)?;
-    if descriptor.name != expected_name {
-        return Err("not_an_xdto_package: descriptor Name does not match metadataPath".to_string());
-    }
-    if model.target_namespace() != Some(descriptor.namespace.as_str()) {
-        return Err(
-            "namespace_mismatch: descriptor Namespace must equal package targetNamespace"
-                .to_string(),
-        );
-    }
-    Ok(model)
-}
-
-fn build_xdto_info(
-    identity: &impl XdtoIdentity,
-    model: &PackageModel,
-    requested: Option<&str>,
-    page: Option<(usize, usize, Option<String>)>,
-) -> Result<XdtoInfoData, XdtoInfoError> {
-    validate_xdto_type_name(requested)?;
-    let value_types = model
-        .types
-        .iter()
-        .filter(|named| named.kind == model::TypeKind::Value)
-        .count();
-    let counts = XdtoTypeCounts {
-        total: model.types.len(),
-        value_types,
-        object_types: model.types.len() - value_types,
-        global_properties: model.global_properties.len(),
-    };
-    let (selected, type_detail, next_cursor) = if let Some(name) = requested {
-        let matches = model
-            .types
-            .iter()
-            .filter(|named| named.name.as_ref().is_some_and(|value| value.value == name))
-            .collect::<Vec<_>>();
-        if matches.len() != 1 {
-            return Err(if matches.is_empty() {
-                XdtoInfoError::TypeNotFound(name.to_string())
-            } else {
-                XdtoInfoError::Source(format!("duplicate_type: XDTO type `{name}` is ambiguous"))
-            });
-        }
-        (Vec::new(), Some(type_info(identity, matches[0])), None)
-    } else {
-        let (start, end, next_cursor) = page.unwrap_or((0, model.types.len(), None));
-        (
-            model.types[start..end].iter().collect::<Vec<_>>(),
-            None,
-            next_cursor,
-        )
-    };
-    let location = addressed_location(identity);
-    Ok(XdtoInfoData {
-        source_set: identity.source_set().to_string(),
-        metadata_path: identity.metadata_path().to_string(),
-        location,
-        target_namespace: model
-            .target_namespace
-            .as_ref()
-            .map(|value| value.value.clone()),
-        imports: model
-            .imports
-            .iter()
-            .map(|import| XdtoImportInfo {
-                namespace: import
-                    .namespace
-                    .as_ref()
-                    .map(|namespace| namespace.value.clone()),
-                location: internal_location(identity, &import.key, &import.span),
-            })
-            .collect(),
-        counts,
-        global_properties: model
-            .global_properties
-            .iter()
-            .map(|property| property_info(identity, property))
-            .collect(),
-        types: selected
-            .into_iter()
-            .map(|named| type_summary(identity, named))
-            .collect(),
-        type_detail,
-        findings: validate(model)
-            .into_iter()
-            .map(|finding| baseline_finding(identity, finding))
-            .collect(),
-        next_cursor,
-    })
-}
-
-fn validate_xdto_type_name(requested: Option<&str>) -> Result<(), String> {
-    if requested.is_some_and(|name| !validation::is_ncname(name)) {
-        return Err("xdto info `typeName` must be an XML NCName".to_string());
-    }
-    Ok(())
-}
-
 fn xdto_info_execution(package: &Package, data: XdtoInfoData) -> XdtoExecution<XdtoInfoData> {
     XdtoExecution {
         outcome: AdapterOutcome {
@@ -1243,26 +213,6 @@ fn xdto_info_execution(package: &Package, data: XdtoInfoData) -> XdtoExecution<X
     }
 }
 
-trait XdtoIdentity {
-    fn source_set(&self) -> &str;
-    fn metadata_path(&self) -> &str;
-}
-
-struct AdmittedXdtoIdentity<'a> {
-    source_set: &'a str,
-    metadata_path: &'a str,
-}
-
-impl XdtoIdentity for AdmittedXdtoIdentity<'_> {
-    fn source_set(&self) -> &str {
-        self.source_set
-    }
-
-    fn metadata_path(&self) -> &str {
-        self.metadata_path
-    }
-}
-
 impl XdtoIdentity for Package {
     fn source_set(&self) -> &str {
         &self.source_set
@@ -1270,187 +220,6 @@ impl XdtoIdentity for Package {
 
     fn metadata_path(&self) -> &str {
         &self.metadata_path
-    }
-}
-
-fn addressed_location(package: &impl XdtoIdentity) -> XdtoLocation {
-    XdtoLocation::Addressed {
-        source_set: package.source_set().to_string(),
-        metadata_path: package.metadata_path().to_string(),
-        target_kind: TargetKind::MetadataObject,
-    }
-}
-
-fn internal_location(
-    package: &impl XdtoIdentity,
-    node_key: &str,
-    span: &model::SourceSpan,
-) -> XdtoLocation {
-    XdtoLocation::Unaddressable {
-        source_set: package.source_set().to_string(),
-        owner_metadata_path: package.metadata_path().to_string(),
-        node_key: node_key.to_string(),
-        body_byte_range: XdtoByteRange {
-            start: span.start,
-            end: span.end,
-        },
-    }
-}
-
-fn qname_info(qname: &model::QNameRef) -> XdtoQNameInfo {
-    XdtoQNameInfo {
-        raw: qname.raw.clone(),
-        prefix: qname.prefix.clone(),
-        local: qname.local.clone(),
-        namespace: qname.namespace.clone(),
-    }
-}
-
-fn type_info(package: &impl XdtoIdentity, named: &model::NamedType) -> XdtoTypeInfo {
-    XdtoTypeInfo {
-        kind: match named.kind {
-            model::TypeKind::Value => XdtoTypeKind::Value,
-            model::TypeKind::Object => XdtoTypeKind::Object,
-        },
-        name: named.name.as_ref().map(|name| name.value.clone()),
-        base: named.base.as_ref().map(qname_info),
-        properties: named
-            .properties
-            .iter()
-            .map(|property| property_info(package, property))
-            .collect(),
-        location: internal_location(package, &named.key, &named.span),
-    }
-}
-
-fn type_summary(package: &impl XdtoIdentity, named: &model::NamedType) -> XdtoTypeSummary {
-    XdtoTypeSummary {
-        kind: match named.kind {
-            model::TypeKind::Value => XdtoTypeKind::Value,
-            model::TypeKind::Object => XdtoTypeKind::Object,
-        },
-        name: named.name.as_ref().map(|name| name.value.clone()),
-        base: named.base.as_ref().map(qname_info),
-        location: internal_location(package, &named.key, &named.span),
-    }
-}
-
-fn property_info(package: &impl XdtoIdentity, property: &model::Property) -> XdtoPropertyInfo {
-    let lower = property
-        .lower_bound
-        .as_ref()
-        .map_or("1", |value| value.value.as_str());
-    let upper = property
-        .upper_bound
-        .as_ref()
-        .map_or("1", |value| value.value.as_str());
-    XdtoPropertyInfo {
-        name: property.name.as_ref().map(|name| name.value.clone()),
-        reference: property.reference.as_ref().map(qname_info),
-        type_name: property.type_ref.as_ref().map(qname_info),
-        bounds: XdtoBoundsInfo {
-            lower: lower.to_string(),
-            upper: upper.to_string(),
-            lower_explicit: property.lower_bound.is_some(),
-            upper_explicit: property.upper_bound.is_some(),
-            unbounded: upper == "-1",
-        },
-        type_defs: property
-            .type_defs
-            .iter()
-            .map(|anonymous| anonymous_type_info(package, anonymous))
-            .collect(),
-        location: internal_location(package, &property.key, &property.span),
-    }
-}
-
-fn anonymous_type_info(
-    package: &impl XdtoIdentity,
-    anonymous: &model::AnonymousObject,
-) -> XdtoAnonymousTypeInfo {
-    XdtoAnonymousTypeInfo {
-        discriminator: anonymous
-            .discriminator
-            .as_ref()
-            .map(|value| value.value.clone()),
-        properties: anonymous
-            .properties
-            .iter()
-            .map(|property| property_info(package, property))
-            .collect(),
-        location: internal_location(package, &anonymous.key, &anonymous.span),
-    }
-}
-
-fn baseline_finding(package: &impl XdtoIdentity, finding: validation::Finding) -> XdtoFinding {
-    XdtoFinding {
-        code: finding.code,
-        severity: XdtoFindingSeverity::Error,
-        state: XdtoFindingState::PreExisting,
-        phase: XdtoFindingPhase::Before,
-        message: finding.message,
-        location: XdtoLocation::Unaddressable {
-            source_set: package.source_set().to_string(),
-            owner_metadata_path: package.metadata_path().to_string(),
-            node_key: finding.location.key,
-            body_byte_range: XdtoByteRange {
-                start: finding.location.span.start,
-                end: finding.location.span.end,
-            },
-        },
-    }
-}
-
-fn classified_finding(package: &Package, finding: &validation::ClassifiedFinding) -> XdtoFinding {
-    XdtoFinding {
-        code: finding.code.clone(),
-        severity: XdtoFindingSeverity::Error,
-        state: match finding.state {
-            validation::FindingState::PreExisting => XdtoFindingState::PreExisting,
-            validation::FindingState::Introduced => XdtoFindingState::Introduced,
-        },
-        phase: match finding.state {
-            validation::FindingState::PreExisting => XdtoFindingPhase::Before,
-            validation::FindingState::Introduced => XdtoFindingPhase::After,
-        },
-        message: finding.message.clone(),
-        location: XdtoLocation::Unaddressable {
-            source_set: package.source_set.clone(),
-            owner_metadata_path: package.metadata_path.clone(),
-            node_key: finding.location.key.clone(),
-            body_byte_range: XdtoByteRange {
-                start: finding.location.span.start,
-                end: finding.location.span.end,
-            },
-        },
-    }
-}
-
-fn writer_finding(package: &Package, finding: &writer::WriterFinding) -> XdtoFinding {
-    XdtoFinding {
-        code: finding.code.to_string(),
-        severity: match finding.severity {
-            writer::WriterFindingSeverity::Info => XdtoFindingSeverity::Info,
-            writer::WriterFindingSeverity::Error => XdtoFindingSeverity::Error,
-        },
-        state: match finding.state {
-            writer::WriterFindingState::PreExisting => XdtoFindingState::PreExisting,
-            writer::WriterFindingState::Introduced => XdtoFindingState::Introduced,
-        },
-        phase: match finding.state {
-            writer::WriterFindingState::PreExisting => XdtoFindingPhase::Before,
-            writer::WriterFindingState::Introduced => XdtoFindingPhase::After,
-        },
-        message: finding.message.clone(),
-        location: XdtoLocation::Unaddressable {
-            source_set: package.source_set.clone(),
-            owner_metadata_path: package.metadata_path.clone(),
-            node_key: finding.location.key.clone(),
-            body_byte_range: XdtoByteRange {
-                start: finding.location.span.start,
-                end: finding.location.span.end,
-            },
-        },
     }
 }
 
@@ -1520,41 +289,6 @@ fn xdto_cursor_error(error: String) -> String {
     )
 }
 
-/// One parsed element of the `operations` array: the operation kind plus the
-/// element's own fields as that operation's writer argument map.
-type ParsedXdtoOperation = (XdtoEditOperation, Map<String, Value>);
-
-/// Split the typed `operations` array into per-element writer inputs. The
-/// element's own fields are exactly the argument names the writer has always
-/// read, so each element minus its `op` tag is that operation's argument map.
-fn parse_operations(args: &Map<String, Value>) -> Result<Vec<ParsedXdtoOperation>, String> {
-    let operations = args
-        .get("operations")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "operations must be a non-empty array".to_string())?;
-    if operations.is_empty() {
-        return Err("operations must be a non-empty array".to_string());
-    }
-    operations
-        .iter()
-        .enumerate()
-        .map(|(index, item)| {
-            let item = item
-                .as_object()
-                .ok_or_else(|| format!("operations[{index}]: must be an object"))?;
-            let op = item
-                .get("op")
-                .and_then(Value::as_str)
-                .ok_or_else(|| format!("operations[{index}]: requires `op`"))?;
-            let operation = XdtoEditOperation::parse(op)
-                .map_err(|error| format!("operations[{index}]: {error}"))?;
-            let mut operation_args = item.clone();
-            operation_args.remove("op");
-            Ok((operation, operation_args))
-        })
-        .collect()
-}
-
 fn edit(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
@@ -1572,95 +306,13 @@ fn edit(
                 "namespace_mismatch: descriptor Namespace must equal package targetNamespace",
             ));
         }
-        let operations = parse_operations(args)?;
-        // Operations apply in order against the accumulated text, so
-        // element `i` sees what element `i - 1` produced; the file is written
-        // once after the whole batch plans cleanly.
-        let mut effects: Vec<XdtoOperationEffect> = Vec::new();
-        let mut current_text = text;
-        let mut step_baseline = validate(&before_model);
-        let partial_data =
-            |effects: &[XdtoOperationEffect], package: &Package, no_op: bool| XdtoEditData {
-                source_set: package.source_set.clone(),
-                metadata_path: package.metadata_path.clone(),
-                location: addressed_location(package),
-                no_op,
-                effects: effects.to_vec(),
-            };
-        for (index, (operation, operation_args)) in operations.iter().enumerate() {
-            let writer_plan = writer::plan(&current_text, operation_args, operation.writer_key())
-                .map_err(|error| PlanningFailure {
-                error: format!("operations[{index}]: {error}"),
-                data: Some(Box::new(partial_data(&effects, &package, false))),
-            })?;
-            let after_model =
-                PackageModel::parse(&writer_plan.after).map_err(|error| PlanningFailure {
-                    error: format!("operations[{index}]: {}", model_error(error)),
-                    data: Some(Box::new(partial_data(&effects, &package, false))),
-                })?;
-            let validation = ValidationDiff::between(&step_baseline, validate(&after_model));
-            let blocked = writer_plan.blocks() || validation.blocks();
-            let step_no_op = current_text == writer_plan.after && !blocked;
-            debug_assert!(writer_plan.edits.len() <= 1);
-            let change = writer_plan.edits.first().map(|edit| XdtoProjectedChange {
-                kind: XdtoChangeKind::PackageTextEdit,
-                location: addressed_location(&package),
-                body_byte_range: XdtoByteRange {
-                    start: edit.range.start,
-                    end: edit.range.end,
-                },
-                removed_byte_count: edit.range.end - edit.range.start,
-                replacement_byte_count: edit.replacement.len(),
-            });
-            let mut findings = validation
-                .findings
-                .iter()
-                .map(|finding| classified_finding(&package, finding))
-                .collect::<Vec<_>>();
-            if let Some(finding) = &writer_plan.finding {
-                findings.push(writer_finding(&package, finding));
-            }
-            effects.push(XdtoOperationEffect {
-                operation_index: index,
-                op: *operation,
-                no_op: step_no_op,
-                change,
-                findings,
-            });
-            if blocked {
-                let mut codes = validation
-                    .findings
-                    .iter()
-                    .filter(|finding| finding.state == validation::FindingState::Introduced)
-                    .map(|finding| finding.code.as_str())
-                    .collect::<Vec<_>>();
-                if let Some(finding) = writer_plan
-                    .finding
-                    .as_ref()
-                    .filter(|_| writer_plan.blocks())
-                {
-                    codes.push(finding.code);
-                }
-                return Err(PlanningFailure {
-                    error: format!(
-                        "operations[{index}]: xdto_validation_failed: introduced findings: {}",
-                        codes.join(", ")
-                    ),
-                    data: Some(Box::new(partial_data(&effects, &package, false))),
-                });
-            }
-            step_baseline = validate(&after_model);
-            current_text = writer_plan.after;
-        }
-        let after = encode_like(&before, &current_text);
-        let no_op = before == after;
-        let data = partial_data(&effects, &package, no_op);
+        let image = plan_xdto_edit_operations(&package, &before, text, &before_model, args)?;
         Ok(MutationPlan {
             package,
             before,
-            after,
-            data,
-            no_op,
+            after: image.after,
+            data: image.data,
+            no_op: image.no_op,
         })
     })();
     let MutationPlan {
@@ -1938,26 +590,6 @@ struct MutationPlan {
     no_op: bool,
 }
 
-struct PlanningFailure {
-    error: String,
-    data: Option<Box<XdtoEditData>>,
-}
-
-impl PlanningFailure {
-    fn plain(error: impl Into<String>) -> Self {
-        Self {
-            error: error.into(),
-            data: None,
-        }
-    }
-}
-
-impl From<String> for PlanningFailure {
-    fn from(error: String) -> Self {
-        Self::plain(error)
-    }
-}
-
 fn resolve_package(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
@@ -2143,141 +775,57 @@ fn guard_resolved_support(target: &Path, context: &WorkspaceContext) -> Result<(
     }
 }
 
-fn decode(raw: &[u8]) -> Result<String, String> {
-    let value = std::str::from_utf8(raw)
-        .map_err(|_| "unsupported_node: Package.bin is not UTF-8".to_string())?;
-    let body = value.strip_prefix('\u{feff}').unwrap_or(value);
-    if body.starts_with('\u{feff}') {
-        return Err(
-            "unsupported_node: Package.bin must begin with at most one UTF-8 BOM".to_string(),
-        );
-    }
-    Ok(body.to_string())
-}
-fn encode_like(before: &[u8], text: &str) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    if before.starts_with(&[0xef, 0xbb, 0xbf]) {
-        bytes.extend_from_slice(&[0xef, 0xbb, 0xbf]);
-    }
-    bytes.extend_from_slice(text.as_bytes());
-    bytes
-}
-fn model_error(error: model::ModelError) -> String {
-    format!(
-        "{}: {} at byte {}",
-        error.code, error.message, error.span.start
-    )
-}
-
-struct XdtoDescriptorIdentity {
-    name: String,
-    namespace: String,
-}
-
-struct XdtoDescriptorFields {
-    name: Option<String>,
-    namespace: String,
-}
-
-fn xdto_metadata_name(metadata_path: &str) -> Result<&str, String> {
-    let parts = metadata_path.split('.').collect::<Vec<_>>();
-    if parts.len() != 2 || parts[0] != "XDTOPackage" || parts[1].is_empty() {
-        return Err("not_an_xdto_package: metadataPath must be XDTOPackage.<name>".to_string());
-    }
-    Ok(parts[1])
-}
-
 fn descriptor_namespace(path: &Path) -> Result<String, String> {
     let bytes = fs::read(path)
         .map_err(|_| "target_not_found: cannot read proven XDTO descriptor".to_string())?;
     descriptor_fields(&bytes).map(|fields| fields.namespace)
 }
 
-fn descriptor_identity(bytes: &[u8]) -> Result<XdtoDescriptorIdentity, String> {
-    let fields = descriptor_fields(bytes)?;
-    let name = fields
-        .name
-        .ok_or_else(|| "not_an_xdto_package: XDTO descriptor has no Name".to_string())?;
-    Ok(XdtoDescriptorIdentity {
-        name,
-        namespace: fields.namespace,
-    })
+#[cfg(test)]
+pub(crate) fn plan_xdto_batch_owned_for_test(
+    mut staged: unica_workspace::apply::ApplyStagedState,
+    authority: &unica_workspace::actor::XdtoApplyAuthority<'_>,
+    operations: &[IndexedPlanOperation<XdtoPlanOperation>],
+    validation_ledger: &mut XdtoValidationLedger,
+) -> Result<
+    (
+        unica_workspace::apply::ApplyStagedState,
+        Vec<ProvisionalApplyEffect>,
+    ),
+    ApplyPlanError,
+> {
+    let effects = plan_xdto_batch(
+        &mut staged.proposal(),
+        authority,
+        operations,
+        validation_ledger,
+    )?;
+    Ok((staged, effects))
 }
 
-fn descriptor_fields(bytes: &[u8]) -> Result<XdtoDescriptorFields, String> {
-    let text = std::str::from_utf8(bytes)
-        .map_err(|_| "not_an_xdto_package: XDTO descriptor is not UTF-8".to_string())?;
-    let document = Document::parse(text)
-        .map_err(|_| "not_an_xdto_package: XDTO descriptor is not valid XML".to_string())?;
-    let root = document.root_element();
-    if !root.has_tag_name((MD_CLASSES_NS, "MetaDataObject")) {
-        return Err(
-            "not_an_xdto_package: descriptor root must be an MDClasses MetaDataObject".to_string(),
-        );
-    }
-    let package = root
-        .children()
-        .find(|child| child.has_tag_name((MD_CLASSES_NS, "XDTOPackage")))
-        .ok_or_else(|| "not_an_xdto_package: descriptor must contain an XDTOPackage".to_string())?;
-    let properties = package
-        .children()
-        .find(|child| child.has_tag_name((MD_CLASSES_NS, "Properties")))
-        .ok_or_else(|| "namespace_mismatch: XDTO descriptor has no Properties".to_string())?;
-    let name = properties
-        .children()
-        .find(|child| child.has_tag_name((MD_CLASSES_NS, "Name")))
-        .and_then(|name| name.text())
-        .filter(|name| !name.is_empty())
-        .map(str::to_string);
-    let namespace = properties
-        .children()
-        .find(|child| child.has_tag_name((MD_CLASSES_NS, "Namespace")))
-        .and_then(|namespace| namespace.text())
-        .filter(|namespace| !namespace.is_empty())
-        .map(str::to_string)
-        .ok_or_else(|| "namespace_mismatch: XDTO descriptor has no Namespace".to_string())?;
-    Ok(XdtoDescriptorFields { name, namespace })
-}
-fn parse(text: &str) -> Result<Document<'_>, String> {
-    let doc = Document::parse(text)
-        .map_err(|error| format!("unsupported_node: invalid XDTO XML: {error}"))?;
-    let root = doc.root_element();
-    if root.tag_name().name() != "package" || root.tag_name().namespace() != Some(XDTO_NS) {
-        return Err("not_an_xdto_package: Package.bin root is not an XDTO package".to_string());
-    }
-    Ok(doc)
-}
-fn required<'a>(args: &'a Map<String, Value>, name: &str) -> Result<&'a str, String> {
-    args.get(name)
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| format!("{name} must be a non-empty string"))
-}
 #[cfg(test)]
 pub(crate) mod tests {
     use super::{
-        apply_with_data, decode, encode_like, info_with_data, model, parse_xdto_info_bytes,
-        parse_xdto_plan_operation, plan_unindexed_xdto_batch, plan_xdto_batch, preview_with_data,
-        staged_writer_error, staged_writer_operation, validate_final_xdto_resources, writer,
-        IndexedPlanOperation, PrefixedXmlQName, XdtoAddObjectTypeArgs, XdtoAddPropertyArgs,
-        XdtoAddValueTypeArgs, XdtoPlanOperation, XdtoPropertyPath, XdtoPropertySpec,
-        XdtoRemovePropertyArgs, XdtoRemoveTypeArgs, XdtoValidationLedger, XmlNcName,
+        apply_with_data, decode, info_with_data, model, parse_xdto_info_bytes,
+        parse_xdto_plan_operation, plan_unindexed_xdto_batch, plan_xdto_batch_owned_for_test,
+        preview_with_data, staged_writer_error, staged_writer_operation,
+        validate_final_xdto_resources, writer, IndexedPlanOperation, PrefixedXmlQName,
+        XdtoAddObjectTypeArgs, XdtoAddPropertyArgs, XdtoAddValueTypeArgs, XdtoPlanOperation,
+        XdtoPropertyPath, XdtoPropertySpec, XdtoRemovePropertyArgs, XdtoRemoveTypeArgs,
+        XdtoValidationLedger, XmlNcName,
     };
     use crate::application::SupportGuardRequirement;
-    use crate::domain::events::DomainEventKind;
-    use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
-    use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
-    use crate::domain::workspace::WorkspaceContext;
-    use crate::infrastructure::native_operations::apply::{ApplyPlanError, ApplyPlanErrorKind};
-    use crate::infrastructure::native_operations::common::support_guard_violation;
-    use crate::infrastructure::native_operations::single_file_publisher::with_before_commit_hook;
+    use unica_source_contract::events::DomainEventKind;
+    use unica_source_contract::{SourceFormat, SourceProfile, SourceSetKind};
+    use unica_xdto_designer::test_support::{args, PACKAGE};
 
-    use crate::infrastructure::platform::testing::{
-        create_file_link_fixture_for_test, FileLinkFixtureOutcome,
-    };
-    use crate::infrastructure::workspace_actor::{
-        ProviderRootBinding, WorkspaceActor, WorkspaceIdentity, WorkspaceSourceSetInput,
-    };
+    use crate::infrastructure::native_operations::common::support_guard_violation;
+    use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    use unica_source_contract::proposal::{ApplyPlanError, ApplyPlanErrorKind};
+    use unica_source_contract::workspace::WorkspaceContext;
+    use unica_workspace::single_file_publisher::with_before_commit_hook;
+
+    use crate::infrastructure::source_workspace::WorkspaceActor;
     use serde::Serialize;
     use serde_json::{json, Map, Value};
     use std::fs;
@@ -2285,68 +833,12 @@ pub(crate) mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
-
-    const PACKAGE: &str = r#"<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:tns="urn:test" targetNamespace="urn:test">
-	<objectType name="ЛюбаяСсылка">
-		<property name="СсылкаНаОбъект">
-			<typeDef xsi:type="ObjectType">
-			</typeDef>
-		</property>
-	</objectType>
-	<objectType name="СоставнойЛюбойОбъект"/>
-</package>"#;
+    use unica_workspace::actor::{ProviderRootBinding, WorkspaceIdentity, WorkspaceSourceSetInput};
+    use unica_workspace::test_support::{
+        create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+    };
 
     static TEMP_NONCE: AtomicU64 = AtomicU64::new(0);
-
-    #[test]
-    fn xdto_info_shared_core_uses_exact_descriptor_identity_and_admitted_bytes() {
-        let address =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "XDTOPackage.Sample").unwrap();
-        let descriptor = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><XDTOPackage><Properties><Name>Sample</Name><Namespace>urn:test</Namespace></Properties></XDTOPackage></MetaDataObject>"#;
-
-        let data = parse_xdto_info_bytes(
-            PACKAGE.as_bytes(),
-            descriptor,
-            "main",
-            &address,
-            Some("ЛюбаяСсылка"),
-        )
-        .unwrap();
-        let value = serde_json::to_value(data).unwrap();
-        assert_eq!(value["sourceSet"], "main");
-        assert_eq!(value["metadataPath"], "XDTOPackage.Sample");
-        assert_eq!(value["typeDetail"]["name"], "ЛюбаяСсылка");
-
-        let wrong_owner = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><XDTOPackage><Properties><Name>Other</Name><Namespace>urn:test</Namespace></Properties></XDTOPackage></MetaDataObject>"#;
-        let error = parse_xdto_info_bytes(PACKAGE.as_bytes(), wrong_owner, "main", &address, None)
-            .unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "not_an_xdto_package: descriptor Name does not match metadataPath"
-        );
-
-        let malformed = parse_xdto_info_bytes(
-            PACKAGE.as_bytes(),
-            b"<MetaDataObject",
-            "main",
-            &address,
-            None,
-        )
-        .expect_err("malformed descriptor must fail");
-        assert_eq!(
-            malformed.to_string(),
-            "not_an_xdto_package: XDTO descriptor is not valid XML"
-        );
-
-        let other_namespace = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><XDTOPackage><Properties><Name>Sample</Name><Namespace>urn:other</Namespace></Properties></XDTOPackage></MetaDataObject>"#;
-        let mismatch =
-            parse_xdto_info_bytes(PACKAGE.as_bytes(), other_namespace, "main", &address, None)
-                .expect_err("namespace mismatch must fail");
-        assert_eq!(
-            mismatch.to_string(),
-            "namespace_mismatch: descriptor Namespace must equal package targetNamespace"
-        );
-    }
 
     #[test]
     fn xdto_v12_wrapper_and_shared_core_share_projection_and_reject_wrong_owner() {
@@ -2382,59 +874,6 @@ pub(crate) mod tests {
             .expect("wrong descriptor owner must fail");
         assert!(error.starts_with("target_not_found:"), "{error}");
         fs::remove_dir_all(context.workspace_root).unwrap();
-    }
-
-    fn args(entries: &[(&str, Value)]) -> Map<String, Value> {
-        entries
-            .iter()
-            .map(|(key, value)| ((*key).to_string(), value.clone()))
-            .collect()
-    }
-
-    #[test]
-    fn add_property_descends_through_property_path_and_is_idempotent() {
-        let args = args(&[
-            ("typeName", json!("ЛюбаяСсылка")),
-            ("propertyPath", json!("СсылкаНаОбъект")),
-            (
-                "property",
-                json!({"name":"Документ_Новый", "type":"tns:Документ_Новый", "minOccurs":0}),
-            ),
-        ]);
-        let once = writer::plan(PACKAGE, &args, "add-property").unwrap();
-        assert_eq!(
-            once.after,
-            r#"<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:tns="urn:test" targetNamespace="urn:test">
-	<objectType name="ЛюбаяСсылка">
-		<property name="СсылкаНаОбъект">
-			<typeDef xsi:type="ObjectType">
-				<property name="Документ_Новый" type="tns:Документ_Новый" lowerBound="0"/>
-			</typeDef>
-		</property>
-	</objectType>
-	<objectType name="СоставнойЛюбойОбъект"/>
-</package>"#
-        );
-        let repeated = writer::plan(&once.after, &args, "add-property").unwrap();
-        assert_eq!(repeated.after, once.after);
-        assert!(repeated.edits.is_empty());
-        assert_eq!(repeated.finding.unwrap().code, "duplicate_property");
-    }
-
-    #[test]
-    fn byte_encoding_keeps_bom_and_crlf() {
-        let before = format!("\u{feff}{}", PACKAGE.replace('\n', "\r\n")).into_bytes();
-        let text = decode(&before).unwrap();
-        let after = writer::plan(
-            &text,
-            &args(&[("name", json!("Новый")), ("base", json!("xs:string"))]),
-            "add-value-type",
-        )
-        .unwrap()
-        .after;
-        let bytes = encode_like(&before, &after);
-        assert!(bytes.starts_with(&[0xef, 0xbb, 0xbf]));
-        assert!(decode(&bytes).unwrap().contains("\r\n"));
     }
 
     fn xdto_guard_fixture(
@@ -3039,132 +1478,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn xdto_validation_accepts_the_untouched_enterprise_data_fixture() {
-        let bytes = include_bytes!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/xdto/enterprise-data-minimal/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin"
-        ));
-        let text = decode(bytes).unwrap();
-        let model = super::model::PackageModel::parse(&text).unwrap();
-
-        let findings = super::validation::validate(&model);
-
-        assert!(findings.is_empty(), "{findings:#?}");
-    }
-
-    #[test]
-    fn xdto_validation_diff_uses_code_and_logical_key_not_message_or_span() {
-        use super::validation::{
-            Finding, FindingLocation, FindingSeverity, FindingState, SourceSpanDto, ValidationDiff,
-        };
-        let baseline = vec![Finding {
-            code: "unknown_type_reference".to_string(),
-            severity: FindingSeverity::Error,
-            message: "old wording".to_string(),
-            location: FindingLocation {
-                key: "$package/objectType:Consumer/property:Value/@type".to_string(),
-                span: SourceSpanDto { start: 10, end: 18 },
-            },
-        }];
-        let candidate = vec![Finding {
-            code: "unknown_type_reference".to_string(),
-            severity: FindingSeverity::Error,
-            message: "new wording".to_string(),
-            location: FindingLocation {
-                key: "$package/objectType:Consumer/property:Value/@type".to_string(),
-                span: SourceSpanDto {
-                    start: 110,
-                    end: 118,
-                },
-            },
-        }];
-
-        let diff = ValidationDiff::between(&baseline, candidate);
-
-        assert_eq!(diff.findings.len(), 1);
-        assert_eq!(diff.findings[0].state, FindingState::PreExisting);
-        assert_eq!(diff.findings[0].message, "old wording");
-        assert_eq!(diff.findings[0].location.span.start, 10);
-        assert!(!diff.blocks());
-    }
-
-    #[test]
-    fn xdto_validation_diff_classifies_multiplicity_removal_and_fresh_keys() {
-        use super::validation::{
-            Finding, FindingLocation, FindingSeverity, FindingState, SourceSpanDto, ValidationDiff,
-        };
-        let finding = |start| Finding {
-            code: "duplicate_property".to_string(),
-            severity: FindingSeverity::Error,
-            message: "duplicate".to_string(),
-            location: FindingLocation {
-                key: "$package/objectType:Consumer/property:Value/@unique".to_string(),
-                span: SourceSpanDto {
-                    start,
-                    end: start + 1,
-                },
-            },
-        };
-
-        let diff = ValidationDiff::between(&[finding(10)], vec![finding(20), finding(30)]);
-
-        assert_eq!(diff.findings.len(), 2);
-        assert_eq!(diff.findings[0].state, FindingState::PreExisting);
-        assert_eq!(diff.findings[1].state, FindingState::Introduced);
-        assert!(diff.blocks());
-
-        let removed = ValidationDiff::between(&[finding(40)], Vec::new());
-        assert!(removed.findings.is_empty());
-        assert!(!removed.blocks());
-
-        let fresh = ValidationDiff::between(&[], vec![finding(50)]);
-        assert_eq!(fresh.findings[0].state, FindingState::Introduced);
-        assert!(fresh.blocks());
-    }
-
-    #[test]
-    fn xdto_validation_requires_exact_root_and_target_namespace() {
-        let wrong_root = super::model::PackageModel::parse(
-            r#"<package xmlns="urn:not-xdto" targetNamespace="urn:test"/>"#,
-        )
-        .unwrap_err();
-        assert_eq!(wrong_root.code, "not_an_xdto_package");
-
-        let missing_namespace =
-            super::model::PackageModel::parse(r#"<package xmlns="http://v8.1c.ru/8.1/xdto"/>"#)
-                .unwrap();
-        let findings = super::validation::validate(&missing_namespace);
-        assert_eq!(findings.len(), 1, "{findings:#?}");
-        assert_eq!(findings[0].code, "target_namespace_required");
-        assert_eq!(findings[0].location.key, "$package/@targetNamespace");
-    }
-
-    #[test]
-    fn xdto_validation_uses_xml_ncname_character_ranges() {
-        let model = super::model::PackageModel::parse(
-            r#"<package xmlns="http://v8.1c.ru/8.1/xdto" targetNamespace="urn:test">
-	<objectType name="_ok"/>
-	<objectType name="Имя"/>
-	<objectType name="A·B"/>
-	<objectType name="Á"/>
-	<objectType name="1bad"/>
-	<objectType name="bad:name"/>
-</package>"#,
-        )
-        .unwrap();
-
-        let invalid_names = super::validation::validate(&model)
-            .into_iter()
-            .filter(|finding| finding.code == "invalid_ncname")
-            .map(|finding| finding.location.key)
-            .collect::<Vec<_>>();
-
-        assert_eq!(invalid_names.len(), 2, "{invalid_names:#?}");
-        assert!(invalid_names.iter().any(|key| key.contains("1bad")));
-        assert!(invalid_names.iter().any(|key| key.contains("bad:name")));
-    }
-
-    #[test]
     fn xdto_validation_rejects_bare_property_qname_without_rewriting() {
         let (context, mut args, _, _) = xdto_guard_fixture("validation-bare-qname");
         args.insert(
@@ -3439,36 +1752,38 @@ pub(crate) mod tests {
             "staged-xdto-test-provider",
         )
         .unwrap();
-        Arc::new(WorkspaceActor::new(identity, context.clone()).unwrap())
+        Arc::new(
+            crate::infrastructure::source_workspace::new_actor(identity, context.clone()).unwrap(),
+        )
     }
 
     fn staged_xdto_admission(
         fixture: &StagedXdtoFixture,
         if_rev: Option<&str>,
         dry_run: bool,
-    ) -> crate::infrastructure::workspace_actor::ApplyAdmission {
+    ) -> unica_workspace::actor::ApplyAdmission {
         fixture
             .actor
             .admit_apply(
                 &fixture.binding,
                 if_rev,
                 dry_run,
-                crate::domain::code_intelligence::ProviderDeadline::from_budget(
+                unica_work_control::provider_deadline::ProviderDeadline::from_budget(
                     Duration::from_secs(7),
                 ),
-                &crate::domain::cancellation::CancellationToken::new(),
+                &unica_work_control::cancellation::CancellationToken::new(),
             )
             .unwrap()
     }
 
     fn plan_admitted_xdto(
-        admission: &crate::infrastructure::workspace_actor::ApplyAdmission,
+        admission: &unica_workspace::actor::ApplyAdmission,
         binding: &ProviderRootBinding,
         operations: &[XdtoPlanOperation],
     ) -> Result<
         (
-            crate::infrastructure::native_operations::apply::ApplyStagedState,
-            crate::infrastructure::native_operations::apply::PlannedApplyEffects,
+            unica_workspace::apply::ApplyStagedState,
+            unica_source_contract::proposal::PlannedApplyEffects,
         ),
         ApplyPlanError,
     > {
@@ -3477,8 +1792,8 @@ pub(crate) mod tests {
         plan_unindexed_xdto_batch(staged, authority, operations)
     }
 
-    fn qaddr(value: &str) -> crate::domain::address::QualifiedAddress {
-        crate::domain::address::QualifiedAddress::parse(value).unwrap()
+    fn qaddr(value: &str) -> unica_address::address::QualifiedAddress {
+        unica_address::address::QualifiedAddress::parse(value).unwrap()
     }
 
     fn ncname(value: &str) -> XmlNcName {
@@ -3677,10 +1992,10 @@ pub(crate) mod tests {
                 &binding,
                 Some(dry_result.rev()),
                 false,
-                crate::domain::code_intelligence::ProviderDeadline::from_budget(
+                unica_work_control::provider_deadline::ProviderDeadline::from_budget(
                     Duration::from_secs(7),
                 ),
-                &crate::domain::cancellation::CancellationToken::new(),
+                &unica_work_control::cancellation::CancellationToken::new(),
             )
             .unwrap();
         let (mut real_state, real_effects) =
@@ -3716,7 +2031,10 @@ pub(crate) mod tests {
         )
         .unwrap();
         let error = next.prepare_with_effects(state, effects).unwrap_err();
-        assert_eq!(error.kind(), crate::infrastructure::native_operations::apply::ApplyStagingErrorKind::ConcurrentRevision);
+        assert_eq!(
+            error.kind(),
+            unica_source_contract::proposal::ApplyStagingErrorKind::ConcurrentRevision
+        );
         assert_eq!(fs::read(&fixture.package).unwrap(), dry_bytes);
         fixture.cleanup();
     }
@@ -3743,10 +2061,13 @@ pub(crate) mod tests {
             let (state, effects) =
                 plan_admitted_xdto(&admission, &fixture.binding, &operation).unwrap();
             let error = admission.prepare_with_effects(state, effects).unwrap_err();
-            assert_eq!(error.kind(), crate::infrastructure::native_operations::apply::ApplyStagingErrorKind::ConcurrentRevision);
+            assert_eq!(
+                error.kind(),
+                unica_source_contract::proposal::ApplyStagingErrorKind::ConcurrentRevision
+            );
             assert!(error.to_string().contains("stale"));
         }
-        let cancelled = crate::domain::cancellation::CancellationToken::new();
+        let cancelled = unica_work_control::cancellation::CancellationToken::new();
         cancelled.cancel();
         assert!(fixture
             .actor
@@ -3754,7 +2075,7 @@ pub(crate) mod tests {
                 &fixture.binding,
                 None,
                 true,
-                crate::domain::code_intelligence::ProviderDeadline::from_budget(
+                unica_work_control::provider_deadline::ProviderDeadline::from_budget(
                     Duration::from_secs(7),
                 ),
                 &cancelled,
@@ -3768,8 +2089,10 @@ pub(crate) mod tests {
                 &fixture.binding,
                 None,
                 true,
-                crate::domain::code_intelligence::ProviderDeadline::from_budget(Duration::ZERO),
-                &crate::domain::cancellation::CancellationToken::new(),
+                unica_work_control::provider_deadline::ProviderDeadline::from_budget(
+                    Duration::ZERO
+                ),
+                &unica_work_control::cancellation::CancellationToken::new(),
             )
             .unwrap_err()
             .to_string()
@@ -4203,33 +2526,6 @@ pub(crate) mod tests {
         cross.cleanup();
     }
 
-    #[test]
-    fn staged_xdto_writer_errors_are_typed_without_v12_drift() {
-        let legacy = writer::plan(PACKAGE, &args(&[("name", json!("Missing"))]), "remove-type")
-            .expect_err("legacy missing type unexpectedly succeeded");
-        assert_eq!(legacy, "target_not_found: type does not exist");
-
-        let typed = writer::plan_typed(
-            PACKAGE,
-            writer::TypedWriterOperation::RemoveType { name: "Missing" },
-        )
-        .expect_err("typed missing type unexpectedly succeeded");
-        assert_eq!(typed.cause(), writer::WriterErrorCause::NotFound);
-        assert_eq!(typed.to_string(), legacy);
-
-        let ambiguous = r#"<package xmlns="http://v8.1c.ru/8.1/xdto" targetNamespace="urn:test"><objectType name="Same"/><objectType name="Same"/></package>"#;
-        let typed = writer::plan_typed(
-            ambiguous,
-            writer::TypedWriterOperation::RemoveType { name: "Same" },
-        )
-        .expect_err("typed ambiguous type unexpectedly succeeded");
-        assert_eq!(typed.cause(), writer::WriterErrorCause::AmbiguousTarget);
-        assert_eq!(
-            typed.to_string(),
-            "unsupported_node: type identity is ambiguous"
-        );
-    }
-
     /// Вложенное свойство задаётся адресом: цепочка `Property` после типа
     /// становится путём писателя, точка в имени (`\.` в адресе) остаётся
     /// точкой имени, а удаляемое свойство — последним сегментом. Писатель
@@ -4388,7 +2684,7 @@ pub(crate) mod tests {
             IndexedPlanOperation::new(9, add_object("main:XDTOPackage.Sample", "Unrelated")),
         ];
         let mut ledger = XdtoValidationLedger::default();
-        let (state, first_effects) = plan_xdto_batch(
+        let (state, first_effects) = plan_xdto_batch_owned_for_test(
             admission.staged_state().unwrap(),
             &authority,
             &operations[..1],
@@ -4397,12 +2693,15 @@ pub(crate) mod tests {
         .expect("a later operation may complete a forward reference");
         assert_eq!(first_effects.len(), 1);
         let (mut state, _) =
-            plan_xdto_batch(state, &authority, &operations[1..], &mut ledger).unwrap();
-        let error =
-            validate_final_xdto_resources(&mut state, &authority, &ledger, operations.iter())
-                .expect_err(
-                    "a subsequent run must not adopt an introduced finding as its baseline",
-                );
+            plan_xdto_batch_owned_for_test(state, &authority, &operations[1..], &mut ledger)
+                .unwrap();
+        let error = validate_final_xdto_resources(
+            &mut state.proposal(),
+            &authority,
+            &ledger,
+            operations.iter(),
+        )
+        .expect_err("a subsequent run must not adopt an introduced finding as its baseline");
         assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);
         assert_eq!(error.path(), Some("ops[4].args.values.base"));
         assert_eq!(fs::read(&fixture.package).unwrap(), PACKAGE.as_bytes());
@@ -4458,7 +2757,7 @@ pub(crate) mod tests {
             .any(|node| node.is_element() && node.attribute("name") == Some("Used")));
         assert!(!xml
             .descendants()
-            .any(|node| node.has_tag_name((super::XDTO_NS, "property"))));
+            .any(|node| node.has_tag_name((unica_xdto_designer::model::XDTO_NS, "property"))));
         assert!(super::validate(&model::PackageModel::parse(&text).unwrap()).is_empty());
         assert_eq!(effects.events().len(), 1);
         assert_eq!(

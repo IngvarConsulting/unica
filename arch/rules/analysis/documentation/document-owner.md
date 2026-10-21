@@ -1,9 +1,9 @@
 ---
 id: INV.APP.DOCUMENTATION-GET
 check:
-  - crates/unica-coder/src/application/documentation.rs::get_skips_a_non_owner_and_projects_the_owners_document
-  - crates/unica-coder/src/application/documentation.rs::a_locator_no_provider_owns_is_refused_naming_it
-  - crates/unica-coder/src/application/documentation.rs::the_owners_failure_is_the_calls_failure
+  - crates/unica-documentation/src/projection.rs::get_skips_a_non_owner_and_projects_the_owners_document
+  - crates/unica-documentation/src/projection.rs::a_locator_no_provider_owns_is_refused_naming_it
+  - crates/unica-documentation/src/projection.rs::the_owners_failure_is_the_calls_failure
 ---
 
 # Документ возвращает владеющий им поставщик справки

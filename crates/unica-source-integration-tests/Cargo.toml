@@ -1,0 +1,23 @@
+[package]
+name = "unica-source-integration-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+autotests = false
+
+[[test]]
+name = "project_sources"
+path = "tests/project_sources.rs"
+
+[[test]]
+name = "selection"
+path = "tests/selection.rs"
+
+[dev-dependencies]
+unica-source-contract = { path = "../unica-source-contract" }
+unica-source-designer = { path = "../unica-source-designer", features = ["test-support"] }
+unica-workspace = { path = "../unica-workspace", features = ["test-support"] }
+unica-work-control = { path = "../unica-work-control" }
+tempfile.workspace = true

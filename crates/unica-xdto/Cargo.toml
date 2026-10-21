@@ -1,0 +1,22 @@
+[package]
+name = "unica-xdto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+test-support = []
+
+[dependencies]
+unica-operations = { path = "../unica-operations" }
+unica-source-contract = { path = "../unica-source-contract" }
+unica-address = { path = "../unica-address" }
+unica-operation-contract = { path = "../unica-operation-contract" }
+unica-xml-format = { path = "../unica-xml-format" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+jsonschema.workspace = true

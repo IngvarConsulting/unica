@@ -515,6 +515,56 @@ fn public_body_line_ranges_open_search_hits_and_refuse_line_edits() {
 }
 
 #[test]
+fn oversized_error_recovery_is_a_closed_size_refusal_without_poisoning_the_daemon() {
+    let root = tempfile::tempdir().unwrap();
+    body_workspace(root.path(), b"Procedure Small() Export\nEndProcedure\n");
+    let mut mcp = McpProcess::start(root.path());
+    initialize_body_mcp(&mut mcp);
+    // The retired filter route echoes at in next before address validation.
+    // Canonical JSON fits; duplicating complete recovery does not.
+    let mut response = mcp.exchange(call_tool(
+        2,
+        "unica.view",
+        json!({
+            "at": "x".repeat(4_300_000), "filter": {}
+        }),
+    ));
+    for poll in 0..=10 {
+        if response["error"].is_object() {
+            assert_eq!(
+                response["error"]["data"]["code"], "result_too_large",
+                "{response:#}"
+            );
+            break;
+        }
+        let result = domain_result(&response);
+        if result["ok"] == false {
+            assert_eq!(
+                result["diagnostics"][0]["code"], "result_too_large",
+                "{result:#}"
+            );
+            break;
+        }
+        assert!(poll < 10, "oversized refusal did not terminate: {result:#}");
+        let task_id = result["data"]["task"]["taskId"]
+            .as_str()
+            .expect("pending Task");
+        response = mcp.exchange(call_tool(
+            format!("large-recovery:{poll}"),
+            "unica.task.result",
+            json!({"taskId":task_id,"waitMs":7000}),
+        ));
+    }
+    let next = mcp.completed_tool_call(call_tool(
+        3,
+        "unica.view",
+        json!({"at":"main:CommonModule.Main"}),
+    ));
+    assert_eq!(next["ok"], true, "daemon remains usable: {next:#}");
+    mcp.finish();
+}
+
+#[test]
 fn public_view_refuses_bsl_text_over_the_default_budget_whole_with_structural_next() {
     let root = tempfile::tempdir().unwrap();
     let mut source = String::from(
@@ -538,11 +588,26 @@ fn public_view_refuses_bsl_text_over_the_default_budget_whole_with_structural_ne
             .collect::<Vec<_>>()
     };
 
-    let body = mcp.completed_tool_call(call_tool(
-        2,
-        "unica.view",
-        json!({"at": format!("{module}.Body")}),
-    ));
+    let mut recovery_was_visible = false;
+    let body = completed_tool_result(
+        call_tool(2, "unica.view", json!({"at": format!("{module}.Body")})),
+        |request| {
+            let response = mcp.exchange(request);
+            let result = &response["result"];
+            if result["isError"] == true {
+                let recovery: Value = serde_json::from_str(
+                    result["content"][1]["text"]
+                        .as_str()
+                        .expect("refusal exposes recovery to text-only hosts"),
+                )
+                .expect("recovery is complete JSON");
+                assert_eq!(recovery["next"], result["structuredContent"]["next"]);
+                recovery_was_visible = true;
+            }
+            response
+        },
+    );
+    assert!(recovery_was_visible);
     assert_eq!(body["ok"], false, "{body:#}");
     assert_eq!(
         body["diagnostics"][0]["code"], "result_too_large",

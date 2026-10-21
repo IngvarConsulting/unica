@@ -1,4 +1,3 @@
-use crate::domain::engine::{EngineStage, InstallMode, MissingEngine};
 use crate::infrastructure::platform::current_target_id;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -6,51 +5,12 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
+use unica_artifact_delivery::engine::BundledToolError;
+use unica_artifact_delivery::engine::EngineStage;
+use unica_artifact_delivery::engine::InstallMode;
+use unica_artifact_delivery::engine::MissingEngine;
 
-#[derive(Debug, Clone)]
-pub(crate) struct BundledTool {
-    pub(crate) program: PathBuf,
-    pub(crate) warnings: Vec<String>,
-    /// Заполнено, когда предпросмотр строит план по несуществующему файлу.
-    /// Вызывающий обязан это показать: путь к тому, чего нет, выглядит как
-    /// готовая к запуску команда, и это худший из возможных ответов.
-    pub(crate) missing: Option<MissingEngine>,
-}
-
-/// Почему поставляемый движок не разрешился.
-///
-/// Причина типизирована в источнике: шаг поставки, на котором движка не
-/// оказалось, называет место отказа, а не фраза, которую вызывающему пришлось
-/// бы разбирать (#549).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum BundledToolError {
-    /// Движка нет или он не годится к запуску; шаг и поля названы.
-    Missing(Box<MissingEngine>),
-    /// Сбой ввода-вывода, который об отсутствии движка не говорит: файл на
-    /// месте, но прочитать его для контрольной суммы не удалось.
-    Io(String),
-}
-
-impl BundledToolError {
-    fn missing(engine: MissingEngine) -> Self {
-        Self::Missing(Box::new(engine))
-    }
-}
-
-impl std::fmt::Display for BundledToolError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Missing(engine) => formatter.write_str(&engine.message()),
-            Self::Io(message) => formatter.write_str(message),
-        }
-    }
-}
-
-impl From<BundledToolError> for String {
-    fn from(error: BundledToolError) -> Self {
-        error.to_string()
-    }
-}
+use unica_artifact_delivery::engine::BundledTool;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -235,9 +195,7 @@ pub(crate) fn start_failure(
 /// если ОС их назвала, редакция не обещает убрать.
 pub(crate) fn launch_failure_cause(error: &str, tool_name: &str, program: &Path) -> String {
     let error = error.strip_prefix("process_failed: ").unwrap_or(error);
-    crate::infrastructure::redaction::redactor(
-        &error.replace(&program.display().to_string(), tool_name),
-    )
+    unica_redaction::redactor(&error.replace(&program.display().to_string(), tool_name))
 }
 
 /// Проверенный движок, процесс которого ОС не создаёт: отказ на шаге `start`
@@ -250,12 +208,12 @@ pub(crate) fn launch_failure_cause(error: &str, tool_name: &str, program: &Path)
 /// текст. Запущенный процесс сразу завершается. Неготовое окружение или
 /// неудачное подключение процесса к дереву — не незапуск движка (#549).
 ///
-/// [`ManagedSpawnFailure::Launch`]: crate::infrastructure::platform::ManagedSpawnFailure::Launch
+/// [`ManagedSpawnFailure::Launch`]: unica_process::ManagedSpawnFailure::Launch
 pub(crate) fn launch_probe_failure(
     plugin_root: &Path,
     tool_name: &str,
 ) -> Option<(MissingEngine, String)> {
-    use crate::infrastructure::platform::{ManagedChild, ManagedCommand, ManagedSpawnFailure};
+    use unica_process::{ManagedChild, ManagedCommand, ManagedSpawnFailure};
     let program = installed_engine_path(plugin_root, tool_name)?;
     let probe = ManagedChild::spawn_staged(ManagedCommand {
         program: program.clone(),
@@ -265,7 +223,7 @@ pub(crate) fn launch_probe_failure(
         env_remove: Vec::new(),
         capture_limits: Some((4096, 4096)),
         timeout: Some(std::time::Duration::from_secs(1)),
-        cancellation: crate::domain::cancellation::CancellationToken::new(),
+        cancellation: unica_work_control::cancellation::CancellationToken::new(),
     });
     let message = match probe {
         Ok(mut child) => {
@@ -1098,7 +1056,7 @@ mod delivery_tests {
         use flate2::Compression;
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
-        use unica_bootstrap::{
+        use unica_artifact_delivery::{
             BootstrapError, DownloadObserver, Downloader, HostTarget, RuntimeInstaller,
             RuntimeManifest, SilentDownload,
         };
@@ -1608,7 +1566,10 @@ mod missing_engine_tests {
 
         let missing = missing_engine(&plugin_root, "v8-runner").expect("движка нет");
 
-        assert_eq!(missing.code, crate::domain::engine::BUNDLED_TOOL_MISSING);
+        assert_eq!(
+            missing.code,
+            unica_artifact_delivery::engine::BUNDLED_TOOL_MISSING
+        );
         assert_eq!(missing.tool, "v8-runner");
         assert_eq!(missing.install_mode, InstallMode::Source);
         assert_eq!(missing.pinned_version.as_deref(), Some("0.5.1"));

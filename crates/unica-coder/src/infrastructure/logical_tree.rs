@@ -1,22 +1,22 @@
-use crate::domain::address::{NodeKind, QualifiedAddress};
 use crate::domain::logical_route::classify_route;
-use crate::domain::platform_profile::{ModuleCapability, PlatformProfile};
-use crate::domain::source_target::MetadataAddress;
-use crate::domain::subsystem::SUBSYSTEM_ADDRESS_MAX_DEPTH;
+use crate::infrastructure::form_composition::typed_form_reader_target;
 use crate::infrastructure::native_operations::common::typed_role_reader_target;
 use crate::infrastructure::native_operations::dcs::typed_dcs_reader_target;
-use crate::infrastructure::native_operations::form::typed_form_reader_target;
 use crate::infrastructure::native_operations::logical_selector::typed_reader_metadata_target;
 use crate::infrastructure::native_operations::meta::{
     accepts_logical_metadata_address, logical_metadata_reader_target,
 };
-use crate::infrastructure::native_operations::mxl::typed_mxl_reader_target;
+use crate::infrastructure::native_operations::mxl_composition::typed_mxl_reader_target;
 use std::fmt;
 use std::path::PathBuf;
+use unica_address::address::{NodeKind, QualifiedAddress};
+use unica_address::source_target::MetadataAddress;
+use unica_bsl::profile::{ModuleCapability, PlatformProfile};
+use unica_metadata::subsystem::SUBSYSTEM_ADDRESS_MAX_DEPTH;
 
-/// Читатель маршрута — это класс маршрута из `domain`: классификатор один,
+/// Читатель маршрута — общий класс маршрута: классификатор один,
 /// маршрутизатор лишь проверяет форму адреса и находит цель читателя.
-pub(crate) use crate::domain::logical_route::RouteClass as LogicalReader;
+pub(crate) use unica_source_contract::route::RouteClass as LogicalReader;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LogicalTreeRoute {
@@ -68,7 +68,7 @@ pub(crate) fn route_logical_address(
         LogicalReader::Module => {
             let module = profile.module_prefix_capability(address);
             if let Some(module) = module {
-                let _internal_layout = module.source_layout();
+                let _logical_route_kind = module.route_kind();
             }
             Ok(route(address, LogicalReader::Module, None, module))
         }
@@ -188,9 +188,9 @@ impl std::error::Error for LogicalTreeError {}
 #[cfg(test)]
 mod tests {
     use super::{route_logical_address, LogicalReader, LogicalTreeErrorCode};
-    use crate::domain::address::QualifiedAddress;
-    use crate::domain::platform_profile::PlatformProfile;
     use serde::Deserialize;
+    use unica_address::address::QualifiedAddress;
+    use unica_bsl::profile::PlatformProfile;
 
     #[derive(Debug, Deserialize)]
     #[serde(rename_all = "camelCase")]
@@ -357,9 +357,9 @@ mod tests {
 #[cfg(test)]
 mod skill_address_guard {
     use super::route_logical_address;
-    use crate::domain::address::QualifiedAddress;
-    use crate::domain::platform_profile::PlatformProfile;
     use std::path::{Path, PathBuf};
+    use unica_address::address::QualifiedAddress;
+    use unica_bsl::profile::PlatformProfile;
 
     fn repo_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))

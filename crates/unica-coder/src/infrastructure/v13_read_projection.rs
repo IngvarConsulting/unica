@@ -1,10 +1,11 @@
-use crate::application::v13::view::ViewError;
-use crate::domain::address::{member_address, AddressSegment, NodeKind, QualifiedAddress};
-use crate::domain::module_projection::EventProjection;
 use crate::domain::node_view::{BranchRef, CollectionView, NodeView, NodeViewData};
-use crate::domain::refusal::{RefusalCode, RefusalDetail};
+use unica_bsl::projection::EventProjection;
+use unica_execution_contract::view_error::ViewError;
+
 use crate::infrastructure::logical_tree::{LogicalReader, LogicalTreeRoute};
 use serde_json::{json, Map, Value};
+use unica_address::address::{member_address, AddressSegment, NodeKind, QualifiedAddress};
+use unica_refusal::{RefusalCode, RefusalDetail};
 
 mod form;
 mod member_properties;
@@ -34,7 +35,7 @@ pub(super) fn project_typed_payload_with_form_events(
 pub(super) fn project_typed_payload_for_source(
     route: &LogicalTreeRoute,
     payload: Value,
-    source_kind: crate::domain::project_sources::SourceSetKind,
+    source_kind: unica_source_contract::SourceSetKind,
 ) -> Result<NodeViewData, ViewError> {
     project_typed_payload_inner(route, payload, None, Some(source_kind))
 }
@@ -43,7 +44,7 @@ fn project_typed_payload_inner(
     route: &LogicalTreeRoute,
     payload: Value,
     form_events: Option<&[EventProjection]>,
-    source_kind: Option<crate::domain::project_sources::SourceSetKind>,
+    source_kind: Option<unica_source_contract::SourceSetKind>,
 ) -> Result<NodeViewData, ViewError> {
     validate_reader_payload(route.reader(), &payload)?;
     if route.at().form_metadata_owner().is_some() {
@@ -273,117 +274,6 @@ fn project_dcs(
     )))
 }
 
-/// Строки структуры варианта, чей ближайший именованный предок — элемент
-/// `scope` (`None` — сам вариант). Безымянный элемент прозрачен: его потомки
-/// принадлежат ближайшему именованному предку, поэтому именованная группа под
-/// безымянной адресуется от варианта (#1357).
-pub(crate) fn dcs_structure_scope(rows: &[Value], scope: Option<usize>) -> Vec<usize> {
-    let named = |index: usize| {
-        rows.get(index)
-            .and_then(|row| row.get("name"))
-            .and_then(Value::as_str)
-            .is_some_and(|name| !name.is_empty())
-    };
-    let parent = |index: usize| {
-        rows.get(index)
-            .and_then(|row| row.get("parentIndex"))
-            .and_then(Value::as_u64)
-            .and_then(|parent| usize::try_from(parent).ok())
-    };
-    (0..rows.len())
-        .filter(|index| {
-            let mut current = parent(*index);
-            // Глубина ограничена числом строк: испорченный `parentIndex`
-            // не зацикливает обход.
-            for _ in 0..rows.len() {
-                match current {
-                    Some(ancestor) if !named(ancestor) => current = parent(ancestor),
-                    _ => break,
-                }
-            }
-            current == scope
-        })
-        .collect()
-}
-
-/// Имя строки структуры, которое адресует её в области: непустое и
-/// единственное среди строк этой области.
-fn dcs_structure_address_name<'a>(
-    rows: &'a [Value],
-    scope: &[usize],
-    index: usize,
-) -> Option<&'a str> {
-    let name = rows[index]
-        .get("name")
-        .and_then(Value::as_str)
-        .filter(|name| !name.is_empty())?;
-    (scope
-        .iter()
-        .filter(|other| rows[**other].get("name").and_then(Value::as_str) == Some(name))
-        .count()
-        == 1)
-        .then_some(name)
-}
-
-/// Строка в области `scope` по имени сегмента адреса. Отсутствующее и
-/// повторённое имя одинаково не дают узла: адрес не выбирает за читателя.
-pub(crate) fn dcs_structure_child(
-    rows: &[Value],
-    scope: Option<usize>,
-    name: &str,
-) -> Option<usize> {
-    let members = dcs_structure_scope(rows, scope);
-    members
-        .iter()
-        .copied()
-        .find(|index| dcs_structure_address_name(rows, &members, *index) == Some(name))
-}
-
-/// Пути от варианта до элементов структуры с именем `name`: цепочки имён
-/// именованных предков и самого элемента. Пусто — элемента нет; в ответ
-/// входят только те, чей путь адресует именно их (имя единственно на каждом
-/// уровне), а `found` — сколько элементов с этим именем есть всего.
-pub(crate) fn dcs_structure_paths(rows: &[Value], name: &str) -> (Vec<Vec<String>>, usize) {
-    let row_name = |index: usize| {
-        rows.get(index)
-            .and_then(|row| row.get("name"))
-            .and_then(Value::as_str)
-            .filter(|name| !name.is_empty())
-    };
-    let parent = |index: usize| {
-        rows.get(index)
-            .and_then(|row| row.get("parentIndex"))
-            .and_then(Value::as_u64)
-            .and_then(|parent| usize::try_from(parent).ok())
-    };
-    let mut found = 0;
-    let mut paths = Vec::new();
-    for index in (0..rows.len()).filter(|index| row_name(*index) == Some(name)) {
-        found += 1;
-        let mut chain = vec![name.to_string()];
-        let mut current = parent(index);
-        for _ in 0..rows.len() {
-            let Some(ancestor) = current else { break };
-            if let Some(ancestor_name) = row_name(ancestor) {
-                chain.push(ancestor_name.to_string());
-            }
-            current = parent(ancestor);
-        }
-        chain.reverse();
-        let mut scope = None;
-        for step in &chain {
-            scope = dcs_structure_child(rows, scope, step);
-            if scope.is_none() {
-                break;
-            }
-        }
-        if scope == Some(index) {
-            paths.push(chain);
-        }
-    }
-    (paths, found)
-}
-
 fn dcs_structure_props(row: &Value) -> Map<String, Value> {
     row.as_object()
         .into_iter()
@@ -400,7 +290,7 @@ fn dcs_structure_node(address: &QualifiedAddress, rows: &[Value], index: usize) 
         .get("name")
         .and_then(Value::as_str)
         .unwrap_or("Item");
-    let count = dcs_structure_scope(rows, Some(index)).len();
+    let count = unica_dcs::structure::dcs_structure_scope(rows, Some(index)).len();
     let branches = (count > 0)
         .then(|| BranchRef::new(format!("{address}.Item"), count))
         .into_iter()
@@ -419,7 +309,9 @@ fn dcs_structure_root_count(variant: &Value) -> usize {
     variant
         .get("structureItems")
         .and_then(Value::as_array)
-        .map_or(0, |rows| dcs_structure_scope(rows, None).len())
+        .map_or(0, |rows| {
+            unica_dcs::structure::dcs_structure_scope(rows, None).len()
+        })
 }
 
 /// Элементы структуры варианта: `Setting.V.Item[.<имя>[.Item.<имя>…]]`.
@@ -459,11 +351,11 @@ fn project_dcs_structure(
                     "the structure collection has no addressed children",
                 ));
             }
-            let members = dcs_structure_scope(rows, scope);
+            let members = unica_dcs::structure::dcs_structure_scope(rows, scope);
             let items = members
                 .iter()
                 .map(|index| {
-                    dcs_structure_address_name(rows, &members, *index)
+                    unica_dcs::structure::dcs_structure_address_name(rows, &members, *index)
                         .and_then(|name| address.member(name).ok())
                         .and_then(|at| {
                             serde_json::to_value(dcs_structure_node(&at, rows, *index)).ok()
@@ -476,7 +368,7 @@ fn project_dcs_structure(
                 items,
             )));
         };
-        scope = Some(dcs_structure_child(rows, scope, name).ok_or_else(|| {
+        scope = Some(unica_dcs::structure::dcs_structure_child(rows, scope, name).ok_or_else(|| {
             ViewError::new(
                 RefusalCode::NotFound,
                 format!(
@@ -2154,7 +2046,7 @@ mod dcs_structure_tests {
         // ни одного.
         let rows = rows.as_array().unwrap();
         assert_eq!(
-            dcs_structure_paths(rows, "Nested.Name"),
+            unica_dcs::structure::dcs_structure_paths(rows, "Nested.Name"),
             (
                 vec![vec![
                     "Unique (group)".to_string(),
@@ -2163,8 +2055,14 @@ mod dcs_structure_tests {
                 1
             )
         );
-        assert_eq!(dcs_structure_paths(rows, "Repeated"), (Vec::new(), 2));
-        assert_eq!(dcs_structure_paths(rows, "Missing"), (Vec::new(), 0));
+        assert_eq!(
+            unica_dcs::structure::dcs_structure_paths(rows, "Repeated"),
+            (Vec::new(), 2)
+        );
+        assert_eq!(
+            unica_dcs::structure::dcs_structure_paths(rows, "Missing"),
+            (Vec::new(), 0)
+        );
     }
 }
 

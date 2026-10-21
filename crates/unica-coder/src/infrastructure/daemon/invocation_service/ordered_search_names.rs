@@ -1,11 +1,11 @@
 //! Directory names in native `OsString` order, without a corpus entry quota.
 //! A batch bounds resident names, not accepted input. Pairwise merge rounds
 //! keep only three run handles open, irrespective of directory width.
-use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use unica_source_contract::read::SourceDirectory;
 
 const BATCH_NAMES: usize = 1024;
 
@@ -88,7 +88,7 @@ fn merge(
 
 impl OrderedNames {
     pub(super) fn collect(
-        directory: &RetainedDirectoryCapability,
+        directory: &SourceDirectory,
         checkpoint: impl FnMut() -> io::Result<()>,
     ) -> io::Result<Self> {
         Self::collect_with_temporary(directory, checkpoint, || {
@@ -99,7 +99,7 @@ impl OrderedNames {
     }
 
     fn collect_with_temporary(
-        directory: &RetainedDirectoryCapability,
+        directory: &SourceDirectory,
         mut checkpoint: impl FnMut() -> io::Result<()>,
         mut create_temporary: impl FnMut() -> io::Result<tempfile::TempDir>,
     ) -> io::Result<Self> {
@@ -244,11 +244,7 @@ impl OrderedNames {
 mod tests {
     use super::*;
 
-    fn wide_directory() -> (
-        tempfile::TempDir,
-        RetainedDirectoryCapability,
-        Vec<OsString>,
-    ) {
+    fn wide_directory() -> (tempfile::TempDir, SourceDirectory, Vec<OsString>) {
         let root = tempfile::tempdir().unwrap();
         let mut expected = Vec::new();
         for index in (0..(BATCH_NAMES * 3 + 17)).rev() {
@@ -258,7 +254,8 @@ mod tests {
         }
         expected.sort();
         let directory =
-            RetainedDirectoryCapability::open(&root.path().canonicalize().unwrap()).unwrap();
+            unica_workspace::read::open_source_directory(&root.path().canonicalize().unwrap())
+                .unwrap();
         (root, directory, expected)
     }
 

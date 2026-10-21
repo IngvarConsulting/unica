@@ -1,9 +1,9 @@
-use crate::domain::address::{NodeKind, QualifiedAddress};
-use crate::domain::cancellation::CancellationToken;
-use crate::domain::code_intelligence::ProviderDeadline;
-use crate::domain::refusal::RefusalCode;
 use serde::Serialize;
 use std::cmp::Ordering;
+use unica_address::address::{NodeKind, QualifiedAddress};
+use unica_refusal::RefusalCode;
+use unica_work_control::cancellation::CancellationToken;
+use unica_work_control::provider_deadline::ProviderDeadline;
 
 const DEFAULT_LIMIT: usize = 20;
 const MAX_LIMIT: usize = 100;
@@ -622,11 +622,11 @@ fn bounded_levenshtein(left: &str, right: &str, bound: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::{FindDocument, FindFact, FindFactKind, FindIndex, FindRequest};
-    use crate::domain::address::QualifiedAddress;
-    use crate::domain::cancellation::CancellationToken;
-    use crate::domain::code_intelligence::ProviderDeadline;
-    use crate::domain::refusal::RefusalCode;
     use std::time::Duration;
+    use unica_address::address::QualifiedAddress;
+    use unica_refusal::RefusalCode;
+    use unica_work_control::cancellation::CancellationToken;
+    use unica_work_control::provider_deadline::ProviderDeadline;
 
     fn index() -> FindIndex {
         FindIndex::new(vec![

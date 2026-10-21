@@ -1,13 +1,13 @@
 ---
 id: INV.PKG.INSTALL-ATTEMPT-LOG
 check:
-  - crates/unica-bootstrap/tests/runtime_install.rs::an_attempt_is_already_open_while_the_download_runs
-  - crates/unica-bootstrap/tests/runtime_install.rs::a_finished_install_leaves_nothing_unfinished
-  - crates/unica-bootstrap/tests/runtime_install.rs::a_failure_the_bootstrap_reported_is_not_repeated_by_the_next_session
-  - crates/unica-bootstrap/src/attempt.rs::an_attempt_is_discoverable_while_its_stage_runs
-  - crates/unica-bootstrap/src/attempt.rs::a_new_attempt_does_not_erase_the_one_nobody_closed
-  - crates/unica-bootstrap/src/attempt.rs::the_received_volume_is_read_from_the_partial_on_disk
-  - crates/unica-bootstrap/src/attempt.rs::the_stage_reported_is_the_last_one_the_attempt_reached
+  - crates/unica-artifact-delivery/tests/runtime_install.rs::an_attempt_is_already_open_while_the_download_runs
+  - crates/unica-artifact-delivery/tests/runtime_install.rs::a_finished_install_leaves_nothing_unfinished
+  - crates/unica-artifact-delivery/tests/runtime_install.rs::a_failure_the_bootstrap_reported_is_not_repeated_by_the_next_session
+  - crates/unica-artifact-delivery/src/attempt.rs::an_attempt_is_discoverable_while_its_stage_runs
+  - crates/unica-artifact-delivery/src/attempt.rs::a_new_attempt_does_not_erase_the_one_nobody_closed
+  - crates/unica-artifact-delivery/src/attempt.rs::the_received_volume_is_read_from_the_partial_on_disk
+  - crates/unica-artifact-delivery/src/attempt.rs::the_stage_reported_is_the_last_one_the_attempt_reached
 ---
 
 # Незавершённая установка остаётся в журнале попыток

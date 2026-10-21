@@ -7,7 +7,7 @@ check:
   - crates/unica-coder/src/domain/apply.rs::every_retired_argument_entry_builds_a_routable_member_address
   - crates/unica-coder/src/domain/apply.rs::a_duplicate_argument_is_refused_with_the_node_its_value_named
   - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::retired_duplicate_arguments_route_next_to_the_addressed_node
-  - crates/unica-coder/src/infrastructure/native_operations/code.rs::code_replace_refuses_a_method_selector_and_names_the_method_address
+  - crates/unica-coder/tests/platform/code_patch_composition.rs::code_replace_refuses_a_method_selector_and_names_the_method_address
   - crates/unica-coder/src/infrastructure/native_operations/apply_families/dcs_mxl.rs::a_query_is_addressed_through_its_dataset_and_retired_spellings_refuse
   - crates/unica-coder/src/infrastructure/native_operations/apply_families/form_resource.rs::form_and_child_subsystem_names_come_only_from_the_address
   - crates/unica-coder/src/infrastructure/native_operations/apply_families/dcs_mxl.rs::a_data_set_is_found_by_name_inside_unions

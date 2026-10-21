@@ -19,13 +19,13 @@
 //! this module in the same edit.
 
 use super::server::ActorBoundInvocation;
-use crate::application::result_store::{SearchCursorBinding, SearchCursorStore};
 use crate::application::v13::find::FindRequest;
-use crate::domain::address::QualifiedAddress;
-use crate::domain::code_intelligence::ProviderRole;
-use crate::domain::invocation::DomainResult;
-use crate::domain::refusal::RefusalCode;
 use serde_json::{json, Map, Value};
+use unica_address::address::QualifiedAddress;
+use unica_code_intelligence::model::ProviderRole;
+use unica_execution_contract::invocation::DomainResult;
+use unica_navigation::result_store::{SearchCursorBinding, SearchCursorStore};
+use unica_refusal::RefusalCode;
 
 const MAX_SEARCH_LIMIT: usize = 50;
 const DEFAULT_SEARCH_LIMIT: usize = 20;

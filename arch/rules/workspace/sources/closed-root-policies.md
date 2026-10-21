@@ -1,8 +1,8 @@
 ---
 id: INV.SOURCE.ROOT-POLICIES-CLOSED
 check:
-  - crates/unica-coder/src/infrastructure/platform_xml_roots.rs::every_root_has_independently_recorded_publication_and_owner_policies
-  - crates/unica-coder/src/infrastructure/platform_xml_roots.rs::unregistered_roots_have_no_policies
+  - crates/unica-source-designer/src/roots.rs::every_root_has_independently_recorded_publication_and_owner_policies
+  - crates/unica-source-designer/src/roots.rs::unregistered_roots_have_no_policies
 ---
 
 # Неизвестному корню XML не назначается политика по умолчанию

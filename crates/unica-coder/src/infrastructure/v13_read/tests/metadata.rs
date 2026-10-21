@@ -4,7 +4,8 @@ use super::*;
 fn metadata_kind_branch_lists_registered_objects_with_canonical_addresses() {
     let fixture = RealReaderFixture::new();
     let cancellation = CancellationToken::new();
-    let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
+    let source_root =
+        Arc::new(unica_workspace::read::open_source_directory(&fixture.source).unwrap());
     let authority = LogicalViewReadAuthority::new(
         &cancellation,
         "main",
@@ -716,7 +717,7 @@ fn predefined_items_empty_inapplicable_and_unreadable_are_distinct() {
         .read
         .predefined_items(
             &target,
-            crate::domain::metadata::MetadataKind::Catalog,
+            unica_metadata::MetadataKind::Catalog,
             Some("String"),
             &mut || Ok(()),
         )
@@ -811,7 +812,7 @@ fn predefined_items_refuse_file_and_snapshot_budget_without_cursor() {
 
 #[test]
 fn predefined_items_checkpoint_preserves_cancellation_and_deadline() {
-    use crate::domain::metadata::MetadataKind;
+    use unica_metadata::MetadataKind;
     let fixture = predefined_page_fixture();
     let authority = fixture.read_authority();
     let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items").unwrap();
@@ -848,7 +849,7 @@ fn predefined_items_checkpoint_preserves_cancellation_and_deadline() {
 
 #[test]
 fn predefined_items_other_owner_fields_survive_addressed_reads() {
-    use crate::domain::metadata::{MetadataType, MetadataTypeVariant};
+    use unica_metadata::{MetadataType, MetadataTypeVariant};
     let fixture = RealReaderFixture::new();
     let config_path = fixture.source.join("Configuration.xml");
     let config = fs::read_to_string(&config_path).unwrap();

@@ -26,6 +26,7 @@ from __future__ import annotations
 import importlib.util
 import re
 import tomllib
+import tempfile
 import unittest
 from copy import deepcopy
 from functools import cache
@@ -54,43 +55,7 @@ def load_size_filters():
 
 
 def inline_test_modules(source: bytes) -> tuple[set[str], bool]:
-    """Встроенные модули файла с тестами внутри и признак тестов на его верхнем уровне.
-
-    Генератор относит тест к первому сегменту после модуля файла, поэтому
-    вложенный модуль засчитывается внешнему, а не называется отдельно.
-    """
-    tree = Parser(Language(tree_sitter_rust.language())).parse(source)
-
-    def is_test_attribute(node) -> bool:
-        if node.type != "attribute_item":
-            return False
-        compact = re.sub(r"\s+", "", source[node.start_byte : node.end_byte].decode())
-        return TEST_ATTRIBUTE.fullmatch(compact) is not None
-
-    def holds_test(node) -> bool:
-        stack = [node]
-        while stack:
-            current = stack.pop()
-            if is_test_attribute(current):
-                return True
-            stack.extend(current.children)
-        return False
-
-    modules: set[str] = set()
-    top_level = False
-    children = tree.root_node.named_children
-    for index, child in enumerate(children):
-        # Модуль без тела — отдельный файл; его тесты принадлежат не этому терму.
-        if child.type == "mod_item" and child.child_by_field_name("body") is not None:
-            if holds_test(child):
-                modules.add(child.child_by_field_name("name").text.decode())
-        elif child.type == "function_item":
-            # Атрибут — сиблинг перед элементом, а не его ребёнок.
-            back = index - 1
-            while back >= 0 and children[back].type == "attribute_item":
-                top_level = top_level or is_test_attribute(children[back])
-                back -= 1
-    return modules, top_level
+    return load_size_filters().inline_test_modules(source)
 
 
 @cache
@@ -140,6 +105,45 @@ class InlineTestModuleReadingTests(unittest.TestCase):
                 self.assertEqual(inline_test_modules(source), expected)
 
 
+class ComponentSourceOwnershipTests(unittest.TestCase):
+    def test_moved_unit_files_keep_declared_module_paths(self):
+        module = load_size_filters()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            src = root / "crates" / "unica-workspace" / "src"
+            native = src.parent / "tests" / "platform"
+            src.mkdir(parents=True)
+            native.mkdir(parents=True)
+            (src / "lib.rs").write_text('mod actor; mod store;')
+            (src / "actor.rs").write_text('#[path = "actor_local.rs"] mod tests;')
+            (src / "actor_local.rs").write_text('use std::process; #[test] fn spawns() {}')
+            (src / "store.rs").write_text('#[path = "../tests/platform/fork.rs"] mod fork_tests;')
+            (native / "fork.rs").write_text('use std::process; #[test] fn inherits() {}')
+            sources = module.source_modules(root)["unica-workspace"]
+            self.assertEqual(sources[("actor", "tests")][1], src / "actor_local.rs")
+            self.assertEqual(sources[("store", "fork_tests")][1], src / "../tests/platform/fork.rs")
+            self.assertNotIn(("actor_local",), sources)
+            self.assertEqual({path for _, path, _ in module.flagged_modules(root)}, {
+                "actor::tests", "store::fork_tests",
+            })
+
+    def test_root_test_modules_are_qualified_by_their_component_binary(self):
+        module = load_size_filters()
+        module.MEASURED_MEDIUM_CASES = ()
+        listed = {"rust-suites": {"unica-network": {
+            "kind": "lib", "binary-id": "unica-network", "binary-name": "unica_network",
+            "testcases": {"tests::connect": {}},
+        }}}
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "lib.rs"
+            source.write_text("use std::net; mod tests { #[test] fn connect() {} }")
+            terms = module.medium_terms(listed, {"unica-network": {(): (True, source)}})
+            self.assertEqual(terms, ["(binary(unica_network) & test(/^(tests)::/))"])
+            source.write_text(source.read_text() + " #[cfg(windows)] mod windows_tests { #[test] fn native() {} }")
+            terms = module.medium_terms(listed, {"unica-network": {(): (True, source)}})
+            self.assertEqual(terms, ["(binary(unica_network) & test(/^(tests|windows_tests)::/))"])
+
+
 class SizeGuardTests(unittest.TestCase):
     def setUp(self) -> None:
         self.config = tomllib.loads(NEXTEST_TOML.read_text(encoding="utf-8"))
@@ -162,9 +166,9 @@ class SizeGuardTests(unittest.TestCase):
             "testcases": {name: {}},
         }}}
         terms = module.medium_terms(listed, {})
-        self.assertEqual(terms, [f"test(/^{re.escape(name)}$/)"])
+        self.assertEqual(terms, [f"(binary({binary_name}) & test(/^{re.escape(name)}$/))"])
         self.assertIn(terms[0], self.medium)
-        pattern = terms[0][len("test(/"):-len("/)")]
+        pattern = re.search(r"test\(/(.*?)/\)", terms[0])[1]
         self.assertIsNotNone(re.fullmatch(pattern, name))
         spec = importlib.util.spec_from_file_location("allure_results", REPO_ROOT / "scripts" / "ci" / "allure_results.py")
         results = importlib.util.module_from_spec(spec)
@@ -219,31 +223,38 @@ class SizeGuardTests(unittest.TestCase):
                 with self.subTest(crate=crate, root="main.rs"):
                     self.assertIn(src / "main.rs", paths)
 
-    def test_every_module_with_a_process_or_socket_is_declared_medium(self) -> None:
-        """Файл с `std::process` или `std::net` не бывает `small` молча."""
-        declared = set(re.findall(r"test\(/\^([A-Za-z0-9_:]+)::", self.medium))
+    def medium_declarations(self):
+        enumerated = {}
+        direct = set()
+        for binary, pattern in re.findall(
+            r"\(binary\(([A-Za-z0-9_-]+)\)\s*&\s*test\(/(.*?)/\)\)", self.medium
+        ):
+            inline = re.fullmatch(r"\^((?:[A-Za-z0-9_:]+::)?)\(([^)]*)\)::", pattern)
+            if inline:
+                key = (binary, inline[1].removesuffix("::"))
+                enumerated.setdefault(key, set()).update(inline[2].split("|"))
+            top = re.fullmatch(r"\^((?:[A-Za-z0-9_:]+::)?)\[\^:\]\+\$", pattern)
+            if top:
+                direct.add((binary, top[1].removesuffix("::")))
+        return enumerated, direct
 
+    def test_every_module_with_a_process_or_socket_is_declared_medium(self) -> None:
+        """A module is covered in its own binary, including crate-root tests."""
+        enumerated, direct = self.medium_declarations()
+        declared = set(enumerated) | direct
         for crate, path, _, _ in flagged_sources():
             with self.subTest(module=f"{crate}::{path}"):
-                self.assertIn(path, declared)
+                self.assertIn((crate.replace("-", "_"), path), declared)
 
     def test_every_inline_test_module_is_named_in_its_term(self) -> None:
-        """Новый `mod *_tests` в помеченном файле не уезжает в ворота `pr` молча."""
-        enumerated: dict[str, set[str]] = {}
-        for match in ENUMERATED_TERM.finditer(self.medium):
-            enumerated.setdefault(match.group(1), set()).update(match.group(2).split("|"))
-        direct = set(DIRECT_TERM.findall(self.medium))
+        enumerated, direct = self.medium_declarations()
         remedy = "перезапустите `python3 scripts/ci/size-filters.py --write`"
-
         for crate, path, modules, top_level in flagged_sources():
+            key = (crate.replace("-", "_"), path)
             with self.subTest(module=f"{crate}::{path}"):
-                self.assertEqual(
-                    sorted(modules - enumerated.get(path, set())),
-                    [],
-                    f"встроенные модули тестов не названы в терме — {remedy}",
-                )
+                self.assertEqual(sorted(modules - enumerated.get(key, set())), [], remedy)
                 if top_level:
-                    self.assertIn(path, direct, f"тесты верхнего уровня не названы термом — {remedy}")
+                    self.assertIn(key, direct, remedy)
 
 
 if __name__ == "__main__":

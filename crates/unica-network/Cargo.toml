@@ -1,0 +1,21 @@
+[package]
+name = "unica-network"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+test-support = ["dep:rcgen"]
+
+[dependencies]
+ureq.workspace = true
+rustls.workspace = true
+rustls-platform-verifier.workspace = true
+webpki-roots.workspace = true
+url.workspace = true
+rcgen = { workspace = true, optional = true }
+
+[dev-dependencies]
+rcgen.workspace = true

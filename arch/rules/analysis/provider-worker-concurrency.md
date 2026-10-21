@@ -1,12 +1,12 @@
 ---
 id: INV.APP.PROVIDER-WORKER-CONCURRENCY
 check:
-  - crates/unica-coder/src/application/code_intelligence.rs::search_executes_all_workers_past_the_former_provider_quota
-  - crates/unica-coder/src/application/code_intelligence.rs::read_executes_all_workers_past_the_former_provider_quota
-  - crates/unica-coder/src/application/code_intelligence.rs::coordinator_enforces_budget_when_provider_ignores_deadline_and_cancellation
-  - crates/unica-coder/src/application/code_intelligence.rs::read_coordinator_enforces_deadline_for_non_cooperative_provider
-  - crates/unica-coder/src/application/diagnostics.rs::diagnostics_executes_all_workers_past_the_former_provider_quota
-  - crates/unica-coder/src/application/diagnostics.rs::diagnostics_retains_each_noncooperative_worker_after_its_caller_returns
+  - crates/unica-code-intelligence/src/coordinator.rs::search_executes_all_workers_past_the_former_provider_quota
+  - crates/unica-code-intelligence/src/coordinator.rs::read_executes_all_workers_past_the_former_provider_quota
+  - crates/unica-code-intelligence/src/coordinator.rs::coordinator_enforces_budget_when_provider_ignores_deadline_and_cancellation
+  - crates/unica-code-intelligence/src/coordinator.rs::read_coordinator_enforces_deadline_for_non_cooperative_provider
+  - crates/unica-diagnostics/src/coordinator.rs::diagnostics_executes_all_workers_past_the_former_provider_quota
+  - crates/unica-diagnostics/src/coordinator.rs::diagnostics_retains_each_noncooperative_worker_after_its_caller_returns
 ---
 
 # Поставщики исполняют запросы без квоты конкуренции

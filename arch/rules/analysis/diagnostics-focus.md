@@ -2,9 +2,9 @@
 id: INV.APP.DIAGNOSTIC-FOCUS
 check:
   - crates/unica-coder/src/infrastructure/diagnostics.rs::diagnostic_location_preserves_exact_metadata_focus_and_weakens_unknown_elements
-  - crates/unica-coder/src/application/diagnostics.rs::diagnostics_metadata_object_scope_excludes_separately_addressable_children
-  - crates/unica-coder/src/application/diagnostics.rs::diagnostics_zero_width_focus_keeps_its_position_and_respects_the_requested_range
-  - crates/unica-coder/src/domain/diagnostics.rs::zero_width_observation_range_matches_the_requested_range_that_contains_its_caret
+  - crates/unica-diagnostics/src/coordinator.rs::diagnostics_metadata_object_scope_excludes_separately_addressable_children
+  - crates/unica-diagnostics/src/coordinator.rs::diagnostics_zero_width_focus_keeps_its_position_and_respects_the_requested_range
+  - crates/unica-diagnostics/src/model/mod.rs::zero_width_observation_range_matches_the_requested_range_that_contains_its_caret
 ---
 
 # Диагностика указывает только доказанное место внутри объекта

@@ -1,0 +1,19 @@
+[package]
+name = "unica-dcs-designer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+unica-address = { path = "../unica-address" }
+unica-dcs = { path = "../unica-dcs" }
+unica-metadata = { path = "../unica-metadata" }
+unica-source-contract = { path = "../unica-source-contract" }
+unica-source-designer = { path = "../unica-source-designer" }
+unica-operation-contract = { path = "../unica-operation-contract" }
+unica-operations = { path = "../unica-operations" }
+unica-xml-format = { path = "../unica-xml-format" }
+roxmltree.workspace = true
+serde.workspace = true
+serde_json.workspace = true

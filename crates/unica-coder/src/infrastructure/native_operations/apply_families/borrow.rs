@@ -1,17 +1,17 @@
-use super::request::ProvisionalApplyEffect;
-use crate::domain::address::{NodeKind, QualifiedAddress};
-use crate::domain::events::{DomainEvent, DomainEventKind};
-use crate::domain::operation_contract::{metadata_borrow_input_schema, ArgumentShape};
-use crate::domain::project_sources::SourceSetKind;
-use crate::infrastructure::native_operations::apply::{
-    ApplyPlanError, ApplyPlanErrorKind, ApplyStagedState,
-};
-use crate::infrastructure::native_operations::cfe_borrow_enum_value::{
+use std::path::{Path, PathBuf};
+use unica_address::address::{NodeKind, QualifiedAddress};
+use unica_metadata::contracts::metadata_borrow_input_schema;
+use unica_metadata_designer::borrowed_enum_value::{
     enum_value_properties, enum_value_source_uuid, plan_borrow_enum_value, EnumValueLookupError,
     EnumValueLookupErrorKind,
 };
-use crate::infrastructure::workspace_actor::{ApplyAdmission, ProviderRootBinding};
-use std::path::{Path, PathBuf};
+use unica_operation_contract::ArgumentShape;
+use unica_source_contract::events::{DomainEvent, DomainEventKind};
+use unica_source_contract::proposal::ProvisionalApplyEffect;
+use unica_source_contract::proposal::{ApplyPlanError, ApplyPlanErrorKind};
+use unica_source_contract::SourceSetKind;
+use unica_workspace::actor::{ApplyAdmission, ProviderRootBinding};
+use unica_workspace::apply::ApplyStagedState;
 
 #[derive(Debug, Clone)]
 pub(super) struct BorrowOperation {
@@ -102,10 +102,8 @@ pub(super) fn parse(
         })
         .transpose()?;
     if let Some(overrides) = &overrides {
-        crate::infrastructure::native_operations::cfe_borrow_object::validate_requested_overrides(
-            overrides,
-        )
-        .map_err(|error| fail(&error.to_string()))?;
+        unica_metadata_designer::borrowed_object::validate_requested_overrides(overrides)
+            .map_err(|error| fail(&error.to_string()))?;
     }
     Ok(BorrowOperation {
         parent,
@@ -179,7 +177,7 @@ pub(super) fn plan(
 ) -> Result<
     (
         Vec<ProvisionalApplyEffect>,
-        crate::infrastructure::native_operations::apply::BorrowPlanDetail,
+        unica_source_contract::proposal::BorrowPlanDetail,
     ),
     ApplyPlanError,
 > {
@@ -190,7 +188,7 @@ pub(super) fn plan(
     let kind = owner.kind().as_str();
     let name = owner.name().expect("parsed borrow has object name");
     let at = parent.to_string();
-    let layout = crate::infrastructure::metadata_kinds::metadata_kind(kind).ok_or_else(|| {
+    let layout = unica_source_designer::layout::metadata_kind(kind).ok_or_else(|| {
         ApplyPlanError::new(
             ApplyPlanErrorKind::BadValue,
             "from is not a supported top-level metadata object",
@@ -263,27 +261,38 @@ pub(super) fn plan(
         seed.update((bytes.len() as u64).to_be_bytes());
         for chunk in bytes.chunks(64 * 1024) {
             staged
+                .proposal()
                 .checkpoint("borrow identity inputs")
                 .map_err(|error| ApplyPlanError::staging(error, parent.to_string()))?;
             seed.update(chunk);
         }
     }
     seed.update((index as u64).to_be_bytes());
-    let identity = crate::infrastructure::native_operations::cfe::CfeBorrowIdentity::for_plan(
-        seed.finalize().into(),
-    );
-    let mut borrowed = crate::infrastructure::native_operations::cfe_borrow_object::plan_borrow_object_with_identity(
+    let identity =
+        unica_metadata_designer::extension::CfeBorrowIdentity::for_plan(seed.finalize().into());
+    let mut borrowed = unica_metadata_designer::borrowed_object::plan_borrow_object_with_identity(
         &parent_bytes,
         existing.as_deref(),
         operation.overrides.as_deref(),
         &identity,
+        crate::infrastructure::source_ids::fresh_uuid,
     )
     .map_err(|error| {
         let kind = match error.kind {
-            crate::infrastructure::native_operations::cfe_borrow_object::BorrowObjectErrorKind::BadValue => ApplyPlanErrorKind::BadValue,
-            crate::infrastructure::native_operations::cfe_borrow_object::BorrowObjectErrorKind::InvalidSource => ApplyPlanErrorKind::InvalidSource,
+            unica_metadata_designer::borrowed_object::BorrowObjectErrorKind::BadValue => {
+                ApplyPlanErrorKind::BadValue
+            }
+            unica_metadata_designer::borrowed_object::BorrowObjectErrorKind::InvalidSource => {
+                ApplyPlanErrorKind::InvalidSource
+            }
         };
-        ApplyPlanError::new(kind, error.to_string()).at_path(if kind == ApplyPlanErrorKind::BadValue { format!("ops[{index}].args") } else { parent.to_string() })
+        ApplyPlanError::new(kind, error.to_string()).at_path(
+            if kind == ApplyPlanErrorKind::BadValue {
+                format!("ops[{index}].args")
+            } else {
+                parent.to_string()
+            },
+        )
     })?;
     if borrowed.kind != kind || borrowed.name != name {
         return Err(ApplyPlanError::new(
@@ -310,7 +319,11 @@ pub(super) fn plan(
             &parent_bytes,
             &borrowed.bytes,
             value_name,
-            &identity.new_uuid("enum-value", &parent.to_string()),
+            &identity.new_uuid(
+                "enum-value",
+                &parent.to_string(),
+                crate::infrastructure::source_ids::fresh_uuid,
+            ),
         )
         .map_err(|error| {
             ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, error)
@@ -381,7 +394,7 @@ pub(super) fn plan(
         .into_iter()
         .filter(|key| previous_properties.get(key) != next_properties.get(key))
         .collect();
-    let detail = crate::infrastructure::native_operations::apply::BorrowPlanDetail {
+    let detail = unica_source_contract::proposal::BorrowPlanDetail {
         index,
         at: result_at,
         from: parent.to_string(),
@@ -391,7 +404,7 @@ pub(super) fn plan(
         protected_overrides: if value_name.is_some() {
             Vec::new()
         } else {
-            crate::infrastructure::native_operations::meta::parse_meta_borrowing(&borrowed.bytes)
+            unica_metadata_designer::xml_model::parse_meta_borrowing(&borrowed.bytes)
                 .map_err(|error| ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, error))?
                 .overrides
         },
@@ -413,14 +426,19 @@ pub(super) fn plan(
         ));
     }
     if !is_registered {
-        let updated =
-            super::metadata::owner_registration_image(&destination_owner, kind, name, true, index)?
-                .ok_or_else(|| {
-                    ApplyPlanError::new(
-                        ApplyPlanErrorKind::InvalidSource,
-                        "new borrow could not register its object",
-                    )
-                })?;
+        let updated = unica_source_designer::registration::owner_registration_image(
+            &destination_owner,
+            kind,
+            name,
+            true,
+            index,
+        )?
+        .ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidSource,
+                "new borrow could not register its object",
+            )
+        })?;
         staged
             .replace(&owner_path, &destination_owner, updated)
             .map_err(|error| ApplyPlanError::staging(error, "Configuration"))?;
@@ -440,14 +458,14 @@ pub(super) fn plan(
 mod tests {
     use super::*;
     use crate::domain::apply::ApplyRequest;
-    use crate::domain::cancellation::CancellationToken;
-    use crate::domain::code_intelligence::ProviderDeadline;
-    use crate::domain::project_sources::{SourceFormat, SourceProfile};
-    use crate::domain::workspace::WorkspaceContext;
-    use crate::infrastructure::workspace_actor::{
-        WorkspaceActor, WorkspaceIdentity, WorkspaceSourceSetInput,
-    };
+    use unica_source_contract::{SourceFormat, SourceProfile};
+
+    use crate::infrastructure::source_workspace::WorkspaceActor;
     use std::time::Duration;
+    use unica_source_contract::workspace::WorkspaceContext;
+    use unica_work_control::cancellation::CancellationToken;
+    use unica_work_control::provider_deadline::ProviderDeadline;
+    use unica_workspace::actor::{WorkspaceIdentity, WorkspaceSourceSetInput};
 
     struct Fixture {
         _root: tempfile::TempDir,
@@ -497,7 +515,8 @@ mod tests {
                 "borrow-test",
             )
             .unwrap();
-            let actor = WorkspaceActor::new(identity, context).unwrap();
+            let actor =
+                crate::infrastructure::source_workspace::new_actor(identity, context).unwrap();
             let destination = actor.bind_provider_root("extension", &dst).unwrap();
             let parent = actor.bind_provider_root("main", &src).unwrap();
             Self {
@@ -514,8 +533,7 @@ mod tests {
             dry: bool,
             rev: Option<&str>,
             overrides: Option<serde_json::Value>,
-        ) -> Result<crate::infrastructure::workspace_actor::ApplyPublicationResult, String>
-        {
+        ) -> Result<unica_workspace::actor::ApplyPublicationResult, String> {
             self.run_from("main:Catalog.Orders", dry, rev, overrides)
         }
         fn run_from(
@@ -524,8 +542,7 @@ mod tests {
             dry: bool,
             rev: Option<&str>,
             overrides: Option<serde_json::Value>,
-        ) -> Result<crate::infrastructure::workspace_actor::ApplyPublicationResult, String>
-        {
+        ) -> Result<unica_workspace::actor::ApplyPublicationResult, String> {
             let mut args = serde_json::json!({"from":from});
             if let Some(overrides) = overrides {
                 args["overrides"] = overrides;
@@ -662,12 +679,15 @@ mod tests {
     #[test]
     fn canonical_enum_value_missing_collision_and_overrides_refuse_without_writes() {
         let fixture = enum_fixture();
-        let before = crate::test_support::tree_snapshot(&fixture.dst);
+        let before = unica_workspace::test_support::tree_snapshot(&fixture.dst);
         let missing = fixture
             .plan_from("main:Enum.Operations.EnumValue.Missing")
             .unwrap_err();
         assert_eq!(missing.kind(), ApplyPlanErrorKind::NotFound);
-        assert_eq!(crate::test_support::tree_snapshot(&fixture.dst), before);
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&fixture.dst),
+            before
+        );
         assert!(fixture
             .run_from(
                 "main:Enum.Operations.EnumValue.Costs",
@@ -677,7 +697,10 @@ mod tests {
             )
             .unwrap_err()
             .contains("overrides"));
-        assert_eq!(crate::test_support::tree_snapshot(&fixture.dst), before);
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&fixture.dst),
+            before
+        );
         let owner = fixture
             .run_from("main:Enum.Operations", true, None, None)
             .unwrap();
@@ -691,11 +714,14 @@ mod tests {
             "collision fixture must contain the extension-owned value"
         );
         std::fs::write(&path, &text).unwrap();
-        let before = crate::test_support::tree_snapshot(&fixture.dst);
+        let before = unica_workspace::test_support::tree_snapshot(&fixture.dst);
         assert!(fixture
             .run_from("main:Enum.Operations.EnumValue.Costs", true, None, None)
             .is_err());
-        assert_eq!(crate::test_support::tree_snapshot(&fixture.dst), before);
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&fixture.dst),
+            before
+        );
     }
 
     #[test]
@@ -712,7 +738,7 @@ mod tests {
             .unwrap()
             .replace("\n\t\t<ChildObjects/>", "");
         std::fs::write(&path, damaged).unwrap();
-        let before = crate::test_support::tree_snapshot(&fixture.dst);
+        let before = unica_workspace::test_support::tree_snapshot(&fixture.dst);
 
         let error = fixture
             .plan_from("main:Enum.Operations.EnumValue.Costs")
@@ -720,7 +746,10 @@ mod tests {
 
         assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidSource);
         assert!(error.to_string().contains("ChildObjects"), "{error}");
-        assert_eq!(crate::test_support::tree_snapshot(&fixture.dst), before);
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&fixture.dst),
+            before
+        );
     }
 
     #[test]
@@ -792,7 +821,7 @@ mod tests {
         assert!(after.contains(&identity));
         assert!(!after.contains("new parent comment"));
         let file_identity =
-            crate::infrastructure::platform::testing::file_identity_for_test(&descriptor).unwrap();
+            unica_workspace::test_support::file_identity_for_test(&descriptor).unwrap();
         let noop_preview = fixture.run(true, None, None).unwrap();
         assert!(noop_preview.effects().events().is_empty());
         let noop = fixture.run(false, Some(noop_preview.rev()), None).unwrap();
@@ -800,7 +829,7 @@ mod tests {
         assert!(noop.effects().events().is_empty());
         assert_eq!(std::fs::read_to_string(&descriptor).unwrap(), after);
         assert_eq!(
-            crate::infrastructure::platform::testing::file_identity_for_test(&descriptor).unwrap(),
+            unica_workspace::test_support::file_identity_for_test(&descriptor).unwrap(),
             file_identity
         );
     }
@@ -815,16 +844,32 @@ mod tests {
             let error = parse(&serde_json::json!({"at":"extension:Configuration","from":"main:Catalog.Orders","overrides":overrides}), 0, &fixture.destination).expect_err("invalid override is rejected before source planning");
             assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
         }
-        use crate::infrastructure::native_operations::cfe_borrow_object::{
-            plan_borrow_object, BorrowObjectErrorKind,
+        use unica_metadata_designer::borrowed_object::{
+            test_support::plan_borrow_object, BorrowObjectErrorKind,
         };
         let parent = std::fs::read(fixture.src.join("Catalogs/Orders.xml")).unwrap();
-        let unsupported =
-            plan_borrow_object(&parent, None, Some(&["UnknownProperty".to_string()])).unwrap_err();
+        let unsupported = plan_borrow_object(
+            &parent,
+            None,
+            Some(&["UnknownProperty".to_string()]),
+            crate::infrastructure::source_ids::fresh_uuid,
+        )
+        .unwrap_err();
         assert_eq!(unsupported.kind, BorrowObjectErrorKind::BadValue);
-        let first =
-            plan_borrow_object(&parent, None, Some(&["DescriptionLength".to_string()])).unwrap();
-        let changed = plan_borrow_object(&parent, Some(&first.bytes), Some(&[])).unwrap_err();
+        let first = plan_borrow_object(
+            &parent,
+            None,
+            Some(&["DescriptionLength".to_string()]),
+            crate::infrastructure::source_ids::fresh_uuid,
+        )
+        .unwrap();
+        let changed = plan_borrow_object(
+            &parent,
+            Some(&first.bytes),
+            Some(&[]),
+            crate::infrastructure::source_ids::fresh_uuid,
+        )
+        .unwrap_err();
         assert_eq!(changed.kind, BorrowObjectErrorKind::BadValue);
     }
 
@@ -838,12 +883,15 @@ mod tests {
             parent.replace("version=\"2.20\"", "version=\"2.21\""),
         )
         .unwrap();
-        let before = crate::test_support::tree_snapshot(&fixture.dst);
+        let before = unica_workspace::test_support::tree_snapshot(&fixture.dst);
         let error = fixture
             .run(true, None, None)
             .expect_err("a newer parent descriptor must refuse before emitting borrowed XML");
         assert!(error.contains("2.21"), "{error}");
-        assert_eq!(crate::test_support::tree_snapshot(&fixture.dst), before);
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&fixture.dst),
+            before
+        );
         assert!(!fixture.actor.context().cache_root.exists());
     }
 

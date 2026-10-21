@@ -1,10 +1,10 @@
 ---
 id: INV.APP.DOCUMENTATION-CONTAINER-FINGERPRINT
 check:
-  - crates/unica-coder/src/infrastructure/platform_help/provider.rs::a_replaced_container_is_reindexed_instead_of_answering_stale_help
-  - crates/unica-coder/src/infrastructure/platform_help/provider.rs::a_second_call_answers_from_the_index_instead_of_rereading_the_installation
-  - crates/unica-coder/src/infrastructure/platform_help/provider.rs::a_second_language_on_the_same_installation_does_not_answer_from_the_first_ones_index
-  - crates/unica-coder/src/infrastructure/platform_help/provider.rs::two_requests_resolving_to_the_same_locale_share_one_index
+  - crates/unica-documentation-sources/src/platform_help/provider.rs::a_replaced_container_is_reindexed_instead_of_answering_stale_help
+  - crates/unica-documentation-sources/src/platform_help/provider.rs::a_second_call_answers_from_the_index_instead_of_rereading_the_installation
+  - crates/unica-documentation-sources/src/platform_help/provider.rs::a_second_language_on_the_same_installation_does_not_answer_from_the_first_ones_index
+  - crates/unica-documentation-sources/src/platform_help/provider.rs::two_requests_resolving_to_the_same_locale_share_one_index
 ---
 
 # Индекс справки переиспользуется без смешения корпусов

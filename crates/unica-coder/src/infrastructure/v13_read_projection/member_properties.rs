@@ -1,8 +1,8 @@
 use super::bounded_prop;
-use crate::domain::metadata::{
+use serde_json::{Map, Value};
+use unica_metadata::{
     MetaMemberReadContext, MetaMemberReadProfile, MetaObservedProperty, MetaObservedPropertyValue,
 };
-use serde_json::{Map, Value};
 
 /// Both the XML observer and this transfer consume the same closed profile.
 /// A serialized provider property is not, by itself, permission to publish it.

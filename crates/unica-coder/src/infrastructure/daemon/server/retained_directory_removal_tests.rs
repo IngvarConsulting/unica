@@ -1,8 +1,8 @@
 use super::actor_capacity_tests::direct_v5;
 use super::*;
-use crate::application::invocation_store::ToolIdentity;
-use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
 use std::path::Path;
+use unica_execution::invocation_store::ToolIdentity;
+use unica_workspace::state_fs::StateDirectory as RetainedDirectoryCapability;
 
 fn invoke_apply(
     runtime: &V5CanonicalInvocationRuntime,
@@ -79,7 +79,7 @@ fn canonical_object_remove_removes_its_directories_and_preserves_unknown_sibling
         let descriptor = source.join("Documents/Order.xml");
         let module = payload.join("Ext/ObjectModule.bsl");
         let untouched = source.join("UnrelatedEmpty");
-        let before = crate::test_support::tree_snapshot(&source);
+        let before = unica_workspace::test_support::tree_snapshot(&source);
         let directory_paths = [
             payload.clone(),
             payload.join("Empty/Deep"),
@@ -101,7 +101,10 @@ fn canonical_object_remove_removes_its_directories_and_preserves_unknown_sibling
             serde_json::json!({"at":"main:Document.Order","ops":[{"op":"object.remove","args":{}}]}),
         );
         assert!(preview.ok, "{preview:?}");
-        assert_eq!(crate::test_support::tree_snapshot(&source), before);
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&source),
+            before
+        );
         for (path, identity) in directory_paths.iter().zip(&identities) {
             assert_eq!(
                 RetainedDirectoryCapability::open(path).unwrap().identity(),
@@ -142,7 +145,7 @@ fn canonical_object_remove_removes_its_directories_and_preserves_unknown_sibling
         let successor_identity = RetainedDirectoryCapability::open(&successor)
             .unwrap()
             .identity();
-        let after = crate::test_support::tree_snapshot(&source);
+        let after = unica_workspace::test_support::tree_snapshot(&source);
         let replay = invoke_apply(
             &runtime,
             workspace.path(),
@@ -152,7 +155,7 @@ fn canonical_object_remove_removes_its_directories_and_preserves_unknown_sibling
             serde_json::to_value(&replay).unwrap(),
             serde_json::to_value(&published).unwrap()
         );
-        assert_eq!(crate::test_support::tree_snapshot(&source), after);
+        assert_eq!(unica_workspace::test_support::tree_snapshot(&source), after);
         assert_eq!(
             RetainedDirectoryCapability::open(&successor)
                 .unwrap()
@@ -206,7 +209,7 @@ fn canonical_remove_rejects_a_late_empty_directory_without_deleting_it() {
     let identity = RetainedDirectoryCapability::open(&foreign)
         .unwrap()
         .identity();
-    let before = crate::test_support::tree_snapshot(&source);
+    let before = unica_workspace::test_support::tree_snapshot(&source);
     let result = invoke_apply(
         &runtime,
         workspace.path(),
@@ -214,7 +217,10 @@ fn canonical_remove_rejects_a_late_empty_directory_without_deleting_it() {
     );
     assert!(!result.ok, "{result:?}");
     assert_eq!(result.diagnostics[0]["code"], "stale_revision");
-    assert_eq!(crate::test_support::tree_snapshot(&source), before);
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&source),
+        before
+    );
     assert_eq!(
         RetainedDirectoryCapability::open(&foreign)
             .unwrap()
@@ -225,10 +231,10 @@ fn canonical_remove_rejects_a_late_empty_directory_without_deleting_it() {
 
 #[test]
 fn canonical_remove_restores_original_directories_and_cache_on_each_publication_failure() {
-    use crate::infrastructure::native_operations::compile_transaction::{
+    use unica_workspace::compile_transaction::{
         set_retained_apply_failpoint, RetainedApplyFailpoint,
     };
-    use crate::infrastructure::platform::filesystem::portable_permissions;
+    use unica_workspace::test_support::portable_permissions_for_test as portable_permissions;
     for failpoint in [
         RetainedApplyFailpoint::Source(1),
         RetainedApplyFailpoint::StateMarker,
@@ -250,11 +256,11 @@ fn canonical_remove_restores_original_directories_and_cache_on_each_publication_
             .iter()
             .map(|path| portable_permissions(&std::fs::metadata(path).unwrap()))
             .collect::<Vec<_>>();
-        let before = crate::test_support::tree_snapshot(&source);
+        let before = unica_workspace::test_support::tree_snapshot(&source);
         let cache = workspace.path().join(".build/unica");
         let cache_before = cache
             .exists()
-            .then(|| crate::test_support::tree_snapshot(&cache));
+            .then(|| unica_workspace::test_support::tree_snapshot(&cache));
         set_retained_apply_failpoint(failpoint);
         let result = invoke_apply(
             &runtime,
@@ -263,14 +269,14 @@ fn canonical_remove_restores_original_directories_and_cache_on_each_publication_
         );
         assert!(!result.ok, "{failpoint:?}: {result:?}");
         assert_eq!(
-            crate::test_support::tree_snapshot(&source),
+            unica_workspace::test_support::tree_snapshot(&source),
             before,
             "{failpoint:?}"
         );
         assert_eq!(
             cache
                 .exists()
-                .then(|| crate::test_support::tree_snapshot(&cache)),
+                .then(|| unica_workspace::test_support::tree_snapshot(&cache)),
             cache_before,
             "{failpoint:?}"
         );
@@ -291,7 +297,7 @@ fn canonical_remove_restores_original_directories_and_cache_on_each_publication_
 
 #[test]
 fn canonical_remove_keeps_foreign_public_directory_and_original_recovery_on_rollback_conflict() {
-    use crate::infrastructure::native_operations::compile_transaction::{
+    use unica_workspace::compile_transaction::{
         set_retained_apply_before_rollback_hook, set_retained_apply_failpoint,
         RetainedApplyFailpoint,
     };
@@ -396,14 +402,17 @@ fn canonical_form_remove_deletes_its_payload_directories_and_only_its_collection
         };
         let owner_module = source.join("Documents/Order/Ext/ObjectModule.bsl");
         let owner_bytes = std::fs::read(&owner_module).unwrap();
-        let before = crate::test_support::tree_snapshot(&source);
+        let before = unica_workspace::test_support::tree_snapshot(&source);
         let preview = invoke_apply(
             &runtime,
             workspace.path(),
             serde_json::json!({"at":"main:Document.Order.Form.Main","ops":[{"op":"form.remove"}]}),
         );
         assert!(preview.ok, "{preview:?}");
-        assert_eq!(crate::test_support::tree_snapshot(&source), before);
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&source),
+            before
+        );
         assert!(forms.join("Main/Ext/Form/Items/Empty").is_dir());
         let published = invoke_apply(
             &runtime,
@@ -429,7 +438,7 @@ fn canonical_form_remove_deletes_its_payload_directories_and_only_its_collection
 
 #[test]
 fn canonical_remove_preserves_a_foreign_entry_added_to_displaced_tree() {
-    use crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_post_validation_hook;
+    use unica_workspace::compile_transaction::set_retained_apply_before_post_validation_hook;
     let (workspace, source) = object_fixture(false);
     let runtime = runtime();
     let token = removal_preview(&runtime, workspace.path());

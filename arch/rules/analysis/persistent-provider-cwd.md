@@ -1,13 +1,13 @@
 ---
 id: INV.APP.PERSISTENT-PROVIDER-CWD
 check:
-  - crates/unica-coder/src/infrastructure/workspace_services.rs::bsl_analyzer_child_does_not_run_from_inside_the_workspace
+  - crates/unica-coder/tests/platform/workspace_services_integration.rs::bsl_analyzer_child_does_not_run_from_inside_the_workspace
   - crates/unica-coder/tests/platform/persistent_provider_cwd.rs::native_rlm_cwd_is_external_while_same_warm_process_survives_workspace_rename
   - crates/unica-coder/tests/platform/persistent_provider_cwd.rs::native_bsl_cwd_is_external_while_same_warm_process_survives_workspace_rename
   - crates/unica-coder/tests/platform/persistent_provider_cwd.rs::native_helper_does_not_inherit_project_cwd_from_isolated_caller
   - crates/unica-coder/tests/platform/persistent_provider_cwd.rs::windows_live_cwd_inside_outside_pair_isolates_workspace_rename
   - crates/unica-coder/tests/platform/persistent_provider_cwd.rs::windows_factories_start_live_providers_at_an_external_anchor_when_other_candidates_are_excluded
-  - crates/unica-coder/src/infrastructure/workspace_services/persistent_provider_cwd_selection_tests.rs::working_directory_selection_uses_physical_candidate_and_root_identity
+  - crates/unica-coder/tests/workspace_service_support/persistent_provider_cwd_selection_tests.rs::working_directory_selection_uses_physical_candidate_and_root_identity
 gap: https://github.com/IngvarConsulting/unica/issues/961
 ---
 
