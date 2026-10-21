@@ -2078,6 +2078,12 @@ mod tests {
         );
         // The handoff interrupts a running attempt, not an admission: with a
         // short host budget a slow connection could otherwise hand off queued.
+        // The snapshot is the handoff itself; the counter alone could catch up.
+        assert_eq!(
+            snapshot.status(),
+            unica_execution_contract::invocation::InvocationStatus::Working,
+            "the attempt was already running at the handoff: {snapshot:?}"
+        );
         assert_eq!(
             service.executions.load(Ordering::SeqCst),
             1,
@@ -2154,6 +2160,12 @@ mod tests {
         );
         // The handoff interrupts a running attempt, not an admission: with a
         // short host budget a slow connection could otherwise hand off queued.
+        // The snapshot is the handoff itself; the counter alone could catch up.
+        assert_eq!(
+            snapshot.status(),
+            unica_execution_contract::invocation::InvocationStatus::Working,
+            "the attempt was already running at the handoff: {snapshot:?}"
+        );
         assert_eq!(
             service.executions.load(Ordering::SeqCst),
             1,
