@@ -3200,3 +3200,7 @@ pub fn qname_resolves_to(
         && local_name == expected_local_name
         && node.lookup_namespace_uri(Some(prefix)) == Some(expected_namespace)
 }
+
+#[cfg(test)]
+#[path = "../tests/platform/info_projection.rs"]
+mod tests;

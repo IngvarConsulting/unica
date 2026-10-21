@@ -1,6 +1,6 @@
 //! The execution owner's committed frame must be accepted by the real frontend.
+use crate::protocol_v5::decode_v5_server_response;
 use std::time::{Duration, Instant};
-use unica_daemon::protocol_v5::decode_v5_server_response;
 use unica_execution::invocation::normalized_arguments_hash;
 use unica_execution::receipt_ledger::{
     canonical_v5_terminal, request_scope_hash, CoreIdentityDigest, OriginalCutoffDescriptor,

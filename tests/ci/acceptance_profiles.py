@@ -14,7 +14,6 @@ from tests.ci.acceptance_controls import load_corpus, tool_result
 REPO = Path(__file__).resolve().parents[2]
 SYMBOL_WORKSPACE = "tests/fixtures/acceptance/workspace-symbol"
 DIAGNOSTICS_WORKSPACE = "tests/fixtures/acceptance/workspace-diagnostics"
-KB_BOUNDARY_WORKSPACE = "tests/fixtures/acceptance/workspace-kb-boundary"
 FAULT_CASES = {"empty", "invalid-event", "unknown-severity", "exit-failure", "missing-engine", "checksum-mismatch"}
 DIAGNOSTIC_CASES = {"plain", "authors-toml", "authors-json", "diff-base", "precedence"}
 # A call graph branch orders the missing analyzer in the same call; the

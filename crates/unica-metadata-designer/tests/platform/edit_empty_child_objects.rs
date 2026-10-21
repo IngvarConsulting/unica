@@ -1,4 +1,4 @@
-use super::MetaCollection;
+use unica_metadata::MetaCollection;
 
 const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
 
@@ -62,13 +62,8 @@ fn last_typed_child_removal_compacts_only_its_direct_parent() {
         let expected = owner(&format!(
             "{prefix}{outer}<{ns}ChildObjects/>{outer}{suffix}"
         ));
-        unica_metadata_designer::edit::remove_typed_element(
-            &mut actual,
-            MetaCollection::Templates,
-            None,
-            "Last",
-        )
-        .unwrap();
+        crate::edit::remove_typed_element(&mut actual, MetaCollection::Templates, None, "Last")
+            .unwrap();
         assert_eq!(actual, expected);
     }
 }
@@ -81,7 +76,7 @@ fn scoped_removal_preserves_outer_collection_and_parent_opening_spelling() {
         "{before}<md:ChildObjects \t>\n<Attribute uuid=\"22222222-2222-4222-8222-222222222222\"><Properties><Name>Last</Name></Properties></Attribute>\r\n</md:ChildObjects>{after}"
     ));
     let expected = owner(&format!("{before}<md:ChildObjects \t/>{after}"));
-    unica_metadata_designer::edit::remove_typed_element(
+    crate::edit::remove_typed_element(
         &mut actual,
         MetaCollection::Attributes,
         Some("Rows"),
@@ -154,13 +149,8 @@ fn typed_removal_preserves_attributed_or_nonempty_container_bytes() {
             typed_template()
         ));
         let expected = owner(&format!("{opening}\n\t{retained}\n</ChildObjects>"));
-        unica_metadata_designer::edit::remove_typed_element(
-            &mut actual,
-            MetaCollection::Templates,
-            None,
-            "Last",
-        )
-        .unwrap();
+        crate::edit::remove_typed_element(&mut actual, MetaCollection::Templates, None, "Last")
+            .unwrap();
         assert_eq!(actual, expected, "{opening}, {retained:?}");
     }
 }
@@ -217,10 +207,7 @@ fn temporary_range_cut_for_a_move_keeps_the_expanded_container() {
     let child = typed_template();
     let mut actual = owner(&format!("<ChildObjects>{child}</ChildObjects>"));
     let start = actual.find(child).unwrap();
-    unica_metadata_designer::edit::meta_edit_remove_xml_node_range(
-        &mut actual,
-        start..start + child.len(),
-    );
+    crate::edit::meta_edit_remove_xml_node_range(&mut actual, start..start + child.len());
     assert_eq!(actual, owner("<ChildObjects></ChildObjects>"));
 }
 

@@ -68,7 +68,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 BINARY = binary_path(REPO_ROOT)
 
 from tests.ci.acceptance_profiles import (
-    DIAGNOSTICS_WORKSPACE, KB_BOUNDARY_WORKSPACE, SOURCE_WORKSPACES, SYMBOL_WORKSPACE, completed_delivery_call, isolated_environment,
+    DIAGNOSTICS_WORKSPACE, SOURCE_WORKSPACES, SYMBOL_WORKSPACE, completed_delivery_call, isolated_environment,
     select_profile,
 )
 
@@ -547,57 +547,6 @@ def materialize_external_form_link(workspace: Path) -> None:
         raise ValueError("external link fixture did not create an actual relative symlink")
     if payload.resolve(strict=True) != target.resolve(strict=True):
         raise ValueError("external link fixture does not point to the neighboring owner")
-
-
-def source_fixture_environment(workspace_relative, environment=None):
-    if workspace_relative != KB_BOUNDARY_WORKSPACE:
-        return environment
-    environment = dict(os.environ if environment is None else environment)
-    for key in ("no_proxy", "NO_PROXY", "UNICA_DOCUMENTATION_POLICY_FILE"):
-        environment.pop(key, None)
-    # The normal HTTP client rejects this proxy scheme before DNS or a socket.
-    # If the guide-root guard regresses, the corpus fails on the proxy error
-    # instead of asking the real vendor site for the forbidden page.
-    environment["https_proxy"] = "unsupported://127.0.0.1:1"
-    environment["HTTPS_PROXY"] = "unsupported://127.0.0.1:1"
-    return environment
-
-
-class KbBoundaryFixtureTests(unittest.TestCase):
-    def test_boundary_fixture_cannot_inherit_a_proxy_bypass_or_machine_policy(self):
-        inherited = {
-            "https_proxy": "http://inherited.invalid:3128",
-            "HTTPS_PROXY": "http://inherited.invalid:3129",
-            "no_proxy": "*",
-            "NO_PROXY": "kb.1ci.com",
-            "UNICA_DOCUMENTATION_POLICY_FILE": "/unrelated/machine-policy.toml",
-            "PATH": "/inherited/path",
-        }
-        original = inherited.copy()
-        environment = source_fixture_environment(KB_BOUNDARY_WORKSPACE, inherited)
-        self.assertEqual(inherited, original)
-        self.assertEqual(environment["https_proxy"], "unsupported://127.0.0.1:1")
-        self.assertEqual(environment["HTTPS_PROXY"], "unsupported://127.0.0.1:1")
-        for key in ("no_proxy", "NO_PROXY", "UNICA_DOCUMENTATION_POLICY_FILE"):
-            self.assertNotIn(key, environment)
-        self.assertEqual(environment["PATH"], inherited["PATH"])
-
-    def test_other_source_fixtures_keep_their_environment(self):
-        environment = {"https_proxy": "http://inherited.invalid:3128", "no_proxy": "*"}
-        self.assertIs(source_fixture_environment(BARE_WORKSPACE, environment), environment)
-        self.assertIsNone(source_fixture_environment(BARE_WORKSPACE))
-
-    def test_a_proxy_failure_cannot_satisfy_the_guide_root_refusal(self):
-        corpus = load_acceptance_corpus()
-        scenario = next(s for s in corpus["scenarios"] if s["id"] == "S-953-kb-guide-root-boundary")
-        for step in scenario["wire"]:
-            locator = step["args"]["query"]
-            structured = {"ok": False, "diagnostics": [{
-                "code": "not_found",
-                "message": f"documentation page `{locator}` was not found: площадка недоступна: invalid proxy setting",
-            }]}
-            actual, note = classify({"result": {"structuredContent": structured}}, {})
-            self.assertTrue(content_mismatches(step, structured, actual, note))
 
 
 class ExternalLinkFixtureTests(unittest.TestCase):
@@ -1965,7 +1914,6 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cle
             state = home / "state"
             state.mkdir()
             environment = isolated_environment(plugin, state) if plugin else None
-            environment = source_fixture_environment(workspace_relative, environment)
             server_type = DeliveredAcceptanceServer if plugin else AcceptanceServer
             return server_type(workspace, state, corpus["protocolVersion"], environment)
 

@@ -465,6 +465,10 @@ impl CanonicalV13ReadService {
             Ok(planned) => planned,
         };
         let borrowing = effects.borrowing().to_vec();
+        let plan_details = effects
+            .details()
+            .map(|(key, rows)| (key, rows.to_vec()))
+            .collect::<Vec<_>>();
         let has_changes = !staged.planned_changes().is_empty();
         if !has_changes {
             effects = Default::default();
@@ -527,6 +531,15 @@ impl CanonicalV13ReadService {
         if !borrowing.is_empty() {
             result.data.as_mut().expect("apply data exists")["borrowing"] =
                 serde_json::json!(borrowing);
+        }
+        for (key, rows) in plan_details {
+            debug_assert!(
+                PLAN_DETAIL_KEYS.contains(&key),
+                "plan detail section `{}` is not registered",
+                key.as_str()
+            );
+            result.data.as_mut().expect("apply data exists")[key.as_str()] =
+                serde_json::Value::Array(rows);
         }
         if has_changes {
             result.changed = changed;
@@ -3650,6 +3663,44 @@ fn owning_metadata_address(address: &QualifiedAddress) -> String {
     owner
 }
 
+/// Every family section of plan details that an apply answer may carry.
+const PLAN_DETAIL_KEYS: &[unica_source_contract::proposal::PlanDetailKey] =
+    &[unica_xdto::results::XDTO_OBJECTS];
+
+/// Fields the apply answer writes itself; a family section cannot take them.
+const APPLY_DATA_FIELDS: &[&str] = &[
+    "validated",
+    "mode",
+    "executable",
+    "operations",
+    "planHash",
+    "effects",
+    "cache",
+    "borrowing",
+    "executionToken",
+];
+
+/// A section key two families share, or one that shadows the answer's own
+/// field, would overwrite data in the published answer.
+fn plan_detail_key_errors(keys: &[unica_source_contract::proposal::PlanDetailKey]) -> Vec<String> {
+    let mut errors = Vec::new();
+    for (index, key) in keys.iter().enumerate() {
+        if keys[..index].contains(key) {
+            errors.push(format!(
+                "plan detail section `{}` is registered twice",
+                key.as_str()
+            ));
+        }
+        if APPLY_DATA_FIELDS.contains(&key.as_str()) {
+            errors.push(format!(
+                "plan detail section `{}` shadows an apply answer field",
+                key.as_str()
+            ));
+        }
+    }
+    errors
+}
+
 fn apply_plan_hash(staged: &ApplyStagedState, effects: &PlannedApplyEffects) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"unica-v13-apply-plan-v1\0");
@@ -5334,6 +5385,34 @@ fn view_error_result(
     // из них он вышел.
     result.next.extend(error.next().iter().cloned());
     result
+}
+
+#[cfg(test)]
+mod plan_detail_key_tests {
+    use super::{plan_detail_key_errors, PLAN_DETAIL_KEYS};
+    use unica_source_contract::proposal::PlanDetailKey;
+
+    #[test]
+    fn registered_plan_detail_sections_are_unique_and_leave_answer_fields_alone() {
+        assert_eq!(
+            plan_detail_key_errors(PLAN_DETAIL_KEYS),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_shared_or_shadowing_plan_detail_section_is_refused() {
+        const FIRST: PlanDetailKey = PlanDetailKey::new("familyRows");
+        const SECOND: PlanDetailKey = PlanDetailKey::new("familyRows");
+        const SHADOW: PlanDetailKey = PlanDetailKey::new("planHash");
+        assert_eq!(
+            plan_detail_key_errors(&[FIRST, SECOND, SHADOW]),
+            vec![
+                "plan detail section `familyRows` is registered twice".to_string(),
+                "plan detail section `planHash` shadows an apply answer field".to_string(),
+            ]
+        );
+    }
 }
 
 #[cfg(test)]
