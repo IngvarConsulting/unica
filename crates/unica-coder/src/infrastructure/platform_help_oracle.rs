@@ -4,6 +4,11 @@
 //! every `/events/` page of the installed vendor Syntax Assistant and proves
 //! that the compact fixture is an exact derivation for the approved v0.13
 //! logical owner/module profile. Vendor HBK content is never copied here.
+//!
+//! The vendor help is not installed on CI runners, so the oracles are
+//! `#[ignore]`d and reported as skipped there instead of passing empty. Run
+//! them on a stand with the platform:
+//! `UNICA_PLATFORM_HELP_DIR=<8.3.27.2074 installation> cargo nextest run -p unica-coder --lib --run-ignored only -E 'test(/^infrastructure::platform_help_oracle::/)'`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -21,10 +26,12 @@ const FIXTURE: &str =
 #[cfg(feature = "research")]
 const FIXTURE_PATH: &str = "../unica-metadata/src/platform-event-catalog-8.3.27.2074.json";
 
-fn installed_root() -> Option<PathBuf> {
-    std::env::var("UNICA_PLATFORM_HELP_DIR")
-        .ok()
+/// The platform installation holding the vendor help. Without it the oracle
+/// cannot execute, so an explicit run fails instead of passing empty.
+fn platform_help_dir() -> PathBuf {
+    std::env::var_os("UNICA_PLATFORM_HELP_DIR")
         .map(PathBuf::from)
+        .expect("set UNICA_PLATFORM_HELP_DIR to the 1C 8.3.27.2074 installation directory")
 }
 
 fn source_page_path(source_page_id: &str) -> &str {
@@ -881,11 +888,9 @@ fn derive_fixture(root: &Path) -> Result<PlatformEventCatalogFixture, String> {
 }
 
 #[test]
+#[ignore = "vendor help: needs UNICA_PLATFORM_HELP_DIR=<1C 8.3.27.2074 installation>; run with --run-ignored only"]
 fn checked_platform_event_catalog_matches_complete_8_3_27_vendor_oracle() {
-    let Some(root) = installed_root() else {
-        eprintln!("UNICA_PLATFORM_HELP_DIR is not set; platform event oracle skipped");
-        return;
-    };
+    let root = platform_help_dir();
     let derived = derive_fixture(&root).expect("derive complete event fixture from vendor corpus");
     let checked: PlatformEventCatalogFixture =
         serde_json::from_str(FIXTURE).expect("checked event fixture");
@@ -896,11 +901,9 @@ fn checked_platform_event_catalog_matches_complete_8_3_27_vendor_oracle() {
 }
 
 #[test]
+#[ignore = "vendor help: needs UNICA_PLATFORM_HELP_DIR=<1C 8.3.27.2074 installation>; run with --run-ignored only"]
 fn vendor_oracle_rejects_a_matching_hbk_from_the_wrong_installation_version() {
-    let Some(root) = installed_root() else {
-        eprintln!("UNICA_PLATFORM_HELP_DIR is not set; platform version oracle skipped");
-        return;
-    };
+    let root = platform_help_dir();
     let checked: PlatformEventCatalogFixture =
         serde_json::from_str(FIXTURE).expect("checked event fixture");
     let temp = tempfile::tempdir().expect("temporary installation parent");
@@ -932,11 +935,9 @@ fn an_unknown_vendor_owner_cannot_enter_the_reviewed_out_of_profile_category() {
 }
 
 #[test]
+#[ignore = "vendor help: needs UNICA_PLATFORM_HELP_DIR=<1C 8.3.27.2074 installation>; run with --run-ignored only"]
 fn bilingual_template_exceptions_are_exact_and_source_guarded() {
-    let Some(root) = installed_root() else {
-        eprintln!("UNICA_PLATFORM_HELP_DIR is not set; bilingual exception oracle skipped");
-        return;
-    };
+    let root = platform_help_dir();
     let checked: PlatformEventCatalogFixture =
         serde_json::from_str(FIXTURE).expect("checked event fixture");
     let ru_bytes = std::fs::read(root.join(&checked.source.container)).unwrap();
@@ -998,11 +999,9 @@ fn bilingual_template_exceptions_are_exact_and_source_guarded() {
 }
 
 #[test]
+#[ignore = "vendor help: needs UNICA_PLATFORM_HELP_DIR=<1C 8.3.27.2074 installation>; run with --run-ignored only"]
 fn every_vendor_event_markup_page_belongs_to_one_closed_partition_category() {
-    let Some(root) = installed_root() else {
-        eprintln!("UNICA_PLATFORM_HELP_DIR is not set; platform event partition oracle skipped");
-        return;
-    };
+    let root = platform_help_dir();
     let checked: PlatformEventCatalogFixture =
         serde_json::from_str(FIXTURE).expect("checked event fixture");
     let bytes = std::fs::read(root.join(&checked.source.container)).expect("syntax assistant");
@@ -1078,7 +1077,7 @@ fn regenerate_checked_platform_event_catalog() {
         Ok("1"),
         "set UNICA_UPDATE_PLATFORM_EVENT_CATALOG=1 explicitly"
     );
-    let root = installed_root().expect("UNICA_PLATFORM_HELP_DIR");
+    let root = platform_help_dir();
     let derived = derive_fixture(&root).expect("derive complete event fixture from vendor corpus");
     let text = format!(
         "{}\n",

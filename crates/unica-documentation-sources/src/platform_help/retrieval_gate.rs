@@ -1,7 +1,7 @@
 //! Ретривал-гейт: golden-запросы задачи #415 против реальной
-//! установки платформы. Пропускается, когда `UNICA_PLATFORM_HELP_DIR` не
-//! задан — как и остальные проверки против материалов вендора в этом
-//! каталоге; в CI не требуется.
+//! установки платформы. Как и остальные проверки против материалов вендора в
+//! этом каталоге, помечен `#[ignore]`: в CI справки нет, и в отчёте очереди
+//! гейт виден пропущенным; запуск — в `real_installation`.
 //!
 //! Гейт закрепляет две вещи разом: recall@5 — каждый запрос замера находит
 //! свою страницу в топ-5 своей секции — и бюджет тёплой задержки: после
@@ -11,10 +11,10 @@
 //! контрольный «Свернуть» — в recall-набор не входит: он проверял
 //! относительный порядок внутри легитимно широкой выдачи, а не полноту.
 
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crate::platform_help::provider::{index_test_lock, PlatformSyntaxHelpProvider};
+use crate::platform_help::real_installation::platform_help_dir;
 use unica_documentation::model::{
     DocumentationContext, DocumentationProvider, DocumentationSearchRequest, SourceKind,
 };
@@ -72,18 +72,16 @@ fn request(query: &str) -> DocumentationSearchRequest {
 }
 
 #[test]
+#[ignore = "vendor help: needs UNICA_PLATFORM_HELP_DIR=<1C platform installation>; run with --run-ignored only"]
 fn retrieval_gate_finds_every_golden_query_within_budget() {
-    let Ok(root) = std::env::var("UNICA_PLATFORM_HELP_DIR") else {
-        eprintln!("UNICA_PLATFORM_HELP_DIR не задан — ретривал-гейт пропущен");
-        return;
-    };
+    let root = platform_help_dir();
     // Слот индекса общий на процесс: гейт не должен делить его перестройку
     // с синтетическими тестами.
     let _serial = index_test_lock();
     let provider = PlatformSyntaxHelpProvider::new();
     let context = DocumentationContext {
         platform_version: None,
-        installation_root: Some(PathBuf::from(root)),
+        installation_root: Some(root),
     };
     let cold_started = Instant::now();
     provider.search(&request(GOLDEN[0].query), &context);
