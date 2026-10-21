@@ -1460,6 +1460,10 @@ fn cancel_at_maximum_epoch_cannot_bypass_an_already_fail_stopped_store() {
     let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
     let generation_path = receipts.join(GENERATION_FILE_NAME);
     if !set_unix_mode_for_test(&generation_path, 0o644).expect("weaken generation mode fixture") {
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::UnixPermissionBits,
+            "the test sets Unix permission bits",
+        );
         return;
     }
     assert!(matches!(
@@ -5276,6 +5280,10 @@ fn failed_prepublication_cleanup_fail_stops_the_store_until_reopen() {
                 matches!(result, Ok(ReserveOutcome::Created(_))),
                 "a platform-prevented displacement leaves the ordinary publication valid"
             );
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+                "the platform keeps an open file from being displaced",
+            );
             return;
         }
         RetainedRegularFileRelocationOutcome::Relocated => {}
@@ -6401,6 +6409,10 @@ fn observed_receipt_acl_drift_latches_the_writer_before_another_reservation() {
         .join(ACTIVE_DIRECTORY_NAME)
         .join(format!("{}.json", key_digest.as_str()));
     if !set_unix_mode_for_test(&row_path, 0o644).expect("weaken receipt row mode fixture") {
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::UnixPermissionBits,
+            "the test sets Unix permission bits",
+        );
         return;
     }
     let generation_before =
@@ -6448,6 +6460,10 @@ fn authority_failure_latches_every_live_entry_point_until_reopen() {
         let generation_path = receipts.join(GENERATION_FILE_NAME);
         if !set_unix_mode_for_test(&generation_path, 0o644).expect("weaken generation mode fixture")
         {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::UnixPermissionBits,
+                "the test sets Unix permission bits",
+            );
             return;
         }
         let cutoff =
@@ -6653,7 +6669,13 @@ fn receipt_directory_link_or_reparse_point_is_rejected_without_touching_target()
     {
         FileLinkFixtureOutcome::Created => {}
         FileLinkFixtureOutcome::Unsupported
-        | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+        | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
+            return;
+        }
     }
 
     assert!(ReceiptLedgerStore::open(&receipts).is_err());
@@ -6979,9 +7001,8 @@ fn recovery_cleanup_preserves_external_targets_of_replaced_active_and_generation
             .expect("move original after validation handle closes");
         let external = root.path().join("external-target");
         fs::write(&external, b"external-operation-bytes").expect("write external target");
-        let Some(created) = create_file_symlink_for_test(&external, path.join(name)) else {
-            return; // No symlink backend exists on this OS.
-        };
+        let created = create_file_symlink_for_test(&external, path.join(name))
+            .expect("symlink fixtures exist on Unix and Windows");
         created.expect("supported symlink backend must actually create the link");
         assert!(store
             .remove_verified_recovery_staging(directory, name, first_identity)

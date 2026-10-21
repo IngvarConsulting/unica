@@ -25,4 +25,5 @@ unica-source-designer = { path = "../unica-source-designer", features = ["test-s
 unica-metadata-designer = { path = "../unica-metadata-designer" }
 unica-workspace = { path = "../unica-workspace", features = ["test-support"] }
 unica-work-control = { path = "../unica-work-control" }
+unica-process = { path = "../unica-process", features = ["test-support"] }
 tempfile.workspace = true

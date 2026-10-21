@@ -118,6 +118,10 @@ fn source_owner_index_uses_the_host_volume_case_policy() {
     let repository_identity =
         unica_workspace::paths::normalize_path_identity(repository_root).unwrap();
     if unica_workspace::paths::host_filesystem_case_sensitive(&repository_identity).unwrap() {
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::CaseInsensitiveFilesystem,
+            "the case-insensitive owner index needs a case-insensitive volume",
+        );
         return;
     }
     let root = crate::inspection::layout::InspectedSourceRoot {
@@ -149,6 +153,10 @@ fn source_owner_index_applies_case_policy_per_parent_directory() {
     let repository_identity =
         unica_workspace::paths::normalize_path_identity(repository_root).unwrap();
     if !unica_workspace::paths::host_filesystem_case_sensitive(&repository_identity).unwrap() {
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::CaseSensitiveFilesystem,
+            "per-directory case policy needs a case-sensitive volume",
+        );
         return;
     }
     fs::create_dir_all(repository_root.join("modules")).unwrap();
