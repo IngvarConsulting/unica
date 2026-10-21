@@ -1,9 +1,9 @@
-use crate::domain::workspace::WorkspaceContext;
 use std::collections::hash_map::DefaultHasher;
 use std::env;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
+use unica_source_contract::workspace::WorkspaceContext;
 
 /// Discovers the workspace selected by an optional caller-provided directory.
 pub(crate) fn discover_workspace(

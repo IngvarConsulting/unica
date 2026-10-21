@@ -19,7 +19,7 @@
 //! «путь не появляется в `view` и `search`» в силе, — поэтому перевод берёт его
 //! у вызывающего, который уже разрешил адрес в файл, а не строит сам.
 
-use crate::domain::address::{NodeKind, QualifiedAddress};
+use unica_address::address::{NodeKind, QualifiedAddress};
 
 /// Личность узла графа вызовов.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -257,7 +257,7 @@ impl CallGraphIdentity {
 #[cfg(test)]
 mod tests {
     use super::{CallGraphIdentity, CallGraphIdentityError, CallGraphModuleRole};
-    use crate::domain::address::QualifiedAddress;
+    use unica_address::address::QualifiedAddress;
 
     fn address(raw: &str) -> QualifiedAddress {
         QualifiedAddress::parse(raw).expect("измеренный адрес разбирается")

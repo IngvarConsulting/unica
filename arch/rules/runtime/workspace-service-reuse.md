@@ -1,8 +1,8 @@
 ---
 id: INV.PERF.WORKSPACE-SERVICE-REUSE
 check:
-  - crates/unica-coder/src/infrastructure/workspace_services.rs::manager_reuses_matching_live_record_without_spawning
-  - crates/unica-coder/src/infrastructure/workspace_services.rs::service_record_is_reusable_only_for_matching_live_build_and_paths
+  - crates/unica-coder/tests/platform/workspace_services_integration.rs::manager_reuses_matching_live_record_without_spawning
+  - crates/unica-coder/tests/platform/workspace_services_integration.rs::service_record_is_reusable_only_for_matching_live_build_and_paths
 gap: https://github.com/IngvarConsulting/unica/issues/1747
 ---
 

@@ -1,14 +1,11 @@
-use crate::domain::cancellation::CancellationToken;
-use crate::domain::code_intelligence::ProviderDeadline;
 use std::time::{Duration, Instant};
+use unica_metadata_designer::info_read::registrar_scan_checkpoint;
+use unica_work_control::cancellation::CancellationToken;
+use unica_work_control::provider_deadline::ProviderDeadline;
 
-use super::info::{
-    parse_typed_meta_local_info, predefined_code_type_for_info, registrar_scan_checkpoint,
-    typed_elements, typed_optional_root_collection, typed_properties, typed_relations,
-    typed_root_collection, TypedRootCollectionRoute,
-};
-use super::xml_model::meta_info_child;
-use crate::domain::metadata::{
+use super::info::typed_elements;
+
+use unica_metadata::{
     MetaPropertyChanges, MetaPropertyInput, MetaPropertyValue, MetaSupportStatus, MetadataKind,
 };
 
@@ -21,13 +18,13 @@ fn typed_local_info_descriptor(name: &str) -> Vec<u8> {
 
 #[test]
 fn typed_local_info_core_projects_the_exact_descriptor_image() {
-    let target = crate::domain::source_target::MetadataAddress::parse(
-        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+    let target = unica_address::source_target::MetadataAddress::parse(
+        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
         "Catalog.Products",
     )
     .unwrap();
 
-    let info = parse_typed_meta_local_info(
+    let info = unica_metadata_designer::info::parse_typed_meta_local_info(
         &typed_local_info_descriptor("Products"),
         &target,
         MetaSupportStatus::Locked,
@@ -42,13 +39,13 @@ fn typed_local_info_core_projects_the_exact_descriptor_image() {
 
 #[test]
 fn typed_local_info_core_rejects_a_wrong_logical_owner() {
-    let target = crate::domain::source_target::MetadataAddress::parse(
-        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+    let target = unica_address::source_target::MetadataAddress::parse(
+        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
         "Catalog.Orders",
     )
     .unwrap();
 
-    let failure = parse_typed_meta_local_info(
+    let failure = unica_metadata_designer::info::parse_typed_meta_local_info(
         &typed_local_info_descriptor("Products"),
         &target,
         MetaSupportStatus::Supported,
@@ -65,19 +62,22 @@ fn typed_local_info_core_rejects_a_wrong_logical_owner() {
 
 #[test]
 fn typed_local_info_core_rejects_malformed_descriptor_bytes() {
-    let target = crate::domain::source_target::MetadataAddress::parse(
-        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+    let target = unica_address::source_target::MetadataAddress::parse(
+        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
         "Catalog.Products",
     )
     .unwrap();
 
-    let failure =
-        parse_typed_meta_local_info(b"<not-metadata>", &target, MetaSupportStatus::Supported)
-            .expect_err("malformed bytes cannot become typed metadata");
+    let failure = unica_metadata_designer::info::parse_typed_meta_local_info(
+        b"<not-metadata>",
+        &target,
+        MetaSupportStatus::Supported,
+    )
+    .expect_err("malformed bytes cannot become typed metadata");
 
     assert_eq!(
         failure.diagnostics[0].code,
-        crate::domain::metadata::MetaDiagnosticCode::ProviderUnavailable
+        unica_metadata::MetaDiagnosticCode::ProviderUnavailable
     );
 }
 
@@ -86,7 +86,7 @@ fn typed_info_reads_simple_form_template_and_command_references() {
     let xml = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Catalog><ChildObjects><Form>ItemForm</Form><Template>Print</Template><Command>Refresh</Command></ChildObjects></Catalog></MetaDataObject>"#;
     let document = roxmltree::Document::parse(xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
-    let children = meta_info_child(object, "ChildObjects");
+    let children = unica_xml_format::read::child_element(object, "ChildObjects");
 
     let forms = typed_elements(xml, children, "Form", false);
     let templates = typed_elements(xml, children, "Template", false);
@@ -102,7 +102,7 @@ fn typed_info_marks_nonphysical_children_without_properties_incomplete() {
     let xml = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Catalog><ChildObjects><Attribute>LooksValidButIsNot</Attribute></ChildObjects></Catalog></MetaDataObject>"#;
     let document = roxmltree::Document::parse(xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
-    let children = meta_info_child(object, "ChildObjects");
+    let children = unica_xml_format::read::child_element(object, "ChildObjects");
 
     let attributes = typed_elements(xml, children, "Attribute", false);
     let value = serde_json::to_value(&attributes[0]).unwrap();
@@ -116,7 +116,7 @@ fn recalculation_reference_is_complete_when_its_logical_name_is_proved() {
     let xml = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><CalculationRegister><ChildObjects><Recalculation>Main</Recalculation></ChildObjects></CalculationRegister></MetaDataObject>"#;
     let document = roxmltree::Document::parse(xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
-    let children = meta_info_child(object, "ChildObjects");
+    let children = unica_xml_format::read::child_element(object, "ChildObjects");
 
     let recalculations = typed_elements(xml, children, "Recalculation", false);
     let value = serde_json::to_value(&recalculations[0]).unwrap();
@@ -130,17 +130,17 @@ fn empty_recalculation_nulls_the_collection_with_a_diagnostic() {
     let xml = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><CalculationRegister><ChildObjects><Recalculation/></ChildObjects></CalculationRegister></MetaDataObject>"#;
     let document = roxmltree::Document::parse(xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
-    let target = crate::domain::source_target::MetadataAddress::parse(
-        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+    let target = unica_address::source_target::MetadataAddress::parse(
+        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
         "CalculationRegister.Payroll",
     )
     .unwrap();
     let mut diagnostics = Vec::new();
 
-    let value = typed_optional_root_collection(
+    let value = unica_metadata_designer::info::typed_optional_root_collection(
         xml,
-        meta_info_child(object, "ChildObjects"),
-        TypedRootCollectionRoute::new(
+        unica_xml_format::read::child_element(object, "ChildObjects"),
+        unica_metadata_designer::info::TypedRootCollectionRoute::new(
             MetadataKind::CalculationRegister,
             "Recalculation",
             false,
@@ -163,17 +163,17 @@ fn optional_root_collections_distinguish_inapplicable_absent_and_proven_empty() 
     let xml = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><CalculationRegister><ChildObjects/></CalculationRegister></MetaDataObject>"#;
     let document = roxmltree::Document::parse(xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
-    let target = crate::domain::source_target::MetadataAddress::parse(
-        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+    let target = unica_address::source_target::MetadataAddress::parse(
+        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
         "CalculationRegister.Payroll",
     )
     .unwrap();
     let mut diagnostics = Vec::new();
 
-    let absent = typed_optional_root_collection(
+    let absent = unica_metadata_designer::info::typed_optional_root_collection(
         xml,
         None,
-        TypedRootCollectionRoute::new(
+        unica_metadata_designer::info::TypedRootCollectionRoute::new(
             MetadataKind::CalculationRegister,
             "Recalculation",
             false,
@@ -182,10 +182,10 @@ fn optional_root_collections_distinguish_inapplicable_absent_and_proven_empty() 
         &target,
         &mut diagnostics,
     );
-    let empty = typed_optional_root_collection(
+    let empty = unica_metadata_designer::info::typed_optional_root_collection(
         xml,
-        meta_info_child(object, "ChildObjects"),
-        TypedRootCollectionRoute::new(
+        unica_xml_format::read::child_element(object, "ChildObjects"),
+        unica_metadata_designer::info::TypedRootCollectionRoute::new(
             MetadataKind::CalculationRegister,
             "Recalculation",
             false,
@@ -194,10 +194,10 @@ fn optional_root_collections_distinguish_inapplicable_absent_and_proven_empty() 
         &target,
         &mut diagnostics,
     );
-    let inapplicable = typed_optional_root_collection(
+    let inapplicable = unica_metadata_designer::info::typed_optional_root_collection(
         xml,
-        meta_info_child(object, "ChildObjects"),
-        TypedRootCollectionRoute::new(
+        unica_xml_format::read::child_element(object, "ChildObjects"),
+        unica_metadata_designer::info::TypedRootCollectionRoute::new(
             MetadataKind::Catalog,
             "Recalculation",
             false,
@@ -218,17 +218,17 @@ fn optional_root_collection_keeps_an_incomplete_element_with_a_local_warning() {
     let xml = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core"><ChartOfAccounts><ChildObjects><AccountingFlag><Properties><Name>Currency</Name><Type><v8:Type>v8:FutureOpaque</v8:Type></Type></Properties></AccountingFlag></ChildObjects></ChartOfAccounts></MetaDataObject>"#;
     let document = roxmltree::Document::parse(xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
-    let target = crate::domain::source_target::MetadataAddress::parse(
-        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+    let target = unica_address::source_target::MetadataAddress::parse(
+        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
         "ChartOfAccounts.Accounting",
     )
     .unwrap();
     let mut diagnostics = Vec::new();
 
-    let value = typed_optional_root_collection(
+    let value = unica_metadata_designer::info::typed_optional_root_collection(
         xml,
-        meta_info_child(object, "ChildObjects"),
-        TypedRootCollectionRoute::new(
+        unica_xml_format::read::child_element(object, "ChildObjects"),
+        unica_metadata_designer::info::TypedRootCollectionRoute::new(
             MetadataKind::ChartOfAccounts,
             "AccountingFlag",
             false,
@@ -247,7 +247,7 @@ fn optional_root_collection_keeps_an_incomplete_element_with_a_local_warning() {
     assert_eq!(diagnostics.len(), 1);
     assert_eq!(
         diagnostics[0].severity,
-        crate::domain::metadata::MetaDiagnosticSeverity::Warning
+        unica_metadata::MetaDiagnosticSeverity::Warning
     );
 }
 
@@ -280,17 +280,22 @@ fn optional_root_collection_rejects_unknown_nested_semantics_and_missing_identit
         );
         let document = roxmltree::Document::parse(&xml).unwrap();
         let object = document.root_element().first_element_child().unwrap();
-        let target = crate::domain::source_target::MetadataAddress::parse(
-            crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+        let target = unica_address::source_target::MetadataAddress::parse(
+            unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
             metadata_path,
         )
         .unwrap();
         let mut diagnostics = Vec::new();
 
-        let value = typed_optional_root_collection(
+        let value = unica_metadata_designer::info::typed_optional_root_collection(
             &xml,
-            meta_info_child(object, "ChildObjects"),
-            TypedRootCollectionRoute::new(kind, tag, false, "collections.optional"),
+            unica_xml_format::read::child_element(object, "ChildObjects"),
+            unica_metadata_designer::info::TypedRootCollectionRoute::new(
+                kind,
+                tag,
+                false,
+                "collections.optional",
+            ),
             &target,
             &mut diagnostics,
         );
@@ -305,7 +310,7 @@ fn typed_info_preserves_structured_children_with_missing_or_empty_names_as_incom
     let xml = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Catalog><ChildObjects><Attribute><Properties><Synonym/></Properties></Attribute><Attribute><Properties><Name> </Name></Properties></Attribute></ChildObjects></Catalog></MetaDataObject>"#;
     let document = roxmltree::Document::parse(xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
-    let children = meta_info_child(object, "ChildObjects");
+    let children = unica_xml_format::read::child_element(object, "ChildObjects");
 
     let attributes = typed_elements(xml, children, "Attribute", false);
     let value = serde_json::to_value(&attributes).unwrap();
@@ -324,10 +329,13 @@ fn typed_info_retains_owner_code_type_for_predefined_validation() {
     let properties = document
         .root_element()
         .first_element_child()
-        .and_then(|object| meta_info_child(object, "Properties"));
+        .and_then(|object| unica_xml_format::read::child_element(object, "Properties"));
     assert_eq!(
-        predefined_code_type_for_info(properties, crate::domain::metadata::MetadataKind::Catalog,)
-            .as_deref(),
+        unica_metadata_designer::info::predefined_code_type_for_info(
+            properties,
+            unica_metadata::MetadataKind::Catalog,
+        )
+        .as_deref(),
         Some("Number")
     );
 }
@@ -337,7 +345,7 @@ fn typed_info_preserves_uuid_as_an_observed_editable_type() {
     let xml = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core"><Catalog><ChildObjects><Attribute><Properties><Name>ExternalId</Name><Type><v8:Type>v8:UUID</v8:Type></Type></Properties></Attribute></ChildObjects></Catalog></MetaDataObject>"#;
     let document = roxmltree::Document::parse(xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
-    let children = meta_info_child(object, "ChildObjects");
+    let children = unica_xml_format::read::child_element(object, "ChildObjects");
 
     let attributes = typed_elements(xml, children, "Attribute", false);
     let value = serde_json::to_value(&attributes[0]).unwrap();
@@ -357,7 +365,7 @@ fn typed_info_resolves_observed_type_qnames_by_namespace_not_prefix() {
     let xml = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:core="http://v8.1c.ru/8.1/data/core" xmlns:schema="http://www.w3.org/2001/XMLSchema"><Catalog><ChildObjects><Attribute><Properties><Name>ExternalId</Name><Type><core:Type>schema:string</core:Type><core:StringQualifiers><core:Length>36</core:Length><core:AllowedLength>Fixed</core:AllowedLength></core:StringQualifiers></Type></Properties></Attribute></ChildObjects></Catalog></MetaDataObject>"#;
     let document = roxmltree::Document::parse(xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
-    let children = meta_info_child(object, "ChildObjects");
+    let children = unica_xml_format::read::child_element(object, "ChildObjects");
 
     let attributes = typed_elements(xml, children, "Attribute", false);
     let value = serde_json::to_value(&attributes[0]).unwrap();
@@ -381,10 +389,13 @@ fn typed_info_reads_a_proven_read_only_root_property_without_writer_permission()
     let xml = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><WebService><Properties><DescriptorFileName>exchange.1cws</DescriptorFileName></Properties></WebService></MetaDataObject>"#;
     let document = roxmltree::Document::parse(xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
-    let properties = meta_info_child(object, "Properties");
+    let properties = unica_xml_format::read::child_element(object, "Properties");
 
-    let values =
-        serde_json::to_value(typed_properties(properties, MetadataKind::WebService)).unwrap();
+    let values = serde_json::to_value(unica_metadata_designer::info::typed_properties(
+        properties,
+        MetadataKind::WebService,
+    ))
+    .unwrap();
 
     assert_eq!(
         values,
@@ -405,9 +416,13 @@ fn typed_info_keeps_localized_root_properties_as_text() {
     let xml = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core"><Catalog><Properties><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Номенклатура</v8:content></v8:item></Synonym></Properties></Catalog></MetaDataObject>"#;
     let document = roxmltree::Document::parse(xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
-    let properties = meta_info_child(object, "Properties");
+    let properties = unica_xml_format::read::child_element(object, "Properties");
 
-    let values = serde_json::to_value(typed_properties(properties, MetadataKind::Catalog)).unwrap();
+    let values = serde_json::to_value(unica_metadata_designer::info::typed_properties(
+        properties,
+        MetadataKind::Catalog,
+    ))
+    .unwrap();
 
     assert_eq!(
         values,
@@ -420,9 +435,13 @@ fn typed_info_preserves_languages_for_new_read_only_localized_properties() {
     let xml = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core"><Catalog><Properties><ObjectPresentation><v8:item><v8:lang>ru</v8:lang><v8:content>Номенклатура</v8:content></v8:item><v8:item><v8:lang>en</v8:lang><v8:content>Item</v8:content></v8:item></ObjectPresentation></Properties></Catalog></MetaDataObject>"#;
     let document = roxmltree::Document::parse(xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
-    let properties = meta_info_child(object, "Properties");
+    let properties = unica_xml_format::read::child_element(object, "Properties");
 
-    let values = serde_json::to_value(typed_properties(properties, MetadataKind::Catalog)).unwrap();
+    let values = serde_json::to_value(unica_metadata_designer::info::typed_properties(
+        properties,
+        MetadataKind::Catalog,
+    ))
+    .unwrap();
 
     assert_eq!(
         values,
@@ -462,9 +481,12 @@ fn typed_info_publishes_kind_specific_scalar_root_properties() {
         );
         let document = roxmltree::Document::parse(&xml).unwrap();
         let object = document.root_element().first_element_child().unwrap();
-        let properties = meta_info_child(object, "Properties");
+        let properties = unica_xml_format::read::child_element(object, "Properties");
 
-        let values = serde_json::to_value(typed_properties(properties, kind)).unwrap();
+        let values = serde_json::to_value(unica_metadata_designer::info::typed_properties(
+            properties, kind,
+        ))
+        .unwrap();
 
         assert_eq!(
             values,
@@ -490,8 +512,8 @@ fn read_only_boolean_properties_do_not_inherit_writer_applicability() {
         let document = roxmltree::Document::parse(&xml).unwrap();
         let object = document.root_element().first_element_child().unwrap();
 
-        let values = serde_json::to_value(typed_properties(
-            meta_info_child(object, "Properties"),
+        let values = serde_json::to_value(unica_metadata_designer::info::typed_properties(
+            unica_xml_format::read::child_element(object, "Properties"),
             kind,
         ))
         .unwrap();
@@ -506,8 +528,8 @@ fn read_only_boolean_properties_do_not_inherit_writer_applicability() {
     let xml = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Constant><Properties><QuickChoice>Auto</QuickChoice></Properties></Constant></MetaDataObject>"#;
     let document = roxmltree::Document::parse(xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
-    let values = serde_json::to_value(typed_properties(
-        meta_info_child(object, "Properties"),
+    let values = serde_json::to_value(unica_metadata_designer::info::typed_properties(
+        unica_xml_format::read::child_element(object, "Properties"),
         MetadataKind::Constant,
     ))
     .unwrap();
@@ -539,7 +561,7 @@ fn typed_info_preserves_platform_specific_child_collections() {
     for (xml, collections) in cases {
         let document = roxmltree::Document::parse(xml).unwrap();
         let object = document.root_element().first_element_child().unwrap();
-        let child_objects = meta_info_child(object, "ChildObjects");
+        let child_objects = unica_xml_format::read::child_element(object, "ChildObjects");
         for (tag, expected_name) in collections {
             let values = typed_elements(xml, child_objects, tag, false);
             assert_eq!(values.len(), 1, "{tag}");
@@ -561,17 +583,17 @@ fn typed_info_does_not_publish_a_collection_under_the_wrong_owner_kind() {
     let xml = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><Catalog><ChildObjects><AccountingFlag>Currency</AccountingFlag></ChildObjects></Catalog></MetaDataObject>"#;
     let document = roxmltree::Document::parse(xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
-    let target = crate::domain::source_target::MetadataAddress::parse(
-        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+    let target = unica_address::source_target::MetadataAddress::parse(
+        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
         "Catalog.Items",
     )
     .unwrap();
     let mut diagnostics = Vec::new();
 
-    let values = typed_root_collection(
+    let values = unica_metadata_designer::info::typed_root_collection(
         xml,
-        meta_info_child(object, "ChildObjects"),
-        TypedRootCollectionRoute::new(
+        unica_xml_format::read::child_element(object, "ChildObjects"),
+        unica_metadata_designer::info::TypedRootCollectionRoute::new(
             MetadataKind::Catalog,
             "AccountingFlag",
             false,
@@ -593,15 +615,15 @@ fn typed_info_preserves_non_empty_data_lock_fields() {
     ));
     let document = roxmltree::Document::parse(xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
-    let properties = meta_info_child(object, "Properties");
-    let target = crate::domain::source_target::MetadataAddress::parse(
-        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+    let properties = unica_xml_format::read::child_element(object, "Properties");
+    let target = unica_address::source_target::MetadataAddress::parse(
+        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
         "Task.Approval",
     )
     .unwrap();
     let mut diagnostics = Vec::new();
 
-    let relations = typed_relations(
+    let relations = unica_metadata_designer::info::typed_relations(
         &document,
         properties,
         MetadataKind::Task,
@@ -625,16 +647,16 @@ fn malformed_data_lock_entry_nulls_the_collection_instead_of_publishing_a_subset
     let xml = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable"><Task><Properties><Name>Approval</Name><DataLockFields><xr:Field>Task.Approval.Attribute.Subject</xr:Field><xr:Field><xr:Unexpected/></xr:Field></DataLockFields></Properties></Task></MetaDataObject>"#;
     let document = roxmltree::Document::parse(xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
-    let target = crate::domain::source_target::MetadataAddress::parse(
-        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+    let target = unica_address::source_target::MetadataAddress::parse(
+        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
         "Task.Approval",
     )
     .unwrap();
     let mut diagnostics = Vec::new();
 
-    let relations = typed_relations(
+    let relations = unica_metadata_designer::info::typed_relations(
         &document,
-        meta_info_child(object, "Properties"),
+        unica_xml_format::read::child_element(object, "Properties"),
         MetadataKind::Task,
         &target,
         &mut diagnostics,
@@ -653,16 +675,16 @@ fn typed_relations_resolve_object_xsi_type_by_namespace_uri() {
         );
         let document = roxmltree::Document::parse(&xml).unwrap();
         let object = document.root_element().first_element_child().unwrap();
-        let target = crate::domain::source_target::MetadataAddress::parse(
-            crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+        let target = unica_address::source_target::MetadataAddress::parse(
+            unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
             "Catalog.Items",
         )
         .unwrap();
         let mut diagnostics = Vec::new();
 
-        let relations = typed_relations(
+        let relations = unica_metadata_designer::info::typed_relations(
             &document,
-            meta_info_child(object, "Properties"),
+            unica_xml_format::read::child_element(object, "Properties"),
             MetadataKind::Catalog,
             &target,
             &mut diagnostics,
@@ -683,9 +705,12 @@ fn typed_info_does_not_publish_a_foreign_or_malformed_property() {
     let xml = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:foreign="urn:foreign"><Catalog><Properties><foreign:Hierarchical>false</foreign:Hierarchical><CodeLength>9<foreign:Unexpected/></CodeLength></Properties></Catalog></MetaDataObject>"#;
     let document = roxmltree::Document::parse(xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
-    let properties = meta_info_child(object, "Properties");
+    let properties = unica_xml_format::read::child_element(object, "Properties");
 
-    assert!(typed_properties(properties, MetadataKind::Catalog).is_empty());
+    assert!(
+        unica_metadata_designer::info::typed_properties(properties, MetadataKind::Catalog)
+            .is_empty()
+    );
 }
 
 #[test]
@@ -716,7 +741,7 @@ fn registrar_scan_checkpoint_distinguishes_deadline_and_cancellation() {
 
 #[test]
 fn platform_incomplete_borrowed_metadata_keeps_local_observations() {
-    use crate::domain::metadata::MetaInfoPropertyValue;
+    use unica_metadata::MetaInfoPropertyValue;
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures/platform_8_3_27/incomplete_borrowed");
     for (kind, file, name) in [
@@ -735,13 +760,17 @@ fn platform_incomplete_borrowed_metadata_keeps_local_observations() {
         ),
     ] {
         let bytes = std::fs::read(root.join(format!("extension-{file}.xml"))).unwrap();
-        let target = crate::domain::source_target::MetadataAddress::parse(
-            crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+        let target = unica_address::source_target::MetadataAddress::parse(
+            unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
             &format!("{}.{name}", kind.as_str()),
         )
         .unwrap();
-        let info =
-            parse_typed_meta_local_info(&bytes, &target, MetaSupportStatus::Supported).unwrap();
+        let info = unica_metadata_designer::info::parse_typed_meta_local_info(
+            &bytes,
+            &target,
+            MetaSupportStatus::Supported,
+        )
+        .unwrap();
         assert_eq!(info.name, name);
         assert!(
             info.diagnostics.is_empty(),
@@ -773,14 +802,13 @@ fn platform_incomplete_borrowed_metadata_keeps_local_observations() {
 
 #[test]
 fn missing_write_mode_does_not_claim_complete_registrar_evidence() {
-    use crate::application::ports::MetadataEvidenceAvailability;
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/platform_8_3_27/incomplete_borrowed/extension-information-register.xml");
     let raw = std::fs::read_to_string(fixture).unwrap();
     let root = tempfile::tempdir().unwrap();
     // The scan refuses a root reached through a link (macOS `/var`).
     let source_root = std::fs::canonicalize(root.path()).unwrap();
-    let target = crate::domain::source_target::MetadataAddress::parse(
-        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+    let target = unica_address::source_target::MetadataAddress::parse(
+        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
         "InformationRegister.CorpusRegister",
     )
     .unwrap();
@@ -815,10 +843,12 @@ fn missing_write_mode_does_not_claim_complete_registrar_evidence() {
         );
         assert!(images.is_empty());
         match evidence {
-            MetadataEvidenceAvailability::Complete => {
+            unica_metadata::validation_subject::MetadataEvidenceAvailability::Complete => {
                 assert!(matches!(value, Some("Independent" | "RecorderSubordinate")))
             }
-            MetadataEvidenceAvailability::Unavailable(diagnostics) => {
+            unica_metadata::validation_subject::MetadataEvidenceAvailability::Unavailable(
+                diagnostics,
+            ) => {
                 assert!(!matches!(
                     value,
                     Some("Independent" | "RecorderSubordinate")
@@ -837,12 +867,17 @@ fn missing_write_mode_does_not_claim_complete_registrar_evidence() {
 #[test]
 fn typed_tabular_section_preserves_the_declared_standard_attributes() {
     let xml = include_bytes!("../../../../../../tests/fixtures/acceptance/workspace-tabular-standard/src/Catalogs/Items.xml");
-    let target = crate::domain::source_target::MetadataAddress::parse(
-        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+    let target = unica_address::source_target::MetadataAddress::parse(
+        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
         "Catalog.Items",
     )
     .unwrap();
-    let local = parse_typed_meta_local_info(xml, &target, MetaSupportStatus::Locked).unwrap();
+    let local = unica_metadata_designer::info::parse_typed_meta_local_info(
+        xml,
+        &target,
+        MetaSupportStatus::Locked,
+    )
+    .unwrap();
     let section = serde_json::to_value(&local.collections.tabular_sections[0]).unwrap();
     assert_eq!(section["attributes"].as_array().unwrap().len(), 10);
     assert_eq!(section["standardAttributes"][0]["name"], "LineNumber");

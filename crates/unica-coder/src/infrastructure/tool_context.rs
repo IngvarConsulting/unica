@@ -1,13 +1,14 @@
 use crate::application::operation_descriptors::native_operation_descriptor;
 use crate::application::{RuntimeJobAction, ToolHandler, ToolSpec};
-use crate::domain::project_sources::{ProjectSourceMap, SourceFormat, SourceSetKind};
-use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::path_policy::WorkspacePathPolicy;
-use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
+use unica_source_contract::{ProjectSourceMap, SourceFormat, SourceSetKind};
+
 use crate::infrastructure::project_sources::discover_project_source_map;
-use crate::infrastructure::source_roots::deepest_source_set_matches;
 use serde_json::{Map, Value};
 use std::path::{Component, Path, PathBuf};
+use unica_source_contract::workspace::WorkspaceContext;
+use unica_source_designer::selection::deepest_source_set_matches;
+use unica_workspace::path_policy::WorkspacePathPolicy;
+use unica_workspace::paths::metadata_is_link_or_reparse_point;
 
 pub(crate) fn validate_tool_context(
     tool: ToolSpec,
@@ -200,7 +201,7 @@ fn validate_initializer_destination(
 
 fn validate_platform_xml_source_format(
     tool: ToolSpec,
-    source_set: &crate::domain::project_sources::ProjectSourceSet,
+    source_set: &unica_source_contract::ProjectSourceSet,
 ) -> Result<(), String> {
     match source_set.source_format {
         SourceFormat::PlatformXml | SourceFormat::Unknown => Ok(()),
@@ -353,11 +354,11 @@ fn initializer_source_set_kind(tool: ToolSpec) -> Option<SourceSetKind> {
 mod tests {
     use super::*;
     use crate::application::tools;
-    use crate::infrastructure::platform::testing::{
-        create_file_link_fixture_for_test, FileLinkFixtureOutcome,
-    };
     use serde_json::json;
     use std::time::{SystemTime, UNIX_EPOCH};
+    use unica_workspace::test_support::{
+        create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+    };
 
     fn fixture(label: &str) -> (PathBuf, WorkspaceContext) {
         let nonce = SystemTime::now()
@@ -441,7 +442,7 @@ mod tests {
 
     #[test]
     fn native_platform_xml_source_format_public_gate_is_closed_over_public_operations() {
-        use crate::domain::project_sources::{SourceFormat, SourceSetKind};
+        use unica_source_contract::{SourceFormat, SourceSetKind};
 
         let native_tools = tools()
             .into_iter()

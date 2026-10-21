@@ -1,29 +1,31 @@
-use crate::application::metadata::{MetaFailure, MetaInfoRequest, MetadataRequest};
-use crate::application::ports::{
-    MetaEnrichment, MetaLocalInfo, MetaRelatedData, MetadataRead, MetadataValidationResult,
-    MetadataValidationSubject, PreparedMetadataMutation,
-};
-use crate::domain::cancellation::CancellationToken;
-use crate::domain::code_intelligence::ProviderDeadline;
-use crate::domain::metadata::{MetaDiagnostic, MetaDiagnosticCode};
-use crate::domain::support_state::SupportStateReader;
-use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::native_operations::meta::predefined::PredefinedResourceReadBinding;
+use unica_metadata_designer::usage_scan::{scan_local_enrichment, LocalEnrichment, LocalSection};
+use unica_metadata_designer::validation::MetadataValidator;
+
+use crate::application::ports::PreparedMetadataMutation;
 use crate::infrastructure::native_operations::meta::{
     prepare_meta_add, prepare_typed_edit, read_typed_meta_info, resolve_typed_edit_object,
-    resolve_typed_metadata_object, scan_local_enrichment, LocalEnrichment, LocalSection,
-    MetadataValidator,
+    resolve_typed_metadata_object,
 };
-use crate::infrastructure::source_roots::NamedSourceSetErrorKind;
+use unica_metadata::support_state::SupportStateReader;
+use unica_metadata::{MetaDiagnostic, MetaDiagnosticCode};
+use unica_source_contract::discovery::NamedSourceSetErrorKind;
+use unica_source_contract::workspace::WorkspaceContext;
+use unica_work_control::cancellation::CancellationToken;
+use unica_work_control::provider_deadline::ProviderDeadline;
 
 pub(crate) struct MetadataOperations;
 
 impl MetadataOperations {
     pub(crate) fn read_local(
-        request: &MetaInfoRequest,
+        request: &unica_metadata::request::MetaInfoRequest,
         context: &WorkspaceContext,
         cancellation: &CancellationToken,
         support_reader: &dyn SupportStateReader,
-    ) -> Result<MetadataRead, MetaFailure> {
+    ) -> Result<
+        unica_metadata::validation_subject::MetadataRead,
+        unica_metadata::request::MetaFailure,
+    > {
         let resolved = resolve_typed_metadata_object(
             &request.source_set,
             &request.metadata_path,
@@ -42,7 +44,7 @@ impl MetadataOperations {
             cancellation,
             support_reader,
         )?;
-        Ok(MetadataRead {
+        Ok(unica_metadata::validation_subject::MetadataRead {
             local,
             validation_subject,
         })
@@ -56,13 +58,11 @@ impl MetadataOperations {
     /// code index, and only it can therefore be stale or unavailable — which is
     /// why it is the one section that still reports index metadata.
     pub(crate) fn read_related(
-        request: &MetaInfoRequest,
-        local: &MetaLocalInfo,
+        request: &unica_metadata::request::MetaInfoRequest,
+        local: &unica_metadata::validation_subject::MetaLocalInfo,
         context: &WorkspaceContext,
         cancellation: &CancellationToken,
-    ) -> MetaRelatedData {
-        use crate::application::metadata::MetaInfoSection;
-
+    ) -> unica_metadata::validation_subject::MetaRelatedData {
         let source = match crate::infrastructure::source_roots::resolve_named_source_set(
             context,
             &request.source_set,
@@ -80,10 +80,16 @@ impl MetadataOperations {
             .sections
             .iter()
             .map(|section| match section {
-                MetaInfoSection::Roles => LocalSection::Roles,
-                MetaInfoSection::Subscriptions => LocalSection::Subscriptions,
-                MetaInfoSection::FunctionalOptions => LocalSection::FunctionalOptions,
-                MetaInfoSection::PredefinedItems => LocalSection::PredefinedItems,
+                unica_metadata::request::MetaInfoSection::Roles => LocalSection::Roles,
+                unica_metadata::request::MetaInfoSection::Subscriptions => {
+                    LocalSection::Subscriptions
+                }
+                unica_metadata::request::MetaInfoSection::FunctionalOptions => {
+                    LocalSection::FunctionalOptions
+                }
+                unica_metadata::request::MetaInfoSection::PredefinedItems => {
+                    LocalSection::PredefinedItems
+                }
             })
             .collect::<Vec<_>>();
         let LocalEnrichment {
@@ -94,17 +100,21 @@ impl MetadataOperations {
             LocalEnrichment::default()
         } else {
             scan_local_enrichment(
+                &unica_workspace::discovery::ProjectDiscoveryReader::new(&context.cwd),
+                &PredefinedResourceReadBinding,
                 &source.path,
-                local.kind,
-                &local.metadata_path,
-                local.predefined_code_type.as_deref(),
+                unica_metadata_designer::usage_scan::MetadataUsageTarget {
+                    kind: local.kind,
+                    metadata_path: &local.metadata_path,
+                    predefined_code_type: local.predefined_code_type.as_deref(),
+                },
                 &local_sections,
                 request.limit,
                 cancellation,
             )
         };
 
-        MetaEnrichment {
+        unica_metadata::validation_subject::MetaEnrichment {
             predefined_items,
             usage,
             diagnostics,
@@ -112,21 +122,24 @@ impl MetadataOperations {
     }
 
     pub(crate) fn validate(
-        subject: &MetadataValidationSubject,
+        subject: &unica_metadata::validation_subject::MetadataValidationSubject,
         context: &WorkspaceContext,
         _cancellation: &CancellationToken,
-    ) -> MetadataValidationResult {
-        MetadataValidator.validate(subject, context)
+    ) -> unica_metadata::validation_subject::MetadataValidationResult {
+        MetadataValidator::new(unica_metadata_designer::validation::FormRootValidator(
+            unica_forms_designer::root::require_form_root,
+        ))
+        .validate(subject, context)
     }
 
     pub(crate) fn validate_read(
-        subject: &MetadataValidationSubject,
+        subject: &unica_metadata::validation_subject::MetadataValidationSubject,
         context: &WorkspaceContext,
         cancellation: &CancellationToken,
-    ) -> MetadataValidationResult {
+    ) -> unica_metadata::validation_subject::MetadataValidationResult {
         if cancellation.is_cancelled() {
-            return MetadataValidationResult {
-                status: crate::domain::metadata::MetaValidationStatus::Failed,
+            return unica_metadata::validation_subject::MetadataValidationResult {
+                status: unica_metadata::MetaValidationStatus::Failed,
                 diagnostics: vec![MetaDiagnostic::error(
                     MetaDiagnosticCode::ProviderUnavailable,
                     "metadata read validation was cancelled",
@@ -134,17 +147,22 @@ impl MetadataOperations {
                 .with_metadata_path(subject.target.clone())],
             };
         }
-        MetadataValidator.validate_complete_read(subject, context)
+        MetadataValidator::new(unica_metadata_designer::validation::FormRootValidator(
+            unica_forms_designer::root::require_form_root,
+        ))
+        .validate_complete_read(subject, context)
     }
 
     pub(crate) fn prepare_mutation(
-        request: &MetadataRequest,
+        request: &unica_metadata::request::MetadataRequest,
         context: &WorkspaceContext,
         cancellation: &CancellationToken,
-    ) -> Result<Box<dyn PreparedMetadataMutation>, MetaFailure> {
+    ) -> Result<Box<dyn PreparedMetadataMutation>, unica_metadata::request::MetaFailure> {
         match request {
-            MetadataRequest::Add(request) => prepare_meta_add(request, context, cancellation),
-            MetadataRequest::Edit(request) => {
+            unica_metadata::request::MetadataRequest::Add(request) => {
+                prepare_meta_add(request, context, cancellation)
+            }
+            unica_metadata::request::MetadataRequest::Edit(request) => {
                 if request.operations.is_empty() {
                     return Err(MetaDiagnostic::error(
                         MetaDiagnosticCode::InvalidArguments,
@@ -157,7 +175,7 @@ impl MetadataOperations {
                 let resolved = resolve_typed_edit_object(request, context, cancellation)?;
                 prepare_typed_edit(request, resolved, context)
             }
-            MetadataRequest::Info(_) => Err(capability_unavailable(
+            unica_metadata::request::MetadataRequest::Info(_) => Err(capability_unavailable(
                 "typed metadata mutation provider is not available yet",
             )),
         }
@@ -186,46 +204,44 @@ fn logical_source_set_error(source_set: &str, kind: NamedSourceSetErrorKind) -> 
 /// Nothing can be read, and an empty usage list would claim the object is used
 /// nowhere. The sections stay absent instead, and the failure is reported by
 /// the read that owns it.
-fn selected_unavailable_sections(_request: &MetaInfoRequest, _message: &str) -> MetaEnrichment {
-    MetaEnrichment::default()
+fn selected_unavailable_sections(
+    _request: &unica_metadata::request::MetaInfoRequest,
+    _message: &str,
+) -> unica_metadata::validation_subject::MetaEnrichment {
+    unica_metadata::validation_subject::MetaEnrichment::default()
 }
 
-fn capability_unavailable(message: &str) -> MetaFailure {
+fn capability_unavailable(message: &str) -> unica_metadata::request::MetaFailure {
     MetaDiagnostic::error(MetaDiagnosticCode::CapabilityUnavailable, message).into()
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::application::metadata::{
-        MetaAddRequest, MetaEditRequest, MetaInfoRequest, MetaInfoSection,
-    };
+
     use crate::application::ports::{
-        ApplicationPorts, FormatGuardCheck, FormatGuardError, HandlerOutcome,
-        MetadataChildDirectoryKind, MetadataChildProfile, MetadataChildResourceKind,
-        MetadataResourceRole, MetadataTemplateResourcePart, MetadataTemplateType,
-        SupportGuardCheck,
+        ApplicationPorts, FormatGuardCheck, FormatGuardError, HandlerOutcome, SupportGuardCheck,
     };
     use crate::application::{InvocationMode, ToolSpec, UnicaApplication};
-    use crate::domain::cache::{CacheAccess, CacheReport};
-    use crate::domain::events::DomainEvent;
-    use crate::domain::metadata::{
+    use crate::infrastructure::application_ports::InfrastructureApplicationPorts;
+    use crate::infrastructure::native_operations::cf::create_configuration_scaffold;
+    use serde_json::{json, Map};
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+    use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    use unica_metadata::{
         MetaCollection, MetaEditOperation, MetaElementInput, MetaElementUpdateInput,
         MetaEventSource, MetaPosition, MetaPropertyChanges, MetaPropertyInput, MetaPropertyValue,
         MetaPublicationAction, MetaPublicationResource, MetaRelation, MetaRelationTarget,
         MetaScope, MetaValidationStatus, MetadataKind, MetadataReference, RelationEditMode,
     };
-    use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
-    use crate::infrastructure::application_ports::InfrastructureApplicationPorts;
-    use crate::infrastructure::native_operations::cf::create_configuration_scaffold;
-    use crate::infrastructure::native_operations::compile_transaction::{
+    use unica_source_contract::events::DomainEvent;
+    use unica_workspace::cache::{CacheAccess, CacheReport};
+    use unica_workspace::compile_transaction::{
         with_before_rollback_mutation_hook, with_commit_failpoint, CommitFailpoint,
     };
-    use crate::infrastructure::native_operations::single_file_publisher::with_before_commit_hook;
-    use serde_json::{json, Map};
-    use std::fs;
-    use std::path::{Path, PathBuf};
-    use std::sync::Arc;
+    use unica_workspace::single_file_publisher::with_before_commit_hook;
 
     /// Designer keeps a managed form's module one level below the rest of
     /// `Ext`, so a fixture has to create that directory before writing it.
@@ -261,20 +277,21 @@ pub(crate) mod tests {
 
         fn prepare_metadata_mutation(
             &self,
-            request: &MetadataRequest,
+            request: &unica_metadata::request::MetadataRequest,
             context: &WorkspaceContext,
             cancellation: &CancellationToken,
-        ) -> Result<Box<dyn PreparedMetadataMutation>, MetaFailure> {
+        ) -> Result<Box<dyn PreparedMetadataMutation>, unica_metadata::request::MetaFailure>
+        {
             self.inner
                 .prepare_metadata_mutation(request, context, cancellation)
         }
 
         fn validate_metadata(
             &self,
-            subject: &MetadataValidationSubject,
+            subject: &unica_metadata::validation_subject::MetadataValidationSubject,
             context: &WorkspaceContext,
             cancellation: &CancellationToken,
-        ) -> MetadataValidationResult {
+        ) -> unica_metadata::validation_subject::MetadataValidationResult {
             self.inner.validate_metadata(subject, context, cancellation)
         }
 
@@ -320,9 +337,9 @@ pub(crate) mod tests {
         fn notify_committed_changes(
             &self,
             context: &WorkspaceContext,
-            events: &[crate::domain::events::DomainEvent],
+            events: &[unica_source_contract::events::DomainEvent],
             _cancellation: &CancellationToken,
-            _deadline: crate::domain::operation_deadline::OperationDeadline,
+            _deadline: unica_work_control::operation_deadline::OperationDeadline,
         ) {
             self.notify_invalidation(context, events);
         }
@@ -368,13 +385,15 @@ pub(crate) mod tests {
     fn add_exported_event_handler(root: &std::path::Path, context: &WorkspaceContext) {
         let cancellation = CancellationToken::new();
         MetadataOperations::prepare_mutation(
-            &MetadataRequest::Add(MetaAddRequest {
-                source_set: "main".into(),
-                kind: MetadataKind::CommonModule,
-                name: "EventHandlers".into(),
-                operations: Vec::new(),
-                dry_run: false,
-            }),
+            &unica_metadata::request::MetadataRequest::Add(
+                unica_metadata::request::MetaAddRequest {
+                    source_set: "main".into(),
+                    kind: MetadataKind::CommonModule,
+                    name: "EventHandlers".into(),
+                    operations: Vec::new(),
+                    dry_run: false,
+                },
+            ),
             context,
             &cancellation,
         )
@@ -400,7 +419,7 @@ pub(crate) mod tests {
         .unwrap()
     }
 
-    fn source_family(source_class: crate::domain::metadata::EventSourceClass) -> MetaEventSource {
+    fn source_family(source_class: unica_metadata::EventSourceClass) -> MetaEventSource {
         MetaEventSource::Family { source_class }
     }
 
@@ -411,15 +430,17 @@ pub(crate) mod tests {
         add_exported_event_handler(&root, &context);
         let cancellation = CancellationToken::new();
         MetadataOperations::prepare_mutation(
-            &MetadataRequest::Add(MetaAddRequest {
-                source_set: "main".into(),
-                kind: MetadataKind::EventSubscription,
-                name: "Events".into(),
-                operations: vec![source_replace(vec![source_family(
-                    crate::domain::metadata::EventSourceClass::CatalogObject,
-                )])],
-                dry_run: false,
-            }),
+            &unica_metadata::request::MetadataRequest::Add(
+                unica_metadata::request::MetaAddRequest {
+                    source_set: "main".into(),
+                    kind: MetadataKind::EventSubscription,
+                    name: "Events".into(),
+                    operations: vec![source_replace(vec![source_family(
+                        unica_metadata::EventSourceClass::CatalogObject,
+                    )])],
+                    dry_run: false,
+                },
+            ),
             &context,
             &cancellation,
         )
@@ -432,14 +453,16 @@ pub(crate) mod tests {
             MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "EventSubscription.Events")
                 .unwrap();
         let prepared = MetadataOperations::prepare_mutation(
-            &MetadataRequest::Edit(MetaEditRequest {
-                source_set: "main".into(),
-                metadata_path: target,
-                operations: vec![source_replace(vec![source_family(
-                    crate::domain::metadata::EventSourceClass::DocumentObject,
-                )])],
-                dry_run: false,
-            }),
+            &unica_metadata::request::MetadataRequest::Edit(
+                unica_metadata::request::MetaEditRequest {
+                    source_set: "main".into(),
+                    metadata_path: target,
+                    operations: vec![source_replace(vec![source_family(
+                        unica_metadata::EventSourceClass::DocumentObject,
+                    )])],
+                    dry_run: false,
+                },
+            ),
             &context,
             &cancellation,
         )
@@ -488,13 +511,15 @@ pub(crate) mod tests {
             .unwrap();
             let cancellation = CancellationToken::new();
             MetadataOperations::prepare_mutation(
-                &MetadataRequest::Add(MetaAddRequest {
-                    source_set: "main".into(),
-                    kind: MetadataKind::Catalog,
-                    name: "Editable".into(),
-                    operations: Vec::new(),
-                    dry_run: false,
-                }),
+                &unica_metadata::request::MetadataRequest::Add(
+                    unica_metadata::request::MetaAddRequest {
+                        source_set: "main".into(),
+                        kind: MetadataKind::Catalog,
+                        name: "Editable".into(),
+                        operations: Vec::new(),
+                        dry_run: false,
+                    },
+                ),
                 &context,
                 &cancellation,
             )
@@ -511,19 +536,25 @@ pub(crate) mod tests {
             }
         }
 
-        fn edit(&self, property: &str, value: MetaPropertyValue) -> MetadataRequest {
-            MetadataRequest::Edit(MetaEditRequest {
-                source_set: "main".into(),
-                metadata_path: self.target.clone(),
-                operations: vec![MetaEditOperation::SetProperties {
-                    values: MetaPropertyChanges::convert(
-                        MetadataKind::Catalog,
-                        vec![MetaPropertyInput::new(property, value)],
-                    )
-                    .unwrap(),
-                }],
-                dry_run: false,
-            })
+        fn edit(
+            &self,
+            property: &str,
+            value: MetaPropertyValue,
+        ) -> unica_metadata::request::MetadataRequest {
+            unica_metadata::request::MetadataRequest::Edit(
+                unica_metadata::request::MetaEditRequest {
+                    source_set: "main".into(),
+                    metadata_path: self.target.clone(),
+                    operations: vec![MetaEditOperation::SetProperties {
+                        values: MetaPropertyChanges::convert(
+                            MetadataKind::Catalog,
+                            vec![MetaPropertyInput::new(property, value)],
+                        )
+                        .unwrap(),
+                    }],
+                    dry_run: false,
+                },
+            )
         }
 
         fn add_object(&self, kind: MetadataKind, name: &str) -> MetadataAddress {
@@ -538,13 +569,15 @@ pub(crate) mod tests {
         ) -> MetadataAddress {
             let cancellation = CancellationToken::new();
             MetadataOperations::prepare_mutation(
-                &MetadataRequest::Add(MetaAddRequest {
-                    source_set: "main".into(),
-                    kind,
-                    name: name.into(),
-                    operations,
-                    dry_run: false,
-                }),
+                &unica_metadata::request::MetadataRequest::Add(
+                    unica_metadata::request::MetaAddRequest {
+                        source_set: "main".into(),
+                        kind,
+                        name: name.into(),
+                        operations,
+                        dry_run: false,
+                    },
+                ),
                 &self.context,
                 &cancellation,
             )
@@ -562,30 +595,37 @@ pub(crate) mod tests {
             &self,
             mode: RelationEditMode,
             targets: Vec<MetadataAddress>,
-        ) -> MetadataRequest {
-            MetadataRequest::Edit(MetaEditRequest {
-                source_set: "main".into(),
-                metadata_path: self.target.clone(),
-                operations: vec![MetaEditOperation::edit_relations(
-                    MetaRelation::Owners,
-                    mode,
-                    targets
-                        .into_iter()
-                        .map(|metadata_path| MetadataReference { metadata_path })
-                        .collect(),
-                )
-                .unwrap()],
-                dry_run: false,
-            })
+        ) -> unica_metadata::request::MetadataRequest {
+            unica_metadata::request::MetadataRequest::Edit(
+                unica_metadata::request::MetaEditRequest {
+                    source_set: "main".into(),
+                    metadata_path: self.target.clone(),
+                    operations: vec![MetaEditOperation::edit_relations(
+                        MetaRelation::Owners,
+                        mode,
+                        targets
+                            .into_iter()
+                            .map(|metadata_path| MetadataReference { metadata_path })
+                            .collect(),
+                    )
+                    .unwrap()],
+                    dry_run: false,
+                },
+            )
         }
 
-        fn typed_edit(&self, operations: Vec<MetaEditOperation>) -> MetadataRequest {
-            MetadataRequest::Edit(MetaEditRequest {
-                source_set: "main".into(),
-                metadata_path: self.target.clone(),
-                operations,
-                dry_run: false,
-            })
+        fn typed_edit(
+            &self,
+            operations: Vec<MetaEditOperation>,
+        ) -> unica_metadata::request::MetadataRequest {
+            unica_metadata::request::MetadataRequest::Edit(
+                unica_metadata::request::MetaEditRequest {
+                    source_set: "main".into(),
+                    metadata_path: self.target.clone(),
+                    operations,
+                    dry_run: false,
+                },
+            )
         }
 
         fn publish_form_add(&self, name: &str) {
@@ -635,28 +675,28 @@ pub(crate) mod tests {
             cache_root: root.join(".build/unica"),
             workspace_epoch: 0,
         };
-        let request = MetaInfoRequest {
+        let request = unica_metadata::request::MetaInfoRequest {
             source_set: "unsafe".into(),
             metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items")
                 .unwrap(),
-            sections: vec![MetaInfoSection::Roles],
+            sections: vec![unica_metadata::request::MetaInfoSection::Roles],
             limit: 20,
         };
 
         let related = MetadataOperations::read_related(
             &request,
-            &crate::application::ports::MetaLocalInfo {
+            &unica_metadata::validation_subject::MetaLocalInfo {
                 member_read_profile: None,
                 metadata_path: request.metadata_path.clone(),
                 kind: MetadataKind::Catalog,
-                details: crate::domain::metadata::MetaInfoDetails::empty(MetadataKind::Catalog),
+                details: unica_metadata::MetaInfoDetails::empty(MetadataKind::Catalog),
                 name: "Items".into(),
                 synonym: None,
-                support: crate::domain::metadata::MetaSupportStatus::Supported,
+                support: unica_metadata::MetaSupportStatus::Supported,
                 properties: Vec::new(),
-                declarations: crate::domain::metadata::MetaInfoDeclarations::default(),
+                declarations: unica_metadata::MetaInfoDeclarations::default(),
                 predefined_code_type: Some("String".to_string()),
-                relations: crate::domain::metadata::MetaRelationsData {
+                relations: unica_metadata::MetaRelationsData {
                     owners: Some(Some(Vec::new())),
                     register_records: Some(Some(Vec::new())),
                     based_on: Some(Some(Vec::new())),
@@ -665,7 +705,7 @@ pub(crate) mod tests {
                     source: Vec::new(),
                     source_type_ids: Vec::new(),
                 },
-                collections: crate::domain::metadata::MetaCollectionsData {
+                collections: unica_metadata::MetaCollectionsData {
                     attributes: Vec::new(),
                     columns: Vec::new(),
                     tabular_sections: Vec::new(),
@@ -711,15 +751,17 @@ pub(crate) mod tests {
             "EventSubscription.AllEvents",
         )
         .unwrap();
-        let add = MetadataRequest::Add(MetaAddRequest {
-            source_set: "main".into(),
-            kind: MetadataKind::EventSubscription,
-            name: "AllEvents".into(),
-            operations: vec![source_replace(vec![source_family(
-                crate::domain::metadata::EventSourceClass::CatalogObject,
-            )])],
-            dry_run: false,
-        });
+        let add = unica_metadata::request::MetadataRequest::Add(
+            unica_metadata::request::MetaAddRequest {
+                source_set: "main".into(),
+                kind: MetadataKind::EventSubscription,
+                name: "AllEvents".into(),
+                operations: vec![source_replace(vec![source_family(
+                    unica_metadata::EventSourceClass::CatalogObject,
+                )])],
+                dry_run: false,
+            },
+        );
 
         let prepared = MetadataOperations::prepare_mutation(&add, &context, &cancellation).unwrap();
         assert!(prepared
@@ -729,7 +771,7 @@ pub(crate) mod tests {
             .all(|resource| {
                 !matches!(
                     &resource.role,
-                    MetadataResourceRole::Dependency { target }
+                    unica_metadata::validation_subject::MetadataResourceRole::Dependency { target }
                         if target.as_str().starts_with("Catalog.")
                 )
             }));
@@ -737,7 +779,12 @@ pub(crate) mod tests {
             .validation_subject()
             .resources
             .iter()
-            .find(|resource| matches!(resource.role, MetadataResourceRole::Descriptor))
+            .find(|resource| {
+                matches!(
+                    resource.role,
+                    unica_metadata::validation_subject::MetadataResourceRole::Descriptor
+                )
+            })
             .unwrap();
         assert!(String::from_utf8_lossy(&descriptor.bytes)
             .contains("<v8:TypeSet>cfg:CatalogObject</v8:TypeSet>"));
@@ -751,7 +798,7 @@ pub(crate) mod tests {
         prepared.publish(&cancellation).unwrap();
 
         let read = MetadataOperations::read_local(
-            &MetaInfoRequest {
+            &unica_metadata::request::MetaInfoRequest {
                 source_set: "main".into(),
                 metadata_path: target.clone(),
                 sections: Vec::new(),
@@ -765,19 +812,21 @@ pub(crate) mod tests {
         assert_eq!(
             read.local.relations.source,
             vec![source_family(
-                crate::domain::metadata::EventSourceClass::CatalogObject,
+                unica_metadata::EventSourceClass::CatalogObject,
             )]
         );
 
         let noop = MetadataOperations::prepare_mutation(
-            &MetadataRequest::Edit(MetaEditRequest {
-                source_set: "main".into(),
-                metadata_path: target,
-                operations: vec![source_replace(vec![source_family(
-                    crate::domain::metadata::EventSourceClass::CatalogObject,
-                )])],
-                dry_run: false,
-            }),
+            &unica_metadata::request::MetadataRequest::Edit(
+                unica_metadata::request::MetaEditRequest {
+                    source_set: "main".into(),
+                    metadata_path: target,
+                    operations: vec![source_replace(vec![source_family(
+                        unica_metadata::EventSourceClass::CatalogObject,
+                    )])],
+                    dry_run: false,
+                },
+            ),
             &context,
             &cancellation,
         )
@@ -811,18 +860,20 @@ pub(crate) mod tests {
         };
         let cancellation = CancellationToken::new();
         let prepared = MetadataOperations::prepare_mutation(
-            &MetadataRequest::Add(MetaAddRequest {
-                source_set: "main".into(),
-                kind: MetadataKind::EventSubscription,
-                name: "RecordSetEvents".into(),
-                operations: vec![
-                    source_replace(vec![source_family(
-                        crate::domain::metadata::EventSourceClass::InformationRegisterRecordSet,
-                    )]),
-                    binding,
-                ],
-                dry_run: false,
-            }),
+            &unica_metadata::request::MetadataRequest::Add(
+                unica_metadata::request::MetaAddRequest {
+                    source_set: "main".into(),
+                    kind: MetadataKind::EventSubscription,
+                    name: "RecordSetEvents".into(),
+                    operations: vec![
+                        source_replace(vec![source_family(
+                            unica_metadata::EventSourceClass::InformationRegisterRecordSet,
+                        )]),
+                        binding,
+                    ],
+                    dry_run: false,
+                },
+            ),
             &context,
             &cancellation,
         )
@@ -843,15 +894,17 @@ pub(crate) mod tests {
         add_exported_event_handler(&fixture.root, &fixture.context);
         let cancellation = CancellationToken::new();
         MetadataOperations::prepare_mutation(
-            &MetadataRequest::Add(MetaAddRequest {
-                source_set: "main".into(),
-                kind: MetadataKind::EventSubscription,
-                name: name.into(),
-                operations: vec![source_replace(vec![MetaEventSource::Object {
-                    metadata_path: fixture.target.clone(),
-                }])],
-                dry_run: false,
-            }),
+            &unica_metadata::request::MetadataRequest::Add(
+                unica_metadata::request::MetaAddRequest {
+                    source_set: "main".into(),
+                    kind: MetadataKind::EventSubscription,
+                    name: name.into(),
+                    operations: vec![source_replace(vec![MetaEventSource::Object {
+                        metadata_path: fixture.target.clone(),
+                    }])],
+                    dry_run: false,
+                },
+            ),
             &fixture.context,
             &cancellation,
         )
@@ -885,7 +938,7 @@ pub(crate) mod tests {
 
         let cancellation = CancellationToken::new();
         let read = MetadataOperations::read_local(
-            &MetaInfoRequest {
+            &unica_metadata::request::MetaInfoRequest {
                 source_set: "main".into(),
                 metadata_path: subscription,
                 sections: Vec::new(),
@@ -950,7 +1003,7 @@ pub(crate) mod tests {
             };
             let cancellation = CancellationToken::new();
             let read = MetadataOperations::read_local(
-                &MetaInfoRequest {
+                &unica_metadata::request::MetaInfoRequest {
                     source_set: "ext".into(),
                     metadata_path: target.clone(),
                     sections: Vec::new(),
@@ -1040,7 +1093,7 @@ pub(crate) mod tests {
         assert!(footprint.directories.is_empty() && footprint.retained.is_empty());
         footprint
             .directories
-            .push(MetadataChildDirectoryKind::Extension);
+            .push(unica_metadata::validation_subject::MetadataChildDirectoryKind::Extension);
         let validation =
             MetadataOperations::validate(&subject, &context, &CancellationToken::new());
         assert_eq!(
@@ -1055,9 +1108,20 @@ pub(crate) mod tests {
                 .resources
                 .iter_mut()
                 .find(|resource| match (role, &resource.role) {
-                    ("owner", MetadataResourceRole::Descriptor) => true,
-                    ("child", MetadataResourceRole::Form { name, .. }) => name == "Форма",
-                    ("registration", MetadataResourceRole::Registration) => true,
+                    (
+                        "owner",
+                        unica_metadata::validation_subject::MetadataResourceRole::Descriptor,
+                    ) => true,
+                    (
+                        "child",
+                        unica_metadata::validation_subject::MetadataResourceRole::Form {
+                            name, ..
+                        },
+                    ) => name == "Форма",
+                    (
+                        "registration",
+                        unica_metadata::validation_subject::MetadataResourceRole::Registration,
+                    ) => true,
                     _ => false,
                 })
                 .unwrap();
@@ -1115,15 +1179,17 @@ pub(crate) mod tests {
         );
         let cancellation = CancellationToken::new();
         let prepared = MetadataOperations::prepare_mutation(
-            &MetadataRequest::Add(MetaAddRequest {
-                source_set: "main".into(),
-                kind: MetadataKind::EventSubscription,
-                name: "DefinedEvents".into(),
-                operations: vec![source_replace(vec![MetaEventSource::DefinedType {
-                    metadata_path: defined_type.clone(),
-                }])],
-                dry_run: false,
-            }),
+            &unica_metadata::request::MetadataRequest::Add(
+                unica_metadata::request::MetaAddRequest {
+                    source_set: "main".into(),
+                    kind: MetadataKind::EventSubscription,
+                    name: "DefinedEvents".into(),
+                    operations: vec![source_replace(vec![MetaEventSource::DefinedType {
+                        metadata_path: defined_type.clone(),
+                    }])],
+                    dry_run: false,
+                },
+            ),
             &fixture.context,
             &cancellation,
         )
@@ -1138,7 +1204,7 @@ pub(crate) mod tests {
                     .any(|resource| {
                         matches!(
                             &resource.role,
-                            MetadataResourceRole::Dependency { target } if target == expected
+                            unica_metadata::validation_subject::MetadataResourceRole::Dependency { target } if target == expected
                         )
                     }),
                 "missing dependency evidence for {expected}"
@@ -1166,15 +1232,17 @@ pub(crate) mod tests {
         replace_defined_type_members(&fixture.root, "CatalogObjects", &["CatalogObject.Editable"]);
         let cancellation = CancellationToken::new();
         MetadataOperations::prepare_mutation(
-            &MetadataRequest::Add(MetaAddRequest {
-                source_set: "main".into(),
-                kind: MetadataKind::EventSubscription,
-                name: "DefinedEvents".into(),
-                operations: vec![source_replace(vec![MetaEventSource::DefinedType {
-                    metadata_path: defined_type,
-                }])],
-                dry_run: false,
-            }),
+            &unica_metadata::request::MetadataRequest::Add(
+                unica_metadata::request::MetaAddRequest {
+                    source_set: "main".into(),
+                    kind: MetadataKind::EventSubscription,
+                    name: "DefinedEvents".into(),
+                    operations: vec![source_replace(vec![MetaEventSource::DefinedType {
+                        metadata_path: defined_type,
+                    }])],
+                    dry_run: false,
+                },
+            ),
             &fixture.context,
             &cancellation,
         )
@@ -1196,7 +1264,7 @@ pub(crate) mod tests {
         fs::write(defined_type_descriptor, malformed).unwrap();
 
         let read = MetadataOperations::read_local(
-            &MetaInfoRequest {
+            &unica_metadata::request::MetaInfoRequest {
                 source_set: "main".into(),
                 metadata_path: subscription,
                 sections: Vec::new(),
@@ -1241,15 +1309,17 @@ pub(crate) mod tests {
         replace_defined_type_members(&fixture.root, "Second", &["DefinedType.First"]);
         let cancellation = CancellationToken::new();
         let failure = match MetadataOperations::prepare_mutation(
-            &MetadataRequest::Add(MetaAddRequest {
-                source_set: "main".into(),
-                kind: MetadataKind::EventSubscription,
-                name: "CyclicEvents".into(),
-                operations: vec![source_replace(vec![MetaEventSource::DefinedType {
-                    metadata_path: first,
-                }])],
-                dry_run: false,
-            }),
+            &unica_metadata::request::MetadataRequest::Add(
+                unica_metadata::request::MetaAddRequest {
+                    source_set: "main".into(),
+                    kind: MetadataKind::EventSubscription,
+                    name: "CyclicEvents".into(),
+                    operations: vec![source_replace(vec![MetaEventSource::DefinedType {
+                        metadata_path: first,
+                    }])],
+                    dry_run: false,
+                },
+            ),
             &fixture.context,
             &cancellation,
         ) {
@@ -1278,7 +1348,7 @@ pub(crate) mod tests {
     ) {
         let cancellation = CancellationToken::new();
         let read = MetadataOperations::read_local(
-            &MetaInfoRequest {
+            &unica_metadata::request::MetaInfoRequest {
                 source_set: "main".into(),
                 metadata_path: target,
                 sections: Vec::new(),
@@ -1402,13 +1472,15 @@ pub(crate) mod tests {
         add_exported_event_handler(&fixture.root, &fixture.context);
         let cancellation = CancellationToken::new();
         MetadataOperations::prepare_mutation(
-            &MetadataRequest::Add(MetaAddRequest {
-                source_set: "main".into(),
-                kind: MetadataKind::EventSubscription,
-                name: "CatalogEvents".into(),
-                operations: Vec::new(),
-                dry_run: false,
-            }),
+            &unica_metadata::request::MetadataRequest::Add(
+                unica_metadata::request::MetaAddRequest {
+                    source_set: "main".into(),
+                    kind: MetadataKind::EventSubscription,
+                    name: "CatalogEvents".into(),
+                    operations: Vec::new(),
+                    dry_run: false,
+                },
+            ),
             &fixture.context,
             &cancellation,
         )
@@ -1424,14 +1496,16 @@ pub(crate) mod tests {
             MetaEventSource::Object {
                 metadata_path: fixture.target.clone(),
             },
-            source_family(crate::domain::metadata::EventSourceClass::CatalogObject),
+            source_family(unica_metadata::EventSourceClass::CatalogObject),
         ];
-        let request = MetadataRequest::Edit(MetaEditRequest {
-            source_set: "main".into(),
-            metadata_path: subscription.clone(),
-            operations: vec![source_replace(sources.clone())],
-            dry_run: false,
-        });
+        let request = unica_metadata::request::MetadataRequest::Edit(
+            unica_metadata::request::MetaEditRequest {
+                source_set: "main".into(),
+                metadata_path: subscription.clone(),
+                operations: vec![source_replace(sources.clone())],
+                dry_run: false,
+            },
+        );
 
         let prepared =
             MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
@@ -1443,7 +1517,7 @@ pub(crate) mod tests {
             .filter(|resource| {
                 matches!(
                     &resource.role,
-                    MetadataResourceRole::Dependency { target } if target == &fixture.target
+                    unica_metadata::validation_subject::MetadataResourceRole::Dependency { target } if target == &fixture.target
                 )
             })
             .count();
@@ -1455,7 +1529,7 @@ pub(crate) mod tests {
             .any(|resource| {
                 matches!(
                     &resource.role,
-                    MetadataResourceRole::Module { owner }
+                    unica_metadata::validation_subject::MetadataResourceRole::Module { owner }
                         if owner.as_str() == "CommonModule.EventHandlers"
                 )
             }));
@@ -1472,7 +1546,7 @@ pub(crate) mod tests {
         );
         prepared.publish(&cancellation).unwrap();
         let read = MetadataOperations::read_local(
-            &MetaInfoRequest {
+            &unica_metadata::request::MetaInfoRequest {
                 source_set: "main".into(),
                 metadata_path: subscription.clone(),
                 sections: Vec::new(),
@@ -1584,13 +1658,15 @@ pub(crate) mod tests {
         add_exported_event_handler(&fixture.root, &fixture.context);
         let cancellation = CancellationToken::new();
         MetadataOperations::prepare_mutation(
-            &MetadataRequest::Add(MetaAddRequest {
-                source_set: "main".into(),
-                kind: MetadataKind::EventSubscription,
-                name: "CatalogEvents".into(),
-                operations: Vec::new(),
-                dry_run: false,
-            }),
+            &unica_metadata::request::MetadataRequest::Add(
+                unica_metadata::request::MetaAddRequest {
+                    source_set: "main".into(),
+                    kind: MetadataKind::EventSubscription,
+                    name: "CatalogEvents".into(),
+                    operations: Vec::new(),
+                    dry_run: false,
+                },
+            ),
             &fixture.context,
             &cancellation,
         )
@@ -1602,14 +1678,16 @@ pub(crate) mod tests {
             "EventSubscription.CatalogEvents",
         )
         .unwrap();
-        let request = MetadataRequest::Edit(MetaEditRequest {
-            source_set: "main".into(),
-            metadata_path: subscription,
-            operations: vec![source_replace(vec![MetaEventSource::Object {
-                metadata_path: fixture.target.clone(),
-            }])],
-            dry_run: false,
-        });
+        let request = unica_metadata::request::MetadataRequest::Edit(
+            unica_metadata::request::MetaEditRequest {
+                source_set: "main".into(),
+                metadata_path: subscription,
+                operations: vec![source_replace(vec![MetaEventSource::Object {
+                    metadata_path: fixture.target.clone(),
+                }])],
+                dry_run: false,
+            },
+        );
         let prepared =
             MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
                 .unwrap();
@@ -1621,12 +1699,10 @@ pub(crate) mod tests {
         let dependency_directory = fixture.root.join("src/Catalogs");
         let outside_directory = fixture.root.join("outside-catalogs");
         fs::rename(&dependency_directory, &outside_directory).unwrap();
-        let Some(link_result) =
-            crate::infrastructure::platform::filesystem::create_dir_symlink_for_test(
-                &outside_directory,
-                &dependency_directory,
-            )
-        else {
+        let Some(link_result) = unica_workspace::test_support::create_dir_symlink_for_test(
+            &outside_directory,
+            &dependency_directory,
+        ) else {
             fs::rename(&outside_directory, &dependency_directory).unwrap();
             return;
         };
@@ -1657,13 +1733,15 @@ pub(crate) mod tests {
         add_exported_event_handler(&fixture.root, &fixture.context);
         let cancellation = CancellationToken::new();
         MetadataOperations::prepare_mutation(
-            &MetadataRequest::Add(MetaAddRequest {
-                source_set: "main".into(),
-                kind: MetadataKind::EventSubscription,
-                name: "Events".into(),
-                operations: Vec::new(),
-                dry_run: false,
-            }),
+            &unica_metadata::request::MetadataRequest::Add(
+                unica_metadata::request::MetaAddRequest {
+                    source_set: "main".into(),
+                    kind: MetadataKind::EventSubscription,
+                    name: "Events".into(),
+                    operations: Vec::new(),
+                    dry_run: false,
+                },
+            ),
             &fixture.context,
             &cancellation,
         )
@@ -1673,14 +1751,16 @@ pub(crate) mod tests {
         let subscription =
             MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "EventSubscription.Events")
                 .unwrap();
-        let request = MetadataRequest::Edit(MetaEditRequest {
-            source_set: "main".into(),
-            metadata_path: subscription,
-            operations: vec![source_replace(vec![source_family(
-                crate::domain::metadata::EventSourceClass::CatalogObject,
-            )])],
-            dry_run: false,
-        });
+        let request = unica_metadata::request::MetadataRequest::Edit(
+            unica_metadata::request::MetaEditRequest {
+                source_set: "main".into(),
+                metadata_path: subscription,
+                operations: vec![source_replace(vec![source_family(
+                    unica_metadata::EventSourceClass::CatalogObject,
+                )])],
+                dry_run: false,
+            },
+        );
         let prepared =
             MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
                 .unwrap();
@@ -1689,12 +1769,10 @@ pub(crate) mod tests {
         let extension_directory = fixture.root.join("src/CommonModules/EventHandlers/Ext");
         let outside_directory = fixture.root.join("outside-handler-ext");
         fs::rename(&extension_directory, &outside_directory).unwrap();
-        let Some(link_result) =
-            crate::infrastructure::platform::filesystem::create_dir_symlink_for_test(
-                &outside_directory,
-                &extension_directory,
-            )
-        else {
+        let Some(link_result) = unica_workspace::test_support::create_dir_symlink_for_test(
+            &outside_directory,
+            &extension_directory,
+        ) else {
             fs::rename(&outside_directory, &extension_directory).unwrap();
             return;
         };
@@ -1725,13 +1803,15 @@ pub(crate) mod tests {
         add_exported_event_handler(&fixture.root, &fixture.context);
         let cancellation = CancellationToken::new();
         MetadataOperations::prepare_mutation(
-            &MetadataRequest::Add(MetaAddRequest {
-                source_set: "main".into(),
-                kind: MetadataKind::EventSubscription,
-                name: "CatalogEvents".into(),
-                operations: Vec::new(),
-                dry_run: false,
-            }),
+            &unica_metadata::request::MetadataRequest::Add(
+                unica_metadata::request::MetaAddRequest {
+                    source_set: "main".into(),
+                    kind: MetadataKind::EventSubscription,
+                    name: "CatalogEvents".into(),
+                    operations: Vec::new(),
+                    dry_run: false,
+                },
+            ),
             &fixture.context,
             &cancellation,
         )
@@ -1754,14 +1834,16 @@ pub(crate) mod tests {
             "EventSubscription.CatalogEvents",
         )
         .unwrap();
-        let request = MetadataRequest::Edit(MetaEditRequest {
-            source_set: "main".into(),
-            metadata_path: subscription,
-            operations: vec![source_replace(vec![MetaEventSource::Object {
-                metadata_path: fixture.target.clone(),
-            }])],
-            dry_run: false,
-        });
+        let request = unica_metadata::request::MetadataRequest::Edit(
+            unica_metadata::request::MetaEditRequest {
+                source_set: "main".into(),
+                metadata_path: subscription,
+                operations: vec![source_replace(vec![MetaEventSource::Object {
+                    metadata_path: fixture.target.clone(),
+                }])],
+                dry_run: false,
+            },
+        );
 
         let failure =
             match MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation) {
@@ -1783,13 +1865,15 @@ pub(crate) mod tests {
         add_exported_event_handler(&fixture.root, &fixture.context);
         let cancellation = CancellationToken::new();
         MetadataOperations::prepare_mutation(
-            &MetadataRequest::Add(MetaAddRequest {
-                source_set: "main".into(),
-                kind: MetadataKind::EventSubscription,
-                name: "GuardedEvents".into(),
-                operations: Vec::new(),
-                dry_run: false,
-            }),
+            &unica_metadata::request::MetadataRequest::Add(
+                unica_metadata::request::MetaAddRequest {
+                    source_set: "main".into(),
+                    kind: MetadataKind::EventSubscription,
+                    name: "GuardedEvents".into(),
+                    operations: Vec::new(),
+                    dry_run: false,
+                },
+            ),
             &fixture.context,
             &cancellation,
         )
@@ -1801,14 +1885,16 @@ pub(crate) mod tests {
             "EventSubscription.GuardedEvents",
         )
         .unwrap();
-        let request = MetadataRequest::Edit(MetaEditRequest {
-            source_set: "main".into(),
-            metadata_path: subscription,
-            operations: vec![source_replace(vec![source_family(
-                crate::domain::metadata::EventSourceClass::CatalogObject,
-            )])],
-            dry_run: false,
-        });
+        let request = unica_metadata::request::MetadataRequest::Edit(
+            unica_metadata::request::MetaEditRequest {
+                source_set: "main".into(),
+                metadata_path: subscription,
+                operations: vec![source_replace(vec![source_family(
+                    unica_metadata::EventSourceClass::CatalogObject,
+                )])],
+                dry_run: false,
+            },
+        );
         let descriptor = fixture
             .root
             .join("src/EventSubscriptions/GuardedEvents.xml");
@@ -1987,7 +2073,12 @@ pub(crate) mod tests {
             .validation_subject()
             .resources
             .iter()
-            .find(|resource| matches!(resource.role, MetadataResourceRole::Descriptor))
+            .find(|resource| {
+                matches!(
+                    resource.role,
+                    unica_metadata::validation_subject::MetadataResourceRole::Descriptor
+                )
+            })
             .unwrap()
             .bytes
             .clone();
@@ -1998,7 +2089,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             validation.status,
-            crate::domain::metadata::MetaValidationStatus::Passed,
+            unica_metadata::MetaValidationStatus::Passed,
             "{:?}",
             validation.diagnostics
         );
@@ -2024,13 +2115,15 @@ pub(crate) mod tests {
     fn add_help_owner(fixture: &Fixture, name: &str) {
         let cancellation = CancellationToken::new();
         MetadataOperations::prepare_mutation(
-            &MetadataRequest::Add(MetaAddRequest {
-                source_set: "main".into(),
-                kind: MetadataKind::Catalog,
-                name: name.into(),
-                operations: Vec::new(),
-                dry_run: false,
-            }),
+            &unica_metadata::request::MetadataRequest::Add(
+                unica_metadata::request::MetaAddRequest {
+                    source_set: "main".into(),
+                    kind: MetadataKind::Catalog,
+                    name: name.into(),
+                    operations: Vec::new(),
+                    dry_run: false,
+                },
+            ),
             &fixture.context,
             &cancellation,
         )
@@ -2076,9 +2169,9 @@ pub(crate) mod tests {
         let expected_help = {
             let mut bytes = b"\xef\xbb\xbf".to_vec();
             bytes.extend_from_slice(
-                crate::infrastructure::native_operations::help::help_metadata_xml(
+                unica_metadata_designer::help::help_metadata_xml(
                     "ru",
-                    crate::domain::format_profile::ACTIVE_FORMAT_PROFILE.export_format,
+                    unica_source_designer::format_profile::ACTIVE_FORMAT_PROFILE.export_format,
                 )
                 .as_bytes(),
             );
@@ -2370,13 +2463,14 @@ pub(crate) mod tests {
             let fixture = Fixture::new(label);
             let original = fs::read(&fixture.descriptor).unwrap();
             let mixed = mixed_eol_source(&original, first, remaining);
-            let _cwd = crate::test_support::ProcessCwdGuard::enter(&fixture.root).unwrap();
+            let _cwd =
+                unica_workspace::test_support::ProcessCwdGuard::enter(&fixture.root).unwrap();
             let application = UnicaApplication::new();
             let mut observations = Vec::new();
 
             for dry_run in [true, false] {
                 fs::write(&fixture.descriptor, &mixed).unwrap();
-                let before = crate::test_support::tree_snapshot(&fixture.root);
+                let before = unica_workspace::test_support::tree_snapshot(&fixture.root);
                 let result = application
                     .call_tool(
                         "unica.meta.edit",
@@ -2394,7 +2488,7 @@ pub(crate) mod tests {
                         ]),
                     )
                     .expect("public typed meta.edit call");
-                let after = crate::test_support::tree_snapshot(&fixture.root);
+                let after = unica_workspace::test_support::tree_snapshot(&fixture.root);
                 observations.push((dry_run, result, before, after));
             }
 
@@ -2501,7 +2595,12 @@ pub(crate) mod tests {
                     .validation_subject()
                     .resources
                     .iter()
-                    .find(|resource| matches!(resource.role, MetadataResourceRole::Descriptor))
+                    .find(|resource| {
+                        matches!(
+                            resource.role,
+                            unica_metadata::validation_subject::MetadataResourceRole::Descriptor
+                        )
+                    })
                     .unwrap()
                     .bytes
                     .clone();
@@ -2576,7 +2675,12 @@ pub(crate) mod tests {
                 .validation_subject()
                 .resources
                 .iter()
-                .find(|resource| matches!(resource.role, MetadataResourceRole::Descriptor))
+                .find(|resource| {
+                    matches!(
+                        resource.role,
+                        unica_metadata::validation_subject::MetadataResourceRole::Descriptor
+                    )
+                })
                 .unwrap()
                 .bytes
                 .clone();
@@ -2628,7 +2732,12 @@ pub(crate) mod tests {
                     .validation_subject()
                     .resources
                     .iter()
-                    .find(|resource| matches!(resource.role, MetadataResourceRole::Descriptor))
+                    .find(|resource| {
+                        matches!(
+                            resource.role,
+                            unica_metadata::validation_subject::MetadataResourceRole::Descriptor
+                        )
+                    })
                     .unwrap()
                     .bytes
                     .clone(),
@@ -2696,7 +2805,8 @@ pub(crate) mod tests {
             .iter()
             .any(|footprint| {
                 footprint.child.as_str() == "Catalog.Editable.Form.Existing"
-                    && footprint.profile == MetadataChildProfile::Form
+                    && footprint.profile
+                        == unica_metadata::validation_subject::MetadataChildProfile::Form
             }));
         assert!(prepared
             .preview()
@@ -2877,7 +2987,12 @@ pub(crate) mod tests {
             .validation_subject()
             .resources
             .iter()
-            .find(|resource| matches!(resource.role, MetadataResourceRole::Descriptor))
+            .find(|resource| {
+                matches!(
+                    resource.role,
+                    unica_metadata::validation_subject::MetadataResourceRole::Descriptor
+                )
+            })
             .unwrap()
             .bytes
             .clone();
@@ -3008,17 +3123,19 @@ pub(crate) mod tests {
         let fixture = Fixture::new("form-resource-rollback");
         let cancellation = CancellationToken::new();
         let descriptor_before = fs::read(&fixture.descriptor).unwrap();
-        let request = MetadataRequest::Edit(MetaEditRequest {
-            source_set: "main".into(),
-            metadata_path: fixture.target.clone(),
-            operations: vec![MetaEditOperation::add(
-                MetaCollection::Forms,
-                None,
-                vec![MetaElementInput::named("ObjectForm")],
-            )
-            .unwrap()],
-            dry_run: false,
-        });
+        let request = unica_metadata::request::MetadataRequest::Edit(
+            unica_metadata::request::MetaEditRequest {
+                source_set: "main".into(),
+                metadata_path: fixture.target.clone(),
+                operations: vec![MetaEditOperation::add(
+                    MetaCollection::Forms,
+                    None,
+                    vec![MetaElementInput::named("ObjectForm")],
+                )
+                .unwrap()],
+                dry_run: false,
+            },
+        );
         let prepared =
             MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
                 .unwrap();
@@ -3070,15 +3187,17 @@ pub(crate) mod tests {
         fixture
     }
 
-    fn validate_form_read(fixture: &Fixture) -> MetadataValidationResult {
+    fn validate_form_read(
+        fixture: &Fixture,
+    ) -> unica_metadata::validation_subject::MetadataValidationResult {
         let cancellation = CancellationToken::new();
         let read = MetadataOperations::read_local(
-            &MetaInfoRequest {
+            &unica_metadata::request::MetaInfoRequest {
                 source_set: "main".into(),
                 metadata_path: fixture.target.clone(),
                 sections: vec![
-                    MetaInfoSection::Subscriptions,
-                    MetaInfoSection::FunctionalOptions,
+                    unica_metadata::request::MetaInfoSection::Subscriptions,
+                    unica_metadata::request::MetaInfoSection::FunctionalOptions,
                 ],
                 limit: 20,
             },
@@ -3095,7 +3214,7 @@ pub(crate) mod tests {
     #[test]
     fn ordinary_form_binary_is_valid_opaque_parent_read_evidence() {
         let fixture = ordinary_form_read_fixture();
-        let before = crate::test_support::tree_snapshot(&fixture.root.join("src"));
+        let before = unica_workspace::test_support::tree_snapshot(&fixture.root.join("src"));
         let validation = validate_form_read(&fixture);
         assert_eq!(
             validation.status,
@@ -3104,7 +3223,7 @@ pub(crate) mod tests {
             validation.diagnostics
         );
         assert_eq!(
-            crate::test_support::tree_snapshot(&fixture.root.join("src")),
+            unica_workspace::test_support::tree_snapshot(&fixture.root.join("src")),
             before,
             "reading the ordinary form must preserve binary and managed sibling bytes"
         );
@@ -3149,7 +3268,7 @@ pub(crate) mod tests {
             if payload == "extra" {
                 fs::write(ext.join("unexpected.dat"), b"unexpected").unwrap();
             }
-            let before = crate::test_support::tree_snapshot(&fixture.root.join("src"));
+            let before = unica_workspace::test_support::tree_snapshot(&fixture.root.join("src"));
             let validation = validate_form_read(&fixture);
             assert_eq!(
                 validation.status, expected,
@@ -3157,7 +3276,7 @@ pub(crate) mod tests {
                 validation.diagnostics
             );
             assert_eq!(
-                crate::test_support::tree_snapshot(&fixture.root.join("src")),
+                unica_workspace::test_support::tree_snapshot(&fixture.root.join("src")),
                 before,
                 "{form_type}/{payload}: validation must not repair the source tree"
             );
@@ -3197,7 +3316,7 @@ pub(crate) mod tests {
                 original.replace("<FormType>Ordinary</FormType>", form_type_xml),
             )
             .unwrap();
-            let before = crate::test_support::tree_snapshot(&fixture.root.join("src"));
+            let before = unica_workspace::test_support::tree_snapshot(&fixture.root.join("src"));
             let validation = validate_form_read(&fixture);
             assert_eq!(
                 validation.status,
@@ -3206,7 +3325,7 @@ pub(crate) mod tests {
                 validation.diagnostics
             );
             assert_eq!(
-                crate::test_support::tree_snapshot(&fixture.root.join("src")),
+                unica_workspace::test_support::tree_snapshot(&fixture.root.join("src")),
                 before,
                 "{case}"
             );
@@ -3240,7 +3359,7 @@ pub(crate) mod tests {
             ),
         ];
         for (case, request) in requests {
-            let before = crate::test_support::tree_snapshot(&fixture.root.join("src"));
+            let before = unica_workspace::test_support::tree_snapshot(&fixture.root.join("src"));
             let prepared =
                 MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation);
             assert!(
@@ -3248,7 +3367,7 @@ pub(crate) mod tests {
                 "{case}: opaque read evidence must not grant writer support"
             );
             assert_eq!(
-                crate::test_support::tree_snapshot(&fixture.root.join("src")),
+                unica_workspace::test_support::tree_snapshot(&fixture.root.join("src")),
                 before,
                 "{case}: refused writer must preserve ordinary binary and managed sibling"
             );
@@ -3259,17 +3378,19 @@ pub(crate) mod tests {
     fn typed_form_add_validation_covers_content_and_publish_writes_exact_footprint() {
         let fixture = Fixture::new("form-resource-publish-add");
         let cancellation = CancellationToken::new();
-        let request = MetadataRequest::Edit(MetaEditRequest {
-            source_set: "main".into(),
-            metadata_path: fixture.target.clone(),
-            operations: vec![MetaEditOperation::add(
-                MetaCollection::Forms,
-                None,
-                vec![MetaElementInput::named("ObjectForm")],
-            )
-            .unwrap()],
-            dry_run: false,
-        });
+        let request = unica_metadata::request::MetadataRequest::Edit(
+            unica_metadata::request::MetaEditRequest {
+                source_set: "main".into(),
+                metadata_path: fixture.target.clone(),
+                operations: vec![MetaEditOperation::add(
+                    MetaCollection::Forms,
+                    None,
+                    vec![MetaElementInput::named("ObjectForm")],
+                )
+                .unwrap()],
+                dry_run: false,
+            },
+        );
         let prepared =
             MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
                 .unwrap();
@@ -3695,7 +3816,8 @@ pub(crate) mod tests {
             .child_footprints
             .iter()
             .any(|footprint| {
-                footprint.profile == MetadataChildProfile::Command
+                footprint.profile
+                    == unica_metadata::validation_subject::MetadataChildProfile::Command
                     && footprint.directories.is_empty()
             }));
         let validation = MetadataOperations::validate(
@@ -3772,8 +3894,8 @@ pub(crate) mod tests {
             .iter()
             .any(|resource| matches!(
                 resource.role,
-                MetadataResourceRole::ChildResource {
-                    kind: MetadataChildResourceKind::Module,
+                unica_metadata::validation_subject::MetadataResourceRole::ChildResource {
+                    kind: unica_metadata::validation_subject::MetadataChildResourceKind::Module,
                     ordinal: 0,
                     ref child,
                 } if child.as_str() == "Catalog.Editable.Command.RunNew"
@@ -4462,9 +4584,9 @@ pub(crate) mod tests {
                 "spreadsheet",
                 "SpreadsheetDocument",
                 "Template.xml",
-                crate::infrastructure::native_operations::mxl::empty_spreadsheet_document_xml()
+                unica_templates_designer::mxl_root::empty_spreadsheet_document_xml()
                     .into_bytes(),
-                MetadataTemplateType::SpreadsheetDocument,
+                unica_metadata::validation_subject::MetadataTemplateType::SpreadsheetDocument,
             ),
             (
                 "schema",
@@ -4472,21 +4594,21 @@ pub(crate) mod tests {
                 "Template.xml",
                 br#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema"/>"#
                     .to_vec(),
-                MetadataTemplateType::DataCompositionSchema,
+                unica_metadata::validation_subject::MetadataTemplateType::DataCompositionSchema,
             ),
             (
                 "text",
                 "TextDocument",
                 "Template.txt",
                 "Сохранённый текст".as_bytes().to_vec(),
-                MetadataTemplateType::TextDocument,
+                unica_metadata::validation_subject::MetadataTemplateType::TextDocument,
             ),
             (
                 "binary",
                 "BinaryData",
                 "Template.bin",
                 vec![0xff, 0x00, 0x80, 0x01],
-                MetadataTemplateType::BinaryData,
+                unica_metadata::validation_subject::MetadataTemplateType::BinaryData,
             ),
         ];
         for (label, template_type, file_name, payload, expected_type) in cases {
@@ -4545,8 +4667,8 @@ pub(crate) mod tests {
                 .any(|resource| {
                     matches!(
                         resource.role,
-                        MetadataResourceRole::ChildResource {
-                            kind: MetadataChildResourceKind::TemplateContent { template_type, .. },
+                        unica_metadata::validation_subject::MetadataResourceRole::ChildResource {
+                            kind: unica_metadata::validation_subject::MetadataChildResourceKind::TemplateContent { template_type, .. },
                             ..
                         } if template_type == expected_type
                     ) && resource.bytes == payload
@@ -4589,16 +4711,16 @@ pub(crate) mod tests {
                 .unwrap();
         assert_eq!(
             prepared.validation_subject().child_footprints[0].profile,
-            MetadataChildProfile::Form
+            unica_metadata::validation_subject::MetadataChildProfile::Form
         );
         // `Ext/Form` holds the module, so the closure of the payload files
         // carries it as an unnamed nested directory.
         assert_eq!(
             prepared.validation_subject().child_footprints[0].directories,
             vec![
-                MetadataChildDirectoryKind::Root,
-                MetadataChildDirectoryKind::Extension,
-                MetadataChildDirectoryKind::Nested,
+                unica_metadata::validation_subject::MetadataChildDirectoryKind::Root,
+                unica_metadata::validation_subject::MetadataChildDirectoryKind::Extension,
+                unica_metadata::validation_subject::MetadataChildDirectoryKind::Nested,
             ]
         );
         assert!(prepared
@@ -4607,8 +4729,9 @@ pub(crate) mod tests {
             .iter()
             .any(|resource| matches!(
                 resource.role,
-                MetadataResourceRole::ChildResource {
-                    kind: MetadataChildResourceKind::FormContent,
+                unica_metadata::validation_subject::MetadataResourceRole::ChildResource {
+                    kind:
+                        unica_metadata::validation_subject::MetadataChildResourceKind::FormContent,
                     ordinal: 0,
                     ..
                 }
@@ -4619,8 +4742,8 @@ pub(crate) mod tests {
             .iter()
             .any(|resource| matches!(
                 resource.role,
-                MetadataResourceRole::ChildResource {
-                    kind: MetadataChildResourceKind::Module,
+                unica_metadata::validation_subject::MetadataResourceRole::ChildResource {
+                    kind: unica_metadata::validation_subject::MetadataChildResourceKind::Module,
                     ordinal: 1,
                     ..
                 }
@@ -4680,14 +4803,16 @@ pub(crate) mod tests {
                 .unwrap();
         assert_eq!(
             prepared.validation_subject().child_footprints[0].profile,
-            MetadataChildProfile::Template(MetadataTemplateType::HtmlDocument)
+            unica_metadata::validation_subject::MetadataChildProfile::Template(
+                unica_metadata::validation_subject::MetadataTemplateType::HtmlDocument
+            )
         );
         assert_eq!(
             prepared.validation_subject().child_footprints[0].directories,
             vec![
-                MetadataChildDirectoryKind::Root,
-                MetadataChildDirectoryKind::Extension,
-                MetadataChildDirectoryKind::HtmlPages,
+                unica_metadata::validation_subject::MetadataChildDirectoryKind::Root,
+                unica_metadata::validation_subject::MetadataChildDirectoryKind::Extension,
+                unica_metadata::validation_subject::MetadataChildDirectoryKind::HtmlPages,
             ]
         );
         assert!(prepared
@@ -4696,9 +4821,9 @@ pub(crate) mod tests {
             .iter()
             .any(|resource| matches!(
                 resource.role,
-                MetadataResourceRole::ChildResource {
-                    kind: MetadataChildResourceKind::TemplateContent {
-                        part: MetadataTemplateResourcePart::Primary,
+                unica_metadata::validation_subject::MetadataResourceRole::ChildResource {
+                    kind: unica_metadata::validation_subject::MetadataChildResourceKind::TemplateContent {
+                        part: unica_metadata::validation_subject::MetadataTemplateResourcePart::Primary,
                         ..
                     },
                     ordinal: 0,
@@ -4711,9 +4836,9 @@ pub(crate) mod tests {
             .iter()
             .any(|resource| matches!(
                 resource.role,
-                MetadataResourceRole::ChildResource {
-                    kind: MetadataChildResourceKind::TemplateContent {
-                        part: MetadataTemplateResourcePart::HtmlPage,
+                unica_metadata::validation_subject::MetadataResourceRole::ChildResource {
+                    kind: unica_metadata::validation_subject::MetadataChildResourceKind::TemplateContent {
+                        part: unica_metadata::validation_subject::MetadataTemplateResourcePart::HtmlPage,
                         ..
                     },
                     ordinal: 1,
@@ -4741,12 +4866,10 @@ pub(crate) mod tests {
         let ext = fixture.root.join("src/Catalogs/Editable/Forms/Main/Ext");
         let external = fixture.root.join("provider-secret.txt");
         fs::write(&external, b"secret").unwrap();
-        let Some(link_result) =
-            crate::infrastructure::platform::filesystem::create_file_symlink_for_test(
-                &external,
-                ext.join("LinkedResource"),
-            )
-        else {
+        let Some(link_result) = unica_workspace::test_support::create_file_symlink_for_test(
+            &external,
+            ext.join("LinkedResource"),
+        ) else {
             return;
         };
         if link_result.is_err() {
@@ -4862,10 +4985,7 @@ pub(crate) mod tests {
         fs::create_dir_all(&external).unwrap();
         let collection = fixture.root.join("src/Catalogs/Editable/Forms");
         let Some(link_result) =
-            crate::infrastructure::platform::filesystem::create_dir_symlink_for_test(
-                &external,
-                &collection,
-            )
+            unica_workspace::test_support::create_dir_symlink_for_test(&external, &collection)
         else {
             return;
         };
@@ -4902,13 +5022,15 @@ pub(crate) mod tests {
         let fixture = Fixture::new("relation-dependency-drift");
         let cancellation = CancellationToken::new();
         MetadataOperations::prepare_mutation(
-            &MetadataRequest::Add(MetaAddRequest {
-                source_set: "main".into(),
-                kind: MetadataKind::Catalog,
-                name: "Parent".into(),
-                operations: Vec::new(),
-                dry_run: false,
-            }),
+            &unica_metadata::request::MetadataRequest::Add(
+                unica_metadata::request::MetaAddRequest {
+                    source_set: "main".into(),
+                    kind: MetadataKind::Catalog,
+                    name: "Parent".into(),
+                    operations: Vec::new(),
+                    dry_run: false,
+                },
+            ),
             &fixture.context,
             &cancellation,
         )
@@ -4917,24 +5039,26 @@ pub(crate) mod tests {
         .unwrap();
         let parent_address =
             MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Parent").unwrap();
-        let request = MetadataRequest::Edit(MetaEditRequest {
-            source_set: "main".into(),
-            metadata_path: fixture.target.clone(),
-            operations: vec![MetaEditOperation::edit_relations(
-                MetaRelation::Owners,
-                RelationEditMode::Add,
-                vec![MetadataReference {
-                    metadata_path: parent_address.clone(),
-                }],
-            )
-            .unwrap()],
-            dry_run: false,
-        });
+        let request = unica_metadata::request::MetadataRequest::Edit(
+            unica_metadata::request::MetaEditRequest {
+                source_set: "main".into(),
+                metadata_path: fixture.target.clone(),
+                operations: vec![MetaEditOperation::edit_relations(
+                    MetaRelation::Owners,
+                    RelationEditMode::Add,
+                    vec![MetadataReference {
+                        metadata_path: parent_address.clone(),
+                    }],
+                )
+                .unwrap()],
+                dry_run: false,
+            },
+        );
         let prepared =
             MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
                 .unwrap();
         assert!(prepared.validation_subject().resources.iter().any(|resource| {
-            matches!(&resource.role, MetadataResourceRole::Dependency { target } if target == &parent_address)
+            matches!(&resource.role, unica_metadata::validation_subject::MetadataResourceRole::Dependency { target } if target == &parent_address)
         }));
         let parent_path = fixture.root.join("src/Catalogs/Parent.xml");
         let mut external = fs::read(&parent_path).unwrap();
@@ -4979,7 +5103,9 @@ pub(crate) mod tests {
             .resources
             .iter()
             .filter_map(|resource| match &resource.role {
-                MetadataResourceRole::Dependency { target } => Some(target.as_str()),
+                unica_metadata::validation_subject::MetadataResourceRole::Dependency { target } => {
+                    Some(target.as_str())
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -5086,7 +5212,9 @@ pub(crate) mod tests {
             .resources
             .iter()
             .filter_map(|resource| match &resource.role {
-                MetadataResourceRole::Dependency { target } => Some(target),
+                unica_metadata::validation_subject::MetadataResourceRole::Dependency { target } => {
+                    Some(target)
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -5115,7 +5243,9 @@ pub(crate) mod tests {
             .resources
             .iter()
             .filter_map(|resource| match &resource.role {
-                MetadataResourceRole::Dependency { target } => Some(target),
+                unica_metadata::validation_subject::MetadataResourceRole::Dependency { target } => {
+                    Some(target)
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -5136,29 +5266,31 @@ pub(crate) mod tests {
         .unwrap()
         .publish(&cancellation)
         .unwrap();
-        let request = MetadataRequest::Edit(MetaEditRequest {
-            source_set: "main".into(),
-            metadata_path: fixture.target.clone(),
-            operations: vec![
-                MetaEditOperation::edit_relations(
-                    MetaRelation::Owners,
-                    RelationEditMode::Remove,
-                    vec![MetadataReference {
-                        metadata_path: parent.clone(),
-                    }],
-                )
-                .unwrap(),
-                MetaEditOperation::edit_relations(
-                    MetaRelation::Owners,
-                    RelationEditMode::Add,
-                    vec![MetadataReference {
-                        metadata_path: parent.clone(),
-                    }],
-                )
-                .unwrap(),
-            ],
-            dry_run: false,
-        });
+        let request = unica_metadata::request::MetadataRequest::Edit(
+            unica_metadata::request::MetaEditRequest {
+                source_set: "main".into(),
+                metadata_path: fixture.target.clone(),
+                operations: vec![
+                    MetaEditOperation::edit_relations(
+                        MetaRelation::Owners,
+                        RelationEditMode::Remove,
+                        vec![MetadataReference {
+                            metadata_path: parent.clone(),
+                        }],
+                    )
+                    .unwrap(),
+                    MetaEditOperation::edit_relations(
+                        MetaRelation::Owners,
+                        RelationEditMode::Add,
+                        vec![MetadataReference {
+                            metadata_path: parent.clone(),
+                        }],
+                    )
+                    .unwrap(),
+                ],
+                dry_run: false,
+            },
+        );
 
         let prepared =
             MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation)
@@ -5168,7 +5300,7 @@ pub(crate) mod tests {
             .resources
             .iter()
             .filter(|resource| {
-                matches!(&resource.role, MetadataResourceRole::Dependency { target } if target == &parent)
+                matches!(&resource.role, unica_metadata::validation_subject::MetadataResourceRole::Dependency { target } if target == &parent)
             })
             .count();
         assert_eq!(count, 1);
@@ -5180,19 +5312,21 @@ pub(crate) mod tests {
         let cancellation = CancellationToken::new();
         let missing =
             MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Missing").unwrap();
-        let request = MetadataRequest::Edit(MetaEditRequest {
-            source_set: "main".into(),
-            metadata_path: fixture.target.clone(),
-            operations: vec![MetaEditOperation::edit_relations(
-                MetaRelation::Owners,
-                RelationEditMode::Add,
-                vec![MetadataReference {
-                    metadata_path: missing,
-                }],
-            )
-            .unwrap()],
-            dry_run: false,
-        });
+        let request = unica_metadata::request::MetadataRequest::Edit(
+            unica_metadata::request::MetaEditRequest {
+                source_set: "main".into(),
+                metadata_path: fixture.target.clone(),
+                operations: vec![MetaEditOperation::edit_relations(
+                    MetaRelation::Owners,
+                    RelationEditMode::Add,
+                    vec![MetadataReference {
+                        metadata_path: missing,
+                    }],
+                )
+                .unwrap()],
+                dry_run: false,
+            },
+        );
 
         let failure =
             match MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation) {
@@ -5216,37 +5350,39 @@ pub(crate) mod tests {
         let cancellation = CancellationToken::new();
         let descriptor_before = fs::read(&fixture.descriptor).unwrap();
         let owner_before = fs::read(&fixture.owner).unwrap();
-        let request = MetadataRequest::Edit(MetaEditRequest {
-            source_set: "main".into(),
-            metadata_path: fixture.target.clone(),
-            operations: vec![
-                MetaEditOperation::add(
-                    MetaCollection::TabularSections,
-                    None,
-                    vec![MetaElementInput::named("Lines")],
-                )
-                .unwrap(),
-                MetaEditOperation::add(
-                    MetaCollection::Attributes,
-                    Some(MetaScope {
-                        tabular_section: "Lines".into(),
-                    }),
-                    vec![MetaElementInput::named("Value")],
-                )
-                .unwrap(),
-                MetaEditOperation::update(
-                    MetaCollection::Attributes,
-                    None,
-                    vec![MetaElementUpdateInput {
-                        name: "Missing".into(),
-                        synonym: Some("must not upsert".into()),
-                        ..MetaElementUpdateInput::default()
-                    }],
-                )
-                .unwrap(),
-            ],
-            dry_run: false,
-        });
+        let request = unica_metadata::request::MetadataRequest::Edit(
+            unica_metadata::request::MetaEditRequest {
+                source_set: "main".into(),
+                metadata_path: fixture.target.clone(),
+                operations: vec![
+                    MetaEditOperation::add(
+                        MetaCollection::TabularSections,
+                        None,
+                        vec![MetaElementInput::named("Lines")],
+                    )
+                    .unwrap(),
+                    MetaEditOperation::add(
+                        MetaCollection::Attributes,
+                        Some(MetaScope {
+                            tabular_section: "Lines".into(),
+                        }),
+                        vec![MetaElementInput::named("Value")],
+                    )
+                    .unwrap(),
+                    MetaEditOperation::update(
+                        MetaCollection::Attributes,
+                        None,
+                        vec![MetaElementUpdateInput {
+                            name: "Missing".into(),
+                            synonym: Some("must not upsert".into()),
+                            ..MetaElementUpdateInput::default()
+                        }],
+                    )
+                    .unwrap(),
+                ],
+                dry_run: false,
+            },
+        );
 
         let failure =
             match MetadataOperations::prepare_mutation(&request, &fixture.context, &cancellation) {

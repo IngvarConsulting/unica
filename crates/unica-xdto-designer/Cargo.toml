@@ -1,0 +1,22 @@
+[package]
+name = "unica-xdto-designer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+test-support = []
+
+[dependencies]
+unica-address = { path = "../unica-address" }
+unica-source-contract = { path = "../unica-source-contract" }
+unica-xdto = { path = "../unica-xdto" }
+unica-source-designer = { path = "../unica-source-designer" }
+unica-metadata-designer = { path = "../unica-metadata-designer" }
+sha2.workspace = true
+roxmltree.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+unica-xml-format = { path = "../unica-xml-format" }

@@ -1,0 +1,26 @@
+[package]
+name = "unica-metadata-designer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+test-support = []
+
+[dependencies]
+unica-operation-contract = { path = "../unica-operation-contract" }
+unica-execution-contract = { path = "../unica-execution-contract" }
+unica-work-control = { path = "../unica-work-control" }
+sha2.workspace = true
+unica-operations = { path = "../unica-operations" }
+uuid.workspace = true
+serde_json.workspace = true
+unica-bsl-parser = { path = "../unica-bsl-parser" }
+unica-xml-format = { path = "../unica-xml-format" }
+unica-source-contract = { path = "../unica-source-contract" }
+unica-address = { path = "../unica-address" }
+unica-metadata = { path = "../unica-metadata" }
+unica-source-designer = { path = "../unica-source-designer" }
+roxmltree.workspace = true

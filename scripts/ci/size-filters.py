@@ -30,6 +30,9 @@ import sys
 import tomllib
 from pathlib import Path
 
+from tree_sitter import Language, Parser
+import tree_sitter_rust
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 NEXTEST_TOML = REPO_ROOT / ".config" / "nextest.toml"
 MEDIUM_CONSTRUCTS = re.compile(
@@ -44,52 +47,102 @@ TERM = re.compile(r"test\(/\^([A-Za-z0-9_:]+)::")
 # Это размер конкретной проверки; соседние layout-проверки остаются small.
 MEASURED_MEDIUM_CASES = (
     (
-        "unica-coder",
-        "unica_coder",
-        "infrastructure::project_health::layout::tests::health_source_layout_keeps_all_defaulted_rows_and_their_real_ambiguity",
+        "unica-project-health",
+        "unica_project_health",
+        "inspection::layout::tests::health_source_layout_keeps_all_defaulted_rows_and_their_real_ambiguity",
     ),
 )
 
 
-def module_of(path: Path, src: Path) -> tuple[str, ...]:
-    """Модуль файла в дереве библиотеки; пустой кортеж — корень, и он за `lib.rs`.
+TEST_ATTRIBUTE = re.compile(r"#\[(?:[A-Za-z0-9_]+::)*test(?:\(.*\))?\]")
 
-    `main.rs` — корень другой цели, двоичной, и делить пустой кортеж с `lib.rs`
-    ему нельзя: словарь модулей один на крейт, а `main.rs` идёт по сортировке
-    позже и затирал бы `lib.rs` со всеми объявлениями `mod ...;` в нём. Со своим
-    ключом файл остаётся виден `declared`, но термов не получает: `mod main;`
-    никто не объявляет, а размер считается только по целям `kind == "lib"`.
+
+def inline_test_modules(source: bytes) -> tuple[set[str], bool]:
+    """Встроенные модули файла с тестами внутри и признак тестов на его верхнем уровне.
+
+    Генератор относит тест к первому сегменту после модуля файла, поэтому
+    вложенный модуль засчитывается внешнему, а не называется отдельно.
     """
-    parts = list(path.relative_to(src).with_suffix("").parts)
-    if parts[-1] in ("mod", "lib"):
-        parts = parts[:-1]
-    return tuple(parts)
+    tree = Parser(Language(tree_sitter_rust.language())).parse(source)
+
+    def is_test_attribute(node) -> bool:
+        if node.type != "attribute_item":
+            return False
+        compact = re.sub(r"\s+", "", source[node.start_byte : node.end_byte].decode())
+        return TEST_ATTRIBUTE.fullmatch(compact) is not None
+
+    def holds_test(node) -> bool:
+        stack = [node]
+        while stack:
+            current = stack.pop()
+            if is_test_attribute(current):
+                return True
+            stack.extend(current.children)
+        return False
+
+    modules: set[str] = set()
+    top_level = False
+    children = tree.root_node.named_children
+    for index, child in enumerate(children):
+        # Модуль без тела — отдельный файл; его тесты принадлежат не этому терму.
+        if child.type == "mod_item" and child.child_by_field_name("body") is not None:
+            if holds_test(child):
+                modules.add(child.child_by_field_name("name").text.decode())
+        elif child.type == "function_item":
+            # Атрибут — сиблинг перед элементом, а не его ребёнок.
+            back = index - 1
+            while back >= 0 and children[back].type == "attribute_item":
+                top_level = top_level or is_test_attribute(children[back])
+                back -= 1
+    return modules, top_level
+
 
 
 def source_modules(root: Path) -> dict[str, dict[tuple[str, ...], tuple[bool, Path]]]:
-    """Крейт → модуль файла → (есть ли процесс или сокет, путь). Только `src/`."""
-    found: dict[str, dict[tuple[str, ...], tuple[bool, Path]]] = {}
+    """Resolve Rust module declarations, including moved #[path] unit targets."""
+    found = {}
+    parser = Parser(Language(tree_sitter_rust.language()))
     for crate in sorted((root / "crates").iterdir()):
         src = crate / "src"
         if not src.is_dir():
             continue
-        found[crate.name] = {}
-        for path in sorted(src.rglob("*.rs")):
-            text = path.read_text(encoding="utf-8", errors="replace")
-            found[crate.name][module_of(path, src)] = (bool(MEDIUM_CONSTRUCTS.search(text)), path)
+        modules = {}
+
+        def visit_file(path, logical):
+            if not path.is_file():
+                return
+            source = path.read_bytes()
+            modules[logical] = (bool(MEDIUM_CONSTRUCTS.search(source.decode())), path)
+            base = path.parent if path.stem in {"lib", "main", "mod"} else path.with_suffix("")
+            walk(parser.parse(source).root_node, source, logical, base, path.parent)
+
+        def walk(node, source, logical, default_base, explicit_base):
+            attributes = []
+            for child in node.named_children:
+                if child.type == "attribute_item":
+                    attributes.append(source[child.start_byte:child.end_byte].decode())
+                    continue
+                if child.type == "mod_item":
+                    name = child.child_by_field_name("name").text.decode()
+                    body = child.child_by_field_name("body")
+                    if body is not None:
+                        walk(body, source, (*logical, name), default_base / name, default_base / name)
+                    else:
+                        override = next((m[1] for attr in attributes if (m := re.fullmatch(
+                            r'\s*#\[\s*path\s*=\s*"([^"]+)"\s*\]\s*', attr))), None)
+                        if override is not None:
+                            target = explicit_base / override
+                        else:
+                            target = default_base / (name + ".rs")
+                            if not target.is_file():
+                                target = default_base / name / "mod.rs"
+                        visit_file(target, (*logical, name))
+                attributes = []
+
+        visit_file(src / "lib.rs", ())
+        visit_file(src / "main.rs", ("main",))
+        found[crate.name] = modules
     return found
-
-
-def declared(module: tuple[str, ...], sources: dict[tuple[str, ...], tuple[bool, Path]]) -> bool:
-    """Входит ли файл в дерево модулей: кто-то объявил его `mod имя;`.
-
-    Файл-сирота не компилируется, и его тесты не идут ни в одних воротах —
-    объявлять ему размер нечего.
-    """
-    if not module:
-        return True
-    pattern = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+" + re.escape(module[-1]) + r"\s*;", re.M)
-    return any(pattern.search(path.read_text(encoding="utf-8", errors="replace")) for _, path in sources.values())
 
 
 def flagged_modules(root: Path) -> list[tuple[str, str, Path]]:
@@ -103,7 +156,7 @@ def flagged_modules(root: Path) -> list[tuple[str, str, Path]]:
     flagged = []
     for crate, modules in source_modules(root).items():
         for module, (marked, path) in modules.items():
-            if marked and declared(module, modules):
+            if marked:
                 flagged.append((crate, "::".join(module), path))
     return flagged
 
@@ -133,11 +186,13 @@ def medium_terms(listed: dict, modules_by_crate: dict) -> list[str]:
     """
     inline: dict[tuple[str, tuple[str, ...]], set[str]] = {}
     direct: set[tuple[str, tuple[str, ...]]] = set()
+    binaries = {}
     for suite in listed["rust-suites"].values():
         if suite.get("kind") != "lib":
             continue
         crate = suite["binary-id"].split("::")[0]
         modules = modules_by_crate.get(crate, {})
+        binaries[crate] = suite["binary-name"]
         for name in suite["testcases"]:
             module = owner(modules, name)
             if module is None or not modules[module][0]:
@@ -147,14 +202,29 @@ def medium_terms(listed: dict, modules_by_crate: dict) -> list[str]:
                 direct.add((crate, module))
             else:
                 inline.setdefault((crate, module), set()).add(rest[0])
+    # Platform-gated unit modules are still declared in this source tree.
+    # Include their real attributed modules without claiming their execution on
+    # the current host. Cargo's inventory supplies macro-generated test names.
+    for crate, modules in modules_by_crate.items():
+        for module, (marked, path) in modules.items():
+            if not marked:
+                continue
+            named, top_level = inline_test_modules(path.read_bytes())
+            key = (crate, module)
+            if named:
+                inline.setdefault(key, set()).update(named)
+            if top_level:
+                direct.add(key)
     terms = []
     for key in sorted(set(inline) | direct):
         crate, module = key
         prefix = "::".join(module)
+        stem = re.escape(prefix) + "::" if prefix else ""
+        binary = binaries.get(crate, crate.replace("-", "_"))
         if key in inline:
-            terms.append((crate, f"test(/^{re.escape(prefix)}::({'|'.join(sorted(inline[key]))})::/)"))
+            terms.append((crate, f"(binary({binary}) & test(/^{stem}({'|'.join(sorted(inline[key]))})::/))"))
         if key in direct:
-            terms.append((crate, f"test(/^{re.escape(prefix)}::[^:]+$/)"))
+            terms.append((crate, f"(binary({binary}) & test(/^{stem}[^:]+$/))"))
     for (binary_id, _, _), term in zip(MEASURED_MEDIUM_CASES, measured_medium_terms(listed), strict=True):
         terms.append((binary_id, term))
     return [term for _, term in sorted(set(terms))]
@@ -171,7 +241,7 @@ def measured_medium_terms(listed: dict) -> list[str]:
             "lib", binary_id, binary_name
         ):
             raise ValueError(f"measured medium test belongs to another binary: {binary_id}::{name}")
-        terms.append(f"test(/^{re.escape(name)}$/)")
+        terms.append(f"(binary({binary_name}) & test(/^{re.escape(name)}$/))")
     return terms
 
 

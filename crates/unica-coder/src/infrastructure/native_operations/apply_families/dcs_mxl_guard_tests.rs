@@ -1,21 +1,22 @@
 use super::*;
 use crate::domain::apply::ApplyRequest;
-use crate::domain::cancellation::CancellationToken;
-use crate::domain::code_intelligence::ProviderDeadline;
-use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
-use crate::domain::workspace::WorkspaceContext;
+use unica_source_contract::{SourceFormat, SourceProfile, SourceSetKind};
+use unica_work_control::cancellation::CancellationToken;
+use unica_work_control::provider_deadline::ProviderDeadline;
+
 use crate::infrastructure::native_operations::apply_families::plan_hidden_v13_apply;
 use crate::infrastructure::native_operations::apply_families::tests::ApplySeamFixture;
-use crate::infrastructure::platform::testing::file_identity_for_test;
-use crate::infrastructure::workspace_actor::{
-    ApplyPublicationErrorKind, PreparedApplyBatch, WorkspaceActor, WorkspaceIdentity,
-    WorkspaceSourceSetInput,
-};
-use crate::test_support::tree_snapshot;
+use unica_workspace::test_support::file_identity_for_test;
+
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use unica_source_contract::workspace::WorkspaceContext;
+use unica_workspace::actor::{
+    ApplyPublicationErrorKind, PreparedApplyBatch, WorkspaceIdentity, WorkspaceSourceSetInput,
+};
+use unica_workspace::test_support::tree_snapshot;
 
 const TEMPLATE: &str = "main:Report.Versions.Template.Schema";
 const DATASET: &str = "main:Report.Versions.Template.Schema.DataSet.Data";
@@ -62,7 +63,16 @@ fn query_request(at: &str) -> ApplyRequest {
 fn prepare_preview(fixture: &ApplySeamFixture, request: &ApplyRequest) -> PreparedApplyBatch {
     assert!(request.dry_run());
     let mut admission = fixture.admission();
-    admission.bind_request(request);
+    admission.bind_request_identity(
+        &request.at().to_string(),
+        request.ops().iter().map(|operation| {
+            (
+                operation.name(),
+                operation.at().to_string(),
+                operation.args(),
+            )
+        }),
+    );
     let (staged, effects) = plan_hidden_v13_apply(request, &fixture.binding, &admission).unwrap();
     admission.prepare_with_effects(staged, effects).unwrap()
 }
@@ -70,10 +80,7 @@ fn prepare_preview(fixture: &ApplySeamFixture, request: &ApplyRequest) -> Prepar
 fn publication_input(
     fixture: &ApplySeamFixture,
     preview: &ApplyRequest,
-) -> (
-    ApplyRequest,
-    crate::infrastructure::workspace_actor::ApplyAdmission,
-) {
+) -> (ApplyRequest, unica_workspace::actor::ApplyAdmission) {
     let projected = fixture
         .actor()
         .publish_prepared_apply(prepare_preview(fixture, preview))
@@ -96,7 +103,16 @@ fn publication_input(
             &CancellationToken::new(),
         )
         .unwrap();
-    admission.bind_request(&request);
+    admission.bind_request_identity(
+        &request.at().to_string(),
+        request.ops().iter().map(|operation| {
+            (
+                operation.name(),
+                operation.at().to_string(),
+                operation.args(),
+            )
+        }),
+    );
     (request, admission)
 }
 
@@ -309,7 +325,7 @@ fn canonical_dcs_late_planning_failure_discards_prior_successful_operations() {
 
 #[test]
 fn canonical_dcs_late_publication_failure_rolls_back_both_schemas_and_cache() {
-    use crate::infrastructure::native_operations::compile_transaction::{
+    use unica_workspace::compile_transaction::{
         set_retained_apply_failpoint, RetainedApplyFailpoint,
     };
     for failpoint in [
@@ -400,7 +416,7 @@ fn canonical_dcs_old_external_owner_is_refused_before_any_source_write() {
         "dcs-external-refusal",
     )
     .unwrap();
-    let actor = WorkspaceActor::new(identity, context).unwrap();
+    let actor = crate::infrastructure::source_workspace::new_actor(identity, context).unwrap();
     let binding: ProviderRootBinding = actor.bind_provider_root("epf", &source).unwrap();
     let admission = actor
         .admit_apply(

@@ -1,9 +1,9 @@
 ---
 id: INV.CACHE.RETAINED-APPLY-REVISION-ROLLBACK
 check:
-  - crates/unica-coder/src/infrastructure/workspace_actor.rs::real_effect_after_all_postimages_cancellation_rolls_back_exact_state
-  - crates/unica-coder/src/infrastructure/workspace_actor.rs::real_effect_after_all_postimages_deadline_rolls_back_exact_state
-  - crates/unica-coder/src/infrastructure/workspace_actor.rs::retained_apply_failures_restore_source_cache_and_revision_machine_exactly
+  - crates/unica-coder/src/infrastructure/workspace_actor_contract_tests.rs::real_effect_after_all_postimages_cancellation_rolls_back_exact_state
+  - crates/unica-coder/src/infrastructure/workspace_actor_contract_tests.rs::real_effect_after_all_postimages_deadline_rolls_back_exact_state
+  - crates/unica-coder/src/infrastructure/workspace_actor_contract_tests.rs::retained_apply_failures_restore_source_cache_and_revision_machine_exactly
 gap: https://github.com/IngvarConsulting/unica/issues/971
 ---
 

@@ -1,0 +1,29 @@
+[package]
+name = "unica-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+test-support = []
+receipt-ledger-test-support = ["test-support", "unica-execution/receipt-ledger-test-support"]
+
+[dependencies]
+unica-execution = { path = "../unica-execution" }
+unica-execution-contract = { path = "../unica-execution-contract" }
+unica-workspace = { path = "../unica-workspace" }
+unica-bootstrap = { path = "../unica-bootstrap" }
+unica-artifact-delivery = { path = "../unica-artifact-delivery" }
+unica-process = { path = "../unica-process" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+unica-process = { path = "../unica-process", features = ["test-support"] }
+unica-workspace = { path = "../unica-workspace", features = ["test-support"] }
+unica-work-control = { path = "../unica-work-control" }

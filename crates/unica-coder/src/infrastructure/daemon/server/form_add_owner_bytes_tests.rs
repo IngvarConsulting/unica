@@ -1,10 +1,10 @@
 use super::actor_capacity_tests::direct_v5;
 use super::*;
-use crate::application::invocation_store::ToolIdentity;
-use crate::test_support::{canonical_path, tree_snapshot};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use unica_execution::invocation_store::ToolIdentity;
+use unica_workspace::test_support::{canonical_path, tree_snapshot};
 
 const AT: &str = "main:Document.Order";
 const OWNER: &str = "Documents/Order.xml";
@@ -113,7 +113,7 @@ impl Fixture {
         &self,
         tool: ToolIdentity,
         arguments: Value,
-    ) -> crate::domain::invocation::DomainResult {
+    ) -> unica_execution_contract::invocation::DomainResult {
         direct_v5(
             &self.runtime,
             InvocationRequest::new(tool, arguments, self.workspace.to_string_lossy(), 7_000)
@@ -122,7 +122,7 @@ impl Fixture {
         .unwrap()
     }
 
-    fn preview(&self, ops: Value) -> crate::domain::invocation::DomainResult {
+    fn preview(&self, ops: Value) -> unica_execution_contract::invocation::DomainResult {
         let before = snapshot(&self.workspace);
         let result = self.call(ToolIdentity::Apply, json!({"at":AT,"ops":ops}));
         assert_eq!(

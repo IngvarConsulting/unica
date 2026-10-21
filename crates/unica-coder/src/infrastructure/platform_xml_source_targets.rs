@@ -1,35 +1,37 @@
-use crate::application::metadata::MetaFailure;
-use crate::application::source_navigation::SourceLocation;
-use crate::application::source_navigation::{
+use unica_source_designer::module_layout::{
+    metadata_descriptor, platform_xml_module_identity, platform_xml_module_relative,
+    PlatformXmlModuleIdentity, PlatformXmlModuleRole,
+};
+use unica_source_designer::owner::PlatformXmlResourceEvidence;
+
+use unica_metadata::{MetaDiagnostic, MetaDiagnosticCode};
+use unica_navigation::source_navigation::SourceLocation;
+use unica_navigation::source_navigation::{
     LocateRejection, SourceLocateRequest, SourceLocateResult,
 };
-use crate::domain::cancellation::{cancelled_error, CancellationToken};
-use crate::domain::metadata::{MetaDiagnostic, MetaDiagnosticCode};
-use crate::domain::project_sources::ProjectSourceSet;
-use crate::domain::project_sources::{SourceFormat, SourceSetKind};
-use crate::domain::source_target::{
-    MetadataAddress, ResolvedTarget, SourceTarget, SourceTargetError, SourceTargetErrorCode,
-    TargetKind,
-};
-use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::metadata_kinds::{
-    metadata_kind, metadata_kind_by_directory, supports_direct_module_role,
-    supports_nested_form_or_command, MetadataLayout,
-};
-use crate::infrastructure::native_operations::compile_transaction::CompileTransaction;
-use crate::infrastructure::path_policy::WorkspacePathPolicy;
-use crate::infrastructure::platform::filesystem::{
-    metadata_is_link_or_reparse_point, strip_windows_extended_length_prefix,
-};
-use crate::infrastructure::source_roots::{
-    normalize_path_identity, resolve_named_source_set, NamedSourceSetError,
-    NamedSourceSetErrorKind, ResolvedNamedSourceSet,
-};
+use unica_source_contract::ProjectSourceSet;
+use unica_source_contract::{SourceFormat, SourceSetKind};
+
+use crate::infrastructure::source_roots::{resolve_named_source_set, ResolvedNamedSourceSet};
 #[cfg(test)]
 use std::cell::RefCell;
 use std::fmt;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use unica_address::source_target::{
+    MetadataAddress, ResolvedTarget, SourceTarget, SourceTargetError, SourceTargetErrorCode,
+    TargetKind,
+};
+use unica_source_contract::discovery::{NamedSourceSetError, NamedSourceSetErrorKind};
+use unica_source_contract::workspace::WorkspaceContext;
+use unica_source_designer::layout::{metadata_kind, metadata_kind_by_directory, MetadataLayout};
+use unica_work_control::cancellation::{cancelled_error, CancellationToken};
+use unica_workspace::compile_transaction::CompileTransaction;
+use unica_workspace::path_policy::WorkspacePathPolicy;
+use unica_workspace::paths::normalize_path_identity;
+use unica_workspace::paths::{
+    metadata_is_link_or_reparse_point, strip_windows_extended_length_prefix,
+};
 
 const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 const MAX_NAVIGATION_INVENTORY_ENTRIES: usize = 4_096;
@@ -209,7 +211,7 @@ fn locate_platform_xml_source_path_in_with_policy(
                 return Ok(reject(relative_text, LocateRejection::OwnerUnproven));
             }
             let owner = MetadataAddress::parse(
-                crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
                 &identity.owner,
             )
             .ok();
@@ -246,7 +248,7 @@ fn locate_platform_xml_source_path_in_with_policy(
     };
     let object = format!("{}.{name}", kind.tag);
     let Ok(object_address) = MetadataAddress::parse(
-        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
         &object,
     ) else {
         return Ok(reject(relative_text, LocateRejection::NotAddressable));
@@ -275,7 +277,7 @@ fn locate_platform_xml_source_path_in_with_policy(
     };
     if let Some(nested) = nested {
         if let Ok(nested_address) = MetadataAddress::parse(
-            crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+            unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
             &nested,
         ) {
             if exact_object_outcome_with_policy(
@@ -825,7 +827,7 @@ fn descriptor_version_and_name_from_bytes(
         .filter(|name| !name.is_empty())
         .ok_or(())?;
     Ok((
-        crate::infrastructure::platform_xml_owner::root_version_literal(source, root),
+        unica_source_designer::roots::root_version_literal(source, root),
         name.to_string(),
     ))
 }
@@ -890,7 +892,7 @@ impl fmt::Debug for ResolvedSourceSet {
 pub(crate) fn resolve_metadata_add_source(
     context: &WorkspaceContext,
     source_set: &str,
-) -> Result<ResolvedSourceSet, MetaFailure> {
+) -> Result<ResolvedSourceSet, unica_metadata::request::MetaFailure> {
     let target = SourceTarget {
         source_set: source_set.to_string(),
         metadata_path: None,
@@ -904,7 +906,7 @@ pub(crate) fn resolve_metadata_add_source(
         context,
     )
     .map_err(|_| {
-        MetaFailure::from(MetaDiagnostic::error(
+        unica_metadata::request::MetaFailure::from(MetaDiagnostic::error(
             MetaDiagnosticCode::CapabilityUnavailable,
             format!(
                 "sourceSet `{source_set}` is outside the supported Platform XML format profile"
@@ -913,7 +915,7 @@ pub(crate) fn resolve_metadata_add_source(
     })?
     .to_string();
     let owner_preimage = fs::read(&evidence.registration_path).map_err(|_| {
-        MetaFailure::from(MetaDiagnostic::error(
+        unica_metadata::request::MetaFailure::from(MetaDiagnostic::error(
             MetaDiagnosticCode::ProviderUnavailable,
             format!("sourceSet `{source_set}` owner image is unavailable"),
         ))
@@ -930,11 +932,11 @@ pub(crate) fn resolve_metadata_add_source(
 pub(crate) fn revalidate_metadata_add_source(
     context: &WorkspaceContext,
     source: &ResolvedSourceSet,
-) -> Result<(), MetaFailure> {
+) -> Result<(), unica_metadata::request::MetaFailure> {
     revalidate_platform_xml_target(context, &source.handle)
         .map(|_| ())
         .map_err(|_| {
-            MetaFailure::from(MetaDiagnostic::error(
+            unica_metadata::request::MetaFailure::from(MetaDiagnostic::error(
                 MetaDiagnosticCode::ConcurrentModification,
                 format!(
                     "sourceSet `{}` changed after metadata creation was prepared",
@@ -948,7 +950,7 @@ pub(crate) fn bind_metadata_add_source_evidence(
     transaction: &mut CompileTransaction,
     context: &WorkspaceContext,
     source: &ResolvedSourceSet,
-) -> Result<(), MetaFailure> {
+) -> Result<(), unica_metadata::request::MetaFailure> {
     transaction
         .guard_or_verify_exact_preimage(&source.owner_path, &source.owner_preimage)
         .map_err(metadata_concurrent_failure)?;
@@ -961,7 +963,7 @@ pub(crate) fn bind_metadata_add_source_evidence(
     .map_err(metadata_concurrent_failure)
 }
 
-fn metadata_concurrent_failure(_internal: String) -> MetaFailure {
+fn metadata_concurrent_failure(_internal: String) -> unica_metadata::request::MetaFailure {
     MetaDiagnostic::error(
         MetaDiagnosticCode::ConcurrentModification,
         "sourceSet evidence changed after metadata creation was authorized",
@@ -969,7 +971,10 @@ fn metadata_concurrent_failure(_internal: String) -> MetaFailure {
     .into()
 }
 
-fn metadata_source_failure(source_set: &str, error: SourceTargetError) -> MetaFailure {
+fn metadata_source_failure(
+    source_set: &str,
+    error: SourceTargetError,
+) -> unica_metadata::request::MetaFailure {
     let code = match error.code {
         SourceTargetErrorCode::SourceSetNotFound => MetaDiagnosticCode::TargetNotFound,
         SourceTargetErrorCode::ContainmentDenied => MetaDiagnosticCode::ProviderUnavailable,
@@ -992,9 +997,8 @@ impl ClosedPlatformXmlTarget {
 
     pub(crate) fn search_filters(
         &self,
-    ) -> Result<Vec<crate::domain::code_intelligence::RelativeSearchFilter>, SourceTargetError>
-    {
-        use crate::domain::code_intelligence::RelativeSearchFilter;
+    ) -> Result<Vec<unica_code_intelligence::model::RelativeSearchFilter>, SourceTargetError> {
+        use unica_code_intelligence::model::RelativeSearchFilter;
         if self.target_kind == TargetKind::SourceRoot {
             return Ok(Vec::new());
         }
@@ -1044,68 +1048,6 @@ impl fmt::Debug for ClosedPlatformXmlTarget {
 #[derive(Debug)]
 pub(crate) struct RevalidatedPlatformXmlTarget {
     pub(crate) path: PathBuf,
-}
-
-/// Revalidated resource paths whose field meaning follows the closed handle's
-/// target kind:
-///
-/// - `Module`: `target_path` is the BSL module and `descriptor_paths` contains
-///   the descriptors required by its layout; `module_paths` is empty.
-/// - `MetadataObject`: `target_path` is the object descriptor and
-///   `module_paths` contains its proven owned BSL modules; `descriptor_paths`
-///   is empty.
-/// - `SourceRoot`: `target_path` is the source root and `descriptor_paths`
-///   contains `Configuration.xml`; `module_paths` is empty.
-pub(crate) struct PlatformXmlResourceEvidence {
-    pub(crate) target_path: PathBuf,
-    pub(crate) source_root: PathBuf,
-    pub(crate) descriptor_paths: Vec<PathBuf>,
-    /// Proven BSL modules owned by a metadata object target. Empty for module
-    /// and source-root targets, which are not module owners themselves.
-    pub(crate) module_paths: Vec<PathBuf>,
-    pub(crate) registration_path: PathBuf,
-    pub(crate) module_owner: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PlatformXmlModuleIdentity {
-    pub(crate) owner: String,
-    pub(crate) address: MetadataAddress,
-    pub(crate) role: PlatformXmlModuleRole,
-    pub(crate) descriptors: Vec<PathBuf>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PlatformXmlModuleRole {
-    Module,
-    ObjectModule,
-    ManagerModule,
-    RecordSetModule,
-    ValueManagerModule,
-    FormModule,
-    CommandModule,
-    ManagedApplicationModule,
-    OrdinaryApplicationModule,
-    SessionModule,
-    ExternalConnectionModule,
-}
-
-impl PlatformXmlModuleRole {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Module => "Module",
-            Self::ObjectModule => "ObjectModule",
-            Self::ManagerModule => "ManagerModule",
-            Self::RecordSetModule => "RecordSetModule",
-            Self::ValueManagerModule => "ValueManagerModule",
-            Self::FormModule => "FormModule",
-            Self::CommandModule => "CommandModule",
-            Self::ManagedApplicationModule => "ManagedApplicationModule",
-            Self::OrdinaryApplicationModule => "OrdinaryApplicationModule",
-            Self::SessionModule => "SessionModule",
-            Self::ExternalConnectionModule => "ExternalConnectionModule",
-        }
-    }
 }
 
 pub(crate) fn resolve_platform_xml_target(
@@ -1380,13 +1322,12 @@ fn object_registration_evidence(
     let source_owner_path = selected.path.join(source_owner_relative);
     let source_owner = read_navigation_descriptor(&source_owner_path)
         .map_err(|_| metadata_owner_evidence_error(&logical_target))?;
-    let source_owner_evidence =
-        crate::infrastructure::platform_xml_owner::prove_already_read_source_set_owner(
-            &source_owner_path,
-            &source_owner,
-            selected.source_set.kind,
-        )
-        .map_err(|_| metadata_owner_evidence_error(&logical_target))?;
+    let source_owner_evidence = unica_source_designer::owner::prove_already_read_source_set_owner(
+        &source_owner_path,
+        &source_owner,
+        selected.source_set.kind,
+    )
+    .map_err(|_| metadata_owner_evidence_error(&logical_target))?;
     let source_owner_version = source_owner_evidence.version().map(str::to_owned);
 
     let parts = address.segments().collect::<Vec<_>>();
@@ -1610,7 +1551,7 @@ fn object_module_paths(
     let mut paths = Vec::new();
     for role in PLATFORM_XML_OBJECT_MODULE_ROLES {
         let Ok(candidate) = MetadataAddress::parse(
-            crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+            unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
             &format!("{address}.{}", role.as_str()),
         ) else {
             continue;
@@ -1752,517 +1693,6 @@ fn validate_regular_module(
     Ok(())
 }
 
-pub(crate) fn platform_xml_module_identity(
-    relative: &Path,
-) -> Result<PlatformXmlModuleIdentity, String> {
-    module_layout_for_relative(relative).map(|(_, identity)| identity)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PlatformXmlModuleLayoutFamily {
-    RootApplication,
-    OwnerModule,
-    CommonForm,
-    CommonCommand,
-    DirectMetadata,
-    NestedForm,
-    NestedCommand,
-}
-
-const OWNER_MODULE_KINDS: &[&str] = &[
-    "CommonModule",
-    "Bot",
-    "HTTPService",
-    "WebService",
-    "IntegrationService",
-];
-
-#[derive(Debug, Clone, Copy)]
-enum ModuleLayoutToken {
-    Literal(&'static str),
-    MetadataKind,
-    MetadataDirectory,
-    OwnerName,
-    ChildName,
-    Role(ModuleRoleClass),
-    RoleFile(ModuleRoleClass),
-}
-
-#[derive(Debug, Clone, Copy)]
-enum ModuleRoleClass {
-    Root,
-    Direct,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum ModuleLayoutCapability {
-    Any,
-    OwnerModule,
-    DirectModule,
-    NestedFormOrCommand,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum ModuleDescriptorRule {
-    Root,
-    Common {
-        kind: &'static str,
-        directory: &'static str,
-    },
-    Owner,
-    Nested {
-        /// Collection directory holding the child; the child's kind is derived
-        /// from the logical address, so it is not repeated here.
-        child_directory: &'static str,
-    },
-}
-
-#[derive(Debug, Clone, Copy)]
-struct PlatformXmlModuleLayoutDescriptor {
-    family: PlatformXmlModuleLayoutFamily,
-    physical: &'static [ModuleLayoutToken],
-    logical: &'static [ModuleLayoutToken],
-    capability: ModuleLayoutCapability,
-    fixed_role: Option<PlatformXmlModuleRole>,
-    descriptor_rule: ModuleDescriptorRule,
-}
-
-const PLATFORM_XML_MODULE_LAYOUT_FAMILIES: &[PlatformXmlModuleLayoutDescriptor] = &[
-    PlatformXmlModuleLayoutDescriptor {
-        family: PlatformXmlModuleLayoutFamily::RootApplication,
-        physical: &[
-            ModuleLayoutToken::Literal("Ext"),
-            ModuleLayoutToken::RoleFile(ModuleRoleClass::Root),
-        ],
-        logical: &[ModuleLayoutToken::Role(ModuleRoleClass::Root)],
-        capability: ModuleLayoutCapability::Any,
-        fixed_role: None,
-        descriptor_rule: ModuleDescriptorRule::Root,
-    },
-    PlatformXmlModuleLayoutDescriptor {
-        family: PlatformXmlModuleLayoutFamily::OwnerModule,
-        physical: &[
-            ModuleLayoutToken::MetadataDirectory,
-            ModuleLayoutToken::OwnerName,
-            ModuleLayoutToken::Literal("Ext"),
-            ModuleLayoutToken::Literal("Module.bsl"),
-        ],
-        logical: &[
-            ModuleLayoutToken::MetadataKind,
-            ModuleLayoutToken::OwnerName,
-            ModuleLayoutToken::Literal("Module"),
-        ],
-        capability: ModuleLayoutCapability::OwnerModule,
-        fixed_role: Some(PlatformXmlModuleRole::Module),
-        descriptor_rule: ModuleDescriptorRule::Owner,
-    },
-    PlatformXmlModuleLayoutDescriptor {
-        family: PlatformXmlModuleLayoutFamily::CommonForm,
-        physical: &[
-            ModuleLayoutToken::Literal("CommonForms"),
-            ModuleLayoutToken::OwnerName,
-            ModuleLayoutToken::Literal("Ext"),
-            ModuleLayoutToken::Literal("Form"),
-            ModuleLayoutToken::Literal("Module.bsl"),
-        ],
-        logical: &[
-            ModuleLayoutToken::Literal("CommonForm"),
-            ModuleLayoutToken::OwnerName,
-            ModuleLayoutToken::Literal("FormModule"),
-        ],
-        capability: ModuleLayoutCapability::Any,
-        fixed_role: Some(PlatformXmlModuleRole::FormModule),
-        descriptor_rule: ModuleDescriptorRule::Common {
-            kind: "CommonForm",
-            directory: "CommonForms",
-        },
-    },
-    PlatformXmlModuleLayoutDescriptor {
-        family: PlatformXmlModuleLayoutFamily::CommonCommand,
-        physical: &[
-            ModuleLayoutToken::Literal("CommonCommands"),
-            ModuleLayoutToken::OwnerName,
-            ModuleLayoutToken::Literal("Ext"),
-            ModuleLayoutToken::Literal("CommandModule.bsl"),
-        ],
-        logical: &[
-            ModuleLayoutToken::Literal("CommonCommand"),
-            ModuleLayoutToken::OwnerName,
-            ModuleLayoutToken::Literal("CommandModule"),
-        ],
-        capability: ModuleLayoutCapability::Any,
-        fixed_role: Some(PlatformXmlModuleRole::CommandModule),
-        descriptor_rule: ModuleDescriptorRule::Common {
-            kind: "CommonCommand",
-            directory: "CommonCommands",
-        },
-    },
-    PlatformXmlModuleLayoutDescriptor {
-        family: PlatformXmlModuleLayoutFamily::DirectMetadata,
-        physical: &[
-            ModuleLayoutToken::MetadataDirectory,
-            ModuleLayoutToken::OwnerName,
-            ModuleLayoutToken::Literal("Ext"),
-            ModuleLayoutToken::RoleFile(ModuleRoleClass::Direct),
-        ],
-        logical: &[
-            ModuleLayoutToken::MetadataKind,
-            ModuleLayoutToken::OwnerName,
-            ModuleLayoutToken::Role(ModuleRoleClass::Direct),
-        ],
-        capability: ModuleLayoutCapability::DirectModule,
-        fixed_role: None,
-        descriptor_rule: ModuleDescriptorRule::Owner,
-    },
-    PlatformXmlModuleLayoutDescriptor {
-        family: PlatformXmlModuleLayoutFamily::NestedForm,
-        physical: &[
-            ModuleLayoutToken::MetadataDirectory,
-            ModuleLayoutToken::OwnerName,
-            ModuleLayoutToken::Literal("Forms"),
-            ModuleLayoutToken::ChildName,
-            ModuleLayoutToken::Literal("Ext"),
-            ModuleLayoutToken::Literal("Form"),
-            ModuleLayoutToken::Literal("Module.bsl"),
-        ],
-        logical: &[
-            ModuleLayoutToken::MetadataKind,
-            ModuleLayoutToken::OwnerName,
-            ModuleLayoutToken::Literal("Form"),
-            ModuleLayoutToken::ChildName,
-            ModuleLayoutToken::Literal("FormModule"),
-        ],
-        capability: ModuleLayoutCapability::NestedFormOrCommand,
-        fixed_role: Some(PlatformXmlModuleRole::FormModule),
-        descriptor_rule: ModuleDescriptorRule::Nested {
-            child_directory: "Forms",
-        },
-    },
-    PlatformXmlModuleLayoutDescriptor {
-        family: PlatformXmlModuleLayoutFamily::NestedCommand,
-        physical: &[
-            ModuleLayoutToken::MetadataDirectory,
-            ModuleLayoutToken::OwnerName,
-            ModuleLayoutToken::Literal("Commands"),
-            ModuleLayoutToken::ChildName,
-            ModuleLayoutToken::Literal("Ext"),
-            ModuleLayoutToken::Literal("CommandModule.bsl"),
-        ],
-        logical: &[
-            ModuleLayoutToken::MetadataKind,
-            ModuleLayoutToken::OwnerName,
-            ModuleLayoutToken::Literal("Command"),
-            ModuleLayoutToken::ChildName,
-            ModuleLayoutToken::Literal("CommandModule"),
-        ],
-        capability: ModuleLayoutCapability::NestedFormOrCommand,
-        fixed_role: Some(PlatformXmlModuleRole::CommandModule),
-        descriptor_rule: ModuleDescriptorRule::Nested {
-            child_directory: "Commands",
-        },
-    },
-];
-
-impl PlatformXmlModuleLayoutDescriptor {
-    fn identity_from_parts(
-        &self,
-        parts: &[&str],
-    ) -> Option<Result<PlatformXmlModuleIdentity, String>> {
-        self.capture(self.physical, parts)
-            .map(|captures| self.identity(&captures))
-    }
-
-    fn path_from_address(&self, parts: &[&str]) -> Option<Result<PathBuf, String>> {
-        self.capture(self.logical, parts).map(|captures| {
-            let mut path = PathBuf::new();
-            for segment in self.render(self.physical, &captures) {
-                path.push(segment);
-            }
-            Ok(path)
-        })
-    }
-
-    fn capture<'a>(
-        &self,
-        template: &[ModuleLayoutToken],
-        parts: &[&'a str],
-    ) -> Option<ModuleLayoutCaptures<'a>> {
-        if template.len() != parts.len() {
-            return None;
-        }
-        let mut captures = ModuleLayoutCaptures::default();
-        for (token, value) in template.iter().zip(parts.iter().copied()) {
-            match token {
-                ModuleLayoutToken::Literal(expected) if *expected == value => {}
-                ModuleLayoutToken::Literal(_) => return None,
-                ModuleLayoutToken::MetadataKind => {
-                    captures.kind = Some(metadata_kind(value)?);
-                }
-                ModuleLayoutToken::MetadataDirectory => {
-                    captures.kind = Some(metadata_kind_by_directory(value)?);
-                }
-                ModuleLayoutToken::OwnerName => captures.owner_name = Some(value),
-                ModuleLayoutToken::ChildName => captures.child_name = Some(value),
-                ModuleLayoutToken::Role(class) => {
-                    captures.role = Some(class.parse(value)?);
-                }
-                ModuleLayoutToken::RoleFile(class) => {
-                    captures.role = Some(class.parse(value.strip_suffix(".bsl")?)?);
-                }
-            }
-        }
-        self.accepts(&captures).then_some(captures)
-    }
-
-    fn accepts(&self, captures: &ModuleLayoutCaptures<'_>) -> bool {
-        match self.capability {
-            ModuleLayoutCapability::Any => true,
-            ModuleLayoutCapability::OwnerModule => captures
-                .kind
-                .is_some_and(|kind| OWNER_MODULE_KINDS.contains(&kind.tag)),
-            ModuleLayoutCapability::DirectModule => captures
-                .kind
-                .zip(captures.role)
-                .is_some_and(|(kind, role)| supports_direct_module_role(kind.tag, role.as_str())),
-            ModuleLayoutCapability::NestedFormOrCommand => captures
-                .kind
-                .is_some_and(|kind| supports_nested_form_or_command(kind.tag)),
-        }
-    }
-
-    fn render(
-        &self,
-        template: &[ModuleLayoutToken],
-        captures: &ModuleLayoutCaptures<'_>,
-    ) -> Vec<String> {
-        template
-            .iter()
-            .map(|token| match token {
-                ModuleLayoutToken::Literal(value) => (*value).to_string(),
-                ModuleLayoutToken::MetadataKind => captures
-                    .kind
-                    .expect("accepted layout must capture metadata kind")
-                    .tag
-                    .to_string(),
-                ModuleLayoutToken::MetadataDirectory => captures
-                    .kind
-                    .expect("accepted layout must capture metadata kind")
-                    .directory
-                    .to_string(),
-                ModuleLayoutToken::OwnerName => captures
-                    .owner_name
-                    .expect("accepted layout must capture owner name")
-                    .to_string(),
-                ModuleLayoutToken::ChildName => captures
-                    .child_name
-                    .expect("accepted layout must capture child name")
-                    .to_string(),
-                ModuleLayoutToken::Role(_) => captures
-                    .role
-                    .expect("accepted layout must capture module role")
-                    .as_str()
-                    .to_string(),
-                ModuleLayoutToken::RoleFile(_) => format!(
-                    "{}.bsl",
-                    captures
-                        .role
-                        .expect("accepted layout must capture module role")
-                        .as_str()
-                ),
-            })
-            .collect()
-    }
-
-    fn identity(
-        &self,
-        captures: &ModuleLayoutCaptures<'_>,
-    ) -> Result<PlatformXmlModuleIdentity, String> {
-        let address = self.render(self.logical, captures).join(".");
-        let role = self
-            .fixed_role
-            .or(captures.role)
-            .ok_or_else(unsupported_module_layout)?;
-        let (owner, descriptors) = match self.descriptor_rule {
-            ModuleDescriptorRule::Root => (
-                "Configuration".to_string(),
-                vec![PathBuf::from("Configuration.xml")],
-            ),
-            ModuleDescriptorRule::Common { kind, directory } => {
-                let name = captures.owner_name.ok_or_else(unsupported_module_layout)?;
-                (
-                    format!("{kind}.{name}"),
-                    vec![metadata_descriptor(directory, name)],
-                )
-            }
-            ModuleDescriptorRule::Owner => {
-                let kind = captures.kind.ok_or_else(unsupported_module_layout)?;
-                let name = captures.owner_name.ok_or_else(unsupported_module_layout)?;
-                (
-                    format!("{}.{name}", kind.tag),
-                    vec![metadata_descriptor(kind.directory, name)],
-                )
-            }
-            ModuleDescriptorRule::Nested { child_directory } => {
-                let kind = captures.kind.ok_or_else(unsupported_module_layout)?;
-                let name = captures.owner_name.ok_or_else(unsupported_module_layout)?;
-                let child_name = captures.child_name.ok_or_else(unsupported_module_layout)?;
-                (
-                    format!("{}.{name}", kind.tag),
-                    vec![
-                        metadata_descriptor(kind.directory, name),
-                        // The child's metadata descriptor sits beside its
-                        // directory as `<Forms>/<Name>.xml`. The file under
-                        // `<Name>/Ext/Form.xml` is the form's own content in the
-                        // logform schema, not a `MetaDataObject` descriptor.
-                        PathBuf::from(kind.directory)
-                            .join(name)
-                            .join(child_directory)
-                            .join(format!("{child_name}.xml")),
-                    ],
-                )
-            }
-        };
-        module_identity(address, owner, role, descriptors)
-    }
-
-    #[cfg(test)]
-    fn family(&self) -> PlatformXmlModuleLayoutFamily {
-        self.family
-    }
-
-    #[cfg(test)]
-    fn render_physical(&self, address: &MetadataAddress) -> Result<PathBuf, String> {
-        let parts = address.segments().collect::<Vec<_>>();
-        self.path_from_address(&parts)
-            .ok_or_else(unsupported_module_layout)?
-    }
-
-    #[cfg(test)]
-    fn parse_physical(&self, relative: &Path) -> Result<MetadataAddress, String> {
-        let components = relative_module_path_components(relative)?;
-        let parts = components.iter().map(String::as_str).collect::<Vec<_>>();
-        self.identity_from_parts(&parts)
-            .ok_or_else(unsupported_module_layout)?
-            .map(|identity| identity.address)
-    }
-}
-
-#[derive(Debug, Default)]
-struct ModuleLayoutCaptures<'a> {
-    kind: Option<&'static MetadataLayout>,
-    owner_name: Option<&'a str>,
-    child_name: Option<&'a str>,
-    role: Option<PlatformXmlModuleRole>,
-}
-
-impl ModuleRoleClass {
-    fn parse(self, raw: &str) -> Option<PlatformXmlModuleRole> {
-        let role = match raw {
-            "ObjectModule" => PlatformXmlModuleRole::ObjectModule,
-            "ManagerModule" => PlatformXmlModuleRole::ManagerModule,
-            "RecordSetModule" => PlatformXmlModuleRole::RecordSetModule,
-            "ValueManagerModule" => PlatformXmlModuleRole::ValueManagerModule,
-            "ManagedApplicationModule" => PlatformXmlModuleRole::ManagedApplicationModule,
-            "OrdinaryApplicationModule" => PlatformXmlModuleRole::OrdinaryApplicationModule,
-            "SessionModule" => PlatformXmlModuleRole::SessionModule,
-            "ExternalConnectionModule" => PlatformXmlModuleRole::ExternalConnectionModule,
-            _ => return None,
-        };
-        match self {
-            Self::Root
-                if matches!(
-                    role,
-                    PlatformXmlModuleRole::ManagedApplicationModule
-                        | PlatformXmlModuleRole::OrdinaryApplicationModule
-                        | PlatformXmlModuleRole::SessionModule
-                        | PlatformXmlModuleRole::ExternalConnectionModule
-                ) =>
-            {
-                Some(role)
-            }
-            Self::Direct
-                if matches!(
-                    role,
-                    PlatformXmlModuleRole::ObjectModule
-                        | PlatformXmlModuleRole::ManagerModule
-                        | PlatformXmlModuleRole::RecordSetModule
-                        | PlatformXmlModuleRole::ValueManagerModule
-                ) =>
-            {
-                Some(role)
-            }
-            _ => None,
-        }
-    }
-}
-
-fn module_layout_for_relative(
-    relative: &Path,
-) -> Result<(PlatformXmlModuleLayoutFamily, PlatformXmlModuleIdentity), String> {
-    let components = relative_module_path_components(relative)?;
-    let parts = components.iter().map(String::as_str).collect::<Vec<_>>();
-    for family in PLATFORM_XML_MODULE_LAYOUT_FAMILIES {
-        if let Some(identity) = family.identity_from_parts(&parts) {
-            return identity.map(|identity| (family.family, identity));
-        }
-    }
-    Err(unsupported_module_layout())
-}
-
-fn relative_module_path_components(relative: &Path) -> Result<Vec<String>, String> {
-    relative
-        .components()
-        .map(|component| match component {
-            Component::Normal(value) => value
-                .to_str()
-                .map(str::to_string)
-                .ok_or_else(|| "BSL module path is not valid UTF-8".to_string()),
-            _ => Err("BSL module path must be relative to its source set".to_string()),
-        })
-        .collect()
-}
-
-#[cfg(test)]
-fn module_layout_descriptors_for_test() -> &'static [PlatformXmlModuleLayoutDescriptor] {
-    PLATFORM_XML_MODULE_LAYOUT_FAMILIES
-}
-
-fn module_identity(
-    address: String,
-    owner: String,
-    role: PlatformXmlModuleRole,
-    descriptors: Vec<PathBuf>,
-) -> Result<PlatformXmlModuleIdentity, String> {
-    let address = MetadataAddress::parse(
-        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &address,
-    )
-    .map_err(|error| error.to_string())?;
-    Ok(PlatformXmlModuleIdentity {
-        owner,
-        address,
-        role,
-        descriptors,
-    })
-}
-
-/// Pure configuration Platform XML module layout shared by logical readers and
-/// the future staged event writer. External EPF/ERF roots remain a separate
-/// source-set layout and are resolved before this mapper is called.
-pub(crate) fn platform_xml_module_relative(address: &MetadataAddress) -> Result<PathBuf, String> {
-    let parts = address.segments().collect::<Vec<_>>();
-    for family in PLATFORM_XML_MODULE_LAYOUT_FAMILIES {
-        if let Some(path) = family.path_from_address(&parts) {
-            return path;
-        }
-    }
-    Err(unsupported_module_layout())
-}
-
-fn metadata_descriptor(directory: &str, name: &str) -> PathBuf {
-    PathBuf::from(directory).join(format!("{name}.xml"))
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PlatformXmlEvidenceErrorKind {
     Containment,
@@ -2362,32 +1792,27 @@ fn ensure_no_link_components(source_root: &Path, path: &Path) -> Result<(), Stri
     Ok(())
 }
 
-fn unsupported_module_layout() -> String {
-    "unica.code.patch v1 accepts only a supported canonical platform XML BSL module path"
-        .to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::{revalidate_platform_xml_target, set_object_descriptor_content_read_hook_for_test};
 
-    use crate::domain::cancellation::CancellationToken;
-    use crate::domain::code_intelligence::RelativeSearchFilter;
-    use crate::domain::source_target::{
-        MetadataAddress, SourceTarget, SourceTargetErrorCode, SourceTargetErrorReason,
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-    };
-    use crate::domain::workspace::WorkspaceContext;
-    use crate::infrastructure::platform::filesystem::create_dir_symlink_for_test;
-    use crate::infrastructure::platform::testing::{
-        create_directory_link_fixture_for_test, create_file_link_fixture_for_test,
-        FileLinkFixtureOutcome,
-    };
-    use crate::infrastructure::source_roots::normalize_path_identity;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+    use unica_address::source_target::{
+        MetadataAddress, SourceTarget, SourceTargetErrorCode, SourceTargetErrorReason,
+        PLATFORM_XML_8_3_27_FORMAT_2_20,
+    };
+    use unica_code_intelligence::model::RelativeSearchFilter;
+    use unica_source_contract::workspace::WorkspaceContext;
+    use unica_work_control::cancellation::CancellationToken;
+    use unica_workspace::paths::normalize_path_identity;
+    use unica_workspace::test_support::create_dir_symlink_for_test;
+    use unica_workspace::test_support::{
+        create_directory_link_fixture_for_test, create_file_link_fixture_for_test,
+        FileLinkFixtureOutcome,
+    };
 
     static TEMP_NONCE: AtomicU64 = AtomicU64::new(0);
 
@@ -2396,14 +1821,14 @@ mod tests {
     fn resolve_platform_xml_target(
         context: &WorkspaceContext,
         target: &SourceTarget,
-    ) -> Result<super::PlatformXmlResolution, crate::domain::source_target::SourceTargetError> {
+    ) -> Result<super::PlatformXmlResolution, unica_address::source_target::SourceTargetError> {
         super::resolve_platform_xml_target(context, target, super::TargetKindPolicy::ModuleOnly)
     }
 
     fn resolve_platform_xml_object_target(
         context: &WorkspaceContext,
         target: &SourceTarget,
-    ) -> Result<super::PlatformXmlResolution, crate::domain::source_target::SourceTargetError> {
+    ) -> Result<super::PlatformXmlResolution, unica_address::source_target::SourceTargetError> {
         super::resolve_platform_xml_target(context, target, super::TargetKindPolicy::Any)
     }
 
@@ -2413,7 +1838,7 @@ mod tests {
     fn resolve_platform_xml_root_target(
         context: &WorkspaceContext,
         target: &SourceTarget,
-    ) -> Result<super::PlatformXmlResolution, crate::domain::source_target::SourceTargetError> {
+    ) -> Result<super::PlatformXmlResolution, unica_address::source_target::SourceTargetError> {
         super::resolve_platform_xml_target(context, target, super::TargetKindPolicy::Any)
     }
 
@@ -2848,64 +2273,6 @@ mod tests {
     }
 
     #[test]
-    fn platform_xml_module_layouts_share_one_family_registry_in_both_directions() {
-        let cases = [
-            (
-                super::PlatformXmlModuleLayoutFamily::RootApplication,
-                "ManagedApplicationModule",
-                "Ext/ManagedApplicationModule.bsl",
-            ),
-            (
-                super::PlatformXmlModuleLayoutFamily::OwnerModule,
-                "CommonModule.Shared.Module",
-                "CommonModules/Shared/Ext/Module.bsl",
-            ),
-            (
-                super::PlatformXmlModuleLayoutFamily::CommonForm,
-                "CommonForm.Main.FormModule",
-                "CommonForms/Main/Ext/Form/Module.bsl",
-            ),
-            (
-                super::PlatformXmlModuleLayoutFamily::CommonCommand,
-                "CommonCommand.Print.CommandModule",
-                "CommonCommands/Print/Ext/CommandModule.bsl",
-            ),
-            (
-                super::PlatformXmlModuleLayoutFamily::DirectMetadata,
-                "Catalog.Items.ManagerModule",
-                "Catalogs/Items/Ext/ManagerModule.bsl",
-            ),
-            (
-                super::PlatformXmlModuleLayoutFamily::NestedForm,
-                "Catalog.Items.Form.List.FormModule",
-                "Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
-            ),
-            (
-                super::PlatformXmlModuleLayoutFamily::NestedCommand,
-                "Catalog.Items.Command.Open.CommandModule",
-                "Catalogs/Items/Commands/Open/Ext/CommandModule.bsl",
-            ),
-        ];
-
-        let descriptors = super::module_layout_descriptors_for_test();
-        assert_eq!(descriptors.len(), cases.len());
-        for ((expected_family, address, relative), descriptor) in cases.into_iter().zip(descriptors)
-        {
-            let address = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, address).unwrap();
-
-            assert_eq!(descriptor.family(), expected_family);
-            assert_eq!(
-                descriptor.render_physical(&address).unwrap(),
-                Path::new(relative)
-            );
-            assert_eq!(
-                descriptor.parse_physical(Path::new(relative)).unwrap(),
-                address
-            );
-        }
-    }
-
-    #[test]
     fn platform_xml_source_targets_reject_unregistered_module_roles() {
         let context = fixture(
             "unregistered-role",
@@ -3047,7 +2414,7 @@ mod tests {
             assert_eq!(resolution.resolved.metadata_path, None);
             assert_eq!(
                 resolution.resolved.target_kind,
-                crate::domain::source_target::TargetKind::SourceRoot
+                unica_address::source_target::TargetKind::SourceRoot
             );
             assert_eq!(
                 revalidate_platform_xml_target(&context, &resolution.handle)
@@ -3074,7 +2441,7 @@ mod tests {
             .expect("a read-only caller still resolves the source root under `Any`");
         assert_eq!(
             allowed.resolved.target_kind,
-            crate::domain::source_target::TargetKind::SourceRoot
+            unica_address::source_target::TargetKind::SourceRoot
         );
 
         let error = resolve_platform_xml_target(&context, &root_target("main")).unwrap_err();
@@ -3211,7 +2578,7 @@ mod tests {
                 .handle;
         assert_eq!(
             module_handle.target_kind(),
-            crate::domain::source_target::TargetKind::Module
+            unica_address::source_target::TargetKind::Module
         );
         assert_ne!(
             revalidate_platform_xml_target(&context, &module_handle)
@@ -3326,7 +2693,7 @@ mod tests {
         let locate = |path: &str| {
             super::locate_platform_xml_source_path(
                 &context,
-                &crate::application::source_navigation::SourceLocateRequest {
+                &unica_navigation::source_navigation::SourceLocateRequest {
                     source_set: "main".to_string(),
                     path: path.to_string(),
                 },
@@ -3366,7 +2733,7 @@ mod tests {
         let outside = locate("/etc/passwd");
         assert_eq!(
             outside.rejection,
-            Some(crate::application::source_navigation::LocateRejection::OutsideSourceSet)
+            Some(unica_navigation::source_navigation::LocateRejection::OutsideSourceSet)
         );
         assert!(outside.metadata_path.is_none());
         assert!(outside.owner_metadata_path.is_none());
@@ -3395,7 +2762,7 @@ mod tests {
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.19"><Catalog><Properties><Name>Items</Name></Properties></Catalog></MetaDataObject>"#,
         )
         .unwrap();
-        let request = crate::application::source_navigation::SourceLocateRequest {
+        let request = unica_navigation::source_navigation::SourceLocateRequest {
             source_set: "main".to_string(),
             path: "src/Catalogs/Items.xml".to_string(),
         };
@@ -3405,7 +2772,7 @@ mod tests {
                 .unwrap();
         assert_eq!(
             public.rejection,
-            Some(crate::application::source_navigation::LocateRejection::OwnerUnproven)
+            Some(unica_navigation::source_navigation::LocateRejection::OwnerUnproven)
         );
 
         let reader =
@@ -3526,7 +2893,7 @@ mod tests {
 
         assert_eq!(
             resolution.resolved.target_kind,
-            crate::domain::source_target::TargetKind::MetadataObject
+            unica_address::source_target::TargetKind::MetadataObject
         );
         assert_eq!(
             resolution.resolved.metadata_path.unwrap().as_str(),

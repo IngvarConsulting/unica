@@ -1,7 +1,7 @@
 ---
 id: INV.SOURCE.FORM-ELEMENT-REMOVAL-REFERENCES
 check:
-  - crates/unica-coder/src/infrastructure/native_operations/form.rs::form_edit_remove_rejects_surviving_supported_xml_references
+  - crates/unica-coder/tests/platform/form_composition.rs::form_edit_remove_rejects_surviving_supported_xml_references
 ---
 
 # Удаление элемента не оставляет поддержанные ссылки формы без цели

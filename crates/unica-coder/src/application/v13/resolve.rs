@@ -7,9 +7,9 @@
 //! либо файл действительно нужно открыть вне Unica. Оба случая редки, поэтому
 //! ответ здесь точный или его нет: догадок этот инструмент не делает.
 
-use crate::domain::address::QualifiedAddress;
-use crate::domain::refusal::RefusalCode;
 use serde::Serialize;
+use unica_address::address::QualifiedAddress;
+use unica_refusal::RefusalCode;
 
 /// Откуда пришёл вопрос. Ровно одна сторона: спрашивать обе разом бессмысленно,
 /// а не спрашивать ни одной — нечего разрешать.

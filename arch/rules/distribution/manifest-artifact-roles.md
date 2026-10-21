@@ -1,7 +1,7 @@
 ---
 id: INV.PKG.MANIFEST-ARTIFACT-ROLES
 check:
-  - crates/unica-bootstrap/tests/manifest_contract.rs::loading_a_manifest_rejects_an_unknown_artifact_role
+  - crates/unica-artifact-delivery/tests/manifest_contract.rs::loading_a_manifest_rejects_an_unknown_artifact_role
 ---
 
 # Неизвестная роль артефакта делает манифест недопустимым

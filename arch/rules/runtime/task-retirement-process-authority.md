@@ -1,7 +1,7 @@
 ---
 id: INV.APP.TASK-RETIREMENT-PROCESS-AUTHORITY
 check:
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::reopened_retirement_rejects_old_authority_and_preserves_indexes_until_confirmed_delete
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::reopened_retirement_rejects_old_authority_and_preserves_indexes_until_confirmed_delete
   - crates/unica-coder/tests/daemon_receipt_ledger.rs::task_bind_direct_ack_and_receipt_terminal_expiry_release_exact_quota
 ---
 

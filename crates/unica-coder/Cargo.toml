@@ -15,7 +15,7 @@ path = "src/lib.rs"
 
 [features]
 default = []
-receipt-ledger-test-support = []
+receipt-ledger-test-support = ["unica-execution/receipt-ledger-test-support", "unica-daemon/receipt-ledger-test-support"]
 # Исследования — не тесты: их цели собираются только с этой фичей, и в плане
 # конвейера их нет. Запуск — scripts/research/.
 research = []
@@ -36,13 +36,55 @@ path = "tests/research/cf_init_checkpoint.rs"
 required-features = ["research"]
 
 [dependencies]
+unica-daemon = { path = "../unica-daemon" }
+unica-bindings = { path = "../unica-bindings" }
+unica-adapter-lexical = { path = "../unica-adapter-lexical" }
+unica-adapter-bsl-analyzer = { path = "../unica-adapter-bsl-analyzer" }
+unica-adapter-rlm = { path = "../unica-adapter-rlm" }
+unica-analysis-services = { path = "../unica-analysis-services" }
+unica-dcs-designer = { path = "../unica-dcs-designer" }
+unica-roles-designer = { path = "../unica-roles-designer" }
+unica-templates-designer = { path = "../unica-templates-designer" }
+unica-forms-designer = { path = "../unica-forms-designer" }
+unica-metadata-designer = { path = "../unica-metadata-designer" }
+unica-xdto-designer = { path = "../unica-xdto-designer" }
+unica-runner = { path = "../unica-runner" }
+unica-adapter-v8-runner = { path = "../unica-adapter-v8-runner" }
+unica-workspace = { path = "../unica-workspace" }
+unica-redaction = { path = "../unica-redaction" }
+unica-bsl = { path = "../unica-bsl" }
+unica-xdto = { path = "../unica-xdto" }
+unica-dcs = { path = "../unica-dcs" }
+unica-templates = { path = "../unica-templates" }
+unica-operations = { path = "../unica-operations" }
+unica-diagnostics = { path = "../unica-diagnostics" }
+unica-navigation = { path = "../unica-navigation" }
+unica-code-intelligence = { path = "../unica-code-intelligence" }
+unica-execution = { path = "../unica-execution" }
+unica-forms = { path = "../unica-forms" }
+unica-documentation-sources = { path = "../unica-documentation-sources" }
+unica-project-health = { path = "../unica-project-health" }
+unica-configuration = { path = "../unica-configuration" }
+unica-metadata = { path = "../unica-metadata" }
+unica-source-contract = { path = "../unica-source-contract" }
+unica-source-designer = { path = "../unica-source-designer" }
+unica-bsl-parser = { path = "../unica-bsl-parser" }
+unica-roles = { path = "../unica-roles" }
+unica-refusal = { path = "../unica-refusal" }
+unica-execution-contract = { path = "../unica-execution-contract" }
+unica-documentation = { path = "../unica-documentation" }
+unica-address = { path = "../unica-address" }
+unica-process = { path = "../unica-process" }
+unica-artifact-delivery = { path = "../unica-artifact-delivery" }
+unica-xml-format = { path = "../unica-xml-format" }
+unica-operation-contract = { path = "../unica-operation-contract" }
+unica-network = { path = "../unica-network" }
+unica-work-control = { path = "../unica-work-control" }
 base64.workspace = true
-bsl-parser.workspace = true
 # Доставку движка по требованию ведёт тот же установщик, что ставит ядро:
 # формат манифеста, ключ кеша, блокировка и докачка у них общие, и вторая
 # реализация была бы местом, где они разойдутся.
 unica-bootstrap = { path = "../unica-bootstrap" }
-bsl-syntax.workspace = true
 diffy.workspace = true
 fs2.workspace = true
 serde.workspace = true
@@ -84,7 +126,36 @@ cap-primitives.workspace = true
 cap-fs-ext.workspace = true
 
 [dev-dependencies]
-unica-bootstrap = { path = "../unica-bootstrap", features = ["network-test-support"] }
+unica-daemon = { path = "../unica-daemon", features = ["test-support"] }
+unica-project-health = { path = "../unica-project-health", features = ["test-support"] }
+unica-roles-designer = { path = "../unica-roles-designer", features = ["test-support"] }
+unica-templates-designer = { path = "../unica-templates-designer", features = ["test-support"] }
+unica-xdto-designer = { path = "../unica-xdto-designer", features = ["test-support"] }
+unica-bsl = { path = "../unica-bsl", features = ["test-support"] }
+unica-forms-designer = { path = "../unica-forms-designer", features = ["test-support"] }
+unica-metadata-designer = { path = "../unica-metadata-designer", features = ["test-support"] }
+unica-adapter-lexical = { path = "../unica-adapter-lexical", features = ["test-support"] }
+unica-adapter-bsl-analyzer = { path = "../unica-adapter-bsl-analyzer", features = ["test-support"] }
+unica-adapter-rlm = { path = "../unica-adapter-rlm", features = ["test-support"] }
+unica-analysis-services = { path = "../unica-analysis-services", features = ["test-support"] }
+unica-artifact-delivery = { path = "../unica-artifact-delivery", features = ["test-support"] }
+unica-adapter-v8-runner = { path = "../unica-adapter-v8-runner", features = ["test-support"] }
+unica-workspace = { path = "../unica-workspace", features = ["test-support"] }
+unica-redaction = { path = "../unica-redaction", features = ["test-support"] }
+unica-forms = { path = "../unica-forms", features = ["test-support"] }
+unica-xdto = { path = "../unica-xdto", features = ["test-support"] }
+unica-dcs = { path = "../unica-dcs", features = ["test-support"] }
+unica-templates = { path = "../unica-templates", features = ["test-support"] }
+unica-diagnostics = { path = "../unica-diagnostics", features = ["test-support"] }
+unica-navigation = { path = "../unica-navigation", features = ["test-support"] }
+unica-code-intelligence = { path = "../unica-code-intelligence", features = ["test-support"] }
+unica-execution = { path = "../unica-execution", features = ["test-support"] }
+unica-metadata = { path = "../unica-metadata", features = ["test-support"] }
+unica-source-contract = { path = "../unica-source-contract", features = ["test-support"] }
+unica-execution-contract = { path = "../unica-execution-contract", features = ["test-support"] }
+unica-process = { path = "../unica-process", features = ["test-support"] }
+unica-work-control = { path = "../unica-work-control", features = ["test-support"] }
+unica-network = { path = "../unica-network", features = ["test-support"] }
 jsonschema.workspace = true
 proc-macro2.workspace = true
 quote.workspace = true

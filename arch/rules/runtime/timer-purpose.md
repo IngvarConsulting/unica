@@ -1,36 +1,36 @@
 ---
 id: INV.RUNTIME.TIMERS-PRESERVE-WORK
 check:
-  - crates/unica-coder/src/domain/operation_deadline.rs::absence_and_elapsed_finite_deadline_are_distinct
-  - crates/unica-coder/src/application/receipt_ledger_actor.rs::no_deadline_actor_queue_waits_for_running_port_then_returns_success
-  - crates/unica-coder/src/application/receipt_ledger_actor.rs::no_deadline_mutation_keeps_late_successful_completion_authority
-  - crates/unica-coder/src/infrastructure/receipt_ledger/tests.rs::no_deadline_actor_returns_late_real_store_commit_and_reopens
-  - crates/unica-coder/src/infrastructure/receipt_ledger/tests.rs::no_deadline_row_commit_survives_delayed_sync_and_exact_reopen
-  - crates/unica-coder/src/infrastructure/receipt_ledger/tests.rs::no_deadline_keeps_visible_io_failure_commit_uncertain
-  - crates/unica-coder/src/infrastructure/daemon/protocol_v5.rs::no_deadline_frame_keeps_its_consumed_prefix_across_socket_polling
-  - crates/unica-coder/src/infrastructure/daemon/protocol_v5.rs::finite_frame_expiry_checks_the_original_anchor_before_consuming_the_suffix
-  - crates/unica-coder/src/infrastructure/daemon/client_v5.rs::owned_v5_frames_preserve_real_tcp_prefixes_across_a_socket_poll
-  - crates/unica-coder/src/domain/code_intelligence.rs::provider_absence_is_distinct_from_expired_and_contracts_with_finite_deadlines
-  - crates/unica-coder/src/domain/code_intelligence.rs::provider_finite_extreme_budgets_preserve_remaining_without_instant_overflow
-  - crates/unica-coder/src/domain/code_intelligence.rs::provider_relative_equality_compares_the_same_endpoint_with_different_starts
-  - crates/unica-coder/src/infrastructure/deadline_lock.rs::no_deadline_waits_on_occupied_lane_then_acquires_after_release
-  - crates/unica-coder/src/infrastructure/deadline_lock.rs::no_deadline_occupied_lane_still_observes_explicit_cancellation
-  - crates/unica-coder/src/infrastructure/code_intelligence.rs::git_grep_without_deadline_passes_absence_to_the_process_runner
-  - crates/unica-coder/src/infrastructure/code_intelligence.rs::bsl_search_without_deadline_refuses_before_legacy_service_dispatch
-  - crates/unica-coder/src/infrastructure/code_intelligence.rs::bsl_graph_without_deadline_refuses_before_legacy_service_dispatch
-  - crates/unica-coder/src/infrastructure/code_intelligence.rs::rlm_search_without_deadline_refuses_before_legacy_service_dispatch
-  - crates/unica-coder/src/infrastructure/rlm_navigation.rs::no_deadline_navigation_refuses_before_readiness_or_legacy_service_dispatch
-  - crates/unica-coder/src/infrastructure/diagnostics.rs::no_deadline_analyze_dispatches_the_analyzer_without_a_timeout
-  - crates/unica-coder/src/infrastructure/diagnostics.rs::no_deadline_diagnostics_refuses_before_legacy_backend_dispatch
-  - crates/unica-coder/src/infrastructure/diagnostics.rs::no_deadline_diagnostics_explicit_cancel_wins_before_unsupported_bridge
-  - crates/unica-coder/src/infrastructure/bsl_outline.rs::no_deadline_outline_reads_source_but_preserves_scope_and_explicit_cancel
-  - crates/unica-coder/src/infrastructure/task_store_v5.rs::no_deadline_task_commit_preserves_exact_terminal_cas_and_reopens
-  - crates/unica-coder/src/infrastructure/task_store_v5.rs::no_deadline_task_visible_io_failure_is_still_commit_uncertain
-  - crates/unica-coder/src/infrastructure/task_lifecycle_link_store_v5.rs::no_deadline_links_preserve_exact_cas_and_reopen_terminal_winner
+  - crates/unica-work-control/src/operation_deadline.rs::absence_and_elapsed_finite_deadline_are_distinct
+  - crates/unica-execution/src/receipt_ledger_actor.rs::no_deadline_actor_queue_waits_for_running_port_then_returns_success
+  - crates/unica-execution/src/receipt_ledger_actor.rs::no_deadline_mutation_keeps_late_successful_completion_authority
+  - crates/unica-execution/src/receipt_store/tests.rs::no_deadline_actor_returns_late_real_store_commit_and_reopens
+  - crates/unica-execution/src/receipt_store/tests.rs::no_deadline_row_commit_survives_delayed_sync_and_exact_reopen
+  - crates/unica-execution/src/receipt_store/tests.rs::no_deadline_keeps_visible_io_failure_commit_uncertain
+  - crates/unica-daemon/src/protocol_v5.rs::no_deadline_frame_keeps_its_consumed_prefix_across_socket_polling
+  - crates/unica-daemon/src/protocol_v5.rs::finite_frame_expiry_checks_the_original_anchor_before_consuming_the_suffix
+  - crates/unica-daemon/src/client_v5.rs::owned_v5_frames_preserve_real_tcp_prefixes_across_a_socket_poll
+  - crates/unica-work-control/src/provider_deadline.rs::provider_absence_is_distinct_from_expired_and_contracts_with_finite_deadlines
+  - crates/unica-work-control/src/provider_deadline.rs::provider_finite_extreme_budgets_preserve_remaining_without_instant_overflow
+  - crates/unica-work-control/src/provider_deadline.rs::provider_relative_equality_compares_the_same_endpoint_with_different_starts
+  - crates/unica-workspace/src/deadline_lock.rs::no_deadline_waits_on_occupied_lane_then_acquires_after_release
+  - crates/unica-workspace/src/deadline_lock.rs::no_deadline_occupied_lane_still_observes_explicit_cancellation
+  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::git_grep_without_deadline_passes_absence_to_the_process_runner
+  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::bsl_search_without_deadline_refuses_before_legacy_service_dispatch
+  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::bsl_graph_without_deadline_refuses_before_legacy_service_dispatch
+  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::rlm_search_without_deadline_refuses_before_legacy_service_dispatch
+  - crates/unica-adapter-rlm/src/navigation.rs::no_deadline_navigation_refuses_before_readiness_or_legacy_service_dispatch
+  - crates/unica-coder/tests/platform/bsl_diagnostics_provider.rs::no_deadline_analyze_dispatches_the_analyzer_without_a_timeout
+  - crates/unica-coder/tests/platform/bsl_diagnostics_provider.rs::no_deadline_diagnostics_refuses_before_legacy_backend_dispatch
+  - crates/unica-coder/tests/platform/bsl_diagnostics_provider.rs::no_deadline_diagnostics_explicit_cancel_wins_before_unsupported_bridge
+  - crates/unica-code-intelligence/src/current_outline.rs::no_deadline_outline_reads_source_but_preserves_scope_and_explicit_cancel
+  - crates/unica-execution/src/task_store.rs::no_deadline_task_commit_preserves_exact_terminal_cas_and_reopens
+  - crates/unica-execution/src/task_store.rs::no_deadline_task_visible_io_failure_is_still_commit_uncertain
+  - crates/unica-execution/src/lifecycle_link_store.rs::no_deadline_links_preserve_exact_cas_and_reopen_terminal_winner
   - crates/unica-coder/src/infrastructure/daemon/server.rs::default_operation_paths_reach_providers_without_a_deadline
   - crates/unica-coder/src/infrastructure/daemon/server.rs::production_operation_paths_start_no_new_finite_deadline
   - crates/unica-coder/src/infrastructure/daemon/server.rs::saved_apply_adapter_preserves_the_existing_cutoff_and_absence
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks
   - crates/unica-coder/src/infrastructure/internal_adapters.rs::diagnostics_analyze_without_configured_timeout_runs_without_process_timeout
 gap: https://github.com/IngvarConsulting/unica/issues/1119
 ---

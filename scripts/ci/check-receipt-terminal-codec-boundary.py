@@ -9,25 +9,25 @@ import sys
 from pathlib import Path, PurePosixPath
 
 
-SOURCE_ROOT = PurePosixPath("crates/unica-coder/src")
+SOURCE_ROOT = PurePosixPath("crates")
 APPLICATION_PATH = PurePosixPath(
-    "crates/unica-coder/src/application/receipt_ledger.rs"
+    "crates/unica-execution/src/receipt_ledger.rs"
 )
-STORE_PATH = PurePosixPath("crates/unica-coder/src/infrastructure/receipt_ledger.rs")
+STORE_PATH = PurePosixPath("crates/unica-execution/src/receipt_store.rs")
 # The store is a module directory, not one file: its root plus every file under
 # it is "the receipt ledger store" for every path-conditional rule below.
-STORE_DIR = PurePosixPath("crates/unica-coder/src/infrastructure/receipt_ledger")
+STORE_DIR = PurePosixPath("crates/unica-execution/src/receipt_store")
 
 
 def _is_store(path: PurePosixPath) -> bool:
     return path == STORE_PATH or path.is_relative_to(STORE_DIR)
 CODEC_PATH = PurePosixPath(
-    "crates/unica-coder/src/infrastructure/daemon/terminal_codec_v5.rs"
+    "crates/unica-execution/src/terminal_codec.rs"
 )
-DAEMON_MOD_PATH = PurePosixPath(
-    "crates/unica-coder/src/infrastructure/daemon/mod.rs"
+OWNER_MOD_PATH = PurePosixPath(
+    "crates/unica-execution/src/lib.rs"
 )
-REQUIRED_PATHS = (APPLICATION_PATH, STORE_PATH, CODEC_PATH, DAEMON_MOD_PATH)
+REQUIRED_PATHS = (APPLICATION_PATH, STORE_PATH, CODEC_PATH, OWNER_MOD_PATH)
 
 PREPARED_CONSTRUCTORS = (
     "PreparedReceiptRecord",
@@ -304,7 +304,7 @@ def _source_diagnostics(
                     path,
                     source,
                     match.start(),
-                    f"{type_name}::new is owned by terminal_codec_v5",
+                    f"{type_name}::new is owned by terminal_codec",
                 )
             )
 
@@ -319,7 +319,7 @@ def _source_diagnostics(
                         path,
                         source,
                         match.start("artifact"),
-                        f"{type_name} alias is forbidden outside terminal_codec_v5",
+                        f"{type_name} alias is forbidden outside terminal_codec",
                     )
                 )
 
@@ -338,7 +338,7 @@ def _source_diagnostics(
                         path,
                         source,
                         match.start("rhs") + artifact.start(),
-                        f"{type_name} alias is forbidden outside terminal_codec_v5",
+                        f"{type_name} alias is forbidden outside terminal_codec",
                     )
                 )
 
@@ -420,11 +420,11 @@ def _direct_literal_diagnostics(
     manual_markers = (
         (
             '"resultType":"direct"',
-            "production must not handwrite Direct wire JSON outside terminal_codec_v5",
+            "production must not handwrite Direct wire JSON outside terminal_codec",
         ),
         (
             '"state":"direct_terminal_unacked"',
-            "production must not handwrite Direct record JSON outside terminal_codec_v5",
+            "production must not handwrite Direct record JSON outside terminal_codec",
         ),
     )
     if _is_store(path):
@@ -453,11 +453,11 @@ def _direct_literal_diagnostics(
     macro_markers = (
         (
             ("state", "direct_terminal_unacked"),
-            "production must not handwrite Direct record JSON outside terminal_codec_v5",
+            "production must not handwrite Direct record JSON outside terminal_codec",
         ),
         (
             ("resultType", "direct"),
-            "production must not handwrite Direct wire JSON outside terminal_codec_v5",
+            "production must not handwrite Direct wire JSON outside terminal_codec",
         ),
     )
     for match in json_macro.finditer(masked):
@@ -523,19 +523,19 @@ def _linear_artifact_diagnostics(
 def _module_diagnostics(source: str, masked: str) -> list[str]:
     registered = re.search(
         r"(?m)^[ \t]*(?:pub(?:\s*\([^)]*\))?[ \t]+)?"
-        r"mod[ \t]+terminal_codec_v5[ \t]*;",
+        r"mod[ \t]+terminal_codec[ \t]*;",
         masked,
     )
     if registered is not None:
         return []
-    return [f"{DAEMON_MOD_PATH.as_posix()}:1: terminal_codec_v5 module is not registered"]
+    return [f"{OWNER_MOD_PATH.as_posix()}:1: terminal_codec module is not registered"]
 
 
 def collect_sources(root: Path) -> dict[PurePosixPath, str]:
     source_directory = root.joinpath(*SOURCE_ROOT.parts)
     sources: dict[PurePosixPath, str] = {}
     if source_directory.is_dir():
-        for absolute_path in sorted(source_directory.rglob("*.rs")):
+        for absolute_path in sorted(source_directory.glob("*/src/**/*.rs")):
             if absolute_path.is_file():
                 relative_path = PurePosixPath(absolute_path.relative_to(root).as_posix())
                 sources[relative_path] = absolute_path.read_text(encoding="utf-8")
@@ -574,9 +574,9 @@ def check_root(root: Path) -> list[str]:
             diagnostics.extend(
                 _store_diagnostics(path, sources[path], masked_sources[path])
             )
-    if DAEMON_MOD_PATH in sources:
+    if OWNER_MOD_PATH in sources:
         diagnostics.extend(
-            _module_diagnostics(sources[DAEMON_MOD_PATH], masked_sources[DAEMON_MOD_PATH])
+            _module_diagnostics(sources[OWNER_MOD_PATH], masked_sources[OWNER_MOD_PATH])
         )
     return sorted(
         diagnostics,

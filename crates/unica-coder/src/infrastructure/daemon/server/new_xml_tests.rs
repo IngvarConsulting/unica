@@ -1,10 +1,10 @@
 use super::actor_capacity_tests::direct_v5;
 use super::*;
-use crate::application::invocation_store::ToolIdentity;
-use crate::test_support::tree_snapshot;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use unica_execution::invocation_store::ToolIdentity;
+use unica_workspace::test_support::tree_snapshot;
 
 const CATALOG: &str = "Catalogs/CorpusCatalog.xml";
 const FORM_DESCRIPTOR: &str = "Catalogs/CorpusCatalog/Forms/CorpusForm.xml";

@@ -1,11 +1,11 @@
 ---
 id: INV.APP.RECEIPT-RECOVERY-BOUNDS
 check:
-  - crates/unica-coder/src/infrastructure/receipt_ledger/tests.rs::live_receipts_cross_former_count_and_byte_quotas_without_losing_exact_reservations
-  - crates/unica-coder/src/infrastructure/receipt_ledger/tests.rs::batched_live_receipts_and_actor_snapshot_cross_former_quotas_and_reopen
-  - crates/unica-coder/src/infrastructure/receipt_ledger/tests.rs::default_recovery_completes_after_former_automatic_timeout
-  - crates/unica-coder/src/infrastructure/receipt_ledger/tests.rs::expired_recovery_deadline_fails_before_staging_cleanup_or_catalog_mutation
-  - crates/unica-coder/src/infrastructure/receipt_ledger/tests.rs::oversized_live_persisted_row_is_corruption_and_fail_stops_the_store
+  - crates/unica-execution/src/receipt_store/tests.rs::live_receipts_cross_former_count_and_byte_quotas_without_losing_exact_reservations
+  - crates/unica-execution/src/receipt_store/tests.rs::batched_live_receipts_and_actor_snapshot_cross_former_quotas_and_reopen
+  - crates/unica-execution/src/receipt_store/tests.rs::default_recovery_completes_after_former_automatic_timeout
+  - crates/unica-execution/src/receipt_store/tests.rs::expired_recovery_deadline_fails_before_staging_cleanup_or_catalog_mutation
+  - crates/unica-execution/src/receipt_store/tests.rs::oversized_live_persisted_row_is_corruption_and_fail_stops_the_store
 gap: https://github.com/IngvarConsulting/unica/issues/1119
 ---
 

@@ -1,0 +1,21 @@
+[package]
+name = "unica-source-designer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+test-support = []
+
+[dependencies]
+uuid.workspace = true
+sha2.workspace = true
+serde.workspace = true
+serde_yaml.workspace = true
+unsafe-libyaml.workspace = true
+unica-xml-format = { path = "../unica-xml-format" }
+unica-address = { path = "../unica-address" }
+roxmltree.workspace = true
+unica-source-contract = { path = "../unica-source-contract" }

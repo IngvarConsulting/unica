@@ -1,16 +1,17 @@
-//! The real registration macros reject raw tuples for typed operation families.
-//! Registry completeness and descriptor consistency use the actual registry tests
-//! in domain::apply; these smaller compile fixtures exercise registration syntax.
+//! The actual registration macro rejects raw tuples for typed operation families.
+//! These compile fixtures exercise syntax only. Family tables and the composition
+//! macro are real; the minimal generic bundle/bind plumbing has no dispatch policy.
+//! Behavior and completeness use the actual registry/family integration tests.
 use quote::ToTokens;
 use std::process::{Command, Output};
 
-const METADATA_DIAGNOSTIC: &str =
-    "Metadata operations must register a typed MetadataOperation with a mandatory contextual contract";
+const RAW_REGISTRATION_DIAGNOSTIC: &str = "no rules expected";
 
 /// Build the complete typed probe from the real table rather than maintaining
 /// another list of the migrated operation identities.
 fn complete_metadata_entries() -> String {
-    let source = syn::parse_file(include_str!("../src/domain/metadata_operation.rs")).unwrap();
+    let source =
+        syn::parse_file(include_str!("../../unica-metadata/src/apply_operations.rs")).unwrap();
     let invocation = source
         .items
         .iter()
@@ -81,11 +82,11 @@ fn compile_registration(entry: &str) -> Output {
     compile_registration_with_declarations(
         entry,
         &metadata_declaration(
-            include_str!("../src/domain/metadata_operation.rs"),
+            include_str!("../../unica-metadata/src/apply_operations.rs"),
             "metadata_operations",
         ),
         &metadata_declaration(
-            include_str!("../src/domain/form_operation.rs"),
+            include_str!("../../unica-forms/src/operations.rs"),
             "form_operations",
         ),
     )
@@ -98,44 +99,39 @@ fn compile_registration_with_declarations(entry: &str, metadata: &str, form: &st
         .iter()
         .filter_map(|item| match item {
             syn::Item::Macro(item)
-                if item.ident.as_ref().is_some_and(|name| {
-                    name == "operation_descriptor" || name == "operation_descriptors"
-                }) =>
+                if item
+                    .ident
+                    .as_ref()
+                    .is_some_and(|name| name == "operation_descriptors") =>
             {
                 Some(item.to_token_stream().to_string())
             }
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(macros.len(), 2, "exercise both production macros");
-    let name_comparison = source
-        .items
-        .iter()
-        .find_map(|item| match item {
-            syn::Item::Fn(item) if item.sig.ident == "operation_names_equal" => {
-                Some(item.to_token_stream().to_string())
-            }
-            _ => None,
-        })
-        .expect("exercise the production const name comparison");
+    assert_eq!(macros.len(), 1, "exercise the production composition macro");
+    let role = metadata_declaration(
+        include_str!("../../unica-roles/src/operations.rs"),
+        "role_operations",
+    );
+    let support = metadata_declaration(
+        include_str!("../../unica-metadata/src/support.rs"),
+        "support_operations",
+    );
     let fixture = format!(
         r#"
         #![allow(dead_code)]
-        mod domain {{
-        mod metadata_operation {{
-            use super::apply::{{OperationApplicability, OperationSkeleton}};
-            {metadata}
+        extern crate self as unica_operations;
+        pub struct TypedOperationBundle<T>(T);
+        impl<T> TypedOperationBundle<T> {{
+            pub const fn new(operation: T) -> Self {{ Self(operation) }}
         }}
-        mod form_operation {{
-            use super::apply::{{OperationApplicability, OperationSkeleton}};
-            {form}
+        pub struct OperationDescriptor;
+        impl OperationDescriptor {{
+            pub const fn bind<T: 'static>(_: &'static TypedOperationBundle<T>) -> Self {{ Self }}
         }}
-        mod apply {{
-        use super::metadata_operation::MetadataOperation;
-        use super::form_operation::FormOperation;
-        enum OperationFamily {{ Role, Support, Metadata, Form }}
-        pub(super) enum OperationApplicability {{
-            Configuration, ExtensionRoot, Metadata, SupportRule, MetadataAttributeContainer,
+        enum OperationApplicability {{
+            Configuration, ExtensionRoot, Metadata, Role, RoleRight, SupportRule, MetadataAttributeContainer,
             MetadataAttribute, MetadataCommands, MetadataCommand, MetadataForms,
             Form, FormItemContainer, FormItem, FormEvent,
             MetadataTabularSections, MetadataTabularSection,
@@ -143,53 +139,32 @@ fn compile_registration_with_declarations(entry: &str, metadata: &str, form: &st
             MetadataEnumValues, MetadataEnumValue, MetadataColumns, MetadataColumn,
             MetadataTemplates, MetadataTemplate, MetadataPredefinedItems, MetadataPredefinedItem,
         }}
-        pub(super) enum OperationSkeleton {{ Values, Items, Target, From }}
-        enum RoleOperation {{ Create }}
-        enum SupportOperation {{ CapabilitySet, RuleSet }}
-        enum TypedOperation {{
-            Role(RoleOperation), Support(SupportOperation),
-            Metadata(MetadataOperation), Form(FormOperation),
+        enum OperationSkeleton {{ Values, Items, Target, From }}
+        mod metadata_operation {{
+            use super::{{OperationApplicability, OperationSkeleton}};
+            {metadata}
         }}
-        struct OperationDescriptor {{
-            name: &'static str,
-            family: OperationFamily,
-            applicability: OperationApplicability,
-            skeleton: OperationSkeleton,
-            typed_operation: Option<TypedOperation>,
+        mod form_operation {{
+            use super::{{OperationApplicability, OperationSkeleton}};
+            {form}
         }}
-        impl OperationDescriptor {{
-            const fn role(operation: RoleOperation) -> Self {{ Self {{
-                name: "role.create", family: OperationFamily::Role,
-                applicability: OperationApplicability::Configuration,
-                skeleton: OperationSkeleton::Values,
-                typed_operation: Some(TypedOperation::Role(operation)),
-            }} }}
-            const fn support(operation: SupportOperation) -> Self {{ Self {{
-                name: "supportCapability.set", family: OperationFamily::Support,
-                applicability: OperationApplicability::Configuration,
-                skeleton: OperationSkeleton::Values,
-                typed_operation: Some(TypedOperation::Support(operation)),
-            }} }}
-            const fn metadata(operation: MetadataOperation) -> Self {{ Self {{
-                name: operation.name(), family: OperationFamily::Metadata,
-                applicability: operation.applicability(), skeleton: operation.skeleton(),
-                typed_operation: Some(TypedOperation::Metadata(operation)),
-            }} }}
-            const fn form(operation: FormOperation) -> Self {{ Self {{
-                name: operation.name(), family: OperationFamily::Form,
-                applicability: operation.applicability(), skeleton: operation.skeleton(),
-                typed_operation: Some(TypedOperation::Form(operation)),
-            }} }}
+        mod role_operation {{
+            use super::{{OperationApplicability, OperationSkeleton}};
+            {role}
         }}
-        {name_comparison}
+        mod support_operation {{
+            use super::{{OperationApplicability, OperationSkeleton}};
+            {support}
+        }}
+        use metadata_operation::MetadataOperation;
+        use form_operation::FormOperation;
+        use role_operation::RoleOperation;
+        use support_operation::SupportOperation;
         {macros}
         operation_descriptors!({entry});
-        }}
-        }}
         fn main() {{}}
     "#,
         macros = macros.join("\n"),
-        entry = entry
     );
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("registration.rs");
@@ -219,9 +194,7 @@ fn typed_support_registration_compiles_and_legacy_support_tuple_is_rejected() {
         "the old Support registration must fail"
     );
     assert!(
-        String::from_utf8_lossy(&legacy.stderr).contains(
-            "Support operations must register a typed SupportOperation with a mandatory contract"
-        ),
+        String::from_utf8_lossy(&legacy.stderr).contains(RAW_REGISTRATION_DIAGNOSTIC),
         "{}",
         String::from_utf8_lossy(&legacy.stderr)
     );
@@ -242,9 +215,7 @@ fn typed_role_registration_compiles_and_legacy_role_tuple_is_rejected() {
         "the old Role registration must fail"
     );
     assert!(
-        String::from_utf8_lossy(&legacy.stderr).contains(
-            "Role operations must register a typed RoleOperation with a mandatory contract"
-        ),
+        String::from_utf8_lossy(&legacy.stderr).contains(RAW_REGISTRATION_DIAGNOSTIC),
         "{}",
         String::from_utf8_lossy(&legacy.stderr)
     );
@@ -302,13 +273,8 @@ fn typed_contextual_registrations_compile_and_migrated_raw_tuples_are_rejected()
             !legacy.status.success(),
             "{family} {name} must require its typed registration"
         );
-        let expected_diagnostic = if family == "Metadata" {
-            METADATA_DIAGNOSTIC
-        } else {
-            "Form operations must register a typed FormOperation with a mandatory contract"
-        };
         assert!(
-            String::from_utf8_lossy(&legacy.stderr).contains(expected_diagnostic),
+            String::from_utf8_lossy(&legacy.stderr).contains(RAW_REGISTRATION_DIAGNOSTIC),
             "{}",
             String::from_utf8_lossy(&legacy.stderr)
         );
@@ -404,7 +370,7 @@ fn inline_metadata_member_registrations_require_their_typed_variants() {
             "{name} must require its typed registration"
         );
         assert!(
-            String::from_utf8_lossy(&result.stderr).contains(METADATA_DIAGNOSTIC),
+            String::from_utf8_lossy(&result.stderr).contains(RAW_REGISTRATION_DIAGNOSTIC),
             "{name}: {}",
             String::from_utf8_lossy(&result.stderr)
         );
@@ -465,7 +431,7 @@ fn remaining_metadata_registrations_require_their_typed_variants() {
         ));
         assert!(!result.status.success(), "raw {name} must fail");
         assert!(
-            String::from_utf8_lossy(&result.stderr).contains(METADATA_DIAGNOSTIC),
+            String::from_utf8_lossy(&result.stderr).contains(RAW_REGISTRATION_DIAGNOSTIC),
             "{name}: {}",
             String::from_utf8_lossy(&result.stderr)
         );
@@ -492,7 +458,7 @@ fn a_complete_typed_metadata_table_does_not_admit_an_additional_raw_entry() {
             "raw {name} beside typed Metadata must fail"
         );
         assert!(
-            String::from_utf8_lossy(&result.stderr).contains(METADATA_DIAGNOSTIC),
+            String::from_utf8_lossy(&result.stderr).contains(RAW_REGISTRATION_DIAGNOSTIC),
             "{name}: {}",
             String::from_utf8_lossy(&result.stderr)
         );
@@ -502,11 +468,11 @@ fn a_complete_typed_metadata_table_does_not_admit_an_additional_raw_entry() {
 #[test]
 fn raw_metadata_guards_follow_literals_while_the_form_family_requires_typed_registration() {
     let metadata = metadata_declaration(
-        include_str!("../src/domain/metadata_operation.rs"),
+        include_str!("../../unica-metadata/src/apply_operations.rs"),
         "metadata_operations",
     );
     let form = metadata_declaration(
-        include_str!("../src/domain/form_operation.rs"),
+        include_str!("../../unica-forms/src/operations.rs"),
         "form_operations",
     );
     let complete = complete_metadata_entries();
@@ -583,13 +549,8 @@ fn raw_metadata_guards_follow_literals_while_the_form_family_requires_typed_regi
                 "{family} {name}: {}",
                 String::from_utf8_lossy(&result.stderr)
             );
-            let diagnostic = if family == "Metadata" {
-                METADATA_DIAGNOSTIC
-            } else {
-                "Form operations must register a typed FormOperation with a mandatory contract"
-            };
             assert!(
-                String::from_utf8_lossy(&result.stderr).contains(diagnostic),
+                String::from_utf8_lossy(&result.stderr).contains(RAW_REGISTRATION_DIAGNOSTIC),
                 "{family} {name}: {}",
                 String::from_utf8_lossy(&result.stderr)
             );

@@ -4,7 +4,7 @@ check:
   - crates/unica-coder/src/infrastructure/native_operations/cf.rs::cf_init_preview_shares_the_apply_data_shape_and_writes_nothing
   - crates/unica-coder/src/infrastructure/native_operations/cf.rs::cf_init_preview_rejects_what_apply_rejects_and_writes_nothing
   - crates/unica-coder/src/infrastructure/metadata_operations.rs::typed_edit_preview_bytes_equal_the_applied_post_image
-  - crates/unica-coder/src/infrastructure/native_operations/form.rs::form_edit_preview_apply_and_no_op_validate_the_projected_form
+  - crates/unica-coder/tests/platform/form_composition.rs::form_edit_preview_apply_and_no_op_validate_the_projected_form
 gap: https://github.com/IngvarConsulting/unica/issues/959
 ---
 

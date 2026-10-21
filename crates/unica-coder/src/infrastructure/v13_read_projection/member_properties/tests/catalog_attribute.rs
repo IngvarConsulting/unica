@@ -1,6 +1,6 @@
 use super::project;
-use crate::domain::project_sources::SourceSetKind;
 use serde_json::{json, Value};
+use unica_source_contract::SourceSetKind;
 
 const ENUMS: [(&str, &str, &[&str]); 3] = [
     (
