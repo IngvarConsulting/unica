@@ -696,5 +696,23 @@ mod directive_tests {
             .unwrap(),
             RequiredEventDirective::Server
         );
+        let mut dynamic = spec(&["server"]);
+        dynamic.event_id = "OnGetDataAtServer".into();
+        assert_eq!(
+            required_event_directive(
+                EventDirectiveOwner::Property(FormBindingOwner::Table),
+                &dynamic,
+            )
+            .unwrap(),
+            RequiredEventDirective::ServerOrServerNoContext
+        );
+        assert_eq!(
+            required_event_directive(
+                EventDirectiveOwner::Property(FormBindingOwner::Form),
+                &dynamic,
+            )
+            .unwrap(),
+            RequiredEventDirective::Server
+        );
     }
 }

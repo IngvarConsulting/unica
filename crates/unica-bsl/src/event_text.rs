@@ -11,6 +11,8 @@ pub enum RequiredEventDirective {
     None,
     Client,
     Server,
+    /// Reading accepts `&НаСервере` and `&НаСервереБезКонтекста`; a new
+    /// handler is emitted without form context.
     ServerOrServerNoContext,
 }
 
