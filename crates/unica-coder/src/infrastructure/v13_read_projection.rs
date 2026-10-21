@@ -1523,10 +1523,19 @@ fn project_xdto(
                 Value::String(serde_json::to_string(base).unwrap_or_default()),
             );
         }
+        let mut limits = Vec::new();
+        if let Some(base_at) = item.get("baseAt") {
+            if let Some(value) = bounded_prop("baseAt", base_at) {
+                props.insert("baseAt".to_string(), value);
+            } else {
+                limits.push(format!("XDTO baseAt exceeds the compact property limit of {MAX_COMPACT_PROP_BYTES} bytes"));
+            }
+        }
         let branches = xdto_property_branch(address, item)?;
         return Ok(NodeViewData::Node(
             NodeView::new(address.to_string(), segment.kind().as_str(), name, props)
-                .with_branches(branches),
+                .with_branches(branches)
+                .with_limits(limits),
         ));
     }
     // Свойство любой вложенности: `Type.T.Property.A.Property.B` спускается

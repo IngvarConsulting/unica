@@ -4,7 +4,7 @@ use crate::infrastructure::operational_config::load_operational_config;
 use std::time::Duration;
 use unica_documentation_sources::documentation_policy::{DocumentationPolicy, NetworkAccess};
 use unica_workspace::test_support::{create_file_link_fixture_for_test, FileLinkFixtureOutcome};
-const KNOWN: &[&str] = &["v8std", "kb-1ci"];
+const KNOWN: &[&str] = &["v8std", "configuration-help"];
 fn workspace() -> tempfile::TempDir {
     tempfile::tempdir().expect("временный каталог")
 }

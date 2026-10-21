@@ -3319,3 +3319,7 @@ pub fn collapse_standalone_child_descriptors(pre_image: &str, post_image: &mut S
         post_image.replace_range(range, &reference);
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/platform/edit_empty_child_objects.rs"]
+mod empty_child_objects_tests;
