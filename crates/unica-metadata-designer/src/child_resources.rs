@@ -1169,6 +1169,7 @@ pub fn read_typed_child_tree(
 fn new_template_descriptor_image(
     child_xml: &str,
 ) -> Result<Vec<u8>, unica_metadata::request::MetaFailure> {
+    /// Append one template subtree, preserving leaf markup and validating structural gaps.
     fn append(
         source: &str,
         node: roxmltree::Node<'_, '_>,

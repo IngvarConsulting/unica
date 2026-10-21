@@ -1044,6 +1044,7 @@ impl RootState {
         }
     }
 
+    /// Fold a completed XML frame into its parent or the configuration result.
     fn end(&mut self, checkpoint: &dyn Fn() -> Result<(), ViewError>) -> Result<(), ViewError> {
         checkpoint()?;
         if self.ignored_depth != 0 {

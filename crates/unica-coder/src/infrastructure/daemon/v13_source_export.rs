@@ -602,6 +602,7 @@ mod tests {
             panic!("source export must exchange live publication frames")
         }
 
+        /// Drive the fixture publication protocol with configured faults and stop replies.
         fn run_controlled_streaming_staged(
             &self,
             command: &ProcessCommand,
