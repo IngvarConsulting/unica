@@ -1,9 +1,9 @@
 ---
 id: INV.RLM.READ-CANCELLATION
 check:
-  - crates/unica-coder/src/infrastructure/rlm_navigation.rs::adapter_normalizes_client_cancellation_from_readiness_and_call
-  - crates/unica-coder/src/infrastructure/rlm_navigation.rs::cancellation_after_readiness_wins_when_the_deadline_expires_at_the_same_time
-  - crates/unica-coder/src/infrastructure/rlm_navigation.rs::cancellation_after_readiness_wins_before_any_readiness_state_is_interpreted
+  - crates/unica-adapter-rlm/src/navigation.rs::adapter_normalizes_client_cancellation_from_readiness_and_call
+  - crates/unica-adapter-rlm/src/navigation.rs::cancellation_after_readiness_wins_when_the_deadline_expires_at_the_same_time
+  - crates/unica-adapter-rlm/src/navigation.rs::cancellation_after_readiness_wins_before_any_readiness_state_is_interpreted
 ---
 
 # Отмена поиска определения не превращается в ошибку индекса

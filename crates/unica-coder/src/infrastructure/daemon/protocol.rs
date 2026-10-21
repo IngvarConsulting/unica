@@ -1,9 +1,9 @@
 //! The canonical v0.13 request the daemon's domain service takes. The wire
 //! that carries it is protocol v5 (`protocol_v5.rs`); protocol v3 retired
 //! with its own client, loop and stores.
-use crate::application::invocation_store::ToolIdentity;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use unica_execution::invocation_store::ToolIdentity;
 
 pub(crate) const MAX_TASK_WAIT_MS: u64 = 7_000;
 

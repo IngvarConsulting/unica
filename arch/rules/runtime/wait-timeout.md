@@ -1,7 +1,7 @@
 ---
 id: INV.OBS.WAIT-TIMEOUT-KEEPS-JOB
 check:
-  - crates/unica-coder/src/infrastructure/runtime_jobs.rs::caller_wait_timeout_does_not_stop_the_active_job
+  - crates/unica-coder/src/infrastructure/runtime_jobs_integration.rs::caller_wait_timeout_does_not_stop_the_active_job
 ---
 
 # Истечение ожидания не отменяет задание

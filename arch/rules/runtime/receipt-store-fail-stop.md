@@ -1,16 +1,16 @@
 ---
 id: INV.APP.DAEMON-STORE-FAIL-STOP
 check:
-  - crates/unica-coder/src/application/receipt_ledger_actor.rs::expired_direct_terminal_queued_behind_running_reserve_never_reaches_the_port
-  - crates/unica-coder/src/application/receipt_ledger_actor.rs::reserve_panic_is_commit_uncertain_and_fail_stops_actor
-  - crates/unica-coder/src/application/receipt_ledger_actor.rs::running_reserve_deadline_is_commit_uncertain_and_fail_stops_actor
-  - crates/unica-coder/src/application/receipt_ledger_actor.rs::expired_command_queued_behind_running_reserve_never_reaches_the_port
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::commit_uncertain_is_returned_before_process_owned_fail_stop_retains_endpoint
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::every_fail_stop_store_error_is_written_without_reentering_the_actor
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::displaced_receipt_authority_fail_stops_until_process_death
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::tiny_submit_budget_gives_the_receipt_store_its_own_step_budget
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::tiny_submit_budget_after_an_early_cancel_keeps_the_daemon
-  - crates/unica-coder/src/application/receipt_ledger_actor.rs::step_begun_late_in_its_deadline_gets_the_running_floor_from_its_start
+  - crates/unica-execution/src/receipt_ledger_actor.rs::expired_direct_terminal_queued_behind_running_reserve_never_reaches_the_port
+  - crates/unica-execution/src/receipt_ledger_actor.rs::reserve_panic_is_commit_uncertain_and_fail_stops_actor
+  - crates/unica-execution/src/receipt_ledger_actor.rs::running_reserve_deadline_is_commit_uncertain_and_fail_stops_actor
+  - crates/unica-execution/src/receipt_ledger_actor.rs::expired_command_queued_behind_running_reserve_never_reaches_the_port
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::commit_uncertain_is_returned_before_process_owned_fail_stop_retains_endpoint
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::every_fail_stop_store_error_is_written_without_reentering_the_actor
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::displaced_receipt_authority_fail_stops_until_process_death
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::tiny_submit_budget_gives_the_receipt_store_its_own_step_budget
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::tiny_submit_budget_after_an_early_cancel_keeps_the_daemon
+  - crates/unica-execution/src/receipt_ledger_actor.rs::step_begun_late_in_its_deadline_gets_the_running_floor_from_its_start
 gap: https://github.com/IngvarConsulting/unica/issues/984
 ---
 

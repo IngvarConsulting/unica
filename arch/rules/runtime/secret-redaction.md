@@ -1,8 +1,8 @@
 ---
 id: INV.SAFETY.RUNTIME-SECRET-REDACTION
 check:
-  - crates/unica-coder/src/infrastructure/runtime_jobs.rs::production_secret_key_matrix_is_redacted_from_runtime_surfaces
-  - crates/unica-coder/src/infrastructure/runtime_jobs.rs::worker_handoff_never_persists_actual_argv_or_output_secrets
+  - crates/unica-coder/src/infrastructure/runtime_jobs_integration.rs::production_secret_key_matrix_is_redacted_from_runtime_surfaces
+  - crates/unica-coder/src/infrastructure/runtime_jobs_integration.rs::worker_handoff_never_persists_actual_argv_or_output_secrets
 ---
 
 # Запись задания и его журналы скрывают распознаваемые секреты

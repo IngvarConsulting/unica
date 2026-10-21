@@ -9,12 +9,12 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "ci" / "check-receipt-terminal-codec-boundary.py"
 
-APPLICATION_PATH = Path("crates/unica-coder/src/application/receipt_ledger.rs")
-STORE_PATH = Path("crates/unica-coder/src/infrastructure/receipt_ledger.rs")
+APPLICATION_PATH = Path("crates/unica-execution/src/receipt_ledger.rs")
+STORE_PATH = Path("crates/unica-execution/src/receipt_store.rs")
 CODEC_PATH = Path(
-    "crates/unica-coder/src/infrastructure/daemon/terminal_codec_v5.rs"
+    "crates/unica-execution/src/terminal_codec.rs"
 )
-DAEMON_MOD_PATH = Path("crates/unica-coder/src/infrastructure/daemon/mod.rs")
+OWNER_MOD_PATH = Path("crates/unica-execution/src/lib.rs")
 
 
 COMPLIANT_SOURCES = {
@@ -51,7 +51,7 @@ COMPLIANT_SOURCES = {
         "    fn golden() { let _ = DirectReceiptWriteSlot::new(key); }\n"
         "}\n"
     ),
-    DAEMON_MOD_PATH: "pub(crate) mod terminal_codec_v5;\n",
+    OWNER_MOD_PATH: "pub(crate) mod terminal_codec;\n",
 }
 
 
@@ -75,6 +75,15 @@ def run_guard(root: Path) -> subprocess.CompletedProcess[str]:
 
 
 class ReceiptTerminalCodecBoundaryTests(unittest.TestCase):
+    def test_another_component_cannot_construct_prepared_terminal_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            rogue = Path("crates/unica-xdto/src/rogue.rs")
+            write_tree(root, {rogue: "fn bypass() { PreparedWireFrame::new(frame); }\n"})
+            result = run_guard(root)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"{rogue}:1: PreparedWireFrame::new is owned by terminal_codec", result.stdout)
+
     def test_compliant_layout_passes_through_root_cli(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -109,9 +118,9 @@ class ReceiptTerminalCodecBoundaryTests(unittest.TestCase):
         self.assertEqual(
             result.stdout.splitlines(),
             [
-                f"{rogue_path.as_posix()}:2: PreparedReceiptRecord::new is owned by terminal_codec_v5",
-                f"{rogue_path.as_posix()}:3: PreparedWireFrame::new is owned by terminal_codec_v5",
-                f"{rogue_path.as_posix()}:4: PreparedReceiptTerminalPublication::new is owned by terminal_codec_v5",
+                f"{rogue_path.as_posix()}:2: PreparedReceiptRecord::new is owned by terminal_codec",
+                f"{rogue_path.as_posix()}:3: PreparedWireFrame::new is owned by terminal_codec",
+                f"{rogue_path.as_posix()}:4: PreparedReceiptTerminalPublication::new is owned by terminal_codec",
             ],
         )
 
@@ -137,8 +146,8 @@ class ReceiptTerminalCodecBoundaryTests(unittest.TestCase):
         self.assertEqual(
             result.stdout.splitlines(),
             [
-                f"{rogue_path.as_posix()}:2: PreparedReceiptRecord::new is owned by terminal_codec_v5",
-                f"{rogue_path.as_posix()}:3: PreparedWireFrame::new is owned by terminal_codec_v5",
+                f"{rogue_path.as_posix()}:2: PreparedReceiptRecord::new is owned by terminal_codec",
+                f"{rogue_path.as_posix()}:3: PreparedWireFrame::new is owned by terminal_codec",
             ],
         )
 
@@ -154,7 +163,7 @@ class ReceiptTerminalCodecBoundaryTests(unittest.TestCase):
                         "    PreparedReceiptRecord as Record,\n"
                         "};\n"
                         "type Frame = crate::application::receipt_ledger::PreparedWireFrame;\n"
-                        "type Slot = crate::infrastructure::daemon::terminal_codec_v5::DirectReceiptWriteSlot;\n"
+                        "type Slot = crate::infrastructure::daemon::terminal_codec::DirectReceiptWriteSlot;\n"
                     )
                 },
             )
@@ -165,9 +174,9 @@ class ReceiptTerminalCodecBoundaryTests(unittest.TestCase):
         self.assertEqual(
             result.stdout.splitlines(),
             [
-                f"{rogue_path.as_posix()}:2: PreparedReceiptRecord alias is forbidden outside terminal_codec_v5",
-                f"{rogue_path.as_posix()}:4: PreparedWireFrame alias is forbidden outside terminal_codec_v5",
-                f"{rogue_path.as_posix()}:5: DirectReceiptWriteSlot alias is forbidden outside terminal_codec_v5",
+                f"{rogue_path.as_posix()}:2: PreparedReceiptRecord alias is forbidden outside terminal_codec",
+                f"{rogue_path.as_posix()}:4: PreparedWireFrame alias is forbidden outside terminal_codec",
+                f"{rogue_path.as_posix()}:5: DirectReceiptWriteSlot alias is forbidden outside terminal_codec",
             ],
         )
 
@@ -195,7 +204,7 @@ class ReceiptTerminalCodecBoundaryTests(unittest.TestCase):
         self.assertEqual(
             result.stdout.splitlines(),
             [
-                f"{rogue_path.as_posix()}:2: PreparedReceiptRecord alias is forbidden outside terminal_codec_v5",
+                f"{rogue_path.as_posix()}:2: PreparedReceiptRecord alias is forbidden outside terminal_codec",
             ],
         )
 
@@ -329,8 +338,8 @@ class ReceiptTerminalCodecBoundaryTests(unittest.TestCase):
         self.assertEqual(
             result.stdout.splitlines(),
             [
-                f"{rogue_path.as_posix()}:2: production must not handwrite Direct wire JSON outside terminal_codec_v5",
-                f"{rogue_path.as_posix()}:3: production must not handwrite Direct record JSON outside terminal_codec_v5",
+                f"{rogue_path.as_posix()}:2: production must not handwrite Direct wire JSON outside terminal_codec",
+                f"{rogue_path.as_posix()}:3: production must not handwrite Direct record JSON outside terminal_codec",
             ],
         )
 
@@ -360,8 +369,8 @@ class ReceiptTerminalCodecBoundaryTests(unittest.TestCase):
         self.assertEqual(
             result.stdout.splitlines(),
             [
-                f"{rogue_path.as_posix()}:2: production must not handwrite Direct record JSON outside terminal_codec_v5",
-                f"{rogue_path.as_posix()}:3: production must not handwrite Direct wire JSON outside terminal_codec_v5",
+                f"{rogue_path.as_posix()}:2: production must not handwrite Direct record JSON outside terminal_codec",
+                f"{rogue_path.as_posix()}:3: production must not handwrite Direct wire JSON outside terminal_codec",
             ],
         )
 
@@ -608,7 +617,7 @@ class ReceiptTerminalCodecBoundaryTests(unittest.TestCase):
     def test_terminal_codec_module_must_remain_registered(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            write_tree(root, {DAEMON_MOD_PATH: "pub(crate) mod server;\n"})
+            write_tree(root, {OWNER_MOD_PATH: "pub(crate) mod server;\n"})
 
             result = run_guard(root)
 
@@ -616,7 +625,7 @@ class ReceiptTerminalCodecBoundaryTests(unittest.TestCase):
         self.assertEqual(
             result.stdout.splitlines(),
             [
-                f"{DAEMON_MOD_PATH.as_posix()}:1: terminal_codec_v5 module is not registered",
+                f"{OWNER_MOD_PATH.as_posix()}:1: terminal_codec module is not registered",
             ],
         )
 
@@ -641,7 +650,7 @@ class ReceiptTerminalCodecBoundaryTests(unittest.TestCase):
     def test_the_store_is_a_directory_not_one_file(self) -> None:
         """Хранилище разложено по файлам: правила пути держатся на всём модуле."""
         store_child = Path(
-            "crates/unica-coder/src/infrastructure/receipt_ledger/records.rs"
+            "crates/unica-execution/src/receipt_store/records.rs"
         )
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -661,14 +670,14 @@ class ReceiptTerminalCodecBoundaryTests(unittest.TestCase):
             result = run_guard(root)
 
         self.assertEqual(result.returncode, 1, result.stdout)
-        self.assertIn("receipt_ledger/records.rs", result.stdout)
+        self.assertIn("receipt_store/records.rs", result.stdout)
         self.assertIn("must not canonicalize a Direct terminal", result.stdout)
         self.assertNotIn("DirectReceiptWriteSlot::new is owned", result.stdout)
 
     def test_a_test_module_in_its_own_file_is_test_code(self) -> None:
         """`#[cfg(test)] mod tests;` — файл целиком тестовый, как и блок."""
         store_tests = Path(
-            "crates/unica-coder/src/infrastructure/receipt_ledger/tests.rs"
+            "crates/unica-execution/src/receipt_store/tests.rs"
         )
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -691,7 +700,7 @@ class ReceiptTerminalCodecBoundaryTests(unittest.TestCase):
     def test_a_plain_file_module_is_not_test_code(self) -> None:
         """Без `#[cfg(test)]` соседний файл — обычное production-хранилище."""
         store_child = Path(
-            "crates/unica-coder/src/infrastructure/receipt_ledger/encoding.rs"
+            "crates/unica-execution/src/receipt_store/encoding.rs"
         )
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -712,7 +721,7 @@ class ReceiptTerminalCodecBoundaryTests(unittest.TestCase):
     def test_a_commented_test_module_cannot_hide_a_store_child(self) -> None:
         """`#[cfg(test)] mod records;` в комментарии не делает файл тестовым."""
         store_child = Path(
-            "crates/unica-coder/src/infrastructure/receipt_ledger/records.rs"
+            "crates/unica-execution/src/receipt_store/records.rs"
         )
         for disguise in (
             "// #[cfg(test)]\n// mod records;\n",

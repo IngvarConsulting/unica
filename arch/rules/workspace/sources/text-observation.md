@@ -1,18 +1,18 @@
 ---
 id: INV.SOURCE.OBSERVED-BYTES
 check:
-  - crates/unica-coder/src/infrastructure/native_operations/text_snapshot.rs::snapshot_preserves_raw_bytes_and_excludes_one_bom_from_text
-  - crates/unica-coder/src/infrastructure/native_operations/text_snapshot.rs::snapshot_treats_only_the_first_bom_as_preamble
-  - crates/unica-coder/src/infrastructure/native_operations/text_snapshot.rs::snapshot_classifies_no_line_endings
-  - crates/unica-coder/src/infrastructure/native_operations/text_snapshot.rs::snapshot_classifies_uniform_lf_and_terminal_newline
-  - crates/unica-coder/src/infrastructure/native_operations/text_snapshot.rs::snapshot_classifies_uniform_crlf_and_terminal_newline
-  - crates/unica-coder/src/infrastructure/native_operations/text_snapshot.rs::snapshot_classifies_uniform_cr_and_terminal_newline
-  - crates/unica-coder/src/infrastructure/native_operations/text_snapshot.rs::snapshot_classifies_mixed_endings_with_exact_counts
-  - crates/unica-coder/src/infrastructure/native_operations/text_snapshot.rs::snapshot_reports_missing_terminal_newline
-  - crates/unica-coder/src/infrastructure/native_operations/text_snapshot.rs::preserve_prefers_local_context_for_mixed_source
-  - crates/unica-coder/src/infrastructure/native_operations/text_snapshot.rs::observed_resolution_serves_no_eol_source_with_explicit_lf
-  - crates/unica-coder/src/infrastructure/native_operations/text_snapshot.rs::observed_resolution_preserves_uniform_profile_and_prefers_local
-  - crates/unica-coder/src/infrastructure/native_operations/text_snapshot.rs::observed_resolution_rejects_mixed_profile_without_local_context
+  - crates/unica-xml-format/src/text.rs::snapshot_preserves_raw_bytes_and_excludes_one_bom_from_text
+  - crates/unica-xml-format/src/text.rs::snapshot_treats_only_the_first_bom_as_preamble
+  - crates/unica-xml-format/src/text.rs::snapshot_classifies_no_line_endings
+  - crates/unica-xml-format/src/text.rs::snapshot_classifies_uniform_lf_and_terminal_newline
+  - crates/unica-xml-format/src/text.rs::snapshot_classifies_uniform_crlf_and_terminal_newline
+  - crates/unica-xml-format/src/text.rs::snapshot_classifies_uniform_cr_and_terminal_newline
+  - crates/unica-xml-format/src/text.rs::snapshot_classifies_mixed_endings_with_exact_counts
+  - crates/unica-xml-format/src/text.rs::snapshot_reports_missing_terminal_newline
+  - crates/unica-xml-format/src/text.rs::preserve_prefers_local_context_for_mixed_source
+  - crates/unica-xml-format/src/text.rs::observed_resolution_serves_no_eol_source_with_explicit_lf
+  - crates/unica-xml-format/src/text.rs::observed_resolution_preserves_uniform_profile_and_prefers_local
+  - crates/unica-xml-format/src/text.rs::observed_resolution_rejects_mixed_profile_without_local_context
 ---
 
 # Текстовый снимок сохраняет байты и наблюдаемые переводы строк

@@ -1,11 +1,11 @@
 ---
 id: INV.APP.DOCUMENTATION-STANDARDS-CACHE
 check:
-  - crates/unica-coder/src/infrastructure/standards_documentation.rs::a_repeated_search_answers_from_the_process_cache
-  - crates/unica-coder/src/infrastructure/standards_documentation.rs::an_expired_search_cache_entry_is_refetched
-  - crates/unica-coder/src/infrastructure/standards_documentation.rs::the_search_cache_is_bounded_and_purges_expired_entries
-  - crates/unica-coder/src/infrastructure/standards_documentation.rs::the_query_is_normalized_before_the_server_call
-  - crates/unica-coder/src/infrastructure/standards_documentation.rs::v8std_search_reads_past_fifty_and_replays_the_complete_ranked_stream
+  - crates/unica-documentation-sources/src/standards_documentation.rs::a_repeated_search_answers_from_the_process_cache
+  - crates/unica-documentation-sources/src/standards_documentation.rs::an_expired_search_cache_entry_is_refetched
+  - crates/unica-documentation-sources/src/standards_documentation.rs::the_search_cache_is_bounded_and_purges_expired_entries
+  - crates/unica-documentation-sources/src/standards_documentation.rs::the_query_is_normalized_before_the_server_call
+  - crates/unica-documentation-sources/src/standards_documentation.rs::v8std_search_reads_past_fifty_and_replays_the_complete_ranked_stream
 ---
 
 # Повторный поиск стандартов использует действующий кеш

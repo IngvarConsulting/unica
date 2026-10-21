@@ -1,9 +1,9 @@
 ---
 id: INV.APP.RECEIPT-IDENTITY-COLLISION
 check:
-  - crates/unica-coder/src/infrastructure/receipt_ledger/tests.rs::invocation_id_collision_rejects_before_any_mutation
-  - crates/unica-coder/src/infrastructure/receipt_ledger/tests.rs::reserved_task_id_collision_rejects_before_any_mutation
-  - crates/unica-coder/src/infrastructure/receipt_ledger/tests.rs::persisted_dual_index_collision_fails_reopen_before_temporary_cleanup_or_mutation
+  - crates/unica-execution/src/receipt_store/tests.rs::invocation_id_collision_rejects_before_any_mutation
+  - crates/unica-execution/src/receipt_store/tests.rs::reserved_task_id_collision_rejects_before_any_mutation
+  - crates/unica-execution/src/receipt_store/tests.rs::persisted_dual_index_collision_fails_reopen_before_temporary_cleanup_or_mutation
 gap: https://github.com/IngvarConsulting/unica/issues/985
 ---
 

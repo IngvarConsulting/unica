@@ -1,12 +1,12 @@
-use crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES;
-use crate::application::result_store::{ViewCursorBinding, ViewCursorStore};
 use crate::application::v13::view::PREFERRED_PAGE_BYTES;
-use crate::domain::address::QualifiedAddress;
-use crate::domain::invocation::DomainResult;
-use crate::domain::refusal::{RefusalCode, RefusalDetail};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::fmt;
+use unica_address::address::QualifiedAddress;
+use unica_execution_contract::invocation::DomainResult;
+use unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES;
+use unica_navigation::result_store::{ViewCursorBinding, ViewCursorStore};
+use unica_refusal::{RefusalCode, RefusalDetail};
 
 /// Page the diagnostics of one completed node check. The immutable snapshot
 /// holds the verdict and every finding; no first page is published unless
@@ -347,7 +347,7 @@ pub(crate) fn plan_for_node(kind: &str, facts: NodeFacts) -> Vec<CheckStep> {
         // пуст, и `check` отвечал «читается» — то есть молчал о находках,
         // ради которых его и зовут.
         "Module" | "Body" => vec![CheckStep::Bsl],
-        other if facts.named && crate::domain::metadata::MetadataKind::parse(other).is_ok() => {
+        other if facts.named && unica_metadata::MetadataKind::parse(other).is_ok() => {
             vec![CheckStep::Meta]
         }
         _ => Vec::new(),
@@ -474,7 +474,9 @@ impl NativeCheckOutcome {
         }
     }
 
-    pub(crate) fn from_adapter(outcome: &crate::application::AdapterOutcome) -> Self {
+    pub(crate) fn from_adapter(
+        outcome: &unica_execution_contract::adapter_outcome::AdapterOutcome,
+    ) -> Self {
         let mut diagnostics = outcome
             .errors
             .iter()
@@ -556,10 +558,10 @@ mod tests {
         normalize_native_outcome, page_diagnostics, plan_for_node, CheckStep, CheckValidator,
         NativeCheckOutcome, NodeFacts, TemplateFlavour,
     };
-    use crate::application::result_store::{ViewCursorBinding, ViewCursorStore};
-    use crate::domain::address::QualifiedAddress;
-    use crate::domain::invocation::DomainResult;
     use serde_json::json;
+    use unica_address::address::QualifiedAddress;
+    use unica_execution_contract::invocation::DomainResult;
+    use unica_navigation::result_store::{ViewCursorBinding, ViewCursorStore};
 
     fn check_binding(at: &str, revision: &str, limit: usize) -> ViewCursorBinding {
         ViewCursorBinding {
@@ -709,7 +711,7 @@ mod tests {
         let node = serde_json::to_value(node_result).unwrap();
         let item = result.data.as_ref().unwrap()["diagnostics"][1].clone();
         let baseline = super::check_page_result(&node, vec![item], None, "bytes");
-        let message_len = crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES
+        let message_len = unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES
             - super::serialized_result_size(&baseline);
         result.data.as_mut().unwrap()["diagnostics"][1]["message"] = json!("x".repeat(message_len));
 

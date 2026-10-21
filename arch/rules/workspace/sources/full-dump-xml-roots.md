@@ -1,7 +1,7 @@
 ---
 id: INV.SOURCE.ROOT-POLICY-PUBLICATION
 check:
-  - crates/unica-coder/src/infrastructure/platform/full_dump_publication.rs::staged_tree_uses_closed_root_registry_and_exact_raw_versions
+  - crates/unica-coder/tests/platform/full_dump_integration.rs::staged_tree_uses_closed_root_registry_and_exact_raw_versions
 ---
 
 # Полная выгрузка публикуется только с допустимыми XML-корнями

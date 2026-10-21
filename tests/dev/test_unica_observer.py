@@ -24,6 +24,7 @@ import urllib.error
 import urllib.request
 from collections import deque
 from pathlib import Path
+from scripts.ci.prepared_binary import ensure_binary
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "dev" / "unica-observer.py"
@@ -35,6 +36,8 @@ SKELETON = {"from": "", "items": [], "values": {}, "text": "", "at": ""}
 def build_unica() -> Path:
     """Бинарь `unica`: из `UNICA_OBSERVER_BINARY` или собранный Cargo."""
     explicit = os.environ.get("UNICA_OBSERVER_BINARY")
+    if "UNICA_PREPARED_BINARY_MANIFEST" in os.environ:
+        return ensure_binary(REPO_ROOT)
     if explicit:
         return Path(explicit)
     if shutil.which("cargo") is None:

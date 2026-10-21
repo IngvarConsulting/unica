@@ -84,7 +84,7 @@ fn foreign_container(fixture: &RealReaderFixture, relative: &str, name: &str) {
 }
 
 fn assert_failure(fixture: &RealReaderFixture, case: FailedDeclaration) {
-    let before = crate::test_support::tree_snapshot(&fixture.source);
+    let before = unica_workspace::test_support::tree_snapshot(&fixture.source);
     let service = fixture.view_service();
 
     let owner = service.view(ViewRequest::new(case.owner).unwrap());
@@ -147,7 +147,10 @@ fn assert_failure(fixture: &RealReaderFixture, case: FailedDeclaration) {
     let catalog = service.view(ViewRequest::new(CATALOG).unwrap());
     assert!(catalog.ok, "independent catalog facts must remain readable");
     assert_eq!(catalog.data.as_ref().unwrap()["props"]["CodeLength"], 11);
-    assert_eq!(crate::test_support::tree_snapshot(&fixture.source), before);
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&fixture.source),
+        before
+    );
 }
 
 #[test]
@@ -243,11 +246,11 @@ fn nested_standard_attributes_keep_their_standard_tabular_section_context() {
         .expect("nested producer diagnostic keeps its owner context");
     assert_eq!(
         diagnostic.code,
-        crate::domain::metadata::MetaDiagnosticCode::ValidationFailed
+        unica_metadata::MetaDiagnosticCode::ValidationFailed
     );
     assert_eq!(
         diagnostic.severity,
-        crate::domain::metadata::MetaDiagnosticSeverity::Error
+        unica_metadata::MetaDiagnosticSeverity::Error
     );
     assert_eq!(diagnostic.metadata_path.as_ref(), Some(&target));
     assert_eq!(diagnostic.message, "standard attribute has no name");
@@ -384,7 +387,7 @@ fn similarly_named_property_diagnostics_do_not_poison_readable_declarations() {
             anchor,
             &format!("<foreign:{near_name} xmlns:foreign=\"urn:unica:similar-property\"/>{anchor}"),
         );
-        let before = crate::test_support::tree_snapshot(&fixture.source);
+        let before = unica_workspace::test_support::tree_snapshot(&fixture.source);
         let service = fixture.view_service();
         let root = service.view(ViewRequest::new(owner).unwrap());
         assert!(root.ok);
@@ -416,14 +419,17 @@ fn similarly_named_property_diagnostics_do_not_poison_readable_declarations() {
             detail.data.as_ref().unwrap().pointer(pointer),
             Some(&json!(expected))
         );
-        assert_eq!(crate::test_support::tree_snapshot(&fixture.source), before);
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&fixture.source),
+            before
+        );
     }
 }
 
 #[test]
 fn valid_declarations_preserve_items_details_and_readonly_sources() {
     let fixture = readable_declarations();
-    let before = crate::test_support::tree_snapshot(&fixture.source);
+    let before = unica_workspace::test_support::tree_snapshot(&fixture.source);
     let service = fixture.view_service();
     for (owner, branch) in [
         (CATALOG, "main:Catalog.Items.StandardAttribute"),
@@ -462,7 +468,10 @@ fn valid_declarations_preserve_items_details_and_readonly_sources() {
     ).unwrap());
     assert!(nested.ok);
     assert_eq!(nested.data.as_ref().unwrap()["title"], "ExtDimensionType");
-    assert_eq!(crate::test_support::tree_snapshot(&fixture.source), before);
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&fixture.source),
+        before
+    );
 }
 
 #[test]
@@ -513,7 +522,7 @@ fn projection_matches_canonical_segments_and_exact_xml_property_aliases() {
                 let error = result.expect_err("matching field must refuse this branch");
                 assert_eq!(
                     error.detail(),
-                    Some(crate::domain::refusal::RefusalDetail::SourceUnreadable)
+                    Some(unica_refusal::RefusalDetail::SourceUnreadable)
                 );
                 assert!(error.to_string().contains(&field));
             } else {
@@ -541,7 +550,7 @@ fn assert_web_service_declaration_stays_inapplicable(
     let branch_at = format!("{owner_at}.{branch_kind}");
     let target =
         MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "WebService.Exchange").unwrap();
-    let original = crate::test_support::tree_snapshot(&fixture.source);
+    let original = unica_workspace::test_support::tree_snapshot(&fixture.source);
     {
         let service = fixture.view_service();
         let owner = service.view(ViewRequest::new(owner_at).unwrap());
@@ -561,7 +570,7 @@ fn assert_web_service_declaration_stays_inapplicable(
         );
     }
     assert_eq!(
-        crate::test_support::tree_snapshot(&fixture.source),
+        unica_workspace::test_support::tree_snapshot(&fixture.source),
         original
     );
 
@@ -580,7 +589,7 @@ fn assert_web_service_declaration_stays_inapplicable(
         "<Name>Exchange</Name>",
         &format!("<Name>Exchange</Name>{fragment}"),
     );
-    let before = crate::test_support::tree_snapshot(&fixture.source);
+    let before = unica_workspace::test_support::tree_snapshot(&fixture.source);
     let service = fixture.view_service();
     let owner = service.view(ViewRequest::new(owner_at).unwrap());
     assert!(
@@ -636,7 +645,10 @@ fn assert_web_service_declaration_stays_inapplicable(
         serde_json::to_value(&local.info.declarations).unwrap(),
         json!({})
     );
-    assert_eq!(crate::test_support::tree_snapshot(&fixture.source), before);
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&fixture.source),
+        before
+    );
 }
 
 #[test]

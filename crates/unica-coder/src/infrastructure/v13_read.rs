@@ -1,42 +1,32 @@
-use crate::application::ports::{MetadataChildProfile, MetadataTemplateType};
 use crate::application::v13::resolve::ResolvedLines;
 use crate::application::v13::source_text::{admit_text, ModuleText};
-use crate::application::v13::view::{ViewError, ViewReadAuthority, ViewSourceSnapshot};
-use crate::domain::address::{AddressSegment, NodeKind, QualifiedAddress};
-use crate::domain::cancellation::CancellationToken;
-use crate::domain::code_intelligence::ProviderDeadline;
-use crate::domain::metadata::{MetaDiagnosticSeverity, MetadataKind};
-use crate::domain::module_projection::{
+use unica_bsl::projection::{
     CommonModuleProperties, EventProjection, MethodProjection, ModuleProjectionSet,
     RegionProjection,
 };
+use unica_metadata::{MetaDiagnosticSeverity, MetadataKind};
+use {
+    crate::application::v13::view::ViewReadAuthority,
+    crate::application::v13::view::ViewSourceSnapshot,
+    unica_execution_contract::view_error::ViewError,
+};
+
 use crate::domain::node_view::{
     BranchRef, CollectionView, NodeView, NodeViewData, SourceText, TextView,
 };
-use crate::domain::platform_profile::{
-    ModuleCapability, ModuleRole, ModuleSourceLayout, PlatformProfile,
-};
-use crate::domain::project_sources::SourceSetKind;
-use crate::domain::refusal::{RefusalCode, RefusalDetail};
-#[cfg(test)]
-use crate::domain::source_target::SourceTarget;
-use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
-use crate::infrastructure::bsl_module_projection::{
-    project_module, FormEventBindingInput, ModuleProjectionRequest, PlatformEventWriteCapability,
-};
-use crate::infrastructure::event_projection::{
+
+use crate::infrastructure::event_sources::module_prefix as shared_module_prefix;
+use crate::infrastructure::event_sources::{resolve_event_source, LogicalEventSource};
+use unica_bindings::events::{
     form_semantic_inputs, project_platform_event_from_projection,
     project_property_events_from_projection,
 };
-use crate::infrastructure::logical_event_source::{
-    module_prefix as shared_module_prefix, module_source_address as shared_module_source_address,
+use unica_bindings::projection::{
+    project_module, FormEventBindingInput, ModuleProjectionRequest, PlatformEventWriteCapability,
 };
-use crate::infrastructure::logical_event_source::{resolve_event_source, LogicalEventSource};
+use unica_source_designer::module_layout::module_source_address as shared_module_source_address;
+
 use crate::infrastructure::logical_tree::{route_logical_address, LogicalReader, LogicalTreeRoute};
-use crate::infrastructure::native_operations::form::{FormEventEvidence, FormInfoData};
-#[cfg(test)]
-use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
-use crate::infrastructure::platform_xml_owner::PlatformXmlSourceSetOwnerEvidence;
 #[cfg(test)]
 use crate::infrastructure::platform_xml_source_targets::{
     resolve_platform_xml_target, TargetKindPolicy,
@@ -46,6 +36,21 @@ use crate::infrastructure::v13_read_port::ProviderReadAuthority;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
+use unica_address::address::{AddressSegment, NodeKind, QualifiedAddress};
+use unica_address::module_routes::ModuleRole;
+use unica_address::module_routes::ModuleRouteKind;
+#[cfg(test)]
+use unica_address::source_target::SourceTarget;
+use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_bsl::profile::{ModuleCapability, PlatformProfile};
+use unica_forms::facts::{FormEventEvidence, FormInfoData};
+use unica_refusal::{RefusalCode, RefusalDetail};
+#[cfg(test)]
+use unica_source_contract::read::SourceDirectory;
+use unica_source_contract::SourceSetKind;
+use unica_source_designer::owner::PlatformXmlSourceSetOwnerEvidence;
+use unica_work_control::cancellation::CancellationToken;
+use unica_work_control::provider_deadline::ProviderDeadline;
 
 #[cfg(test)]
 std::thread_local! {
@@ -159,7 +164,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         source_set: impl Into<String>,
         source_set_identity: impl Into<String>,
         source_set_kind: SourceSetKind,
-        source_root: Arc<RetainedDirectoryCapability>,
+        source_root: Arc<SourceDirectory>,
         profile: PlatformProfile,
     ) -> Self {
         Self::with_read_authority(
@@ -221,8 +226,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
     pub(crate) fn object_borrowing(
         &self,
         at: &QualifiedAddress,
-    ) -> Result<Option<crate::infrastructure::native_operations::meta::MetaBorrowing>, ViewError>
-    {
+    ) -> Result<Option<unica_metadata_designer::xml_model::MetaBorrowing>, ViewError> {
         if self.read.source_set_kind() != SourceSetKind::Extension
             || at.segments().len() != 1
             || at.segments()[0].name().is_none()
@@ -240,7 +244,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             revision: self.exact_revision()?,
         };
         self.verify_registered_owner(&target, &admitted)?;
-        crate::infrastructure::native_operations::meta::parse_meta_borrowing(
+        unica_metadata_designer::xml_model::parse_meta_borrowing(
             &self.read.metadata_descriptor(&target)?,
         )
         .map(Some)
@@ -547,12 +551,12 @@ impl<'a> LogicalViewReadAuthority<'a> {
         &self,
         target: &MetadataAddress,
     ) -> Option<QualifiedAddress> {
-        let path = crate::infrastructure::logical_event_source::module_relative(
+        let path = unica_source_designer::module_layout::module_relative(
             target,
             self.read.source_set_kind(),
         )
         .ok()?;
-        crate::infrastructure::logical_event_source::module_address_for_relative(
+        crate::infrastructure::event_sources::module_address_for_relative(
             self.read.source_set(),
             self.read.source_set_kind(),
             self.profile,
@@ -619,13 +623,14 @@ impl<'a> LogicalViewReadAuthority<'a> {
     pub(crate) fn diagnostic_mapping(
         &self,
         at: &QualifiedAddress,
-        workspace: &crate::domain::workspace::WorkspaceContext,
+        workspace: &unica_source_contract::workspace::WorkspaceContext,
     ) -> Result<crate::infrastructure::diagnostics::CanonicalModuleDiagnosticMapping, ViewError>
     {
-        use crate::domain::diagnostics::DiagnosticContext;
-        use crate::domain::project_sources::{ProjectSourceSet, SourceFormat, SourceSetState};
-        use crate::domain::source_roots::ResolvedSourceRoot;
-        use crate::domain::source_target::{ResolvedTarget, TargetKind};
+        use unica_diagnostics::model::DiagnosticContext;
+        use unica_source_contract::{ProjectSourceSet, SourceFormat, SourceSetState};
+
+        use unica_address::source_target::{ResolvedTarget, TargetKind};
+        use unica_source_contract::workspace::ResolvedSourceRoot;
         let admitted = self.snapshot(at)?;
         let canonical = self.canonical_address(at, &admitted)?;
         let capability = self
@@ -705,7 +710,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
         self.verify_registered_owner(&target, &admitted)?;
         if !matches!(
             self.read.metadata_child_profile(&target)?,
-            MetadataChildProfile::Template(MetadataTemplateType::DataCompositionSchema)
+            unica_metadata::validation_subject::MetadataChildProfile::Template(
+                unica_metadata::validation_subject::MetadataTemplateType::DataCompositionSchema
+            )
         ) {
             return Err(ViewError::new(
                 RefusalCode::BadValue,
@@ -729,14 +736,18 @@ impl<'a> LogicalViewReadAuthority<'a> {
         let admitted = self.snapshot(at)?;
         let canonical = self.canonical_address(at, &admitted)?;
         let target =
-            crate::infrastructure::native_operations::mxl::typed_mxl_reader_target(&canonical)
-                .ok_or_else(|| {
-                    ViewError::new(RefusalCode::BadValue, "MXL validation requires a template")
-                })?;
+            crate::infrastructure::native_operations::mxl_composition::typed_mxl_reader_target(
+                &canonical,
+            )
+            .ok_or_else(|| {
+                ViewError::new(RefusalCode::BadValue, "MXL validation requires a template")
+            })?;
         self.verify_registered_owner(&target, &admitted)?;
         if !matches!(
             self.read.metadata_child_profile(&target)?,
-            MetadataChildProfile::Template(MetadataTemplateType::SpreadsheetDocument)
+            unica_metadata::validation_subject::MetadataChildProfile::Template(
+                unica_metadata::validation_subject::MetadataTemplateType::SpreadsheetDocument
+            )
         ) {
             return Err(ViewError::new(
                 RefusalCode::BadValue,
@@ -1246,7 +1257,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 ));
             };
             let projection = self.module_projection(&source.module_at, capability, admitted)?;
-            let event = project_platform_event_from_projection(&source, &projection)
+            let event = project_platform_event_from_projection(&source.event_at, &projection)
                 .map_err(|error| ViewError::new(error.code(), error.to_string()))?;
             return Ok(NodeViewData::Node(event_node(&event)));
         }
@@ -1366,7 +1377,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         capability: ModuleCapability,
         admitted: &ViewSourceSnapshot,
     ) -> Result<(), ViewError> {
-        if capability.source_layout() == ModuleSourceLayout::Root {
+        if capability.route_kind() == ModuleRouteKind::Root {
             return match self.read.source_set_kind() {
                 // An extension extends the configuration runtime modules from
                 // its own root (`Ext/ManagedApplicationModule.bsl` and the
@@ -2046,7 +2057,7 @@ impl LogicalViewReadAuthority<'_> {
         admitted: &ViewSourceSnapshot,
     ) -> Result<
         Option<(
-            crate::infrastructure::native_operations::meta::MetaBorrowing,
+            unica_metadata_designer::xml_model::MetaBorrowing,
             &'static str,
         )>,
         ViewError,
@@ -2108,12 +2119,12 @@ impl LogicalViewReadAuthority<'_> {
         .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))?;
         let mut projected = projected;
         let format = match self.read.metadata_child_profile(&child) {
-            Ok(MetadataChildProfile::Template(MetadataTemplateType::DataCompositionSchema)) => {
-                Some("DataCompositionSchema")
-            }
-            Ok(MetadataChildProfile::Template(MetadataTemplateType::SpreadsheetDocument)) => {
-                Some("SpreadsheetDocument")
-            }
+            Ok(unica_metadata::validation_subject::MetadataChildProfile::Template(
+                unica_metadata::validation_subject::MetadataTemplateType::DataCompositionSchema,
+            )) => Some("DataCompositionSchema"),
+            Ok(unica_metadata::validation_subject::MetadataChildProfile::Template(
+                unica_metadata::validation_subject::MetadataTemplateType::SpreadsheetDocument,
+            )) => Some("SpreadsheetDocument"),
             _ => None,
         };
         if format.is_some() {
@@ -2156,13 +2167,17 @@ impl LogicalViewReadAuthority<'_> {
         child: &MetadataAddress,
     ) -> Result<Vec<(NodeKind, usize)>, ViewError> {
         Ok(match self.read.metadata_child_profile(child) {
-            Ok(MetadataChildProfile::Template(MetadataTemplateType::DataCompositionSchema)) => {
+            Ok(unica_metadata::validation_subject::MetadataChildProfile::Template(
+                unica_metadata::validation_subject::MetadataTemplateType::DataCompositionSchema,
+            )) => {
                 let payload = self
                     .read
                     .dcs_payload(child, &mut || self.read_checkpoint())?;
                 crate::infrastructure::v13_read_projection::dcs_template_branches(&payload)
             }
-            Ok(MetadataChildProfile::Template(MetadataTemplateType::SpreadsheetDocument)) => {
+            Ok(unica_metadata::validation_subject::MetadataChildProfile::Template(
+                unica_metadata::validation_subject::MetadataTemplateType::SpreadsheetDocument,
+            )) => {
                 let payload = self
                     .read
                     .mxl_payload(child, false, &mut || self.read_checkpoint())?;
@@ -2176,11 +2191,11 @@ impl LogicalViewReadAuthority<'_> {
             }
             // Text, HTML, binary, add-in and appearance templates have no
             // addressable interior: addressing stops at the template.
-            Ok(MetadataChildProfile::Template(_)) => Vec::new(),
+            Ok(unica_metadata::validation_subject::MetadataChildProfile::Template(_)) => Vec::new(),
             Ok(
-                MetadataChildProfile::Form
-                | MetadataChildProfile::OrdinaryForm
-                | MetadataChildProfile::Command,
+                unica_metadata::validation_subject::MetadataChildProfile::Form
+                | unica_metadata::validation_subject::MetadataChildProfile::OrdinaryForm
+                | unica_metadata::validation_subject::MetadataChildProfile::Command,
             ) => {
                 return Err(ViewError::detailed(
                     RefusalDetail::SourceUnreadable,
@@ -2269,7 +2284,7 @@ pub(crate) const INHERITED_CONTENT: &str = "inherited";
 /// существует: отказ `not_found` направляет к родителю.
 fn project_inherited_part(
     route: &LogicalTreeRoute,
-    borrowing: &crate::infrastructure::native_operations::meta::MetaBorrowing,
+    borrowing: &unica_metadata_designer::xml_model::MetaBorrowing,
     resource: &str,
 ) -> Result<NodeViewData, ViewError> {
     let at = route.at();
@@ -2494,8 +2509,13 @@ fn module_source_address(
     module_at: &QualifiedAddress,
     capability: ModuleCapability,
 ) -> Result<MetadataAddress, ViewError> {
-    shared_module_source_address(module_at, capability)
-        .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error))
+    shared_module_source_address(
+        module_at,
+        capability.owner_kind(),
+        capability.role(),
+        capability.route_kind(),
+    )
+    .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error))
 }
 
 fn common_module_properties(
@@ -2511,7 +2531,7 @@ fn common_module_properties(
     let document = roxmltree::Document::parse(text.trim_start_matches('\u{feff}'))
         .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))?;
     let root = document.root_element();
-    use crate::domain::metadata::{
+    use unica_metadata::{
         MetaInfoPropertyAbsence, MetaInfoPropertyValue, META_INFO_PROPERTY_PROFILE,
     };
     const NS: &str = "http://v8.1c.ru/8.3/MDClasses";
@@ -2550,7 +2570,7 @@ fn common_module_properties(
         }
     };
     let borrowing_property = |name| {
-        crate::infrastructure::native_operations::meta::observe_meta_borrowing_property(
+        unica_metadata_designer::info_projection::observe_meta_borrowing_property(
             properties,
             MetadataKind::CommonModule,
             name,
@@ -2566,7 +2586,7 @@ fn common_module_properties(
     // у обычного остаётся ошибкой источника. Записанное значение проверяется
     // одинаково.
     let observe = |name: &str| -> Result<Option<MetaInfoPropertyValue>, ViewError> {
-        let value = crate::infrastructure::native_operations::meta::observe_meta_info_property(
+        let value = unica_metadata_designer::info_projection::observe_meta_info_property(
             properties,
             MetadataKind::CommonModule,
             name,
@@ -2851,7 +2871,11 @@ fn module_text(
     } else {
         SourceText::Oversized {
             bytes: text.len() as u64,
-            prefix: crate::application::v13::source_text::complete_prefix(text).to_string(),
+            prefix: unica_execution_contract::source_text_budget::complete_prefix(
+                text,
+                unica_bootstrap::MAX_RESPONSE_BUDGET,
+            )
+            .to_string(),
         }
     };
     Ok(NodeViewData::Text(TextView::new(

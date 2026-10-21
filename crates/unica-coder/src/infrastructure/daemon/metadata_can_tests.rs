@@ -1,18 +1,18 @@
 use super::actor_capacity_tests::direct_v5;
 use super::*;
-use crate::application::invocation_store::ToolIdentity;
 use crate::domain::apply::ApplyRequest;
-use crate::domain::invocation::DomainResult;
-use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
-use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::native_operations::apply::ApplyPlanError;
+use unica_execution::invocation_store::ToolIdentity;
+use unica_source_contract::{SourceFormat, SourceProfile, SourceSetKind};
+
 use crate::infrastructure::native_operations::apply_families::parse_family_operation_for_test;
-use crate::infrastructure::workspace_actor::{
-    ProviderRootBinding, WorkspaceActor, WorkspaceIdentity, WorkspaceSourceSetInput,
-};
+use unica_source_contract::proposal::ApplyPlanError;
+use unica_source_contract::workspace::WorkspaceContext;
+use unica_workspace::actor::{ProviderRootBinding, WorkspaceIdentity, WorkspaceSourceSetInput};
+
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use unica_execution_contract::invocation::DomainResult;
 
 type SourceImage = BTreeMap<PathBuf, Vec<u8>>;
 
@@ -32,7 +32,7 @@ fn repo_root() -> PathBuf {
 }
 
 fn copy_image(from: &Path, to: &Path) {
-    for (relative, bytes) in crate::test_support::tree_snapshot(from) {
+    for (relative, bytes) in unica_workspace::test_support::tree_snapshot(from) {
         let path = to.join(relative);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, bytes).unwrap();
@@ -42,7 +42,8 @@ fn copy_image(from: &Path, to: &Path) {
 impl Fixture {
     fn new(name: &str) -> Self {
         let root = tempfile::tempdir().unwrap();
-        let workspace = crate::test_support::canonical_path(root.path()).join("workspace");
+        let workspace =
+            unica_workspace::test_support::canonical_path(root.path()).join("workspace");
         copy_image(
             &repo_root().join("tests/fixtures/acceptance").join(name),
             &workspace,
@@ -96,7 +97,7 @@ impl Fixture {
             "metadata-can-parser-test",
         )
         .unwrap();
-        WorkspaceActor::new(identity, context)
+        crate::infrastructure::source_workspace::new_actor(identity, context)
             .unwrap()
             .bind_provider_root(name, &source)
             .unwrap()
@@ -184,7 +185,7 @@ fn assert_parity(
 fn assert_props_can_and_preview(at: &str, preview_args: Value, samples: &[(Value, bool)]) {
     let fixture = Fixture::new("workspace");
     let runtime = runtime();
-    let before = crate::test_support::tree_snapshot(&fixture.source);
+    let before = unica_workspace::test_support::tree_snapshot(&fixture.source);
     let project_before = std::fs::read(fixture.workspace.join("v8project.yaml")).unwrap();
     let operation_at = format!("{at}.Can.props.set");
     let detailed = call(
@@ -226,7 +227,10 @@ fn assert_props_can_and_preview(at: &str, preview_args: Value, samples: &[(Value
     ] {
         assert!(!oracle.is_valid(&args), "{at}: {args}");
     }
-    assert_eq!(crate::test_support::tree_snapshot(&fixture.source), before);
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&fixture.source),
+        before
+    );
     assert_eq!(
         std::fs::read(fixture.workspace.join("v8project.yaml")).unwrap(),
         project_before
@@ -247,7 +251,10 @@ fn assert_props_can_and_preview(at: &str, preview_args: Value, samples: &[(Value
     assert!(planned["effects"]
         .as_u64()
         .is_some_and(|effects| effects > 0));
-    assert_eq!(crate::test_support::tree_snapshot(&fixture.source), before);
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&fixture.source),
+        before
+    );
     assert_eq!(
         std::fs::read(fixture.workspace.join("v8project.yaml")).unwrap(),
         project_before
@@ -259,10 +266,10 @@ fn props_set_common_module_can_is_contextual_and_previews_without_writes() {
     let at = "main:CommonModule.GoogleПереводчик";
     assert_eq!(
         crate::domain::logical_route::classify_route(
-            &crate::domain::address::QualifiedAddress::parse(at).unwrap(),
-            crate::domain::platform_profile::PlatformProfile::v8_3_27(),
+            &unica_address::address::QualifiedAddress::parse(at).unwrap(),
+            unica_bsl::profile::PlatformProfile::v8_3_27(),
         ),
-        Some(crate::domain::logical_route::RouteClass::Module)
+        Some(unica_source_contract::route::RouteClass::Module)
     );
     assert_props_can_and_preview(
         at,
@@ -353,8 +360,9 @@ fn props_set_subsystem_can_is_contextual_and_previews_without_writes() {
 fn seven_metadata_can_contracts_publish_and_real_arguments_preview_without_writes() {
     let fixture = Fixture::with_extension();
     let runtime = runtime();
-    let before = crate::test_support::tree_snapshot(&fixture.source);
-    let extension_before = crate::test_support::tree_snapshot(&fixture.workspace.join("src-ext"));
+    let before = unica_workspace::test_support::tree_snapshot(&fixture.source);
+    let extension_before =
+        unica_workspace::test_support::tree_snapshot(&fixture.workspace.join("src-ext"));
     let cases = [
         (
             "main:Configuration",
@@ -411,9 +419,12 @@ fn seven_metadata_can_contracts_publish_and_real_arguments_preview_without_write
         assert!(preview.data.as_ref().unwrap()["executionToken"]
             .as_str()
             .is_some_and(|token| !token.is_empty()));
-        assert_eq!(crate::test_support::tree_snapshot(&fixture.source), before);
         assert_eq!(
-            crate::test_support::tree_snapshot(&fixture.workspace.join("src-ext")),
+            unica_workspace::test_support::tree_snapshot(&fixture.source),
+            before
+        );
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&fixture.workspace.join("src-ext")),
             extension_before
         );
     }
@@ -503,7 +514,7 @@ fn scalar_and_nested_can_fields_agree_with_productive_readers() {
             ],
         ),
     ];
-    let before = crate::test_support::tree_snapshot(&fixture.source);
+    let before = unica_workspace::test_support::tree_snapshot(&fixture.source);
     for (at, op, binding, samples) in cases {
         let detailed = contract(&runtime, &fixture, at, op);
         assert_parity(&detailed["argsSchema"], binding, at, op, &samples);
@@ -533,7 +544,10 @@ fn scalar_and_nested_can_fields_agree_with_productive_readers() {
         "object.create requires `values.kind`, a top-level metadata kind"
     );
     assert_eq!(refused.diagnostics[0]["code"], "bad_value");
-    assert_eq!(crate::test_support::tree_snapshot(&fixture.source), before);
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&fixture.source),
+        before
+    );
 }
 
 #[test]
@@ -563,8 +577,8 @@ fn relation_can_is_contextual_and_a_relationless_owner_has_no_accepted_sample() 
             json!([{"kind":"object","metadataPath":"Catalog.ПримерА"}]),
         ),
     ];
-    let before = crate::test_support::tree_snapshot(&fixture.source);
-    let event_before = crate::test_support::tree_snapshot(&event.source);
+    let before = unica_workspace::test_support::tree_snapshot(&fixture.source);
+    let event_before = unica_workspace::test_support::tree_snapshot(&event.source);
     for op in ["relation.add", "relation.remove", "relation.replace"] {
         for (workspace, binding, at, accepted) in [
             (
@@ -639,9 +653,12 @@ fn relation_can_is_contextual_and_a_relationless_owner_has_no_accepted_sample() 
             }
         }
     }
-    assert_eq!(crate::test_support::tree_snapshot(&fixture.source), before);
     assert_eq!(
-        crate::test_support::tree_snapshot(&event.source),
+        unica_workspace::test_support::tree_snapshot(&fixture.source),
+        before
+    );
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&event.source),
         event_before
     );
 }
@@ -751,18 +768,21 @@ fn canonical_help_saved_execute_creates_the_facet_and_preserves_neighbors_and_re
     std::fs::write(fixture.source.join("Catalogs/Items/Forms/Kept.xml"), r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form uuid="f3317000-0000-4000-8000-000000000099"><Properties><Name>Kept</Name><FormType>Managed</FormType><IncludeHelpInContents>true</IncludeHelpInContents></Properties></Form></MetaDataObject>"#).unwrap();
     let runtime = runtime();
     let args = json!({"at":"main:Catalog.Items","ops":[{"op":"help.create","args":{"values":{"lang":"ru"}}}]});
-    let before = crate::test_support::tree_snapshot(&fixture.source);
+    let before = unica_workspace::test_support::tree_snapshot(&fixture.source);
     let planned = call(&runtime, &fixture, ToolIdentity::Apply, args.clone());
     assert!(planned.ok, "{planned:?}");
     assert_eq!(planned.data.as_ref().unwrap()["mode"], "preview");
-    assert_eq!(crate::test_support::tree_snapshot(&fixture.source), before);
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&fixture.source),
+        before
+    );
 
     // An external writer's edit invalidates the saved plan. Its bytes survive the
     // refusal, and neither help file nor a form edit may leak from the plan.
     let mut edited_owner = std::fs::read(&owner).unwrap();
     edited_owner.extend_from_slice(b"\n<!-- changed after help preview -->\n");
     std::fs::write(&owner, edited_owner).unwrap();
-    let externally_changed = crate::test_support::tree_snapshot(&fixture.source);
+    let externally_changed = unica_workspace::test_support::tree_snapshot(&fixture.source);
     let stale = call(
         &runtime,
         &fixture,
@@ -772,14 +792,14 @@ fn canonical_help_saved_execute_creates_the_facet_and_preserves_neighbors_and_re
     assert!(!stale.ok, "{stale:?}");
     assert_eq!(stale.diagnostics[0]["code"], "stale_revision");
     assert_eq!(
-        crate::test_support::tree_snapshot(&fixture.source),
+        unica_workspace::test_support::tree_snapshot(&fixture.source),
         externally_changed
     );
 
     let planned = call(&runtime, &fixture, ToolIdentity::Apply, args.clone());
     assert!(planned.ok, "{planned:?}");
     assert_eq!(
-        crate::test_support::tree_snapshot(&fixture.source),
+        unica_workspace::test_support::tree_snapshot(&fixture.source),
         externally_changed
     );
     // The help plan does not read this module. An independent edit must not
@@ -788,7 +808,7 @@ fn canonical_help_saved_execute_creates_the_facet_and_preserves_neighbors_and_re
     let mut edited = std::fs::read(&module).unwrap();
     edited.extend_from_slice(b"\n// independent edit after fresh help preview\n");
     std::fs::write(&module, edited).unwrap();
-    let externally_changed = crate::test_support::tree_snapshot(&fixture.source);
+    let externally_changed = unica_workspace::test_support::tree_snapshot(&fixture.source);
     let published = call(
         &runtime,
         &fixture,
@@ -801,7 +821,7 @@ fn canonical_help_saved_execute_creates_the_facet_and_preserves_neighbors_and_re
         published.data.as_ref().unwrap()["planHash"],
         planned.data.as_ref().unwrap()["planHash"]
     );
-    let after = crate::test_support::tree_snapshot(&fixture.source);
+    let after = unica_workspace::test_support::tree_snapshot(&fixture.source);
     assert_eq!(
         changed_paths(&externally_changed, &after),
         (
@@ -862,5 +882,8 @@ fn canonical_help_saved_execute_creates_the_facet_and_preserves_neighbors_and_re
         .data
         .as_ref()
         .is_none_or(|data| data.get("executionToken").is_none()));
-    assert_eq!(crate::test_support::tree_snapshot(&fixture.source), after);
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&fixture.source),
+        after
+    );
 }
