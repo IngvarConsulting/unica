@@ -1,9 +1,9 @@
 """Страж состава: ворота, профили nextest и размеры наборов согласованы.
 
 Отбор объявлен профилями: `pr` пропускает только `small`, очередь и `main` —
-всё, кроме `large`, релиз гоняет всё, `large` — названные тесты ёмкости и
-нагрузки ReceiptLedger и карты исходников, а на Windows — весь набор. Меняется этот
-страж осознанно, вместе с выражениями профилей.
+всё, кроме `large` и временного каталога `nightly-only`, релиз гоняет всё,
+`large` — названные тесты ёмкости и нагрузки ReceiptLedger и карты исходников, а на
+Windows — весь набор. Меняется этот страж осознанно, вместе с выражениями профилей.
 """
 
 from __future__ import annotations
@@ -46,24 +46,47 @@ UREQ_SELECTION = (
 )
 
 
-def large_groups(expression: str) -> dict[str, list[str]]:
-    """Exact named tests remain bound to their actual Cargo binary owners."""
+# Integration targets whose root tests stay in the nightly-only catalogue
+# until full nightly shows them green on Windows (#1835, #1820), with the
+# source file that declares them.
+NIGHTLY_ONLY_TARGETS = {
+    "platform_project_health": "crates/unica-coder/tests/platform/project_health.rs",
+    "v13_workspace_bootstrap": "crates/unica-coder/tests/platform/v13_canonical_symlinked_workspace.rs",
+}
+
+
+def exact_groups(expression: str, label: str, targets: set[str]) -> dict[str, list[str]]:
+    """`(binary(T) & (test(/^name$/) | ...)) | ...`: every declared target once, exact sorted names."""
     group = re.compile(r"\(\s*binary\(([A-Za-z0-9_-]+)\)\s*&\s*\((.*?)(?<!/)\)\s*\)", re.S)
     result = {}
     end = 0
     for match in group.finditer(expression):
         between = expression[end:match.start()].strip()
         if between != ("" if not result else "|"):
-            raise ValueError("large must consist of declared binary/test groups")
+            raise ValueError(f"{label} must consist of declared binary/test groups")
         target, body = match.groups()
-        if target not in {"daemon_receipt_ledger", "unica_coder", "unica_workspace", "selection"} or target in result:
-            raise ValueError("large has an unknown or repeated target")
+        if target not in targets or target in result:
+            raise ValueError(f"{label} has an unknown or repeated target")
         names = []
         for term in body.strip().split("|"):
             parsed = re.fullmatch(r"\s*test\(/\^([\w:]+)\$/\)\s*", term)
             if parsed is None:
-                raise ValueError("large members must be exact anchored test names")
-            name = parsed[1]
+                raise ValueError(f"{label} members must be exact anchored test names")
+            names.append(parsed[1])
+        if not names or names != sorted(set(names)):
+            raise ValueError(f"{label} members must be unique and sorted within each target")
+        result[target] = names
+        end = match.end()
+    if expression[end:].strip() or set(result) != targets:
+        raise ValueError(f"{label} must name every declared target exactly once")
+    return result
+
+
+def large_groups(expression: str) -> dict[str, list[str]]:
+    """Exact named tests remain bound to their actual Cargo binary owners."""
+    result = exact_groups(expression, "large", {"daemon_receipt_ledger", "unica_coder", "unica_workspace", "selection"})
+    for target, names in result.items():
+        for name in names:
             if target == "daemon_receipt_ledger":
                 if "::" in name:
                     raise ValueError("large ledger tests must belong to the contract root")
@@ -72,21 +95,27 @@ def large_groups(expression: str) -> dict[str, list[str]]:
                 for binary, prefix in LARGE_LIBRARY_MODULES
             ):
                 raise ValueError("large library tests must belong to their declared binary and module")
-            names.append(name)
-        if not names or names != sorted(set(names)):
-            raise ValueError("large members must be unique and sorted within each target")
-        result[target] = names
-        end = match.end()
-    if expression[end:].strip() or set(result) != {"daemon_receipt_ledger", "unica_coder", "unica_workspace", "selection"}:
-        raise ValueError("large must name every declared target exactly once")
+    return result
+
+
+def nightly_only_groups(expression: str) -> dict[str, list[str]]:
+    """Root tests of the declared integration targets, no module paths."""
+    result = exact_groups(expression, "nightly-only", set(NIGHTLY_ONLY_TARGETS))
+    if any("::" in name for names in result.values() for name in names):
+        raise ValueError("nightly-only members must be root tests of their target")
     return result
 
 
 def attributed_test_functions(source: str) -> set[str]:
     """Read test attributes and module ownership from Rust syntax, not comments."""
+    return set(test_function_attributes(source))
+
+
+def test_function_attributes(source: str) -> dict[str, list[str]]:
+    """Every `#[test]` function with its compacted outer attributes."""
     encoded = source.encode()
     tree = Parser(Language(tree_sitter_rust.language())).parse(encoded)
-    found = set()
+    found = {}
     stack = [(tree.root_node, ())]
     while stack:
         parent, modules = stack.pop()
@@ -102,7 +131,7 @@ def attributed_test_functions(source: str) -> set[str]:
                     stack.append((body, (*modules, name)))
             elif child.type == "function_item" and "#[test]" in attributes:
                 name = child.child_by_field_name("name").text.decode()
-                found.add("::".join((*modules, name)))
+                found["::".join((*modules, name))] = attributes
             attributes = []
     return found
 
@@ -146,6 +175,7 @@ class GateProfileCompositionTests(unittest.TestCase):
         profiles = self.config["profile"]
 
         large = profiles["large"]["default-filter"].strip()
+        nightly_only = profiles["nightly-only"]["default-filter"].strip()
         for gate in GATES:
             with self.subTest(gate=gate):
                 self.assertIn(gate, profiles)
@@ -156,8 +186,10 @@ class GateProfileCompositionTests(unittest.TestCase):
                 elif gate == "release":
                     self.assertEqual(profiles[gate].get("default-filter"), "all()")
                 else:
-                    # Очередь и `main` — всё, кроме ночного яруса, тем же выражением.
-                    self.assertEqual(profiles[gate]["default-filter"].strip(), f"not (\n{large}\n)")
+                    # Очередь и `main` — всё, кроме ночного яруса и каталога
+                    # «только ночь», теми же выражениями.
+                    self.assertEqual(profiles[gate]["default-filter"].strip(),
+                                     f"not (\n{large}\n) & not (\n{nightly_only}\n)")
         self.assertEqual(set(self.run_tests.PROFILES), {"all", "large", *GATES})
         self.assertEqual(self.run_tests.nextest_profile("large"), "nightly-full")
         self.assertEqual(profiles["nightly-full"]["default-filter"], "all()")
@@ -223,6 +255,30 @@ class GateProfileCompositionTests(unittest.TestCase):
             for name in names:
                 with self.subTest(target=target, test=name):
                     self.assertIn(name, declared, "large member must have a test attribute in its declared module")
+
+    def test_nightly_only_catalogue_names_runnable_root_tests_of_its_targets(self) -> None:
+        """Каталог «только ночь» — точные имена неигнорируемых тестов: `ignore`
+        спрятал бы их и от ночи, а переименование выпало бы из неё молча."""
+        expression = self.config["profile"]["nightly-only"]["default-filter"].strip()
+        groups = nightly_only_groups(expression)
+        self.assertEqual(sum(map(len, groups.values())), expression.count("test("))
+        for target, names in groups.items():
+            declared = test_function_attributes((REPO_ROOT / NIGHTLY_ONLY_TARGETS[target]).read_text(encoding="utf-8"))
+            for name in names:
+                with self.subTest(target=target, test=name):
+                    self.assertIn(name, declared, "nightly-only member must have a test attribute in its target")
+                    self.assertFalse(any(attribute.startswith("#[ignore") for attribute in declared[name]),
+                                     "nightly-only member must not be ignored")
+        name = groups["v13_workspace_bootstrap"][0]
+        exact = f"test(/^{name}$/)"
+        for replacement in [f"test(/^{name}/)", f"test(/^module::{name}$/)", exact + " | " + exact]:
+            with self.subTest(replacement=replacement):
+                with self.assertRaises(ValueError):
+                    nightly_only_groups(expression.replace(exact, replacement, 1))
+        with self.assertRaises(ValueError):
+            nightly_only_groups(expression.replace("binary(v13_workspace_bootstrap)", "binary(unica_coder)", 1))
+        self.assertEqual(test_function_attributes('#[test]\n#[ignore = "why"]\nfn quiet() {}\n#[test]\nfn loud() {}'),
+                         {"quiet": ["#[test]", '#[ignore="why"]'], "loud": ["#[test]"]})
 
     def test_large_filter_rejects_broad_wrong_target_and_duplicate_members(self) -> None:
         expression = self.config["profile"]["large"]["default-filter"].strip()
