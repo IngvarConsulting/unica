@@ -673,6 +673,16 @@ mod operation_dictionary_tests {
 pub(super) fn search_scope_prefix(
     scope: &QualifiedAddress,
 ) -> Result<Option<String>, ReadModeError> {
+    let concrete_module = crate::domain::platform_profile::PlatformProfile::v8_3_27()
+        .module_capability(scope)
+        .is_some();
+    let common_module =
+        scope.segments().len() == 1 && scope.segments()[0].kind() == NodeKind::CommonModule;
+    if concrete_module && !common_module {
+        return Err(ReadModeError::unsupported_scope(format!(
+            "literal search does not accept a concrete Module scope; repeat unica.search with role: \"lexical\", the same query and scope: \"{scope}\" to search only this module"
+        )));
+    }
     if scope.segments().len() != 1 {
         return Err(ReadModeError::unsupported_scope(
             "literal search currently accepts only Configuration or one metadata-object subtree",
@@ -714,8 +724,20 @@ mod tests {
             search_scope_prefix(&catalog).unwrap().as_deref(),
             Some("Catalogs/Items")
         );
-        let attribute = QualifiedAddress::parse("main:Catalog.Items.Attribute.Code").unwrap();
-        assert!(search_scope_prefix(&attribute).is_err());
+        let common = QualifiedAddress::parse("main:CommonModule.Shared").unwrap();
+        assert_eq!(
+            search_scope_prefix(&common).unwrap().as_deref(),
+            Some("CommonModules/Shared")
+        );
+        for at in [
+            "main:Catalog.Items.Attribute.Code",
+            "main:Catalog.Items.Module.Object.Method.Read",
+            "main:Catalog.Items.Module.Unknown",
+        ] {
+            let scope = QualifiedAddress::parse(at).unwrap();
+            let refusal = search_scope_prefix(&scope).unwrap_err();
+            assert!(!refusal.message.contains("lexical"), "{at}");
+        }
     }
 }
 
