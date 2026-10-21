@@ -18,7 +18,8 @@ description: Конвейер сессий над Unica — координато
 ни в комментарии состояния, ты не в конвейере: работай по
 [unica-development](../unica-development/SKILL.md).
 
-Правила разработки, тестирования и PR из unica-development и unica-testing
+Навыки разработки Unica подбирай и правь через
+[unica-development](../unica-development/SKILL.md), его правила
 действуют и в конвейере. Отличие одно: исполнитель сам не ставит PR
 в очередь и не включает автовливание, хотя
 [правило PR](../unica-development/references/pull-requests.md#вливание-через-очередь)
