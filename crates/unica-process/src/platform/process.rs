@@ -2313,7 +2313,7 @@ enum ReapFailurePolicy {
 /// child. Runtime jobs install a stronger descendant-lifetime sentinel and
 /// therefore require its EOF. `exact_retained_leader` prevents either branch
 /// from authorizing a released/recycled numeric group.
-#[cfg(any(unix, any(test, feature = "test-support")))]
+#[cfg(any(unix, test))]
 fn permission_denied_proves_empty_group(
     host_is_darwin: bool,
     exact_retained_leader: bool,

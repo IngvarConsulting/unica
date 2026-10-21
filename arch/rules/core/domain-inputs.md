@@ -6,6 +6,7 @@ check:
   - tests/ci/test_rust_platform_boundary.py::RustPlatformBoundaryTests.test_allows_business_instance_methods_and_pure_path_operations
   - tests/ci/test_rust_platform_boundary.py::RustPlatformBoundaryTests.test_masks_domain_io_text_in_comments_and_literals
   - tests/ci/test_rust_platform_boundary.py::RustPlatformBoundaryTests.test_moved_semantic_packages_keep_domain_io_and_dependency_guards
+  - tests/ci/test_rust_platform_boundary.py::RustPlatformBoundaryTests.test_codecs_and_engines_reach_files_only_through_workspace
   - tests/ci/test_rust_platform_boundary.py::RustPlatformBoundaryTests.test_repository_currently_complies_with_platform_boundary
 ---
 
@@ -20,3 +21,12 @@ check:
 они не обращаются к файловой системе. Страж различает их и явно адресованные
 файловые вызовы, в том числе через псевдонимы стандартных типов. Определение
 типа получателя у вызова вида `path.exists()` эта проверка не выполняет.
+
+Designer-кодеки (`unica-<семейство>-designer`) и пакеты `unica-operations`,
+`unica-navigation`, `unica-diagnostics`, `unica-code-intelligence`,
+`unica-xml-format`, `unica-work-control` также не используют `std::fs`
+и явные файловые вызовы через `Path` и `PathBuf` в `src/`, включая модули
+`#[cfg(test)]`. Исходники они читают через порты чтения, которые выдаёт
+владелец workspace, а не открывают файлы в обход него. `std::env`
+и `std::process` им доступны. Тесты, которым нужна файловая система,
+находятся в `tests/` пакета.

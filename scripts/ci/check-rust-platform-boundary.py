@@ -83,6 +83,26 @@ DOMAIN_COMPONENTS = frozenset({
 })
 
 
+# Designer codecs and the engines around them read and propose source changes
+# through workspace ports; a direct `std::fs` call would bypass the publication
+# authority that workspace owns (INV.APP.COMPONENT-DEPENDENCIES). The owners are
+# named by package, never by file: every `unica-*-designer` package is a codec.
+FILE_IO_COMPONENTS = frozenset({
+    "unica-operations", "unica-navigation", "unica-diagnostics",
+    "unica-code-intelligence", "unica-xml-format", "unica-work-control",
+})
+DESIGNER_CODEC_PACKAGE = re.compile(r"unica-[a-z0-9-]+-designer")
+
+
+def _is_file_io_free_source(path: PurePosixPath) -> bool:
+    parts = path.parts
+    return (
+        len(parts) >= 4 and parts[0] == "crates" and parts[2] == "src"
+        and (parts[1] in FILE_IO_COMPONENTS
+             or DESIGNER_CODEC_PACKAGE.fullmatch(parts[1]) is not None)
+    )
+
+
 def _is_domain_source(path: PurePosixPath) -> bool:
     parts = path.parts
     return path.as_posix().startswith("crates/unica-coder/src/domain/") or (
@@ -687,28 +707,37 @@ def _path_io_ufcs_method_pattern(
 
 
 def _domain_io_diagnostics(path: PurePosixPath, source: str, masked: str) -> list[str]:
-    if not _is_domain_source(path):
-        return []
+    if _is_domain_source(path):
+        return _std_io_diagnostics(path, source, masked, "domain", DOMAIN_STD_IO_MODULES)
+    if _is_file_io_free_source(path):
+        return _std_io_diagnostics(path, source, masked, "component", frozenset({"fs"}))
+    return []
 
+
+def _std_io_diagnostics(
+    path: PurePosixPath, source: str, masked: str, layer: str, modules: frozenset[str]
+) -> list[str]:
     diagnostics: list[str] = []
     std_roots = ("std", *_std_root_aliases(masked))
     for index, module in _direct_std_io_roots(masked, std_roots):
-        diagnostics.append(
-            _diagnostic(
-                path,
-                _line_number(source, index),
-                f"domain must not access std::{module} directly",
+        if module in modules:
+            diagnostics.append(
+                _diagnostic(
+                    path,
+                    _line_number(source, index),
+                    f"{layer} must not access std::{module} directly",
+                )
             )
-        )
 
     for index, module in _grouped_std_io_roots(masked, std_roots):
-        diagnostics.append(
-            _diagnostic(
-                path,
-                _line_number(source, index),
-                f"domain must not access std::{module} directly",
+        if module in modules:
+            diagnostics.append(
+                _diagnostic(
+                    path,
+                    _line_number(source, index),
+                    f"{layer} must not access std::{module} directly",
+                )
             )
-        )
 
     path_type_names = ("Path", "PathBuf", *_path_type_aliases(masked, std_roots))
     for method_call in _path_io_ufcs_method_pattern(path_type_names, std_roots).finditer(masked):
@@ -717,7 +746,7 @@ def _domain_io_diagnostics(path: PurePosixPath, source: str, masked: str) -> lis
             _diagnostic(
                 path,
                 _line_number(source, method_call.start()),
-                f"domain must not call filesystem method .{method} directly",
+                f"{layer} must not call filesystem method .{method} directly",
             )
         )
     return diagnostics

@@ -215,7 +215,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         workspace.workspace_root =
             unica_workspace::paths::normalize_path_identity(&workspace.workspace_root)?;
         workspace.cwd = unica_workspace::paths::normalize_path_identity(&workspace.cwd)?;
-        Ok(CodeIntelligenceContext::new(workspace, source_root))
+        Ok(code_intelligence_context(workspace, source_root))
     }
 
     fn resolve_code_search_context(
@@ -288,8 +288,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                 legacy_selector: false,
             };
             return Ok((
-                CodeIntelligenceContext::new(workspace, source_root)
-                    .with_search_scope(scope.clone()),
+                code_intelligence_context(workspace, source_root).with_search_scope(scope.clone()),
                 scope,
             ));
         }
@@ -1419,6 +1418,18 @@ fn select_platform_version(
     }
 }
 
+/// The composition issues the workspace owner's read port with the context, so
+/// code intelligence reads current source without opening files itself.
+fn code_intelligence_context(
+    workspace: WorkspaceContext,
+    source_root: unica_source_contract::workspace::ResolvedSourceRoot,
+) -> CodeIntelligenceContext {
+    let reader = Arc::new(unica_workspace::discovery::ProjectDiscoveryReader::new(
+        &workspace.workspace_root,
+    ));
+    CodeIntelligenceContext::new(workspace, source_root, reader)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -2320,6 +2331,9 @@ mod tests {
                     source_set: Some("main".to_string()),
                     path: source_root,
                 },
+                Arc::new(unica_workspace::discovery::ProjectDiscoveryReader::new(
+                    &workspace,
+                )),
             ),
         )
     }

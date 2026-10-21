@@ -23,7 +23,7 @@ check:
   - crates/unica-coder/tests/platform/bsl_diagnostics_provider.rs::no_deadline_analyze_dispatches_the_analyzer_without_a_timeout
   - crates/unica-coder/tests/platform/bsl_diagnostics_provider.rs::no_deadline_diagnostics_refuses_before_legacy_backend_dispatch
   - crates/unica-coder/tests/platform/bsl_diagnostics_provider.rs::no_deadline_diagnostics_explicit_cancel_wins_before_unsupported_bridge
-  - crates/unica-code-intelligence/src/current_outline.rs::no_deadline_outline_reads_source_but_preserves_scope_and_explicit_cancel
+  - crates/unica-code-intelligence/tests/current_outline.rs::no_deadline_outline_reads_source_but_preserves_scope_and_explicit_cancel
   - crates/unica-execution/src/task_store.rs::no_deadline_task_commit_preserves_exact_terminal_cas_and_reopens
   - crates/unica-execution/src/task_store.rs::no_deadline_task_visible_io_failure_is_still_commit_uncertain
   - crates/unica-execution/src/lifecycle_link_store.rs::no_deadline_links_preserve_exact_cas_and_reopen_terminal_winner
