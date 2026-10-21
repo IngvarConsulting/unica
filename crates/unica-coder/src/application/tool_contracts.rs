@@ -2643,7 +2643,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "documentId",
-        "Stable locator of a documentation hit, minted by the canonical documentation query and passed verbatim to unica.documentation.get to fetch the full document text: configuration-help:<source-set>:<path> for the workspace configuration's embedded help, platform-syntax-help:<corpus>:<path> for the installed platform's help, an absolute https://kb.1ci.com/... page address for the vendor knowledge base, and an https://v8std.ru/... address for a development standard; the provider that minted the locator is the only one that resolves it.",
+        "Stable locator of a documentation hit, minted by the canonical documentation query and passed verbatim to unica.documentation.get to fetch the full document text: configuration-help:<source-set>:<path> for the workspace configuration's embedded help, platform-syntax-help:<corpus>:<path> for the installed platform's help, and an https://v8std.ru/... address for a development standard; the provider that minted the locator is the only one that resolves it.",
     ),
     (
         "platformVersion",
