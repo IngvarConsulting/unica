@@ -646,9 +646,11 @@ jobs:
     timeout-minutes: 60
     # Прежний инвентарь — артефакт прогона ближайшего first-parent предка:
     # читать артефакты чужого прогона можно только с `actions: read`.
+    # Объяснения пропаж берутся из описаний pull request (`pull-requests: read`).
     permissions:
       contents: read
       actions: read
+      pull-requests: read
     env:
       RUNNERS: ${{ needs.classify-changes.outputs.runners }}
       CI_LANE_JOB_RESULTS: ${{ toJSON(needs) }}
