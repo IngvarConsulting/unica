@@ -1254,7 +1254,8 @@ fn canonical_check_expands_nested_defined_type_event_sources() {
             .as_array()
             .unwrap()
             .contains(
-                &json!({"relation":"source","at":"main:DefinedType.Outer","kind":"DefinedType"})
+                &json!({"relation":"source","at":"main:DefinedType.Outer","kind":"DefinedType",
+                    "target":{"kind":"definedType","metadataPath":"DefinedType.Outer"}})
             ),
         "{relations:?}"
     );
@@ -1395,8 +1396,22 @@ fn canonical_event_source_family_and_constant_manager_choice_round_trip() {
         );
     };
 
+    let relation = |fixture: &Fixture| {
+        let view = call(
+            &runtime,
+            fixture,
+            ToolIdentity::View,
+            json!({"at":format!("{at}.Relation")}),
+        );
+        assert!(view.ok, "{view:?}");
+        view.data.unwrap()["items"].clone()
+    };
     let family = json!({"kind":"family","sourceClass":"catalogObject"});
     publish(&runtime, &fixture, replace(family.clone()));
+    assert_eq!(
+        relation(&fixture),
+        json!([{"relation":"source","kind":"family","target":family}])
+    );
     assert_eq!(
         subscription_source(&fixture),
         [("TypeSet".to_owned(), "CatalogObject".to_owned())]
@@ -1411,16 +1426,36 @@ fn canonical_event_source_family_and_constant_manager_choice_round_trip() {
         &fixture,
         json!({"at":"main:Configuration","ops":[{"op":"object.create","args":{"values":{"kind":"Constant","name":"Sample"}}}]}),
     );
-    for (class, written) in [
-        ("constantManager", "ConstantManager.Sample"),
-        ("constantValueManager", "ConstantValueManager.Sample"),
+    // Each manager class has its own events; the plan checks the source
+    // against the event, so the event that fits is set in the same batch.
+    for (class, event, written) in [
+        (
+            "constantManager",
+            "FormGetProcessing",
+            "ConstantManager.Sample",
+        ),
+        (
+            "constantValueManager",
+            "BeforeWrite",
+            "ConstantValueManager.Sample",
+        ),
     ] {
         let target = json!({"kind":"manager","metadataPath":"Constant.Sample","sourceClass":class});
-        let published = publish(&runtime, &fixture, replace(target.clone()));
+        let mut batch = replace(target.clone());
+        batch["ops"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"op":"props.set","args":{"values":{"Event":event}}}));
+        let published = publish(&runtime, &fixture, batch);
         assert_eq!(published.data.as_ref().unwrap()["effects"], 1, "{class}");
         assert_eq!(
             subscription_source(&fixture),
             [("Type".to_owned(), written.to_owned())],
+            "{class}"
+        );
+        assert_eq!(
+            relation(&fixture),
+            json!([{"relation":"source","at":"main:Constant.Sample","kind":"Constant","target":target}]),
             "{class}"
         );
         assert_noop(target);
@@ -1746,4 +1781,165 @@ fn canonical_bare_fill_value_is_a_diagnostic_not_an_absent_value() {
                 .starts_with("collections.attributes[0].fillValue: validation_failed: ")),
         "{attribute}"
     );
+}
+
+/// INV.SOURCE.EVENT-DEFINED-TYPE: канонический план раскрывает определяемый
+/// тип источника вместе с вложенным до классов событий. Цикл, неподходящий
+/// член и класс, несовместимый с событием, отклоняют план без записи;
+/// описания определяемых типов входят во входы плана, и их правка после
+/// плана делает токен устаревшим.
+#[test]
+fn canonical_apply_expands_defined_type_event_sources_before_publication() {
+    let at = "main:EventSubscription.CorpusEventSubscription";
+    let add = json!({"at":at,"ops":[{"op":"relation.add","args":{"values":{"relation":"source","targets":[
+        {"kind":"definedType","metadataPath":"DefinedType.Outer"}
+    ]}}}]});
+    let prepared = || {
+        let fixture = Fixture::new("workspace-event-source-order");
+        let runtime = runtime();
+        publish(
+            &runtime,
+            &fixture,
+            json!({"at":"main:Configuration","ops":[
+                {"op":"object.create","args":{"values":{"kind":"DefinedType","name":"Inner"}}},
+                {"op":"object.create","args":{"values":{"kind":"DefinedType","name":"Outer"}}}
+            ]}),
+        );
+        set_defined_type_members(&fixture.source, "Outer", &["DefinedType.Inner"]);
+        (fixture, runtime)
+    };
+
+    for (members, cause) in [
+        (
+            &["DefinedType.Outer"][..],
+            "cycle contains `DefinedType.Outer`",
+        ),
+        (&["String"][..], "class family cfg:String is unsupported"),
+        (
+            &["CatalogObject.ПримерБ", "DocumentObject"][..],
+            "`catalogObject` (Cancel) versus `documentObject`",
+        ),
+    ] {
+        let (fixture, runtime) = prepared();
+        set_defined_type_members(&fixture.source, "Inner", members);
+        let before = unica_workspace::test_support::tree_snapshot(&fixture.workspace);
+        let refused = call(&runtime, &fixture, ToolIdentity::Apply, add.clone());
+        assert!(!refused.ok, "{cause}: {refused:?}");
+        assert_eq!(refused.diagnostics.len(), 1, "{cause}: {refused:?}");
+        assert_eq!(refused.diagnostics[0]["code"], "bad_value", "{cause}");
+        let message = refused.diagnostics[0]["message"].as_str().unwrap();
+        assert!(message.contains(cause), "{cause}: {message}");
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&fixture.workspace),
+            before,
+            "{cause}: a refused plan writes nothing"
+        );
+    }
+
+    // A nested class that fits the event plans; the descriptors it was
+    // expanded from bind the saved plan, so changing one makes it stale.
+    let (fixture, runtime) = prepared();
+    set_defined_type_members(&fixture.source, "Inner", &["CatalogObject.ПримерБ"]);
+    let planned = call(&runtime, &fixture, ToolIdentity::Apply, add.clone());
+    assert!(planned.ok, "{planned:?}");
+    let token = planned.data.unwrap()["executionToken"].clone();
+    set_defined_type_members(
+        &fixture.source,
+        "Inner",
+        &["CatalogObject.ПримерБ", "DocumentObject"],
+    );
+    let subscription = fixture
+        .source
+        .join("EventSubscriptions/CorpusEventSubscription.xml");
+    let unchanged = std::fs::read(&subscription).unwrap();
+    let stale = call(
+        &runtime,
+        &fixture,
+        ToolIdentity::Apply,
+        json!({"executionToken": token}),
+    );
+    assert!(!stale.ok, "{stale:?}");
+    assert_eq!(stale.diagnostics[0]["code"], "stale_revision", "{stale:?}");
+    assert!(
+        stale.diagnostics[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("DefinedTypes/Inner.xml"),
+        "{stale:?}"
+    );
+    assert_eq!(std::fs::read(&subscription).unwrap(), unchanged);
+
+    // The same nested source, planned afresh over the fitting type, publishes.
+    set_defined_type_members(&fixture.source, "Inner", &["CatalogObject.ПримерБ"]);
+    publish(&runtime, &fixture, add);
+}
+
+/// INV.SOURCE.EVENT-DEFINED-TYPE: проверка плана касается только изменённого
+/// источника или события. Заимствованная подписка своего источника не несёт,
+/// а правка другого свойства подписки расширения с источником `v8:TypeId`
+/// сохраняет его как есть: оба плана публикуются.
+#[test]
+fn canonical_borrowed_and_unchanged_event_sources_publish_without_a_recheck() {
+    let runtime = runtime();
+
+    // The acceptance extension root without its own objects, over the
+    // configuration whose subscription is borrowed.
+    let fixture = Fixture::new("workspace-event-source-order");
+    let template = repo_root().join("tests/fixtures/acceptance/workspace-format/src-ext");
+    let extension = fixture.workspace.join("src-ext");
+    copy_image(&template.join("Languages"), &extension.join("Languages"));
+    let root = std::fs::read_to_string(template.join("Configuration.xml"))
+        .unwrap()
+        .lines()
+        .filter(|line| {
+            ![
+                "<Role>",
+                "<CommonModule>",
+                "<EventSubscription>",
+                "<Catalog>",
+            ]
+            .iter()
+            .any(|tag| line.trim_start().starts_with(tag))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(extension.join("Configuration.xml"), root).unwrap();
+    std::fs::write(
+        fixture.workspace.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n  - name: ext\n    type: EXTENSION\n    path: src-ext\n",
+    )
+    .unwrap();
+    publish(
+        &runtime,
+        &fixture,
+        json!({"at":"ext:Configuration","ops":[
+            {"op":"object.borrow","args":{"from":"main:EventSubscription.CorpusEventSubscription"}}
+        ]}),
+    );
+    let borrowed =
+        std::fs::read_to_string(extension.join("EventSubscriptions/CorpusEventSubscription.xml"))
+            .unwrap();
+    assert!(
+        borrowed.contains("<ExtendedConfigurationObject>"),
+        "{borrowed}"
+    );
+    assert!(!borrowed.contains("<Source>"), "{borrowed}");
+
+    let fixture = Fixture::with_extension();
+    let own = fixture
+        .workspace
+        .join("src-ext/EventSubscriptions/ПР_ПередЗаписьюНастроек.xml");
+    assert!(std::fs::read_to_string(&own)
+        .unwrap()
+        .contains("<v8:TypeId>"));
+    publish(
+        &runtime,
+        &fixture,
+        json!({"at":"ext:EventSubscription.ПР_ПередЗаписьюНастроек","ops":[
+            {"op":"props.set","args":{"values":{"Comment":"Проверено"}}}
+        ]}),
+    );
+    assert!(std::fs::read_to_string(&own)
+        .unwrap()
+        .contains("<v8:TypeId>"));
 }

@@ -82,6 +82,44 @@ medium. План и результаты лежат в `medium.json`. `test-rust
 добавка не сравнивается. Очередь по-прежнему исполняет полный набор.
 Lanes receipt и vendor и medium на macOS остаются за очередью.
 
+### Возможности хоста
+
+Тест, которому не хватает возможности хоста, не проходит молча (#1893).
+В `tests/platform/` и фасадах `src/platform/` возможность, которую задаёт
+сама ОС, тест объявляет через
+`#[cfg_attr(not(<ОС>), ignore = "host capability ...")]`. На остальных ОС
+он виден в отчёте как `skipped` с причиной. Инвентарь считает его
+ignored-кейсом, а не потерей. Вне этих путей OS-cfg запрещён
+(INV.PLATFORM.OS-BEHIND-FACADE). Там тест спрашивает пробу фасада
+и пропускается через helper с именем возможности ОС.
+
+Возможность, зависящую от тома или прав, тест проверяет при исполнении.
+Если её нет, он вызывает `skip_without_host_capability` и выходит. Helper
+пишет запись в каталог `UNICA_HOST_CAPABILITY_SKIPS`, который задаёт
+`ci_rust_lanes.py`. Раннер превращает такой PASS в `skipped` с причиной
+`host capability <имя>: ...`. На раннере, где возможность обязательна
+(`REQUIRED_HOST_CAPABILITIES`), такой пропуск роняет gate.
+`tests/ci/test_host_capability_skips.py` не даёт выйти рядом с пробой
+возможности в обход helper-а. Места, найденные до механизма, перечислены
+в allowlist стража, и переводы снимают их пакетами.
+
+| Возможность | Обязательна на | Где исполняется |
+| --- | --- | --- |
+| `symlink` | ubuntu, macOS | очередь Linux; macOS — очередь для `tests/platform/`, остальное nightly; Windows без привилегии — `skipped` |
+| `case-sensitive-filesystem` | ubuntu | очередь Linux |
+| `case-insensitive-filesystem` | macOS | macOS: очередь для `tests/platform/`, остальное nightly |
+| `normalization-insensitive-filesystem` | macOS | как предыдущая |
+| `enforced-permission-bits` | ubuntu, macOS | очередь Linux |
+| `directory-mtime` | ubuntu, macOS | очередь Linux |
+| `non-utf8-file-names` | ubuntu | очередь Linux |
+| `rename-under-open-handle`, `unix-process-groups`, `unix-permission-bits` | ubuntu, macOS | очередь Linux |
+| `windows-job-object`, `windows-path-syntax` | — | nightly Windows (advisory) |
+
+Для `windows-latest` набор обязательных возможностей пуст. Это решение,
+а не свойство раннера: Windows остаётся advisory (#1523), поэтому пропуск
+там виден, но не отвергается. Причины пропусков собраны в отчёте
+в категорию «Нет возможности хоста».
+
 Сценарий доставки сервисных движков получает путь и SHA256 уже включённого
 в ordinary archive non-test binary `unica`. Producer выбирает его по metadata
 nextest; parent и дочерний тест сверяют hash перед запуском. Вложенной сборки

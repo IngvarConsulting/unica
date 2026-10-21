@@ -389,14 +389,14 @@ fn metadata_missing_empty_and_malformed_types_do_not_claim_a_size_limit() {
                 let limit = limit.as_str().unwrap();
                 !limit.contains("2048") && !limit.contains("compact property limit")
             }),
-            "{data}"
+            "{item_limits:?}"
         );
         assert_eq!(
             item_limits
                 .iter()
                 .any(|limit| limit.as_str().unwrap().starts_with("collections.attributes[0].type: ")),
             damaged,
-            "{data}"
+            "{item_limits:?}"
         );
         assert_eq!(data["props"].get("incomplete").and_then(serde_json::Value::as_bool).unwrap_or(false), damaged);
         let root = service.view(ViewRequest::new("main:Catalog.Items").unwrap());
