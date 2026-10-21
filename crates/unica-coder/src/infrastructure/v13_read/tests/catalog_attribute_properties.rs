@@ -1,6 +1,6 @@
 use super::{write, RealReaderFixture, ViewRequest};
-use crate::test_support::tree_snapshot;
 use serde_json::{json, Value};
+use unica_workspace::test_support::tree_snapshot;
 
 const CATALOG: &str = include_str!(
     "../../../../../../tests/fixtures/acceptance/catalog-attribute-properties/src/Catalogs/Items.xml"

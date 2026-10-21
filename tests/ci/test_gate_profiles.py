@@ -24,8 +24,17 @@ GATES = ("pr", "queue", "main", "release")
 # file that declares them: map capacity checks and the real-time daemon run
 # past the former operation deadlines (#1251).
 LARGE_LIBRARY_MODULES = {
-    "infrastructure::source_selection_evidence::tests::": "src/infrastructure/source_selection_evidence.rs",
-    "infrastructure::daemon::runtime_v5::tests::": "src/infrastructure/daemon/runtime_v5/tests.rs",
+    ("unica_coder", "infrastructure::daemon::receipt_runtime_tests::"): (
+        "crates/unica-coder/tests/platform/receipt_runtime.rs",
+        "infrastructure::daemon::receipt_runtime_tests::",
+    ),
+    ("selection", ""): (
+        "crates/unica-source-integration-tests/tests/selection.rs",
+        "",
+    ),
+    ("unica_workspace", "selection_evidence::tests::"): (
+        "crates/unica-workspace/src/selection_evidence.rs", "selection_evidence::",
+    ),
 }
 
 # Expected command is independent of the runner's production constant.
@@ -38,37 +47,38 @@ UREQ_SELECTION = (
 
 
 def large_groups(expression: str) -> dict[str, list[str]]:
-    """Only exact named tests of the two declared targets enter the large tier."""
-    group = r"\(\s*binary\({target}\)\s*&\s*\((?P<{label}>.*?)\)\s*\)"
-    pattern = (
-        group.format(target="daemon_receipt_ledger", label="ledger")
-        + r"\s*\|\s*"
-        + group.format(target="unica_coder", label="selection")
-    )
-    matched = re.fullmatch(pattern, expression.strip(), re.S)
-    if matched is None:
-        raise ValueError("large must name only the declared ledger and library targets")
+    """Exact named tests remain bound to their actual Cargo binary owners."""
+    group = re.compile(r"\(\s*binary\(([A-Za-z0-9_-]+)\)\s*&\s*\((.*?)(?<!/)\)\s*\)", re.S)
     result = {}
-    for target, label in [("daemon_receipt_ledger", "ledger"), ("unica_coder", "selection")]:
-        terms = matched[label].strip().split("|")
+    end = 0
+    for match in group.finditer(expression):
+        between = expression[end:match.start()].strip()
+        if between != ("" if not result else "|"):
+            raise ValueError("large must consist of declared binary/test groups")
+        target, body = match.groups()
+        if target not in {"daemon_receipt_ledger", "unica_coder", "unica_workspace", "selection"} or target in result:
+            raise ValueError("large has an unknown or repeated target")
         names = []
-        for term in terms:
+        for term in body.strip().split("|"):
             parsed = re.fullmatch(r"\s*test\(/\^([\w:]+)\$/\)\s*", term)
             if parsed is None:
                 raise ValueError("large members must be exact anchored test names")
             name = parsed[1]
-            if target == "unica_coder":
-                if not any(
-                    name.startswith(prefix) and "::" not in name[len(prefix):]
-                    for prefix in LARGE_LIBRARY_MODULES
-                ):
-                    raise ValueError("large library tests must belong to a declared large module")
-            elif "::" in name:
-                raise ValueError("large ledger tests must belong to the contract root")
+            if target == "daemon_receipt_ledger":
+                if "::" in name:
+                    raise ValueError("large ledger tests must belong to the contract root")
+            elif not any(
+                binary == target and name.startswith(prefix) and "::" not in name[len(prefix):]
+                for binary, prefix in LARGE_LIBRARY_MODULES
+            ):
+                raise ValueError("large library tests must belong to their declared binary and module")
             names.append(name)
-        if names != sorted(set(names)):
+        if not names or names != sorted(set(names)):
             raise ValueError("large members must be unique and sorted within each target")
         result[target] = names
+        end = match.end()
+    if expression[end:].strip() or set(result) != {"daemon_receipt_ledger", "unica_coder", "unica_workspace", "selection"}:
+        raise ValueError("large must name every declared target exactly once")
     return result
 
 
@@ -110,7 +120,7 @@ class GateProfileCompositionTests(unittest.TestCase):
         self.run_tests = load_run_tests()
 
     def test_private_scenario_feature_selection_is_scoped_to_its_library_module(self) -> None:
-        prefix = "infrastructure::daemon::runtime_v5::receipt_scenario_v5::tests::"
+        prefix = "infrastructure::receipt_scenario::tests::"
         # Признак включается одному пакету и двум целям: библиотеке, где фильтр
         # оставляет только модуль сценариев, и контракту целиком. Один вызов —
         # одна сборка `unica-coder` с признаком на план и прогон.
@@ -127,7 +137,7 @@ class GateProfileCompositionTests(unittest.TestCase):
                 self.assertEqual(selections, [("--workspace",), expected, UREQ_SELECTION])
                 self.assertNotIn("--features", selections[0])
                 self.assertNotIn("--workspace", selections[1])
-        source = (REPO_ROOT / "crates/unica-coder/src/infrastructure/daemon/runtime_v5/receipt_scenario_v5/tests.rs").read_text()
+        source = (REPO_ROOT / "crates/unica-coder/tests/support/receipt_scenario/tests.rs").read_text()
         declared = attributed_test_functions(source)
         self.assertIn("fresh_task_listener_after_restart_survives_its_prepare_barrier_release", declared)
         self.assertIn("successor_closes_and_joins_old_gate_waiters_without_cancelling_the_new_life", declared)
@@ -149,7 +159,10 @@ class GateProfileCompositionTests(unittest.TestCase):
                     # Очередь и `main` — всё, кроме ночного яруса, тем же выражением.
                     self.assertEqual(profiles[gate]["default-filter"].strip(), f"not (\n{large}\n)")
         self.assertEqual(set(self.run_tests.PROFILES), {"all", "large", *GATES})
-        # Ночной ярус на ubuntu и macOS — только названные тесты двух целей;
+        self.assertEqual(self.run_tests.nextest_profile("large"), "nightly-full")
+        self.assertEqual(profiles["nightly-full"]["default-filter"], "all()")
+        self.assertEqual(profiles["nightly-full"]["overrides"], profiles["large"]["overrides"])
+        # Ночной ярус на ubuntu и macOS — только названные тесты своих целей;
         # тот же список стоит и у срока `large`.
         large_groups(large)
         deadline = next(o for o in profiles["default"]["overrides"] if o.get("threads-required"))
@@ -171,7 +184,7 @@ class GateProfileCompositionTests(unittest.TestCase):
                 self.assertEqual(command, ["cargo", "nextest", "run", *UREQ_SELECTION, "--profile", "ureq-recycling"])
                 self.assertNotIn("--no-tests=pass", command, "the named vendor regressions must never be empty")
             else:
-                self.assertIn("--no-tests=pass", command)
+                self.assertNotIn("--no-tests=pass", command, "full nightly inventory must never be empty")
 
     def test_dependency_regressions_have_a_standalone_config_and_no_retry_at_admitting_gates(self) -> None:
         config = tomllib.loads((REPO_ROOT / "vendor/ureq/.config/nextest.toml").read_text(encoding="utf-8"))
@@ -201,13 +214,10 @@ class GateProfileCompositionTests(unittest.TestCase):
         groups = large_groups(large)
         self.assertEqual(sum(map(len, groups.values())), large.count("test("))
         ledger = (REPO_ROOT / "crates" / "unica-coder" / "tests/daemon_receipt_ledger.rs").read_text(encoding="utf-8")
-        declared_by_target = {"daemon_receipt_ledger": attributed_test_functions(ledger), "unica_coder": set()}
-        for prefix, path in LARGE_LIBRARY_MODULES.items():
-            source = (REPO_ROOT / "crates" / "unica-coder" / path).read_text(encoding="utf-8")
-            # A `tests.rs` file is the module body itself; an inline module
-            # contributes its own `tests::` segment.
-            module = prefix if path.endswith("/tests.rs") else prefix.removesuffix("tests::")
-            declared_by_target["unica_coder"] |= {module + name for name in attributed_test_functions(source)}
+        declared_by_target = {"daemon_receipt_ledger": attributed_test_functions(ledger), "unica_coder": set(), "unica_workspace": set(), "selection": set()}
+        for (binary, _), (path, module) in LARGE_LIBRARY_MODULES.items():
+            source = (REPO_ROOT / path).read_text(encoding="utf-8")
+            declared_by_target[binary] |= {module + name for name in attributed_test_functions(source)}
         for target, names in groups.items():
             declared = declared_by_target[target]
             for name in names:
@@ -264,7 +274,7 @@ class GateProfileCompositionTests(unittest.TestCase):
         release = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / "unica-plugin-release.yml").read_text(encoding="utf-8"))
         tools = next(
             step["with"]["tool"]
-            for step in release["jobs"]["test-rust-platforms"]["steps"]
+            for step in release["jobs"]["build-rust-ordinary"]["steps"]
             if step.get("uses", "").startswith("taiki-e/install-action@")
         )
         installed = next(part.split("@")[1] for part in tools.split(",") if part.startswith("cargo-nextest@"))

@@ -1,15 +1,16 @@
 use super::{
-    cf, cfe, code, external, form, mxl, registry, role, subsystem, xdto, NativeOperationAdapter,
-};
-use crate::{
-    application::AdapterOutcome,
-    domain::{
-        cache::CacheReport, cancellation::CancellationToken, code_intelligence::ProviderDeadline,
-        events::DomainEvent, support_state::SupportStateReader, workspace::WorkspaceContext,
-    },
+    cf, cfe, code_patch_composition, external, mxl_composition, registry, role, xdto,
+    NativeOperationAdapter,
 };
 use serde::Serialize;
 use serde_json::{Map, Value};
+use unica_execution_contract::adapter_outcome::AdapterOutcome;
+use unica_metadata::support_state::SupportStateReader;
+use unica_source_contract::events::DomainEvent;
+use unica_source_contract::workspace::WorkspaceContext;
+use unica_work_control::cancellation::CancellationToken;
+use unica_work_control::provider_deadline::ProviderDeadline;
+use unica_workspace::cache::CacheReport;
 
 pub(crate) struct NativeOperationResult {
     pub(crate) adapter: AdapterOutcome,
@@ -41,7 +42,7 @@ impl<'a> NativeInvocationContext<'a> {
 
 impl NativeOperationAdapter {
     pub(crate) fn prepared_subsystem_info_with_data(
-        execution: subsystem::SubsystemInfoExecution,
+        execution: crate::infrastructure::subsystem_composition::SubsystemInfoExecution,
     ) -> Result<NativeOperationResult, String> {
         typed_operation_result(execution.outcome, execution.data, "subsystem info")
     }
@@ -63,17 +64,23 @@ impl NativeOperationAdapter {
             match registry::typed_mutation_handler(operation) {
                 Some(registry::TypedMutationHandler::CodePatch) => {
                     let execution = if dry_run {
-                        code::preview_with_data(args, context)
+                        code_patch_composition::preview_with_data(args, context)
                     } else {
-                        code::apply_with_data(args, context)
+                        code_patch_composition::apply_with_data(args, context)
                     };
-                    return typed_operation_result(execution.outcome, execution.data, "code patch");
+                    return typed_operation_result(
+                        execution.outcome,
+                        execution.data,
+                        "code_patch_composition patch",
+                    );
                 }
-                Some(registry::TypedMutationHandler::FormEdit) if form::has_edit_payload(args) => {
+                Some(registry::TypedMutationHandler::FormEdit)
+                    if unica_forms_designer::codec::has_edit_payload(args) =>
+                {
                     let execution = if dry_run {
-                        form::preview_with_data(args, context)
+                        crate::infrastructure::form_composition::preview_with_data(args, context)
                     } else {
-                        form::apply_with_data(args, context)
+                        crate::infrastructure::form_composition::apply_with_data(args, context)
                     };
                     return typed_operation_result(execution.outcome, execution.data, "form edit");
                 }
@@ -118,7 +125,10 @@ impl NativeOperationAdapter {
                         }
                     }
                     "interface-edit" => {
-                        let execution = super::interface::edit_interface_with_data(args, context);
+                        let execution =
+                            crate::infrastructure::interface_composition::edit_interface_with_data(
+                                args, context,
+                            );
                         return typed_operation_result(
                             execution.outcome,
                             execution.data,
@@ -126,7 +136,10 @@ impl NativeOperationAdapter {
                         );
                     }
                     "support-edit" => {
-                        let execution = super::support::edit_support_with_data(args, context);
+                        let execution =
+                            crate::infrastructure::support_composition::edit_support_with_data(
+                                args, context,
+                            );
                         return typed_operation_result(
                             execution.outcome,
                             execution.data,
@@ -134,7 +147,9 @@ impl NativeOperationAdapter {
                         );
                     }
                     "form-add" => {
-                        let execution = form::add_form_with_data(args, context);
+                        let execution = crate::infrastructure::form_composition::add_form_with_data(
+                            args, context,
+                        );
                         return typed_operation_result(
                             execution.outcome,
                             execution.data,
@@ -142,7 +157,10 @@ impl NativeOperationAdapter {
                         );
                     }
                     "subsystem-edit" => {
-                        let execution = subsystem::edit_subsystem_with_data(args, context);
+                        let execution =
+                            crate::infrastructure::subsystem_composition::edit_subsystem_with_data(
+                                args, context,
+                            );
                         return typed_operation_result(
                             execution.outcome,
                             execution.data,
@@ -190,7 +208,10 @@ impl NativeOperationAdapter {
                         );
                     }
                     "form-remove" => {
-                        let execution = form::remove_form_with_data(args, context);
+                        let execution =
+                            crate::infrastructure::form_composition::remove_form_with_data(
+                                args, context,
+                            );
                         return typed_operation_result(
                             execution.outcome,
                             execution.data,
@@ -224,15 +245,20 @@ impl NativeOperationAdapter {
             }
             "form-info" => {
                 let execution =
-                    form::analyze_form_info_with_data(args, context, invocation.support_reader);
+                    crate::infrastructure::form_composition::analyze_form_info_with_data(
+                        args,
+                        context,
+                        invocation.support_reader,
+                    );
                 return typed_operation_result(execution.outcome, execution.data, "form info");
             }
             "mxl-info" => {
-                let execution = mxl::analyze_mxl_info(args, context, invocation.support_reader);
+                let execution =
+                    mxl_composition::analyze_mxl_info(args, context, invocation.support_reader);
                 return typed_operation_result(execution.outcome, execution.data, "mxl info");
             }
             "subsystem-info" => {
-                let execution = subsystem::analyze_subsystem_info_cancellable(
+                let execution = crate::infrastructure::subsystem_composition::analyze_subsystem_info_cancellable(
                     args,
                     context,
                     invocation.cancellation,

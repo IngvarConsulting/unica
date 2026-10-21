@@ -154,6 +154,26 @@ class JunitTranslationTests(unittest.TestCase):
         labels = {l["name"]: l["value"] for l in self.entries()["address::resolves_catalog"]["labels"]}
         self.assertIn(labels["size"], ("small", "medium"))
 
+    def test_sizes_do_not_cross_component_binary_boundaries(self) -> None:
+        matcher = self.module.SizeMatcher(
+            "kind(test) | (binary(unica_network) & test(/^(tests)::/))",
+            "(binary(unica_workspace) & (test(/^selection::capacity$/))) | "
+            "(binary(unica_coder) & (test(/^daemon::capacity$/)))",
+        )
+        for binary, name, expected in [
+            ("unica-network", "tests::connect", "medium"),
+            ("unica-metadata", "tests::connect", "small"),
+            ("unica-workspace", "selection::capacity", "large"),
+            ("unica-coder", "selection::capacity", "small"),
+            ("unica-coder", "daemon::capacity", "large"),
+            ("unica-workspace", "daemon::capacity", "small"),
+        ]:
+            with self.subTest(binary=binary, name=name):
+                self.assertEqual(matcher.size(binary, name), expected)
+        for expression in ("binary(unica_network) &", "(test(/^x$/)", "unknown()"):
+            with self.subTest(expression=expression), self.assertRaises(ValueError):
+                self.module.SizeMatcher(expression)
+
     def test_write_produces_one_uuid_named_file_per_record(self) -> None:
         out = self.root / "allure-results"
         module = self.module

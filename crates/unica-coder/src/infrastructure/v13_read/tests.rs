@@ -15,20 +15,22 @@ use super::{
     LogicalViewReadAuthority, MetadataAddress, SourceTarget, TargetKindPolicy,
     PLATFORM_XML_8_3_27_FORMAT_2_20,
 };
-use crate::application::result_store::ViewCursorStore;
 use crate::application::v13::find::FindRequest;
-use crate::application::v13::view::{ViewError, ViewReadAuthority, ViewRequest, ViewService};
-use crate::domain::address::QualifiedAddress;
-use crate::domain::cancellation::CancellationToken;
-use crate::domain::code_intelligence::ProviderDeadline;
-use crate::domain::platform_profile::PlatformProfile;
-use crate::domain::project_sources::SourceSetKind;
-use crate::domain::refusal::RefusalCode;
-use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::logical_tree::route_logical_address;
-use crate::infrastructure::platform::filesystem::{
-    supports_retained_root_replacement_test, RetainedDirectoryCapability,
+use unica_address::address::QualifiedAddress;
+use unica_bsl::profile::PlatformProfile;
+use unica_navigation::result_store::ViewCursorStore;
+use unica_refusal::RefusalCode;
+use {
+    crate::application::v13::view::ViewReadAuthority, crate::application::v13::view::ViewRequest,
+    crate::application::v13::view::ViewService, unica_execution_contract::view_error::ViewError,
 };
+
+use unica_source_contract::workspace::WorkspaceContext;
+use unica_source_contract::SourceSetKind;
+use unica_work_control::cancellation::CancellationToken;
+use unica_work_control::provider_deadline::ProviderDeadline;
+use unica_workspace::test_support::supports_retained_root_replacement_test;
 
 use crate::infrastructure::v13_read_port::{
     review_clear_revision_identity_hooks, review_set_revision_identity_hooks, ProviderReadAuthority,
@@ -460,7 +462,7 @@ fn common_module_present_damage_is_not_missing() {
 
 fn configuration_payload(
     reader: &ProviderReadAuthority,
-) -> Result<serde_json::Value, crate::application::v13::view::ViewError> {
+) -> Result<serde_json::Value, unica_execution_contract::view_error::ViewError> {
     reader
         .configuration_payload_with_checkpoint(&mut || Ok(()))
         .map(|payload| payload.as_ref().clone())
@@ -564,7 +566,8 @@ fn typed_projection_rejects_unknown_provider_payload_instead_of_dumping_it() {
 fn actor_owned_reader_never_follows_a_source_set_remap_after_admission() {
     let fixture = RealReaderFixture::new();
     let cancellation = CancellationToken::new();
-    let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
+    let source_root =
+        Arc::new(unica_workspace::read::open_source_directory(&fixture.source).unwrap());
     let authority = LogicalViewReadAuthority::new(
         &cancellation,
         "main",
@@ -622,7 +625,8 @@ fn actor_owned_configuration_support_and_home_page_sidecars_are_retained() {
     )
     .unwrap();
     let cancellation = CancellationToken::new();
-    let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
+    let source_root =
+        Arc::new(unica_workspace::read::open_source_directory(&fixture.source).unwrap());
     let authority = LogicalViewReadAuthority::new(
         &cancellation,
         "main",
@@ -662,7 +666,7 @@ fn actor_owned_configuration_support_and_home_page_sidecars_are_retained() {
 fn retained_home_page_distinguishes_missing_from_malformed_and_wrong_root() {
     let fixture = RealReaderFixture::new();
     fs::create_dir_all(fixture.source.join("Ext")).unwrap();
-    let root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
+    let root = Arc::new(unica_workspace::read::open_source_directory(&fixture.source).unwrap());
     let reader = ProviderReadAuthority::new(
         "main",
         "actor-fixture-main",
@@ -698,7 +702,7 @@ fn retained_home_page_distinguishes_missing_from_malformed_and_wrong_root() {
 #[test]
 fn actor_supplied_extension_kind_preserves_extension_support_semantics() {
     let fixture = RealReaderFixture::new();
-    let root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
+    let root = Arc::new(unica_workspace::read::open_source_directory(&fixture.source).unwrap());
     let reader = ProviderReadAuthority::new(
         "extension",
         "actor-fixture-extension",
@@ -858,7 +862,8 @@ fn every_typed_reader_remains_on_the_admitted_root_after_source_set_remap() {
 fn configuration_root_carries_the_retired_cf_info_facts() {
     let fixture = RealReaderFixture::new();
     let cancellation = CancellationToken::new();
-    let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
+    let source_root =
+        Arc::new(unica_workspace::read::open_source_directory(&fixture.source).unwrap());
     let authority = LogicalViewReadAuthority::new(
         &cancellation,
         "main",
@@ -917,7 +922,8 @@ fn configuration_root_carries_the_retired_cf_info_facts() {
 fn configuration_root_branch_counts_match_every_reachable_collection() {
     let fixture = RealReaderFixture::new();
     let cancellation = CancellationToken::new();
-    let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
+    let source_root =
+        Arc::new(unica_workspace::read::open_source_directory(&fixture.source).unwrap());
     let authority = LogicalViewReadAuthority::new(
         &cancellation,
         "main",
@@ -1111,7 +1117,7 @@ fn every_accepted_profile_address_has_a_real_non_skipping_view() {
 fn capability_bound_configuration_reader_preserves_complete_cf_info_semantics() {
     let fixture = RealReaderFixture::new();
     let cancellation = CancellationToken::new();
-    let root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
+    let root = Arc::new(unica_workspace::read::open_source_directory(&fixture.source).unwrap());
     let reader = ProviderReadAuthority::new(
         "main",
         "actor-fixture-main",
@@ -1120,7 +1126,7 @@ fn capability_bound_configuration_reader_preserves_complete_cf_info_semantics() 
     );
     reader
         .exact_revision(
-            crate::domain::code_intelligence::ProviderDeadline::from_budget(
+            unica_work_control::provider_deadline::ProviderDeadline::from_budget(
                 std::time::Duration::from_secs(7),
             ),
             &cancellation,
@@ -1740,7 +1746,9 @@ fn canonical_view_distinguishes_absent_support_from_unreadable_and_invalid_marke
     }
 }
 
-fn view_items(result: &crate::domain::invocation::DomainResult) -> Vec<serde_json::Value> {
+fn view_items(
+    result: &unica_execution_contract::invocation::DomainResult,
+) -> Vec<serde_json::Value> {
     assert!(result.ok, "{:?}", refusal_codes(result));
     result.data.as_ref().unwrap()["items"]
         .as_array()
@@ -1748,7 +1756,10 @@ fn view_items(result: &crate::domain::invocation::DomainResult) -> Vec<serde_jso
         .unwrap_or_default()
 }
 
-fn view_branch_count(result: &crate::domain::invocation::DomainResult, at: &str) -> Option<u64> {
+fn view_branch_count(
+    result: &unica_execution_contract::invocation::DomainResult,
+    at: &str,
+) -> Option<u64> {
     assert!(result.ok, "{:?}", refusal_codes(result));
     result.data.as_ref().unwrap()["branches"]
         .as_array()
@@ -2330,7 +2341,8 @@ fn xdto_property_view_names_facts_that_exceed_the_compact_limit() {
 fn real_typed_readers_cover_every_task14_profile_without_skipping() {
     let fixture = RealReaderFixture::new();
     let cancellation = CancellationToken::new();
-    let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
+    let source_root =
+        Arc::new(unica_workspace::read::open_source_directory(&fixture.source).unwrap());
     let metadata_target =
         MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items").unwrap();
     let metadata_resolution = resolve_platform_xml_target(
@@ -2429,7 +2441,8 @@ fn websocket_client_source_view_is_an_explicit_provider_gap() {
     )
     .unwrap();
     let cancellation = CancellationToken::new();
-    let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
+    let source_root =
+        Arc::new(unica_workspace::read::open_source_directory(&fixture.source).unwrap());
     let authority = LogicalViewReadAuthority::new(
         &cancellation,
         "main",
@@ -2452,7 +2465,8 @@ fn extension_platform_event_does_not_advertise_unproved_interception() {
     let fixture = RealReaderFixture::new();
     fixture.install_accepted_profile_sources();
     let cancellation = CancellationToken::new();
-    let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
+    let source_root =
+        Arc::new(unica_workspace::read::open_source_directory(&fixture.source).unwrap());
     let authority = LogicalViewReadAuthority::new(
         &cancellation,
         "main",
@@ -2479,7 +2493,8 @@ fn extension_root_platform_modules_are_owned_by_the_extension_root() {
         "Procedure ПередНачаломРаботыСистемы(Отказ)\nEndProcedure\n\nProcedure РасширениеПриСтарте()\nEndProcedure\n",
     );
     let cancellation = CancellationToken::new();
-    let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
+    let source_root =
+        Arc::new(unica_workspace::read::open_source_directory(&fixture.source).unwrap());
     let authority = LogicalViewReadAuthority::new(
         &cancellation,
         "main",
@@ -2493,7 +2508,8 @@ fn extension_root_platform_modules_are_owned_by_the_extension_root() {
         .view(ViewRequest::new("main:Module.ManagedApplication").unwrap());
     assert!(module.ok, "{module:?}");
 
-    let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
+    let source_root =
+        Arc::new(unica_workspace::read::open_source_directory(&fixture.source).unwrap());
     let authority = LogicalViewReadAuthority::new(
         &cancellation,
         "main",
@@ -2563,8 +2579,8 @@ fn read_authority_rejects_named_root_replacement_before_node_read() {
         return;
     }
     let fixture = RealReaderFixture::new();
-    let root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
-    let deadline = crate::domain::code_intelligence::ProviderDeadline::no_deadline();
+    let root = Arc::new(unica_workspace::read::open_source_directory(&fixture.source).unwrap());
+    let deadline = unica_work_control::provider_deadline::ProviderDeadline::no_deadline();
     let authority = LogicalViewReadAuthority::with_read_authority(
         &fixture.cancellation,
         ProviderReadAuthority::new(
@@ -2758,7 +2774,9 @@ fn external_inventory_skips_runtime_sidecar_and_fails_closed_on_malformed_or_amb
 #[test]
 fn retained_external_inventory_is_cancellable() {
     let cancelled_fixture = RealExternalReaderFixture::new();
-    let root = Arc::new(RetainedDirectoryCapability::open(&cancelled_fixture.processor).unwrap());
+    let root = Arc::new(
+        unica_workspace::read::open_source_directory(&cancelled_fixture.processor).unwrap(),
+    );
     let reader = ProviderReadAuthority::new(
         "artifact_processor",
         "actor-external-cancel",
@@ -2774,7 +2792,7 @@ fn retained_external_inventory_is_cancellable() {
                 cancellation.cancel();
             }
             if cancellation.is_cancelled() {
-                Err(crate::application::v13::view::ViewError::new(
+                Err(unica_execution_contract::view_error::ViewError::new(
                     RefusalCode::Cancelled,
                     "external inventory cancelled",
                 ))
@@ -2808,7 +2826,7 @@ fn add_large_external_descriptors(fixture: &RealExternalReaderFixture, count: us
 }
 
 fn external_inventory_reader(fixture: &RealExternalReaderFixture) -> ProviderReadAuthority {
-    let root = Arc::new(RetainedDirectoryCapability::open(&fixture.processor).unwrap());
+    let root = Arc::new(unica_workspace::read::open_source_directory(&fixture.processor).unwrap());
     ProviderReadAuthority::new(
         "artifact_processor",
         "actor-external-complete",
@@ -3102,7 +3120,7 @@ fn replaced_support_marker_never_reaches_a_retained_root_with_the_old_state() {
             "main",
             "actor-fixture-main",
             SourceSetKind::Configuration,
-            Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap()),
+            Arc::new(unica_workspace::read::open_source_directory(&fixture.source).unwrap()),
         )
         .with_artifacts(artifacts)
     };
@@ -3136,8 +3154,8 @@ fn replaced_support_marker_never_reaches_a_retained_root_with_the_old_state() {
 
 #[test]
 fn large_support_marker_reads_late_rules_once_for_multiple_owners() {
-    use crate::domain::support_state::ObjectSupportState;
-    use crate::infrastructure::native_operations::common::support_root_uuid_from_bytes;
+    use unica_metadata::support_state::ObjectSupportState;
+    use unica_metadata_designer::support::support_root_uuid_from_bytes;
 
     let fixture = RealReaderFixture::new();
     let catalog_uuid =
@@ -3183,7 +3201,7 @@ fn large_support_marker_reads_late_rules_once_for_multiple_owners() {
 
 #[test]
 fn support_marker_stream_preserves_terminal_errors_and_never_memoizes_interruption() {
-    use crate::application::v13::view::ViewError;
+    use unica_execution_contract::view_error::ViewError;
     let fixture = RealReaderFixture::new();
     let marker_path = fixture.source.join("Ext/ParentConfigurations.bin");
     fs::create_dir_all(marker_path.parent().unwrap()).unwrap();
@@ -3935,7 +3953,7 @@ fn diagnostic_module_scope_refuses_replaced_retained_root() {
 
 #[test]
 fn diagnostic_module_scope_refuses_module_replaced_by_foreign_symlink() {
-    use crate::infrastructure::platform::testing::{
+    use unica_workspace::test_support::{
         create_file_link_fixture_for_test, FileLinkFixtureOutcome,
     };
     let fixture = RealReaderFixture::new();
@@ -3964,12 +3982,13 @@ fn diagnostic_module_scope_refuses_module_replaced_by_foreign_symlink() {
 
 mod canonical_module_diagnostics {
     use super::*;
-    use crate::application::diagnostics::{DiagnosticCoordinator, DiagnosticMapping};
-    use crate::domain::diagnostics::*;
-    use crate::domain::source_location::SourceLocation;
-    use crate::domain::source_target::TargetKind;
     use crate::infrastructure::diagnostics::CanonicalModuleDiagnosticMapping;
     use std::time::Duration;
+    use unica_address::source_target::TargetKind;
+    use unica_diagnostics::coordinator::DiagnosticCoordinator;
+    use unica_diagnostics::coordinator::DiagnosticMapping;
+    use unica_diagnostics::model::*;
+    use unica_source_contract::location::SourceLocation;
 
     fn request(mapping: &CanonicalModuleDiagnosticMapping) -> DiagnosticRequest {
         DiagnosticRequest {
@@ -4438,7 +4457,7 @@ fn canonical_dcs_validation_keeps_captured_owner_format_warnings() {
 
 #[test]
 fn canonical_dcs_validation_does_not_follow_links_after_input_capture() {
-    use crate::infrastructure::platform::testing::{
+    use unica_workspace::test_support::{
         create_file_link_fixture_for_test, FileLinkFixtureOutcome,
     };
 
@@ -4484,7 +4503,7 @@ fn canonical_dcs_validation_does_not_follow_links_after_input_capture() {
 
 #[test]
 fn canonical_dcs_validation_refuses_linked_format_owners_before_capture() {
-    use crate::infrastructure::platform::testing::{
+    use unica_workspace::test_support::{
         create_file_link_fixture_for_test, FileLinkFixtureOutcome,
     };
 
@@ -4627,8 +4646,8 @@ fn canonical_dcs_format_owner_read_stops_at_typed_midstream_checkpoint() {
         )
         .unwrap();
         let authority = fixture.read_authority();
-        let target = crate::domain::source_target::MetadataAddress::parse(
-            crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+        let target = unica_address::source_target::MetadataAddress::parse(
+            unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
             "Report.ParityReport.Template.MainSchema",
         )
         .unwrap();
@@ -4686,7 +4705,7 @@ fn external_leaf_read(source: &Path, kind: SourceSetKind) -> ProviderReadAuthori
         "artifact",
         "external-leaf-identity",
         kind,
-        Arc::new(RetainedDirectoryCapability::open(source).unwrap()),
+        Arc::new(unica_workspace::read::open_source_directory(source).unwrap()),
         "external-leaf-local-read".into(),
     )
 }
@@ -4929,12 +4948,11 @@ fn external_inventory_leaf_preserves_actor_admission_membership_finality() {
     for index in 0..257 {
         fs::write(source.join(format!("noise{index:03}.txt")), "unrelated").unwrap();
     }
-    let admission =
-        crate::infrastructure::source_selection_evidence::discover_project_source_admission(
-            workspace.path(),
-            &mut || Ok(()),
-        )
-        .unwrap();
+    let admission = crate::infrastructure::source_workspace::discover_project_source_admission(
+        workspace.path(),
+        &mut || Ok(()),
+    )
+    .unwrap();
     assert_eq!(admission.map().source_sets.len(), 1);
     assert_eq!(
         admission.map().source_sets[0].kind,
@@ -4963,7 +4981,7 @@ fn external_inventory_leaf_preserves_actor_admission_membership_finality() {
             .validate(ProviderDeadline::no_deadline(), &CancellationToken::new())
             .unwrap_err()
             .kind(),
-        crate::infrastructure::source_selection_evidence::SourceSelectionEvidenceErrorKind::Changed
+        unica_workspace::selection_evidence::SourceSelectionEvidenceErrorKind::Changed
     );
 }
 
@@ -5055,7 +5073,7 @@ fn named_external_descriptor_distinguishes_missing_from_unreadable_source() {
         };
         assert_eq!(
             unreadable.detail(),
-            Some(crate::domain::refusal::RefusalDetail::SourceUnreadable)
+            Some(unica_refusal::RefusalDetail::SourceUnreadable)
         );
         assert_ne!(unreadable.code(), RefusalCode::NotFound);
         assert_eq!(reader.metadata_descriptor_read_count(target.as_str()), 2);
@@ -5105,7 +5123,7 @@ fn external_leaf_preserves_an_explicit_finite_relative_read_limit() {
         .unwrap_err();
     assert_eq!(
         error.detail(),
-        Some(crate::domain::refusal::RefusalDetail::SourceUnreadable)
+        Some(unica_refusal::RefusalDetail::SourceUnreadable)
     );
     assert!(error.to_string().contains("128-byte read limit"));
     assert_eq!(
@@ -5128,7 +5146,7 @@ fn mxl_check_consumes_captured_body_without_reopening_its_display_path() {
     let authority = fixture.read_authority();
     let input = authority.mxl_validation_input(&at).unwrap();
     fs::remove_file(&input.artifact).unwrap();
-    let result = crate::infrastructure::native_operations::mxl::validate_mxl_input(
+    let result = crate::infrastructure::native_operations::mxl_composition::validate_mxl_input(
         &serde_json::Map::new(),
         &input.text,
         input.artifact,
@@ -5168,7 +5186,7 @@ fn retained_mxl_check_supports_configuration_extension_epf_and_erf_owners() {
             crate::application::ports::FormatGuardCheck::Allow
         ));
         assert!(
-            crate::infrastructure::native_operations::mxl::validate_mxl_input(
+            crate::infrastructure::native_operations::mxl_composition::validate_mxl_input(
                 &serde_json::Map::new(),
                 &input.text,
                 input.artifact
@@ -5211,7 +5229,7 @@ fn retained_mxl_check_supports_configuration_extension_epf_and_erf_owners() {
             crate::application::ports::FormatGuardCheck::Allow
         ));
         assert!(
-            crate::infrastructure::native_operations::mxl::validate_mxl_input(
+            crate::infrastructure::native_operations::mxl_composition::validate_mxl_input(
                 &serde_json::Map::new(),
                 &input.text,
                 input.artifact
@@ -5260,7 +5278,7 @@ fn retained_mxl_check_keeps_unbounded_body_read_and_format_warnings() {
         crate::application::ports::FormatGuardCheck::Warn { .. }
     ));
     assert!(
-        crate::infrastructure::native_operations::mxl::validate_mxl_input(
+        crate::infrastructure::native_operations::mxl_composition::validate_mxl_input(
             &serde_json::Map::new(),
             &input.text,
             input.artifact
@@ -6020,7 +6038,7 @@ fn canonical_subsystem_check_validates_the_child_and_rejects_wrong_identity() {
 
 #[test]
 fn canonical_subsystem_check_refuses_linked_dependencies() {
-    use crate::infrastructure::platform::testing::{
+    use unica_workspace::test_support::{
         create_file_link_fixture_for_test, FileLinkFixtureOutcome,
     };
     for dependency in [
@@ -6358,7 +6376,7 @@ fn tabular_standard_attributes_preserve_profiled_member_facts_and_independent_li
             xml = xml.replacen("<xr:ToolTip/>", "<xr:ToolTip>broken</xr:ToolTip>", 1);
         }
         write(&fixture.source.join("Catalogs/Items.xml"), &xml);
-        let before = crate::test_support::tree_snapshot(&fixture.source);
+        let before = unica_workspace::test_support::tree_snapshot(&fixture.source);
         let service = fixture.view_service();
         let at = "main:Catalog.Items.TabularSection.Rows";
         let section = service.view(ViewRequest::new(at).unwrap());
@@ -6412,6 +6430,9 @@ fn tabular_standard_attributes_preserve_profiled_member_facts_and_independent_li
                 )
                 .ok
         );
-        assert_eq!(crate::test_support::tree_snapshot(&fixture.source), before);
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&fixture.source),
+            before
+        );
     }
 }

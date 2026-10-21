@@ -1,12 +1,12 @@
 ---
 id: INV.RUNTIME.DAEMON-CONNECTION-ADMISSION
 check:
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::ninth_connection_delivers_cancel_while_eight_real_handshakes_are_held
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::sixty_fifth_authenticated_owner_delivers_exact_cancellation
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::connection_ownership_survives_former_limit_and_checked_overflow
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::v5_duplicate_live_owner_lease_is_rejected
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::live_v5_owner_prevents_idle_listener_shutdown
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::owner_handoff_between_idle_reads_keeps_listener_and_exact_owner_alive
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::ninth_connection_delivers_cancel_while_eight_real_handshakes_are_held
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::sixty_fifth_authenticated_owner_delivers_exact_cancellation
+  - crates/unica-daemon/tests/platform/listener.rs::connection_ownership_survives_former_limit_and_checked_overflow
+  - crates/unica-daemon/tests/platform/listener.rs::v5_duplicate_live_owner_lease_is_rejected
+  - crates/unica-daemon/tests/platform/listener.rs::live_v5_owner_prevents_idle_listener_shutdown
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::owner_handoff_between_idle_reads_keeps_listener_and_exact_owner_alive
 ---
 
 # Соединения демона сохраняют владельцев без произвольной квоты приёма

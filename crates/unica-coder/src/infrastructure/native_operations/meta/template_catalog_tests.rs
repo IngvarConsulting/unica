@@ -1,15 +1,9 @@
 use roxmltree::{Document, Node};
 
-use crate::domain::metadata::{
+use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_metadata::{
     DateFractions, MetadataKind, MetadataType, MetadataTypeVariant, NumberSign, StringLengthMode,
 };
-use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
-
-use super::template_catalog::{
-    metadata_generated_types_8_3_27, minimal_auxiliary_files, minimal_metadata_xml,
-    minimal_metadata_xml_for_tests, split_meta_camel_case, MinimalTemplateContext,
-};
-use super::xml_model::{emit_meta_typed_value_type, meta_info_child, meta_info_child_text};
 
 fn direct_child_names<'a>(node: Node<'a, '_>) -> Vec<&'a str> {
     node.children()
@@ -20,13 +14,16 @@ fn direct_child_names<'a>(node: Node<'a, '_>) -> Vec<&'a str> {
 
 #[test]
 fn typed_minimal_catalog_emits_non_hierarchical_platform_shape() {
-    let (xml, _) = minimal_metadata_xml_for_tests(MetadataKind::ChartOfAccounts, "Accounts")
-        .expect("typed ChartOfAccounts template");
+    let (xml, _) = unica_metadata_designer::template_catalog::minimal_metadata_xml_for_tests(
+        MetadataKind::ChartOfAccounts,
+        "Accounts",
+    )
+    .expect("typed ChartOfAccounts template");
     let document = Document::parse(&xml).unwrap();
     let properties = document
         .descendants()
         .find(|node| node.tag_name().name() == "ChartOfAccounts")
-        .and_then(|node| meta_info_child(node, "Properties"))
+        .and_then(|node| unica_xml_format::read::child_element(node, "Properties"))
         .unwrap();
 
     assert_eq!(
@@ -82,11 +79,11 @@ fn typed_minimal_catalog_emits_non_hierarchical_platform_shape() {
         "{xml}"
     );
     assert!(
-        meta_info_child(properties, "Hierarchical").is_none(),
+        unica_xml_format::read::child_element(properties, "Hierarchical").is_none(),
         "{xml}"
     );
     assert_eq!(
-        meta_info_child_text(properties, "MaxExtDimensionCount").as_deref(),
+        unica_xml_format::read::child_direct_text(properties, "MaxExtDimensionCount").as_deref(),
         Some("0")
     );
 }
@@ -94,7 +91,10 @@ fn typed_minimal_catalog_emits_non_hierarchical_platform_shape() {
 #[test]
 fn typed_minimal_templates_cover_all_public_add_kinds() {
     for kind in MetadataKind::ALL {
-        let (xml, _) = minimal_metadata_xml_for_tests(*kind, "Evidence").unwrap();
+        let (xml, _) = unica_metadata_designer::template_catalog::minimal_metadata_xml_for_tests(
+            *kind, "Evidence",
+        )
+        .unwrap();
         let document = Document::parse(&xml).unwrap();
         assert_eq!(
             document.root_element().tag_name().name(),
@@ -103,7 +103,10 @@ fn typed_minimal_templates_cover_all_public_add_kinds() {
             kind.as_str()
         );
         assert!(
-            metadata_generated_types_8_3_27(kind.as_str()).is_some(),
+            unica_metadata_designer::template_catalog::metadata_generated_types_8_3_27(
+                kind.as_str()
+            )
+            .is_some(),
             "{}",
             kind.as_str()
         );
@@ -127,7 +130,10 @@ fn minimal_templates_emit_child_objects_only_where_the_kind_declares_them() {
     ];
 
     for kind in MetadataKind::ALL {
-        let (xml, _) = minimal_metadata_xml_for_tests(*kind, "Evidence").unwrap();
+        let (xml, _) = unica_metadata_designer::template_catalog::minimal_metadata_xml_for_tests(
+            *kind, "Evidence",
+        )
+        .unwrap();
         let document = Document::parse(&xml).unwrap();
         let object = document
             .root_element()
@@ -135,7 +141,7 @@ fn minimal_templates_emit_child_objects_only_where_the_kind_declares_them() {
             .find(Node::is_element)
             .unwrap();
 
-        let emitted = meta_info_child(object, "ChildObjects").is_some();
+        let emitted = unica_xml_format::read::child_element(object, "ChildObjects").is_some();
         assert_eq!(
             emitted,
             !CHILDLESS.contains(kind),
@@ -149,7 +155,9 @@ fn minimal_templates_emit_child_objects_only_where_the_kind_declares_them() {
 fn business_process_template_names_its_mandatory_task() {
     // 8.3.27 refuses to import a business process without a task:
     // `БизнесПроцесс.<Имя> - Business process task not selected`.
-    let context = MinimalTemplateContext {
+    let context: unica_metadata_designer::template_catalog::MinimalTemplateContext<
+        crate::infrastructure::platform_xml_source_targets::ClosedPlatformXmlTarget,
+    > = unica_metadata_designer::template_catalog::MinimalTemplateContext {
         chart_of_accounts: None,
         chart_of_calculation_types: None,
         task: Some("Task.CorpusTask".to_string()),
@@ -160,8 +168,14 @@ fn business_process_template_names_its_mandatory_task() {
         dependencies: Vec::new(),
         language: "ru".to_string(),
     };
-    let (xml, _) =
-        minimal_metadata_xml(MetadataKind::BusinessProcess, "Evidence", "2.20", &context).unwrap();
+    let (xml, _) = unica_metadata_designer::template_catalog::minimal_metadata_xml(
+        MetadataKind::BusinessProcess,
+        "Evidence",
+        "2.20",
+        &context,
+        crate::infrastructure::source_ids::fresh_uuid,
+    )
+    .unwrap();
     assert!(
         xml.contains("<Task>Task.CorpusTask</Task>"),
         "business process template must reference the registered task: {xml}"
@@ -172,7 +186,9 @@ fn business_process_template_names_its_mandatory_task() {
 fn document_journal_template_registers_its_mandatory_document() {
     // 8.3.27 refuses to import a journal with no registered documents:
     // `ЖурналДокументов.<Имя> - No recorded documents specified for log`.
-    let context = MinimalTemplateContext {
+    let context: unica_metadata_designer::template_catalog::MinimalTemplateContext<
+        crate::infrastructure::platform_xml_source_targets::ClosedPlatformXmlTarget,
+    > = unica_metadata_designer::template_catalog::MinimalTemplateContext {
         chart_of_accounts: None,
         chart_of_calculation_types: None,
         task: None,
@@ -183,8 +199,14 @@ fn document_journal_template_registers_its_mandatory_document() {
         dependencies: Vec::new(),
         language: "ru".to_string(),
     };
-    let (xml, _) =
-        minimal_metadata_xml(MetadataKind::DocumentJournal, "Evidence", "2.20", &context).unwrap();
+    let (xml, _) = unica_metadata_designer::template_catalog::minimal_metadata_xml(
+        MetadataKind::DocumentJournal,
+        "Evidence",
+        "2.20",
+        &context,
+        crate::infrastructure::source_ids::fresh_uuid,
+    )
+    .unwrap();
     assert!(
         xml.contains(
             "<RegisteredDocuments>\r\n\t\t\t\t<xr:Item xsi:type=\"xr:MDObjectRef\">Document.CorpusDocument</xr:Item>\r\n\t\t\t</RegisteredDocuments>"
@@ -202,7 +224,10 @@ fn minimal_templates_never_invent_content() {
         MetadataKind::AccountingRegister,
         MetadataKind::CalculationRegister,
     ] {
-        let (xml, _) = minimal_metadata_xml_for_tests(kind, "Evidence").unwrap();
+        let (xml, _) = unica_metadata_designer::template_catalog::minimal_metadata_xml_for_tests(
+            kind, "Evidence",
+        )
+        .unwrap();
         assert!(
             !xml.contains("<Resource"),
             "{} invented a resource: {xml}",
@@ -222,7 +247,11 @@ fn generated_synonym_separates_digits_from_the_words_around_them() {
         ("Товар", "Товар"),
         ("", ""),
     ] {
-        assert_eq!(split_meta_camel_case(name), synonym, "{name}");
+        assert_eq!(
+            unica_metadata_designer::template_catalog::split_meta_camel_case(name),
+            synonym,
+            "{name}"
+        );
     }
 }
 
@@ -252,7 +281,7 @@ fn typed_value_type_groups_platform_tags_before_qualifiers() {
         ],
     };
     let mut lines = Vec::new();
-    emit_meta_typed_value_type(&mut lines, "", &value_type);
+    unica_metadata_designer::xml_model::emit_meta_typed_value_type(&mut lines, "", &value_type);
     let xml = lines.join("");
 
     let concrete = xml.find("<v8:Type>xs:string</v8:Type>").unwrap();
@@ -267,7 +296,10 @@ fn typed_value_type_groups_platform_tags_before_qualifiers() {
 
 #[test]
 fn typed_auxiliary_xml_matches_platform_fixtures() {
-    let exchange = minimal_auxiliary_files(MetadataKind::ExchangePlan, "2.20");
+    let exchange = unica_metadata_designer::template_catalog::minimal_auxiliary_files(
+        MetadataKind::ExchangePlan,
+        "2.20",
+    );
     assert_eq!(exchange.len(), 1);
     assert_eq!(
         exchange[0].2.replace("\r\n", "\n"),
@@ -275,7 +307,10 @@ fn typed_auxiliary_xml_matches_platform_fixtures() {
             .replace("\r\n", "\n")
     );
 
-    let process = minimal_auxiliary_files(MetadataKind::BusinessProcess, "2.20");
+    let process = unica_metadata_designer::template_catalog::minimal_auxiliary_files(
+        MetadataKind::BusinessProcess,
+        "2.20",
+    );
     assert_eq!(process.len(), 1);
     assert!(process[0].2.contains("<GraphicalSchema "));
     assert!(process[0].2.contains("<Items/>"));

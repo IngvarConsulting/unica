@@ -1,0 +1,39 @@
+[package]
+name = "unica-adapter-bsl-analyzer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+test-support = ["unica-workspace/test-support", "unica-process/test-support", "unica-analysis-services/test-support", "unica-diagnostics/test-support"]
+
+[dependencies]
+unica-analysis-services = { path = "../unica-analysis-services" }
+unica-code-intelligence = { path = "../unica-code-intelligence" }
+unica-process = { path = "../unica-process" }
+unica-work-control = { path = "../unica-work-control" }
+unica-source-contract = { path = "../unica-source-contract" }
+unica-workspace = { path = "../unica-workspace" }
+unica-redaction = { path = "../unica-redaction" }
+unica-artifact-delivery = { path = "../unica-artifact-delivery" }
+unica-configuration = { path = "../unica-configuration" }
+unica-execution-contract = { path = "../unica-execution-contract" }
+unica-diagnostics = { path = "../unica-diagnostics" }
+unica-address = { path = "../unica-address" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+uuid.workspace = true
+fs2.workspace = true
+tempfile.workspace = true
+url.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+unica-workspace = { path = "../unica-workspace", features = ["test-support"] }
+unica-process = { path = "../unica-process", features = ["test-support"] }
+unica-analysis-services = { path = "../unica-analysis-services", features = ["test-support"] }
+unica-diagnostics = { path = "../unica-diagnostics", features = ["test-support"] }

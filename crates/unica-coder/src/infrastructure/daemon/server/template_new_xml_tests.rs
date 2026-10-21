@@ -1,24 +1,20 @@
 use super::actor_capacity_tests::direct_v5;
 use super::*;
-use crate::application::invocation_store::ToolIdentity;
-use crate::application::metadata::{MetaEditRequest, MetadataRequest};
-use crate::application::ports::{
-    MetadataChildResourceKind, MetadataResourceRole, MetadataTemplateResourcePart,
-    MetadataTemplateType,
-};
-use crate::domain::cancellation::CancellationToken;
-use crate::domain::metadata::{
-    MetaCollection, MetaEditOperation, MetaElementInput, MetaElementUpdateInput, MetaTemplateKind,
-    MetaValidationStatus,
-};
-use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
-use crate::domain::workspace::WorkspaceContext;
+use unica_execution::invocation_store::ToolIdentity;
+
 use crate::infrastructure::metadata_operations::MetadataOperations;
-use crate::test_support::tree_snapshot;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_metadata::{
+    MetaCollection, MetaEditOperation, MetaElementInput, MetaElementUpdateInput, MetaTemplateKind,
+    MetaValidationStatus,
+};
+use unica_source_contract::workspace::WorkspaceContext;
+use unica_work_control::cancellation::CancellationToken;
+use unica_workspace::test_support::tree_snapshot;
 
 const OWNER: &str = "Reports/CorpusReport.xml";
 const DESCRIPTOR: &str = "Reports/CorpusReport/Templates/CorpusTemplate.xml";
@@ -470,12 +466,13 @@ fn retained_publish(
     };
     let target =
         MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Report.CorpusReport").unwrap();
-    let request = MetadataRequest::Edit(MetaEditRequest {
-        source_set: "main".into(),
-        metadata_path: target.clone(),
-        operations,
-        dry_run: false,
-    });
+    let request =
+        unica_metadata::request::MetadataRequest::Edit(unica_metadata::request::MetaEditRequest {
+            source_set: "main".into(),
+            metadata_path: target.clone(),
+            operations,
+            dry_run: false,
+        });
     let before = (tree_snapshot(&root), directories(&root));
     let cancellation = CancellationToken::new();
     let prepared = MetadataOperations::prepare_mutation(&request, &context, &cancellation)
@@ -504,7 +501,7 @@ fn retained_publish(
         .filter(|resource| {
             matches!(
                 &resource.role,
-                MetadataResourceRole::Template {owner, name: resource_name}
+                unica_metadata::validation_subject::MetadataResourceRole::Template {owner, name: resource_name}
                     if owner == &target && resource_name == name
             )
         })
@@ -514,18 +511,22 @@ fn retained_publish(
         1,
         "one prepared final Template descriptor"
     );
-    let expected_type = MetadataTemplateType::from_descriptor_value(kind.as_str()).unwrap();
+    let expected_type =
+        unica_metadata::validation_subject::MetadataTemplateType::from_descriptor_value(
+            kind.as_str(),
+        )
+        .unwrap();
     let child_address = format!("Report.CorpusReport.Template.{name}");
     let payloads = resources
         .iter()
         .filter(|resource| {
             matches!(
                 &resource.role,
-                MetadataResourceRole::ChildResource {
+                unica_metadata::validation_subject::MetadataResourceRole::ChildResource {
                     child,
-                    kind: MetadataChildResourceKind::TemplateContent {
+                    kind: unica_metadata::validation_subject::MetadataChildResourceKind::TemplateContent {
                         template_type,
-                        part: MetadataTemplateResourcePart::Primary,
+                        part: unica_metadata::validation_subject::MetadataTemplateResourcePart::Primary,
                     },
                     ordinal: 0,
                 } if child.as_str() == child_address && *template_type == expected_type

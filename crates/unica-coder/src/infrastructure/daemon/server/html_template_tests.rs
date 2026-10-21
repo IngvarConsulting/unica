@@ -1,9 +1,9 @@
 use super::actor_capacity_tests::direct_v5;
 use super::*;
-use crate::application::invocation_store::ToolIdentity;
-use crate::test_support::tree_snapshot;
 use serde_json::json;
 use std::path::Path;
+use unica_execution::invocation_store::ToolIdentity;
+use unica_workspace::test_support::tree_snapshot;
 
 const PAGE: &str = "Reports/Report/Templates/Html/Ext/Template/ru.html";
 const DESCRIPTOR: &str = "Reports/Report/Templates/Html.xml";

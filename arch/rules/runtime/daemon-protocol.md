@@ -1,10 +1,10 @@
 ---
 id: CTR.WIRE.DAEMON-INVOCATION-PROTOCOL
 check:
-  - crates/unica-coder/src/infrastructure/daemon/protocol_v5.rs::strict_v5_client_decoder_round_trips_every_closed_request_kind
-  - crates/unica-coder/src/infrastructure/daemon/protocol_v5.rs::strict_v5_server_response_round_trips_the_cr0_invocation_algebra
-  - crates/unica-coder/src/infrastructure/daemon/protocol_v5.rs::strict_v5_client_decoder_rejects_unknown_missing_cross_variant_and_invalid_values
-  - crates/unica-coder/src/infrastructure/daemon/protocol_v5.rs::strict_v5_server_response_rejects_unknown_kinds_extra_fields_and_invalid_enums
+  - crates/unica-daemon/src/protocol_v5.rs::strict_v5_client_decoder_round_trips_every_closed_request_kind
+  - crates/unica-daemon/src/protocol_v5.rs::strict_v5_server_response_round_trips_the_cr0_invocation_algebra
+  - crates/unica-daemon/src/protocol_v5.rs::strict_v5_client_decoder_rejects_unknown_missing_cross_variant_and_invalid_values
+  - crates/unica-daemon/src/protocol_v5.rs::strict_v5_server_response_rejects_unknown_kinds_extra_fields_and_invalid_enums
   - crates/unica-coder/tests/daemon_receipt_ledger.rs::v5_rejects_v3_v4_and_strictly_round_trips_receipt_messages
 ---
 

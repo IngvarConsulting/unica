@@ -1,9 +1,9 @@
 use super::actor_capacity_tests::direct_v5;
 use super::*;
-use crate::application::invocation_store::ToolIdentity;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use unica_execution::invocation_store::ToolIdentity;
 
 const OWNER: &str = "Catalog.Editable";
 
@@ -15,10 +15,11 @@ struct Fixture {
 impl Fixture {
     fn new(existing_cache: bool) -> Self {
         let root = tempfile::tempdir().unwrap();
-        let workspace = crate::test_support::canonical_path(root.path()).join("workspace");
+        let workspace =
+            unica_workspace::test_support::canonical_path(root.path()).join("workspace");
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/acceptance/workspace-legacy-inline");
-        for (relative, bytes) in crate::test_support::tree_snapshot(&fixture) {
+        for (relative, bytes) in unica_workspace::test_support::tree_snapshot(&fixture) {
             let path = workspace.join(relative);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, bytes).unwrap();
@@ -68,7 +69,7 @@ impl Fixture {
     }
 
     fn check_without_writes(&self) -> Value {
-        let files_before = crate::test_support::tree_snapshot(&self.workspace);
+        let files_before = unica_workspace::test_support::tree_snapshot(&self.workspace);
         let directories_before = directory_membership(&self.workspace);
         let runtime = V5CanonicalInvocationRuntime::new(
             Arc::new(
@@ -92,7 +93,7 @@ impl Fixture {
         // would miss a check that creates a previously absent cache directory.
         assert_eq!(
             files_before,
-            crate::test_support::tree_snapshot(&self.workspace),
+            unica_workspace::test_support::tree_snapshot(&self.workspace),
             "check must preserve source and cache bytes and file membership"
         );
         assert_eq!(

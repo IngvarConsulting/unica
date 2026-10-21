@@ -1,10 +1,10 @@
 ---
 id: INV.SOURCE.LOGICAL-IDENTITY
 check:
-  - crates/unica-coder/src/domain/source_target.rs::source_target_profile_emits_canonical_english_kind_tokens
-  - crates/unica-coder/src/domain/source_target.rs::source_target_profile_normalizes_only_registered_exact_russian_kind_aliases
-  - crates/unica-coder/src/domain/source_target.rs::source_target_profile_preserves_application_name_case
-  - crates/unica-coder/src/domain/source_target.rs::source_target_and_resolved_target_serialize_only_logical_identity
+  - crates/unica-address/src/source_target.rs::source_target_profile_emits_canonical_english_kind_tokens
+  - crates/unica-address/src/source_target.rs::source_target_profile_normalizes_only_registered_exact_russian_kind_aliases
+  - crates/unica-address/src/source_target.rs::source_target_profile_preserves_application_name_case
+  - crates/unica-address/src/source_target.rs::source_target_and_resolved_target_serialize_only_logical_identity
 ---
 
 # Разрешённая цель исходников сохраняет логическую идентичность

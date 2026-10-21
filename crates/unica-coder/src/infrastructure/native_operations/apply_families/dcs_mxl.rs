@@ -1,48 +1,27 @@
-use super::metadata::qualified_target;
 use super::validate_platform_xml_binding;
-use crate::domain::address::{member_address, NodeKind, QualifiedAddress};
-use crate::domain::apply::OperationDescriptor;
-use crate::domain::dcs_operation::{DcsIntent, Primitive};
-use crate::domain::events::{DomainEvent, DomainEventKind};
-use crate::domain::mxl_operation::MxlOperation;
-use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
-use crate::infrastructure::logical_event_source::attached_resource_relative;
-use crate::infrastructure::native_operations::apply::{
-    empty_apply_family_batch, hidden_apply_family_unimplemented, ApplyPlanError,
-    ApplyPlanErrorKind, ApplyStagedState,
-};
-use crate::infrastructure::native_operations::apply_families::request::{
-    IndexedPlanOperation, ProvisionalApplyEffect,
-};
-use crate::infrastructure::workspace_actor::{DcsMxlApplyAuthority, ProviderRootBinding};
+use crate::domain::apply::OperationDescriptorExt;
 use serde_json::{Map, Value};
+use unica_address::address::{member_address, NodeKind, QualifiedAddress};
 
-/// A normalized basic operation and its captured logical target.
-#[derive(Debug, Clone)]
-struct DcsPrimitivePlan {
-    template: MetadataAddress,
-    intent: DcsIntent,
-    target: crate::infrastructure::native_operations::dcs_primitives::Target,
-}
+#[cfg(test)]
+use unica_dcs::operations::DcsIntent;
+use unica_operations::OperationDescriptor;
 
-use crate::infrastructure::native_operations::mxl_cells::{self, CellText, MxlEditError};
+use unica_source_contract::proposal::{
+    empty_apply_family_batch, hidden_apply_family_unimplemented, ApplyPlanError, ApplyPlanErrorKind,
+};
+use unica_source_contract::proposal::{ApplyProposal, ApplySourceAuthority};
+use unica_source_contract::proposal::{IndexedPlanOperation, ProvisionalApplyEffect};
 
-#[derive(Debug, Clone)]
-struct MxlEdit {
-    template: MetadataAddress,
-    /// Квалифицированный адрес макета для текста отказа.
-    template_at: String,
-    area: String,
-    operation: MxlOperation,
-    /// Путь аргументов области: `values` или `items[i]`.
-    location: String,
-    columns: Option<i64>,
-    cells: Vec<CellText>,
-}
+use unica_templates::operations::MxlOperation;
+use unica_templates_designer::planner::{stage_mxl_edit, MxlEdit};
+use unica_workspace::actor::ProviderRootBinding;
+
+use unica_templates_designer::mxl_cells::CellText;
 
 #[derive(Debug, Clone)]
 enum DcsMxlPlanKind {
-    Dcs(Box<DcsPrimitivePlan>),
+    Dcs(Box<unica_dcs_designer::planner::DcsPrimitivePlan>),
     Mxl(Vec<MxlEdit>),
     Unsupported,
 }
@@ -57,115 +36,13 @@ impl DcsMxlPlanOperation {
     pub(crate) fn operation(&self) -> &str {
         &self.operation
     }
-}
 
-/// The DCS parts of a logical address: the template owner, plus the dataset,
-/// settings variant and its structure items, or the field, parameter, data
-/// source, calculated field or total the address descends into, and whether
-/// it ends at the dataset's unnamed `Query`.
-struct DcsTarget {
-    template: MetadataAddress,
-    datasets: Vec<String>,
-    variant: String,
-    structure: Vec<String>,
-    terminal: Option<(NodeKind, String)>,
-    query: bool,
-}
-
-fn dcs_target(target: &QualifiedAddress, op_index: usize) -> Result<DcsTarget, ApplyPlanError> {
-    let at_path = format!("ops[{op_index}].args.at");
-    let bad = |message: &str| {
-        ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message.to_string())
-            .at_path(at_path.clone())
-    };
-    let segments = target.segments();
-    let [owner, template, rest @ ..] = segments else {
-        return Err(bad(
-            "DCS operations address a schema template: `Owner.Name.Template.Name[.DataSet.Name[.Query]|.Setting.Name[.Item.Name…]|.DataSource.Name|.CalculatedField.Name|.Total.Name]`",
-        ));
-    };
-    if template.kind() != NodeKind::Template {
-        return Err(bad(
-            "DCS operations address a `Template` node of a report or object",
-        ));
-    }
-    let owner_name = owner
-        .name()
-        .ok_or_else(|| bad("the template owner must be named"))?;
-    let template_name = template
-        .name()
-        .ok_or_else(|| bad("the template must be named"))?;
-    let template = MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!(
-            "{}.{owner_name}.Template.{template_name}",
-            owner.kind().as_str()
-        ),
-    )
-    .map_err(|error| bad(&error.to_string()))?;
-    let mut datasets = Vec::new();
-    let mut variant = String::new();
-    let mut structure = Vec::new();
-    let mut terminal = None;
-    let mut query = false;
-    for segment in rest {
-        if terminal.is_some() || query {
-            return Err(bad("a DCS terminal has no addressed children"));
-        }
-        if segment.kind() == NodeKind::Query {
-            // Запрос — узел набора без имени: `DataSet.D.Query`. Прежний
-            // псевдоним набора `Template.T.Query.D` не принимается (#1353).
-            match segment.name() {
-                None if !datasets.is_empty() && variant.is_empty() => {
-                    query = true;
-                    continue;
-                }
-                Some(name) => {
-                    return Err(bad(&format!(
-                    "a query is addressed through its dataset: `Template.T.DataSet.{name}.Query`"
-                )))
-                }
-                None => {
-                    return Err(bad(
-                        "a query is addressed through its dataset: `DataSet.D.Query`",
-                    ))
-                }
-            }
-        }
-        let name = segment
-            .name()
-            .ok_or_else(|| bad("DCS address segments below the template must be named"))?
-            .to_string();
-        let at_schema = datasets.is_empty() && variant.is_empty();
-        match segment.kind() {
-            NodeKind::DataSet if variant.is_empty() => datasets.push(name),
-            NodeKind::Setting if at_schema => variant = name,
-            // Элемент структуры варианта: цепочка `Item.<имя>` (#1357).
-            NodeKind::Item if !variant.is_empty() => structure.push(name),
-            NodeKind::Field if !datasets.is_empty() && variant.is_empty() => {
-                terminal = Some((NodeKind::Field, name))
-            }
-            NodeKind::Parameter if variant.is_empty() => {
-                terminal = Some((NodeKind::Parameter, name))
-            }
-            kind @ (NodeKind::DataSource | NodeKind::CalculatedField | NodeKind::Total)
-                if at_schema =>
-            {
-                terminal = Some((kind, name))
-            }
-            _ => return Err(bad(
-                "DCS address must select a Template, nested DataSet, Setting with its Item chain, or terminal Field/Parameter/DataSource/CalculatedField/Total",
-            )),
+    pub(super) fn dcs_plan(&self) -> Option<&unica_dcs_designer::planner::DcsPrimitivePlan> {
+        match &self.kind {
+            DcsMxlPlanKind::Dcs(edit) => Some(edit),
+            _ => None,
         }
     }
-    Ok(DcsTarget {
-        template,
-        datasets,
-        variant,
-        structure,
-        terminal,
-        query,
-    })
 }
 
 fn required_items(args: &Map<String, Value>, op_index: usize) -> Result<&[Value], ApplyPlanError> {
@@ -250,10 +127,21 @@ pub(crate) fn parse_dcs_mxl_plan_operation_in(
         )
         .at_path(format!("ops[{op_index}].args"))
     })?;
-    let kind = match descriptor.and_then(OperationDescriptor::mxl_operation) {
+    let kind = match descriptor
+        .and_then(OperationDescriptor::operation::<unica_templates::operations::MxlOperation>)
+    {
         Some(operation) => parse_mxl_operation(operation, object, op_index, binding)?,
-        None => match descriptor.and_then(OperationDescriptor::dcs_operation) {
-            Some(operation) => parse_dcs_operation(operation, object, op_index, binding)?,
+        None => match descriptor
+            .and_then(OperationDescriptor::operation::<unica_dcs::operations::Primitive>)
+        {
+            Some(operation) => {
+                DcsMxlPlanKind::Dcs(Box::new(unica_dcs_designer::planner::parse_dcs_operation(
+                    operation,
+                    object,
+                    op_index,
+                    binding.source_set_name(),
+                )?))
+            }
             None => DcsMxlPlanKind::Unsupported,
         },
     };
@@ -263,138 +151,7 @@ pub(crate) fn parse_dcs_mxl_plan_operation_in(
     })
 }
 
-fn parse_dcs_operation(
-    operation: Primitive,
-    args: &Map<String, Value>,
-    op_index: usize,
-    binding: &ProviderRootBinding,
-) -> Result<DcsMxlPlanKind, ApplyPlanError> {
-    let intent = operation
-        .decode(
-            &Value::Object(args.clone()),
-            &format!("ops[{op_index}].args"),
-        )
-        .map_err(|error| {
-            ApplyPlanError::new(
-                ApplyPlanErrorKind::BadValue,
-                format!("{}: {}", error.path, error.message),
-            )
-            .at_path(error.path)
-        })?;
-    let address = qualified_target(args, op_index, binding)?;
-    let target = dcs_target(&address, op_index)?;
-    let (query_operation, variant_operation, structure_operation, terminal_kind) = match operation {
-        Primitive::QuerySet | Primitive::QueryPatch => (true, false, false, None),
-        Primitive::VariantSet | Primitive::VariantRemove => (false, true, false, None),
-        Primitive::StructurePatch | Primitive::StructureRemove => (false, false, true, None),
-        Primitive::FieldRemove | Primitive::FieldSet | Primitive::FieldRoleSet => {
-            (false, false, false, Some(NodeKind::Field))
-        }
-        Primitive::ParameterRemove | Primitive::ParameterSet | Primitive::ParameterRename => {
-            (false, false, false, Some(NodeKind::Parameter))
-        }
-        Primitive::DataSourceSet | Primitive::DataSourceRemove => {
-            (false, false, false, Some(NodeKind::DataSource))
-        }
-        Primitive::CalculatedFieldSet | Primitive::CalculatedFieldRemove => {
-            (false, false, false, Some(NodeKind::CalculatedField))
-        }
-        Primitive::TotalSet | Primitive::TotalRemove => {
-            (false, false, false, Some(NodeKind::Total))
-        }
-        Primitive::DataSourceAdd
-        | Primitive::DataSetAdd
-        | Primitive::DataSetSet
-        | Primitive::DataSetRemove
-        | Primitive::FieldAdd
-        | Primitive::ParameterAdd
-        | Primitive::ParameterReorder
-        | Primitive::CalculatedFieldAdd
-        | Primitive::TotalAdd
-        | Primitive::VariantAdd
-        | Primitive::FilterAdd
-        | Primitive::FilterSet
-        | Primitive::FilterRemove
-        | Primitive::FilterClear
-        | Primitive::SelectionAdd
-        | Primitive::SelectionClear
-        | Primitive::OrderAdd
-        | Primitive::OrderClear
-        | Primitive::DataParameterAdd
-        | Primitive::DataParameterSet
-        | Primitive::OutputParameterSet
-        | Primitive::ConditionalAppearanceAdd
-        | Primitive::ConditionalAppearanceClear
-        | Primitive::StructureAdd
-        | Primitive::StructureSet
-        | Primitive::DataSetLinkAdd
-        | Primitive::SelectionSet
-        | Primitive::SelectionRemove
-        | Primitive::OrderSet
-        | Primitive::OrderRemove
-        | Primitive::DataParameterRemove
-        | Primitive::OutputParameterRemove
-        | Primitive::ConditionalAppearanceRemove
-        | Primitive::DataSetLinkSet
-        | Primitive::DataSetLinkRemove => (false, false, false, None),
-    };
-    let name = operation.name();
-    if !target.query && query_operation {
-        return Err(ApplyPlanError::new(
-            ApplyPlanErrorKind::BadValue,
-            format!("{name} addresses the dataset's query: `DataSet.D.Query`"),
-        )
-        .at_path(format!("ops[{op_index}].args.at")));
-    }
-    if target.query && !query_operation {
-        return Err(ApplyPlanError::new(
-            ApplyPlanErrorKind::BadValue,
-            format!("{name} addresses the dataset, not its Query"),
-        )
-        .at_path(format!("ops[{op_index}].args.at")));
-    }
-    if variant_operation
-        && (target.variant.is_empty() || target.terminal.is_some() || !target.structure.is_empty())
-    {
-        return Err(ApplyPlanError::new(
-            ApplyPlanErrorKind::BadValue,
-            format!("{name} addresses a settings variant: `Template.T.Setting.S`"),
-        )
-        .at_path(format!("ops[{op_index}].args.at")));
-    }
-    if structure_operation && target.structure.is_empty() {
-        return Err(ApplyPlanError::new(
-            ApplyPlanErrorKind::BadValue,
-            format!("{name} addresses a named structure item: `Template.T.Setting.S.Item.I`"),
-        )
-        .at_path(format!("ops[{op_index}].args.at")));
-    }
-    if let Some(expected) = terminal_kind {
-        if !target
-            .terminal
-            .as_ref()
-            .is_some_and(|(kind, _)| *kind == expected)
-        {
-            return Err(ApplyPlanError::new(
-                ApplyPlanErrorKind::BadValue,
-                format!("address a named {}", expected.as_str()),
-            )
-            .at_path(format!("ops[{op_index}].args.at")));
-        }
-    }
-    Ok(DcsMxlPlanKind::Dcs(Box::new(DcsPrimitivePlan {
-        template: target.template,
-        intent,
-        target: crate::infrastructure::native_operations::dcs_primitives::Target {
-            datasets: target.datasets,
-            variant: target.variant,
-            structure: target.structure,
-            terminal: target.terminal.map(|(_, name)| name),
-        },
-    })))
-}
-
-use crate::domain::operation_contract::parse_mxl_cell_address as parse_cell_address;
+use unica_templates::contracts::parse_mxl_cell_address as parse_cell_address;
 
 /// Ячейки области из контракта: строка и колонка с 1, по порядку.
 fn mxl_cells(area: &Map<String, Value>) -> Vec<CellText> {
@@ -442,7 +199,11 @@ fn parse_mxl_operation(
             ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(error.path)
         })?;
     let args = normalized.as_object().expect("object contract");
-    let address = qualified_target(args, op_index, binding)?;
+    let address = unica_source_contract::proposal::input::qualified_target(
+        args,
+        op_index,
+        binding.source_set_name(),
+    )?;
     let at_path = format!("ops[{op_index}].args.at");
     let segments = address.segments();
     let shape = match operation {
@@ -463,7 +224,7 @@ fn parse_mxl_operation(
         source_set: address.source_set().to_string(),
         segments: template_segments,
     };
-    let target = dcs_target(&template_address, op_index)?;
+    let target = unica_dcs_designer::planner::dcs_target(&template_address, op_index)?;
     let edits = match operation {
         MxlOperation::Set => {
             let area = area.expect("mxl.set retained the addressed area");
@@ -531,212 +292,6 @@ fn parse_mxl_operation(
     Ok(DcsMxlPlanKind::Mxl(edits))
 }
 
-/// Есть ли именованная область в стадированном табличном документе.
-/// `None` — документ не читается.
-pub(super) fn spreadsheet_area_exists(bytes: &[u8], name: &str) -> Option<bool> {
-    let text = std::str::from_utf8(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes)).ok()?;
-    let document = roxmltree::Document::parse(text).ok()?;
-    Some(
-        document
-            .root_element()
-            .children()
-            .filter(|node| node.is_element() && node.tag_name().name() == "namedItem")
-            .any(|node| {
-                node.children().any(|part| {
-                    part.is_element()
-                        && part.tag_name().name() == "name"
-                        && part.text().map(str::trim) == Some(name)
-                })
-            }),
-    )
-}
-
-pub(crate) fn plan_dcs_mxl_batch(
-    staged: ApplyStagedState,
-    authority: DcsMxlApplyAuthority<'_>,
-    operations: &[IndexedPlanOperation<DcsMxlPlanOperation>],
-) -> Result<(ApplyStagedState, Vec<ProvisionalApplyEffect>), ApplyPlanError> {
-    if operations.is_empty() {
-        return Err(empty_apply_family_batch());
-    }
-    if !authority.owns_staged_state(&staged) {
-        return Err(ApplyPlanError::new(
-            ApplyPlanErrorKind::InvalidState,
-            "DCS/MXL planner authority does not own the staged state",
-        )
-        .at_path("ops"));
-    }
-    let mut staged = staged;
-    let mut provisional = Vec::new();
-    for operation in operations {
-        let op_index = operation.index();
-        require_template_format(&mut staged, &authority, operation.operation(), op_index)?;
-        let edit = match &operation.operation().kind {
-            DcsMxlPlanKind::Dcs(edit) => edit,
-            DcsMxlPlanKind::Mxl(edits) => {
-                for edit in edits {
-                    stage_mxl_edit(&mut staged, &authority, edit, op_index, &mut provisional)?;
-                }
-                continue;
-            }
-            DcsMxlPlanKind::Unsupported => {
-                return Err(hidden_apply_family_unimplemented(op_index));
-            }
-        };
-        let at_path = format!("ops[{op_index}].args.at");
-        let relative =
-            attached_resource_relative(&edit.template, "Template.xml", authority.source_kind())
-                .map_err(|message| {
-                    ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message)
-                        .at_path(at_path.clone())
-                })?;
-        let preimage = staged
-            .read(&relative)
-            .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
-            .ok_or_else(|| {
-                ApplyPlanError::new(
-                    ApplyPlanErrorKind::NotFound,
-                    "the data composition schema template was not found",
-                )
-                .at_path(at_path.clone())
-            })?;
-        let (bom, body) = match preimage.strip_prefix(b"\xef\xbb\xbf") {
-            Some(body) => (&b"\xef\xbb\xbf"[..], body),
-            None => (&b""[..], preimage.as_slice()),
-        };
-        let mut xml_text = String::from_utf8(body.to_vec()).map_err(|_| {
-            ApplyPlanError::new(
-                ApplyPlanErrorKind::InvalidSource,
-                "the data composition schema is not UTF-8",
-            )
-            .at_path(at_path.clone())
-        })?;
-        {
-            let document = roxmltree::Document::parse(&xml_text).map_err(|error| {
-                ApplyPlanError::new(
-                    ApplyPlanErrorKind::InvalidSource,
-                    format!("the data composition schema is not well-formed XML: {error}"),
-                )
-                .at_path(at_path.clone())
-            })?;
-            crate::infrastructure::native_operations::dcs::require_dcs_root(
-                document.root_element(),
-            )
-            .map_err(|error| {
-                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, error)
-                    .at_path(at_path.clone())
-            })?;
-        }
-        let original = xml_text.clone();
-        apply_dcs_edit(&mut staged, &authority, &mut xml_text, edit, op_index)?;
-        if xml_text == original {
-            continue;
-        }
-        let mut postimage = Vec::with_capacity(bom.len() + xml_text.len());
-        postimage.extend_from_slice(bom);
-        postimage.extend_from_slice(xml_text.as_bytes());
-        staged
-            .replace(&relative, &preimage, postimage)
-            .map_err(|error| ApplyPlanError::staging(error, at_path))?;
-        provisional.push(ProvisionalApplyEffect::single(
-            relative,
-            DomainEvent::new(
-                DomainEventKind::DcsChanged,
-                edit.template.as_str().to_string(),
-            ),
-            op_index,
-        ));
-    }
-    Ok((staged, provisional))
-}
-
-/// Discharge removed-source obligations against the complete request image,
-/// after all family runs and before request-level effect reconciliation.
-pub(super) fn validate_final_dcs_resources<'a>(
-    staged: &mut ApplyStagedState,
-    binding: &ProviderRootBinding,
-    operations: impl IntoIterator<Item = &'a IndexedPlanOperation<DcsMxlPlanOperation>>,
-) -> Result<(), ApplyPlanError> {
-    let mut templates =
-        std::collections::BTreeMap::<String, (MetadataAddress, Vec<(String, usize)>)>::new();
-    for operation in operations {
-        let DcsMxlPlanKind::Dcs(edit) = &operation.operation().kind else {
-            continue;
-        };
-        if !matches!(edit.intent.operation(), Primitive::DataSourceRemove) {
-            continue;
-        }
-        let name = edit
-            .target
-            .terminal
-            .as_ref()
-            .expect("the typed source removal has an addressed DataSource");
-        let (_, removed) = templates
-            .entry(edit.template.as_str().to_string())
-            .or_insert_with(|| (edit.template.clone(), Vec::new()));
-        if !removed.iter().any(|(previous, _)| previous == name) {
-            removed.push((name.clone(), operation.index()));
-        }
-    }
-    let mut first_dangling = None;
-    for (template, removed) in templates.into_values() {
-        let first_index = removed[0].1;
-        let at_path = format!("ops[{first_index}].args.at");
-        let relative = attached_resource_relative(&template, "Template.xml", binding.source_kind())
-            .map_err(|message| {
-                ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(at_path.clone())
-            })?;
-        let bytes = staged
-            .read(&relative)
-            .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
-            .ok_or_else(|| {
-                ApplyPlanError::new(
-                    ApplyPlanErrorKind::NotFound,
-                    "the data composition schema template was not found",
-                )
-                .at_path(at_path.clone())
-            })?;
-        let body = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&bytes);
-        let text = std::str::from_utf8(body).map_err(|_| {
-            ApplyPlanError::new(
-                ApplyPlanErrorKind::InvalidSource,
-                "the data composition schema is not UTF-8",
-            )
-            .at_path(at_path.clone())
-        })?;
-        let document = roxmltree::Document::parse(text).map_err(|error| {
-            ApplyPlanError::new(
-                ApplyPlanErrorKind::InvalidSource,
-                format!("the data composition schema is not well-formed XML: {error}"),
-            )
-            .at_path(at_path.clone())
-        })?;
-        let root = document.root_element();
-        crate::infrastructure::native_operations::dcs::require_dcs_root(root).map_err(
-            |message| {
-                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path(at_path)
-            },
-        )?;
-        for (name, op_index) in removed {
-            use crate::infrastructure::native_operations::dcs_primitives::{
-                declares_data_source, references_data_source,
-            };
-            if !declares_data_source(root, &name) && references_data_source(root, &name) {
-                first_dangling =
-                    Some(first_dangling.map_or(op_index, |previous: usize| previous.min(op_index)));
-            }
-        }
-    }
-    if let Some(op_index) = first_dangling {
-        return Err(ApplyPlanError::new(
-            ApplyPlanErrorKind::BadValue,
-            "dataSource is still referenced by a dataset",
-        )
-        .at_path(format!("ops[{op_index}].args")));
-    }
-    Ok(())
-}
-
 /// The template format filter of the canonical path, read from the staged
 /// template descriptor: a DCS operation applies to a data composition schema
 /// and `mxl.set` to a spreadsheet only. The filter is the registry's
@@ -744,8 +299,8 @@ pub(super) fn validate_final_dcs_resources<'a>(
 /// the staged state keeps it right for a template added earlier in the same
 /// request.
 fn require_template_format(
-    staged: &mut ApplyStagedState,
-    authority: &DcsMxlApplyAuthority<'_>,
+    staged: &mut ApplyProposal<'_>,
+    authority: &dyn ApplySourceAuthority,
     operation: &DcsMxlPlanOperation,
     op_index: usize,
 ) -> Result<(), ApplyPlanError> {
@@ -757,13 +312,12 @@ fn require_template_format(
         },
         DcsMxlPlanKind::Unsupported => return Ok(()),
     };
-    let Some(descriptor) =
-        crate::domain::apply::OperationRegistry::closed().lookup(&operation.operation)
+    let Some(descriptor) = crate::domain::apply::operation_registry().lookup(&operation.operation)
     else {
         return Ok(());
     };
     let at_path = format!("ops[{op_index}].args.at");
-    let relative = crate::infrastructure::logical_event_source::metadata_descriptor_relative(
+    let relative = unica_source_designer::layout::metadata_descriptor_relative(
         template,
         authority.source_kind(),
     )
@@ -778,8 +332,8 @@ fn require_template_format(
         // корень само и отвечает «не найден» или «не тот документ».
         return Ok(());
     };
-    let format =
-        template_type_of(&bytes).map(|raw| crate::domain::apply::TemplateFormat::parse(&raw));
+    let format = unica_templates_designer::descriptor::template_type_of(&bytes)
+        .map(|raw| unica_templates::TemplateFormat::parse(&raw));
     if descriptor.admits_template_format(format) {
         return Ok(());
     }
@@ -789,271 +343,85 @@ fn require_template_format(
             "operation `{}` does not apply to the template `{}` of format `{}`",
             operation.operation,
             template.as_str(),
-            format.map_or("unknown", crate::domain::apply::TemplateFormat::as_str)
+            format.map_or("unknown", unica_templates::TemplateFormat::as_str)
         ),
     )
     .at_path(at_path))
 }
 
-/// Путь набора с именем `name` в теле схемы: `["A", "B"]` для члена
-/// объединения `A`; несколько наборов с этим именем — все их пути.
-pub(super) fn data_set_path_in_schema(
-    bytes: &[u8],
-    name: &str,
-) -> crate::domain::apply::NamedLookup {
-    use crate::domain::apply::NamedLookup;
-    use crate::infrastructure::native_operations::dcs::DCS_SCHEMA_NS as S;
-    fn walk(
-        node: roxmltree::Node<'_, '_>,
-        tag: &str,
-        name: &str,
-        path: &mut Vec<String>,
-        found: &mut Vec<Vec<String>>,
-    ) {
-        for child in node
-            .children()
-            .filter(|child| child.is_element() && child.has_tag_name((S, tag)))
-        {
-            let Some(own) = child
-                .children()
-                .find(|item| item.is_element() && item.has_tag_name((S, "name")))
-                .and_then(|item| item.text())
-                .map(str::trim)
-            else {
+pub(crate) fn plan_dcs_mxl_batch(
+    staged: &mut ApplyProposal<'_>,
+    authority: &dyn ApplySourceAuthority,
+    operations: &[IndexedPlanOperation<DcsMxlPlanOperation>],
+) -> Result<Vec<ProvisionalApplyEffect>, ApplyPlanError> {
+    if operations.is_empty() {
+        return Err(empty_apply_family_batch());
+    }
+    if !authority.owns_staged_state(staged) {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidState,
+            "DCS/MXL planner authority does not own the staged state",
+        )
+        .at_path("ops"));
+    }
+    let mut provisional = Vec::new();
+    for operation in operations {
+        let op_index = operation.index();
+        require_template_format(staged, authority, operation.operation(), op_index)?;
+        let edit = match &operation.operation().kind {
+            DcsMxlPlanKind::Dcs(edit) => edit,
+            DcsMxlPlanKind::Mxl(edits) => {
+                for edit in edits {
+                    stage_mxl_edit(staged, authority, edit, op_index, &mut provisional)?;
+                }
                 continue;
-            };
-            path.push(own.to_string());
-            if own == name {
-                found.push(path.clone());
             }
-            walk(child, "item", name, path, found);
-            path.pop();
-        }
+            DcsMxlPlanKind::Unsupported => {
+                return Err(hidden_apply_family_unimplemented(op_index));
+            }
+        };
+        unica_dcs_designer::planner::stage_dcs_edit(
+            staged,
+            authority,
+            edit,
+            op_index,
+            &mut provisional,
+        )?;
     }
-    let Some(document) = std::str::from_utf8(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes))
-        .ok()
-        .and_then(|text| roxmltree::Document::parse(text).ok())
-    else {
-        return NamedLookup::Missing;
-    };
-    let mut found = Vec::new();
-    walk(
-        document.root_element(),
-        "dataSet",
-        name,
-        &mut Vec::new(),
-        &mut found,
-    );
-    match found.len() {
-        0 => NamedLookup::Missing,
-        1 => NamedLookup::Found(found.remove(0)),
-        _ => NamedLookup::Ambiguous(found),
-    }
+    Ok(provisional)
 }
 
-/// Путь элемента структуры варианта `variant` с именем `name`: имена
-/// именованных предков и его собственное, как их адресует чтение
-/// (`Setting.V.Item.A.Item.B`). Несколько элементов с этим именем — пути
-/// тех, что адресуемы.
-pub(super) fn structure_item_path_in_schema(
-    bytes: &[u8],
-    variant: &str,
-    name: &str,
-) -> crate::domain::apply::NamedLookup {
-    use crate::domain::apply::NamedLookup;
-    let Some(data) = std::str::from_utf8(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes))
-        .ok()
-        .and_then(|text| {
-            crate::infrastructure::native_operations::dcs::parse_dcs_info_xml(
-                text,
-                crate::domain::support_state::ObjectSupportData {
-                    state: crate::domain::support_state::ObjectSupportState::NotSupported,
-                    direct_edit_safe: None,
-                },
-            )
-            .ok()
-        })
-    else {
-        return NamedLookup::Missing;
-    };
-    let Some(rows) = data
-        .variants
-        .iter()
-        .find(|candidate| candidate.name == variant)
-        .and_then(|variant| serde_json::to_value(&variant.structure_items).ok())
-    else {
-        return NamedLookup::Missing;
-    };
-    let rows = rows.as_array().map(Vec::as_slice).unwrap_or_default();
-    let (mut paths, found) =
-        crate::infrastructure::v13_read_projection::dcs_structure_paths(rows, name);
-    match (found, paths.len()) {
-        (0, _) => NamedLookup::Missing,
-        (1, 1) => NamedLookup::Found(paths.remove(0)),
-        _ => NamedLookup::Ambiguous(paths),
-    }
-}
-
-/// `TemplateType` of a template descriptor.
-pub(super) fn template_type_of(bytes: &[u8]) -> Option<String> {
-    let text = std::str::from_utf8(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes)).ok()?;
-    let document = roxmltree::Document::parse(text).ok()?;
-    document
-        .descendants()
-        .find(|node| node.is_element() && node.tag_name().name() == "TemplateType")
-        .and_then(|node| node.text())
-        .map(|text| text.trim().to_string())
-}
-
-/// Applies one DCS edit to `xml_text`. The default language of the source
-/// set is read only when the edit writes a plain-string multilingual value,
-/// so edits without such text do not depend on `Configuration.xml` (#1257).
-fn apply_dcs_edit(
-    staged: &mut ApplyStagedState,
-    authority: &DcsMxlApplyAuthority<'_>,
-    xml_text: &mut String,
-    edit: &DcsPrimitivePlan,
-    op_index: usize,
-) -> Result<(), ApplyPlanError> {
-    use crate::infrastructure::native_operations::dcs_primitives::{apply, ApplyError};
-    let apply_with = |xml_text: &mut String, lang: Option<&str>| {
-        apply(xml_text, &edit.intent, &edit.target, lang)
-    };
-    let result = match apply_with(xml_text, None) {
-        Err(ApplyError::TextLanguageRequired) => {
-            let lang =
-                super::metadata::staged_text_language(staged, authority.source_kind(), op_index)?;
-            apply_with(xml_text, Some(&lang))
-        }
-        result => result,
-    };
-    result.map_err(|error| {
-        let path = error
-            .argument_path()
-            .map(|path| format!("ops[{op_index}].args.{path}"))
-            .unwrap_or_else(|| format!("ops[{op_index}].args"));
-        ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.to_string()).at_path(path)
-    })
-}
-
-fn stage_mxl_edit(
-    staged: &mut ApplyStagedState,
-    authority: &DcsMxlApplyAuthority<'_>,
-    edit: &MxlEdit,
-    op_index: usize,
-    provisional: &mut Vec<ProvisionalApplyEffect>,
-) -> Result<(), ApplyPlanError> {
-    let at_path = format!("ops[{op_index}].args.at");
-    let values_path = edit.location.clone();
-    let relative =
-        attached_resource_relative(&edit.template, "Template.xml", authority.source_kind())
-            .map_err(|message| {
-                ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(at_path.clone())
-            })?;
-    let preimage = staged
-        .read(&relative)
-        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
-        .ok_or_else(|| {
-            ApplyPlanError::new(
-                ApplyPlanErrorKind::NotFound,
-                "the spreadsheet template (Ext/Template.xml) was not found",
-            )
-            .at_path(at_path.clone())
-        })?;
-    let (bom, body) = match preimage.strip_prefix(b"\xef\xbb\xbf") {
-        Some(body) => (&b"\xef\xbb\xbf"[..], body),
-        None => (&b""[..], preimage.as_slice()),
-    };
-    let mut text = String::from_utf8(body.to_vec()).map_err(|_| {
-        ApplyPlanError::new(
-            ApplyPlanErrorKind::InvalidSource,
-            "the spreadsheet template is not UTF-8",
-        )
-        .at_path(at_path.clone())
-    })?;
-    let original = text.clone();
-    let written = match edit.operation {
-        MxlOperation::Set => {
-            mxl_cells::set_area_cells(&mut text, &edit.area, edit.columns, &edit.cells)
-        }
-        MxlOperation::AreaAdd => {
-            mxl_cells::add_area(&mut text, &edit.area, edit.columns, &edit.cells)
-        }
-    };
-    written.map_err(|error| match error {
-        MxlEditError::AreaMissing => ApplyPlanError::new(
-            ApplyPlanErrorKind::NotFound,
-            format!(
-                "the template has no area `{}`; create it with area.add at `{}`",
-                edit.area, edit.template_at
-            ),
-        )
-        .at_path(at_path.clone()),
-        MxlEditError::AreaSpelling(existing) => ApplyPlanError::new(
-            ApplyPlanErrorKind::NotFound,
-            format!(
-                "the template has no area `{}`; its area is spelled `{existing}`: address `{}`",
-                edit.area,
-                member_address(&format!("{}.Area", edit.template_at), &existing)
-            ),
-        )
-        .at_path(at_path.clone()),
-        MxlEditError::AreaExists(existing) => ApplyPlanError::new(
-            ApplyPlanErrorKind::BadValue,
-            format!(
-                "the template already has area `{existing}`; change its cells with mxl.set at `{}`",
-                member_address(&format!("{}.Area", edit.template_at), &existing)
-            ),
-        )
-        .at_path(format!("{values_path}.name")),
-        MxlEditError::RowOutsideArea { key, rows } => ApplyPlanError::new(
-            ApplyPlanErrorKind::BadValue,
-            format!(
-                "`{key}` is below area `{}` of {rows} rows; an area grows only when it is the last one and no row below it is used, add a new area with area.add at `{}`",
-                edit.area, edit.template_at
-            ),
-        )
-        .at_path(format!("{values_path}.cells.{key}")),
-        MxlEditError::Cell { key, message } => {
-            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message)
-                .at_path(format!("{values_path}.cells.{key}"))
-        }
-        MxlEditError::Source(message) => {
-            ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path(at_path.clone())
-        }
-    })?;
-    if text == original {
-        return Ok(());
-    }
-    let mut postimage = Vec::with_capacity(bom.len() + text.len());
-    postimage.extend_from_slice(bom);
-    postimage.extend_from_slice(text.as_bytes());
-    staged
-        .replace(&relative, &preimage, postimage)
-        .map_err(|error| ApplyPlanError::staging(error, at_path))?;
-    provisional.push(ProvisionalApplyEffect::single(
-        relative,
-        DomainEvent::new(
-            DomainEventKind::MxlChanged,
-            edit.template.as_str().to_string(),
-        ),
-        op_index,
-    ));
-    Ok(())
+#[cfg(test)]
+pub(crate) fn plan_dcs_mxl_batch_owned_for_test(
+    mut staged: unica_workspace::apply::ApplyStagedState,
+    authority: unica_workspace::actor::DcsMxlApplyAuthority<'_>,
+    operations: &[IndexedPlanOperation<DcsMxlPlanOperation>],
+) -> Result<
+    (
+        unica_workspace::apply::ApplyStagedState,
+        Vec<ProvisionalApplyEffect>,
+    ),
+    ApplyPlanError,
+> {
+    let effects = plan_dcs_mxl_batch(&mut staged.proposal(), &authority, operations)?;
+    Ok((staged, effects))
 }
 
 #[cfg(test)]
 mod tests {
     use super::DcsMxlPlanKind;
-    use super::{parse_cell_address, parse_dcs_mxl_plan_operation, plan_dcs_mxl_batch};
-    use crate::domain::apply::ApplyRequest;
-    use crate::infrastructure::native_operations::apply::{
-        ApplyPlanError, ApplyPlanErrorKind, ApplyStagedState, PlannedApplyEffects, StagedFileState,
+    use super::{
+        parse_cell_address, parse_dcs_mxl_plan_operation, plan_dcs_mxl_batch_owned_for_test,
     };
-    use crate::infrastructure::native_operations::apply_families::request::IndexedPlanOperation;
+    use crate::domain::apply::ApplyRequest;
     use crate::infrastructure::native_operations::apply_families::tests::ApplySeamFixture;
     use serde_json::json;
     use std::path::Path;
+    use unica_source_contract::proposal::IndexedPlanOperation;
+    use unica_source_contract::proposal::{
+        ApplyPlanError, ApplyPlanErrorKind, PlannedApplyEffects, StagedFileState,
+    };
+    use unica_workspace::apply::ApplyStagedState;
 
     const SCHEMA: &str = include_str!(
         "../../../../../../tests/fixtures/acceptance/workspace/src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml"
@@ -1122,7 +490,8 @@ mod tests {
         for spelling in ["0", "0.0", "0e0"] {
             for slot in ["index", "parentIndexes"] {
                 let (fixture, original) = composed_dcs_fixture();
-                let source_before = crate::test_support::tree_snapshot(&fixture.source_dir());
+                let source_before =
+                    unica_workspace::test_support::tree_snapshot(&fixture.source_dir());
                 let (index, parent) = if slot == "index" {
                     (spelling, "0")
                 } else {
@@ -1156,7 +525,7 @@ mod tests {
                     "{slot}={spelling} must remove only the nested zero-th selection"
                 );
                 assert_eq!(
-                    crate::test_support::tree_snapshot(&fixture.source_dir()),
+                    unica_workspace::test_support::tree_snapshot(&fixture.source_dir()),
                     source_before,
                     "planning must not publish {slot}={spelling}"
                 );
@@ -1167,7 +536,7 @@ mod tests {
     #[test]
     fn dcs_final_template_accepts_source_removal_before_its_referencing_dataset() {
         let (fixture, original) = composed_dcs_fixture();
-        let source_before = crate::test_support::tree_snapshot(&fixture.source_dir());
+        let source_before = unica_workspace::test_support::tree_snapshot(&fixture.source_dir());
         let args = json!({
             "at":COMPOSED_TEMPLATE,
             "ops":[
@@ -1196,7 +565,7 @@ mod tests {
             "the final whole Template must retain the other source, dataset and settings exactly"
         );
         assert_eq!(
-            crate::test_support::tree_snapshot(&fixture.source_dir()),
+            unica_workspace::test_support::tree_snapshot(&fixture.source_dir()),
             source_before,
             "a valid final staged image must remain a preview"
         );
@@ -1205,7 +574,7 @@ mod tests {
     #[test]
     fn dcs_final_source_refusal_keeps_original_index_and_decoded_reference_without_publication() {
         let (fixture, _) = composed_dcs_fixture();
-        let source_before = crate::test_support::tree_snapshot(&fixture.source_dir());
+        let source_before = unica_workspace::test_support::tree_snapshot(&fixture.source_dir());
         let args = json!({
             "at":COMPOSED_TEMPLATE,
             "ops":[
@@ -1229,7 +598,7 @@ mod tests {
             .to_string()
             .contains("dataSource is still referenced by a dataset"));
         assert_eq!(
-            crate::test_support::tree_snapshot(&fixture.source_dir()),
+            unica_workspace::test_support::tree_snapshot(&fixture.source_dir()),
             source_before,
             "late resource refusal must not publish a partial Template"
         );
@@ -1249,7 +618,7 @@ mod tests {
             source.as_bytes(),
         )
         .unwrap();
-        let source_before = crate::test_support::tree_snapshot(&fixture.source_dir());
+        let source_before = unica_workspace::test_support::tree_snapshot(&fixture.source_dir());
         let result = plan_composed_dcs(
             &fixture,
             "main:Report.Versions",
@@ -1271,7 +640,7 @@ mod tests {
             .to_string()
             .contains("dataSource is still referenced by a dataset"));
         assert_eq!(
-            crate::test_support::tree_snapshot(&fixture.source_dir()),
+            unica_workspace::test_support::tree_snapshot(&fixture.source_dir()),
             source_before,
             "late DCS refusal must discard both the Template and earlier metadata staging"
         );
@@ -1280,7 +649,7 @@ mod tests {
     #[test]
     fn dcs_final_source_readdition_satisfies_obligation_and_preserves_neighbours() {
         let (fixture, original) = composed_dcs_fixture();
-        let source_before = crate::test_support::tree_snapshot(&fixture.source_dir());
+        let source_before = unica_workspace::test_support::tree_snapshot(&fixture.source_dir());
         let (staged, _) = plan_composed_dcs(&fixture, COMPOSED_TEMPLATE, json!([
             {"op":"dataSource.remove","args":{"at":format!("{COMPOSED_TEMPLATE}.DataSource.Local")}},
             {"op":"dataSource.add","args":{"items":[{"name":"Local"}]}},
@@ -1295,7 +664,7 @@ mod tests {
         assert!(current.starts_with(b"\xef\xbb\xbf"));
         let text = std::str::from_utf8(&current[3..]).unwrap();
         let document = roxmltree::Document::parse(text).unwrap();
-        let namespace = crate::infrastructure::native_operations::dcs::DCS_SCHEMA_NS;
+        let namespace = unica_dcs_designer::schema::DCS_SCHEMA_NS;
         let sources = document
             .root_element()
             .children()
@@ -1320,7 +689,7 @@ mod tests {
             "every byte outside the re-created source must remain exact"
         );
         assert_eq!(
-            crate::test_support::tree_snapshot(&fixture.source_dir()),
+            unica_workspace::test_support::tree_snapshot(&fixture.source_dir()),
             source_before
         );
     }
@@ -1328,7 +697,7 @@ mod tests {
     #[test]
     fn dcs_final_source_obligations_span_separated_family_runs() {
         let (fixture, original) = composed_dcs_fixture();
-        let source_before = crate::test_support::tree_snapshot(&fixture.source_dir());
+        let source_before = unica_workspace::test_support::tree_snapshot(&fixture.source_dir());
         let (staged, _) = plan_composed_dcs(&fixture, "main:Report.Versions", json!([
             {"op":"dataSource.remove","args":{"at":format!("{COMPOSED_TEMPLATE}.DataSource.Local")}},
             {"op":"props.set","args":{"at":"main:Report.Versions","values":{"Comment":"separate run"}}},
@@ -1353,7 +722,7 @@ mod tests {
         );
         assert_eq!(projected_source_tree(&staged, &source_before), expected);
         assert_eq!(
-            crate::test_support::tree_snapshot(&fixture.source_dir()),
+            unica_workspace::test_support::tree_snapshot(&fixture.source_dir()),
             source_before
         );
     }
@@ -1396,7 +765,7 @@ mod tests {
             )
             .unwrap();
         }
-        let source_before = crate::test_support::tree_snapshot(&source);
+        let source_before = unica_workspace::test_support::tree_snapshot(&source);
         let result = plan_composed_dcs(
             &fixture,
             "main:Report.Versions",
@@ -1413,7 +782,10 @@ mod tests {
         };
         assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
         assert_eq!(error.path(), Some("ops[1].args"));
-        assert_eq!(crate::test_support::tree_snapshot(&source), source_before);
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&source),
+            source_before
+        );
     }
 
     #[test]
@@ -1430,7 +802,7 @@ mod tests {
             source.as_bytes(),
         )
         .unwrap();
-        let source_before = crate::test_support::tree_snapshot(&fixture.source_dir());
+        let source_before = unica_workspace::test_support::tree_snapshot(&fixture.source_dir());
         let dataset_at = format!("{COMPOSED_TEMPLATE}.DataSet.Data");
         let field_at = format!("{dataset_at}.Field.Amount");
         let plan = |ops| {
@@ -1453,7 +825,7 @@ mod tests {
             .unwrap()
             .trim_start_matches('\u{feff}');
         let document = roxmltree::Document::parse(text).unwrap();
-        let namespace = crate::infrastructure::native_operations::dcs::DCS_SCHEMA_NS;
+        let namespace = unica_dcs_designer::schema::DCS_SCHEMA_NS;
         let field_by_path = |path| {
             document
                 .descendants()
@@ -1503,7 +875,7 @@ mod tests {
             assert_eq!(error.path(), Some(path), "{operation}: {error}");
         }
         assert_eq!(
-            crate::test_support::tree_snapshot(&fixture.source_dir()),
+            unica_workspace::test_support::tree_snapshot(&fixture.source_dir()),
             source_before,
             "Query field refusal and preview must not publish source changes"
         );
@@ -1599,8 +971,9 @@ mod tests {
         let schema = r#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema">
 <dataSet><name>Union</name><item><name>Member</name></item><item><name>Twin</name></item></dataSet>
 <dataSet><name>Top</name></dataSet><dataSet><name>Twin</name></dataSet></DataCompositionSchema>"#;
-        let path = |name| super::data_set_path_in_schema(schema.as_bytes(), name);
-        use crate::domain::apply::NamedLookup;
+        let path =
+            |name| unica_dcs_designer::recovery::data_set_path_in_schema(schema.as_bytes(), name);
+        use unica_operations::recovery::NamedLookup;
         assert_eq!(
             path("Member"),
             NamedLookup::Found(vec!["Union".to_string(), "Member".to_string()])
@@ -1635,8 +1008,14 @@ mod tests {
 <dcsset:item xsi:type="dcsset:StructureItemGroup"><dcsset:name>Same</dcsset:name></dcsset:item>
 <dcsset:item xsi:type="dcsset:StructureItemGroup"><dcsset:name>Same</dcsset:name></dcsset:item>
 </dcsset:settings></settingsVariant></DataCompositionSchema>"#;
-        use crate::domain::apply::NamedLookup;
-        let path = |name| super::structure_item_path_in_schema(schema.as_bytes(), "Main", name);
+        use unica_operations::recovery::NamedLookup;
+        let path = |name| {
+            unica_dcs_designer::recovery::structure_item_path_in_schema(
+                schema.as_bytes(),
+                "Main",
+                name,
+            )
+        };
         let names = |items: &[&str]| {
             items
                 .iter()
@@ -1657,7 +1036,11 @@ mod tests {
         assert_eq!(path("Same"), NamedLookup::Ambiguous(Vec::new()));
         assert_eq!(path("Missing"), NamedLookup::Missing);
         assert_eq!(
-            super::structure_item_path_in_schema(schema.as_bytes(), "Other", "Top"),
+            unica_dcs_designer::recovery::structure_item_path_in_schema(
+                schema.as_bytes(),
+                "Other",
+                "Top"
+            ),
             NamedLookup::Missing
         );
     }
@@ -1784,7 +1167,7 @@ mod tests {
             &fixture.binding,
         )
         .unwrap();
-        let (staged, effects) = plan_dcs_mxl_batch(
+        let (staged, effects) = plan_dcs_mxl_batch_owned_for_test(
             staged,
             authority,
             &[
@@ -1802,8 +1185,7 @@ mod tests {
             changes[0].relative_path,
             Path::new("Reports/Versions/Templates/Schema/Ext/Template.xml")
         );
-        let crate::infrastructure::native_operations::apply::StagedFileState::Bytes(current) =
-            &changes[0].current
+        let unica_source_contract::proposal::StagedFileState::Bytes(current) = &changes[0].current
         else {
             panic!("the schema keeps bytes");
         };
@@ -1825,7 +1207,7 @@ mod tests {
     fn plan_on_versions_schema(
         fixture: &ApplySeamFixture,
         operations: &[(&str, serde_json::Value)],
-    ) -> Result<String, crate::infrastructure::native_operations::apply::ApplyPlanError> {
+    ) -> Result<String, unica_source_contract::proposal::ApplyPlanError> {
         let template_dir = fixture
             .source_dir()
             .join("Reports/Versions/Templates/Schema/Ext");
@@ -1847,10 +1229,9 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
-        let (staged, _) = plan_dcs_mxl_batch(staged, authority, &operations)?;
+        let (staged, _) = plan_dcs_mxl_batch_owned_for_test(staged, authority, &operations)?;
         let changes = staged.planned_changes();
-        let crate::infrastructure::native_operations::apply::StagedFileState::Bytes(bytes) =
-            &changes[0].current
+        let unica_source_contract::proposal::StagedFileState::Bytes(bytes) = &changes[0].current
         else {
             panic!("expected XML bytes");
         };
@@ -2032,7 +1413,7 @@ mod tests {
             &fixture.binding,
         )
         .unwrap();
-        let (staged, effects) = plan_dcs_mxl_batch(
+        let (staged, effects) = plan_dcs_mxl_batch_owned_for_test(
             staged,
             authority,
             &[IndexedPlanOperation::new(0, operation)],
@@ -2044,8 +1425,7 @@ mod tests {
             "a success must change the named existing field"
         );
         let changes = staged.planned_changes();
-        let crate::infrastructure::native_operations::apply::StagedFileState::Bytes(bytes) =
-            &changes[0].current
+        let unica_source_contract::proposal::StagedFileState::Bytes(bytes) = &changes[0].current
         else {
             panic!("expected XML bytes");
         };
@@ -2053,7 +1433,7 @@ mod tests {
             .unwrap()
             .trim_start_matches('\u{feff}');
         let document = roxmltree::Document::parse(xml).unwrap();
-        let namespace = crate::infrastructure::native_operations::dcs::DCS_COMMON_NS;
+        let namespace = unica_dcs_designer::schema::DCS_COMMON_NS;
         let field = document
             .descendants()
             .find(|node| {
@@ -2117,12 +1497,11 @@ mod tests {
                 .unwrap(),
             ),
         ];
-        let (staged, effects) = plan_dcs_mxl_batch(staged, authority, &operations)
+        let (staged, effects) = plan_dcs_mxl_batch_owned_for_test(staged, authority, &operations)
             .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
         assert!(!effects.is_empty());
         let changes = staged.planned_changes();
-        let crate::infrastructure::native_operations::apply::StagedFileState::Bytes(bytes) =
-            &changes[0].current
+        let unica_source_contract::proposal::StagedFileState::Bytes(bytes) = &changes[0].current
         else {
             panic!("expected XML bytes");
         };
@@ -2145,7 +1524,7 @@ mod tests {
         assert!(changed
             .descendants()
             .any(|node| node.text() == Some("Тип (представление)")));
-        let namespace = crate::infrastructure::native_operations::dcs::DCS_COMMON_NS;
+        let namespace = unica_dcs_designer::schema::DCS_COMMON_NS;
         assert!(changed
             .descendants()
             .any(|node| node.tag_name().namespace() == Some(namespace)
@@ -2214,7 +1593,6 @@ mod tests {
 
     #[test]
     fn typed_dcs_role_preserves_every_supported_key_and_replaces_previous_entries() {
-        use crate::infrastructure::native_operations::dcs::DCS_COMMON_NS;
         for (role, expected) in [
             ("periodNumber=2", vec![("periodNumber", "2")]),
             ("periodType=Main", vec![("periodType", "Main")]),
@@ -2301,7 +1679,7 @@ mod tests {
                 .dcs_mxl_planning_authority(&fixture.binding)
                 .unwrap();
             let operation=parse_dcs_mxl_plan_operation("fieldRole.set",&json!({"at":"main:Report.Versions.Template.Schema.DataSet.НаборДанных1.Field.РазмерДанных","values":{"role":role_args}}),0,&fixture.binding).unwrap();
-            let (staged, effects) = plan_dcs_mxl_batch(
+            let (staged, effects) = plan_dcs_mxl_batch_owned_for_test(
                 staged,
                 authority,
                 &[IndexedPlanOperation::new(0, operation)],
@@ -2309,7 +1687,7 @@ mod tests {
             .unwrap();
             assert_eq!(effects.len(), 1, "{role}");
             let changes = staged.planned_changes();
-            let crate::infrastructure::native_operations::apply::StagedFileState::Bytes(bytes) =
+            let unica_source_contract::proposal::StagedFileState::Bytes(bytes) =
                 &changes[0].current
             else {
                 panic!("XML bytes")
@@ -2333,7 +1711,9 @@ mod tests {
             let entries: Vec<_> = field
                 .descendants()
                 .filter(|node| {
-                    node.is_element() && node.tag_name().namespace() == Some(DCS_COMMON_NS)
+                    node.is_element()
+                        && node.tag_name().namespace()
+                            == Some(unica_dcs_designer::schema::DCS_COMMON_NS)
                 })
                 .map(|node| (node.tag_name().name(), node.text().unwrap_or_default()))
                 .collect();
@@ -2357,13 +1737,10 @@ mod tests {
 
     #[test]
     fn full_schema_input_is_absent_from_the_closed_registry() {
-        assert!(crate::domain::apply::OperationRegistry::closed()
+        assert!(crate::domain::apply::operation_registry()
             .lookup("dcs.set")
             .is_none());
-        assert!(
-            crate::infrastructure::native_operations::dcs_primitives::Primitive::named("dcs.set")
-                .is_none()
-        );
+        assert!(unica_dcs::operations::Primitive::named("dcs.set").is_none());
     }
 
     #[test]

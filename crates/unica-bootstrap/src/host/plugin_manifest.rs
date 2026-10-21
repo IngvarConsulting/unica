@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::error::{BootstrapError, Failure, Result};
+use unica_artifact_delivery::{BootstrapError, Failure, Result};
 
 use super::descriptor::KNOWN;
 
@@ -155,7 +155,10 @@ mod tests {
             let error = verify_installed_plugin_metadata(&fixture.root, VERSION)
                 .expect_err("malformed plugin metadata");
 
-            assert_eq!(error.failure(), crate::error::Failure::Configuration);
+            assert_eq!(
+                error.failure(),
+                unica_artifact_delivery::Failure::Configuration
+            );
             fixture.assert_rejected(dir, "failed to parse installed host manifest");
         }
     }

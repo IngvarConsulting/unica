@@ -5,13 +5,14 @@
 //! спрашивая анализатор: на холодном пространстве к чтению метода добавилось бы
 //! построение индекса. Граф читается одним входом — адресом ветви.
 
-use crate::domain::address::{AddressSegment, NodeKind, QualifiedAddress};
 use crate::domain::call_graph_identity::{CallGraphIdentity, CallGraphIdentityError};
-use crate::domain::code_intelligence::{
-    CallEdgeProvenance, CallGraphDirection, CallGraphResult, CallGraphState,
-};
-use crate::domain::invocation::DomainResult;
 use serde_json::{json, Map, Value};
+use unica_address::address::{AddressSegment, NodeKind, QualifiedAddress};
+use unica_code_intelligence::model::CallEdgeProvenance;
+use unica_code_intelligence::model::CallGraphDirection;
+use unica_code_intelligence::model::CallGraphResult;
+use unica_code_intelligence::model::CallGraphState;
+use unica_execution_contract::invocation::DomainResult;
 
 pub(super) enum CallGraphFetchError {
     Provider(String),
@@ -320,12 +321,12 @@ pub(super) fn branch_owner(at: &QualifiedAddress) -> Option<QualifiedAddress> {
 /// `unavailable`, а не превращается в нулевой счёт.
 pub(super) fn fetch_summary(
     ports: &dyn crate::application::ports::ApplicationPorts,
-    workspace: &crate::domain::workspace::WorkspaceContext,
+    workspace: &unica_source_contract::workspace::WorkspaceContext,
     source_set: &str,
     identity: &CallGraphIdentity,
     limit: usize,
     budget: std::time::Duration,
-    cancellation: &crate::domain::cancellation::CancellationToken,
+    cancellation: &unica_work_control::cancellation::CancellationToken,
 ) -> Result<CallGraphSummary, CallGraphFetchError> {
     let mut args = Map::new();
     args.insert("sourceSet".to_string(), json!(source_set));
@@ -336,7 +337,7 @@ pub(super) fn fetch_summary(
     let mut reason = None;
     for direction in [CallGraphDirection::Callers, CallGraphDirection::Callees] {
         let Some(provider) =
-            registry.provider_for(crate::domain::code_intelligence::ProviderCapability::CallGraph)
+            registry.provider_for(unica_code_intelligence::model::ProviderCapability::CallGraph)
         else {
             return Ok(CallGraphSummary {
                 callers: unavailable(),
@@ -344,9 +345,9 @@ pub(super) fn fetch_summary(
                 reason: Some("no code intelligence provider implements the call graph".to_string()),
             });
         };
-        let outcome = crate::application::code_intelligence::execute_provider_read(
+        let outcome = unica_code_intelligence::coordinator::execute_provider_read(
             provider,
-            crate::domain::code_intelligence::CodeIntelligenceReadRequest::CallGraph {
+            unica_code_intelligence::model::CodeIntelligenceReadRequest::CallGraph {
                 id: id.clone(),
                 direction,
                 limit,
@@ -357,7 +358,7 @@ pub(super) fn fetch_summary(
         );
         answers.push(match outcome {
             Ok(outcome) => match outcome.data {
-                Some(crate::domain::code_intelligence::CodeIntelligenceReadData::CallGraph(
+                Some(unica_code_intelligence::model::CodeIntelligenceReadData::CallGraph(
                     result,
                 )) => {
                     if result.state == CallGraphState::Unavailable && reason.is_none() {
@@ -447,11 +448,13 @@ mod tests {
         placed_for_module_file, required_full_branch_limit, unready_branch_result,
         CallGraphSummary, CompleteBranchError,
     };
-    use crate::domain::address::QualifiedAddress;
-    use crate::domain::code_intelligence::{
-        CallEdgeProvenance, CallGraphDirection, CallGraphEdge, CallGraphResult, CallGraphState,
-    };
     use serde_json::{json, Map};
+    use unica_address::address::QualifiedAddress;
+    use unica_code_intelligence::model::CallEdgeProvenance;
+    use unica_code_intelligence::model::CallGraphDirection;
+    use unica_code_intelligence::model::CallGraphEdge;
+    use unica_code_intelligence::model::CallGraphResult;
+    use unica_code_intelligence::model::CallGraphState;
 
     fn address(raw: &str) -> QualifiedAddress {
         QualifiedAddress::parse(raw).expect("адрес разбирается")

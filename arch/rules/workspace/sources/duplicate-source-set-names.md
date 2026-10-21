@@ -1,8 +1,8 @@
 ---
 id: INV.SOURCE.AMBIGUOUS-NAME-HEALTH
 check:
-  - crates/unica-coder/src/infrastructure/project_health/layout.rs::duplicate_names_have_one_group_fact_and_no_ambiguous_root
-  - crates/unica-coder/src/infrastructure/project_health.rs::duplicate_source_set_names_do_not_invent_an_addressable_repository_row
+  - crates/unica-project-health/tests/platform/project_health_layout.rs::duplicate_names_have_one_group_fact_and_no_ambiguous_root
+  - crates/unica-project-health/tests/platform/project_health_inspection.rs::duplicate_source_set_names_do_not_invent_an_addressable_repository_row
 ---
 
 # Одноимённые наборы исходников получают общую диагностику

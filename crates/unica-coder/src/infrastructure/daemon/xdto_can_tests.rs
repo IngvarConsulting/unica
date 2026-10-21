@@ -1,8 +1,8 @@
 use super::actor_capacity_tests::direct_v5;
 use super::*;
-use crate::application::invocation_store::ToolIdentity;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
+use unica_execution::invocation_store::ToolIdentity;
 
 const PACKAGE: &str = "main:XDTOPackage.EnterpriseData_1_17_3";
 const OBJECT: &str = "main:XDTOPackage.EnterpriseData_1_17_3.Type.EnterpriseData";
@@ -15,13 +15,14 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let root = tempfile::tempdir().unwrap();
-        let workspace = crate::test_support::canonical_path(root.path()).join("workspace");
+        let workspace =
+            unica_workspace::test_support::canonical_path(root.path()).join("workspace");
         let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
             .parent()
             .unwrap();
-        for (relative, bytes) in crate::test_support::tree_snapshot(
+        for (relative, bytes) in unica_workspace::test_support::tree_snapshot(
             &repository.join("tests/fixtures/acceptance/workspace"),
         ) {
             let path = workspace.join(relative);
@@ -41,7 +42,7 @@ fn assert_contract_and_preview(at: &str, operation: &str, arguments: Value, has_
         Arc::new(crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default()),
         Arc::new(TokioClock),
     );
-    let before = crate::test_support::tree_snapshot(&fixture.workspace);
+    let before = unica_workspace::test_support::tree_snapshot(&fixture.workspace);
     let call = |tool, arguments| {
         direct_v5(
             &runtime,
@@ -86,7 +87,7 @@ fn assert_contract_and_preview(at: &str, operation: &str, arguments: Value, has_
         assert!(!oracle.is_valid(&json!({"values": {}})));
     }
     assert_eq!(
-        crate::test_support::tree_snapshot(&fixture.workspace),
+        unica_workspace::test_support::tree_snapshot(&fixture.workspace),
         before
     );
     let preview = call(
@@ -103,7 +104,7 @@ fn assert_contract_and_preview(at: &str, operation: &str, arguments: Value, has_
         .as_u64()
         .is_some_and(|effects| effects > 0));
     assert_eq!(
-        crate::test_support::tree_snapshot(&fixture.workspace),
+        unica_workspace::test_support::tree_snapshot(&fixture.workspace),
         before
     );
 }
@@ -164,7 +165,7 @@ fn forward_reference_is_validated_on_the_final_public_package_without_writes() {
         Arc::new(crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default()),
         Arc::new(TokioClock),
     );
-    let before = crate::test_support::tree_snapshot(&fixture.workspace);
+    let before = unica_workspace::test_support::tree_snapshot(&fixture.workspace);
     let request = InvocationRequest::new(
         ToolIdentity::Apply,
         json!({
@@ -180,7 +181,7 @@ fn forward_reference_is_validated_on_the_final_public_package_without_writes() {
     .unwrap();
     let preview = direct_v5(&runtime, request).unwrap();
     assert_eq!(
-        crate::test_support::tree_snapshot(&fixture.workspace),
+        unica_workspace::test_support::tree_snapshot(&fixture.workspace),
         before
     );
     assert!(

@@ -1,7 +1,7 @@
 use super::actor_capacity_tests::{direct_v5, subsystem_picture_workspace};
 use super::*;
-use crate::application::invocation_store::ToolIdentity;
 use std::path::Path;
+use unica_execution::invocation_store::ToolIdentity;
 
 fn tree_entries(root: &Path) -> Vec<std::path::PathBuf> {
     fn visit(root: &Path, path: &Path, entries: &mut Vec<std::path::PathBuf>) {
@@ -34,7 +34,7 @@ fn canonical_apply_preserves_external_cache_authority_from_preview_to_execution(
             "relative",
         ] {
             let cache_parent = tempfile::tempdir().unwrap();
-            let cache = crate::test_support::canonical_path(cache_parent.path())
+            let cache = unica_workspace::test_support::canonical_path(cache_parent.path())
                 .join("missing-parent/cache");
             if mode == "external-existing" {
                 std::fs::create_dir_all(cache.join("keep-empty")).unwrap();
@@ -65,17 +65,17 @@ fn canonical_apply_preserves_external_cache_authority_from_preview_to_execution(
     };
 
     let workspace = subsystem_picture_workspace("", true);
-    let root = crate::test_support::canonical_path(workspace.path());
+    let root = unica_workspace::test_support::canonical_path(workspace.path());
     let cache = std::env::var_os("UNICA_CACHE_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| root.join(".build/unica"));
     let descriptor = root.join("src/Subsystems/Sales.xml");
     let bytes_before = std::fs::read(&descriptor).unwrap();
-    let source_before = crate::test_support::tree_snapshot(&root);
+    let source_before = unica_workspace::test_support::tree_snapshot(&root);
     let cache_entries_before = tree_entries(&cache);
     let cache_before = cache
         .exists()
-        .then(|| crate::test_support::tree_snapshot(&cache));
+        .then(|| unica_workspace::test_support::tree_snapshot(&cache));
     let runtime = V5CanonicalInvocationRuntime::new(
         Arc::new(crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default()),
         Arc::new(TokioClock),
@@ -95,12 +95,15 @@ fn canonical_apply_preserves_external_cache_authority_from_preview_to_execution(
         "ops": [{"op":"props.set", "args":{"values":{"Comment":"external cache"}}}]
     }));
     assert!(preview.ok, "{mode} preview: {preview:?}");
-    assert_eq!(crate::test_support::tree_snapshot(&root), source_before);
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&root),
+        source_before
+    );
     assert_eq!(tree_entries(&cache), cache_entries_before);
     assert_eq!(
         cache
             .exists()
-            .then(|| crate::test_support::tree_snapshot(&cache)),
+            .then(|| unica_workspace::test_support::tree_snapshot(&cache)),
         cache_before
     );
     let token = &preview.data.as_ref().unwrap()["executionToken"];
@@ -137,14 +140,13 @@ fn canonical_apply_preserves_external_cache_authority_from_preview_to_execution(
     // apply created it; this opens the real retained store without a provider.
     let projection =
         super::super::runner_015::lock_project(&root, &CancellationToken::new()).unwrap();
-    let cache_identity =
-        crate::infrastructure::source_roots::normalize_path_identity(&cache).unwrap();
+    let cache_identity = unica_workspace::paths::normalize_path_identity(&cache).unwrap();
     assert!(projection
         .directory()
         .starts_with(cache_identity.join("runner-project")));
     drop(projection);
-    let after = crate::test_support::tree_snapshot(&root);
+    let after = unica_workspace::test_support::tree_snapshot(&root);
     let replayed = call(serde_json::json!({"executionToken":token}));
     assert!(replayed.ok, "{replayed:?}");
-    assert_eq!(crate::test_support::tree_snapshot(&root), after);
+    assert_eq!(unica_workspace::test_support::tree_snapshot(&root), after);
 }

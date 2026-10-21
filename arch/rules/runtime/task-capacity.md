@@ -1,24 +1,24 @@
 ---
 id: INV.APP.DAEMON-TASK-CAPACITY
 check:
-  - crates/unica-coder/src/infrastructure/task_store_v5.rs::production_catalog_creates_past_4096_and_reopens_exactly
-  - crates/unica-coder/src/infrastructure/task_store_v5.rs::inspection_cleans_staging_past_former_directory_bound
-  - crates/unica-coder/src/infrastructure/task_store_v5.rs::terminal_records_remain_until_exact_retirement_and_not_found_is_typed
-  - crates/unica-coder/src/infrastructure/task_lifecycle_link_store_v5.rs::production_links_reserve_and_materialize_past_4096_and_reopen
-  - crates/unica-coder/src/infrastructure/task_lifecycle_link_store_v5.rs::real_snapshot_over_8mib_can_reopen_mutate
-  - crates/unica-coder/src/infrastructure/task_lifecycle_link_store_v5.rs::inspection_cleans_links_staging_past_former_directory_bound
-  - crates/unica-coder/src/infrastructure/task_lifecycle_link_store_v5.rs::corrupt_snapshot_preserves_verified_orphan_before_cleanup
-  - crates/unica-coder/src/infrastructure/task_lifecycle_link_store_v5.rs::catalog_schema_rejects_duplicate_unknown_missing_and_trailing_fields
-  - crates/unica-coder/src/infrastructure/task_lifecycle_link_store_v5.rs::streaming_catalog_preserves_canonical_bytes_for_all_states_and_id_orders
+  - crates/unica-execution/src/task_store.rs::production_catalog_creates_past_4096_and_reopens_exactly
+  - crates/unica-execution/src/task_store.rs::inspection_cleans_staging_past_former_directory_bound
+  - crates/unica-execution/src/task_store.rs::terminal_records_remain_until_exact_retirement_and_not_found_is_typed
+  - crates/unica-execution/src/lifecycle_link_store.rs::production_links_reserve_and_materialize_past_4096_and_reopen
+  - crates/unica-execution/src/lifecycle_link_store.rs::real_snapshot_over_8mib_can_reopen_mutate
+  - crates/unica-execution/src/lifecycle_link_store.rs::inspection_cleans_links_staging_past_former_directory_bound
+  - crates/unica-execution/src/lifecycle_link_store.rs::corrupt_snapshot_preserves_verified_orphan_before_cleanup
+  - crates/unica-execution/src/lifecycle_link_store.rs::catalog_schema_rejects_duplicate_unknown_missing_and_trailing_fields
+  - crates/unica-execution/src/lifecycle_link_store.rs::streaming_catalog_preserves_canonical_bytes_for_all_states_and_id_orders
   - crates/unica-coder/tests/daemon_receipt_ledger.rs::task_store_capacity_after_reservation_is_invariant_violation_and_fail_stops
   - crates/unica-coder/tests/daemon_receipt_ledger.rs::task_bind_direct_ack_and_receipt_terminal_expiry_release_exact_quota
-  - crates/unica-coder/src/infrastructure/task_lifecycle_link_store_v5.rs::reservation_consumes_task_store_slot_before_materialization_and_reopens_exactly
-  - crates/unica-coder/src/infrastructure/task_lifecycle_link_store_v5.rs::task_bound_terminal_and_retirement_transitions_are_exact_cas_and_reopen_stable
-  - crates/unica-coder/src/infrastructure/task_store_v5.rs::corrupt_committed_task_preserves_orphan_before_cleanup
-  - crates/unica-coder/src/infrastructure/task_store_v5.rs::second_pass_refuses_replaced_task_staging_without_deleting_either_file
-  - crates/unica-coder/src/infrastructure/task_store_v5.rs::second_pass_refuses_task_staging_symlink_and_preserves_external_bytes
-  - crates/unica-coder/src/infrastructure/task_lifecycle_link_store_v5.rs::second_pass_refuses_replaced_link_staging_without_deleting_either_file
-  - crates/unica-coder/src/infrastructure/task_lifecycle_link_store_v5.rs::second_pass_refuses_link_staging_symlink_and_preserves_external_bytes
+  - crates/unica-execution/src/lifecycle_link_store.rs::reservation_consumes_task_store_slot_before_materialization_and_reopens_exactly
+  - crates/unica-execution/src/lifecycle_link_store.rs::task_bound_terminal_and_retirement_transitions_are_exact_cas_and_reopen_stable
+  - crates/unica-execution/src/task_store.rs::corrupt_committed_task_preserves_orphan_before_cleanup
+  - crates/unica-execution/src/task_store.rs::second_pass_refuses_replaced_task_staging_without_deleting_either_file
+  - crates/unica-execution/src/task_store.rs::second_pass_refuses_task_staging_symlink_and_preserves_external_bytes
+  - crates/unica-execution/src/lifecycle_link_store.rs::second_pass_refuses_replaced_link_staging_without_deleting_either_file
+  - crates/unica-execution/src/lifecycle_link_store.rs::second_pass_refuses_link_staging_symlink_and_preserves_external_bytes
   - crates/unica-coder/tests/daemon_receipt_ledger.rs::task_handoff_before_begun_materializes_past_former_link_quota_without_callback
   - crates/unica-coder/tests/daemon_receipt_ledger.rs::staged_handoff_materializes_past_former_link_quota_and_reopens_exact_winner
   - crates/unica-coder/tests/daemon_receipt_ledger.rs::task_store_4097_materialization_preserves_existing_tasks_listener_and_recovery

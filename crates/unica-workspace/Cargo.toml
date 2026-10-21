@@ -1,0 +1,43 @@
+[package]
+name = "unica-workspace"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+test-support = ["dep:tempfile", "unica-work-control/test-support"]
+
+[dependencies]
+unica-xml-format = { path = "../unica-xml-format" }
+tempfile = { workspace = true, optional = true }
+unica-work-control = { path = "../unica-work-control" }
+unica-source-contract = { path = "../unica-source-contract" }
+unica-execution-contract = { path = "../unica-execution-contract" }
+base64.workspace = true
+fs2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+roxmltree.workspace = true
+uuid.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+cap-primitives.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+cap-primitives.workspace = true
+cap-fs-ext.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-foundation.workspace = true
+
+[dev-dependencies]
+syn.workspace = true
+unica-process = { path = "../unica-process", features = ["test-support"] }
+unica-source-contract = { path = "../unica-source-contract", features = ["test-support"] }
+unica-work-control = { path = "../unica-work-control", features = ["test-support"] }
+tempfile.workspace = true

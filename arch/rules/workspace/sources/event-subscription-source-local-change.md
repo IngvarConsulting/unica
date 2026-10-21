@@ -6,7 +6,7 @@ check:
   - crates/unica-coder/src/infrastructure/native_operations/meta/edit.rs::typed_event_source_incremental_edits_keep_aliases_type_ids_and_distinct_manager_classes
   - crates/unica-coder/src/infrastructure/native_operations/meta/edit.rs::typed_event_source_incremental_add_declares_namespaces_and_preserves_bom_eol
   - crates/unica-coder/src/infrastructure/native_operations/meta/edit.rs::typed_event_source_incremental_edits_refuse_invalid_and_empty_results_without_writes
-  - crates/unica-coder/src/infrastructure/native_operations/meta/xml_model.rs::event_source_removal_range_includes_whitespace_before_self_closing_last_element
+  - crates/unica-metadata-designer/src/xml_model.rs::event_source_removal_range_includes_whitespace_before_self_closing_last_element
 ---
 
 # Правка источников подписки сохраняет нетронутый XML и логический состав

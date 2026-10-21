@@ -2,7 +2,7 @@
 id: INV.WIRE.APPLY-REQUIRES-THE-FENCE
 check:
   - crates/unica-coder/src/application/v13/apply.rs::planning_and_saved_plan_execution_have_disjoint_public_shapes
-  - crates/unica-coder/src/infrastructure/workspace_actor.rs::saved_apply_large_retained_inputs_can_be_saved_and_executed
+  - crates/unica-coder/src/infrastructure/workspace_actor_contract_tests.rs::saved_apply_large_retained_inputs_can_be_saved_and_executed
   - crates/unica-coder/src/infrastructure/daemon/server.rs::saved_apply_more_than_256_plans_keep_earlier_tokens_without_writes
   - crates/unica-coder/src/infrastructure/daemon/server.rs::saved_apply_token_survives_eight_other_workspace_profiles_and_replays_exactly
   - crates/unica-coder/src/infrastructure/daemon/server.rs::saved_apply_token_survives_temporary_named_root_validation_failure

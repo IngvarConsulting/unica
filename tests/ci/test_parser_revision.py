@@ -12,6 +12,21 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEPENDENCIES = ("bsl-parser", "bsl-syntax")
 
 
+def parser_owner_errors(workspace: dict, manifests: list[dict]) -> list[str]:
+    errors = []
+    for manifest in manifests:
+        owner = manifest["package"]["name"]
+        tables = [manifest, *manifest.get("target", {}).values()]
+        for table in tables:
+            for section in ("dependencies", "dev-dependencies", "build-dependencies"):
+                for alias, used in table.get(section, {}).items():
+                    resolved = workspace.get(alias, {}) if isinstance(used, dict) and used.get("workspace") else used
+                    package = resolved.get("package", alias) if isinstance(resolved, dict) else alias
+                    if (alias in DEPENDENCIES or package in ("parser", "syntax")) and owner != "unica-bsl-parser":
+                        errors.append(f"{owner}: {alias} bypasses the parser component")
+    return errors
+
+
 def revision_errors(cargo: dict, lock: dict, tools: dict, consumer: dict) -> list[str]:
     """Check source relationships, without resolving dependencies or fixing a commit."""
     errors = []
@@ -40,7 +55,7 @@ def revision_errors(cargo: dict, lock: dict, tools: dict, consumer: dict) -> lis
         used = consumer["dependencies"].get(alias)
         if isinstance(used, dict) and used.get("workspace") is True:
             if any(key in used for key in ("git", "rev", "branch", "tag", "path", "version", "package")):
-                errors.append(f"{alias}: unica-coder combines inherited and direct sources")
+                errors.append(f"{alias}: parser component combines inherited and direct sources")
             used = dependency
         if not isinstance(used, dict) or (
             used.get("package") != package
@@ -48,7 +63,7 @@ def revision_errors(cargo: dict, lock: dict, tools: dict, consumer: dict) -> lis
             or used.get("rev") != commit
             or any(key in used for key in ("branch", "tag", "path"))
         ):
-            errors.append(f"{alias}: unica-coder source differs from bsl-analyzer")
+            errors.append(f"{alias}: parser component source differs from bsl-analyzer")
 
         resolved = [entry for entry in lock["package"] if entry["name"] == package]
         if len(resolved) != 1:
@@ -69,7 +84,7 @@ class ParserRevisionTests(unittest.TestCase):
             (REPO_ROOT / "plugins/unica/third-party/tools.lock.json").read_text(encoding="utf-8")
         )
         cls.consumer = tomllib.loads(
-            (REPO_ROOT / "crates/unica-coder/Cargo.toml").read_text(encoding="utf-8")
+            (REPO_ROOT / "crates/unica-bsl-parser/Cargo.toml").read_text(encoding="utf-8")
         )
 
     def documents(self) -> tuple[dict, dict, dict, dict]:
@@ -81,6 +96,21 @@ class ParserRevisionTests(unittest.TestCase):
 
     def test_repository_parser_and_analyzer_sources_are_aligned(self) -> None:
         self.assertEqual(revision_errors(self.cargo, self.lock, self.tools, self.consumer), [])
+
+    def test_only_the_parser_component_consumes_the_upstream_packages(self) -> None:
+        manifests = [tomllib.loads((REPO_ROOT / member / "Cargo.toml").read_text(encoding="utf-8"))
+                     for member in self.cargo["workspace"]["members"]]
+        self.assertEqual(parser_owner_errors(self.cargo["workspace"]["dependencies"], manifests), [])
+
+    def test_a_consumer_cannot_bypass_the_owner_through_a_renamed_target_dependency(self) -> None:
+        workspace = self.cargo["workspace"]["dependencies"]
+        for section in ("dependencies", "dev-dependencies", "build-dependencies"):
+            for used in ({"workspace": True}, {"package": "parser", "path": "../fork"}):
+                alias = "bsl-parser" if used.get("workspace") else "renamed"
+                manifest = {"package": {"name": "another-owner"}, "target": {"cfg(unix)": {section: {alias: used}}}}
+                with self.subTest(section=section, alias=alias):
+                    self.assertEqual(parser_owner_errors(workspace, [manifest]),
+                                     [f"another-owner: {alias} bypasses the parser component"])
 
     def test_changing_only_parser_or_syntax_is_rejected(self) -> None:
         for alias in ("bsl-parser", "bsl-syntax"):
@@ -159,7 +189,7 @@ class ParserRevisionTests(unittest.TestCase):
                         used = {"package": alias.removeprefix("bsl-"), "path": "../other-parser"}
                     consumer["dependencies"][alias] = used
                     self.assertIn(
-                        f"{alias}: unica-coder source differs from bsl-analyzer",
+                        f"{alias}: parser component source differs from bsl-analyzer",
                         revision_errors(cargo, lock, tools, consumer),
                     )
 
