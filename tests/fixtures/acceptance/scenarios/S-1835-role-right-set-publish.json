@@ -1,0 +1,96 @@
+{
+  "id": "S-1835-role-right-set-publish",
+  "issue": 1835,
+  "area": "Роли и права",
+  "task": "Разрешить роли SalesReader интерактивное удаление валют: предпросмотр не пишет права, публикация добавляет ровно это право объекта",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Role.SalesReader"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before": {
+          "file": "src/Roles/SalesReader/Ext/Rights.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Role.SalesReader.Right.Catalog_Валюты",
+        "ops": [
+          {
+            "op": "right.set",
+            "args": {
+              "values": {
+                "right": "InteractiveDelete",
+                "value": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Roles/SalesReader/Ext/Rights.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Roles/SalesReader/Ext/Rights.xml",
+          "kind": "sha256",
+          "eq": "b4884184732c226271b4ed53d547840504f22bcd3b28c2bd8b14546974434e7c"
+        },
+        {
+          "path": "src/Roles/SalesReader/Ext/Rights.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.2/roles}object[{http://v8.1c.ru/8.2/roles}name='Catalog.Валюты']/{http://v8.1c.ru/8.2/roles}right/{http://v8.1c.ru/8.2/roles}name",
+          "eq": [
+            "Read",
+            "View",
+            "InteractiveDelete"
+          ]
+        }
+      ]
+    }
+  ]
+}
