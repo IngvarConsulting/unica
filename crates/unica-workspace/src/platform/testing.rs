@@ -1,5 +1,6 @@
 use std::io;
 use std::path::{Path, PathBuf};
+#[cfg(all(any(test, feature = "test-support"), unix))]
 use std::time::Duration;
 
 #[cfg(windows)]
