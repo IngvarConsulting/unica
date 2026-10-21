@@ -139,12 +139,21 @@ impl StyleItem {
                 .children()
                 .filter(|node| node.has_tag_name((CORE, "item")))
                 .collect::<Vec<_>>();
+            let has_content = |node: &Node<'_, '_>| {
+                node.children().any(|node| {
+                    node.has_tag_name((CORE, "content"))
+                        && node.text().is_some_and(|text| !text.is_empty())
+                })
+            };
             let preferred = entries
                 .iter()
                 .find(|node| {
-                    node.children()
-                        .any(|node| node.has_tag_name((CORE, "lang")) && node.text() == Some("ru"))
+                    has_content(node)
+                        && node.children().any(|node| {
+                            node.has_tag_name((CORE, "lang")) && node.text() == Some("ru")
+                        })
                 })
+                .or_else(|| entries.iter().find(|node| has_content(node)))
                 .or(entries.first());
             if let Some(entry) = preferred {
                 if let Some(content) = item.child(*entry, CORE, "content", "synonym") {
@@ -288,6 +297,27 @@ mod tests {
             duplicate["unreadable"][0]["field"],
             "properties.borderStyle"
         );
+    }
+
+    #[test]
+    fn styleitem_title_skips_empty_preferred_language_like_metadata_nodes() {
+        let item = |lang: &str, content: &str| {
+            format!(
+                "<v8:item><v8:lang>{lang}</v8:lang><v8:content>{content}</v8:content></v8:item>"
+            )
+        };
+        let synonym = |items: &str| {
+            observed(&format!(
+                "<Synonym xmlns:v8=\"{CORE}\">{items}</Synonym><Type>Color</Type>"
+            ))["synonym"]
+                .clone()
+        };
+        assert_eq!(
+            synonym(&(item("en", "Title") + &item("ru", "Заголовок"))),
+            "Заголовок"
+        );
+        assert_eq!(synonym(&(item("ru", "") + &item("en", "Title"))), "Title");
+        assert_eq!(synonym(&item("ru", "")), "");
     }
 
     #[test]
