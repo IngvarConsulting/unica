@@ -1400,6 +1400,46 @@ fn inserted_method_spacing_covers_positions_eol_eof_and_repeat() {
     }
 }
 
+/// Модуль, где метод уже стоит вплотную к соседу (написан вручную или прежней
+/// версией вставки), повтор той же вставки не дублирует: проверка присутствия
+/// принимает и текст без добавленных разделителей.
+#[test]
+fn inserted_method_spacing_recognizes_an_existing_method_without_separators() {
+    for eol in ["\n", "\r\n"] {
+        let added = format!("Procedure Added(){eol}EndProcedure{eol}");
+        let first = format!("Procedure First(){eol}EndProcedure{eol}");
+        let second = format!("Procedure Second(){eol}EndProcedure{eol}");
+        for (before, selector, position) in [
+            (
+                format!("{first}{added}{second}"),
+                "Second",
+                CodePosition::Before,
+            ),
+            (
+                format!("{first}{added}{second}"),
+                "First",
+                CodePosition::After,
+            ),
+            (format!("{added}{first}"), "First", CodePosition::Before),
+            (format!("{first}{added}"), "First", CodePosition::After),
+        ] {
+            let operation = staged_insert(
+                "main:CommonModule.Sample",
+                "Procedure Added()\nEndProcedure",
+                Some(CodeSelector::Method(selector.to_string())),
+                Some(position),
+            );
+            let post = plan_code_postimage(before.as_bytes(), &operation, 0).unwrap();
+            assert!(post.no_op, "{eol:?} {selector} {position:?}");
+            assert_eq!(
+                post.after,
+                before.as_bytes(),
+                "{eol:?} {selector} {position:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn inserted_method_spacing_preserves_empty_bom_payload_and_mixed_bytes() {
     for (before, content, selector, expected) in [

@@ -1490,7 +1490,11 @@ fn prepare_insertion(
             .saturating_sub(trailing_breaks(&insertion[..boundary]) + leading_breaks(following));
         insertion.splice(boundary..boundary, eol.repeat(missing));
     }
-    let present = method_insertion_is_present(text, site, &insertion);
+    // Метод, уже стоящий вплотную к соседу, — тоже повтор: модуль мог быть
+    // написан вручную или прежней вставкой без разделителей.
+    let bare = normalized_content(content, site.eol, LeadingSeparator::None);
+    let present = method_insertion_is_present(text, site, &bare)
+        || method_insertion_is_present(text, site, &insertion);
     if methods.iter().any(|method| method.end <= site.offset) {
         let missing = 2usize.saturating_sub(
             trailing_breaks(&snapshot.raw()[..site.offset]) + leading_breaks(&insertion),
