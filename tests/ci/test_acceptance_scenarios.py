@@ -1827,11 +1827,15 @@ class AcceptanceCorpusScheduleTests(unittest.TestCase):
              if publishes else [{"tool": "unica.view", "args": {}, "expect": ["ok"]}] * steps}
             for identifier, workspace, publishes, steps in scenarios]}
 
-    def test_a_segment_is_one_workspace_until_a_scenario_publishes(self) -> None:
+    def test_a_segment_is_the_life_of_one_server(self) -> None:
         corpus = self.corpus(("A1", "a", False, 2), ("B1", "b", False, 1), ("A2", "a", True, 1),
                              ("A3", "a", False, 1), ("B2", "b", True, 1), ("B3", "b", False, 3))
         segments = [[scenario["id"] for _, scenario in segment] for segment in corpus_segments(corpus)]
-        self.assertEqual(segments, [["A1", "A2"], ["B1", "B2"], ["A3"], ["B3"]])
+        # Exactly the old server lives: a switch or a publication ends one.
+        self.assertEqual(segments, [["A1"], ["B1"], ["A2"], ["A3"], ["B2"], ["B3"]])
+        corpus = self.corpus(("A1", "a", False, 1), ("A2", "a", False, 1), ("A3", "a", True, 1), ("A4", "a", False, 1))
+        self.assertEqual([[scenario["id"] for _, scenario in segment] for segment in corpus_segments(corpus)],
+                         [["A1", "A2", "A3"], ["A4"]])
 
     def test_workers_share_segments_exactly_once_and_deterministically(self) -> None:
         corpus = self.corpus(*[(f"S{index}", "abc"[index % 3], index % 4 == 0, 1 + index % 5) for index in range(40)])
@@ -1852,6 +1856,7 @@ class AcceptanceCorpusScheduleTests(unittest.TestCase):
         with patch.dict(os.environ, {"UNICA_ACCEPTANCE_WORKERS": "3"}):
             self.assertEqual(corpus_workers(None), 3)
             self.assertEqual(corpus_workers(Path("/staged-plugin")), 1)
+            self.assertEqual(corpus_workers(None, lambda *_: None), 1)
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("UNICA_ACCEPTANCE_WORKERS", None)
             self.assertEqual(corpus_workers(None), SOURCE_WORKERS)
@@ -1876,7 +1881,7 @@ class AcceptanceCorpusScheduleTests(unittest.TestCase):
             def close(self):
                 pass
 
-        corpus = self.corpus(("A1", "a", False, 1), ("B1", "b", False, 1), ("A2", "a", True, 1), ("A3", "a", False, 1))
+        corpus = self.corpus(("A1", "a", False, 1), ("A2", "a", True, 1), ("B1", "b", False, 1), ("A3", "a", False, 1))
         complete = corpus_batches
 
         def lossy(selected, workers):
@@ -1900,6 +1905,39 @@ class AcceptanceCorpusScheduleTests(unittest.TestCase):
                 else:
                     with self.assertRaisesRegex(AssertionError, "did not cover the corpus exactly once"):
                         run_corpus(self, corpus)
+
+
+    def test_a_failing_worker_stops_the_others_and_raises(self) -> None:
+        calls = []
+
+        class Server:
+            provider_failure_cache_is_default = False
+
+            def __init__(self, workspace, *_):
+                self.workspace = workspace
+
+            def call(self, *_):
+                calls.append(None)
+                return {}
+
+            def close(self):
+                pass
+
+        def classify_or_fail(response, context):
+            if len(calls) == 1:
+                raise RuntimeError("worker sentinel")
+            return "ok", ""
+
+        corpus = self.corpus(*[(f"S{index}", "ab"[index % 2], False, 1) for index in range(40)])
+        with (patch.dict(os.environ, {"UNICA_ACCEPTANCE_WORKERS": "2"}),
+              patch(f"{__name__}.AcceptanceServer", Server),
+              patch(f"{__name__}.shutil.copytree", lambda _, path: path.mkdir(parents=True)),
+              patch(f"{__name__}.classify", classify_or_fail),
+              patch(f"{__name__}.content_mismatches", return_value=[]),
+              patch(f"{__name__}.capture_values", return_value={})):
+            with self.assertRaisesRegex(RuntimeError, "worker sentinel"):
+                run_corpus(self, corpus)
+        self.assertLess(len(calls), 40, "the other worker must stop at its next scenario")
 
 
 class AcceptanceCorpusRunTests(unittest.TestCase):
@@ -2027,23 +2065,21 @@ START_WEIGHT = 4
 
 
 def corpus_segments(corpus) -> list[list[tuple[int, dict]]]:
-    """Split the corpus into runs that each need exactly one fresh server.
+    """Split the corpus into the lives of its servers.
 
-    Scenarios of one workspace share a server in corpus order until one of
-    them publishes; the next scenario starts from the pristine fixture, as it
-    always did.  A segment is therefore independent of every other one, and
-    a workspace starts once per segment instead of on every switch between
-    neighbours of the corpus."""
-    open_runs: dict[str, list[tuple[int, dict]]] = {}
+    A server serves neighbouring scenarios of one workspace in corpus order;
+    a scenario of another workspace or a publishing one ends it, and the
+    next scenario starts on a fresh server over the pristine fixture.  A
+    segment is that life exactly, so it is independent of every other one
+    and keeps the state its scenarios always saw."""
     segments: list[list[tuple[int, dict]]] = []
+    closed = True
     for ordinal, scenario in enumerate(corpus["scenarios"]):
         workspace = scenario.get("workspace", corpus["workspace"])
-        run = open_runs.setdefault(workspace, [])
-        if not run:
-            segments.append(run)
-        run.append((ordinal, scenario))
-        if scenario_publishes(scenario):
-            open_runs[workspace] = []
+        if closed or workspace != segments[-1][0][1].get("workspace", corpus["workspace"]):
+            segments.append([])
+        segments[-1].append((ordinal, scenario))
+        closed = scenario_publishes(scenario)
     return segments
 
 
@@ -2067,9 +2103,10 @@ def corpus_batches(corpus, workers: int) -> list[list[list[tuple[int, dict]]]]:
     return [sorted(batch, key=lambda segment: segment[0][0]) for batch in dealt if batch]
 
 
-def corpus_workers(plugin) -> int:
-    if plugin is not None:
-        # A delivered plugin is one staged installation; it is not shared.
+def corpus_workers(plugin, scenario_driver=None) -> int:
+    if plugin is not None or scenario_driver is not None:
+        # A delivered plugin is one staged installation, and a driver may
+        # hold its own outside state: neither is shared between workers.
         return 1
     raw = os.environ.get("UNICA_ACCEPTANCE_WORKERS", str(SOURCE_WORKERS))
     if not raw.isdigit() or int(raw) < 1:
@@ -2084,7 +2121,8 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cle
     default_workspace = corpus["workspace"]
     if not corpus["scenarios"]:
         raise ValueError("selected acceptance profile is empty")
-    batches = corpus_batches(corpus, corpus_workers(plugin))
+    batches = corpus_batches(corpus, corpus_workers(plugin, scenario_driver))
+    stop = threading.Event()
     segment_starts = {segment[0][0] for batch in batches for segment in batch}
 
     def fresh_server(root: Path, generation: int, workspace_relative: str) -> AcceptanceServer:
@@ -2120,6 +2158,9 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cle
         server = None
         try:
             for case_ordinal, scenario in (entry for segment in batch for entry in segment):
+                if stop.is_set():
+                    # Another worker failed; its exception decides the run.
+                    break
                 wanted = scenario.get("workspace", default_workspace)
                 if server is not None and case_ordinal in segment_starts:
                     server.close()
@@ -2204,6 +2245,9 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cle
                 if broken or scenario_publishes(scenario):
                     server.close()
                     server = None
+        except BaseException:
+            stop.set()
+            raise
         finally:
             if server is not None:
                 server.close()
