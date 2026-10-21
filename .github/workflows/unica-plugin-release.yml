@@ -747,6 +747,33 @@ jobs:
           set -o pipefail
           cargo clippy --workspace --all-targets --all-features --message-format=json -- -D warnings \
             | clippy-sarif | tee clippy.sarif | sarif-fmt
+      # Сборка workspace объединяет признаки: dev-зависимость одного пакета
+      # включает `test-support` другого, и его код под этим признаком
+      # перестаёт быть мёртвым. Поштучный линт ловит то, что не собирается или
+      # не используется в самом пакете. Шаг идёт поверх уже собранного
+      # workspace и только на одной ОС ради времени: ветки `cfg` по ОС ловит
+      # линт workspace на каждой ОС, но не в сочетании с признаками пакета.
+      - name: Clippy каждого пакета с его признаками
+        if: matrix.runner == 'ubuntu-latest'
+        run: |
+          set -euo pipefail
+          # Подстановка в заголовке `for` скрыла бы отказ cargo metadata.
+          mapfile -t packages < <(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[].name' | sort)
+          wait "$!"
+          if [ "${#packages[@]}" -eq 0 ]; then
+            echo "::error::cargo metadata не вернул ни одного пакета"
+            exit 1
+          fi
+          failed=()
+          for package in "${packages[@]}"; do
+            echo "::group::$package"
+            cargo clippy -p "$package" --all-targets --locked -- -D warnings || failed+=("$package")
+            echo "::endgroup::"
+          done
+          if [ "${#failed[@]}" -ne 0 ]; then
+            echo "::error::Clippy отдельно не проходят: ${failed[*]}"
+            exit 1
+          fi
       - if: always() && hashFiles('clippy.sarif') != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
         uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:

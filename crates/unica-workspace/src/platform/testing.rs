@@ -20,7 +20,7 @@ pub fn path_text_for_test(path: &Path) -> String {
 
 /// Hold a known regular fixture file open without delete sharing. A retained
 /// publisher can still read it, but Windows must reject its rename for recovery.
-#[cfg(windows)]
+#[cfg(all(feature = "test-support", windows))]
 pub(crate) fn hold_regular_file_without_delete_sharing_for_test(
     path: &Path,
 ) -> io::Result<Option<std::fs::File>> {
@@ -37,7 +37,7 @@ pub(crate) fn hold_regular_file_without_delete_sharing_for_test(
         .map(Some)
 }
 
-#[cfg(not(windows))]
+#[cfg(all(feature = "test-support", not(windows)))]
 pub(crate) fn hold_regular_file_without_delete_sharing_for_test(
     _path: &Path,
 ) -> io::Result<Option<std::fs::File>> {

@@ -32,6 +32,7 @@ pub(super) fn configuration_bytes() -> Vec<u8> {
     bytes
 }
 
+#[cfg(feature = "test-support")]
 pub(super) fn assert_no_bare_lf(bytes: &[u8]) {
     for (index, byte) in bytes.iter().enumerate() {
         if *byte == b'\n' {

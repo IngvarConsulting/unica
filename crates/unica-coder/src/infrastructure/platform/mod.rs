@@ -28,18 +28,9 @@ pub(crate) fn create_runtime_directory_link_for_test(
 }
 
 #[cfg(test)]
-pub(crate) fn inject_unix_waitid_error_for_test() {
-    #[cfg(unix)]
-    unica_process::test_support::inject_unix_waitid_error_for_test();
-}
-
-#[cfg(test)]
-pub(crate) fn reap_runtime_authority_test_child(process_id: u32) {
-    #[cfg(unix)]
-    unica_process::test_support::reap_runtime_authority_test_child(process_id);
-    #[cfg(not(unix))]
-    let _ = process_id;
-}
+pub(crate) use unica_process::test_support::{
+    inject_unix_waitid_error_for_test, reap_runtime_authority_test_child,
+};
 
 #[cfg(test)]
 pub(crate) fn assert_runtime_generation_authority_for_test() {
