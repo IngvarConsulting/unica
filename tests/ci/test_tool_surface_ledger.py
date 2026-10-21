@@ -65,7 +65,7 @@ def resolve_schema_base(root, schema):
 class ToolSurfaceLedgerTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        ensure_binary(REPO_ROOT, build_command=["cargo", "build", "--quiet", "--package", "unica-coder", "--bin", "unica"])
+        ensure_binary(REPO_ROOT)
         cls.module = load_generator()
         cls.tools = cls.module.read_registry(BINARY)
         cls.review = json.loads(REVIEW.read_text(encoding="utf-8"))

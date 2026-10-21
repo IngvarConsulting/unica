@@ -67,7 +67,7 @@ def workspace_image(root: Path):
 class WholeTemplatePlanDiffWireTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        ensure_binary(REPO_ROOT, build_command=["cargo", "build", "--quiet", "--package", "unica-coder", "--bin", "unica"])
+        ensure_binary(REPO_ROOT)
 
     def _start(self):
         temporary = tempfile.TemporaryDirectory(prefix="unica-whole-template-plan-")

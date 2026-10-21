@@ -16,6 +16,7 @@ import platform
 import shutil
 import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
 from pathlib import Path
@@ -23,6 +24,7 @@ from pathlib import Path
 MANIFEST_ENV = "UNICA_PREPARED_BINARY_MANIFEST"
 SCHEMA = 1
 ORDINARY_FEATURES = ["default"]
+LOCAL_BUILD = ["cargo", "build", "--quiet", "--locked", "-p", "unica-coder", "--bin", "unica"]
 
 
 def digest(path: Path) -> str:
@@ -110,11 +112,18 @@ def binary_path(root: Path) -> Path:
     return (root / os.environ.get("CARGO_TARGET_DIR", "target") / "debug" / ("unica.exe" if os.name == "nt" else "unica")).resolve()
 
 
-def ensure_binary(root: Path, *, build_command: list[str] | None = None) -> Path:
+def ensure_binary(root: Path) -> Path:
     if MANIFEST_ENV in os.environ:
         return binary_path(root)
-    command = build_command or ["cargo", "build", "--quiet", "--locked", "-p", "unica-coder", "--bin", "unica"]
-    subprocess.run(command, cwd=root, check=True)
+    # CI Python suites consume the verified build-python-product bytes. A job
+    # without the manifest is a wiring defect, not a reason to compile again.
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        raise ValueError(f"{MANIFEST_ENV} is unset in CI; Python suites never build the product")
+    print(f"prepared_binary: {MANIFEST_ENV} is unset, building the product: {' '.join(LOCAL_BUILD)}\n"
+          f"prepared_binary: to skip it, run `python scripts/ci/prepared_binary.py build --destination DIR "
+          f"--archive FILE` and set {MANIFEST_ENV}=DIR/manifest.json (valid for the unchanged source tree)",
+          file=sys.stderr)
+    subprocess.run(LOCAL_BUILD, cwd=root, check=True)
     binary = binary_path(root)
     if not binary.is_file():
         raise ValueError(f"Cargo did not produce {binary}")

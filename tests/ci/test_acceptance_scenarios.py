@@ -1759,7 +1759,7 @@ class AcceptanceCorpusRunTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        ensure_binary(REPO_ROOT, build_command=["cargo", "build", "--quiet", "--package", "unica-coder", "--bin", "unica"])
+        ensure_binary(REPO_ROOT)
         cls.corpus = load_acceptance_corpus()
         for scenario in cls.corpus["scenarios"]:
             declared = set()
@@ -2003,7 +2003,7 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cle
 class AcceptanceDeliveryCorpusRunTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        ensure_binary(REPO_ROOT, build_command=["cargo", "build", "--quiet", "--locked", "--package", "unica-coder", "--bin", "unica"])
+        ensure_binary(REPO_ROOT)
         cls.corpus = load_acceptance_corpus()
         for scenario in cls.corpus["scenarios"]:
             declared = set()
@@ -2050,7 +2050,7 @@ class AcceptanceDeliveryCorpusRunTests(unittest.TestCase):
 class AcceptanceFaultCorpusRunTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        ensure_binary(REPO_ROOT, build_command=["cargo", "build", "--quiet", "--locked", "--package", "unica-coder", "--bin", "unica"])
+        ensure_binary(REPO_ROOT)
         cls.corpus = load_acceptance_corpus()
 
     def test_controlled_jsonl_faults_preserve_public_reason_without_provider_input(self):

@@ -55,7 +55,10 @@ Python получает его архив с manifest и проверяет ег
 режим и состав архива. Только после проверки извлечённые bytes становятся
 доступны по `UNICA_PREPARED_BINARY_MANIFEST`, вне изменяемого Cargo target.
 Test-support и stale binary отвергаются; при заданном manifest возврата
-к локальной сборке нет. Без него локальные consumers сохраняют Cargo fallback.
+к локальной сборке нет. Без него в CI (`GITHUB_ACTIONS=true`) `ensure_binary`
+отказывает; локально собирает одной командой и сообщает об этом в stderr.
+Модуль-потребитель `ensure_binary` объявляется `medium`; это держит
+`tests/ci/test_python_sizes.py`.
 
 `ci_shadow_selector.py` строит кандидата по union base/head Cargo graphs и
 обратным consumers. Общие/неизвестные входы, locks/features, fixtures/specs

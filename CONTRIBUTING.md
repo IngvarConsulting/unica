@@ -325,8 +325,13 @@ Python `medium` получает раннюю ordinary-сборку незави
 Rust-тестов. `UNICA_PREPARED_BINARY_MANIFEST` указывает на проверенный
 манифест извлечённых неизменяемых bytes вне Cargo target. Проверяются дерево
 исходников, SHA, target, toolchain, cfg/features, hash и режим файла.
-Receipt-сборка и устаревший артефакт отвергаются. Без этой переменной локальные
-тесты сохраняют обычную сборку Cargo.
+Receipt-сборка и устаревший артефакт отвергаются. В CI без этой переменной
+Python-тест отказывает, а не собирает продукт. Локально без неё
+`ensure_binary` собирает `cargo build --locked -p unica-coder --bin unica`
+и пишет об этом в stderr. Чтобы не собирать повторно, подготовьте манифест
+командой `python scripts/ci/prepared_binary.py build --destination DIR --archive FILE`
+и задайте `UNICA_PREPARED_BINARY_MANIFEST=DIR/manifest.json`. Манифест
+действует, пока не изменились исходники.
 
 Компонентный selector работает в тени полной очереди: сравнивает графы Cargo
 на base/head и выбирает изменённые packages с обратными потребителями.

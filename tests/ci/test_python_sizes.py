@@ -1,8 +1,8 @@
 """Размер тестов Python объявлен вне кода: манифест существует, конструкции покрыты.
 
-Признак `medium` — тест зовёт `cargo` или поднимает сокет: модуль с такими
-конструкциями обязан быть назван в манифесте, а каждая запись манифеста —
-существовать в дереве. Наших имён страж не знает.
+Признак `medium` — тест зовёт `cargo`, берёт продукт через `ensure_binary`
+или поднимает сокет: модуль с такими конструкциями обязан быть назван
+в манифесте, а каждая запись манифеста — существовать в дереве. Наших имён страж не знает.
 """
 
 from __future__ import annotations
@@ -24,6 +24,8 @@ SUITES = ("tests/ci", "tests/dev")
 # Вызов, а не упоминание: `"cargo"` в ожидании мока или в утверждении — не сборка.
 CARGO = re.compile(r'subprocess\.(?:run|Popen|check_output|check_call|call)\(\s*\[\s*"cargo"')
 SOCKET = re.compile(r"^\s*(import socket|from socket import)", re.M)
+# Без манифеста `ensure_binary` собирает продукт: потребитель тоже `medium`.
+ENSURE_BINARY = re.compile(r"^\s*from scripts\.ci\.prepared_binary import [^\n]*\bensure_binary\b", re.M)
 
 
 def load_runner():
@@ -62,14 +64,19 @@ class PythonSizeManifestTests(unittest.TestCase):
                     self.assertIn(rest[1], methods)
 
     def test_modules_that_build_or_connect_are_declared(self) -> None:
-        """Вызов `cargo` или сокет в модуле — продукт собирается или запускается: не `small` молча."""
+        """`cargo`, `ensure_binary` или сокет в модуле — продукт собирается или запускается: не `small` молча."""
         declared = {entry.split(".")[0] for entry in entries()}
         for suite in SUITES:
             for path in sorted((REPO_ROOT / suite).glob("test_*.py")):
                 text = path.read_text(encoding="utf-8", errors="replace")
-                if CARGO.search(text) or SOCKET.search(text):
+                if CARGO.search(text) or ENSURE_BINARY.search(text) or SOCKET.search(text):
                     with self.subTest(module=path.stem):
                         self.assertIn(path.stem, declared)
+
+    def test_ensure_binary_consumer_pattern_ignores_mentions(self) -> None:
+        self.assertTrue(ENSURE_BINARY.search("from scripts.ci.prepared_binary import binary_path, ensure_binary\n"))
+        self.assertFalse(ENSURE_BINARY.search("from scripts.ci.prepared_binary import binary_path\n"))
+        self.assertFalse(ENSURE_BINARY.search('message = "from scripts.ci.prepared_binary import ensure_binary"\n'))
 
     def test_runner_admits_only_the_requested_sizes(self) -> None:
         """Ворота `pr` не видят `medium`: тест исключён из плана, а не пропущен."""
