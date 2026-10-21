@@ -1,9 +1,9 @@
 ---
 id: INV.SOURCE.EVENT-DEFINED-TYPE
 check:
+  - crates/unica-coder/src/infrastructure/daemon/metadata_can_tests.rs::canonical_check_expands_nested_defined_type_event_sources
   - crates/unica-coder/src/infrastructure/metadata_operations.rs::defined_type_event_source_expands_to_concrete_event_classes_and_dependencies
   - crates/unica-coder/src/infrastructure/metadata_operations.rs::defined_type_event_source_cycle_is_rejected_before_publication
-  - crates/unica-coder/src/infrastructure/metadata_operations.rs::meta_info_surfaces_a_strict_defined_type_member_parse_failure
 ---
 
 # Определяемый тип раскрывается перед проверкой подписки

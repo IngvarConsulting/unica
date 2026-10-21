@@ -4232,6 +4232,122 @@ pub(crate) mod actor_capacity_tests {
         assert!(output.status.success(), "{stdout}\n{stderr}");
     }
 
+    /// #406: канонический `run` создания базы в рабочей области без
+    /// поставляемого раннера отвечает одним типизированным отказом и не
+    /// раскрывает ни путь рабочей области, ни строку подключения из
+    /// `v8project.yaml`, ни значения, переданные в аргументах.
+    #[test]
+    fn canonical_infobase_create_refusal_discloses_no_private_input() {
+        const CHILD: &str = "UNICA_ISSUE_406_RUN_CHILD";
+        const ROOT: &str = "UNICA_ISSUE_406_RUN_ROOT";
+        const WORKSPACE_SENTINEL: &str = "unica-issue-406-private-workspace";
+        const CWD_SENTINEL: &str = "/missing/unica-issue-406-private-cwd";
+        const CONNECTION_SENTINEL: &str = "File=/private/issue-406-sensitive.ib";
+        if std::env::var_os(CHILD).is_some() {
+            let root = std::path::PathBuf::from(std::env::var_os(ROOT).unwrap());
+            let workspace = std::fs::canonicalize(root.join(WORKSPACE_SENTINEL)).unwrap();
+            let runtime = bootstrap_runtime();
+            let call = |arguments: serde_json::Value| -> DomainResult {
+                let request = InvocationRequest::new(
+                    ToolIdentity::Run,
+                    arguments,
+                    workspace.to_string_lossy(),
+                    7_000,
+                )
+                .unwrap();
+                match runtime.bind(request) {
+                    Ok(bound) => match bound.prepare() {
+                        Ok(prepared) => prepared.execute(CancellationToken::new()).unwrap(),
+                        Err(result) => *result,
+                    },
+                    Err(V5CanonicalPrepareError::Direct(result))
+                    | Err(V5CanonicalPrepareError::Rejected(result)) => *result,
+                    Err(error) => panic!("{error:?}"),
+                }
+            };
+            let before = unica_workspace::test_support::tree_snapshot(&workspace);
+            for (case, arguments, code) in [
+                (
+                    "configured connection",
+                    serde_json::json!({"op":"infobase.create","args":{},"dryRun":false}),
+                    "provider_unavailable",
+                ),
+                (
+                    "private arguments",
+                    serde_json::json!({"op":"infobase.create","args":{
+                        "cwd": CWD_SENTINEL,
+                        "connection": CONNECTION_SENTINEL
+                    },"dryRun":false}),
+                    "bad_value",
+                ),
+            ] {
+                let refused = call(arguments);
+                assert!(!refused.ok, "{case}: {refused:?}");
+                assert_eq!(refused.diagnostics.len(), 1, "{case}: {refused:?}");
+                assert_eq!(refused.diagnostics[0]["code"], code, "{case}: {refused:?}");
+                if code == "provider_unavailable" {
+                    assert_eq!(
+                        refused.diagnostics[0]["detailCode"], "provider_absent",
+                        "{case}: {refused:?}"
+                    );
+                }
+                let serialized = serde_json::to_string(&refused).unwrap();
+                for private in [
+                    WORKSPACE_SENTINEL,
+                    CWD_SENTINEL,
+                    CONNECTION_SENTINEL,
+                    "issue-406-sensitive",
+                ] {
+                    assert!(
+                        !serialized.contains(private),
+                        "{case} discloses {private}: {serialized}"
+                    );
+                }
+            }
+            assert_eq!(
+                unica_workspace::test_support::tree_snapshot(&workspace),
+                before
+            );
+            return;
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join(WORKSPACE_SENTINEL);
+        std::fs::create_dir_all(workspace.join("src")).unwrap();
+        std::fs::write(
+            workspace.join("v8project.yaml"),
+            format!(
+                "format: DESIGNER\ninfobase:\n  connection: '{CONNECTION_SENTINEL}'\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n"
+            ),
+        )
+        .unwrap();
+        // Поставка без раннера: манифест есть, инструментов в нём нет.
+        let plugin = root.path().join("plugin");
+        std::fs::create_dir_all(plugin.join("third-party")).unwrap();
+        std::fs::write(
+            plugin.join("third-party/manifest.json"),
+            serde_json::json!({"schemaVersion": 2, "tools": []}).to_string(),
+        )
+        .unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "infrastructure::daemon::server::actor_capacity_tests::canonical_infobase_create_refusal_discloses_no_private_input",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env(ROOT, root.path())
+            .env("UNICA_PLUGIN_ROOT", &plugin)
+            .env_remove("UNICA_ARTIFACT_CACHE")
+            .env_remove("UNICA_RUNTIME_MANIFEST")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stdout.contains("running 1 test"), "{stdout}\n{stderr}");
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+    }
+
     fn canonical_delivery_fixture_binary() -> (std::path::PathBuf, String) {
         use sha2::{Digest, Sha256};
 

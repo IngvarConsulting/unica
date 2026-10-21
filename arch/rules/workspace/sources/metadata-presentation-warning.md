@@ -1,8 +1,7 @@
 ---
 id: INV.APP.META-FINDINGS
 check:
-  - crates/unica-coder/src/application/meta_info_surface_tests.rs::info_warns_when_list_presentation_duplicates_the_synonym
-  - crates/unica-coder/src/application/meta_add_surface_tests.rs::info_uses_nonempty_list_presentation_for_command_text_finding
+  - crates/unica-coder/src/infrastructure/daemon/metadata_can_tests.rs::canonical_check_reports_list_presentation_findings_with_field_and_language
 ---
 
 # Предупреждение о представлении называет поле и язык
@@ -16,5 +15,6 @@ check:
 `redundant_list_presentation` с теми же полем и языком. Обе находки остаются
 предупреждениями; их код не извлекается из текста сообщения.
 
-Проверки проходят внутренний читатель метаданных: русское представление
-длиннее 38 символов и повторение синонима. Они не проверяют весь путь `unica.check`.
+Проверка проходит канонический `unica.check` справочника: русское
+представление длиннее 38 символов, повторение синонима, короткое
+представление при длинном синониме и длинный синоним без представления.
