@@ -6,7 +6,7 @@ check:
   - crates/unica-coder/src/application/meta_info_surface_tests.rs::info_localizes_an_unmodelled_constant_type_with_the_warning_code
   - crates/unica-coder/src/application/meta_info_surface_tests.rs::info_keeps_a_broken_qualifier_in_the_error_severity_branch
   - crates/unica-coder/src/application/meta_info_surface_tests.rs::uuid_writer_round_trips_through_meta_edit_and_info
-  - crates/unica-coder/src/infrastructure/native_operations/meta/info_projection_tests.rs::observed_type_reads_an_extension_type_id_as_a_read_only_variant
+  - crates/unica-metadata-designer/tests/platform/info_projection.rs::observed_type_reads_an_extension_type_id_as_a_read_only_variant
 ---
 
 # Распознанный тип не обязательно доступен для изменения

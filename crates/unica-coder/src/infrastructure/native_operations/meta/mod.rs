@@ -149,12 +149,8 @@ pub(crate) fn accepts_logical_metadata_address(
 }
 
 #[cfg(test)]
-mod info_projection_tests;
-#[cfg(test)]
 mod info_tests;
 #[cfg(test)]
 mod remove_tests;
-#[cfg(test)]
-mod template_catalog_tests;
 #[cfg(test)]
 mod usage_scan_tests;

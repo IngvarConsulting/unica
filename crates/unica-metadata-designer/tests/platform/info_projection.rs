@@ -8,7 +8,7 @@ fn project(xml: &str, kind: MetadataKind, metadata_path: &str) -> serde_json::Va
     let child_objects = unica_xml_format::read::child_element(object, "ChildObjects");
     let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, metadata_path).unwrap();
     let mut diagnostics = Vec::new();
-    let details = unica_metadata_designer::info_projection::project_meta_info_details(
+    let details = crate::info_projection::project_meta_info_details(
         kind,
         properties,
         child_objects,
@@ -41,13 +41,9 @@ fn report_profile_observes_the_tracked_auxiliary_variant_form() {
     let object = document.root_element().first_element_child().unwrap();
     let properties = unica_xml_format::read::child_element(object, "Properties");
 
-    unica_metadata_designer::info_projection::validate_meta_info_profile(
-        MetadataKind::Report,
-        properties,
-        None,
-    )
-    .unwrap();
-    let projected = serde_json::to_value(unica_metadata_designer::info::typed_properties(
+    crate::info_projection::validate_meta_info_profile(MetadataKind::Report, properties, None)
+        .unwrap();
+    let projected = serde_json::to_value(crate::info::typed_properties(
         properties,
         MetadataKind::Report,
     ))
@@ -65,7 +61,7 @@ fn project_declarations(xml: &str, kind: MetadataKind, metadata_path: &str) -> s
     let object = document.root_element().first_element_child().unwrap();
     let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, metadata_path).unwrap();
     let mut diagnostics = Vec::new();
-    let declarations = unica_metadata_designer::info_projection::project_meta_info_declarations(
+    let declarations = crate::info_projection::project_meta_info_declarations(
         kind,
         unica_xml_format::read::child_element(object, "Properties"),
         &target,
@@ -102,15 +98,13 @@ fn scheduled_job_rejects_a_two_part_value_that_is_not_a_common_module_method() {
         MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "ScheduledJob.Invalid").unwrap();
     let mut diagnostics = Vec::new();
 
-    let value = serde_json::to_value(
-        unica_metadata_designer::info_projection::project_meta_info_details(
-            MetadataKind::ScheduledJob,
-            unica_xml_format::read::child_element(object, "Properties"),
-            None,
-            &target,
-            &mut diagnostics,
-        ),
-    )
+    let value = serde_json::to_value(crate::info_projection::project_meta_info_details(
+        MetadataKind::ScheduledJob,
+        unica_xml_format::read::child_element(object, "Properties"),
+        None,
+        &target,
+        &mut diagnostics,
+    ))
     .unwrap();
 
     assert!(value["details"]["method"].is_null());
@@ -141,14 +135,12 @@ fn calculation_register_details_keep_the_schedule_triple_at_its_real_owner() {
 
     let document = roxmltree::Document::parse(xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
-    assert!(
-        unica_metadata_designer::info_projection::validate_meta_info_profile(
-            MetadataKind::CalculationRegister,
-            unica_xml_format::read::child_element(object, "Properties"),
-            unica_xml_format::read::child_element(object, "ChildObjects"),
-        )
-        .is_ok()
-    );
+    assert!(crate::info_projection::validate_meta_info_profile(
+        MetadataKind::CalculationRegister,
+        unica_xml_format::read::child_element(object, "Properties"),
+        unica_xml_format::read::child_element(object, "ChildObjects"),
+    )
+    .is_ok());
 }
 
 #[test]
@@ -255,15 +247,13 @@ fn http_service_descriptive_properties_still_reject_nested_markup() {
             let object = document.root_element().first_element_child().unwrap();
             let mut diagnostics = Vec::new();
 
-            let value = serde_json::to_value(
-                unica_metadata_designer::info_projection::project_meta_info_details(
-                    MetadataKind::HTTPService,
-                    unica_xml_format::read::child_element(object, "Properties"),
-                    unica_xml_format::read::child_element(object, "ChildObjects"),
-                    &target,
-                    &mut diagnostics,
-                ),
-            )
+            let value = serde_json::to_value(crate::info_projection::project_meta_info_details(
+                MetadataKind::HTTPService,
+                unica_xml_format::read::child_element(object, "Properties"),
+                unica_xml_format::read::child_element(object, "ChildObjects"),
+                &target,
+                &mut diagnostics,
+            ))
             .unwrap();
 
             assert!(
@@ -420,15 +410,13 @@ fn web_service_operation_properties_still_reject_foreign_content() {
             let object = document.root_element().first_element_child().unwrap();
             let mut diagnostics = Vec::new();
 
-            let value = serde_json::to_value(
-                unica_metadata_designer::info_projection::project_meta_info_details(
-                    MetadataKind::WebService,
-                    unica_xml_format::read::child_element(object, "Properties"),
-                    unica_xml_format::read::child_element(object, "ChildObjects"),
-                    &target,
-                    &mut diagnostics,
-                ),
-            )
+            let value = serde_json::to_value(crate::info_projection::project_meta_info_details(
+                MetadataKind::WebService,
+                unica_xml_format::read::child_element(object, "Properties"),
+                unica_xml_format::read::child_element(object, "ChildObjects"),
+                &target,
+                &mut diagnostics,
+            ))
             .unwrap();
 
             assert!(
@@ -512,19 +500,14 @@ fn manifest_and_profile_cover_every_platform_gated_metadata_kind() {
     let mut profile_errors = Vec::new();
     let mut observed_routes = std::collections::BTreeSet::new();
     for kind in MetadataKind::ALL {
-        let (xml, _) = unica_metadata_designer::template_catalog::minimal_metadata_xml_for_tests(
-            *kind, "Evidence",
-        )
-        .unwrap();
+        let (xml, _) =
+            crate::template_catalog::minimal_metadata_xml_for_tests(*kind, "Evidence").unwrap();
         let document = roxmltree::Document::parse(&xml).unwrap();
         let object = document.root_element().first_element_child().unwrap();
         let properties = unica_xml_format::read::child_element(object, "Properties");
         let child_objects = unica_xml_format::read::child_element(object, "ChildObjects");
-        let errors = unica_metadata_designer::info_projection::meta_info_profile_errors(
-            *kind,
-            properties,
-            child_objects,
-        );
+        let errors =
+            crate::info_projection::meta_info_profile_errors(*kind, properties, child_objects);
         if !errors.is_empty() {
             profile_errors.extend(
                 errors
@@ -533,28 +516,24 @@ fn manifest_and_profile_cover_every_platform_gated_metadata_kind() {
             );
             continue;
         }
-        observed_routes.extend(
-            unica_metadata_designer::info_projection::observed_meta_info_semantic_routes(
-                *kind,
-                properties,
-                child_objects,
-            ),
-        );
+        observed_routes.extend(crate::info_projection::observed_meta_info_semantic_routes(
+            *kind,
+            properties,
+            child_objects,
+        ));
         let target = MetadataAddress::parse(
             PLATFORM_XML_8_3_27_FORMAT_2_20,
             &format!("{}.Evidence", kind.as_str()),
         )
         .unwrap();
         let mut diagnostics = Vec::new();
-        let value = serde_json::to_value(
-            unica_metadata_designer::info_projection::project_meta_info_details(
-                *kind,
-                properties,
-                child_objects,
-                &target,
-                &mut diagnostics,
-            ),
-        )
+        let value = serde_json::to_value(crate::info_projection::project_meta_info_details(
+            *kind,
+            properties,
+            child_objects,
+            &target,
+            &mut diagnostics,
+        ))
         .unwrap();
         assert!(diagnostics.is_empty(), "{}: {diagnostics:?}", kind.as_str());
         assert_eq!(value["kind"], kind.as_str());
@@ -588,19 +567,13 @@ fn manifest_and_profile_cover_every_platform_gated_metadata_kind() {
             );
             let properties = unica_xml_format::read::child_element(object, "Properties");
             let child_objects = unica_xml_format::read::child_element(object, "ChildObjects");
-            unica_metadata_designer::info_projection::validate_meta_info_profile(
+            crate::info_projection::validate_meta_info_profile(kind, properties, child_objects)
+                .unwrap();
+            observed_routes.extend(crate::info_projection::observed_meta_info_semantic_routes(
                 kind,
                 properties,
                 child_objects,
-            )
-            .unwrap();
-            observed_routes.extend(
-                unica_metadata_designer::info_projection::observed_meta_info_semantic_routes(
-                    kind,
-                    properties,
-                    child_objects,
-                ),
-            );
+            ));
             let name = properties
                 .and_then(|node| unica_xml_format::read::child_direct_text(node, "Name"))
                 .unwrap();
@@ -610,15 +583,13 @@ fn manifest_and_profile_cover_every_platform_gated_metadata_kind() {
             )
             .unwrap();
             let mut diagnostics = Vec::new();
-            let details = serde_json::to_value(
-                unica_metadata_designer::info_projection::project_meta_info_details(
-                    kind,
-                    properties,
-                    child_objects,
-                    &target,
-                    &mut diagnostics,
-                ),
-            )
+            let details = serde_json::to_value(crate::info_projection::project_meta_info_details(
+                kind,
+                properties,
+                child_objects,
+                &target,
+                &mut diagnostics,
+            ))
             .unwrap();
             assert!(
                 diagnostics.is_empty(),
@@ -661,10 +632,10 @@ fn manifest_and_profile_cover_every_platform_gated_metadata_kind() {
             )
             .unwrap();
             let mut diagnostics = Vec::new();
-            let values = unica_metadata_designer::info::typed_root_collection(
+            let values = crate::info::typed_root_collection(
                 &xml,
                 unica_xml_format::read::child_element(object, "ChildObjects"),
-                unica_metadata_designer::info::TypedRootCollectionRoute::new(
+                crate::info::TypedRootCollectionRoute::new(
                     kind,
                     tag,
                     tag == "TabularSection",
@@ -678,11 +649,10 @@ fn manifest_and_profile_cover_every_platform_gated_metadata_kind() {
             observed_routes.insert(route);
         }
     }
-    let declared_collection_routes =
-        unica_metadata_designer::info_projection::declared_meta_info_collection_routes()
-            .into_iter()
-            .map(|(kind, tag)| format!("{}.childObjects.{tag}", kind.as_str()))
-            .collect::<std::collections::BTreeSet<_>>();
+    let declared_collection_routes = crate::info_projection::declared_meta_info_collection_routes()
+        .into_iter()
+        .map(|(kind, tag)| format!("{}.childObjects.{tag}", kind.as_str()))
+        .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(manifest_collection_routes, declared_collection_routes);
 
     for (kind_name, names) in manifest["propertyRouteMatrix"].as_object().unwrap() {
@@ -701,27 +671,18 @@ fn manifest_and_profile_cover_every_platform_gated_metadata_kind() {
             let object = document.root_element().first_element_child().unwrap();
             let properties = unica_xml_format::read::child_element(object, "Properties");
             assert!(
-                unica_metadata_designer::info_projection::meta_info_profile_errors(
-                    kind, properties, None
-                )
-                .is_empty(),
+                crate::info_projection::meta_info_profile_errors(kind, properties, None).is_empty(),
                 "{}.properties.{name}",
                 kind.as_str()
             );
-            assert_eq!(
-                unica_metadata_designer::info::typed_properties(properties, kind).len(),
-                1
-            );
-            observed_routes.extend(
-                unica_metadata_designer::info_projection::observed_meta_info_semantic_routes(
-                    kind, properties, None,
-                ),
-            );
+            assert_eq!(crate::info::typed_properties(properties, kind).len(), 1);
+            observed_routes.extend(crate::info_projection::observed_meta_info_semantic_routes(
+                kind, properties, None,
+            ));
         }
     }
 
-    let declared_routes =
-        unica_metadata_designer::info_projection::declared_meta_info_semantic_routes();
+    let declared_routes = crate::info_projection::declared_meta_info_semantic_routes();
     let missing_routes = declared_routes
         .difference(&observed_routes)
         .cloned()
@@ -775,7 +736,7 @@ fn characteristic_type_details_preserve_the_observed_value_type() {
 
 #[test]
 fn canonical_standard_attributes_and_tabular_sections_have_typed_owners() {
-    let (xml, _) = unica_metadata_designer::template_catalog::minimal_metadata_xml_for_tests(
+    let (xml, _) = crate::template_catalog::minimal_metadata_xml_for_tests(
         MetadataKind::ChartOfAccounts,
         "Accounts",
     )
@@ -859,15 +820,14 @@ fn declaration_localized_leaves_reject_unmodelled_attributes() {
             .unwrap();
     let mut diagnostics = Vec::new();
 
-    let declarations = serde_json::to_value(
-        unica_metadata_designer::info_projection::project_meta_info_declarations(
+    let declarations =
+        serde_json::to_value(crate::info_projection::project_meta_info_declarations(
             MetadataKind::ChartOfAccounts,
             unica_xml_format::read::child_element(object, "Properties"),
             &target,
             &mut diagnostics,
-        ),
-    )
-    .unwrap();
+        ))
+        .unwrap();
 
     assert!(declarations["standardTabularSections"].is_null());
     assert_eq!(diagnostics[0].code, MetaDiagnosticCode::ProviderUnavailable);
@@ -899,10 +859,7 @@ fn observed_type_rejects_a_defined_type_qname_with_the_wrong_metadata_kind() {
     let document = roxmltree::Document::parse(xml).unwrap();
 
     assert!(
-        unica_metadata_designer::info_projection::parse_observed_metadata_type_node(
-            document.root_element()
-        )
-        .is_err()
+        crate::info_projection::parse_observed_metadata_type_node(document.root_element()).is_err()
     );
 }
 
@@ -917,15 +874,13 @@ fn root_details_localize_unknown_platform_qnames_as_warnings() {
         let target =
             MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Constant.Value").unwrap();
         let mut diagnostics = Vec::new();
-        let details = serde_json::to_value(
-            unica_metadata_designer::info_projection::project_meta_info_details(
-                MetadataKind::Constant,
-                unica_xml_format::read::child_element(object, "Properties"),
-                None,
-                &target,
-                &mut diagnostics,
-            ),
-        )
+        let details = serde_json::to_value(crate::info_projection::project_meta_info_details(
+            MetadataKind::Constant,
+            unica_xml_format::read::child_element(object, "Properties"),
+            None,
+            &target,
+            &mut diagnostics,
+        ))
         .unwrap();
 
         assert!(details["details"]["type"].is_null(), "{type_value}");
@@ -946,7 +901,7 @@ fn unknown_platform_type_with_a_malformed_qualifier_remains_an_error() {
     let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Constant.Value").unwrap();
     let mut diagnostics = Vec::new();
 
-    let _ = unica_metadata_designer::info_projection::project_meta_info_details(
+    let _ = crate::info_projection::project_meta_info_details(
         MetadataKind::Constant,
         unica_xml_format::read::child_element(object, "Properties"),
         None,
@@ -967,10 +922,7 @@ fn observed_type_rejects_a_foreign_namespace_qualifier_decoy() {
     let document = roxmltree::Document::parse(xml).unwrap();
 
     assert!(
-        unica_metadata_designer::info_projection::parse_observed_metadata_type_node(
-            document.root_element()
-        )
-        .is_err()
+        crate::info_projection::parse_observed_metadata_type_node(document.root_element()).is_err()
     );
 }
 
@@ -982,10 +934,8 @@ fn observed_type_requires_present_qualifiers_to_be_complete_and_match_a_primitiv
     ] {
         let document = roxmltree::Document::parse(xml).unwrap();
         assert!(
-            unica_metadata_designer::info_projection::parse_observed_metadata_type_node(
-                document.root_element()
-            )
-            .is_err(),
+            crate::info_projection::parse_observed_metadata_type_node(document.root_element())
+                .is_err(),
             "qualifiers must be complete and owned by a matching primitive: {xml}"
         );
     }
@@ -993,10 +943,7 @@ fn observed_type_requires_present_qualifiers_to_be_complete_and_match_a_primitiv
     let canonical_default = r#"<Properties xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema"><Type><v8:Type>xs:string</v8:Type></Type></Properties>"#;
     let document = roxmltree::Document::parse(canonical_default).unwrap();
     assert!(
-        unica_metadata_designer::info_projection::parse_observed_metadata_type_node(
-            document.root_element()
-        )
-        .is_ok(),
+        crate::info_projection::parse_observed_metadata_type_node(document.root_element()).is_ok(),
         "the platform emitter uses omitted qualifiers for the canonical default string"
     );
 }
@@ -1009,10 +956,8 @@ fn observed_type_rejects_nested_markup_in_type_and_qualifier_leaves() {
     ] {
         let document = roxmltree::Document::parse(xml).unwrap();
         assert!(
-            unica_metadata_designer::info_projection::parse_observed_metadata_type_node(
-                document.root_element()
-            )
-            .is_err(),
+            crate::info_projection::parse_observed_metadata_type_node(document.root_element())
+                .is_err(),
             "nested markup must not be hidden by node.text(): {xml}"
         );
     }
@@ -1026,10 +971,8 @@ fn observed_type_rejects_attributes_and_mixed_text_on_type_containers() {
     ] {
         let document = roxmltree::Document::parse(xml).unwrap();
         assert!(
-            unica_metadata_designer::info_projection::parse_observed_metadata_type_node(
-                document.root_element()
-            )
-            .is_err(),
+            crate::info_projection::parse_observed_metadata_type_node(document.root_element())
+                .is_err(),
             "container attributes or mixed text must fail closed: {xml}"
         );
     }
@@ -1040,18 +983,13 @@ fn unknown_platform_qnames_are_classified_by_uri_and_unbound_prefixes_are_reject
     let unknown = r#"<Properties xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:core="http://v8.1c.ru/8.1/data/core"><Type><core:Type>core:FutureOpaque</core:Type></Type></Properties>"#;
     let document = roxmltree::Document::parse(unknown).unwrap();
     assert!(
-        unica_metadata_designer::info_projection::observed_type_is_strict_but_unmodelled(
-            document.root_element()
-        )
+        crate::info_projection::observed_type_is_strict_but_unmodelled(document.root_element())
     );
 
     let unbound = r#"<Properties xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:core="http://v8.1c.ru/8.1/data/core"><Type><core:Type>v8:UUID</core:Type></Type></Properties>"#;
     let document = roxmltree::Document::parse(unbound).unwrap();
     assert!(
-        unica_metadata_designer::info_projection::parse_observed_metadata_type_node(
-            document.root_element()
-        )
-        .is_err()
+        crate::info_projection::parse_observed_metadata_type_node(document.root_element()).is_err()
     );
 }
 
@@ -1064,13 +1002,11 @@ fn malformed_known_variants_are_not_downgraded_by_an_unknown_qname() {
     ] {
         let document = roxmltree::Document::parse(xml).unwrap();
         assert!(
-            unica_metadata_designer::info_projection::parse_observed_metadata_type_node(
-                document.root_element()
-            )
-            .is_err()
+            crate::info_projection::parse_observed_metadata_type_node(document.root_element())
+                .is_err()
         );
         assert!(
-            !unica_metadata_designer::info_projection::observed_type_is_strict_but_unmodelled(
+            !crate::info_projection::observed_type_is_strict_but_unmodelled(
                 document.root_element()
             ),
             "malformed known semantics must stay in the error branch: {xml}"
@@ -1086,15 +1022,13 @@ fn details_reject_nested_markup_in_reference_and_qname_leaves() {
     let target =
         MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "DocumentJournal.Journal").unwrap();
     let mut diagnostics = Vec::new();
-    let details = serde_json::to_value(
-        unica_metadata_designer::info_projection::project_meta_info_details(
-            MetadataKind::DocumentJournal,
-            unica_xml_format::read::child_element(object, "Properties"),
-            None,
-            &target,
-            &mut diagnostics,
-        ),
-    )
+    let details = serde_json::to_value(crate::info_projection::project_meta_info_details(
+        MetadataKind::DocumentJournal,
+        unica_xml_format::read::child_element(object, "Properties"),
+        None,
+        &target,
+        &mut diagnostics,
+    ))
     .unwrap();
     assert!(details["details"]["registeredDocuments"].is_null());
     assert_eq!(
@@ -1108,15 +1042,13 @@ fn details_reject_nested_markup_in_reference_and_qname_leaves() {
     let target =
         MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "WebService.Service").unwrap();
     let mut diagnostics = Vec::new();
-    let details = serde_json::to_value(
-        unica_metadata_designer::info_projection::project_meta_info_details(
-            MetadataKind::WebService,
-            unica_xml_format::read::child_element(object, "Properties"),
-            unica_xml_format::read::child_element(object, "ChildObjects"),
-            &target,
-            &mut diagnostics,
-        ),
-    )
+    let details = serde_json::to_value(crate::info_projection::project_meta_info_details(
+        MetadataKind::WebService,
+        unica_xml_format::read::child_element(object, "Properties"),
+        unica_xml_format::read::child_element(object, "ChildObjects"),
+        &target,
+        &mut diagnostics,
+    ))
     .unwrap();
     assert!(details["details"]["operations"].is_null());
     assert_eq!(
@@ -1134,15 +1066,13 @@ fn reference_and_xdto_entries_reject_unmodelled_attributes() {
         MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "DocumentJournal.Journal").unwrap();
     let mut diagnostics = Vec::new();
 
-    let details = serde_json::to_value(
-        unica_metadata_designer::info_projection::project_meta_info_details(
-            MetadataKind::DocumentJournal,
-            unica_xml_format::read::child_element(object, "Properties"),
-            None,
-            &target,
-            &mut diagnostics,
-        ),
-    )
+    let details = serde_json::to_value(crate::info_projection::project_meta_info_details(
+        MetadataKind::DocumentJournal,
+        unica_xml_format::read::child_element(object, "Properties"),
+        None,
+        &target,
+        &mut diagnostics,
+    ))
     .unwrap();
 
     assert!(details["details"]["registeredDocuments"].is_null());
@@ -1157,15 +1087,13 @@ fn root_reference_lists_reject_nested_metadata_addresses() {
     let target =
         MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "DocumentJournal.Journal").unwrap();
     let mut diagnostics = Vec::new();
-    let details = serde_json::to_value(
-        unica_metadata_designer::info_projection::project_meta_info_details(
-            MetadataKind::DocumentJournal,
-            unica_xml_format::read::child_element(object, "Properties"),
-            None,
-            &target,
-            &mut diagnostics,
-        ),
-    )
+    let details = serde_json::to_value(crate::info_projection::project_meta_info_details(
+        MetadataKind::DocumentJournal,
+        unica_xml_format::read::child_element(object, "Properties"),
+        None,
+        &target,
+        &mut diagnostics,
+    ))
     .unwrap();
     assert!(details["details"]["registeredDocuments"].is_null());
 
@@ -1182,15 +1110,13 @@ fn root_reference_lists_reject_nested_metadata_addresses() {
     let target =
         MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "WebService.Exchange").unwrap();
     let mut diagnostics = Vec::new();
-    let details = serde_json::to_value(
-        unica_metadata_designer::info_projection::project_meta_info_details(
-            MetadataKind::WebService,
-            unica_xml_format::read::child_element(object, "Properties"),
-            unica_xml_format::read::child_element(object, "ChildObjects"),
-            &target,
-            &mut diagnostics,
-        ),
-    )
+    let details = serde_json::to_value(crate::info_projection::project_meta_info_details(
+        MetadataKind::WebService,
+        unica_xml_format::read::child_element(object, "Properties"),
+        unica_xml_format::read::child_element(object, "ChildObjects"),
+        &target,
+        &mut diagnostics,
+    ))
     .unwrap();
     assert!(details["details"]["xdtoPackages"].is_null());
 }
@@ -1201,10 +1127,7 @@ fn observed_type_does_not_scan_type_nodes_outside_the_direct_type_property() {
     let document = roxmltree::Document::parse(xml).unwrap();
 
     assert!(
-        unica_metadata_designer::info_projection::parse_observed_metadata_type_node(
-            document.root_element()
-        )
-        .is_err()
+        crate::info_projection::parse_observed_metadata_type_node(document.root_element()).is_err()
     );
 }
 
@@ -1216,15 +1139,13 @@ fn non_empty_type_without_a_known_variant_is_not_silently_treated_as_absent() {
     let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Constant.Value").unwrap();
     let mut diagnostics = Vec::new();
 
-    let details = serde_json::to_value(
-        unica_metadata_designer::info_projection::project_meta_info_details(
-            MetadataKind::Constant,
-            unica_xml_format::read::child_element(object, "Properties"),
-            None,
-            &target,
-            &mut diagnostics,
-        ),
-    )
+    let details = serde_json::to_value(crate::info_projection::project_meta_info_details(
+        MetadataKind::Constant,
+        unica_xml_format::read::child_element(object, "Properties"),
+        None,
+        &target,
+        &mut diagnostics,
+    ))
     .unwrap();
 
     assert!(details["details"]["type"].is_null());
@@ -1261,15 +1182,13 @@ fn an_incomplete_http_collection_is_null_and_names_the_public_field() {
         MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "HTTPService.ExternalAPI").unwrap();
     let mut diagnostics = Vec::new();
 
-    let value = serde_json::to_value(
-        unica_metadata_designer::info_projection::project_meta_info_details(
-            MetadataKind::HTTPService,
-            unica_xml_format::read::child_element(object, "Properties"),
-            unica_xml_format::read::child_element(object, "ChildObjects"),
-            &target,
-            &mut diagnostics,
-        ),
-    )
+    let value = serde_json::to_value(crate::info_projection::project_meta_info_details(
+        MetadataKind::HTTPService,
+        unica_xml_format::read::child_element(object, "Properties"),
+        unica_xml_format::read::child_element(object, "ChildObjects"),
+        &target,
+        &mut diagnostics,
+    ))
     .unwrap();
 
     assert!(value["details"]["urlTemplates"].is_null());
@@ -1290,15 +1209,13 @@ fn a_missing_http_methods_container_is_not_reported_as_an_empty_collection() {
         MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "HTTPService.ExternalAPI").unwrap();
     let mut diagnostics = Vec::new();
 
-    let value = serde_json::to_value(
-        unica_metadata_designer::info_projection::project_meta_info_details(
-            MetadataKind::HTTPService,
-            unica_xml_format::read::child_element(object, "Properties"),
-            unica_xml_format::read::child_element(object, "ChildObjects"),
-            &target,
-            &mut diagnostics,
-        ),
-    )
+    let value = serde_json::to_value(crate::info_projection::project_meta_info_details(
+        MetadataKind::HTTPService,
+        unica_xml_format::read::child_element(object, "Properties"),
+        unica_xml_format::read::child_element(object, "ChildObjects"),
+        &target,
+        &mut diagnostics,
+    ))
     .unwrap();
 
     assert!(value["details"]["urlTemplates"].is_null());
@@ -1317,15 +1234,13 @@ fn an_unexpected_nested_http_child_is_not_reported_as_an_empty_collection() {
         MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "HTTPService.ExternalAPI").unwrap();
     let mut diagnostics = Vec::new();
 
-    let value = serde_json::to_value(
-        unica_metadata_designer::info_projection::project_meta_info_details(
-            MetadataKind::HTTPService,
-            unica_xml_format::read::child_element(object, "Properties"),
-            unica_xml_format::read::child_element(object, "ChildObjects"),
-            &target,
-            &mut diagnostics,
-        ),
-    )
+    let value = serde_json::to_value(crate::info_projection::project_meta_info_details(
+        MetadataKind::HTTPService,
+        unica_xml_format::read::child_element(object, "Properties"),
+        unica_xml_format::read::child_element(object, "ChildObjects"),
+        &target,
+        &mut diagnostics,
+    ))
     .unwrap();
 
     assert!(value["details"]["urlTemplates"].is_null());
@@ -1345,15 +1260,13 @@ fn duplicate_nested_structure_has_a_stable_provider_unavailable_code() {
         MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "HTTPService.ExternalAPI").unwrap();
     let mut diagnostics = Vec::new();
 
-    let value = serde_json::to_value(
-        unica_metadata_designer::info_projection::project_meta_info_details(
-            MetadataKind::HTTPService,
-            unica_xml_format::read::child_element(object, "Properties"),
-            unica_xml_format::read::child_element(object, "ChildObjects"),
-            &target,
-            &mut diagnostics,
-        ),
-    )
+    let value = serde_json::to_value(crate::info_projection::project_meta_info_details(
+        MetadataKind::HTTPService,
+        unica_xml_format::read::child_element(object, "Properties"),
+        unica_xml_format::read::child_element(object, "ChildObjects"),
+        &target,
+        &mut diagnostics,
+    ))
     .unwrap();
 
     assert!(value["details"]["urlTemplates"].is_null());
@@ -1369,15 +1282,13 @@ fn nested_http_and_web_leaves_reject_unmodelled_attributes() {
         MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "HTTPService.ExternalAPI").unwrap();
     let mut diagnostics = Vec::new();
 
-    let value = serde_json::to_value(
-        unica_metadata_designer::info_projection::project_meta_info_details(
-            MetadataKind::HTTPService,
-            unica_xml_format::read::child_element(object, "Properties"),
-            unica_xml_format::read::child_element(object, "ChildObjects"),
-            &target,
-            &mut diagnostics,
-        ),
-    )
+    let value = serde_json::to_value(crate::info_projection::project_meta_info_details(
+        MetadataKind::HTTPService,
+        unica_xml_format::read::child_element(object, "Properties"),
+        unica_xml_format::read::child_element(object, "ChildObjects"),
+        &target,
+        &mut diagnostics,
+    ))
     .unwrap();
 
     assert!(value["details"]["urlTemplates"].is_null());
@@ -1397,15 +1308,13 @@ fn a_missing_web_parameters_container_is_not_reported_as_an_empty_collection() {
         MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "WebService.Exchange").unwrap();
     let mut diagnostics = Vec::new();
 
-    let value = serde_json::to_value(
-        unica_metadata_designer::info_projection::project_meta_info_details(
-            MetadataKind::WebService,
-            unica_xml_format::read::child_element(object, "Properties"),
-            unica_xml_format::read::child_element(object, "ChildObjects"),
-            &target,
-            &mut diagnostics,
-        ),
-    )
+    let value = serde_json::to_value(crate::info_projection::project_meta_info_details(
+        MetadataKind::WebService,
+        unica_xml_format::read::child_element(object, "Properties"),
+        unica_xml_format::read::child_element(object, "ChildObjects"),
+        &target,
+        &mut diagnostics,
+    ))
     .unwrap();
 
     assert!(value["details"]["operations"].is_null());
@@ -1424,15 +1333,13 @@ fn an_unexpected_nested_web_child_is_not_reported_as_an_empty_collection() {
         MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "WebService.Exchange").unwrap();
     let mut diagnostics = Vec::new();
 
-    let value = serde_json::to_value(
-        unica_metadata_designer::info_projection::project_meta_info_details(
-            MetadataKind::WebService,
-            unica_xml_format::read::child_element(object, "Properties"),
-            unica_xml_format::read::child_element(object, "ChildObjects"),
-            &target,
-            &mut diagnostics,
-        ),
-    )
+    let value = serde_json::to_value(crate::info_projection::project_meta_info_details(
+        MetadataKind::WebService,
+        unica_xml_format::read::child_element(object, "Properties"),
+        unica_xml_format::read::child_element(object, "ChildObjects"),
+        &target,
+        &mut diagnostics,
+    ))
     .unwrap();
 
     assert!(value["details"]["operations"].is_null());
@@ -1456,15 +1363,13 @@ fn web_service_rejects_a_qname_with_an_invalid_local_name() {
         MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "WebService.Exchange").unwrap();
     let mut diagnostics = Vec::new();
 
-    let value = serde_json::to_value(
-        unica_metadata_designer::info_projection::project_meta_info_details(
-            MetadataKind::WebService,
-            unica_xml_format::read::child_element(object, "Properties"),
-            unica_xml_format::read::child_element(object, "ChildObjects"),
-            &target,
-            &mut diagnostics,
-        ),
-    )
+    let value = serde_json::to_value(crate::info_projection::project_meta_info_details(
+        MetadataKind::WebService,
+        unica_xml_format::read::child_element(object, "Properties"),
+        unica_xml_format::read::child_element(object, "ChildObjects"),
+        &target,
+        &mut diagnostics,
+    ))
     .unwrap();
 
     assert!(value["details"]["operations"].is_null());
@@ -1497,7 +1402,7 @@ fn profile_rejects_a_foreign_namespace_decoy_with_a_known_local_name() {
     let document = roxmltree::Document::parse(xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
 
-    let error = unica_metadata_designer::info_projection::validate_meta_info_profile(
+    let error = crate::info_projection::validate_meta_info_profile(
         MetadataKind::Catalog,
         unica_xml_format::read::child_element(object, "Properties"),
         None,
@@ -1513,7 +1418,7 @@ fn profile_rejects_a_malformed_known_scalar_instead_of_dropping_it() {
     let document = roxmltree::Document::parse(xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
 
-    let error = unica_metadata_designer::info_projection::validate_meta_info_profile(
+    let error = crate::info_projection::validate_meta_info_profile(
         MetadataKind::Catalog,
         unica_xml_format::read::child_element(object, "Properties"),
         None,
@@ -1529,7 +1434,7 @@ fn profile_rejects_a_boolean_suffix_hidden_after_an_xml_comment() {
     let document = roxmltree::Document::parse(xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
 
-    let error = unica_metadata_designer::info_projection::validate_meta_info_profile(
+    let error = crate::info_projection::validate_meta_info_profile(
         MetadataKind::Catalog,
         unica_xml_format::read::child_element(object, "Properties"),
         None,
@@ -1565,15 +1470,13 @@ fn http_url_template_name_must_be_a_platform_identifier() {
         MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "HTTPService.ExternalAPI").unwrap();
     let mut diagnostics = Vec::new();
 
-    let value = serde_json::to_value(
-        unica_metadata_designer::info_projection::project_meta_info_details(
-            MetadataKind::HTTPService,
-            unica_xml_format::read::child_element(object, "Properties"),
-            unica_xml_format::read::child_element(object, "ChildObjects"),
-            &target,
-            &mut diagnostics,
-        ),
-    )
+    let value = serde_json::to_value(crate::info_projection::project_meta_info_details(
+        MetadataKind::HTTPService,
+        unica_xml_format::read::child_element(object, "Properties"),
+        unica_xml_format::read::child_element(object, "ChildObjects"),
+        &target,
+        &mut diagnostics,
+    ))
     .unwrap();
 
     assert!(value["details"]["urlTemplates"].is_null());
@@ -1589,7 +1492,7 @@ fn profile_rejects_a_known_string_property_with_nested_markup() {
     let document = roxmltree::Document::parse(xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
 
-    let error = unica_metadata_designer::info_projection::validate_meta_info_profile(
+    let error = crate::info_projection::validate_meta_info_profile(
         MetadataKind::Catalog,
         unica_xml_format::read::child_element(object, "Properties"),
         None,
@@ -1620,7 +1523,7 @@ fn profile_rejects_nested_markup_in_every_scalar_property_kind() {
         let document = roxmltree::Document::parse(&xml).unwrap();
         let object = document.root_element().first_element_child().unwrap();
 
-        let error = unica_metadata_designer::info_projection::validate_meta_info_profile(
+        let error = crate::info_projection::validate_meta_info_profile(
             MetadataKind::Catalog,
             unica_xml_format::read::child_element(object, "Properties"),
             None,
@@ -1645,7 +1548,7 @@ fn profile_rejects_duplicate_details_and_nested_text_leaves() {
     ] {
         let document = roxmltree::Document::parse(xml).unwrap();
         assert!(
-            unica_metadata_designer::info_projection::validate_meta_info_profile(
+            crate::info_projection::validate_meta_info_profile(
                 kind,
                 Some(document.root_element()),
                 None
@@ -1666,7 +1569,7 @@ fn profile_rejects_localized_leaf_markup_duplicate_languages_and_scalar_attribut
     ] {
         let document = roxmltree::Document::parse(xml).unwrap();
         assert!(
-            unica_metadata_designer::info_projection::validate_meta_info_profile(
+            crate::info_projection::validate_meta_info_profile(
                 MetadataKind::Catalog,
                 Some(document.root_element()),
                 None,
@@ -1683,7 +1586,7 @@ fn profile_rejects_a_known_child_object_under_the_wrong_kind() {
     let document = roxmltree::Document::parse(xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
 
-    let error = unica_metadata_designer::info_projection::validate_meta_info_profile(
+    let error = crate::info_projection::validate_meta_info_profile(
         MetadataKind::Catalog,
         unica_xml_format::read::child_element(object, "Properties"),
         unica_xml_format::read::child_element(object, "ChildObjects"),
@@ -1709,7 +1612,7 @@ fn profile_rejects_child_objects_for_platform_childless_kinds() {
         let document = roxmltree::Document::parse(&xml).unwrap();
         let object = document.root_element().first_element_child().unwrap();
 
-        let error = unica_metadata_designer::info_projection::validate_meta_info_profile(
+        let error = crate::info_projection::validate_meta_info_profile(
             kind,
             unica_xml_format::read::child_element(object, "Properties"),
             unica_xml_format::read::child_element(object, "ChildObjects"),
@@ -1727,7 +1630,7 @@ fn profile_rejects_a_relation_property_under_the_wrong_kind() {
     let document = roxmltree::Document::parse(xml).unwrap();
     let object = document.root_element().first_element_child().unwrap();
 
-    let error = unica_metadata_designer::info_projection::validate_meta_info_profile(
+    let error = crate::info_projection::validate_meta_info_profile(
         MetadataKind::WebService,
         unica_xml_format::read::child_element(object, "Properties"),
         None,
@@ -1743,7 +1646,7 @@ fn http_method_projection_accepts_every_8_3_27_enum_literal() {
         env!("CARGO_MANIFEST_DIR"),
         "/../../tests/fixtures/platform_8_3_27/meta_info/edge/http-service.xml"
     ));
-    let allowed = unica_metadata_designer::validation::meta_validate_property_values()
+    let allowed = crate::validation::meta_validate_property_values()
         .iter()
         .find(|(name, _)| *name == "HTTPMethod")
         .map(|(_, allowed)| *allowed)
@@ -1775,10 +1678,8 @@ fn observed_type_reads_an_extension_type_id_as_a_read_only_variant() {
     };
     let single = properties("<v8:TypeId>41dbb66b-ff77-4b8f-aaf8-0ca2012d3a6f</v8:TypeId>");
     let document = roxmltree::Document::parse(&single).unwrap();
-    let observed = unica_metadata_designer::info_projection::parse_observed_metadata_type_node(
-        document.root_element(),
-    )
-    .unwrap();
+    let observed =
+        crate::info_projection::parse_observed_metadata_type_node(document.root_element()).unwrap();
     assert_eq!(
         observed.variants,
         vec![ObservedMetadataTypeVariant::TypeId {
@@ -1799,10 +1700,8 @@ fn observed_type_reads_an_extension_type_id_as_a_read_only_variant() {
         "<v8:Type>cfg:CatalogRef.Settings</v8:Type><v8:Type>xs:string</v8:Type><v8:TypeId>41dbb66b-ff77-4b8f-aaf8-0ca2012d3a6f</v8:TypeId><v8:TypeId>d7bc4697-f470-58f7-aca4-4e6bf45f9e69</v8:TypeId><v8:StringQualifiers><v8:Length>50</v8:Length><v8:AllowedLength>Variable</v8:AllowedLength></v8:StringQualifiers>",
     );
     let document = roxmltree::Document::parse(&composite).unwrap();
-    let observed = unica_metadata_designer::info_projection::parse_observed_metadata_type_node(
-        document.root_element(),
-    )
-    .unwrap();
+    let observed =
+        crate::info_projection::parse_observed_metadata_type_node(document.root_element()).unwrap();
     assert_eq!(observed.variants.len(), 4);
     assert_eq!(
         observed.variants[1],
@@ -1824,7 +1723,7 @@ fn observed_type_reads_an_extension_type_id_as_a_read_only_variant() {
         let xml = properties(broken);
         let document = roxmltree::Document::parse(&xml).unwrap();
         assert!(
-            unica_metadata_designer::info_projection::parse_observed_metadata_type_node(document.root_element()).is_err(),
+            crate::info_projection::parse_observed_metadata_type_node(document.root_element()).is_err(),
             "{broken}"
         );
     }
@@ -1850,9 +1749,8 @@ fn property_observation_distinguishes_missing_false_empty_nil_and_damage() {
             let xml = format!("<Properties xmlns=\"http://v8.1c.ru/8.3/MDClasses\">{fragment}<Comment/></Properties>");
             let doc = roxmltree::Document::parse(&xml).unwrap();
             let props = doc.root_element();
-            let observed = unica_metadata_designer::info_projection::observe_meta_info_property(
-                props, kind, property,
-            );
+            let observed =
+                crate::info_projection::observe_meta_info_property(props, kind, property);
             match raw {
                 "" => assert_eq!(observed.unwrap(), None),
                 "false" => assert_eq!(
@@ -1866,17 +1764,11 @@ fn property_observation_distinguishes_missing_false_empty_nil_and_damage() {
                 _ => assert!(observed.is_err()),
             }
             assert_eq!(
-                unica_metadata_designer::info_projection::observe_meta_info_property(
-                    props, kind, "Comment"
-                )
-                .unwrap(),
+                crate::info_projection::observe_meta_info_property(props, kind, "Comment").unwrap(),
                 Some(MetaInfoPropertyValue::String(String::new()))
             );
-            let diagnostics = unica_metadata_designer::info_projection::meta_info_profile_errors(
-                kind,
-                Some(props),
-                None,
-            );
+            let diagnostics =
+                crate::info_projection::meta_info_profile_errors(kind, Some(props), None);
             assert_eq!(diagnostics.is_empty(), raw != "maybe");
         }
     }
@@ -1891,7 +1783,7 @@ fn property_observation_distinguishes_missing_false_empty_nil_and_damage() {
             format!("<Properties xmlns=\"http://v8.1c.ru/8.3/MDClasses\">{fragment}</Properties>");
         let doc = roxmltree::Document::parse(&xml).unwrap();
         assert!(
-            unica_metadata_designer::info_projection::observe_meta_info_property(
+            crate::info_projection::observe_meta_info_property(
                 doc.root_element(),
                 MetadataKind::CommonModule,
                 "Server"
@@ -1901,7 +1793,7 @@ fn property_observation_distinguishes_missing_false_empty_nil_and_damage() {
         );
     }
     let doc = roxmltree::Document::parse(r#"<Properties xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><MinValue xsi:nil="true"/></Properties>"#).unwrap();
-    let nil = unica_metadata_designer::info_projection::observe_meta_info_property(
+    let nil = crate::info_projection::observe_meta_info_property(
         doc.root_element(),
         MetadataKind::Constant,
         "MinValue",
@@ -1910,7 +1802,7 @@ fn property_observation_distinguishes_missing_false_empty_nil_and_damage() {
     assert!(nil.is_some());
     assert_ne!(
         nil,
-        unica_metadata_designer::info_projection::observe_meta_info_property(
+        crate::info_projection::observe_meta_info_property(
             doc.root_element(),
             MetadataKind::Constant,
             "MaxValue"
@@ -1938,10 +1830,9 @@ fn observed_binary_type_accepts_native_qnames_and_keeps_legacy_read_compatibilit
     ] {
         let xml = wrap(&fragment, "http://www.w3.org/2001/XMLSchema");
         let document = roxmltree::Document::parse(&xml).unwrap();
-        let observed = unica_metadata_designer::info_projection::parse_observed_metadata_type_node(
-            document.root_element(),
-        )
-        .unwrap();
+        let observed =
+            crate::info_projection::parse_observed_metadata_type_node(document.root_element())
+                .unwrap();
         assert_eq!(
             observed.variants,
             vec![ObservedMetadataTypeVariant::BinaryData {
@@ -1950,7 +1841,7 @@ fn observed_binary_type_accepts_native_qnames_and_keeps_legacy_read_compatibilit
             }]
         );
         assert!(
-            !unica_metadata_designer::info_projection::observed_type_is_strict_but_unmodelled(
+            !crate::info_projection::observed_type_is_strict_but_unmodelled(
                 document.root_element()
             )
         );
@@ -1958,9 +1849,7 @@ fn observed_binary_type_accepts_native_qnames_and_keeps_legacy_read_compatibilit
         let xml = wrap(&with_unknown, "http://www.w3.org/2001/XMLSchema");
         let document = roxmltree::Document::parse(&xml).unwrap();
         assert!(
-            unica_metadata_designer::info_projection::observed_type_is_strict_but_unmodelled(
-                document.root_element()
-            )
+            crate::info_projection::observed_type_is_strict_but_unmodelled(document.root_element())
         );
     }
     for fragment in [
@@ -1992,14 +1881,12 @@ fn observed_binary_type_accepts_native_qnames_and_keeps_legacy_read_compatibilit
         let xml = wrap(&fragment, "http://www.w3.org/2001/XMLSchema");
         let document = roxmltree::Document::parse(&xml).unwrap();
         assert!(
-            unica_metadata_designer::info_projection::parse_observed_metadata_type_node(
-                document.root_element()
-            )
-            .is_err(),
+            crate::info_projection::parse_observed_metadata_type_node(document.root_element())
+                .is_err(),
             "{fragment}"
         );
         assert!(
-            !unica_metadata_designer::info_projection::observed_type_is_strict_but_unmodelled(
+            !crate::info_projection::observed_type_is_strict_but_unmodelled(
                 document.root_element()
             ),
             "{fragment}"
@@ -2008,7 +1895,7 @@ fn observed_binary_type_accepts_native_qnames_and_keeps_legacy_read_compatibilit
         let xml = wrap(&with_unknown, "http://www.w3.org/2001/XMLSchema");
         let document = roxmltree::Document::parse(&xml).unwrap();
         assert!(
-            !unica_metadata_designer::info_projection::observed_type_is_strict_but_unmodelled(
+            !crate::info_projection::observed_type_is_strict_but_unmodelled(
                 document.root_element()
             ),
             "{with_unknown}"
@@ -2017,14 +1904,9 @@ fn observed_binary_type_accepts_native_qnames_and_keeps_legacy_read_compatibilit
     let foreign = wrap(native, "urn:foreign");
     let document = roxmltree::Document::parse(&foreign).unwrap();
     assert!(
-        unica_metadata_designer::info_projection::parse_observed_metadata_type_node(
-            document.root_element()
-        )
-        .is_err()
+        crate::info_projection::parse_observed_metadata_type_node(document.root_element()).is_err()
     );
     assert!(
-        !unica_metadata_designer::info_projection::observed_type_is_strict_but_unmodelled(
-            document.root_element()
-        )
+        !crate::info_projection::observed_type_is_strict_but_unmodelled(document.root_element())
     );
 }
