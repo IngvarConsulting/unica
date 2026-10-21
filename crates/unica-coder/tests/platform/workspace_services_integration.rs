@@ -6857,6 +6857,50 @@ fn main() {
         cleanup(&context);
     }
 
+    /// Сервис, умерший до готовности, записи не напишет: ожидание обязано
+    /// прекратиться по его выходу, а не досиживать весь срок (#1920).
+    #[test]
+    fn spawn_wait_stops_once_the_spawned_service_has_exited() {
+        let context = test_context("spawn-wait-exited");
+        let identity =
+            WorkspaceServiceIdentity::new(&context, &context.workspace_root.join("src")).unwrap();
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "infrastructure::workspace_services::tests::startup_failure_child_fixture",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("UNICA_STARTUP_FAILURE_CHILD_FIXTURE", "1")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut child = ManagedStartupChild::spawn_configured(command).unwrap();
+        let pid = child.id();
+        let started = Instant::now();
+
+        let error = unica_analysis_services::test_support::wait_for_record_while(
+            &identity,
+            &RecordingConnector::default(),
+            CoreIdentity::production().as_str(),
+            pid,
+            "secret",
+            Duration::from_secs(30),
+            &CancellationToken::new(),
+            &mut || matches!(child.try_wait_status(), Ok(Some(_))),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("did not become ready"), "{error}");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "ожидание пережило выход сервиса: {:?}",
+            started.elapsed()
+        );
+        assert!(matches!(child.try_wait_status(), Ok(Some(_))));
+        cleanup(&context);
+    }
+
     #[test]
     fn spawn_wait_prioritizes_cancellation_over_its_timeout() {
         let context = test_context("spawn-wait-cancelled");

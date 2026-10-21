@@ -1360,7 +1360,9 @@ impl ServiceSpawner for SystemServiceSpawner {
             let wait_budget = deadline
                 .remaining(cancellation)?
                 .min(SERVICE_CONNECT_TIMEOUT);
-            let record = wait_for_record_with_connector(
+            // Сервис, завершившийся до готовности, записи уже не напишет:
+            // ожидание прекращается сразу, а не досиживает весь срок.
+            let record = wait_for_record_while(
                 identity,
                 &SYSTEM_SERVICE_CONNECTOR,
                 build,
@@ -1368,6 +1370,7 @@ impl ServiceSpawner for SystemServiceSpawner {
                 token,
                 wait_budget,
                 cancellation,
+                &mut || matches!(child.try_wait_status(), Ok(Some(_))),
             )?;
             deadline.remaining(cancellation)?;
             Ok(record)
@@ -2659,6 +2662,7 @@ pub fn spawn_lock_is_contended(error: &io::Error) -> bool {
             .is_some_and(|(actual, expected)| actual == expected)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub fn wait_for_record_with_connector(
     identity: &WorkspaceServiceIdentity,
     connector: &dyn ServiceConnector,
@@ -2667,6 +2671,31 @@ pub fn wait_for_record_with_connector(
     expected_token: &str,
     timeout: Duration,
     cancellation: &CancellationToken,
+) -> Result<WorkspaceServiceRecord, String> {
+    wait_for_record_while(
+        identity,
+        connector,
+        build,
+        expected_pid,
+        expected_token,
+        timeout,
+        cancellation,
+        &mut || false,
+    )
+}
+
+/// Как `wait_for_record_with_connector`, но `exited` сообщает, что
+/// ожидаемый процесс уже завершился: тогда ждать записи бессмысленно.
+#[allow(clippy::too_many_arguments)]
+pub fn wait_for_record_while(
+    identity: &WorkspaceServiceIdentity,
+    connector: &dyn ServiceConnector,
+    build: &str,
+    expected_pid: u32,
+    expected_token: &str,
+    timeout: Duration,
+    cancellation: &CancellationToken,
+    exited: &mut dyn FnMut() -> bool,
 ) -> Result<WorkspaceServiceRecord, String> {
     let started = Instant::now();
     while started.elapsed() < timeout {
@@ -2697,6 +2726,9 @@ pub fn wait_for_record_with_connector(
                 return Ok(record);
             }
             cancellation_error(cancellation)?;
+        }
+        if exited() {
+            break;
         }
         thread::sleep(Duration::from_millis(50).min(remaining));
     }
