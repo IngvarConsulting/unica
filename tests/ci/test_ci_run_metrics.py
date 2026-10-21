@@ -202,6 +202,9 @@ Cache restored from key: cargo-old
                           for entry in metrics.parse_log(log)["cache"]],
                          [(True, "exact", False, "v0-exact"), (True, "partial", False, "v0-prefix-old"),
                           (False, "partial", True, "cargo-old")])
+        jobs = [job(2, "Build Rust ordinary (macos-14)", t("02:00:00"), t("02:00:01"), t("02:01:00"))]
+        counted = metrics.run_metrics(queue_run(), jobs, {2: metrics.parse_log(log)}, [], [])["cacheRestored"]
+        self.assertEqual(counted, {"exact": 0, "partial": 1, "lookupOnly": 2, "miss": 0})
 
     def test_cargo_durations_in_every_format(self):
         for text, seconds in (("17.43s", 17.43), ("3m 26s", 206.0), ("1h 2m 05s", 3725.0)):

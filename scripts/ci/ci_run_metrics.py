@@ -276,7 +276,7 @@ def run_metrics(run: dict, jobs: list[dict], logs: dict[int, dict], lanes: list[
         "cargoFinished": {"count": len(finished), "sumSeconds": sum(finished), "maxSeconds": max(finished, default=0.0)},
         "cache": caches,
         "cacheRestored": {"exact": sum(1 for entry in caches if entry["restored"] and entry["match"] == "exact"),
-                          "partial": sum(1 for entry in caches if entry["match"] == "partial"),
+                          "partial": sum(1 for entry in caches if entry["restored"] and entry["match"] == "partial"),
                           "lookupOnly": sum(1 for entry in caches if entry["lookupOnly"]),
                           "miss": sum(1 for entry in caches if entry["match"] == "none")},
         "lanes": lanes, "shards": shards,
