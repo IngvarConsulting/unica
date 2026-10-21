@@ -60,6 +60,7 @@ CATEGORIES = [
     {"name": "Только документация", "matchedStatuses": ["skipped"], "messageRegex": "docs-only:.*"},
     {"name": "Инфраструктура: раннер не дошёл", "matchedStatuses": ["skipped"], "messageRegex": "раннер не дошёл.*"},
     {"name": "Отключены автором", "matchedStatuses": ["skipped"], "messageRegex": "отключён автором.*"},
+    {"name": "Нет возможности хоста", "matchedStatuses": ["skipped"], "messageRegex": "host capability .*"},
     {"name": "Не в этом ярусе", "matchedStatuses": ["skipped"], "messageRegex": "cadence:.*"},
     {"name": "Поломка теста, а не продукта", "matchedStatuses": ["broken"]},
     {"name": "Дефект продукта", "matchedStatuses": ["failed"]},
