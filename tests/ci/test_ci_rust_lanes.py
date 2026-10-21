@@ -1,6 +1,7 @@
 """Lane/shard inventory is a fail-closed partition of the original full suite."""
 from __future__ import annotations
 import copy
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -17,9 +18,12 @@ import ci_rust_lanes as lanes
 
 def manifest(lane="ordinary", host="ubuntu-latest", profile="queue"):
     parts = [[{"binary": f"package-{lane}", "name": f"case_{i}", "ignored": False}] for i in range(lanes.shards(profile, lane))]
-    return {"schemaVersion": 1, "identity": {"sha": "a" * 40}, "profile": profile, "runner": host,
+    document = {"schemaVersion": 1, "identity": {"sha": "a" * 40, "target": "x86_64-unknown-linux-gnu", "os": "Linux"}, "profile": profile, "runner": host,
             "lane": lane, "selection": list(lanes.selection(lane)), "nextestProfile": lanes.runner.nextest_profile(profile, lanes.selection(lane)),
             "archiveSha256": "archive-" + lane, "inventory": sum(parts, []), "ignoredInventory": [], "shards": parts}
+    if lane == "ordinary":
+        document["fixtureBinary"] = {"path": "x86_64-unknown-linux-gnu/debug/unica", "sha256": "0" * 64, "bytes": 1}
+    return document
 
 
 def result(plan, index):
@@ -130,6 +134,170 @@ class RustLaneTests(unittest.TestCase):
                 lanes.verify_union(Path(temporary), "large", [], "a" * 40)
 
 
+class ArchiveFixtureBinaryTests(unittest.TestCase):
+    def listing(self, root):
+        target = "x86_64-unknown-linux-gnu"
+        return {
+            "rust-build-meta": {"target-directory": str(root / "target"),
+                "platforms": {"host": {"platform": {"triple": target}}, "targets": [{"platform": {"triple": target}}]},
+                "non-test-binaries": {"exact-coder-package": [{"name": "unica", "kind": "bin-exe", "build-platform": "target", "path": target + "/debug/unica"}]}},
+            "rust-suites": {"unica-coder": {"package-name": "unica-coder", "package-id": "exact-coder-package", "kind": "lib",
+                "binary-id": "unica-coder", "build-platform": "target", "testcases": {"selected": {"ignored": False}}}},
+        }
+
+    def test_native_mac_and_windows_metadata_bind_the_target_specific_executable(self):
+        for system, target, name in (("Darwin", "aarch64-apple-darwin", "unica"), ("Windows", "x86_64-pc-windows-msvc", "unica.exe")):
+            with self.subTest(system=system), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                listed = self.listing(root)
+                metadata = listed["rust-build-meta"]
+                metadata["platforms"] = {"host": {"platform": {"triple": target}}, "targets": [{"platform": {"triple": target}}]}
+                relative = f"{target}/debug/{name}"
+                metadata["non-test-binaries"]["exact-coder-package"][0]["path"] = relative.replace("/", "\\") if system == "Windows" else relative
+                binary = root / "target" / relative
+                binary.parent.mkdir(parents=True)
+                binary.write_bytes(b"native archive fixture")
+                descriptor = lanes.fixture_binary_descriptor(root, listed, {"target": target, "os": system})
+                self.assertEqual(descriptor["path"], relative)
+
+    def test_build_binds_only_the_existing_ordinary_archive_non_test_executable(self):
+        for lane in lanes.LANES:
+            with self.subTest(lane=lane), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                identity = manifest()["identity"]
+                listed = self.listing(root)
+                binary = root / "target/x86_64-unknown-linux-gnu/debug/unica"
+                binary.parent.mkdir(parents=True)
+                binary.write_bytes(b"already built non-test executable")
+                calls = []
+
+                def nextest(command, _root, *, capture=False):
+                    calls.append(command[2])
+                    if command[2] == "archive":
+                        (root / "prepared/tests.tar.zst").write_bytes(b"same archive")
+                    return subprocess.CompletedProcess(command, 0, stdout=json.dumps(listed)), 0.01
+
+                with patch.object(lanes.prepared_binary, "identity", return_value=identity), \
+                     patch.object(lanes.prepared_binary, "output", return_value="fixture nextest"), \
+                     patch.object(lanes, "signature"), patch.object(lanes, "timed", side_effect=nextest):
+                    lanes.build(root, root / "prepared", lane, "pr", "ubuntu-latest", "main")
+                plan = json.loads((root / "prepared/lane.json").read_text())
+                self.assertEqual(calls, ["archive", "list", "list"])
+                if lane == "ordinary":
+                    self.assertEqual(plan["fixtureBinary"], {"path": "x86_64-unknown-linux-gnu/debug/unica",
+                        "sha256": hashlib.sha256(binary.read_bytes()).hexdigest(), "bytes": binary.stat().st_size})
+                else:
+                    self.assertNotIn("fixtureBinary", plan)
+
+    def test_missing_duplicate_wrong_package_kind_platform_path_and_link_are_refused(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            original = self.listing(root)
+            identity = manifest()["identity"]
+            binary = root / "target/x86_64-unknown-linux-gnu/debug/unica"
+            binary.parent.mkdir(parents=True)
+            binary.write_bytes(b"archive binary")
+            mutations = [
+                lambda row: row["rust-build-meta"].pop("non-test-binaries"),
+                lambda row: row["rust-suites"]["unica-coder"].update({"package-id": "another-package"}),
+                lambda row: row["rust-suites"]["unica-coder"].update({"package-name": "another-package"}),
+                lambda row: row["rust-build-meta"]["platforms"]["host"]["platform"].update({"triple": "another-host"}),
+                lambda row: row["rust-build-meta"]["platforms"]["targets"].append({"platform": {"triple": "another-target"}}),
+                lambda row: row["rust-build-meta"].update({"target-directory": str(root / "elsewhere")}),
+            ]
+            for changes in ({"kind": "bin"}, {"build-platform": "host"}, {"name": "unica-bootstrap"},
+                            {"path": "../unica"}, {"path": "/tmp/unica"}, {"path": "x86_64-unknown-linux-gnu/debug/deps/unica"}):
+                mutations.append(lambda row, changes=changes: row["rust-build-meta"]["non-test-binaries"]["exact-coder-package"][0].update(changes))
+            mutations.append(lambda row: row["rust-build-meta"]["non-test-binaries"]["exact-coder-package"].append(
+                copy.deepcopy(row["rust-build-meta"]["non-test-binaries"]["exact-coder-package"][0])))
+            for index, mutate in enumerate(mutations):
+                row = copy.deepcopy(original)
+                mutate(row)
+                with self.subTest(mutation=index), self.assertRaises(ValueError):
+                    lanes.fixture_binary_descriptor(root, row, identity)
+            binary.unlink()
+            with self.assertRaises(ValueError):
+                lanes.fixture_binary_descriptor(root, original, identity)
+            other = root / "unrelated"
+            other.write_bytes(b"unrelated")
+            binary.symlink_to(other)
+            with self.assertRaises(ValueError):
+                lanes.fixture_binary_descriptor(root, original, identity)
+
+    def run_fixture(self, lane="ordinary", mutate=None, *, shadow=False):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(lanes.os.environ, {}, clear=True):
+            root = Path(temporary).resolve()
+            prepared = root / "prepared"
+            archive = prepared / "tests.tar.zst"
+            prepared.mkdir()
+            archive.write_bytes(b"bound archive")
+            plan = manifest(lane, profile="pr")
+            plan.update(workspace=str(root), nextestVersion="fixture nextest",
+                        archiveSha256=lanes.prepared_binary.digest(archive), archiveBytes=archive.stat().st_size)
+            payload = b"archive's existing non-test product"
+            if lane == "ordinary":
+                plan["fixtureBinary"].update(sha256=hashlib.sha256(payload).hexdigest(), bytes=len(payload))
+            if mutate:
+                mutate(plan)
+            lanes.write(prepared / "lane.json", plan)
+            decision = root / "decision.json" if shadow else None
+            if decision:
+                lanes.write(decision, {"mode": "affected", "mandatoryMode": "full", "affectedAdmission": False,
+                    "headSha": plan["identity"]["sha"], "packages": ["package-" + lane]})
+            case = plan["inventory"][0]
+            calls = []
+
+            def nextest(command, **kwargs):
+                calls.append((command[2], kwargs["env"]))
+                if command[2] == "list":
+                    return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"rust-suites": {case["binary"]: {
+                        "binary-id": case["binary"], "testcases": {case["name"]: {"ignored": False}}}}}))
+                if lane == "ordinary":
+                    path = Path(kwargs["env"]["UNICA_CANONICAL_DELIVERY_SUCCESS_BINARY"])
+                    self.assertEqual(path, root / "target/x86_64-unknown-linux-gnu/debug/unica")
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(payload)
+                    self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), kwargs["env"]["UNICA_CANONICAL_DELIVERY_SUCCESS_SHA256"])
+                else:
+                    self.assertIsNone(kwargs["env"])
+                junit = root / "target/nextest" / plan["nextestProfile"] / "junit.xml"
+                junit.parent.mkdir(parents=True, exist_ok=True)
+                junit.write_text(f'<testsuites><testsuite name="{case["binary"]}"><testcase name="{case["name"]}"/></testsuite></testsuites>')
+                return subprocess.CompletedProcess(command, 0)
+
+            with patch.object(lanes.prepared_binary, "identity", return_value=plan["identity"]), \
+                 patch.object(lanes.prepared_binary, "output", return_value=plan["nextestVersion"]), \
+                 patch.object(lanes, "signature"), patch.object(lanes.runner, "emit_rust"), \
+                 patch.object(lanes.subprocess, "run", side_effect=nextest) as executed:
+                if mutate:
+                    with self.assertRaises(ValueError):
+                        lanes.run_archive(root, prepared, root / "result", lane, "pr", "ubuntu-latest", 1, None)
+                    executed.assert_not_called()
+                else:
+                    self.assertEqual(lanes.run_archive(root, prepared, root / "result", lane, "pr", "ubuntu-latest", 1, None, decision), 0)
+            return calls
+
+    def test_actual_timed_full_and_shadow_use_the_same_binding_while_other_lanes_are_unchanged(self):
+        calls = self.run_fixture(shadow=True)
+        self.assertEqual([kind for kind, _ in calls], ["run", "list", "run"])
+        self.assertEqual(calls[0][1], calls[2][1])
+        self.assertIsNone(calls[1][1], "listing does not receive fixture execution inputs")
+        for lane in ("receipt", "vendor"):
+            self.assertEqual(self.run_fixture(lane), [("run", None)])
+
+    def test_missing_half_malformed_escaping_and_wrong_target_descriptors_stop_before_execution(self):
+        self.run_fixture(mutate=lambda plan: plan.pop("fixtureBinary"))
+        for descriptor in (None, {}, {"path": "x86_64-unknown-linux-gnu/debug/unica"},
+                           {"sha256": "f" * 64, "bytes": 1}):
+            with self.subTest(descriptor=descriptor):
+                self.run_fixture(mutate=lambda plan, descriptor=descriptor: plan.update(fixtureBinary=descriptor))
+        for change in ({"path": "../unica"}, {"path": "/tmp/unica"}, {"path": "other-target/debug/unica"},
+                       {"path": "x86_64-unknown-linux-gnu/debug/unica.exe"}, {"sha256": "not-a-digest"},
+                       {"sha256": "F" * 64}, {"bytes": 0}, {"bytes": True}, {"extra": "unbound"}):
+            with self.subTest(change=change):
+                self.run_fixture(mutate=lambda plan, change=change: plan["fixtureBinary"].update(change))
+
+
 class IgnoredJUnitArchiveTests(unittest.TestCase):
     # Exact names/reason from root's native nightly-full/hash-partition control.
     native_ignored = (
@@ -165,7 +333,7 @@ class IgnoredJUnitArchiveTests(unittest.TestCase):
                    + ''.join(f'<testcase name="{name}">{markers[status]}</testcase>'
                              for name, status in raw_cases) + '</testsuite></testsuites>').encode()
 
-            def nextest(command, _root, *, capture=False):
+            def nextest(command, _root, *, capture=False, env=None):
                 self.assertEqual(command[2], "run")
                 junit = root / "target/nextest" / plan["nextestProfile"] / "junit.xml"
                 junit.parent.mkdir(parents=True, exist_ok=True)

@@ -36,6 +36,12 @@ Guards, Clippy и тесты работают на отдельных ранне
 workflow. Повторы nextest остаются в Allure, а не считаются новыми случаями.
 Неожиданно пустой план, потерянная часть и обязательный skip блокируют gate.
 
+Сценарий доставки сервисных движков получает путь и SHA256 уже включённого
+в ordinary archive non-test binary `unica`. Producer выбирает его по metadata
+nextest; parent и дочерний тест сверяют hash перед запуском. Вложенной сборки
+Cargo нет. Этот executable — фикстура архива; проверенный production artifact
+для Python готовится и проверяется отдельно.
+
 Архивы сохраняют встроенные абсолютные пути `CARGO_MANIFEST_DIR` и
 `CARGO_BIN_EXE_*`: producer и executor должны иметь одинаковый путь workspace,
 ОС, target, toolchain и cfg. Произвольная релокация этим механизмом не обещана.

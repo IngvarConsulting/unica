@@ -4232,6 +4232,32 @@ pub(crate) mod actor_capacity_tests {
         assert!(output.status.success(), "{stdout}\n{stderr}");
     }
 
+    fn canonical_delivery_fixture_binary() -> (std::path::PathBuf, String) {
+        use sha2::{Digest, Sha256};
+
+        let binary = std::path::PathBuf::from(
+            std::env::var_os("UNICA_CANONICAL_DELIVERY_SUCCESS_BINARY")
+                .expect("prepare the ordinary test archive and bind its Unica fixture binary"),
+        );
+        let expected = std::env::var("UNICA_CANONICAL_DELIVERY_SUCCESS_SHA256")
+            .expect("the archive fixture binary requires its producer's SHA256");
+        assert!(binary.is_absolute(), "fixture binary path must be absolute");
+        assert!(
+            expected.len() == 64
+                && expected
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+            "fixture binary SHA256 must be canonical lowercase hex"
+        );
+        let bytes = std::fs::read(&binary).expect("read the prepared archive fixture binary");
+        assert_eq!(
+            format!("{:x}", Sha256::digest(bytes)),
+            expected,
+            "archive fixture binary does not match its producer's SHA256"
+        );
+        (binary, expected)
+    }
+
     #[test]
     fn canonical_run_and_role_search_deliver_engines_and_run_supported_providers() {
         const CHILD: &str = "UNICA_CANONICAL_DELIVERY_SUCCESS_CHILD";
@@ -4444,18 +4470,7 @@ fn main() {
             std::env::set_var("UNICA_RUNTIME_MANIFEST", &release_path);
             std::env::set_var("UNICA_TEST_PROVIDER_MARKER_DIR", &root);
             std::env::set_var("UNICA_WORKSPACE_SERVICE_IDLE_SECS", "1");
-            let server = std::env::current_exe()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .join(format!("unica{}", std::env::consts::EXE_SUFFIX));
-            assert!(
-                server.is_file(),
-                "build the Unica binary for workspace service: {}",
-                server.display()
-            );
+            let (server, _) = canonical_delivery_fixture_binary();
             std::env::set_var("UNICA_TEST_WORKSPACE_SERVICE_EXE", server);
             let downloader = Arc::new(PublishedFixture(
                 assets,
@@ -4629,88 +4644,7 @@ fn main() {
         }
 
         let root = tempfile::tempdir().unwrap();
-        let test_executable = std::env::current_exe().unwrap();
-        let profile_dir = test_executable.parent().unwrap().parent().unwrap();
-        let server = profile_dir.join(format!("unica{}", std::env::consts::EXE_SUFFIX));
-        let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .canonicalize()
-            .unwrap();
-        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-        let stdout = std::fs::File::create(root.path().join("cargo-build.stdout")).unwrap();
-        let stderr = std::fs::File::create(root.path().join("cargo-build.stderr")).unwrap();
-        let mut command = std::process::Command::new(cargo);
-        command
-            .current_dir(&workspace)
-            .args([
-                "build",
-                "--offline",
-                "--locked",
-                "-p",
-                "unica-coder",
-                "--bin",
-                "unica",
-            ])
-            .stdout(stdout)
-            .stderr(stderr);
-        // The test harness exports this package's identity (`CARGO_MANIFEST_DIR`,
-        // `CARGO_PKG_*`, …). Build scripts such as ring's declare some of these
-        // names in `rerun-if-env-changed`, and Cargo compares them with its own
-        // environment: an inherited value would rerun those scripts and make
-        // the outer test build recompile everything above them.
-        for (name, _) in std::env::vars_os() {
-            let Some(name) = name.to_str() else {
-                continue;
-            };
-            if name == "OUT_DIR"
-                || name == "CARGO_CRATE_NAME"
-                || name == "CARGO_BIN_NAME"
-                || name == "CARGO_PRIMARY_PACKAGE"
-                || name == "CARGO_TARGET_TMPDIR"
-                || name.starts_with("CARGO_MANIFEST_")
-                || name.starts_with("CARGO_PKG_")
-                || name.starts_with("CARGO_CFG_")
-                || name.starts_with("CARGO_FEATURE_")
-            {
-                command.env_remove(name);
-            }
-        }
-        if let Some(target_dir) = std::env::var_os("CARGO_TARGET_DIR") {
-            command.env("CARGO_TARGET_DIR", target_dir);
-        }
-        let mut child = command.spawn().unwrap();
-        // Сборка — подготовка, а не предмет теста. `-p unica-coder --bin unica`
-        // собирается с другим набором признаков, чем `--workspace` у nextest,
-        // и на двухъядерном Windows-раннере под нагрузкой соседних тестов
-        // пересборка шла 122 с и больше 180 с (#1441). Срок держит зависшую
-        // сборку, оставляя запас до остановки теста по сроку `medium`
-        // (2 × 300 с в `.config/nextest.toml`) на сам дочерний прогон.
-        const BUILD_BUDGET: std::time::Duration = std::time::Duration::from_secs(420);
-        let deadline = std::time::Instant::now() + BUILD_BUDGET;
-        let status = loop {
-            if let Some(status) = child.try_wait().unwrap() {
-                break status;
-            }
-            if std::time::Instant::now() >= deadline {
-                child.kill().unwrap();
-                child.wait().unwrap();
-                panic!(
-                    "offline Unica binary build exceeded {} seconds",
-                    BUILD_BUDGET.as_secs()
-                );
-            }
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        };
-        assert!(
-            status.success(),
-            "offline Unica binary build failed: {}",
-            std::fs::read_to_string(root.path().join("cargo-build.stderr")).unwrap()
-        );
-        assert!(
-            server.is_file(),
-            "offline build did not create {}",
-            server.display()
-        );
+        let (server, digest) = canonical_delivery_fixture_binary();
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -4719,6 +4653,8 @@ fn main() {
             ])
             .env(CHILD, "1")
             .env(ROOT, root.path())
+            .env("UNICA_CANONICAL_DELIVERY_SUCCESS_BINARY", server)
+            .env("UNICA_CANONICAL_DELIVERY_SUCCESS_SHA256", digest)
             .output()
             .unwrap();
         let stdout = String::from_utf8_lossy(&output.stdout);

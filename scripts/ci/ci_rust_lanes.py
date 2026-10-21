@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import time
@@ -151,11 +152,64 @@ def signature(directory: Path, *, profile: str, host: str, lane: str, line: str 
     write(path, document)
 
 
-def timed(command: list[str], root: Path, *, capture: bool = False):
+def timed(command: list[str], root: Path, *, capture: bool = False, env: dict[str, str] | None = None):
     print("+ " + " ".join(command), flush=True)
     start = time.monotonic()
-    completed = subprocess.run(command, cwd=root, text=True, stdout=subprocess.PIPE if capture else None)
+    completed = subprocess.run(command, cwd=root, text=True, stdout=subprocess.PIPE if capture else None, env=env)
     return completed, time.monotonic() - start
+
+
+def fixture_binary_path(identity: dict) -> str:
+    target = identity.get("target")
+    system = identity.get("os")
+    suffix = {"Linux": "-linux-", "Darwin": "-apple-darwin", "Windows": "-windows-"}.get(system)
+    if not isinstance(target, str) or re.fullmatch(r"[A-Za-z0-9_.-]+", target) is None or suffix is None or suffix not in target:
+        raise ValueError("fixture binary requires the native host target")
+    return f"{target}/debug/" + ("unica.exe" if system == "Windows" else "unica")
+
+
+def fixture_binary_descriptor(root: Path, listed: dict, identity: dict) -> dict:
+    """Bind the ordinary archive's existing non-test executable, without building."""
+    metadata = listed.get("rust-build-meta", {})
+    platforms = metadata.get("platforms", {})
+    target = identity["target"]
+    if (metadata.get("target-directory") != str(root / "target")
+        or platforms.get("host", {}).get("platform", {}).get("triple") != target
+        or [item.get("platform", {}).get("triple") for item in platforms.get("targets", [])] != [target]):
+        raise ValueError("fixture binary metadata does not describe the native archive target")
+    suite = listed.get("rust-suites", {}).get("unica-coder", {})
+    if (suite.get("package-name"), suite.get("binary-id"), suite.get("kind"), suite.get("build-platform")) != ("unica-coder", "unica-coder", "lib", "target"):
+        raise ValueError("fixture binary metadata is missing the unica-coder package")
+    package = suite.get("package-id")
+    if not isinstance(package, str) or not package:
+        raise ValueError("fixture binary metadata is missing the unica-coder package identity")
+    candidates = [entry for entry in metadata.get("non-test-binaries", {}).get(package, []) if entry.get("name") == "unica"]
+    relative = fixture_binary_path(identity)
+    described_path = candidates[0].get("path") if len(candidates) == 1 else None
+    if identity["os"] == "Windows" and isinstance(described_path, str):
+        described_path = described_path.replace("\\", "/")
+    if len(candidates) != 1 or any(candidates[0].get(key) != value for key, value in (
+        ("kind", "bin-exe"), ("build-platform", "target"),
+    )) or described_path != relative:
+        raise ValueError("archive must contain exactly one target unica non-test fixture binary")
+    binary = root.resolve() / "target" / relative
+    if not binary.is_file() or binary.resolve() != binary or binary.stat().st_size <= 0:
+        raise ValueError("archive fixture binary is missing, empty or linked")
+    return {"path": relative, "sha256": prepared_binary.digest(binary), "bytes": binary.stat().st_size}
+
+
+def fixture_binary_environment(root: Path, document: dict) -> dict[str, str]:
+    descriptor = document.get("fixtureBinary")
+    if (not isinstance(descriptor, dict) or set(descriptor) != {"path", "sha256", "bytes"}
+        or descriptor.get("path") != fixture_binary_path(document["identity"])
+        or not isinstance(descriptor.get("sha256"), str) or re.fullmatch(r"[0-9a-f]{64}", descriptor["sha256"]) is None
+        or type(descriptor.get("bytes")) is not int or descriptor["bytes"] <= 0):
+        raise ValueError("missing or malformed ordinary archive fixture binary")
+    # Nextest extracts the checked archive before starting tests. The parent and
+    # isolated child verify these exact extracted bytes before using the fixture.
+    return {**os.environ,
+            "UNICA_CANONICAL_DELIVERY_SUCCESS_BINARY": str(root.resolve() / "target" / descriptor["path"]),
+            "UNICA_CANONICAL_DELIVERY_SUCCESS_SHA256": descriptor["sha256"]}
 
 
 def junit_outcomes(path: Path) -> list[dict]:
@@ -244,6 +298,8 @@ def build(root: Path, destination: Path, lane: str, profile: str, host: str, lin
         "buildSeconds": seconds, "listSeconds": list_seconds,
         "runId": os.environ.get("GITHUB_RUN_ID"), "attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
     }
+    if lane == "ordinary":
+        document["fixtureBinary"] = fixture_binary_descriptor(root, listed, before)
     write(destination / "lane.json", document)
     allure_results.write_plan(destination, full)
 
@@ -270,6 +326,7 @@ def run_archive(root: Path, prepared: Path, destination: Path, lane: str, profil
     archive = prepared / "tests.tar.zst"
     if prepared_binary.digest(archive) != document["archiveSha256"] or archive.stat().st_size != document["archiveBytes"]:
         raise ValueError("test archive hash or size mismatch")
+    run_options = {"env": fixture_binary_environment(root, document)} if lane == "ordinary" else {}
     if not 1 <= index <= len(document["shards"]):
         raise ValueError("invalid shard index")
     plan = document["shards"][index - 1]
@@ -283,7 +340,7 @@ def run_archive(root: Path, prepared: Path, destination: Path, lane: str, profil
     command = reuse_command("run", root, archive, lane, profile, f"hash:{index}/{len(document['shards'])}")
     if not any(not case["ignored"] for case in plan):
         command.append("--no-tests=pass")
-    completed, seconds = timed(command, root)
+    completed, seconds = timed(command, root, **run_options)
     found = [path for path in candidates if path.is_file()]
     records = []
     annotations = []
@@ -330,7 +387,7 @@ def run_archive(root: Path, prepared: Path, destination: Path, lane: str, profil
                 for path in candidates:
                     path.unlink(missing_ok=True)
                 shadow_command = reuse_command("run", root, archive, lane, profile, f"hash:{index}/{len(document['shards'])}", candidate=expression)
-                shadow_run, shadow_seconds = timed(shadow_command, root)
+                shadow_run, shadow_seconds = timed(shadow_command, root, **run_options)
                 comparison.update(shadowNotRun=False, affectedSeconds=shadow_seconds, exitCode=shadow_run.returncode)
                 shadow_reports = [path for path in candidates if path.is_file()]
                 if shadow_run.returncode != 0 or len(shadow_reports) != 1:
