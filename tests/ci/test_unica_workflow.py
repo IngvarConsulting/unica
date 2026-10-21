@@ -684,7 +684,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
                 self.assertTrue("!cancelled()" in gate_condition or "always()" in gate_condition, gate_condition)
         # Внутри шага один красный набор или полоса не останавливает остальные.
         python = step_by_id(gate, "python")
-        self.assertIn('failed+=("$slug")', python["run"])
+        self.assertIn('wait "${pids[$index]}" || failed+=("${slugs[$index]}")', python["run"])
         self.assertNotIn("set -e", python["run"].replace("set -uo pipefail", ""))
         self.assertIs(job(self.release, "rust-os")["strategy"]["fail-fast"], False)
         build = job(self.release, "build-tools")
@@ -890,7 +890,10 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         # по таймауту. Он идёт после тестов и Clippy и с проверенным продуктом.
         for step_id in ("product", "rust-run", "clippy", "clippy-packages"):
             self.assertLess(ids.index(step_id), ids.index("python"))
-        self.assertNotIn("&", python["run"].replace("&&", ""))
+        # Наборы Python идут параллельно друг другу, и каждый ожидается: ни один
+        # не остаётся фоновым после шага.
+        self.assertIn('for index in "${!pids[@]}"; do', python["run"])
+        self.assertEqual(python["run"].count(" &\n"), 1)
 
     def test_agent_evaluation_and_credential_are_absent_from_every_workflow(self) -> None:
         for workflow in sorted((*WORKFLOWS_DIR.glob("*.yml"), *WORKFLOWS_DIR.glob("*.yaml"))):

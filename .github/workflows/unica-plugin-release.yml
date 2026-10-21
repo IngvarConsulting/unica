@@ -300,9 +300,12 @@ jobs:
         with:
           sarif_file: .build/clippy.sarif
           category: clippy-ubuntu-latest
-      # Python не идёт параллельно с Rust: MCP-тесты ждут ответа по таймауту
-      # и под нагрузкой сборки и nextest падают. Наборы идут подряд тем же
-      # швом, что и раньше джобами; один красный набор не отменяет остальные.
+      # Python не идёт параллельно с Rust и Clippy: MCP-тесты ждут ответа по
+      # таймауту и под нагрузкой сборки и nextest падают. Наборы Python идут
+      # параллельно друг другу тем же швом, что и раньше джобами: каждый
+      # в своём процессе и каталоге результатов, их нагрузка — ожидание
+      # процессов продукта, а не компиляция. Красный набор не отменяет
+      # остальные; вывод каждого печатается своей группой.
       - id: python
         if: ${{ !cancelled() && !(github.event_name == 'push' && github.ref == 'refs/heads/main') }}
         env:
@@ -311,16 +314,21 @@ jobs:
           DOCS_ONLY: ${{ steps.classify.outputs.docs_only }}
         run: |
           set -uo pipefail
-          failed=()
+          slugs=(); pids=(); failed=()
           while read -r entry; do
             suite="$(jq -r .suite <<<"$entry")"; lane="$(jq -r .lane <<<"$entry")"; slug="$(jq -r .slug <<<"$entry")"
             results="$REPORT/results-python-$slug"
             mkdir -p "$results"
             cp -R "$REPORT/plan-python-$slug/." "$results/"
-            echo "::group::Python $slug"
-            python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$suite" --only-size "$lane" --docs-only "$DOCS_ONLY" --results "$results" --runner ubuntu-latest --line "$RUN_LINE" || failed+=("$slug")
-            echo "::endgroup::"
+            python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$suite" --only-size "$lane" --docs-only "$DOCS_ONLY" --results "$results" --runner ubuntu-latest --line "$RUN_LINE" > ".build/python-$slug.log" 2>&1 &
+            slugs+=("$slug"); pids+=("$!")
           done < <(jq -c '.[]' <<<"$PYTHON_MATRIX")
+          for index in "${!pids[@]}"; do
+            wait "${pids[$index]}" || failed+=("${slugs[$index]}")
+            echo "::group::Python ${slugs[$index]}"
+            cat ".build/python-${slugs[$index]}.log"
+            echo "::endgroup::"
+          done
           if [ "${#failed[@]}" -ne 0 ]; then
             echo "::error::Python не проходят: ${failed[*]}"
             exit 1
