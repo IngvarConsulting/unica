@@ -81,6 +81,10 @@ def combined(outcomes: list[str]) -> str:
     for verdict in ("failure", "cancelled"):
         if verdict in outcomes:
             return verdict
+    # A named non-success (`timed_out`, `not_acquired`) reaches the summary as is.
+    named = [outcome for outcome in outcomes if outcome not in ("success", "skipped")]
+    if named:
+        return named[0]
     if all(outcome == "success" for outcome in outcomes):
         return "success"
     if all(outcome == "skipped" for outcome in outcomes):

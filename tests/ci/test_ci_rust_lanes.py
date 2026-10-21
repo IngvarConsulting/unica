@@ -827,6 +827,22 @@ class PreviousInventoryTests(unittest.TestCase):
             self.verify(previous, "large", hosts=hosts,
                         jobs={**self.jobs("large", hosts=hosts), lanes.os_job("macos-14"): "failure"})
 
+    def test_a_runner_github_never_acquired_is_named_once_not_as_lost_lanes(self):
+        # GitHub had no macOS runner: the job was cancelled before start and
+        # left no plan. The gate stays red with that reason, not with the
+        # lane/shard losses that follow from it.
+        previous = self.previous()
+        with tempfile.TemporaryDirectory() as temporary, \
+             patch.dict(lanes.os.environ, {"CI_JOB_RESULTS": json.dumps({lanes.os_job("macos-14"): "not_acquired"})}, clear=True):
+            root = Path(temporary)
+            write_configurations(root / "ubuntu-latest", "queue", "ubuntu-latest")
+            with self.assertRaises(ValueError) as caught:
+                lanes.verify_union(root, "queue", self.HOSTS, "a" * 40, previous)
+        message = str(caught.exception)
+        self.assertIn("Rust (macos-14) got no macos-14 runner from GitHub", message)
+        self.assertNotIn("missing or duplicate", message)
+        self.assertNotIn("macos-14/ordinary", message)
+
     def test_queue_requires_macos_platform_configuration_and_both_runners(self):
         previous = self.previous()
         with tempfile.TemporaryDirectory() as temporary, \

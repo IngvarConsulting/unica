@@ -67,9 +67,10 @@ jobs:
     # SARIF пишет в Code Scanning; прежний инвентарь и джобы других ОС
     # читаются из Actions, объяснения пропаж инвентаря — из описаний pull
     # request. Права джобы заменяют права workflow целиком.
+    # `actions: write` — только чтобы прогон снятой записи очереди отменил себя.
     permissions:
       contents: read
-      actions: read
+      actions: write
       pull-requests: read
       security-events: write
     outputs:
@@ -98,6 +99,22 @@ jobs:
       REPORT: .build/ci-report
       LANES: .build/ci-lanes
     steps:
+      # Очередь, пересобирая пачку, удаляет ref снятой записи, а её прогон
+      # остаётся ждать раннеров. Прогон, чей ref уже исчез (404), отменяет себя
+      # до занятия второго раннера: его результат никому не нужен. Любой
+      # другой ответ API — не повод отменять: лишний прогон дешевле ложной отмены.
+      - name: Queue entry still exists
+        if: github.event_name == 'merge_group'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          QUEUE_REF: ${{ github.ref }}
+        run: |
+          code="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/git/ref/${QUEUE_REF#refs/}")"
+          if [ "$code" != "404" ]; then exit 0; fi
+          echo "::warning::$QUEUE_REF больше нет: очередь сняла эту запись, прогон отменяется"
+          gh run cancel "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY"
+          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -429,6 +446,10 @@ jobs:
   # оставляет его в отчёте для разбора.
   rust-os:
     name: Rust (${{ matrix.runner }})
+    # Чтение исходников; `actions: write` — только для самоотмены снятой записи очереди.
+    permissions:
+      contents: read
+      actions: write
     if: ${{ !(github.event_name == 'push' && github.ref == 'refs/heads/main') && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.profile == 'large' && 180 || 60 }}
@@ -448,6 +469,22 @@ jobs:
       REPORT: .build/ci-report
       LANES: .build/ci-lanes
     steps:
+      # Очередь, пересобирая пачку, удаляет ref снятой записи, а её прогон
+      # остаётся ждать раннеров. Прогон, чей ref уже исчез (404), отменяет себя
+      # до занятия второго раннера: его результат никому не нужен. Любой
+      # другой ответ API — не повод отменять: лишний прогон дешевле ложной отмены.
+      - name: Queue entry still exists
+        if: github.event_name == 'merge_group'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          QUEUE_REF: ${{ github.ref }}
+        run: |
+          code="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/git/ref/${QUEUE_REF#refs/}")"
+          if [ "$code" != "404" ]; then exit 0; fi
+          echo "::warning::$QUEUE_REF больше нет: очередь сняла эту запись, прогон отменяется"
+          gh run cancel "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY"
+          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false

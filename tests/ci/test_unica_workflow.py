@@ -378,7 +378,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         # `Unica CI` ждёт джобу ОС по API, а не через `needs`.
         wait = step_by_id(gate, "os-jobs")
         self.assertIn("python scripts/ci/await_os_jobs.py", wait["run"])
-        self.assertEqual(gate["permissions"]["actions"], "read")
+        self.assertEqual(gate["permissions"]["actions"], "write")
         self.assertEqual(other["name"], "Rust (${{ matrix.runner }})")
         self.assertEqual(normalized(other["continue-on-error"]), "${{ matrix.runner == 'windows-latest' }}")
 
@@ -386,6 +386,22 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         # Проверяем все входы сборочного workflow: безопасный pull_request
         # не исключает параллельный pull_request_target с metadata types.
         self.assertEqual(metadata_build_triggers(self.release), {})
+
+    def test_an_orphaned_queue_run_cancels_itself_before_holding_runners(self) -> None:
+        """Очередь удаляет ref снятой записи; её прогон отменяет себя первым шагом."""
+        for job_id in ("unica-ci", "rust-os"):
+            with self.subTest(job=job_id):
+                found = job(self.release, job_id)
+                first = steps(found)[0]
+                self.assertEqual(first["name"], "Queue entry still exists")
+                self.assertEqual(condition(first), "github.event_name == 'merge_group'")
+                self.assertEqual(first["env"]["QUEUE_REF"], "${{ github.ref }}")
+                # Отмена только на доказанном отсутствии ref: другой ответ API
+                # прогон не останавливает.
+                self.assertIn('if [ "$code" != "404" ]; then exit 0; fi', first["run"])
+                self.assertIn('gh run cancel "$GITHUB_RUN_ID"', first["run"])
+                self.assertIn('/git/ref/${QUEUE_REF#refs/}', first["run"])
+                self.assertEqual(found["permissions"]["actions"], "write")
 
     def test_p0_dry_release_proof_is_read_only_and_aggregated(self) -> None:
         proof = job(self.release, "p0-release-proof")
@@ -562,7 +578,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("hashFiles('.build/clippy.sarif') != ''", condition(sarif))
         # Отчёт в Code Scanning — не проверка: сбой загрузки гейт не красит.
         self.assertIs(sarif["continue-on-error"], True)
-        self.assertEqual(gate["permissions"], {"contents": "read", "actions": "read", "pull-requests": "read", "security-events": "write"})
+        self.assertEqual(gate["permissions"], {"contents": "read", "actions": "write", "pull-requests": "read", "security-events": "write"})
         # Clippy исполняется в фоне, пока идут тесты; его шаг ждёт конца
         # и несёт его исход. Старт — до прогона, ожидание — до Python.
         start, clippy = step_by_id(gate, "clippy-start"), step_by_id(gate, "clippy")

@@ -55,6 +55,12 @@ class AwaitOsJobsTests(unittest.TestCase):
         ])
         self.assertEqual(result, {MAC: "failure"})
 
+    def test_a_job_cancelled_without_a_runner_was_not_acquired(self):
+        never_started = {**job(MAC, conclusion="cancelled"), "runner_name": ""}
+        cancelled = {**job(MAC, conclusion="cancelled"), "runner_name": "GitHub Actions 1000"}
+        self.assertEqual(self.wait([[never_started]]), {MAC: "not_acquired"})
+        self.assertEqual(self.wait([[cancelled]]), {MAC: "cancelled"})
+
     def test_an_absent_job_is_missing_only_once_nothing_else_runs(self):
         # The matrix of the other runner may not be expanded yet.
         result = self.wait([

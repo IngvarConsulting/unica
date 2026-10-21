@@ -800,6 +800,7 @@ def verify_union(directory: Path, profile: str, hosts: list[str], sha: str, base
     # The Linux gate job runs this verifier itself; the other runners' jobs
     # report their conclusions through `await_os_jobs.py`, read from the run.
     in_ci = bool(os.environ.get("CI_JOB_RESULTS"))
+    unacquired: set[str] = set()
     if in_ci:
         if hosts != profile_hosts(profile) and not (profile == "pr" and hosts == [LINUX]):
             problems.append("runner matrix omits an expected operating system")
@@ -811,11 +812,20 @@ def verify_union(directory: Path, profile: str, hosts: list[str], sha: str, base
             outcome = jobs.get(os_job(host))
             if outcome != "success":
                 target = advisory if profile == "large" and host == "windows-latest" else problems
-                target.append(f"{os_job(host)} did not finish as success: {outcome or 'missing'}")
+                if outcome == "not_acquired":
+                    # Not a lost part of the plan: GitHub had no runner of this
+                    # type for the job. Its lanes are reported once, here.
+                    unacquired.add(host)
+                    target.append(f"{os_job(host)} got no {host} runner from GitHub (cancelled before start); "
+                                  "its tests did not run, re-run the workflow")
+                else:
+                    target.append(f"{os_job(host)} did not finish as success: {outcome or 'missing'}")
     expected_configs = {(host, lane) for host in hosts for lane in lanes(profile, host)}
     if any((item.get("runner"), item.get("lane")) not in expected_configs for item in manifests + results):
         raise ValueError("unexpected runner or lane in the collected inventory")
     for host, lane in sorted(expected_configs):
+        if host in unacquired:
+            continue
         try:
             matching = [item for item in manifests if (item.get("runner"), item.get("lane")) == (host, lane)]
             if len(matching) != 1:
@@ -866,6 +876,10 @@ def verify_union(directory: Path, profile: str, hosts: list[str], sha: str, base
     drift = None
     if baseline is not None:
         lost, lost_advisory, drift = compare_inventory(baseline, summary)
+        # A runner that never started loses all its configurations at once;
+        # that is the one reason above, not a list of vanished lanes.
+        lost = [item for item in lost if not any(item.startswith(f"{host}/") for host in unacquired)]
+        lost_advisory = [item for item in lost_advisory if not any(item.startswith(f"{host}/") for host in unacquired)]
         problems += lost
         advisory += lost_advisory
     elif in_ci:
