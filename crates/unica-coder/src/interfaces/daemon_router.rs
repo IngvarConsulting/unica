@@ -2076,6 +2076,13 @@ mod tests {
             snapshot.completed_result().is_none(),
             "the handoff answers before the attempt finishes: {snapshot:?}"
         );
+        // The handoff interrupts a running attempt, not an admission: with a
+        // short host budget a slow connection could otherwise hand off queued.
+        assert_eq!(
+            service.executions.load(Ordering::SeqCst),
+            1,
+            "the attempt was already running at the handoff"
+        );
         // The daemon hands off at its own cutoff and the frontend still gets
         // the answer inside its transport window plus recovery.
         assert_cutoff_handoff(answered_after);
@@ -2144,6 +2151,13 @@ mod tests {
         assert!(
             snapshot.completed_result().is_none(),
             "the handoff answers before the attempt finishes: {snapshot:?}"
+        );
+        // The handoff interrupts a running attempt, not an admission: with a
+        // short host budget a slow connection could otherwise hand off queued.
+        assert_eq!(
+            service.executions.load(Ordering::SeqCst),
+            1,
+            "the attempt was already running at the handoff"
         );
         assert_cutoff_handoff(answered_after);
 

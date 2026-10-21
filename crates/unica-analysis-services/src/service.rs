@@ -1370,7 +1370,9 @@ impl ServiceSpawner for SystemServiceSpawner {
                 token,
                 wait_budget,
                 cancellation,
-                &mut || matches!(child.try_wait_status(), Ok(Some(_))),
+                // Ошибка опроса — тоже конец ожидания, как у демона v5: процессом
+                // запуск уже не владеет, а причину назовёт отчёт о старте.
+                &mut || !matches!(child.try_wait_status(), Ok(None)),
             )?;
             deadline.remaining(cancellation)?;
             Ok(record)
