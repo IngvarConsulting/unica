@@ -24,6 +24,12 @@ import tree_sitter_rust
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RMCP_OWNER = "crates/unica-coder/src/interfaces/mcp.rs"
+# Зависший фейк rlm (стенд-ин индекса и MCP) спит столько секунд. Граница
+# «срок фазы сработал» выражена через неё, а не через скорость машины.
+RLM_FAKE_HANG_SECONDS = 30
+# Предохранитель ожидания старта фейка и выхода его дерева, не проверяемый
+# срок; он короче зависания, чтобы не спутать «убит» с «сам доспал».
+RLM_FAKE_EVENT_FUSE_SECONDS = RLM_FAKE_HANG_SECONDS / 2
 RMCP_INTERFACE_ROOT = "crates/unica-coder/src/interfaces/"
 RMCP_CRATES_IO_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
 RMCP_ALLOWED_FEATURES = ["server", "transport-io"]
@@ -2824,67 +2830,76 @@ fn test_only() { std::process::Command::new("git"); }
                 self.assertTrue(any(expected in error for error in errors), errors)
                 self.assertFalse(any(str(root) in error for error in errors), errors)
 
-    def test_rlm_mcp_contract_bounds_reads_and_terminates_the_process_tree(self) -> None:
+    def rlm_session_ready_after_fake_start(self, module, tool: Path, pid_log: Path):
+        """Start the narrowed phase only after the hanging fake recorded its tree.
+
+        The timeout under test bounds the hang, not interpreter start-up:
+        a session for `tool` returns from its constructor once the fake wrote
+        `pid_log`, so a slow start cannot expire the narrowed budget first.
+        """
+        shared = module.load_shared_mcp_smoke_module()
+
+        class ReadySession(shared.McpSession):
+            def __init__(self, command, *args, **kwargs):
+                super().__init__(command, *args, **kwargs)
+                if str(tool) in command:
+                    deadline = time.monotonic() + RLM_FAKE_EVENT_FUSE_SECONDS
+                    while not pid_log.exists() and time.monotonic() < deadline:
+                        time.sleep(0.01)
+
+        return type("Shared", (), {"McpSession": ReadySession})
+
+    def assert_rlm_hang_is_bounded(self, *, mode: str, index_mode: str, phase: str) -> None:
         module = load_contract_module()
         parent_pid = child_pid = 0
+        timeout_name = {
+            "mcp": "RLM_MCP_CONTRACT_TIMEOUT_SECONDS",
+            "index": "RLM_INDEX_PROCESS_TIMEOUT_SECONDS",
+        }[phase]
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             mcp_tool, index_tool, _request_log, _index_log, pid_log = (
-                self.write_rlm_contract_standins(root, mode="hang")
+                self.write_rlm_contract_standins(root, mode=mode, index_mode=index_mode)
             )
+            hanging_tool = mcp_tool if phase == "mcp" else index_tool
+            shared = self.rlm_session_ready_after_fake_start(module, hanging_tool, pid_log)
             try:
-                with patch.object(module, "RLM_MCP_CONTRACT_TIMEOUT_SECONDS", 0.2):
+                # Сужается только проверяемая фаза; другая сохраняет обычный
+                # срок и не зависит от скорости старта своего фейка.
+                with patch.object(module, timeout_name, 0.2), patch.object(
+                    module, "load_shared_mcp_smoke_module", return_value=shared
+                ):
                     started_at = time.monotonic()
                     errors = module.check_rlm_mcp_contract(mcp_tool, index_tool)
                     elapsed = time.monotonic() - started_at
+                self.assertTrue(
+                    pid_log.is_file(),
+                    "the hanging rlm fake did not record its process tree",
+                )
                 parent_pid, child_pid = [
                     int(line)
                     for line in pid_log.read_text(encoding="utf-8").splitlines()
                 ]
-                deadline = time.monotonic() + 2.0
+                deadline = time.monotonic() + RLM_FAKE_EVENT_FUSE_SECONDS
                 while time.monotonic() < deadline and (
                     self.process_is_alive(parent_pid) or self.process_is_alive(child_pid)
                 ):
                     time.sleep(0.025)
 
-                self.assertLess(elapsed, 2.0)
+                # Без срока фазы проверка ждала бы, пока фейк доспит.
+                self.assertLess(elapsed, RLM_FAKE_HANG_SECONDS)
                 self.assertTrue(any("timed out" in error for error in errors), errors)
                 self.assertFalse(self.process_is_alive(parent_pid))
                 self.assertFalse(self.process_is_alive(child_pid))
             finally:
                 self.cleanup_process_tree_best_effort(parent_pid, child_pid)
+
+    def test_rlm_mcp_contract_bounds_reads_and_terminates_the_process_tree(self) -> None:
+        self.assert_rlm_hang_is_bounded(mode="hang", index_mode="ok", phase="mcp")
 
     def test_rlm_mcp_contract_bounds_index_build_and_terminates_its_process_tree(self) -> None:
-        module = load_contract_module()
-        parent_pid = child_pid = 0
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            mcp_tool, index_tool, _request_log, _index_log, pid_log = (
-                self.write_rlm_contract_standins(root, index_mode="hang")
-            )
-            try:
-                with patch.object(module, "RLM_MCP_CONTRACT_TIMEOUT_SECONDS", 0.2):
-                    started_at = time.monotonic()
-                    errors = module.check_rlm_mcp_contract(mcp_tool, index_tool)
-                    elapsed = time.monotonic() - started_at
-                parent_pid, child_pid = [
-                    int(line)
-                    for line in pid_log.read_text(encoding="utf-8").splitlines()
-                ]
-                deadline = time.monotonic() + 2.0
-                while time.monotonic() < deadline and (
-                    self.process_is_alive(parent_pid) or self.process_is_alive(child_pid)
-                ):
-                    time.sleep(0.025)
-
-                self.assertLess(elapsed, 2.0)
-                self.assertTrue(any("timed out" in error for error in errors), errors)
-                self.assertFalse(self.process_is_alive(parent_pid))
-                self.assertFalse(self.process_is_alive(child_pid))
-            finally:
-                self.cleanup_process_tree_best_effort(parent_pid, child_pid)
+        self.assert_rlm_hang_is_bounded(mode="ok", index_mode="hang", phase="index")
 
     def test_rlm_mcp_contract_closes_transport_pipes(self) -> None:
         module = load_contract_module()
