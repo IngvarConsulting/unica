@@ -21,8 +21,8 @@ Guards и Python `small` обоих наборов (`tests/ci`, `tests/dev`) о�
 
 Прогон занимает по одной джобе на ОС. Тариф даёт 20 одновременных джоб,
 из них 5 macOS, поэтому запись очереди — ровно два раннера: Linux-джоба
-`Unica CI` и `Rust (macos-14)`. Pull request — `Unica CI` и `Rust lint`
-(Clippy отдельной джобой, чтобы обычный PR не ждал его подряд); метка
+`Unica CI` и `Rust (macos-14)`. Pull request — `Unica CI` и `Lint and Python`
+(Clippy и Python small отдельной джобой, параллельно сборке и medium); метка
 `ci:full` добавляет macOS. Ночной `large` добавляет `Rust (windows-latest)`,
 он остаётся advisory. `Unica CI` подряд, в одном каталоге `target`, исполняет
 маршрут, guards, теневой selector, продукт для Python, архивы и прогоны
@@ -30,8 +30,8 @@ Guards и Python `small` обоих наборов (`tests/ci`, `tests/dev`) о�
 инвентаря и итог. В очереди и на ветках Clippy исполняется в фоне
 (`background_step.py`), пока идут тесты Rust; Python ждёт его конца и идёт
 после: MCP-тесты под нагрузкой сборки и nextest падают по таймауту. Наборы
-Python идут параллельно друг другу. В pull request `Unica CI` после Python
-ждёт исход джобы `Rust lint` (шаг `lint-job`). Красный шаг не отменяет следующие (`!cancelled()`),
+Python идут параллельно друг другу. В pull request `Unica CI` ждёт исход шагов
+Clippy и Python джобы `Lint and Python` (шаги `lint-job`, `pr-python`). Красный шаг не отменяет следующие (`!cancelled()`),
 поэтому ошибка линта или загрузки SARIF не лишает отчёт тестовых результатов.
 
 `needs` на macOS сделал бы запись последовательной. Поэтому `Unica CI` в конце

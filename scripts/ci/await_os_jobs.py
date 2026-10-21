@@ -29,7 +29,7 @@ from ci_rust_lanes import GATE_JOB, LINUX, os_job  # noqa: E402
 def list_jobs(repository: str, run_id: str) -> list[dict]:
     pages = subprocess.check_output(
         ["gh", "api", "--paginate", f"repos/{repository}/actions/runs/{run_id}/jobs?filter=latest&per_page=100",
-         "--jq", ".jobs[] | {name, status, conclusion, runner_name}"], text=True,
+         "--jq", ".jobs[] | {name, status, conclusion, runner_name, steps: [.steps[]? | {name, conclusion}]}"], text=True,
     )
     return [json.loads(line) for line in pages.splitlines() if line.strip()]
 
@@ -45,12 +45,20 @@ def conclusion(job: dict) -> str:
     return outcome
 
 
+STEP = "::"
+
+
 def outcomes(jobs: list[dict], expected: list[str]) -> dict[str, str] | None:
-    """Исходы ожидаемых джоб или None, пока какая-то из них может появиться или идёт."""
+    """Исходы ожидаемых джоб или None, пока какая-то из них может появиться или идёт.
+
+    `Джоба::Шаг` — исход одного шага джобы: у джобы pull request с Clippy
+    и Python отказ одного не должен выдавать себя за отказ другого.
+    """
     found = {job["name"]: job for job in jobs}
     result = {}
     for name in expected:
-        job = found.get(name)
+        job_name, _, step_name = name.partition(STEP)
+        job = found.get(job_name)
         if job is None:
             # Матрица ещё не развёрнута или джобы нет вовсе: «нет» становится
             # окончательным, только когда больше ничего, кроме гейта, не идёт.
@@ -59,6 +67,9 @@ def outcomes(jobs: list[dict], expected: list[str]) -> dict[str, str] | None:
             result[name] = "missing"
         elif job["status"] != "completed":
             return None
+        elif step_name and conclusion(job) != NOT_ACQUIRED:
+            step = next((item for item in job.get("steps") or [] if item.get("name") == step_name), None)
+            result[name] = (step.get("conclusion") or "unknown") if step else "missing"
         else:
             result[name] = conclusion(job)
     return result
@@ -88,7 +99,7 @@ def wait(expected: list[str], read: Callable[[], list[dict]], *, timeout: float,
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--runners", required=True, help="JSON runners of this gate profile")
-    parser.add_argument("--job", action="append", default=[], help="another job of this run to await by its name")
+    parser.add_argument("--job", action="append", default=[], help="another job of this run to await by its name; JOB::STEP for one step")
     parser.add_argument("--require-success", action="store_true", help="exit 1 unless every awaited job succeeded")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--timeout", type=float, default=3600)

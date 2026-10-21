@@ -261,7 +261,7 @@ jobs:
       # Планы выгружаются до тестов: раннер, умерший на середине, оставляет
       # состав, и недошедшие тесты попадут в отчёт `skipped`.
       - id: python-plan
-        if: ${{ !cancelled() && !(github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+        if: ${{ !cancelled() && !(github.event_name == 'push' && github.ref == 'refs/heads/main') && github.event_name != 'pull_request' }}
         env:
           PYTHON_MATRIX: ${{ steps.python-matrix.outputs.python_matrix }}
           RUN_LINE: ${{ steps.line.outputs.line }}
@@ -285,7 +285,7 @@ jobs:
       # подряд. `cargo` здесь один — прогон архивов его не зовёт. Python с
       # Clippy не пересекается: MCP-тесты под нагрузкой сборки падают по
       # таймауту, поэтому Python идёт после ожидания Clippy. Pull request
-      # линтует отдельной джобой `Rust lint`: так он укладывается в обычное
+      # линтует отдельной джобой `Lint and Python`: так он укладывается в обычное
       # время, а очередь остаётся на двух раннерах.
       - id: clippy-start
         if: ${{ !cancelled() && steps.classify.outputs.rust_required == 'true' && github.event_name != 'pull_request' }}
@@ -319,7 +319,7 @@ jobs:
       # процессов продукта, а не компиляция. Красный набор не отменяет
       # остальные; вывод каждого печатается своей группой.
       - id: python
-        if: ${{ !cancelled() && !(github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+        if: ${{ !cancelled() && !(github.event_name == 'push' && github.ref == 'refs/heads/main') && github.event_name != 'pull_request' }}
         env:
           PYTHON_MATRIX: ${{ steps.python-matrix.outputs.python_matrix }}
           RUN_LINE: ${{ steps.line.outputs.line }}
@@ -345,12 +345,18 @@ jobs:
             echo "::error::Python не проходят: ${failed[*]}"
             exit 1
           fi
-      # Clippy pull request — исход джобы `Rust lint` этого прогона.
+      # Clippy и Python pull request — шаги джобы `Lint and Python` этого
+      # прогона: каждый своей записью гейта.
       - id: lint-job
         if: ${{ !cancelled() && github.event_name == 'pull_request' && steps.classify.outputs.rust_required == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python scripts/ci/await_os_jobs.py --runners '["ubuntu-latest"]' --job "Rust lint" --out .build/lint-job.json --timeout 3600 --require-success
+        run: python scripts/ci/await_os_jobs.py --runners '["ubuntu-latest"]' --job "Lint and Python::Clippy" --out .build/lint-job.json --timeout 3600 --require-success
+      - id: pr-python
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/ci/await_os_jobs.py --runners '["ubuntu-latest"]' --job "Lint and Python::Python" --out .build/pr-python.json --timeout 3600 --require-success
       # Джобы других ОС этого прогона: их исход и отчёт. Пока они не
       # закончились, Linux ждёт; не дождались за час — `timed_out`.
       - id: os-jobs
@@ -447,11 +453,13 @@ jobs:
           PYTHON_MATRIX: ${{ steps.python-matrix.outputs.python_matrix }}
         run: python scripts/ci/evaluate-ci-gate.py
 
-  # Clippy pull request: отдельная Linux-джоба рядом с `Unica CI`, которая
-  # ждёт её исход по jobs API (шаг `lint-job`). Только pull request: очередь
-  # и ветки линтуют в фоне внутри `Unica CI` и держат два раннера на запись.
-  rust-lint:
-    name: Rust lint
+  # Clippy и Python pull request: вторая Linux-джоба рядом с `Unica CI`,
+  # которая ждёт исход её шагов по jobs API (`lint-job`, `pr-python`). Python
+  # small продукту не нужен, поэтому он идёт здесь, параллельно сборке и
+  # medium. Только pull request: очередь и ветки исполняют всё внутри
+  # `Unica CI` и держат два раннера на запись.
+  pr-checks:
+    name: Lint and Python
     if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -464,6 +472,8 @@ jobs:
         shell: bash
     env:
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      PYTHONUTF8: "1"
+      REPORT: .build/ci-report
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -472,14 +482,25 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      # Маршрут — тот же классификатор: без Rust линтовать нечего.
+      - id: line
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: echo "line=$(python scripts/ci/resolve-line.py --ref-type "$REF_TYPE" --ref-name "$REF_NAME" --sha "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
+      # Маршрут — тот же классификатор: без Rust линтовать нечего, документация
+      # сужает Python до small.
       - id: classify
         run: |
           set -euo pipefail
           mkdir -p .build
-          python scripts/ci/classify-workflow-changes.py --github-event --runner-matrix '["ubuntu-latest"]' --line "" --results .build/ci-routing-lint >> "$GITHUB_OUTPUT"
-      - if: steps.classify.outputs.rust_required == 'true'
-        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+          python scripts/ci/classify-workflow-changes.py --github-event --runner-matrix '["ubuntu-latest"]' --line "" --results .build/ci-routing-pr >> "$GITHUB_OUTPUT"
+      - id: python-matrix
+        env:
+          DOCS_ONLY: ${{ steps.classify.outputs.docs_only }}
+        run: echo "python_matrix=$(python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --python-matrix --docs-only "$DOCS_ONLY")" >> "$GITHUB_OUTPUT"
+      - run: python -m pip install -r tests/ci/requirements.txt
+      # Python small читает манифесты через `cargo metadata`; Clippy — компоненту.
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable
           components: clippy
@@ -488,15 +509,52 @@ jobs:
         with:
           tool: clippy-sarif@0.8.0,sarif-fmt@0.8.0
       # Только чтение: pull request ключ не пишет.
-      - name: Кэш зависимостей Rust # zizmor: ignore[cache-poisoning] restore-only; PR читает область main, джоба публикует только SARIF
+      - name: Кэш зависимостей Rust # zizmor: ignore[cache-poisoning] restore-only; PR читает область main, джоба публикует только SARIF и отчёт Python
         if: steps.classify.outputs.rust_required == 'true'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: ci-rust-ordinary
           save-if: false
-      - id: clippy
-        if: steps.classify.outputs.rust_required == 'true'
+      # Python и Clippy делят раннер, но не по очереди: Python идёт первым,
+      # пока компиляции нет, — MCP-тесты под нагрузкой сборки падают.
+      - name: Python
+        id: python
+        env:
+          PYTHON_MATRIX: ${{ steps.python-matrix.outputs.python_matrix }}
+          RUN_LINE: ${{ steps.line.outputs.line }}
+          DOCS_ONLY: ${{ steps.classify.outputs.docs_only }}
+        run: |
+          set -uo pipefail
+          slugs=(); pids=(); failed=()
+          while read -r entry; do
+            suite="$(jq -r .suite <<<"$entry")"; lane="$(jq -r .lane <<<"$entry")"; slug="$(jq -r .slug <<<"$entry")"
+            results="$REPORT/results-python-$slug"
+            python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$suite" --only-size "$lane" --docs-only "$DOCS_ONLY" --plan-only --results "$results" --runner ubuntu-latest --line "$RUN_LINE" || failed+=("$slug-plan")
+            python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$suite" --only-size "$lane" --docs-only "$DOCS_ONLY" --results "$results" --runner ubuntu-latest --line "$RUN_LINE" > ".build/python-$slug.log" 2>&1 &
+            slugs+=("$slug"); pids+=("$!")
+          done < <(jq -c '.[]' <<<"$PYTHON_MATRIX")
+          for index in "${!pids[@]}"; do
+            wait "${pids[$index]}" || failed+=("${slugs[$index]}")
+            echo "::group::Python ${slugs[$index]}"
+            cat ".build/python-${slugs[$index]}.log"
+            echo "::endgroup::"
+          done
+          if [ "${#failed[@]}" -ne 0 ]; then
+            echo "::error::Python не проходят: ${failed[*]}"
+            exit 1
+          fi
+      - name: Clippy
+        id: clippy
+        if: ${{ !cancelled() && steps.classify.outputs.rust_required == 'true' }}
         run: scripts/ci/clippy.sh all
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: results-pr-python
+          path: .build/ci-report/results-*
+          retention-days: 7
+          overwrite: true
+          if-no-files-found: ignore
       # Категория сохраняет прежнее имя `clippy-ubuntu-latest`, чтобы не
       # потерять историю оповещений.
       - if: always() && hashFiles('.build/clippy.sarif') != '' && github.event.pull_request.head.repo.full_name == github.repository

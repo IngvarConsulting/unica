@@ -61,6 +61,18 @@ class AwaitOsJobsTests(unittest.TestCase):
         self.assertEqual(self.wait([[never_started]]), {MAC: "not_acquired"})
         self.assertEqual(self.wait([[cancelled]]), {MAC: "cancelled"})
 
+    def test_a_step_of_a_job_reports_its_own_outcome(self):
+        # The pull request job lints and runs Python: a red lint must not
+        # pass for a red Python, and the other way round.
+        checks = {**job("Lint and Python", conclusion="failure"), "runner_name": "GitHub Actions 7",
+                  "steps": [{"name": "Python", "conclusion": "success"}, {"name": "Clippy", "conclusion": "failure"}]}
+        result = self.wait([[checks]], expected=("Lint and Python::Python", "Lint and Python::Clippy", "Lint and Python::Absent"))
+        self.assertEqual(result, {"Lint and Python::Python": "success", "Lint and Python::Clippy": "failure",
+                                  "Lint and Python::Absent": "missing"})
+        never_started = {**job("Lint and Python", conclusion="cancelled"), "runner_name": "", "steps": []}
+        self.assertEqual(self.wait([[never_started]], expected=("Lint and Python::Python",)),
+                         {"Lint and Python::Python": "not_acquired"})
+
     def test_an_absent_job_is_missing_only_once_nothing_else_runs(self):
         # The matrix of the other runner may not be expanded yet.
         result = self.wait([

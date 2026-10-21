@@ -1,6 +1,8 @@
 """Lane/shard inventory is a fail-closed partition of the original full suite."""
 from __future__ import annotations
 import copy
+from contextlib import redirect_stdout
+import io
 import hashlib
 import json
 from pathlib import Path
@@ -194,7 +196,8 @@ class HostLaneTests(unittest.TestCase):
                 (destination / "tests.tar.zst").write_bytes(b"archive stays in the job")
 
             with patch.object(lanes, "build", side_effect=build):
-                status = lanes.build_host(root, root / "work", root / "report", "queue", "ubuntu-latest", "main")
+                with redirect_stdout(io.StringIO()):  # the ::error:: lines would annotate the CI log
+                    status = lanes.build_host(root, root / "work", root / "report", "queue", "ubuntu-latest", "main")
             self.assertEqual(status, 1)
             self.assertEqual(built, [("ordinary", "queue", "ubuntu-latest"), ("receipt", "queue", "ubuntu-latest")])
             failed = root / "report" / "plan-rust-ubuntu-latest-ordinary"
@@ -226,12 +229,14 @@ class HostLaneTests(unittest.TestCase):
                     if lane == "ordinary":
                         raise error
                     return 0
-                with self.subTest(error=type(error).__name__), patch.object(lanes, "run_archive", side_effect=broken):
+                with self.subTest(error=type(error).__name__), patch.object(lanes, "run_archive", side_effect=broken), \
+                     redirect_stdout(io.StringIO()):
                     self.assertEqual(lanes.run_host(root, root / "work", root / f"report-{type(error).__name__}", "large", "ubuntu-latest", None, None), 1)
                     self.assertEqual(order, ["ordinary", "receipt"])
 
             with patch.object(lanes, "run_archive", side_effect=run):
-                status = lanes.run_host(root, root / "work", root / "report", "large", "ubuntu-latest", None, root / "absent.json")
+                with redirect_stdout(io.StringIO()):  # the ::error:: lines would annotate the CI log
+                    status = lanes.run_host(root, root / "work", root / "report", "large", "ubuntu-latest", None, root / "absent.json")
             self.assertEqual(status, 1)
             self.assertEqual(calls, [("ordinary", "results-rust-ubuntu-latest-ordinary-1", 1, None),
                                      ("receipt", "results-rust-ubuntu-latest-receipt-1", 1, None)])
