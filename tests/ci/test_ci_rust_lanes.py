@@ -125,6 +125,22 @@ class RustLaneTests(unittest.TestCase):
                 lanes.verify_union(root, "queue", ["ubuntu-latest"], "a" * 40)
             self.assertFalse(json.loads((root / "verification.json").read_text())["mandatoryComplete"])
 
+    def test_large_windows_doctest_failure_is_advisory(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(lanes.os.environ, {}, clear=True):
+            root = Path(temporary)
+            for lane in lanes.LANES:
+                plan = manifest(lane, host="windows-latest", profile="large")
+                if lane == "ordinary":
+                    plan["doctests"].update(exitCode=101)
+                lanes.write(root / lane / "lane.json", plan)
+                for index in range(1, len(plan["shards"]) + 1):
+                    lanes.write(root / lane / str(index) / "shard.json", result(plan, index))
+            report = lanes.verify_union(root, "large", ["windows-latest"], "a" * 40)
+            self.assertTrue(report["mandatoryComplete"])
+            self.assertFalse(report["fullMatrixPassed"])
+            self.assertEqual(report["advisoryFailures"],
+                             ["windows-latest/ordinary: workspace doctests failed with exit code 101"])
+
     def test_windows_advisory_is_visible_and_never_full_matrix_passed(self):
         with tempfile.TemporaryDirectory() as temporary, patch.dict(lanes.os.environ, {}, clear=True):
             report = lanes.verify_union(Path(temporary), "large", ["windows-latest"], "a" * 40)
@@ -172,7 +188,7 @@ class ArchiveFixtureBinaryTests(unittest.TestCase):
                 binary.write_bytes(b"already built non-test executable")
                 calls = []
 
-                def nextest(command, _root, *, capture=False):
+                def nextest(command, _root, *, capture=False, merge_stderr=False):
                     calls.append(command[2])
                     if command[2] == "archive":
                         (root / "prepared/tests.tar.zst").write_bytes(b"same archive")
@@ -203,12 +219,12 @@ class ArchiveFixtureBinaryTests(unittest.TestCase):
             binary.write_bytes(b"already built non-test executable")
             calls = []
 
-            def command(argv, _root, *, capture=False):
+            def command(argv, _root, *, capture=False, merge_stderr=False):
                 calls.append(argv[2])
                 if argv[2] == "archive":
                     (root / "prepared/tests.tar.zst").write_bytes(b"archive")
                 if argv[2] == "--doc":
-                    self.assertTrue(capture, "the doctest output must reach the report")
+                    self.assertTrue(capture and merge_stderr, "the doctest output must reach the report")
                     return subprocess.CompletedProcess(argv, 101, stdout="test read::ReadFile - compile fail ... FAILED\n"), 0.01
                 return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(listed)), 0.01
 
@@ -233,6 +249,7 @@ class ArchiveFixtureBinaryTests(unittest.TestCase):
         failed["doctests"].update(exitCode=101, output="compile fail ... FAILED")
         record = lanes.doctest_record(failed, "queue", "ubuntu-latest")
         self.assertEqual(record["status"], "failed")
+        self.assertEqual(record["stop"] - record["start"], 10)
         self.assertIn("exit code 101", record["statusDetails"]["message"])
         self.assertEqual(record["statusDetails"]["trace"], "compile fail ... FAILED")
         for broken in (lambda plan: plan.pop("doctests"), lambda plan: plan.update(doctests={"exitCode": "0"})):
