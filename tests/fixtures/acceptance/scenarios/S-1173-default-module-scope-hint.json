@@ -1,0 +1,33 @@
+{
+  "id": "S-1173-default-module-scope-hint",
+  "issue": 1173,
+  "area": "Поиск",
+  "task": "При default literal поиске по конкретному модулю вернуть применимый совет выбрать lexical с тем же адресом, не расширяя поиск автоматически.",
+  "workspace": "tests/fixtures/acceptance/workspace-code",
+  "wire": [
+    {
+      "tool": "unica.search",
+      "args": {
+        "query": "insertion point",
+        "scope": "main:Catalog.Пример.Module.Object"
+      },
+      "expect": [
+        "unsupported"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "unsupported_scope"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "role: \"lexical\""
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "main:Catalog.Пример.Module.Object"
+        }
+      ]
+    }
+  ]
+}
