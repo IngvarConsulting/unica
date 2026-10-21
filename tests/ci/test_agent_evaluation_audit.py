@@ -142,6 +142,7 @@ def evaluate_mxl_fixture(root, mutation=None):
 
 class AgentEvaluationAuditTests(unittest.TestCase):
     def test_codex_command_disables_images_without_legacy_tool_configuration(self):
+        """Parse overrides as TOML so alternate spellings cannot restore tools.view_image."""
         from tests.agent_evaluation.dcs_driver import codex_command
         command = codex_command(Path("/workspace"), Path("/schema.json"), Path("/final.json"), [])
         disabled = [command[index + 1] for index, arg in enumerate(command) if arg == "--disable"]
@@ -152,6 +153,7 @@ class AgentEvaluationAuditTests(unittest.TestCase):
                 self.assertNotIn("view_image", config.get("tools", {}))
 
     def test_agent_audit_rejects_errors_and_forbidden_events_in_an_otherwise_valid_turn(self):
+        """Inject faults into an accepted transcript so rejection is caused by each fault."""
         help_path = Path("/prepared/help.md")
         call = {"type": "mcp_tool_call", "server": "unica", "tool": "unica.view", "status": "completed"}
         valid = [
@@ -956,6 +958,7 @@ class AgentEvaluationAuditTests(unittest.TestCase):
                 self.assertFalse(allowed_help_command(command, path))
 
     def test_unknown_failed_and_tool_events_refuse_independent_review(self):
+        """Start from an accepted review and reject faults before or after completion."""
         valid = [{"type": "thread.started"}, {"type": "turn.started"},
                  {"type": "item.completed", "item": {"type": "agent_message", "text": "accepted"}},
                  {"type": "turn.completed"}]

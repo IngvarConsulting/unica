@@ -77,6 +77,7 @@ def disabled_skills():
 
 
 def codex_command(workspace, schema, final, skill_paths):
+    """Build the isolated CLI command shared by acceptance agents and reviewers."""
     command = ["codex", "exec", "--ignore-user-config", "--ignore-rules", "--ephemeral",
                "--json", "--skip-git-repo-check", "--sandbox", "read-only",
                "-C", str(workspace), "--output-schema", str(schema),
