@@ -1232,6 +1232,27 @@ pub fn cfe_borrow_form_shell(
 
     let form_xml_target = form_meta_dir.join(form_name).join("Ext").join("Form.xml");
     let source_form_content = write_plan.read_dependency_utf8_sig(&source_form_xml)?;
+    let owner_file = cfg_dir.join(dir_name).join(format!("{object_name}.xml"));
+    let owner_content = if write_plan.exists(&owner_file) {
+        Some(write_plan.read_dependency_utf8_sig(&owner_file)?)
+    } else {
+        None
+    };
+    let source_form_content = match cfe_borrow_synthetic_footer_paths(
+        &source_form_content,
+        owner_content.as_deref(),
+        type_name,
+        object_name,
+    ) {
+        Some(paths) => cfe_borrow_prune_omitted_form_bindings(&source_form_content, &paths),
+        None => {
+            log.warn(
+                "owner metadata unavailable or malformed; uncertain footer bindings preserved"
+                    .to_string(),
+            );
+            source_form_content
+        }
+    };
     let borrowed_form_xml = cfe_borrow_form_xml(
         reader,
         &source_form_content,
@@ -1408,6 +1429,22 @@ pub fn cfe_borrow_form_xml(
         }
     }
 
+    // Omit auxiliary attributes/columns and, when requested, the main attribute.
+    // Their bindings must not survive in either snapshot or form-level properties.
+    let omitted_paths = cfe_borrow_omitted_form_paths(source, borrow_main_attr);
+    for xml in [&mut auto_cmd_xml, &mut child_items_xml]
+        .into_iter()
+        .flatten()
+        .chain(form_props.iter_mut())
+    {
+        *xml = cfe_borrow_prune_omitted_form_bindings(xml, &omitted_paths);
+    }
+    if !omitted_paths.is_empty() {
+        let mut names = omitted_paths.iter().cloned().collect::<Vec<_>>();
+        names.sort();
+        log.warn(format!("Borrowed form shell omits {} auxiliary form data paths; unsupported bindings removed (examples: {})", names.len(), names.iter().take(5).cloned().collect::<Vec<_>>().join(", ")));
+    }
+
     let main_attr_type = if borrow_main_attr {
         let object_type_prefix = cfe_borrow_generated_types(type_name)
             .and_then(|items| {
@@ -1460,6 +1497,204 @@ pub fn cfe_borrow_form_xml(
     ));
     parts.push("\r\n\t</BaseForm>\r\n</Form>".to_string());
     parts.concat()
+}
+
+// Return data roots omitted from the shell, including an unborrowed main attribute.
+pub fn cfe_borrow_omitted_form_paths(source: &str, borrow_main_attr: bool) -> HashSet<String> {
+    let mut paths = HashSet::new();
+    let Ok(doc) = Document::parse(source) else {
+        return paths;
+    };
+    for attrs in doc
+        .root_element()
+        .children()
+        .filter(|n| n.has_tag_name("Attributes"))
+    {
+        for attr in attrs.children().filter(|n| n.has_tag_name("Attribute")) {
+            let Some(name) = attr.attribute("name") else {
+                continue;
+            };
+            let main = attr
+                .children()
+                .any(|n| n.has_tag_name("MainAttribute") && n.text() == Some("true"));
+            if !main || !borrow_main_attr {
+                paths.insert(name.to_string());
+            }
+            for columns in attr
+                .descendants()
+                .filter(|n| n.has_tag_name("AdditionalColumns"))
+            {
+                let Some(table) = columns.attribute("table") else {
+                    continue;
+                };
+                for column in columns.children().filter(|n| n.has_tag_name("Column")) {
+                    if let Some(name) = column.attribute("name") {
+                        paths.insert(format!("{table}.{name}"));
+                    }
+                }
+            }
+        }
+    }
+    paths
+}
+
+// Infer only a Total+numeric-attribute footer paired with its exact DataPath.
+// Unknown cases and declared Total-prefixed metadata fields stay untouched.
+// The emitter currently uses the conventional main attribute "Объект";
+// differently named main attributes are deliberately not inferred here.
+pub fn cfe_borrow_synthetic_footer_paths(
+    source: &str,
+    owner: Option<&str>,
+    type_name: &str,
+    object_name: &str,
+) -> Option<HashSet<String>> {
+    use unica_xml_format::read::{child_direct_text, child_element};
+
+    let form = Document::parse(source).ok()?;
+    let candidates: Vec<_> = form
+        .descendants()
+        .filter(|node| node.has_tag_name("FooterDataPath"))
+        .filter(|node| {
+            let Some(path) = node.text() else {
+                return false;
+            };
+            let Some((parent_path, name)) = path.rsplit_once('.') else {
+                return false;
+            };
+            let Some(attribute) = name.strip_prefix("Total").filter(|n| !n.is_empty()) else {
+                return false;
+            };
+            let data_path = format!("{parent_path}.{attribute}");
+            node.parent().is_some_and(|parent| {
+                parent.children().any(|child| {
+                    child.has_tag_name("DataPath") && child.text() == Some(data_path.as_str())
+                })
+            })
+        })
+        .filter_map(|node| node.text())
+        .filter(|path| {
+            path.split('.')
+                .next_back()
+                .is_some_and(|name| name.starts_with("Total"))
+        })
+        .collect();
+    if candidates.is_empty() {
+        return Some(HashSet::new());
+    }
+    let metadata = Document::parse(owner?.trim_start_matches('\u{feff}')).ok()?;
+    let descriptor = metadata
+        .root_element()
+        .children()
+        .find(|node| node.has_tag_name(type_name))?;
+    let properties = child_element(descriptor, "Properties")?;
+    if child_direct_text(properties, "Name").as_deref() != Some(object_name) {
+        return None;
+    }
+    let children = child_element(descriptor, "ChildObjects")?;
+    let mut omitted = HashSet::new();
+    for path in candidates {
+        let pieces: Vec<_> = path.split('.').collect();
+        if pieces.len() != 3 || pieces[0] != "Объект" {
+            continue;
+        }
+        let section = children.children().find(|node| {
+            node.has_tag_name("TabularSection")
+                && child_element(*node, "Properties")
+                    .and_then(|props| child_direct_text(props, "Name"))
+                    .as_deref()
+                    == Some(pieces[1])
+        });
+        let Some(section) = section else {
+            continue;
+        };
+        let Some(attributes) = child_element(section, "ChildObjects") else {
+            continue;
+        };
+        let declared = attributes.children().any(|node| {
+            node.has_tag_name("Attribute")
+                && child_element(node, "Properties")
+                    .and_then(|props| child_direct_text(props, "Name"))
+                    .as_deref()
+                    == Some(pieces[2])
+        });
+        let numeric_base = pieces[2].strip_prefix("Total").is_some_and(|base| {
+            attributes.children().any(|node| {
+                if !node.has_tag_name("Attribute") {
+                    return false;
+                }
+                let Some(props) = child_element(node, "Properties") else {
+                    return false;
+                };
+                if child_direct_text(props, "Name").as_deref() != Some(base) {
+                    return false;
+                }
+                let Some(typ) = child_element(props, "Type") else {
+                    return false;
+                };
+                let types: Vec<_> = typ.children().filter(|n| n.has_tag_name("Type")).collect();
+                types.len() == 1 && types[0].text() == Some("xs:decimal")
+            })
+        });
+        if !declared && numeric_base {
+            omitted.insert(path.to_string());
+        }
+    }
+    Some(omitted)
+}
+
+pub fn cfe_borrow_prune_omitted_form_bindings(xml: &str, omitted: &HashSet<String>) -> String {
+    let invalid = |value: &str| {
+        let value = value.trim();
+        omitted.iter().any(|path| {
+            value == path
+                || value
+                    .strip_prefix(path.as_str())
+                    .is_some_and(|tail| tail.starts_with('.'))
+        })
+    };
+    let mut result = xml.to_string();
+    // A link without its source is not a valid link. Remove the entire link,
+    // preserving other links in the same ChoiceParameterLinks container.
+    result = cfe_borrow_remove_element_blocks(&result, "Link", |block| {
+        let mut cursor = 0;
+        while let Some(offset) = block[cursor..].find('<') {
+            let start = cursor + offset;
+            let Some(tag) = cfe_borrow_start_tag_at(block, start) else {
+                cursor = start + 1;
+                continue;
+            };
+            if tag.local_name == "DataPath" {
+                if let Some(end) = block[tag.end..].find('<') {
+                    if invalid(&block[tag.end..tag.end + end]) {
+                        return true;
+                    }
+                }
+            }
+            cursor = tag.end;
+        }
+        false
+    });
+    for tag in [
+        "DataPath",
+        "TitleDataPath",
+        "FooterDataPath",
+        "HeaderDataPath",
+        "MultipleValueDataPath",
+        "MultipleValuePresentDataPath",
+        "RowPictureDataPath",
+        "MultipleValuePictureDataPath",
+    ] {
+        result = cfe_borrow_remove_element_blocks(&result, tag, |block| {
+            let Some(open) = cfe_borrow_start_tag_at(block, 0) else {
+                return false;
+            };
+            let Some(end) = block[open.end..].find('<') else {
+                return false;
+            };
+            invalid(&block[open.end..open.end + end])
+        });
+    }
+    result
 }
 
 pub fn cfe_borrow_form_xml_fallback(

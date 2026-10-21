@@ -12,6 +12,8 @@ mod facade_guards;
 mod frontend_process;
 #[path = "daemon_receipt_ledger/frontend_restart.rs"]
 mod frontend_restart;
+#[path = "daemon_receipt_ledger/receipt_scenario_harness.rs"]
+mod receipt_scenario_harness;
 
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};

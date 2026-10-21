@@ -76,9 +76,8 @@ class RunTestsSeamTests(unittest.TestCase):
                 [
                     "cargo", "nextest", "run", "-p", "unica-coder",
                     "--features", "receipt-ledger-test-support",
-                    "--lib", "--test", "daemon_receipt_ledger", "-E",
-                    "binary(daemon_receipt_ledger) | "
-                    "test(/^infrastructure::receipt_scenario::tests::/)",
+                    "--test", "daemon_receipt_ledger", "-E",
+                    "binary(daemon_receipt_ledger)",
                     "--profile", "default",
                 ],
                 ["cargo", "nextest", "run", *UREQ_SELECTION, "--profile", "ureq-recycling"],
@@ -220,9 +219,8 @@ class RunTestsSeamTests(unittest.TestCase):
             [
                 "cargo nextest run --workspace --profile default",
                 "cargo nextest run -p unica-coder --features receipt-ledger-test-support"
-                " --lib --test daemon_receipt_ledger"
-                " -E binary(daemon_receipt_ledger) |"
-                " test(/^infrastructure::receipt_scenario::tests::/)"
+                " --test daemon_receipt_ledger"
+                " -E binary(daemon_receipt_ledger)"
                 " --profile default",
                 "cargo nextest run --manifest-path vendor/ureq/Cargo.toml --locked --lib"
                 " --features json,serde_json/preserve_order,serde_json/float_roundtrip"
@@ -240,9 +238,8 @@ class GateProfileTests(unittest.TestCase):
 
         ledger = [
             "-p", "unica-coder", "--features", "receipt-ledger-test-support",
-            "--lib", "--test", "daemon_receipt_ledger", "-E",
-            "binary(daemon_receipt_ledger) | "
-            "test(/^infrastructure::receipt_scenario::tests::/)",
+            "--test", "daemon_receipt_ledger", "-E",
+            "binary(daemon_receipt_ledger)",
         ]
         for gate in ("pr", "queue", "main", "release"):
             with self.subTest(gate=gate):
@@ -253,7 +250,7 @@ class GateProfileTests(unittest.TestCase):
                     # `small` его не гоняют и не вызывают nextest впустую.
                     self.assertEqual(len(commands), 1)
                 else:
-                    # Контракт и сценарии — один вызов: одна сборка с признаком.
+                    # Контракт с проверками обвязки — один вызов: одна сборка с признаком.
                     self.assertEqual(commands[1], ["cargo", "nextest", "run", *ledger, "--profile", gate])
                     self.assertEqual(commands[2], ["cargo", "nextest", "run", *UREQ_SELECTION, "--profile", "ureq-recycling"])
                     self.assertEqual(len(commands), 3)
@@ -279,53 +276,39 @@ class GateProfileTests(unittest.TestCase):
                     self.assertEqual(listing[3:3 + len(selection)], selection)
                     self.assertEqual(listing[-4:], ["--run-ignored", "all", "--message-format", "json"])
 
-    def test_scenario_library_plan_and_results_share_the_exact_medium_boundary(self) -> None:
+    def test_ledger_selection_relabels_no_case_and_takes_sizes_from_the_catalogue(self) -> None:
         from unittest.mock import patch
 
         module = load_module()
-        prefix = module.SCENARIO_TEST_PREFIX
         cases = [
-            {"binary": "unica-coder", "name": prefix + "owned", "ignored": False},
-            {"binary": "unica-coder", "name": "unrelated::sibling", "ignored": False},
-            {"binary": "other-coder", "name": prefix + "foreign", "ignored": False},
-            # Контракт идёт тем же вызовом; переразметка его не касается.
-            {"binary": "unica-coder::daemon_receipt_ledger", "name": prefix + "contract", "ignored": False},
+            {"binary": "unica-coder::daemon_receipt_ledger", "name": "receipt_scenario_harness::check", "ignored": False},
+            {"binary": "unica-coder::daemon_receipt_ledger", "name": "contract", "ignored": False},
+            # Бывший путь библиотечных сценариев больше ничего не значит.
+            {"binary": "unica-coder", "name": "infrastructure::receipt_scenario::tests::former", "ignored": False},
         ]
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             with patch.object(module.allure_results, "nextest_list", side_effect=lambda _, command: [dict(case) for case in cases] if "receipt-ledger-test-support" in command else []):
-                self.assertEqual(module.write_rust_plan(root, "queue"), 4)
+                self.assertEqual(module.write_rust_plan(root, "queue"), 3)
             planned = json.loads((root / "plan.json").read_text())
-            self.assertEqual(planned[0]["size"], "medium")
-            self.assertNotIn("size", planned[1])
-            self.assertNotIn("size", planned[2])
-            self.assertNotIn("size", planned[3])
+            for entry in planned:
+                self.assertNotIn("size", entry)
             junit = root / "junit.xml"
             junit.write_text(
-                '<testsuites><testsuite name="unica-coder">'
-                f'<testcase name="{prefix}owned" time="0.1"/>'
-                '<testcase name="unrelated::sibling" time="0.1"/>'
-                '</testsuite><testsuite name="other-coder">'
-                f'<testcase name="{prefix}foreign" time="0.1"/>'
-                '</testsuite><testsuite name="unica-coder::daemon_receipt_ledger">'
-                f'<testcase name="{prefix}contract" time="0.1"/>'
+                '<testsuites><testsuite name="unica-coder::daemon_receipt_ledger">'
+                '<testcase name="receipt_scenario_harness::check" time="0.1"/>'
+                '<testcase name="contract" time="0.1"/>'
+                '</testsuite><testsuite name="unica-coder">'
+                '<testcase name="infrastructure::receipt_scenario::tests::former" time="0.1"/>'
                 '</testsuite></testsuites>'
             )
-            contract_sizes = set()
-            for selection, expected_owned_size in [(module.LEDGER_FEATURE_SELECTION, "medium"), (("--workspace",), "small")]:
-                output = root / expected_owned_size
-                self.assertEqual(module.emit_rust(output, "queue", "linux", junit, selection=selection), 4)
-                results = [json.loads(path.read_text()) for path in output.glob("*-result.json")]
-                sizes = {entry["fullName"]: next(label["value"] for label in entry["labels"] if label["name"] == "size") for entry in results}
-                self.assertEqual(sizes["unica-coder::" + prefix + "owned"], expected_owned_size)
-                self.assertEqual(sizes["unica-coder::unrelated::sibling"], "small")
-                self.assertEqual(sizes["other-coder::" + prefix + "foreign"], "small")
-                contract_sizes.add(sizes["unica-coder::daemon_receipt_ledger::" + prefix + "contract"])
-                for entry in results:
-                    self.assertIn({"name": "profile", "value": "queue"}, entry["labels"])
-                    self.assertEqual(entry["parameters"], [{"name": "runner", "value": "linux"}])
-            # Размер контракта не зависит от того, каким вызовом он пришёл.
-            self.assertEqual(len(contract_sizes), 1)
+            self.assertEqual(module.emit_rust(root / "out", "queue", "linux", junit, selection=module.LEDGER_FEATURE_SELECTION), 3)
+            results = [json.loads(path.read_text()) for path in (root / "out").glob("*-result.json")]
+            sizes = {entry["fullName"]: next(label["value"] for label in entry["labels"] if label["name"] == "size") for entry in results}
+            # Контракт и его проверки обвязки — `kind(test)`, то есть `medium` по каталогу.
+            self.assertEqual(sizes["unica-coder::daemon_receipt_ledger::receipt_scenario_harness::check"], "medium")
+            self.assertEqual(sizes["unica-coder::daemon_receipt_ledger::contract"], "medium")
+            self.assertEqual(sizes["unica-coder::infrastructure::receipt_scenario::tests::former"], "small")
 
     def test_each_rust_invocation_gets_its_own_junit_snapshot(self) -> None:
         """JUnit одного каталога снимается после каждого вызова, а не раз в конце."""
@@ -349,13 +332,12 @@ class GateProfileTests(unittest.TestCase):
                     '</testsuite>'
                 )
             elif featured:
-                # Один вызов с признаком пишет обе цели: сценарии библиотеки
-                # и контракт.
+                # Вызов с признаком пишет одну цель: контракт вместе
+                # с проверками его обвязки.
                 suites = (
-                    '<testsuite name="unica-coder">'
-                    '<testcase name="' + module.SCENARIO_TEST_PREFIX + 'case" classname="unica-coder" time="0.1"/>'
-                    '</testsuite><testsuite name="unica-coder::daemon_receipt_ledger">'
+                    '<testsuite name="unica-coder::daemon_receipt_ledger">'
                     '<testcase name="case" classname="unica-coder::daemon_receipt_ledger" time="0.1"/>'
+                    '<testcase name="receipt_scenario_harness::case" classname="unica-coder::daemon_receipt_ledger" time="0.1"/>'
                     '</testsuite>'
                 )
             else:
@@ -373,17 +355,17 @@ class GateProfileTests(unittest.TestCase):
         names = sorted(json.loads(path.read_text(encoding="utf-8"))["fullName"] for path in out.glob("*-result.json"))
         self.assertEqual(names, sorted([
             "unica-coder::case", "unica-coder::daemon_receipt_ledger::case",
-            "unica-coder::" + module.SCENARIO_TEST_PREFIX + "case",
+            "unica-coder::daemon_receipt_ledger::receipt_scenario_harness::case",
             "ureq::completed_response_recycling::case",
         ]))
         entries = [json.loads(path.read_text(encoding="utf-8")) for path in out.glob("*-result.json")]
         statuses = {entry["fullName"]: entry["status"] for entry in entries}
         self.assertEqual(statuses["unica-coder::case"], "failed")
         self.assertEqual(statuses["unica-coder::daemon_receipt_ledger::case"], "passed")
-        self.assertEqual(statuses["unica-coder::" + module.SCENARIO_TEST_PREFIX + "case"], "passed")
+        self.assertEqual(statuses["unica-coder::daemon_receipt_ledger::receipt_scenario_harness::case"], "passed")
         self.assertEqual(statuses["ureq::completed_response_recycling::case"], "passed")
-        library_entry = next(entry for entry in entries if entry["fullName"].endswith(module.SCENARIO_TEST_PREFIX + "case"))
-        self.assertIn({"name": "size", "value": "medium"}, library_entry["labels"])
+        harness_entry = next(entry for entry in entries if entry["fullName"].endswith("receipt_scenario_harness::case"))
+        self.assertIn({"name": "size", "value": "medium"}, harness_entry["labels"])
 
     def test_surviving_products_are_listed_before_each_feature_rebuild_only(self) -> None:
         """Отчёт идёт перед пересборкой с признаком, а не перед workspace-вызовом."""

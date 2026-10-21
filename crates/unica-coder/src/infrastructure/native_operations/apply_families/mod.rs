@@ -659,21 +659,19 @@ fn staged_schema_lookup(
     if covered != template.segments().len() {
         return NamedLookup::Missing;
     }
-    let Some(bytes) = unica_source_designer::layout::attached_resource_relative(
-        &address,
-        "Template.xml",
-        binding.source_kind(),
-    )
-    .ok()
-    .and_then(|relative| admission.staged_state().ok()?.read(&relative).ok()?) else {
+    let Ok(mut staged) = admission.staged_state() else {
         return NamedLookup::Missing;
     };
-    match variant {
-        Some(variant) => {
-            unica_dcs_designer::recovery::structure_item_path_in_schema(&bytes, variant, name)
-        }
-        None => unica_dcs_designer::recovery::data_set_path_in_schema(&bytes, name),
-    }
+    let member = match variant {
+        Some(variant) => unica_dcs::codec::DcsMember::StructureItem { variant, name },
+        None => unica_dcs::codec::DcsMember::DataSet(name),
+    };
+    crate::infrastructure::family_codecs::dcs_codec().member_path(
+        &mut staged.proposal(),
+        binding.source_kind(),
+        &address,
+        member,
+    )
 }
 
 /// Путь узла с именем `name` под контейнером в стадированном состоянии:
@@ -1022,16 +1020,20 @@ pub(crate) fn plan_hidden_v13_apply(
         binding.source_set_name(),
         binding.source_kind(),
     )?;
-    unica_dcs_designer::planner::validate_final_dcs_resources(
-        &mut staged.proposal(),
-        binding.source_kind(),
-        parsed.iter().filter_map(|operation| match operation {
+    let dcs_edits = parsed
+        .iter()
+        .filter_map(|operation| match operation {
             ParsedApplyOperation::DcsMxl(operation) => operation
                 .operation()
                 .dcs_plan()
                 .map(|edit| (operation.index(), edit)),
             _ => None,
-        }),
+        })
+        .collect::<Vec<_>>();
+    crate::infrastructure::family_codecs::dcs_codec().check_staged(
+        &mut staged.proposal(),
+        binding.source_kind(),
+        &dcs_edits,
     )?;
     if !xdto_validation.is_empty() {
         let authority = admission.xdto_planning_authority(binding)?;

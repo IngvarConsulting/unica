@@ -96,3 +96,77 @@ pub fn structure_item_path_in_schema(
         _ => NamedLookup::Ambiguous(paths),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Набор находится по имени на любой глубине объединения; повторённое
+    /// имя даёт все пути, отсутствующее — ни одного (#1357).
+    #[test]
+    fn a_data_set_is_found_by_name_inside_unions() {
+        let schema = r#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema">
+<dataSet><name>Union</name><item><name>Member</name></item><item><name>Twin</name></item></dataSet>
+<dataSet><name>Top</name></dataSet><dataSet><name>Twin</name></dataSet></DataCompositionSchema>"#;
+        let path = |name| data_set_path_in_schema(schema.as_bytes(), name);
+        use unica_operations::recovery::NamedLookup;
+        assert_eq!(
+            path("Member"),
+            NamedLookup::Found(vec!["Union".to_string(), "Member".to_string()])
+        );
+        assert_eq!(path("Top"), NamedLookup::Found(vec!["Top".to_string()]));
+        assert_eq!(
+            path("Twin"),
+            NamedLookup::Ambiguous(vec![
+                vec!["Union".to_string(), "Twin".to_string()],
+                vec!["Twin".to_string()],
+            ])
+        );
+        assert_eq!(path("Missing"), NamedLookup::Missing);
+    }
+    /// Элемент структуры находится так, как его адресует чтение: путь —
+    /// именованные предки, безымянная группа прозрачна, повторённое имя
+    /// даёт пути всех адресуемых совпадений (#1357).
+    #[test]
+    fn a_structure_item_is_found_by_its_named_ancestors() {
+        let schema = r#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" xmlns:dcsset="http://v8.1c.ru/8.1/data-composition-system/settings" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+<settingsVariant><dcsset:name>Main</dcsset:name><dcsset:settings>
+<dcsset:item xsi:type="dcsset:StructureItemGroup">
+ <dcsset:item xsi:type="dcsset:StructureItemGroup"><dcsset:name>Top</dcsset:name>
+  <dcsset:item xsi:type="dcsset:StructureItemGroup"><dcsset:name>Details</dcsset:name></dcsset:item>
+  <dcsset:item xsi:type="dcsset:StructureItemGroup"><dcsset:name>Twin</dcsset:name></dcsset:item>
+ </dcsset:item>
+</dcsset:item>
+<dcsset:item xsi:type="dcsset:StructureItemTable"><dcsset:name>Table</dcsset:name>
+ <dcsset:row><dcsset:name>Twin</dcsset:name></dcsset:row>
+</dcsset:item>
+<dcsset:item xsi:type="dcsset:StructureItemGroup"><dcsset:name>Same</dcsset:name></dcsset:item>
+<dcsset:item xsi:type="dcsset:StructureItemGroup"><dcsset:name>Same</dcsset:name></dcsset:item>
+</dcsset:settings></settingsVariant></DataCompositionSchema>"#;
+        use unica_operations::recovery::NamedLookup;
+        let path = |name| structure_item_path_in_schema(schema.as_bytes(), "Main", name);
+        let names = |items: &[&str]| {
+            items
+                .iter()
+                .map(|item| item.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(path("Top"), NamedLookup::Found(names(&["Top"])));
+        assert_eq!(
+            path("Details"),
+            NamedLookup::Found(names(&["Top", "Details"]))
+        );
+        assert_eq!(
+            path("Twin"),
+            NamedLookup::Ambiguous(vec![names(&["Top", "Twin"]), names(&["Table", "Twin"])])
+        );
+        // Два одноимённых элемента на одном уровне не адресуемы: ни один
+        // путь не выбирается.
+        assert_eq!(path("Same"), NamedLookup::Ambiguous(Vec::new()));
+        assert_eq!(path("Missing"), NamedLookup::Missing);
+        assert_eq!(
+            structure_item_path_in_schema(schema.as_bytes(), "Other", "Top"),
+            NamedLookup::Missing
+        );
+    }
+}
