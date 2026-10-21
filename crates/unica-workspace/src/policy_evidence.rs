@@ -751,6 +751,51 @@ pub(crate) mod tests {
         }
     }
 
+    /// Ослабляют запрет только точные `warn` и `off`; пропущенное поле,
+    /// иное значение или нечитаемый файл оставляют `deny`.
+    #[test]
+    fn support_policy_downgrade_comes_only_from_exact_warn_or_off() {
+        let temporary = tempfile::tempdir().unwrap();
+        let project_dir = temporary.path().join("project");
+        let source = project_dir.join("src");
+        std::fs::create_dir_all(&source).unwrap();
+        let mode = |bytes: &[u8]| support_policy_mode_from_bytes(bytes, &project_dir, &source);
+
+        assert_eq!(
+            mode(br#"{"editingAllowedCheck":"warn"}"#),
+            SupportPolicyMode::Warn
+        );
+        assert_eq!(
+            mode(br#"{"editingAllowedCheck":"off"}"#),
+            SupportPolicyMode::Off
+        );
+        assert_eq!(
+            mode("\u{feff}{\"editingAllowedCheck\":\"off\"}".as_bytes()),
+            SupportPolicyMode::Off
+        );
+        for value in ["deny", "", "WARN", "Off", " warn", "unsupported"] {
+            let bytes =
+                serde_json::to_vec(&serde_json::json!({"editingAllowedCheck": value})).unwrap();
+            assert_eq!(mode(&bytes), SupportPolicyMode::Deny, "{value:?}");
+        }
+        for bytes in [
+            &br#"{}"#[..],
+            br#"{"editingAllowedCheck":true}"#,
+            br#"{"editingAllowedCheck":null}"#,
+            br#"{"editingAllowedCheck":"off""#,
+            b"not json",
+            b"",
+            b"\xff\xfe{\"editingAllowedCheck\":\"off\"}",
+        ] {
+            assert_eq!(
+                mode(bytes),
+                SupportPolicyMode::Deny,
+                "{}",
+                String::from_utf8_lossy(bytes)
+            );
+        }
+    }
+
     #[test]
     pub(crate) fn support_policy_database_paths_distinguish_nested_sources_from_prefix_siblings() {
         let temporary = tempfile::tempdir().unwrap();

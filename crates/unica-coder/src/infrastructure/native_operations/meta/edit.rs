@@ -282,6 +282,20 @@ pub(super) fn parse_typed_metadata_type(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// Эмиттеры шаблонов designer, связанные напрямую: тесты плана образов
+    /// не зависят от продуктовой привязки писателя v0.12.
+    fn template_seed_emitters() -> unica_metadata_designer::child_resources::TemplateSeedEmitters {
+        unica_metadata_designer::child_resources::TemplateSeedEmitters {
+            spreadsheet: unica_metadata_designer::planner::TemplateSeedEmitter(
+                unica_templates_designer::mxl_root::empty_spreadsheet_document_xml,
+            ),
+            html_descriptor: unica_templates_designer::descriptor::html_template_descriptor,
+            html_page: unica_templates_designer::descriptor::html_template_page,
+            content_xml: unica_templates_designer::descriptor::template_content_xml,
+        }
+    }
+
     fn build_typed_operation_post_image(
         scope: TypedOperationDependencyScope<'_>,
         descriptor_path: &Path,

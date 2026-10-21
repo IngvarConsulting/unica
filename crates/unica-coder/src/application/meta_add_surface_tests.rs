@@ -2,8 +2,18 @@ use super::{OperationResult, UnicaApplication};
 use crate::composition::testing::{
     with_meta_add_after_authorization_hook, with_meta_edit_before_reauthorization_hook,
 };
+use crate::infrastructure::metadata_operations::MetadataOperations;
+use crate::infrastructure::support_state::{
+    SupportStateReaderFactory, WorkspaceSupportStateReaderFactory,
+};
+use crate::infrastructure::test_fixtures;
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
+use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_metadata::request::MetaInfoRequest;
+use unica_metadata::validation_subject::MetadataValidationResult;
+use unica_metadata::MetaValidationStatus;
+use unica_source_contract::workspace::WorkspaceContext;
 use unica_work_control::cancellation::CancellationToken;
 use unica_workspace::test_support::{tree_snapshot, ProcessCwdGuard};
 use uuid::Uuid;
@@ -60,30 +70,7 @@ impl Drop for TempWorkspace {
 
 fn create_configuration_workspace(label: &str) -> TempWorkspace {
     let workspace = TempWorkspace::new(label);
-    let args = Map::from_iter([
-        (
-            "cwd".to_string(),
-            Value::String(workspace.path().display().to_string()),
-        ),
-        ("Name".to_string(), Value::String("MetaSurface".to_string())),
-        ("OutputDir".to_string(), Value::String("src".to_string())),
-        ("dryRun".to_string(), Value::Bool(false)),
-    ]);
-    let result = UnicaApplication::new()
-        .call_tool("unica.cf.init", &args)
-        .expect("configuration fixture call");
-    assert!(result.ok, "{:?}", result.errors);
-    std::fs::write(
-        workspace.path().join("v8project.yaml"),
-        concat!(
-            "format: DESIGNER\n",
-            "source-set:\n",
-            "  - name: main\n",
-            "    type: CONFIGURATION\n",
-            "    path: src\n",
-        ),
-    )
-    .unwrap();
+    test_fixtures::copy_empty_configuration(workspace.path());
     for (kind, name) in [
         ("Catalog", "MetaAddSource"),
         ("Document", "MetaAddRegistrar"),
@@ -217,6 +204,64 @@ fn call_edit(
             ]),
         )
         .expect("internal meta.edit call")
+}
+
+/// Набор `main` из файловой фикстуры: пустая конфигурация 8.3.27 без
+/// объектов, которые заводит писатель v0.12.
+fn fixture_root_workspace(label: &str) -> TempWorkspace {
+    let workspace = TempWorkspace::new(label);
+    test_fixtures::copy_empty_configuration(workspace.path());
+    workspace
+}
+
+/// Справочник из фикстуры под именем `name` с синонимом `synonym`.
+fn place_catalog(workspace: &Path, name: &str, synonym: &str) {
+    test_fixtures::add_fixture_object(
+        workspace,
+        "catalog",
+        "Catalog",
+        name,
+        &[("Inspectable synonym", synonym), ("Inspectable", name)],
+    );
+}
+
+/// Проверка описания тем же путём, что `unica.check`: живое чтение
+/// `read_local` и валидатор `MetadataOperations::validate`.
+fn check_metadata(workspace: &Path, metadata_path: &str) -> MetadataValidationResult {
+    let context = WorkspaceContext {
+        cwd: workspace.to_path_buf(),
+        workspace_root: workspace.to_path_buf(),
+        cache_root: workspace.join(".build/unica"),
+        workspace_epoch: 0,
+    };
+    let request = MetaInfoRequest {
+        source_set: "main".to_string(),
+        metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, metadata_path)
+            .unwrap(),
+        sections: Vec::new(),
+        limit: 0,
+    };
+    let cancellation = CancellationToken::new();
+    let readers = WorkspaceSupportStateReaderFactory;
+    let reader = SupportStateReaderFactory::create(&readers, &context);
+    let read = MetadataOperations::read_local(&request, &context, &cancellation, reader.as_ref())
+        .unwrap_or_else(|failure| panic!("{metadata_path}: {:?}", failure.diagnostics));
+    MetadataOperations::validate(&read.validation_subject, &context, &cancellation)
+}
+
+fn checked_diagnostics(workspace: &Path, metadata_path: &str) -> Vec<Value> {
+    let validation = check_metadata(workspace, metadata_path);
+    assert_eq!(
+        validation.status,
+        MetaValidationStatus::Passed,
+        "{metadata_path}: {:?}",
+        validation.diagnostics
+    );
+    validation
+        .diagnostics
+        .iter()
+        .map(|diagnostic| serde_json::to_value(diagnostic).unwrap())
+        .collect()
 }
 
 #[test]
@@ -1124,27 +1169,11 @@ fn add_does_not_judge_subsystem_membership() {
     );
 }
 
+/// Находки проверки справочника с синонимом `synonym`. Предупреждение
+/// не мешает проверке пройти, а значит и применению.
 fn add_with_synonym(workspace: &TempWorkspace, name: &str, synonym: &str) -> Vec<Value> {
-    let mut args = add_args(workspace.path(), "Catalog", name, false);
-    args.insert(
-        "operations".to_string(),
-        json!([{"op": "setProperties", "values": {"Synonym": synonym}}]),
-    );
-    let result = call_add_with_args(workspace.path(), &args);
-    assert!(result.ok, "{name}: {:?}", result.errors);
-    assert!(
-        workspace
-            .path()
-            .join(format!("src/Catalogs/{name}.xml"))
-            .exists(),
-        "warning must not block apply for Catalog.{name}"
-    );
-    let data = result.data.expect("typed mutation data");
-    assert_eq!(data["validation"]["status"], "passed", "{name}");
-    data["validation"]["diagnostics"]
-        .as_array()
-        .expect("validation diagnostics")
-        .clone()
+    place_catalog(workspace.path(), name, synonym);
+    checked_diagnostics(workspace.path(), &format!("Catalog.{name}"))
 }
 
 fn diagnostic_by_code<'a>(diagnostics: &'a [Value], code: &str) -> Option<&'a Value> {
@@ -1155,7 +1184,7 @@ fn diagnostic_by_code<'a>(diagnostics: &'a [Value], code: &str) -> Option<&'a Va
 
 #[test]
 fn add_pins_both_command_text_thresholds_at_their_boundaries() {
-    let workspace = create_configuration_workspace("command-text-boundaries");
+    let workspace = fixture_root_workspace("command-text-boundaries");
     let cases = [
         (30, None),
         (31, Some("command_text_recommended_limit")),
@@ -1200,7 +1229,7 @@ fn add_pins_both_command_text_thresholds_at_their_boundaries() {
 
 #[test]
 fn info_uses_nonempty_list_presentation_for_command_text_finding() {
-    let workspace = create_configuration_workspace("command-text-list-presentation");
+    let workspace = fixture_root_workspace("command-text-list-presentation");
     let name = "ListPresentationLimit";
     let synonym_diagnostics = add_with_synonym(&workspace, name, "Короткий синоним");
     assert!(
@@ -1223,22 +1252,7 @@ fn info_uses_nonempty_list_presentation_for_command_text_finding() {
     );
     std::fs::write(&descriptor, patched).unwrap();
 
-    let _cwd = ProcessCwdGuard::enter(workspace.path()).unwrap();
-    let result = UnicaApplication::new()
-        .call_tool(
-            "unica.meta.info",
-            &Map::from_iter([
-                ("sourceSet".to_string(), json!("main")),
-                ("metadataPath".to_string(), json!(format!("Catalog.{name}"))),
-            ]),
-        )
-        .expect("private typed meta.info call");
-    assert!(result.ok, "{:?}", result.errors);
-    let data = result.data.expect("typed info data");
-    assert_eq!(data["validation"]["status"], "passed");
-    let diagnostics = data["validation"]["diagnostics"]
-        .as_array()
-        .expect("validation diagnostics");
+    let diagnostics = &checked_diagnostics(workspace.path(), &format!("Catalog.{name}"));
     let warning = diagnostic_by_code(diagnostics, "command_text_upper_limit")
         .unwrap_or_else(|| panic!("typed ListPresentation warning: {diagnostics:?}"));
     assert_eq!(warning["severity"], "warning");

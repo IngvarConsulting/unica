@@ -4,9 +4,8 @@ check:
   - crates/unica-metadata/src/diagnostics.rs::diagnostic_codes_serialize_to_the_stable_exhaustive_vocabulary
   - crates/unica-coder/src/infrastructure/native_operations/meta/validation.rs::legacy_metadata_warnings_use_a_warning_code_and_keep_error_verdicts
   - crates/unica-coder/src/infrastructure/native_operations/meta/validation.rs::internal_malformed_xml_is_a_hard_failure_matching_legacy_classification
-  - crates/unica-coder/src/application/meta_info_surface_tests.rs::info_localizes_an_unknown_but_valid_platform_type_as_a_warning
-  - crates/unica-coder/src/application/meta_info_surface_tests.rs::info_localizes_an_unmodelled_constant_type_with_the_warning_code
   - tests/ci/test_acceptance_scenarios.py::AcceptanceCorpusRunTests.test_every_wire_answers_its_frozen_classes
+gap: https://github.com/IngvarConsulting/unica/issues/1933
 ---
 
 # Предупреждение метаданных отличается от ошибки кодом и вердиктом
@@ -26,4 +25,6 @@ check:
 документов: пустая коллекция зарегистрированных документов вызывает
 предупреждение, а колонка с пустыми References добавляет семантическую
 ошибку. Типизированные проверки общего модуля и наблюдённых типов отдельно
-проверяют внутренние источники предупреждений.
+проверяют внутренние источники предупреждений. Канонические `check` и `view`
+пока не передают в ответ предупреждение читателя о немоделируемом типе:
+это разрыв.

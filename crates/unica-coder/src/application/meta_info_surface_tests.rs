@@ -1,13 +1,30 @@
+//! Чтение описания объекта метаданных живым движком: `read_local` и проверка
+//! полного чтения валидатором designer. Корень набора — файловая фикстура.
+//! Три теста писателя v0.12 (`call_edit`, `add_catalog`) ждут решения
+//! владельца и остаются на прежнем входе только для записи.
+
 use super::{OperationResult, UnicaApplication};
 use crate::composition::testing::{
     with_meta_info_descriptor_image_hook, with_registrar_processing_hook,
     with_subsystem_evidence_processing_hook,
 };
+use crate::infrastructure::metadata_operations::MetadataOperations;
+use crate::infrastructure::support_state::{
+    SupportStateReaderFactory, WorkspaceSupportStateReaderFactory,
+};
+use crate::infrastructure::test_fixtures;
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
+use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_forms_designer::root::require_form_root;
+use unica_metadata::request::MetaInfoRequest;
+use unica_metadata::validation_subject::MetadataSubsystemEvidence;
+use unica_metadata::{MetaDiagnostic, MetaDiagnosticSeverity, MetaValidationStatus};
 use unica_metadata_designer::info_read::{
     RegistrarProcessingPhase, SubsystemEvidenceProcessingPhase,
 };
+use unica_metadata_designer::validation::{FormRootValidator, MetadataValidator};
+use unica_source_contract::workspace::WorkspaceContext;
 use unica_work_control::cancellation::CancellationToken;
 use unica_workspace::test_support::ProcessCwdGuard;
 use uuid::Uuid;
@@ -36,121 +53,134 @@ impl Drop for TempWorkspace {
     }
 }
 
+fn meta_info_surface_fixture(part: &str) -> PathBuf {
+    test_fixtures::meta_info_surface_fixture(part)
+}
+
+fn add_fixture_object(
+    workspace: &Path,
+    part: &str,
+    tag: &str,
+    name: &str,
+    renames: &[(&str, &str)],
+) {
+    test_fixtures::add_fixture_object(workspace, part, tag, name, renames);
+}
+
+/// Пустая конфигурация 8.3.27 и справочник `Inspectable`: синоним, реквизиты
+/// `Code` (строка 9) и `Amount` (число 15.2), табличная часть `Rows`.
 fn create_info_workspace(label: &str) -> TempWorkspace {
     let workspace = TempWorkspace::new(label);
-    let initialized = UnicaApplication::new()
-        .call_tool(
-            "unica.cf.init",
-            &Map::from_iter([
-                (
-                    "cwd".to_string(),
-                    Value::String(workspace.path().display().to_string()),
-                ),
-                ("Name".to_string(), Value::String("MetaInfo".to_string())),
-                ("OutputDir".to_string(), Value::String("src".to_string())),
-                ("dryRun".to_string(), Value::Bool(false)),
-            ]),
-        )
-        .unwrap();
-    assert!(initialized.ok, "{:?}", initialized.errors);
-    std::fs::write(
-        workspace.path().join("v8project.yaml"),
-        concat!(
-            "format: DESIGNER\n",
-            "source-set:\n",
-            "  - name: main\n",
-            "    type: CONFIGURATION\n",
-            "    path: src\n",
-        ),
-    )
-    .unwrap();
-    let _cwd = ProcessCwdGuard::enter(workspace.path()).unwrap();
-    let added = UnicaApplication::new().call_tool(
-        "unica.meta.add",
-        &Map::from_iter([
-            ("sourceSet".to_string(), Value::String("main".to_string())),
-            ("kind".to_string(), Value::String("Catalog".to_string())),
-            ("name".to_string(), Value::String("Inspectable".to_string())),
-            ("dryRun".to_string(), Value::Bool(false)),
-        ]),
-    );
-    let edited = UnicaApplication::new()
-        .call_tool(
-            "unica.meta.edit",
-            &Map::from_iter([
-                ("sourceSet".to_string(), Value::String("main".to_string())),
-                (
-                    "metadataPath".to_string(),
-                    Value::String("Catalog.Inspectable".to_string()),
-                ),
-                (
-                    "operations".to_string(),
-                    serde_json::json!([
-                        {"op": "setProperties", "values": {"Synonym": "Inspectable synonym"}},
-                        {"op": "add", "collection": "attributes", "elements": [
-                            {"name": "Code", "type": {"variants": [{"kind": "string", "length": 9, "allowedLength": "variable"}] }},
-                            {"name": "Amount", "type": {"variants": [{"kind": "number", "digits": 15, "fraction": 2, "sign": "any"}] }}
-                        ]},
-                        {"op": "add", "collection": "tabularSections", "elements": [{
-                            "name": "Rows",
-                            "attributes": [{"name": "Value", "type": {"variants": [{"kind": "string", "length": 20, "allowedLength": "variable"}] }}]
-                        }]}
-                    ]),
-                ),
-                ("dryRun".to_string(), Value::Bool(false)),
-            ]),
-        );
-    let added = added.unwrap();
-    assert!(added.ok, "{:?}", added.errors);
-    let edited = edited.unwrap();
-    assert!(edited.ok, "{:?}", edited.errors);
+    test_fixtures::copy_empty_configuration(workspace.path());
+    add_fixture_object(workspace.path(), "catalog", "Catalog", "Inspectable", &[]);
     workspace
 }
 
-fn call_info(
-    workspace: &Path,
-    extra: impl IntoIterator<Item = (String, Value)>,
-) -> OperationResult {
-    call_info_path(workspace, "Catalog.Inspectable", extra)
+/// Ответ чтения описания объекта живым движком: `read_local` и проверка
+/// полного чтения валидатором designer, без входа v0.12.
+#[derive(Debug)]
+struct InfoResult {
+    ok: bool,
+    data: Option<Value>,
+    diagnostics: Option<Value>,
+    errors: Vec<String>,
 }
 
-fn call_info_path(
+fn info_failure(diagnostics: Vec<MetaDiagnostic>, data: Option<Value>) -> InfoResult {
+    InfoResult {
+        ok: false,
+        data,
+        errors: diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.clone())
+            .collect(),
+        diagnostics: Some(serde_json::to_value(&diagnostics).unwrap()),
+    }
+}
+
+fn read_info(
     workspace: &Path,
     metadata_path: &str,
-    extra: impl IntoIterator<Item = (String, Value)>,
-) -> OperationResult {
-    let mut args = Map::from_iter([
-        ("sourceSet".to_string(), Value::String("main".to_string())),
-        (
-            "metadataPath".to_string(),
-            Value::String(metadata_path.to_string()),
-        ),
-    ]);
-    args.extend(extra);
-    let _cwd = ProcessCwdGuard::enter(workspace).unwrap();
-    UnicaApplication::new()
-        .call_tool("unica.meta.info", &args)
-        .expect("private typed meta.info call")
+    cancellation: &CancellationToken,
+) -> InfoResult {
+    let context = WorkspaceContext {
+        cwd: workspace.to_path_buf(),
+        workspace_root: workspace.to_path_buf(),
+        cache_root: workspace.join(".build/unica"),
+        workspace_epoch: 0,
+    };
+    let request = MetaInfoRequest {
+        source_set: "main".to_string(),
+        metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, metadata_path)
+            .unwrap(),
+        sections: Vec::new(),
+        limit: 0,
+    };
+    let readers = WorkspaceSupportStateReaderFactory;
+    let reader = SupportStateReaderFactory::create(&readers, &context);
+    let read =
+        match MetadataOperations::read_local(&request, &context, cancellation, reader.as_ref()) {
+            Ok(read) => read,
+            Err(failure) => return info_failure(failure.diagnostics, None),
+        };
+    let mut validation = MetadataValidator::new(FormRootValidator(require_form_root))
+        .validate_complete_read(&read.validation_subject, &context);
+    if read
+        .local
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == MetaDiagnosticSeverity::Error)
+    {
+        validation.status = MetaValidationStatus::Failed;
+    }
+    validation
+        .diagnostics
+        .extend(read.local.diagnostics.iter().cloned());
+    let (functional_subsystems, interface_subsystems) =
+        match &read.validation_subject.subsystem_evidence {
+            Some(MetadataSubsystemEvidence::Complete {
+                functional_subsystems,
+                interface_subsystems,
+            }) => (
+                Some(functional_subsystems.clone()),
+                Some(interface_subsystems.clone()),
+            ),
+            Some(MetadataSubsystemEvidence::Unavailable(_)) | None => (None, None),
+        };
+    let failed = validation.status == MetaValidationStatus::Failed;
+    let diagnostics = validation.diagnostics.clone();
+    let data = serde_json::to_value(read.local.into_info(
+        validation,
+        Default::default(),
+        functional_subsystems,
+        interface_subsystems,
+    ))
+    .unwrap();
+    if failed {
+        return info_failure(diagnostics, Some(data));
+    }
+    InfoResult {
+        ok: true,
+        data: Some(data),
+        diagnostics: None,
+        errors: Vec::new(),
+    }
+}
+
+fn call_info(workspace: &Path) -> InfoResult {
+    call_info_path(workspace, "Catalog.Inspectable")
+}
+
+fn call_info_path(workspace: &Path, metadata_path: &str) -> InfoResult {
+    read_info(workspace, metadata_path, &CancellationToken::new())
 }
 
 fn call_info_path_cancellable(
     workspace: &Path,
     metadata_path: &str,
-    extra: impl IntoIterator<Item = (String, Value)>,
     cancellation: CancellationToken,
-) -> OperationResult {
-    let mut args = Map::from_iter([
-        ("sourceSet".to_string(), Value::String("main".to_string())),
-        (
-            "metadataPath".to_string(),
-            Value::String(metadata_path.to_string()),
-        ),
-    ]);
-    args.extend(extra);
-    let _cwd = ProcessCwdGuard::enter(workspace).unwrap();
-    UnicaApplication::new()
-        .call_tool_cancellable("unica.meta.info", &args, cancellation)
-        .expect("private typed meta.info call")
+) -> InfoResult {
+    read_info(workspace, metadata_path, &cancellation)
 }
 
 fn call_meta_tool(workspace: &Path, tool: &str, args: Map<String, Value>) -> OperationResult {
@@ -176,19 +206,6 @@ fn add_catalog(
         args.insert("operations".to_string(), operations);
     }
     call_meta_tool(workspace, "unica.meta.add", args)
-}
-
-fn add_metadata_object(workspace: &Path, kind: &str, name: &str) -> OperationResult {
-    call_meta_tool(
-        workspace,
-        "unica.meta.add",
-        Map::from_iter([
-            ("sourceSet".to_string(), Value::String("main".to_string())),
-            ("kind".to_string(), Value::String(kind.to_string())),
-            ("name".to_string(), Value::String(name.to_string())),
-            ("dryRun".to_string(), Value::Bool(false)),
-        ]),
-    )
 }
 
 fn replace_first_string_type_with_unqualified_variant(xml: &str, replacement: &str) -> String {
@@ -240,7 +257,7 @@ fn call_edit(
     )
 }
 
-fn assert_logical_diagnostic(result: &OperationResult, workspace: &Path, code: &str) {
+fn assert_logical_diagnostic(result: &InfoResult, workspace: &Path, code: &str) {
     let diagnostics = result
         .diagnostics
         .as_ref()
@@ -260,7 +277,7 @@ fn assert_logical_diagnostic(result: &OperationResult, workspace: &Path, code: &
     );
 }
 
-fn assert_no_error_diagnostic(result: &OperationResult, code: &str) {
+fn assert_no_error_diagnostic(result: &InfoResult, code: &str) {
     let Some(diagnostics) = result.diagnostics.as_ref().and_then(Value::as_array) else {
         return;
     };
@@ -294,10 +311,7 @@ fn fixture_workspace(label: &str, fixture: &str, files: &[&str]) -> TempWorkspac
 fn info_without_sections_is_local_only() {
     let workspace = create_info_workspace("local");
 
-    let result = call_info(
-        workspace.path(),
-        [("limit".to_string(), Value::Number(50_u64.into()))],
-    );
+    let result = call_info(workspace.path());
 
     assert!(result.ok, "{:?}", result.errors);
     let data = result.data.expect("typed metadata info data");
@@ -353,7 +367,6 @@ fn info_without_sections_is_local_only() {
     // section left that could be absent for provider reasons.
     assert!(data.get("related").is_none());
     assert_eq!(data["usage"], serde_json::json!({}));
-    assert!(result.stdout.is_none());
 }
 
 #[test]
@@ -391,7 +404,7 @@ fn info_observes_inline_command_without_a_standalone_descriptor() {
         "command mutation must stay in the owner descriptor"
     );
 
-    let result = call_info(workspace.path(), []);
+    let result = call_info(workspace.path());
 
     assert!(result.ok, "{:?}", result.errors);
     let data = result.data.expect("typed metadata info data");
@@ -404,7 +417,7 @@ fn info_observes_inline_command_without_a_standalone_descriptor() {
         .join("src/Catalogs/Inspectable/Forms/ItemForm.xml");
     let form_bytes = std::fs::read(&form_descriptor).unwrap();
     std::fs::remove_file(&form_descriptor).unwrap();
-    let incomplete = call_info(workspace.path(), []);
+    let incomplete = call_info(workspace.path());
     assert!(!incomplete.ok, "missing form evidence must stay an error");
     let errors = incomplete.errors.join("\n");
     assert!(
@@ -436,7 +449,7 @@ fn info_observes_inline_command_without_a_standalone_descriptor() {
     let commands_dir = workspace.path().join("src/Catalogs/Inspectable/Commands");
     assert!(!commands_dir.join("Refresh.xml").exists());
     assert!(!commands_dir.join("Reload.xml").exists());
-    let data = call_info(workspace.path(), [])
+    let data = call_info(workspace.path())
         .data
         .expect("typed metadata info after command rename");
     assert_eq!(data["collections"]["commands"][0]["name"], "Reload");
@@ -452,7 +465,7 @@ fn info_observes_inline_command_without_a_standalone_descriptor() {
         false,
     );
     assert!(removed.ok, "{:?}", removed.errors);
-    let data = call_info(workspace.path(), [])
+    let data = call_info(workspace.path())
         .data
         .expect("typed metadata info after command removal");
     assert_eq!(data["collections"]["commands"], serde_json::json!([]));
@@ -461,10 +474,15 @@ fn info_observes_inline_command_without_a_standalone_descriptor() {
 #[test]
 fn info_returns_the_constant_value_type_in_kind_specific_details() {
     let workspace = create_info_workspace("constant-details-type");
-    let added = add_metadata_object(workspace.path(), "Constant", "MainCurrency");
-    assert!(added.ok, "{:?}", added.errors);
+    add_fixture_object(
+        workspace.path(),
+        "constant",
+        "Constant",
+        "MainCurrency",
+        &[],
+    );
 
-    let result = call_info_path(workspace.path(), "Constant.MainCurrency", []);
+    let result = call_info_path(workspace.path(), "Constant.MainCurrency");
 
     assert!(result.ok, "{:?}", result.errors);
     assert_eq!(
@@ -483,14 +501,19 @@ fn info_returns_the_constant_value_type_in_kind_specific_details() {
 #[test]
 fn info_localizes_an_unmodelled_constant_type_with_the_warning_code() {
     let workspace = create_info_workspace("constant-unmodelled-type");
-    let added = add_metadata_object(workspace.path(), "Constant", "MainCurrency");
-    assert!(added.ok, "{:?}", added.errors);
+    add_fixture_object(
+        workspace.path(),
+        "constant",
+        "Constant",
+        "MainCurrency",
+        &[],
+    );
     let descriptor = workspace.path().join("src/Constants/MainCurrency.xml");
     let xml = std::fs::read_to_string(&descriptor).unwrap();
     let unknown = replace_first_string_type_with_unqualified_variant(&xml, "v8:FutureOpaque");
     assert_ne!(unknown, xml, "fixture must contain the constant value type");
     std::fs::write(&descriptor, unknown).unwrap();
-    let result = call_info_path(workspace.path(), "Constant.MainCurrency", []);
+    let result = call_info_path(workspace.path(), "Constant.MainCurrency");
     assert!(result.ok, "{:?}", result.errors);
     let data = result.data.as_ref().unwrap();
     assert!(data["details"]["type"].is_null());
@@ -521,7 +544,7 @@ fn info_does_not_silently_drop_an_unknown_compound_root_property() {
                 )
                 .into_bytes()
         },
-        || call_info(workspace.path(), []),
+        || call_info(workspace.path()),
     );
 
     assert!(
@@ -546,7 +569,7 @@ fn info_does_not_silently_drop_an_unknown_scalar_root_property() {
                 )
                 .into_bytes()
         },
-        || call_info(workspace.path(), []),
+        || call_info(workspace.path()),
     );
 
     assert!(
@@ -571,7 +594,7 @@ fn info_reports_every_unknown_root_node_instead_of_only_the_first() {
                 )
                 .into_bytes()
         },
-        || call_info(workspace.path(), []),
+        || call_info(workspace.path()),
     );
 
     assert!(!result.ok, "unknown semantic nodes must fail closed");
@@ -618,7 +641,7 @@ fn info_rejects_a_duplicate_root_child_objects_container() {
             );
             patched.into_bytes()
         },
-        || call_info(workspace.path(), []),
+        || call_info(workspace.path()),
     );
 
     assert!(!result.ok, "duplicate root container must fail closed");
@@ -641,7 +664,7 @@ fn info_rejects_a_foreign_namespace_root_child_objects_container() {
                 .replacen("</ChildObjects>", "</foreign:ChildObjects>", 1)
                 .into_bytes()
         },
-        || call_info(workspace.path(), []),
+        || call_info(workspace.path()),
     );
 
     assert!(!result.ok, "foreign root container must fail closed");
@@ -663,7 +686,7 @@ fn info_never_publishes_a_foreign_synonym_decoy_in_partial_data() {
                 )
                 .into_bytes()
         },
-        || call_info(workspace.path(), []),
+        || call_info(workspace.path()),
     );
 
     assert!(!result.ok);
@@ -704,7 +727,7 @@ fn info_groups_only_the_current_objects_subsystem_memberships() {
         &content_item("Catalog.Other"),
     );
 
-    let result = call_info(workspace.path(), []);
+    let result = call_info(workspace.path());
 
     assert!(result.ok, "{:?}", result.errors);
     let data = result.data.expect("typed metadata info data");
@@ -748,7 +771,7 @@ fn info_matches_subsystem_memberships_by_address_or_root_descriptor_uuid() {
         ),
     );
 
-    let result = call_info(workspace.path(), []);
+    let result = call_info(workspace.path());
 
     assert!(result.ok, "{:?}", result.errors);
     let data = result.data.expect("typed metadata info data");
@@ -767,7 +790,7 @@ fn info_returns_proved_empty_memberships_for_a_nonmatching_valid_uuid() {
         &content_item("11111111-2222-4333-8444-555555555555"),
     );
 
-    let result = call_info(workspace.path(), []);
+    let result = call_info(workspace.path());
 
     assert!(result.ok, "{:?}", result.errors);
     let data = result.data.expect("typed metadata info data");
@@ -786,7 +809,7 @@ fn info_omits_memberships_when_registered_content_reference_is_malformed() {
         &content_item("not-a-metadata-reference"),
     );
 
-    let result = call_info(workspace.path(), []);
+    let result = call_info(workspace.path());
 
     assert!(!result.ok);
     let data = result
@@ -813,7 +836,7 @@ fn info_omits_memberships_when_content_type_prefix_has_a_foreign_namespace() {
         ),
     );
 
-    let result = call_info(workspace.path(), []);
+    let result = call_info(workspace.path());
 
     assert!(!result.ok);
     let data = result
@@ -840,7 +863,7 @@ fn info_omits_memberships_when_content_value_contains_a_nested_element() {
         ),
     );
 
-    let result = call_info(workspace.path(), []);
+    let result = call_info(workspace.path());
 
     assert!(!result.ok);
     let data = result
@@ -863,7 +886,7 @@ fn info_omits_memberships_when_content_contains_raw_direct_text() {
         "Catalog.Inspectable",
     );
 
-    let result = call_info(workspace.path(), []);
+    let result = call_info(workspace.path());
 
     assert!(!result.ok);
     let data = result.data.as_ref().expect("partial local metadata data");
@@ -888,7 +911,7 @@ fn info_omits_memberships_when_child_objects_contains_raw_direct_text() {
         .replace("<Subsystem>Поврежденная</Subsystem>", "Поврежденная");
     std::fs::write(&configuration, malformed).unwrap();
 
-    let result = call_info(workspace.path(), []);
+    let result = call_info(workspace.path());
 
     assert!(!result.ok);
     let data = result.data.as_ref().expect("partial local metadata data");
@@ -917,7 +940,7 @@ fn info_rejects_an_invalid_root_descriptor_uuid_instead_of_matching_by_address_o
         &content_item("Catalog.Inspectable"),
     );
 
-    let result = call_info(workspace.path(), []);
+    let result = call_info(workspace.path());
 
     assert!(!result.ok);
     assert!(result
@@ -951,7 +974,7 @@ fn info_rejects_a_missing_root_descriptor_uuid_instead_of_matching_by_address_on
         &content_item("Catalog.Inspectable"),
     );
 
-    let result = call_info(workspace.path(), []);
+    let result = call_info(workspace.path());
 
     assert!(!result.ok);
     assert!(result
@@ -983,7 +1006,7 @@ fn info_rejects_a_root_descriptor_name_that_disagrees_with_the_target() {
                 .replacen("<Name>Inspectable</Name>", "<Name>Other</Name>", 1)
                 .into_bytes()
         },
-        || call_info(workspace.path(), []),
+        || call_info(workspace.path()),
     );
 
     assert!(!result.ok);
@@ -1037,7 +1060,7 @@ fn info_rejects_non_exact_properties_and_name_identity_proofs() {
         );
         let result = with_meta_info_descriptor_image_hook(
             move |bytes| mutate(std::str::from_utf8(bytes).unwrap()).into_bytes(),
-            || call_info(workspace.path(), []),
+            || call_info(workspace.path()),
         );
 
         assert!(!result.ok, "{label}: {result:?}");
@@ -1089,7 +1112,7 @@ fn info_rejects_a_foreign_namespace_descriptor_root_before_publishing_membership
             )
             .into_bytes()
         },
-        || call_info(workspace.path(), []),
+        || call_info(workspace.path()),
     );
 
     assert!(!result.ok);
@@ -1127,7 +1150,7 @@ fn info_rejects_a_foreign_direct_descriptor_artifact_before_publishing_membershi
             ambiguous.insert_str(closing, "<foreign:Decoy xmlns:foreign=\"urn:foreign\"/>");
             ambiguous.into_bytes()
         },
-        || call_info(workspace.path(), []),
+        || call_info(workspace.path()),
     );
 
     assert!(!result.ok);
@@ -1176,7 +1199,7 @@ fn info_rejects_duplicate_direct_metadata_objects_before_publishing_memberships(
             ambiguous.insert_str(closing, &duplicate);
             ambiguous.into_bytes()
         },
-        || call_info(workspace.path(), []),
+        || call_info(workspace.path()),
     );
 
     assert!(!result.ok);
@@ -1206,17 +1229,10 @@ fn info_rejects_duplicate_direct_metadata_objects_before_publishing_memberships(
 #[test]
 fn info_preserves_local_structure_when_child_resource_evidence_is_unavailable() {
     let workspace = create_info_workspace("child-evidence-unavailable");
-    let edited = call_edit(
-        workspace.path(),
-        "Catalog.Inspectable",
-        serde_json::json!([{
-            "op": "add",
-            "collection": "forms",
-            "elements": [{"name": "Main"}]
-        }]),
-        false,
+    test_fixtures::copy_tree(
+        &meta_info_surface_fixture("catalog_form"),
+        &workspace.path().join("src"),
     );
-    assert!(edited.ok, "{:?}", edited.errors);
     std::fs::write(
         workspace
             .path()
@@ -1225,7 +1241,7 @@ fn info_preserves_local_structure_when_child_resource_evidence_is_unavailable() 
     )
     .unwrap();
 
-    let result = call_info(workspace.path(), []);
+    let result = call_info(workspace.path());
 
     assert!(!result.ok);
     assert_eq!(result.data.as_ref().unwrap()["name"], "Inspectable");
@@ -1351,7 +1367,7 @@ fn info_observes_every_typed_mutation_field() {
 
     let applied = call_edit(workspace.path(), "Catalog.RoundTrip", operations, false);
     assert!(applied.ok, "{:?}", applied.errors);
-    let result = call_info_path(workspace.path(), "Catalog.RoundTrip", []);
+    let result = call_info_path(workspace.path(), "Catalog.RoundTrip");
     assert!(result.ok, "{:?}", result.errors);
     let data = result.data.unwrap();
     assert!(data["properties"]
@@ -1421,7 +1437,7 @@ fn info_localizes_an_unknown_but_valid_platform_type_as_a_warning() {
     assert_ne!(unknown, xml, "fixture must contain a typed attribute");
     std::fs::write(&descriptor, unknown).unwrap();
 
-    let result = call_info(workspace.path(), []);
+    let result = call_info(workspace.path());
 
     assert!(result.ok, "{:?}", result.errors);
     let data = result.data.as_ref().expect("partial typed info");
@@ -1447,7 +1463,7 @@ fn info_keeps_a_broken_qualifier_in_the_error_severity_branch() {
     assert_ne!(broken, xml, "fixture must contain string qualifiers");
     std::fs::write(&descriptor, broken).unwrap();
 
-    let result = call_info(workspace.path(), []);
+    let result = call_info(workspace.path());
 
     assert!(!result.ok, "a malformed qualifier must remain an error");
     let data = result.data.as_ref().expect("partial typed info");
@@ -1472,7 +1488,7 @@ fn info_reads_uuid_as_an_editable_observed_type() {
     assert_ne!(uuid, xml, "fixture must contain a typed attribute");
     std::fs::write(&descriptor, uuid).unwrap();
 
-    let result = call_info(workspace.path(), []);
+    let result = call_info(workspace.path());
 
     assert!(result.ok, "{:?}", result.errors);
     let observed = &result.data.unwrap()["collections"]["attributes"][0]["type"];
@@ -1498,7 +1514,7 @@ fn uuid_writer_round_trips_through_meta_edit_and_info() {
     );
 
     assert!(edited.ok, "{:?}", edited.errors);
-    let result = call_info(workspace.path(), []);
+    let result = call_info(workspace.path());
     assert!(result.ok, "{:?}", result.errors);
     let external_id = result.data.unwrap()["collections"]["attributes"]
         .as_array()
@@ -1531,7 +1547,7 @@ fn info_marks_bare_fill_value_incomplete_with_diagnostic() {
     );
     std::fs::write(&descriptor, malformed).unwrap();
 
-    let result = call_info(workspace.path(), []);
+    let result = call_info(workspace.path());
 
     assert!(!result.ok);
     let data = result.data.as_ref().expect("partial typed info");
@@ -1555,7 +1571,7 @@ fn meta_info_private_coordinator_hard_fails_malformed_xml_but_keeps_semantic_fai
     )
     .unwrap();
 
-    let malformed_result = call_info(malformed.path(), []);
+    let malformed_result = call_info(malformed.path());
     assert!(!malformed_result.ok);
     assert!(malformed_result.data.is_none());
 
@@ -1566,7 +1582,7 @@ fn meta_info_private_coordinator_hard_fails_malformed_xml_but_keeps_semantic_fai
     assert_ne!(duplicate, xml, "fixture must contain the second attribute");
     std::fs::write(&descriptor, duplicate).unwrap();
 
-    let semantic_result = call_info(semantic.path(), []);
+    let semantic_result = call_info(semantic.path());
     assert!(!semantic_result.ok);
     assert_eq!(
         semantic_result.data.as_ref().unwrap()["validation"]["status"],
@@ -1597,7 +1613,7 @@ fn meta_info_private_closed_read_preserves_missing_and_empty_child_names_as_inco
     }
     std::fs::write(&descriptor, xml).unwrap();
 
-    let result = call_info(workspace.path(), []);
+    let result = call_info(workspace.path());
 
     assert!(!result.ok);
     let data = result
@@ -1626,7 +1642,7 @@ fn meta_info_private_closed_read_proof_requires_every_registered_language_image(
         "Languages/Русский.xml",
     ];
     let valid = fixture_workspace("language-valid", "meta-validate-language-aware", &files);
-    let valid_result = call_info_path(valid.path(), "Enum.LanguageAware", []);
+    let valid_result = call_info_path(valid.path(), "Enum.LanguageAware");
     assert_eq!(
         valid_result.data.as_ref().unwrap()["validation"]["status"],
         "passed"
@@ -1634,7 +1650,7 @@ fn meta_info_private_closed_read_proof_requires_every_registered_language_image(
 
     let missing = fixture_workspace("language-missing", "meta-validate-language-aware", &files);
     std::fs::remove_file(missing.path().join("src/Languages/English.xml")).unwrap();
-    let missing_result = call_info_path(missing.path(), "Enum.LanguageAware", []);
+    let missing_result = call_info_path(missing.path(), "Enum.LanguageAware");
 
     assert!(!missing_result.ok);
     assert_eq!(
@@ -1646,7 +1662,7 @@ fn meta_info_private_closed_read_proof_requires_every_registered_language_image(
 
     let invalid = fixture_workspace("language-invalid", "meta-validate-language-aware", &files);
     std::fs::write(invalid.path().join("src/Languages/English.xml"), "not XML").unwrap();
-    let invalid_result = call_info_path(invalid.path(), "Enum.LanguageAware", []);
+    let invalid_result = call_info_path(invalid.path(), "Enum.LanguageAware");
 
     assert!(!invalid_result.ok);
     assert_eq!(
@@ -1677,7 +1693,7 @@ fn meta_info_private_closed_read_proof_rejects_a_missing_forward_register_image(
     )
     .unwrap();
 
-    let result = call_info_path(workspace.path(), "Document.Регистратор", []);
+    let result = call_info_path(workspace.path(), "Document.Регистратор");
 
     assert!(!result.ok);
     assert_eq!(
@@ -1708,11 +1724,7 @@ fn meta_info_private_closed_read_proof_rejects_reverse_registrar_inconsistency()
     );
     std::fs::write(&registrar, bytes).unwrap();
 
-    let result = call_info_path(
-        workspace.path(),
-        "InformationRegister.SubordinateRegister",
-        [],
-    );
+    let result = call_info_path(workspace.path(), "InformationRegister.SubordinateRegister");
 
     assert!(!result.ok);
     assert_eq!(
@@ -1738,11 +1750,7 @@ fn meta_info_private_closed_read_accepts_complete_registrar_evidence() {
         &files,
     );
 
-    let result = call_info_path(
-        workspace.path(),
-        "InformationRegister.SubordinateRegister",
-        [],
-    );
+    let result = call_info_path(workspace.path(), "InformationRegister.SubordinateRegister");
 
     assert!(result.ok, "{result:?}");
     assert_eq!(
@@ -1765,15 +1773,14 @@ fn meta_info_private_closed_read_treats_absent_and_empty_documents_as_complete_e
         "meta-validate-subordinate-register",
         &files,
     );
-    let absent_result =
-        call_info_path(absent.path(), "InformationRegister.SubordinateRegister", []);
+    let absent_result = call_info_path(absent.path(), "InformationRegister.SubordinateRegister");
     let empty = fixture_workspace(
         "registrar-documents-empty",
         "meta-validate-subordinate-register",
         &files,
     );
     std::fs::create_dir_all(empty.path().join("src/Documents")).unwrap();
-    let empty_result = call_info_path(empty.path(), "InformationRegister.SubordinateRegister", []);
+    let empty_result = call_info_path(empty.path(), "InformationRegister.SubordinateRegister");
 
     for (result, workspace) in [
         (&absent_result, absent.path()),
@@ -1808,11 +1815,7 @@ fn meta_info_private_closed_read_registrar_scan_enforces_byte_cap() {
         .set_len(64 * 1024 * 1024 + 1)
         .unwrap();
 
-    let result = call_info_path(
-        workspace.path(),
-        "InformationRegister.SubordinateRegister",
-        [],
-    );
+    let result = call_info_path(workspace.path(), "InformationRegister.SubordinateRegister");
 
     assert!(!result.ok);
     assert_logical_diagnostic(&result, workspace.path(), "provider_unavailable");
@@ -1838,11 +1841,7 @@ fn meta_info_private_closed_read_reports_malformed_registrar_evidence_unavailabl
     )
     .unwrap();
 
-    let result = call_info_path(
-        workspace.path(),
-        "InformationRegister.SubordinateRegister",
-        [],
-    );
+    let result = call_info_path(workspace.path(), "InformationRegister.SubordinateRegister");
 
     assert!(!result.ok);
     assert_eq!(result.data.as_ref().unwrap()["name"], "SubordinateRegister");
@@ -1879,7 +1878,6 @@ fn meta_info_post_capture_cancellation_after_first_identity_parse_is_provider_un
             call_info_path_cancellable(
                 workspace.path(),
                 "InformationRegister.SubordinateRegister",
-                [],
                 cancellation,
             )
         },
@@ -1932,7 +1930,6 @@ fn meta_info_post_capture_cancellation_after_large_identity_parse_is_provider_un
             call_info_path_cancellable(
                 workspace.path(),
                 "InformationRegister.SubordinateRegister",
-                [],
                 cancellation,
             )
         },
@@ -1982,7 +1979,6 @@ fn meta_info_post_capture_cancellation_after_last_registrar_parse_is_provider_un
             call_info_path_cancellable(
                 workspace.path(),
                 "InformationRegister.SubordinateRegister",
-                [],
                 cancellation,
             )
         },
@@ -2020,7 +2016,6 @@ fn meta_info_post_capture_cancellation_before_complete_return_is_provider_unavai
             call_info_path_cancellable(
                 workspace.path(),
                 "InformationRegister.SubordinateRegister",
-                [],
                 cancellation,
             )
         },
@@ -2136,59 +2131,32 @@ fn metadata_object_uuid(workspace: &Path, relative_descriptor: &str) -> String {
         .to_string()
 }
 
+/// Регистр сведений с одним измерением `Period` (строка 9): целостности
+/// объекта нужно хотя бы одно поле.
 fn add_command_interface_register(workspace: &Path, name: &str) {
-    {
-        let _cwd = ProcessCwdGuard::enter(workspace).unwrap();
-        let added = UnicaApplication::new()
-            .call_tool(
-                "unica.meta.add",
-                &Map::from_iter([
-                    ("sourceSet".to_string(), Value::String("main".to_string())),
-                    (
-                        "kind".to_string(),
-                        Value::String("InformationRegister".to_string()),
-                    ),
-                    ("name".to_string(), Value::String(name.to_string())),
-                    (
-                        // Object integrity requires a register to
-                        // carry at least one dimension, resource or attribute.
-                        "operations".to_string(),
-                        serde_json::json!([{
-                            "op": "add",
-                            "collection": "dimensions",
-                            "elements": [{
-                                "name": "Period",
-                                "type": {"variants": [{
-                                    "kind": "string",
-                                    "length": 9,
-                                    "allowedLength": "variable"
-                                }]}
-                            }]
-                        }]),
-                    ),
-                    ("dryRun".to_string(), Value::Bool(false)),
-                ]),
-            )
-            .unwrap();
-        assert!(added.ok, "{name}: {:?}", added.errors);
-    }
+    add_fixture_object(
+        workspace,
+        "register",
+        "InformationRegister",
+        name,
+        &[("CommandInterfaceRegister", name)],
+    );
 }
 
-fn register_command_interface_result(workspace: &Path, name: &str) -> OperationResult {
+fn register_command_interface_result(workspace: &Path, name: &str) -> InfoResult {
     add_command_interface_register(workspace, name);
-    call_info_path(workspace, &format!("InformationRegister.{name}"), [])
+    call_info_path(workspace, &format!("InformationRegister.{name}"))
 }
 
 fn register_command_interface_result_cancellable(
     workspace: &Path,
     name: &str,
     cancellation: CancellationToken,
-) -> OperationResult {
+) -> InfoResult {
     add_command_interface_register(workspace, name);
     call_info_path_cancellable(
         workspace,
         &format!("InformationRegister.{name}"),
-        [],
         cancellation,
     )
 }
@@ -2513,30 +2481,16 @@ fn add_enum_with_presentations(
     synonym: &str,
     list_presentation: Option<&str>,
 ) -> Vec<Value> {
-    {
-        let _cwd = ProcessCwdGuard::enter(workspace).unwrap();
-        let added = UnicaApplication::new()
-            .call_tool(
-                "unica.meta.add",
-                &Map::from_iter([
-                    ("sourceSet".to_string(), Value::String("main".to_string())),
-                    ("kind".to_string(), Value::String("Enum".to_string())),
-                    ("name".to_string(), Value::String(name.to_string())),
-                    (
-                        "operations".to_string(),
-                        serde_json::json!([
-                            {"op": "setProperties", "values": {"Synonym": synonym}}
-                        ]),
-                    ),
-                    ("dryRun".to_string(), Value::Bool(false)),
-                ]),
-            )
-            .unwrap();
-        assert!(added.ok, "{name}: {:?}", added.errors);
-    }
+    add_fixture_object(
+        workspace,
+        "enum",
+        "Enum",
+        name,
+        &[("PresentationEnum", name), ("PresentationSynonym", synonym)],
+    );
 
-    // ListPresentation is not a settable property of the typed surface, so the
-    // descriptor carries it by replacing the platform emitter's empty value.
+    // The fixture descriptor carries the platform emitter's empty
+    // ListPresentation; the case replaces it with the value under test.
     if let Some(list_presentation) = list_presentation {
         let descriptor = workspace.join(format!("src/Enums/{name}.xml"));
         let text = std::fs::read_to_string(&descriptor).unwrap();
@@ -2559,7 +2513,7 @@ fn add_enum_with_presentations(
         std::fs::write(&descriptor, patched).unwrap();
     }
 
-    let result = call_info_path(workspace, &format!("Enum.{name}"), []);
+    let result = call_info_path(workspace, &format!("Enum.{name}"));
     assert!(result.ok, "{name}: {:?}", result.errors);
     let data = result.data.expect("typed meta.info data");
     assert_eq!(data["validation"]["status"], "passed", "{name}");

@@ -360,55 +360,60 @@ fn closing_token_anchor_matches_crlf_and_repeats_as_noop() {
 
 #[test]
 fn patch_rejects_content_that_would_break_anchor_idempotence() {
-    let context = temp_context("unstable-anchor");
-    let module = context
-        .workspace_root
-        .join("src/CommonModules/Sample/Ext/Module.bsl");
-    fs::create_dir_all(module.parent().unwrap()).unwrap();
     let before = b"Procedure Run()\n    Target();\nEndProcedure\n";
-    fs::write(&module, before).unwrap();
-    let args = patch_args_for_selector(
-        "main",
-        "CommonModule.Sample.Module",
-        json!({"anchor": "Target();"}),
-        "before",
+    let fixture = staged_code_fixture("unstable-anchor", before);
+    let operation = [staged_insert(
+        "main:CommonModule.Sample",
         "    Target();",
+        Some(CodeSelector::Anchor("Target();".to_string())),
+        Some(CodePosition::Before),
+    )];
+
+    let admission = staged_code_admission(&fixture, false);
+    let error = plan_admitted_code(&admission, &fixture.binding, &operation)
+        .expect_err("an insert that duplicates its anchor must be refused");
+
+    assert_eq!(error.kind(), ApplyPlanErrorKind::Postcondition, "{error:?}");
+    assert!(
+        error
+            .to_string()
+            .contains("does not prove repeat-noop behavior"),
+        "{error}"
     );
-
-    let result = patch_inner(&args, &context, PatchMode::Apply);
-
-    assert!(!result.outcome.ok);
-    assert!(result.outcome.errors[0].contains("cannot be applied idempotently"));
-    assert_eq!(fs::read(&module).unwrap(), before);
     assert_eq!(
-        result.data.unwrap().validation.status,
-        ValidationStatus::Passed
+        fs::read(fixture.source.join("CommonModules/Sample/Ext/Module.bsl")).unwrap(),
+        before
     );
-    fs::remove_dir_all(&context.workspace_root).unwrap();
+    fixture.cleanup();
 }
 
 #[test]
 fn patch_rejects_content_that_duplicates_the_selected_method() {
-    let context = temp_context("unstable-method");
-    let module = context
-        .workspace_root
-        .join("src/CommonModules/Sample/Ext/Module.bsl");
-    fs::create_dir_all(module.parent().unwrap()).unwrap();
     let before = b"Procedure Run()\nEndProcedure\n";
-    fs::write(&module, before).unwrap();
-    let args = patch_args(
-        "main",
-        "CommonModule.Sample.Module",
-        "Run",
+    let fixture = staged_code_fixture("unstable-method", before);
+    let operation = [staged_insert(
+        "main:CommonModule.Sample.Method.Run",
         "Procedure Run()\nEndProcedure",
+        Some(CodeSelector::Method("Run".to_string())),
+        Some(CodePosition::After),
+    )];
+
+    let admission = staged_code_admission(&fixture, false);
+    let error = plan_admitted_code(&admission, &fixture.binding, &operation)
+        .expect_err("an insert that duplicates the addressed method must be refused");
+
+    assert_eq!(error.kind(), ApplyPlanErrorKind::Postcondition, "{error:?}");
+    assert!(
+        error
+            .to_string()
+            .contains("does not prove repeat-noop behavior"),
+        "{error}"
     );
-
-    let result = patch_inner(&args, &context, PatchMode::Apply);
-
-    assert!(!result.outcome.ok);
-    assert!(result.outcome.errors[0].contains("cannot be applied idempotently"));
-    assert_eq!(fs::read(&module).unwrap(), before);
-    fs::remove_dir_all(&context.workspace_root).unwrap();
+    assert_eq!(
+        fs::read(fixture.source.join("CommonModules/Sample/Ext/Module.bsl")).unwrap(),
+        before
+    );
+    fixture.cleanup();
 }
 
 #[test]
@@ -489,33 +494,38 @@ fn code_patch_replaces_one_method_and_leaves_its_neighbours_untouched() {
 
 #[test]
 fn code_patch_replace_that_consumes_its_selector_cannot_apply_twice() {
-    let context = temp_context("replace-consumes-selector");
-    let module = context
-        .workspace_root
-        .join("src/CommonModules/Sample/Ext/Module.bsl");
-    fs::create_dir_all(module.parent().unwrap()).unwrap();
-    fs::write(&module, "Процедура Цель()\nКонецПроцедуры\n").unwrap();
-    let args = replace_args(
-        "CommonModule.Sample.Module",
-        json!({"method": "Цель"}),
-        "Процедура Переименована()\nКонецПроцедуры",
+    let fixture = staged_code_fixture(
+        "replace-consumes-selector",
+        "Процедура Цель()\nКонецПроцедуры\n".as_bytes(),
     );
+    let relative = Path::new("CommonModules/Sample/Ext/Module.bsl");
+    let operation = [staged_replace(
+        "main:CommonModule.Sample.Method.Цель",
+        "Процедура Переименована()\nКонецПроцедуры",
+        None,
+    )];
 
-    let applied = patch_inner(&args, &context, PatchMode::Apply);
-    assert!(applied.outcome.ok, "{:?}", applied.outcome.errors);
-    let after = fs::read_to_string(&module).unwrap();
+    let applied = staged_code_admission(&fixture, false);
+    let (state, effects) = plan_admitted_code(&applied, &fixture.binding, &operation).unwrap();
+    fixture
+        .actor
+        .publish_prepared_apply(applied.prepare_with_effects(state, effects).unwrap())
+        .unwrap();
+    let after = fs::read_to_string(fixture.source.join(relative)).unwrap();
     assert_eq!(after, "Процедура Переименована()\nКонецПроцедуры\n");
 
-    // The selector no longer resolves, so the repeat fails closed rather
-    // than writing the edit a second time.
-    let repeated = patch_inner(&args, &context, PatchMode::Apply);
-    assert!(!repeated.outcome.ok);
+    // The addressed method no longer resolves, so the repeat fails closed
+    // rather than writing the edit a second time.
+    let repeated = staged_code_admission(&fixture, false);
+    let error = plan_admitted_code(&repeated, &fixture.binding, &operation)
+        .expect_err("a consumed method address must not resolve again");
+    assert_eq!(error.kind(), ApplyPlanErrorKind::NotFound);
     assert_eq!(
-        fs::read_to_string(&module).unwrap(),
+        fs::read_to_string(fixture.source.join(relative)).unwrap(),
         after,
         "a refused repeat must leave the module byte-identical"
     );
-    fs::remove_dir_all(&context.workspace_root).unwrap();
+    fixture.cleanup();
 }
 
 #[test]
@@ -548,34 +558,49 @@ fn code_patch_replace_keeps_an_anchor_edit_inline() {
 
 #[test]
 fn code_patch_without_any_source_eol_uses_lf_for_preview_apply_and_repeat_noop() {
-    let context = temp_context("no-source-eol");
-    let module = context
-        .workspace_root
-        .join("src/CommonModules/Sample/Ext/Module.bsl");
-    fs::create_dir_all(module.parent().unwrap()).unwrap();
     let before = "Процедура Тест() КонецПроцедуры";
     let expected = "Процедура Тест() КонецПроцедуры\n\nПроцедура Добавлена() КонецПроцедуры\n";
-    fs::write(&module, before).unwrap();
-    let args = patch_args(
-        "main",
-        "CommonModule.Sample.Module",
-        "Тест",
+    let fixture = staged_code_fixture("no-source-eol", before.as_bytes());
+    let relative = Path::new("CommonModules/Sample/Ext/Module.bsl");
+    let operation = [staged_insert(
+        "main:CommonModule.Sample",
         "Процедура Добавлена() КонецПроцедуры",
+        Some(CodeSelector::Method("Тест".to_string())),
+        Some(CodePosition::After),
+    )];
+
+    let preview = staged_code_admission(&fixture, true);
+    let (mut state, effects) = plan_admitted_code(&preview, &fixture.binding, &operation).unwrap();
+    assert_eq!(state.read(relative).unwrap().unwrap(), expected.as_bytes());
+    fixture
+        .actor
+        .publish_prepared_apply(preview.prepare_with_effects(state, effects).unwrap())
+        .unwrap();
+    assert_eq!(
+        fs::read(fixture.source.join(relative)).unwrap(),
+        before.as_bytes()
     );
 
-    let preview = patch_inner(&args, &context, PatchMode::Preview);
-    assert!(preview.outcome.ok, "{:?}", preview.outcome.errors);
-    assert_eq!(fs::read_to_string(&module).unwrap(), before);
+    let applied = staged_code_admission(&fixture, false);
+    let (state, effects) = plan_admitted_code(&applied, &fixture.binding, &operation).unwrap();
+    fixture
+        .actor
+        .publish_prepared_apply(applied.prepare_with_effects(state, effects).unwrap())
+        .unwrap();
+    assert_eq!(
+        fs::read(fixture.source.join(relative)).unwrap(),
+        expected.as_bytes()
+    );
 
-    let applied = patch_inner(&args, &context, PatchMode::Apply);
-    assert!(applied.outcome.ok, "{:?}", applied.outcome.errors);
-    assert_eq!(fs::read_to_string(&module).unwrap(), expected);
-
-    let repeated = patch_inner(&args, &context, PatchMode::Apply);
-    assert!(repeated.outcome.ok, "{:?}", repeated.outcome.errors);
-    assert!(repeated.data.unwrap().no_op);
-    assert_eq!(fs::read_to_string(&module).unwrap(), expected);
-    fs::remove_dir_all(&context.workspace_root).unwrap();
+    let repeated = staged_code_admission(&fixture, true);
+    let (state, effects) = plan_admitted_code(&repeated, &fixture.binding, &operation).unwrap();
+    assert!(state.planned_changes().is_empty());
+    assert!(effects.events().is_empty());
+    assert_eq!(
+        fs::read(fixture.source.join(relative)).unwrap(),
+        expected.as_bytes()
+    );
+    fixture.cleanup();
 }
 
 #[test]
@@ -613,28 +638,74 @@ fn code_patch_preserves_two_leading_boms_for_preview_apply_and_repeat_noop() {
 
 #[test]
 fn mixed_eol_apply_preserves_untouched_bytes_and_uses_target_eol() {
-    let context = temp_context("mixed-eol");
-    let module = context
-        .workspace_root
-        .join("src/CommonModules/Sample/Ext/Module.bsl");
-    fs::create_dir_all(module.parent().unwrap()).unwrap();
     let before = b"Procedure First()\r\nEndProcedure\r\nProcedure Second()\nEndProcedure\n";
-    fs::write(&module, before).unwrap();
-    let args = patch_args(
-        "main",
-        "CommonModule.Sample.Module",
-        "Second",
+    let fixture = staged_code_fixture("mixed-eol", before);
+    let relative = Path::new("CommonModules/Sample/Ext/Module.bsl");
+    let operation = [staged_insert(
+        "main:CommonModule.Sample",
         "Procedure Added()\r\nEndProcedure",
-    );
+        Some(CodeSelector::Method("Second".to_string())),
+        Some(CodePosition::After),
+    )];
 
-    let applied = patch_inner(&args, &context, PatchMode::Apply);
+    let applied = staged_code_admission(&fixture, false);
+    let (state, effects) = plan_admitted_code(&applied, &fixture.binding, &operation).unwrap();
+    fixture
+        .actor
+        .publish_prepared_apply(applied.prepare_with_effects(state, effects).unwrap())
+        .unwrap();
 
-    assert!(applied.outcome.ok, "{:?}", applied.outcome.errors);
     assert_eq!(
-            fs::read(&module).unwrap(),
-            b"Procedure First()\r\nEndProcedure\r\nProcedure Second()\nEndProcedure\n\nProcedure Added()\nEndProcedure\n"
-        );
-    fs::remove_dir_all(&context.workspace_root).unwrap();
+        fs::read(fixture.source.join(relative)).unwrap(),
+        b"Procedure First()\r\nEndProcedure\r\nProcedure Second()\nEndProcedure\n\nProcedure Added()\nEndProcedure\n"
+    );
+    fixture.cleanup();
+}
+
+/// Модуль сам версии не задаёт; формат ему задают корень набора и описание
+/// общего модуля. Устаревшая или неточная версия любого из них блокирует
+/// канонический `code.insert` до записи.
+#[test]
+fn canonical_code_insert_inside_older_source_set_is_refused_without_writes() {
+    for relative in ["Configuration.xml", "CommonModules/Sample.xml"] {
+        for version in ["2.19", "2.20.0"] {
+            let fixture = staged_code_fixture(
+                &format!("older-owner-{}-{version}", relative.replace('/', "-")),
+                b"Procedure Base()\nEndProcedure\n",
+            );
+            let owner = fixture.source.join(relative);
+            let original = fs::read_to_string(&owner).unwrap();
+            let older = original.replace("version=\"2.20\"", &format!("version=\"{version}\""));
+            assert_ne!(
+                older, original,
+                "{relative}: fixture must declare its version"
+            );
+            fs::write(&owner, older).unwrap();
+            let source_before = snapshot_staged_code_tree(&fixture.source);
+            let cache = fixture.root.join(".build/unica");
+            let cache_before = snapshot_staged_code_tree(&cache);
+            let operation = [staged_insert(
+                "main:CommonModule.Sample",
+                "Procedure Added()\nEndProcedure",
+                None,
+                None,
+            )];
+
+            for dry_run in [true, false] {
+                let admission = staged_code_admission(&fixture, dry_run);
+                let error = plan_admitted_code(&admission, &fixture.binding, &operation)
+                    .expect_err("an older format owner must block the code insert");
+                assert_eq!(
+                    error.kind(),
+                    ApplyPlanErrorKind::InvalidSource,
+                    "{relative} version={version} dryRun={dry_run}: {error}"
+                );
+            }
+            assert_eq!(snapshot_staged_code_tree(&fixture.source), source_before);
+            assert_eq!(snapshot_staged_code_tree(&cache), cache_before);
+            fixture.cleanup();
+        }
+    }
 }
 
 #[test]
@@ -960,35 +1031,51 @@ fn code_patch_invalid_postimage_returns_failed_validation_without_writing() {
 
 #[test]
 pub(crate) fn code_patch_without_a_selector_appends_to_the_end_and_proves_the_repeat() {
-    let context = temp_context("tail-append");
-    let module = context
-        .workspace_root
-        .join("src/CommonModules/Sample/Ext/Module.bsl");
-    fs::create_dir_all(module.parent().unwrap()).unwrap();
     let before = "Procedure Run()\nEndProcedure\n";
-    fs::write(&module, before).unwrap();
-    let args = tail_args(
-        "main",
-        "CommonModule.Sample.Module",
+    let expected = "Procedure Run()\nEndProcedure\n\nProcedure Added()\nEndProcedure\n";
+    let fixture = staged_code_fixture("tail-append", before.as_bytes());
+    let relative = Path::new("CommonModules/Sample/Ext/Module.bsl");
+    let operation = [staged_insert(
+        "main:CommonModule.Sample",
         "Procedure Added()\nEndProcedure",
+        None,
+        None,
+    )];
+
+    let preview = staged_code_admission(&fixture, true);
+    let (mut state, effects) = plan_admitted_code(&preview, &fixture.binding, &operation).unwrap();
+    assert_eq!(state.read(relative).unwrap().unwrap(), expected.as_bytes());
+    fixture
+        .actor
+        .publish_prepared_apply(preview.prepare_with_effects(state, effects).unwrap())
+        .unwrap();
+    assert_eq!(
+        fs::read(fixture.source.join(relative)).unwrap(),
+        before.as_bytes()
     );
 
-    let preview = patch_inner(&args, &context, PatchMode::Preview);
-    assert!(preview.outcome.ok, "{:?}", preview.outcome.errors);
-    assert_eq!(fs::read(&module).unwrap(), before.as_bytes());
-
-    let applied = patch_inner(&args, &context, PatchMode::Apply);
-    assert!(applied.outcome.ok, "{:?}", applied.outcome.errors);
-    let expected = "Procedure Run()\nEndProcedure\n\nProcedure Added()\nEndProcedure\n";
-    assert_eq!(fs::read(&module).unwrap(), expected.as_bytes());
+    let applied = staged_code_admission(&fixture, false);
+    let (state, effects) = plan_admitted_code(&applied, &fixture.binding, &operation).unwrap();
+    fixture
+        .actor
+        .publish_prepared_apply(applied.prepare_with_effects(state, effects).unwrap())
+        .unwrap();
+    assert_eq!(
+        fs::read(fixture.source.join(relative)).unwrap(),
+        expected.as_bytes()
+    );
 
     // The end of the module is still addressable afterwards, so the repeat
     // is a proven no-op rather than a refusal after the write landed.
-    let repeat = patch_inner(&args, &context, PatchMode::Apply);
-    assert!(repeat.outcome.ok, "{:?}", repeat.outcome.errors);
-    assert!(repeat.outcome.summary.contains("already applied"));
-    assert_eq!(fs::read(&module).unwrap(), expected.as_bytes());
-    fs::remove_dir_all(&context.workspace_root).unwrap();
+    let repeated = staged_code_admission(&fixture, true);
+    let (state, effects) = plan_admitted_code(&repeated, &fixture.binding, &operation).unwrap();
+    assert!(state.planned_changes().is_empty());
+    assert!(effects.events().is_empty());
+    assert_eq!(
+        fs::read(fixture.source.join(relative)).unwrap(),
+        expected.as_bytes()
+    );
+    fixture.cleanup();
 }
 
 #[test]
@@ -1063,35 +1150,52 @@ pub(crate) fn code_patch_writes_the_first_body_of_an_empty_or_bom_only_module() 
             b"Procedure Run()\nEndProcedure\n".to_vec(),
         ),
     ] {
-        let context = temp_context(&format!("tail-first-{label}"));
-        let module = context
-            .workspace_root
-            .join("src/CommonModules/Sample/Ext/Module.bsl");
-        fs::create_dir_all(module.parent().unwrap()).unwrap();
-        fs::write(&module, &before).unwrap();
-        let args = tail_args(
-            "main",
-            "CommonModule.Sample.Module",
+        let fixture = staged_code_fixture(&format!("tail-first-{label}"), &before);
+        let relative = Path::new("CommonModules/Sample/Ext/Module.bsl");
+        let operation = [staged_insert(
+            "main:CommonModule.Sample",
             "Procedure Run()\nEndProcedure",
+            None,
+            None,
+        )];
+
+        let preview = staged_code_admission(&fixture, true);
+        let (mut state, effects) =
+            plan_admitted_code(&preview, &fixture.binding, &operation).unwrap();
+        assert_eq!(state.read(relative).unwrap().unwrap(), expected, "{label}");
+        fixture
+            .actor
+            .publish_prepared_apply(preview.prepare_with_effects(state, effects).unwrap())
+            .unwrap();
+        assert_eq!(
+            fs::read(fixture.source.join(relative)).unwrap(),
+            before,
+            "{label} preview wrote"
         );
 
-        let preview = patch_inner(&args, &context, PatchMode::Preview);
-        assert!(preview.outcome.ok, "{label}: {:?}", preview.outcome.errors);
-        assert_eq!(fs::read(&module).unwrap(), before, "{label} preview wrote");
-        let data = preview.data.unwrap();
-        assert_eq!(data.pre_hash, hash(&before), "{label}");
-        assert_eq!(data.post_hash, hash(&expected), "{label}");
-        assert_eq!(data.validation.status, ValidationStatus::Passed, "{label}");
-
-        let applied = patch_inner(&args, &context, PatchMode::Apply);
-        assert!(applied.outcome.ok, "{label}: {:?}", applied.outcome.errors);
+        let applied = staged_code_admission(&fixture, false);
+        let (state, effects) = plan_admitted_code(&applied, &fixture.binding, &operation).unwrap();
+        fixture
+            .actor
+            .publish_prepared_apply(applied.prepare_with_effects(state, effects).unwrap())
+            .unwrap();
         // No blank line is owed: a byte order mark is not content.
-        assert_eq!(fs::read(&module).unwrap(), expected, "{label}");
+        assert_eq!(
+            fs::read(fixture.source.join(relative)).unwrap(),
+            expected,
+            "{label}"
+        );
 
-        let repeat = patch_inner(&args, &context, PatchMode::Apply);
-        assert!(repeat.outcome.ok, "{label}: {:?}", repeat.outcome.errors);
-        assert_eq!(fs::read(&module).unwrap(), expected, "{label} repeat wrote");
-        fs::remove_dir_all(&context.workspace_root).unwrap();
+        let repeated = staged_code_admission(&fixture, true);
+        let (state, effects) = plan_admitted_code(&repeated, &fixture.binding, &operation).unwrap();
+        assert!(state.planned_changes().is_empty(), "{label}");
+        assert!(effects.events().is_empty(), "{label}");
+        assert_eq!(
+            fs::read(fixture.source.join(relative)).unwrap(),
+            expected,
+            "{label} repeat wrote"
+        );
+        fixture.cleanup();
     }
 }
 
