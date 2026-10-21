@@ -41,15 +41,21 @@ FUNCTION = re.compile(
 )
 TEST_ATTRIBUTE = re.compile(r"#\[(?:[\w:]+::)?test\b")
 IGNORE_ATTRIBUTE = re.compile(r'#\[ignore\s*=\s*"[^"]+"\]')
-ENV_READ = r"(?:std::)?env::var(?:_os)?\([^()]*\)"
+ENV_READ = r"(?:std::)?env::var(?:_os)?\((?:[^()]|\([^()]*\))*\)"
 # Тело, которое ничего не делает, кроме печати: пустой выход.
-QUIET = r"(?:\s*(?:eprintln|println)!\((?:[^;]|\n)*?\);)*\s*"
+QUIET = r"(?:\s*(?:eprintln|println)!\([^;]*?\);)*\s*"
+EMPTY = r"(?:\{" + QUIET + r"\}|\(\)|return\b)"
 SILENT_EXITS = (
     re.compile(r"let\s+(?:Ok|Some)\s*\([^=]*\)\s*=\s*" + ENV_READ + r"[^;{]*else\s*\{" + QUIET + r"return\b[^;]*;\s*\}"),
     re.compile(r"if\s+" + ENV_READ + r"\s*\.is_(?:err|none)\(\)\s*\{" + QUIET + r"return\b[^;]*;\s*\}"),
-    re.compile(r"(?:Err\s*\(\s*_\s*\)|None|_)\s*=>\s*(?:\{" + QUIET + r"\}|return\b)"),
+    re.compile(r"if\s+!\s*" + ENV_READ + r"\s*\.is_(?:ok|some)\(\)\s*\{" + QUIET + r"return\b[^;]*;\s*\}"),
+    re.compile(r"if\s+let\s+(?:Err\s*\(\s*_\s*\)|None)\s*=\s*" + ENV_READ + r"[^{]*\{" + QUIET + r"return\b[^;]*;\s*\}"),
 )
-WHOLE_BODY_UNDER_ENV = re.compile(r"\A\s*\{\s*if\s+" + ENV_READ + r"\s*\.is_(?:some|ok)\(\)\s*\{(?P<inner>.*)\}\s*\}\s*\Z", re.S)
+FALLBACK_ARM = re.compile(r"(?:Err\s*\(\s*_\s*\)|None|_)\s*=>\s*" + EMPTY)
+# Условие, при ложности которого тест ничего не делает, если под ним всё тело.
+GUARDED_BODY = re.compile(
+    r"\A\s*\{\s*if\s+(?:" + ENV_READ + r"\s*\.is_(?:some|ok)\(\)|let\s+(?:Ok|Some)\s*\([^=]*\)\s*=\s*" + ENV_READ + r"[^{]*)\s*(?=\{)"
+)
 
 
 def attributes_above(text: str, start: int) -> list[str]:
@@ -136,19 +142,27 @@ def stand_violations(text: str, label: str) -> list[str]:
     return problems
 
 
+def guarded_whole_body(body: str) -> bool:
+    """Всё тело под `if <есть переменная> { … }` без `else` и без кода после."""
+    head = GUARDED_BODY.match(body)
+    if not head:
+        return False
+    guarded = block(body, head.end())
+    rest = body[head.end() + len(guarded):]
+    return re.fullmatch(r"\s*\}\s*", rest) is not None
+
+
 def silent_exit_violations(text: str, label: str) -> list[str]:
     problems = []
     for item in functions(without_comments(text)):
         if not is_test(item) or is_ignored(item):
             continue
         body = item["body"]
-        if any(pattern.search(body) for pattern in SILENT_EXITS[:2]) or WHOLE_BODY_UNDER_ENV.match(body):
+        silent = any(pattern.search(body) for pattern in SILENT_EXITS) or guarded_whole_body(body) or any(
+            FALLBACK_ARM.search(block(body, match.end())) for match in re.finditer(r"match\s+" + ENV_READ, body)
+        )
+        if silent:
             problems.append(f"{label}: test {item['name']} passes empty without its environment; mark it #[ignore = \"...\"]")
-            continue
-        for match in re.finditer(r"match\s+" + ENV_READ, body):
-            if SILENT_EXITS[2].search(block(body, match.end())):
-                problems.append(f"{label}: test {item['name']} passes empty without its environment; mark it #[ignore = \"...\"]")
-                break
     return problems
 
 
@@ -162,29 +176,33 @@ def launch_violations(sources: dict[str, str]) -> list[str]:
 
     Без флага дочерний процесс отвечает `0 tests` с кодом 0, и родитель,
     который только наблюдает процесс, проходит, не запустив помощника.
+    Запуск — массив аргументов с `"--exact"`; флаг ищется в том же массиве.
+    Имя может прийти через константу, в том числе импортированную из
+    другого файла.
     """
     problems = []
     names = ignored_test_names(sources)
-    for label, text in sources.items():
-        code = without_comments(text)
+    codes = {label: without_comments(text) for label, text in sources.items()}
+    for label, code in codes.items():
         for literal in re.finditer(r'"(?:[\w:]*::)?(\w+)"', code):
             if literal.group(1) not in names:
                 continue
-            line_start = code.rfind("\n", 0, literal.start()) + 1
-            constant = re.match(r"\s*(?:pub(?:\([^)]*\))?\s+)?const\s+(\w+)\s*:\s*&str\s*=\s*$",
-                                code[line_start:literal.start()].replace("\n", " ")) or \
-                re.search(r"const\s+(\w+)\s*:\s*&str\s*=\s*$", code[max(0, line_start - 120):literal.start()])
-            sites = ([use.start() for use in re.finditer(rf"\b{constant.group(1)}\b", code)
-                      if use.start() != code.find(constant.group(1), max(0, line_start - 120))]
-                     if constant else [literal.start()])
-            for site in sites:
-                before = code[:site].splitlines()[-4:]
-                after = code[site:].splitlines()[:4]
-                window = "\n".join(before + after)
-                if '"--exact"' not in code[max(0, site - 200):site + 200]:
-                    continue
-                if '"--ignored"' not in window:
-                    problems.append(f"{label}: launch of ignored test {literal.group(1)} lacks --ignored")
+            constant = re.search(r"const\s+(\w+)\s*:\s*&(?:'static\s+)?str\s*=\s*$",
+                                 code[max(0, literal.start() - 160):literal.start()])
+            if constant:
+                name = constant.group(1)
+                declared = code.rfind(name, 0, literal.start())
+                sites = [(label, use.start()) for use in re.finditer(rf"\b{name}\b", code) if use.start() != declared]
+                sites += [(other, use.start()) for other, text in codes.items()
+                          if other != label and re.search(rf"\buse\s[^;]*\b{name}\b", text)
+                          for use in re.finditer(rf"\b{name}\b", text)]
+            else:
+                sites = [(label, literal.start())]
+            for where, site in sites:
+                text = codes[where]
+                arguments = text[text.rfind("[", 0, site):text.find("]", site) + 1]
+                if '"--exact"' in arguments and '"--ignored"' not in arguments:
+                    problems.append(f"{where}: launch of ignored test {literal.group(1)} lacks --ignored")
     return problems
 
 
@@ -316,6 +334,17 @@ class SilentExitTests(unittest.TestCase):
         )
         self.assertEqual(silent_exit_violations(text, "fixture"), [])
 
+    def test_equivalent_absence_forms_are_silent(self) -> None:
+        self.assertSilent('    if let Ok(value) = std::env::var(CHILD) {\n        run(value);\n    }')
+        self.assertSilent('    if let Err(_) = std::env::var(CHILD) {\n        return;\n    }\n    run();')
+        self.assertSilent('    if !std::env::var(CHILD).is_ok() {\n        return;\n    }\n    run();')
+        self.assertSilent('    match std::env::var(CHILD) {\n        Ok(v) => run(v),\n        Err(_) => (),\n    }')
+        self.assertSilent('    let Ok(v) = std::env::var(format!("{}_X", PREFIX)) else {\n        return;\n    };\n    run(v);')
+
+    def test_an_if_else_self_reexec_is_not_silent(self) -> None:
+        text = "#[test]\nfn t() {\n    if std::env::var_os(C).is_some() {\n        a();\n    } else {\n        b();\n    }\n}\n"
+        self.assertEqual(silent_exit_violations(text, "fixture"), [])
+
     def test_a_parent_branch_that_does_work_is_not_silent(self) -> None:
         text = '''
 #[test]
@@ -348,6 +377,17 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual(len(launch_violations({"a.rs": self.HELPER + launch})), 1)
         fixed = launch.replace('"tests::child_helper",\n', '"tests::child_helper",\n        "--ignored",\n')
         self.assertEqual(launch_violations({"a.rs": self.HELPER + fixed}), [])
+
+    def test_a_neighbouring_launch_does_not_lend_its_flag(self) -> None:
+        launch = ('fn parent() {\n    a.args(["--exact", "other", "--ignored"]);\n'
+                  '    c.args(["--exact", "tests::child_helper"]);\n}\n')
+        self.assertEqual(len(launch_violations({"a.rs": self.HELPER + launch})), 1)
+
+    def test_a_static_constant_imported_elsewhere_needs_the_flag(self) -> None:
+        declaration = "pub const CHILD: &'static str = \"tests::child_helper\";\n"
+        launch = 'use crate::a::CHILD;\nfn parent() {\n' + " " * 300 + '\n    command.args(["--exact", CHILD]);\n}\n'
+        self.assertEqual(launch_violations({"a.rs": self.HELPER + declaration, "b.rs": launch}),
+                         ["b.rs: launch of ignored test child_helper lacks --ignored"])
 
     def test_a_launch_through_a_constant_needs_the_ignored_flag(self) -> None:
         launch = 'const CHILD: &str =\n    "tests::child_helper";\nfn parent() {\n    command.args(["--exact", CHILD, "--nocapture"]);\n}\n'
