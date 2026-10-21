@@ -20,6 +20,9 @@ SOURCE_ROOT = REPO_ROOT / "crates"
 HELPER = "platform_help_dir"
 
 ENV_READ = re.compile(r'env::var(?:_os)?\(\s*"UNICA_PLATFORM_HELP_DIR"\s*\)')
+# Падение обязано относиться к самому чтению: `.expect` на другом выражении
+# рядом с умолчанием для переменной снова дал бы тихий проход.
+FAILING_READ = re.compile(ENV_READ.pattern + r"\s*(?:\.map\s*\(\s*PathBuf::from\s*\)\s*)?\.expect\s*\(")
 FUNCTION = re.compile(r"^(?P<indent>[ \t]*)(?:pub(?:\([^)]*\))?\s+)?fn\s+(?P<name>\w+)\s*\(", re.M)
 ATTRIBUTE_LINE = re.compile(r"^[ \t]*#\[.*\][ \t]*$")
 
@@ -50,7 +53,7 @@ def violations(text: str, label: str) -> list[str]:
         owner = min(owners, key=lambda item: item["end"] - item["start"]) if owners else None
         if owner is None or owner["name"] != HELPER:
             problems.append(f"{label}: UNICA_PLATFORM_HELP_DIR is read outside {HELPER}()")
-        elif ".expect(" not in owner["body"]:
+        elif not FAILING_READ.match(text, read.start()):
             problems.append(f"{label}: {HELPER}() must fail without the variable, not skip")
     for item in found:
         if "#[test]" not in item["attributes"] or not re.search(rf"\b{HELPER}\(\)", item["body"]):
@@ -119,6 +122,15 @@ fn oracle() {
 
     def test_a_helper_that_does_not_fail_is_rejected(self) -> None:
         text = IGNORED.replace('.expect("set it")', "")
+        self.assertEqual(len(violations(text, "fixture")), 1)
+
+    def test_an_unrelated_expect_does_not_excuse_a_defaulted_read(self) -> None:
+        text = IGNORED.replace(
+            '    std::env::var_os("UNICA_PLATFORM_HELP_DIR").map(PathBuf::from).expect("set it")\n',
+            '    let _ = "1".parse::<u8>().expect("unrelated");\n'
+            '    std::env::var_os("UNICA_PLATFORM_HELP_DIR").map(PathBuf::from).unwrap_or_default()\n',
+        )
+        self.assertNotEqual(text, IGNORED)
         self.assertEqual(len(violations(text, "fixture")), 1)
 
 
