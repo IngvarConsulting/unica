@@ -389,14 +389,14 @@ fn metadata_missing_empty_and_malformed_types_do_not_claim_a_size_limit() {
                 let limit = limit.as_str().unwrap();
                 !limit.contains("2048") && !limit.contains("compact property limit")
             }),
-            "{item_limits:?}"
+            "a type limit of the attribute claims a size bound"
         );
         assert_eq!(
             item_limits
                 .iter()
                 .any(|limit| limit.as_str().unwrap().starts_with("collections.attributes[0].type: ")),
             damaged,
-            "{item_limits:?}"
+            "the attribute limits name the type damage exactly when the type is damaged"
         );
         assert_eq!(data["props"].get("incomplete").and_then(serde_json::Value::as_bool).unwrap_or(false), damaged);
         let root = service.view(ViewRequest::new("main:Catalog.Items").unwrap());
