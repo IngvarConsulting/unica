@@ -1,4 +1,5 @@
 """Локальная агентная приёмка сценария MXL."""
+from scripts.ci.prepared_binary import binary_path, ensure_binary
 import json
 import subprocess
 import unittest
@@ -11,8 +12,7 @@ from tests.ci.test_acceptance_scenarios import run_corpus
 
 class MxlAgentAcceptanceTests(unittest.TestCase):
     def test_agent_uses_current_contract_without_retired_skills(self):
-        subprocess.run(["cargo", "build", "--quiet", "--locked", "-p", "unica-coder", "--bin", "unica"],
-                       cwd=REPO, check=True)
+        ensure_binary(REPO, build_command=["cargo", "build", "--quiet", "--locked", "-p", "unica-coder", "--bin", "unica"])
         corpus = select_profile(load_acceptance_corpus(), "agent-evaluation")
         corpus["scenarios"] = [s for s in corpus["scenarios"] if s["evaluation"] == "mxl-contract"]
         proofs = REPO / ".session-temp/acceptance-agent"

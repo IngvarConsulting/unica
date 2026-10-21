@@ -1,0 +1,3273 @@
+//! Durable sole-record lifecycle-link pool for protocol-v5 Tasks.
+
+use crate::receipt_ledger::{
+    receipt_key_digest, AttemptPhase, ClosedTerminalStatus, LifecycleLinkRecordHeader, ReceiptKey,
+    ReceiptKeyDigest, ReceiptLedgerError, ReceiptTaskProjection, RetainedDualIdAccounting,
+    TaskBoundReceipt, TaskLinkDigest, TaskLinkReference, TaskRetirementPendingReceipt,
+    TaskTerminalBoundReceipt, TerminalDigest,
+    MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES as APPLICATION_MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES,
+};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::ffi::OsStr;
+use std::fmt;
+use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::path::Path;
+use std::sync::{Mutex, MutexGuard, TryLockError};
+use std::time::Duration;
+use unica_execution_contract::invocation::{InvocationId, SafeIdentityHash, TaskId};
+use unica_work_control::provider_deadline::ProviderDeadline;
+use unica_workspace::state_fs::StateHandle as File;
+use unica_workspace::state_fs::{
+    create_state_file_child, open_state_ownership_lock, open_state_regular_child,
+    remove_state_regular_child, rename_state_regular_child_no_replace, replace_state_regular_child,
+    restrict_state_stage_to_owner, state_file_identity, sync_state_directory,
+    verify_state_owner_only, FileIdentity, StateDirectory,
+};
+use uuid::Uuid;
+
+pub const MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES: usize =
+    APPLICATION_MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES as usize;
+
+const STORE_SCHEMA_VERSION: u32 = 1;
+const STORE_LOCK_FILE: &str = ".task-lifecycle-link-v5.lock";
+const STORE_SNAPSHOT_FILE: &str = "task-lifecycle-links-v1.json";
+const STORE_STAGING_PREFIX: &str = ".task-lifecycle-links-v1.";
+const STORE_STAGING_SUFFIX: &str = ".tmp";
+const STORE_WRITER_WAIT_SLICE: Duration = Duration::from_millis(10);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TaskLifecycleLinkStoreError {
+    AlreadyOwned,
+    DeadlineExceeded,
+    NotFound {
+        task_id: TaskId,
+    },
+    AlreadyMaterialized {
+        task_id: TaskId,
+    },
+    IdentityMismatch,
+    ReservationMismatch,
+    StateMismatch,
+    VersionMismatch {
+        expected: u64,
+        actual: u64,
+    },
+    RecordTooLarge {
+        actual: usize,
+        maximum: usize,
+    },
+    CommitUncertain {
+        receipt_key_digest: ReceiptKeyDigest,
+    },
+    Corrupt(&'static str),
+    Storage {
+        operation: &'static str,
+        message: String,
+    },
+}
+
+impl fmt::Display for TaskLifecycleLinkStoreError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AlreadyOwned => formatter.write_str("Task lifecycle-link store is already owned"),
+            Self::DeadlineExceeded => {
+                formatter.write_str("Task lifecycle-link store deadline expired")
+            }
+            Self::NotFound { task_id } => {
+                write!(formatter, "Task lifecycle link {task_id} was not found")
+            }
+            Self::AlreadyMaterialized { task_id } => {
+                write!(
+                    formatter,
+                    "Task lifecycle link {task_id} is already materialized"
+                )
+            }
+            Self::IdentityMismatch => {
+                formatter.write_str("Task lifecycle-link identity belongs to another exact key")
+            }
+            Self::ReservationMismatch => {
+                formatter.write_str("Task lifecycle-link reservation does not match durable state")
+            }
+            Self::StateMismatch => formatter.write_str("Task lifecycle-link state mismatch"),
+            Self::VersionMismatch { expected, actual } => write!(
+                formatter,
+                "Task lifecycle-link version mismatch: expected {expected}, actual {actual}"
+            ),
+            Self::RecordTooLarge { actual, maximum } => write!(
+                formatter,
+                "Task lifecycle-link record uses {actual} bytes, maximum is {maximum}"
+            ),
+            Self::CommitUncertain { receipt_key_digest } => write!(
+                formatter,
+                "Task lifecycle-link commit is uncertain for {receipt_key_digest}"
+            ),
+            Self::Corrupt(message) => {
+                write!(formatter, "corrupt Task lifecycle-link store: {message}")
+            }
+            Self::Storage { operation, message } => write!(formatter, "{operation}: {message}"),
+        }
+    }
+}
+
+impl std::error::Error for TaskLifecycleLinkStoreError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskLinkReservation {
+    key: ReceiptKey,
+    key_digest: ReceiptKeyDigest,
+    link: TaskLinkReference,
+    reservation_version: u64,
+    mutation_sequence: u64,
+    encoded_bytes: u64,
+}
+
+impl TaskLinkReservation {
+    pub fn key(&self) -> &ReceiptKey {
+        &self.key
+    }
+
+    pub fn key_digest(&self) -> &ReceiptKeyDigest {
+        &self.key_digest
+    }
+
+    pub fn link(&self) -> &TaskLinkReference {
+        &self.link
+    }
+
+    pub const fn reservation_version(&self) -> u64 {
+        self.reservation_version
+    }
+
+    pub const fn mutation_sequence(&self) -> u64 {
+        self.mutation_sequence
+    }
+
+    pub const fn encoded_bytes(&self) -> u64 {
+        self.encoded_bytes
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)] // The variants preserve the normative lifecycle state names.
+pub enum TaskLifecycleLinkRecord {
+    TaskBound(TaskBoundReceipt),
+    TaskTerminalBound(TaskTerminalBoundReceipt),
+    TaskRetirementPending(TaskRetirementPendingReceipt),
+}
+
+impl TaskLifecycleLinkRecord {
+    pub fn key(&self) -> &ReceiptKey {
+        match self {
+            Self::TaskBound(record) => record.key(),
+            Self::TaskTerminalBound(record) => record.key(),
+            Self::TaskRetirementPending(record) => record.key(),
+        }
+    }
+
+    fn key_digest(&self) -> &ReceiptKeyDigest {
+        match self {
+            Self::TaskBound(record) => record.key_digest(),
+            Self::TaskTerminalBound(record) => record.key_digest(),
+            Self::TaskRetirementPending(record) => record.key_digest(),
+        }
+    }
+
+    fn link(&self) -> &TaskLinkReference {
+        match self {
+            Self::TaskBound(record) => record.link(),
+            Self::TaskTerminalBound(record) => record.link(),
+            Self::TaskRetirementPending(record) => record.link(),
+        }
+    }
+
+    fn lifecycle_link_version(&self) -> u64 {
+        match self {
+            Self::TaskBound(record) => record.lifecycle_link_version(),
+            Self::TaskTerminalBound(record) => record.lifecycle_link_version(),
+            Self::TaskRetirementPending(record) => record.lifecycle_link_version(),
+        }
+    }
+
+    fn mutation_sequence(&self) -> u64 {
+        match self {
+            Self::TaskBound(record) => record.mutation_sequence(),
+            Self::TaskTerminalBound(record) => record.mutation_sequence(),
+            Self::TaskRetirementPending(record) => record.mutation_sequence(),
+        }
+    }
+
+    fn encoded_bytes(&self) -> u64 {
+        match self {
+            Self::TaskBound(record) => record.encoded_bytes(),
+            Self::TaskTerminalBound(record) => record.encoded_bytes(),
+            Self::TaskRetirementPending(record) => record.encoded_bytes(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TaskLifecycleLinkCatalogEntry {
+    Reservation(TaskLinkReservation),
+    Record(TaskLifecycleLinkRecord),
+}
+
+impl TaskLifecycleLinkCatalogEntry {
+    pub fn key_digest(&self) -> &ReceiptKeyDigest {
+        match self {
+            Self::Reservation(reservation) => reservation.key_digest(),
+            Self::Record(record) => record.key_digest(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskLifecycleLinkCatalogSnapshot {
+    generation: u64,
+    entries: Vec<TaskLifecycleLinkCatalogEntry>,
+    count: usize,
+    actual_bytes: u64,
+    reserved_count: usize,
+    reserved_bytes: u64,
+}
+
+impl TaskLifecycleLinkCatalogSnapshot {
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn entries(&self) -> &[TaskLifecycleLinkCatalogEntry] {
+        &self.entries
+    }
+
+    pub const fn count(&self) -> usize {
+        self.count
+    }
+
+    pub const fn actual_bytes(&self) -> u64 {
+        self.actual_bytes
+    }
+
+    pub const fn reserved_count(&self) -> usize {
+        self.reserved_count
+    }
+
+    pub const fn reserved_bytes(&self) -> u64 {
+        self.reserved_bytes
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TaskLifecycleLinkCapacitySnapshot {
+    live_reservations: usize,
+    materialized_links: usize,
+    accounted_bytes: usize,
+}
+
+#[cfg(test)]
+impl TaskLifecycleLinkCapacitySnapshot {
+    pub const fn live_reservations(self) -> usize {
+        self.live_reservations
+    }
+
+    pub const fn materialized_links(self) -> usize {
+        self.materialized_links
+    }
+
+    pub const fn task_store_slots_accounted(self) -> usize {
+        self.live_reservations + self.materialized_links
+    }
+
+    pub const fn accounted_bytes(self) -> usize {
+        self.accounted_bytes
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Debug, PartialEq, Eq)]
+pub struct TaskLifecycleLinkMemoryForTest(StoreCatalog);
+
+#[derive(Debug, Clone, Copy)]
+struct StoreLimits {
+    max_record_bytes: usize,
+}
+
+impl StoreLimits {
+    const fn production() -> Self {
+        Self {
+            max_record_bytes: MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CatalogEntry {
+    Reservation(TaskLinkReservation),
+    Link(TaskLifecycleLinkRecord),
+}
+
+impl CatalogEntry {
+    fn key(&self) -> &ReceiptKey {
+        match self {
+            Self::Reservation(reservation) => reservation.key(),
+            Self::Link(record) => record.key(),
+        }
+    }
+
+    fn key_digest(&self) -> &ReceiptKeyDigest {
+        match self {
+            Self::Reservation(reservation) => reservation.key_digest(),
+            Self::Link(record) => record.key_digest(),
+        }
+    }
+
+    fn link(&self) -> &TaskLinkReference {
+        match self {
+            Self::Reservation(reservation) => reservation.link(),
+            Self::Link(record) => record.link(),
+        }
+    }
+
+    fn mutation_sequence(&self) -> u64 {
+        match self {
+            Self::Reservation(reservation) => reservation.mutation_sequence(),
+            Self::Link(record) => record.mutation_sequence(),
+        }
+    }
+
+    #[cfg(test)]
+    fn accounted_bytes(&self, maximum_record_bytes: usize) -> usize {
+        match self {
+            Self::Reservation(_) => maximum_record_bytes,
+            Self::Link(record) => usize::try_from(record.encoded_bytes()).unwrap_or(usize::MAX),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct StoreCatalog {
+    mutation_sequence: u64,
+    entries: HashMap<ReceiptKeyDigest, CatalogEntry>,
+    task_index: HashMap<TaskId, ReceiptKeyDigest>,
+    invocation_index: HashMap<InvocationId, ReceiptKeyDigest>,
+}
+
+impl StoreCatalog {
+    #[cfg(test)]
+    fn capacity_snapshot(&self, maximum_record_bytes: usize) -> TaskLifecycleLinkCapacitySnapshot {
+        let mut live_reservations = 0;
+        let mut materialized_links = 0;
+        let mut accounted_bytes = 0usize;
+        for entry in self.entries.values() {
+            match entry {
+                CatalogEntry::Reservation(_) => live_reservations += 1,
+                CatalogEntry::Link(_) => materialized_links += 1,
+            }
+            accounted_bytes =
+                accounted_bytes.saturating_add(entry.accounted_bytes(maximum_record_bytes));
+        }
+        TaskLifecycleLinkCapacitySnapshot {
+            live_reservations,
+            materialized_links,
+            accounted_bytes,
+        }
+    }
+
+    fn insert_exact(&mut self, entry: CatalogEntry) -> Result<(), TaskLifecycleLinkStoreError> {
+        let key_digest = entry.key_digest().clone();
+        let task_id = entry.key().reserved_task_id();
+        let invocation_id = entry.key().invocation_id();
+        if receipt_key_digest(entry.key()) != key_digest
+            || entry.link().receipt_key_digest() != &key_digest
+            || entry.link().task_id() != task_id
+            || entry.link().invocation_id() != invocation_id
+        {
+            return Err(TaskLifecycleLinkStoreError::Corrupt(
+                "catalog entry has contradictory key or link identity",
+            ));
+        }
+        if self
+            .task_index
+            .get(&task_id)
+            .is_some_and(|existing| existing != &key_digest)
+            || self
+                .invocation_index
+                .get(&invocation_id)
+                .is_some_and(|existing| existing != &key_digest)
+        {
+            return Err(TaskLifecycleLinkStoreError::IdentityMismatch);
+        }
+        self.task_index.insert(task_id, key_digest.clone());
+        self.invocation_index
+            .insert(invocation_id, key_digest.clone());
+        self.entries.insert(key_digest, entry);
+        Ok(())
+    }
+
+    fn remove_exact_pending(
+        &mut self,
+        expected: &TaskRetirementPendingReceipt,
+    ) -> Result<(), TaskLifecycleLinkStoreError> {
+        let key_digest = expected.key_digest();
+        let current =
+            self.entries
+                .get(key_digest)
+                .ok_or(TaskLifecycleLinkStoreError::NotFound {
+                    task_id: expected.task().task_id(),
+                })?;
+        if current
+            != &CatalogEntry::Link(TaskLifecycleLinkRecord::TaskRetirementPending(
+                expected.clone(),
+            ))
+        {
+            return Err(TaskLifecycleLinkStoreError::StateMismatch);
+        }
+        if self.task_index.get(&expected.task().task_id()) != Some(key_digest)
+            || self.invocation_index.get(&expected.task().invocation_id()) != Some(key_digest)
+        {
+            return Err(TaskLifecycleLinkStoreError::Corrupt(
+                "TaskRetirementPending indexes do not bind its exact identity",
+            ));
+        }
+        self.entries.remove(key_digest);
+        self.task_index.remove(&expected.task().task_id());
+        self.invocation_index
+            .remove(&expected.task().invocation_id());
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StoredTaskProjectionV1 {
+    created_at_epoch_ms: u64,
+    updated_at_epoch_ms: u64,
+    ttl_ms: u64,
+    poll_interval_ms: u64,
+    version: u64,
+}
+
+impl StoredTaskProjectionV1 {
+    fn from_application(task: &ReceiptTaskProjection) -> Self {
+        Self {
+            created_at_epoch_ms: task.created_at_epoch_ms(),
+            updated_at_epoch_ms: task.updated_at_epoch_ms(),
+            ttl_ms: task.ttl_ms(),
+            poll_interval_ms: task.poll_interval_ms(),
+            version: task.version(),
+        }
+    }
+
+    fn into_application(
+        self,
+        task_id: TaskId,
+        invocation_id: InvocationId,
+    ) -> Result<ReceiptTaskProjection, TaskLifecycleLinkStoreError> {
+        ReceiptTaskProjection::new(
+            task_id,
+            invocation_id,
+            self.created_at_epoch_ms,
+            self.updated_at_epoch_ms,
+            self.ttl_ms,
+            self.poll_interval_ms,
+            self.version,
+        )
+        .map_err(application_corruption)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StoredTaskLinkReferenceV1 {
+    workspace_identity_hash: SafeIdentityHash,
+    task_link_digest: TaskLinkDigest,
+}
+
+impl StoredTaskLinkReferenceV1 {
+    fn from_application(link: &TaskLinkReference) -> Self {
+        Self {
+            workspace_identity_hash: link.workspace_identity_hash().clone(),
+            task_link_digest: link.digest().clone(),
+        }
+    }
+
+    fn into_application(
+        self,
+        receipt_key_digest: ReceiptKeyDigest,
+        task_id: TaskId,
+        invocation_id: InvocationId,
+    ) -> Result<TaskLinkReference, TaskLifecycleLinkStoreError> {
+        let link = TaskLinkReference::new(
+            receipt_key_digest,
+            task_id,
+            invocation_id,
+            self.workspace_identity_hash,
+        );
+        if link.digest() != &self.task_link_digest {
+            return Err(TaskLifecycleLinkStoreError::Corrupt(
+                "persisted lifecycle-link digest does not match its exact identity",
+            ));
+        }
+        Ok(link)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum StoredAttemptPhaseV1 {
+    NotBegun,
+    Begun,
+}
+
+impl From<AttemptPhase> for StoredAttemptPhaseV1 {
+    fn from(value: AttemptPhase) -> Self {
+        match value {
+            AttemptPhase::NotBegun => Self::NotBegun,
+            AttemptPhase::Begun => Self::Begun,
+        }
+    }
+}
+
+impl From<StoredAttemptPhaseV1> for AttemptPhase {
+    fn from(value: StoredAttemptPhaseV1) -> Self {
+        match value {
+            StoredAttemptPhaseV1::NotBegun => Self::NotBegun,
+            StoredAttemptPhaseV1::Begun => Self::Begun,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum StoredClosedTerminalStatusV1 {
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl From<ClosedTerminalStatus> for StoredClosedTerminalStatusV1 {
+    fn from(value: ClosedTerminalStatus) -> Self {
+        match value {
+            ClosedTerminalStatus::Completed => Self::Completed,
+            ClosedTerminalStatus::Failed => Self::Failed,
+            ClosedTerminalStatus::Cancelled => Self::Cancelled,
+        }
+    }
+}
+
+impl From<StoredClosedTerminalStatusV1> for ClosedTerminalStatus {
+    fn from(value: StoredClosedTerminalStatusV1) -> Self {
+        match value {
+            StoredClosedTerminalStatusV1::Completed => Self::Completed,
+            StoredClosedTerminalStatusV1::Failed => Self::Failed,
+            StoredClosedTerminalStatusV1::Cancelled => Self::Cancelled,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "state",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+enum StoredEntryV1 {
+    Reservation {
+        schema_version: u32,
+        key: ReceiptKey,
+        link: StoredTaskLinkReferenceV1,
+        reservation_version: u64,
+        mutation_sequence: u64,
+    },
+    TaskBound {
+        schema_version: u32,
+        key: ReceiptKey,
+        link: StoredTaskLinkReferenceV1,
+        task: StoredTaskProjectionV1,
+        lifecycle_link_version: u64,
+        mutation_sequence: u64,
+        task_record_version: u64,
+        bind_epoch_ms: u64,
+        phase: StoredAttemptPhaseV1,
+    },
+    TaskTerminalBound {
+        schema_version: u32,
+        key: ReceiptKey,
+        link: StoredTaskLinkReferenceV1,
+        task: StoredTaskProjectionV1,
+        lifecycle_link_version: u64,
+        mutation_sequence: u64,
+        task_record_version: u64,
+        terminal_status: StoredClosedTerminalStatusV1,
+        terminal_digest: TerminalDigest,
+        terminal_epoch_ms: u64,
+        expires_at_epoch_ms: u64,
+    },
+    TaskRetirementPending {
+        schema_version: u32,
+        key: ReceiptKey,
+        link: StoredTaskLinkReferenceV1,
+        task: StoredTaskProjectionV1,
+        // Pending must fit the reserved 1 KiB even with real epoch timestamps.
+        // Aliases keep previously persisted v1 pending records readable.
+        #[serde(rename = "lv", alias = "lifecycleLinkVersion")]
+        lifecycle_link_version: u64,
+        #[serde(rename = "ms", alias = "mutationSequence")]
+        mutation_sequence: u64,
+        #[serde(rename = "tv", alias = "expectedTerminalTaskVersion")]
+        expected_terminal_task_version: u64,
+        #[serde(rename = "ts", alias = "terminalStatus")]
+        terminal_status: StoredClosedTerminalStatusV1,
+        #[serde(rename = "td", alias = "terminalDigest")]
+        terminal_digest: TerminalDigest,
+        #[serde(rename = "te", alias = "terminalEpochMs")]
+        terminal_epoch_ms: u64,
+        #[serde(rename = "ex", alias = "expiresAtEpochMs")]
+        expires_at_epoch_ms: u64,
+        #[serde(rename = "l")]
+        retained_link_bytes: u64,
+        #[serde(rename = "i")]
+        invocation_index_bytes: u64,
+        #[serde(rename = "r")]
+        reserved_task_index_bytes: u64,
+    },
+}
+
+impl StoredEntryV1 {
+    fn from_catalog_entry(entry: &CatalogEntry) -> Self {
+        match entry {
+            CatalogEntry::Reservation(reservation) => Self::Reservation {
+                schema_version: STORE_SCHEMA_VERSION,
+                key: reservation.key().clone(),
+                link: StoredTaskLinkReferenceV1::from_application(reservation.link()),
+                reservation_version: reservation.reservation_version(),
+                mutation_sequence: reservation.mutation_sequence(),
+            },
+            CatalogEntry::Link(TaskLifecycleLinkRecord::TaskBound(record)) => Self::TaskBound {
+                schema_version: STORE_SCHEMA_VERSION,
+                key: record.key().clone(),
+                link: StoredTaskLinkReferenceV1::from_application(record.link()),
+                task: StoredTaskProjectionV1::from_application(record.task()),
+                lifecycle_link_version: record.lifecycle_link_version(),
+                mutation_sequence: record.mutation_sequence(),
+                task_record_version: record.task_record_version(),
+                bind_epoch_ms: record.bind_epoch_ms(),
+                phase: record.phase().into(),
+            },
+            CatalogEntry::Link(TaskLifecycleLinkRecord::TaskTerminalBound(record)) => {
+                Self::TaskTerminalBound {
+                    schema_version: STORE_SCHEMA_VERSION,
+                    key: record.key().clone(),
+                    link: StoredTaskLinkReferenceV1::from_application(record.link()),
+                    task: StoredTaskProjectionV1::from_application(record.task()),
+                    lifecycle_link_version: record.lifecycle_link_version(),
+                    mutation_sequence: record.mutation_sequence(),
+                    task_record_version: record.task_record_version(),
+                    terminal_status: record.terminal_status().into(),
+                    terminal_digest: record.terminal_digest().clone(),
+                    terminal_epoch_ms: record.terminal_epoch_ms(),
+                    expires_at_epoch_ms: record.expires_at_epoch_ms(),
+                }
+            }
+            CatalogEntry::Link(TaskLifecycleLinkRecord::TaskRetirementPending(record)) => {
+                Self::TaskRetirementPending {
+                    schema_version: STORE_SCHEMA_VERSION,
+                    key: record.key().clone(),
+                    link: StoredTaskLinkReferenceV1::from_application(record.link()),
+                    task: StoredTaskProjectionV1::from_application(record.task()),
+                    lifecycle_link_version: record.lifecycle_link_version(),
+                    mutation_sequence: record.mutation_sequence(),
+                    expected_terminal_task_version: record.expected_terminal_task_version(),
+                    terminal_status: record.terminal_status().into(),
+                    terminal_digest: record.terminal_digest().clone(),
+                    terminal_epoch_ms: record.terminal_epoch_ms(),
+                    expires_at_epoch_ms: record.expires_at_epoch_ms(),
+                    retained_link_bytes: record.retained_link_bytes(),
+                    invocation_index_bytes: record
+                        .retained_dual_id_accounting()
+                        .invocation_index_bytes(),
+                    reserved_task_index_bytes: record
+                        .retained_dual_id_accounting()
+                        .reserved_task_index_bytes(),
+                }
+            }
+        }
+    }
+
+    fn encoded_len(&self) -> Result<usize, TaskLifecycleLinkStoreError> {
+        serde_json::to_vec(self)
+            .map(|encoded| encoded.len())
+            .map_err(|error| storage_message("serialize Task lifecycle-link record", error))
+    }
+
+    fn into_catalog_entry(self) -> Result<CatalogEntry, TaskLifecycleLinkStoreError> {
+        let encoded_bytes = u64::try_from(self.encoded_len()?).map_err(|_| {
+            TaskLifecycleLinkStoreError::Corrupt("lifecycle-link record length does not fit u64")
+        })?;
+        match self {
+            Self::Reservation {
+                schema_version,
+                key,
+                link,
+                reservation_version,
+                mutation_sequence,
+            } => {
+                require_schema_v1(schema_version)?;
+                let key_digest = receipt_key_digest(&key);
+                let link = link.into_application(
+                    key_digest.clone(),
+                    key.reserved_task_id(),
+                    key.invocation_id(),
+                )?;
+                validate_exact_identity(&key, &key_digest, &link)?;
+                if reservation_version == 0 || mutation_sequence == 0 {
+                    return Err(TaskLifecycleLinkStoreError::Corrupt(
+                        "lifecycle-link reservation has a zero version",
+                    ));
+                }
+                Ok(CatalogEntry::Reservation(TaskLinkReservation {
+                    key,
+                    key_digest,
+                    link,
+                    reservation_version,
+                    mutation_sequence,
+                    encoded_bytes,
+                }))
+            }
+            Self::TaskBound {
+                schema_version,
+                key,
+                link,
+                task,
+                lifecycle_link_version,
+                mutation_sequence,
+                task_record_version,
+                bind_epoch_ms,
+                phase,
+            } => {
+                require_schema_v1(schema_version)?;
+                let key_digest = receipt_key_digest(&key);
+                let link = link.into_application(
+                    key_digest.clone(),
+                    key.reserved_task_id(),
+                    key.invocation_id(),
+                )?;
+                validate_exact_identity(&key, &key_digest, &link)?;
+                let task_id = key.reserved_task_id();
+                let invocation_id = key.invocation_id();
+                let header = LifecycleLinkRecordHeader::new(
+                    key,
+                    link,
+                    lifecycle_link_version,
+                    mutation_sequence,
+                    encoded_bytes,
+                )
+                .map_err(application_corruption)?;
+                let record = TaskBoundReceipt::new(
+                    header,
+                    task.into_application(task_id, invocation_id)?,
+                    task_record_version,
+                    bind_epoch_ms,
+                    phase.into(),
+                )
+                .map_err(application_corruption)?;
+                Ok(CatalogEntry::Link(TaskLifecycleLinkRecord::TaskBound(
+                    record,
+                )))
+            }
+            Self::TaskTerminalBound {
+                schema_version,
+                key,
+                link,
+                task,
+                lifecycle_link_version,
+                mutation_sequence,
+                task_record_version,
+                terminal_status,
+                terminal_digest,
+                terminal_epoch_ms,
+                expires_at_epoch_ms,
+            } => {
+                require_schema_v1(schema_version)?;
+                let key_digest = receipt_key_digest(&key);
+                let link = link.into_application(
+                    key_digest.clone(),
+                    key.reserved_task_id(),
+                    key.invocation_id(),
+                )?;
+                validate_exact_identity(&key, &key_digest, &link)?;
+                let task_id = key.reserved_task_id();
+                let invocation_id = key.invocation_id();
+                let header = LifecycleLinkRecordHeader::new(
+                    key,
+                    link,
+                    lifecycle_link_version,
+                    mutation_sequence,
+                    encoded_bytes,
+                )
+                .map_err(application_corruption)?;
+                let record = TaskTerminalBoundReceipt::new(
+                    header,
+                    task.into_application(task_id, invocation_id)?,
+                    task_record_version,
+                    terminal_status.into(),
+                    terminal_digest,
+                    terminal_epoch_ms,
+                    expires_at_epoch_ms,
+                )
+                .map_err(application_corruption)?;
+                Ok(CatalogEntry::Link(
+                    TaskLifecycleLinkRecord::TaskTerminalBound(record),
+                ))
+            }
+            Self::TaskRetirementPending {
+                schema_version,
+                key,
+                link,
+                task,
+                lifecycle_link_version,
+                mutation_sequence,
+                expected_terminal_task_version,
+                terminal_status,
+                terminal_digest,
+                terminal_epoch_ms,
+                expires_at_epoch_ms,
+                retained_link_bytes,
+                invocation_index_bytes,
+                reserved_task_index_bytes,
+            } => {
+                require_schema_v1(schema_version)?;
+                let key_digest = receipt_key_digest(&key);
+                let link = link.into_application(
+                    key_digest.clone(),
+                    key.reserved_task_id(),
+                    key.invocation_id(),
+                )?;
+                validate_exact_identity(&key, &key_digest, &link)?;
+                let task_id = key.reserved_task_id();
+                let invocation_id = key.invocation_id();
+                let header = LifecycleLinkRecordHeader::new(
+                    key,
+                    link,
+                    lifecycle_link_version,
+                    mutation_sequence,
+                    encoded_bytes,
+                )
+                .map_err(application_corruption)?;
+                let accounting = RetainedDualIdAccounting::new(
+                    invocation_index_bytes,
+                    reserved_task_index_bytes,
+                )
+                .map_err(application_corruption)?;
+                let record = TaskRetirementPendingReceipt::new(
+                    header,
+                    task.into_application(task_id, invocation_id)?,
+                    expected_terminal_task_version,
+                    terminal_status.into(),
+                    terminal_digest,
+                    terminal_epoch_ms,
+                    expires_at_epoch_ms,
+                    retained_link_bytes,
+                    accounting,
+                )
+                .map_err(application_corruption)?;
+                Ok(CatalogEntry::Link(
+                    TaskLifecycleLinkRecord::TaskRetirementPending(record),
+                ))
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StoredCatalogV1 {
+    schema_version: u32,
+    mutation_sequence: u64,
+    entries: Vec<StoredEntryV1>,
+}
+
+pub struct TaskLifecycleLinkStoreV5 {
+    root: StateDirectory,
+    root_file: File,
+    _ownership_lock: File,
+    writer: Mutex<StoreCatalog>,
+    limits: StoreLimits,
+}
+
+impl TaskLifecycleLinkStoreV5 {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn ownership_file_identity_for_test(&self) -> unica_workspace::state_fs::FileIdentity {
+        state_file_identity(&self._ownership_lock).expect("retained Task lifecycle owner identity")
+    }
+
+    #[cfg(feature = "receipt-ledger-test-support")]
+    pub fn seed_task_terminal_bounds_bulk_for_test(
+        &self,
+        records: Vec<(
+            ReceiptKey,
+            TaskLinkReference,
+            ReceiptTaskProjection,
+            u64,
+            u64,
+            TerminalDigest,
+        )>,
+        deadline: ProviderDeadline,
+    ) -> Result<Vec<TaskTerminalBoundReceipt>, TaskLifecycleLinkStoreError> {
+        let mut writer = self.lock_writer(deadline)?;
+        if !writer.entries.is_empty() {
+            return Err(TaskLifecycleLinkStoreError::Corrupt(
+                "bulk fixture requires an empty catalog",
+            ));
+        }
+        self.verify_root_authority()?;
+        let mut next = writer.clone();
+        let mut first_digest = None;
+        let mut seeded = Vec::with_capacity(records.len());
+        for (key, link, task, task_record_version, terminal_epoch_ms, terminal_digest) in records {
+            let mutation_sequence = next_sequence(next.mutation_sequence)?;
+            let key_digest = receipt_key_digest(&key);
+            first_digest.get_or_insert_with(|| key_digest.clone());
+            let expires_at_epoch_ms = terminal_epoch_ms.checked_add(task.ttl_ms()).ok_or(
+                TaskLifecycleLinkStoreError::Corrupt("bulk terminal fixture expiry exceeds u64"),
+            )?;
+            let record = build_task_terminal_bound(
+                key,
+                link,
+                task,
+                3,
+                mutation_sequence,
+                task_record_version,
+                ClosedTerminalStatus::Completed,
+                terminal_digest,
+                terminal_epoch_ms,
+                expires_at_epoch_ms,
+                self.limits,
+            )?;
+            seeded.push(record.clone());
+            next.mutation_sequence = mutation_sequence;
+            next.insert_exact(CatalogEntry::Link(
+                TaskLifecycleLinkRecord::TaskTerminalBound(record),
+            ))?;
+        }
+        let Some(first_digest) = first_digest else {
+            return Ok(Vec::new());
+        };
+        let committed = self.publish_and_readback(&next, &first_digest, deadline)?;
+        *writer = committed;
+        Ok(seeded)
+    }
+
+    pub fn open(
+        root: impl AsRef<Path>,
+        deadline: ProviderDeadline,
+    ) -> Result<Self, TaskLifecycleLinkStoreError> {
+        Self::open_with_limits(root, StoreLimits::production(), deadline)
+    }
+
+    fn open_with_limits(
+        root: impl AsRef<Path>,
+        limits: StoreLimits,
+        deadline: ProviderDeadline,
+    ) -> Result<Self, TaskLifecycleLinkStoreError> {
+        check_deadline(deadline)?;
+        let root = StateDirectory::open(root.as_ref())
+            .map_err(|error| storage_error("retain Task lifecycle-link root", error))?;
+        root.validate_named_identity()
+            .map_err(|error| storage_error("validate Task lifecycle-link root", error))?;
+        let root_file = root
+            .open_retained_handle()
+            .map_err(|error| storage_error("clone Task lifecycle-link root", error))?;
+        verify_state_owner_only(&root_file)
+            .map_err(|error| storage_error("verify Task lifecycle-link root ownership", error))?;
+        let ownership_lock = open_state_ownership_lock(&root_file, OsStr::new(STORE_LOCK_FILE))
+            .map_err(|error| storage_error("open Task lifecycle-link ownership object", error))?;
+        verify_state_owner_only(&ownership_lock)
+            .map_err(|error| storage_error("verify Task lifecycle-link ownership object", error))?;
+        match ownership_lock.try_lock_exclusive() {
+            Ok(()) => {}
+            Err(error) if lock_is_contended(&error) => {
+                return Err(TaskLifecycleLinkStoreError::AlreadyOwned)
+            }
+            Err(error) => {
+                return Err(storage_error(
+                    "acquire Task lifecycle-link ownership lock",
+                    error,
+                ))
+            }
+        }
+        let mut store = Self {
+            root,
+            root_file,
+            _ownership_lock: ownership_lock,
+            writer: Mutex::new(StoreCatalog::default()),
+            limits,
+        };
+        let catalog = store.inspect_and_recover(deadline)?;
+        store.writer = Mutex::new(catalog);
+        Ok(store)
+    }
+
+    #[cfg(test)]
+    pub fn capacity_snapshot(&self) -> TaskLifecycleLinkCapacitySnapshot {
+        self.writer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .capacity_snapshot(self.limits.max_record_bytes)
+    }
+
+    pub fn catalog_snapshot(
+        &self,
+        deadline: ProviderDeadline,
+    ) -> Result<TaskLifecycleLinkCatalogSnapshot, TaskLifecycleLinkStoreError> {
+        check_deadline(deadline)?;
+        let writer = self.lock_writer(deadline)?;
+        self.verify_root_authority()?;
+        check_deadline(deadline)?;
+
+        let maximum_record_bytes = u64::try_from(self.limits.max_record_bytes).map_err(|_| {
+            TaskLifecycleLinkStoreError::Corrupt(
+                "Task lifecycle-link record limit does not fit u64",
+            )
+        })?;
+        let mut entries = Vec::with_capacity(writer.entries.len());
+        let mut actual_bytes = 0u64;
+        let mut reserved_count = 0usize;
+        let mut reserved_bytes = 0u64;
+        for entry in writer.entries.values() {
+            match entry {
+                CatalogEntry::Reservation(reservation) => {
+                    reserved_count = reserved_count.checked_add(1).ok_or(
+                        TaskLifecycleLinkStoreError::Corrupt(
+                            "Task lifecycle-link reservation count overflowed",
+                        ),
+                    )?;
+                    reserved_bytes = reserved_bytes.checked_add(maximum_record_bytes).ok_or(
+                        TaskLifecycleLinkStoreError::Corrupt(
+                            "Task lifecycle-link reserved byte count overflowed",
+                        ),
+                    )?;
+                    entries.push(TaskLifecycleLinkCatalogEntry::Reservation(
+                        reservation.clone(),
+                    ));
+                }
+                CatalogEntry::Link(record) => {
+                    actual_bytes = actual_bytes.checked_add(record.encoded_bytes()).ok_or(
+                        TaskLifecycleLinkStoreError::Corrupt(
+                            "Task lifecycle-link actual byte count overflowed",
+                        ),
+                    )?;
+                    entries.push(TaskLifecycleLinkCatalogEntry::Record(record.clone()));
+                }
+            }
+        }
+        entries.sort_by(|left, right| left.key_digest().as_str().cmp(right.key_digest().as_str()));
+        let count = entries.len();
+        Ok(TaskLifecycleLinkCatalogSnapshot {
+            generation: writer.mutation_sequence,
+            entries,
+            count,
+            actual_bytes,
+            reserved_count,
+            reserved_bytes,
+        })
+    }
+
+    pub fn reserve_task_link(
+        &self,
+        key: ReceiptKey,
+        link: TaskLinkReference,
+        deadline: ProviderDeadline,
+    ) -> Result<TaskLinkReservation, TaskLifecycleLinkStoreError> {
+        validate_exact_identity(&key, &receipt_key_digest(&key), &link)?;
+        let mut writer = self.lock_writer(deadline)?;
+        self.verify_root_authority()?;
+        let key_digest = receipt_key_digest(&key);
+        if let Some(existing) = writer.entries.get(&key_digest) {
+            return match existing {
+                CatalogEntry::Reservation(reservation)
+                    if reservation.key() == &key && reservation.link() == &link =>
+                {
+                    Ok(reservation.clone())
+                }
+                CatalogEntry::Reservation(_) => Err(TaskLifecycleLinkStoreError::IdentityMismatch),
+                CatalogEntry::Link(record) if record.key() == &key && record.link() == &link => {
+                    Err(TaskLifecycleLinkStoreError::AlreadyMaterialized {
+                        task_id: key.reserved_task_id(),
+                    })
+                }
+                CatalogEntry::Link(_) => Err(TaskLifecycleLinkStoreError::IdentityMismatch),
+            };
+        }
+        if writer
+            .task_index
+            .get(&key.reserved_task_id())
+            .is_some_and(|digest| digest != &key_digest)
+            || writer
+                .invocation_index
+                .get(&key.invocation_id())
+                .is_some_and(|digest| digest != &key_digest)
+        {
+            return Err(TaskLifecycleLinkStoreError::IdentityMismatch);
+        }
+        let mutation_sequence = next_sequence(writer.mutation_sequence)?;
+        let reservation = build_reservation(key, link, mutation_sequence, self.limits)?;
+        let mut next = writer.clone();
+        next.mutation_sequence = mutation_sequence;
+        next.insert_exact(CatalogEntry::Reservation(reservation.clone()))?;
+        let committed = self.publish_and_readback(&next, &key_digest, deadline)?;
+        *writer = committed;
+        match writer.entries.get(&key_digest) {
+            Some(CatalogEntry::Reservation(readback)) if readback == &reservation => {
+                Ok(readback.clone())
+            }
+            _ => Err(TaskLifecycleLinkStoreError::Corrupt(
+                "durable lifecycle-link reservation readback changed",
+            )),
+        }
+    }
+
+    pub fn materialize_task_bound(
+        &self,
+        reservation: &TaskLinkReservation,
+        task: ReceiptTaskProjection,
+        task_record_version: u64,
+        bind_epoch_ms: u64,
+        phase: AttemptPhase,
+        deadline: ProviderDeadline,
+    ) -> Result<TaskBoundReceipt, TaskLifecycleLinkStoreError> {
+        let mut writer = self.lock_writer(deadline)?;
+        let current = writer
+            .entries
+            .get(reservation.key_digest())
+            .ok_or(TaskLifecycleLinkStoreError::ReservationMismatch)?;
+        if current != &CatalogEntry::Reservation(reservation.clone()) {
+            return Err(TaskLifecycleLinkStoreError::ReservationMismatch);
+        }
+        let mutation_sequence = next_sequence(writer.mutation_sequence)?;
+        let record = build_task_bound(
+            reservation.key().clone(),
+            reservation.link().clone(),
+            task,
+            next_sequence(reservation.reservation_version())?,
+            mutation_sequence,
+            task_record_version,
+            bind_epoch_ms,
+            phase,
+            self.limits,
+        )?;
+        let result = record.clone();
+        let mut next = writer.clone();
+        next.mutation_sequence = mutation_sequence;
+        next.insert_exact(CatalogEntry::Link(TaskLifecycleLinkRecord::TaskBound(
+            record,
+        )))?;
+        let committed = self.publish_and_readback(&next, reservation.key_digest(), deadline)?;
+        *writer = committed;
+        match writer.entries.get(reservation.key_digest()) {
+            Some(CatalogEntry::Link(TaskLifecycleLinkRecord::TaskBound(readback)))
+                if readback == &result =>
+            {
+                Ok(readback.clone())
+            }
+            _ => Err(TaskLifecycleLinkStoreError::Corrupt(
+                "durable TaskBound readback changed",
+            )),
+        }
+    }
+
+    pub fn mark_task_bound_begun(
+        &self,
+        expected: &TaskBoundReceipt,
+        task_record_version: u64,
+        updated_at_epoch_ms: u64,
+        deadline: ProviderDeadline,
+    ) -> Result<TaskBoundReceipt, TaskLifecycleLinkStoreError> {
+        if expected.phase() != AttemptPhase::NotBegun {
+            return Err(TaskLifecycleLinkStoreError::StateMismatch);
+        }
+        let mut writer = self.lock_writer(deadline)?;
+        let current = exact_task_bound(
+            &writer,
+            expected.key_digest(),
+            expected.lifecycle_link_version(),
+        )?;
+        if current != expected {
+            return Err(TaskLifecycleLinkStoreError::StateMismatch);
+        }
+        let task = ReceiptTaskProjection::new(
+            expected.task().task_id(),
+            expected.task().invocation_id(),
+            expected.task().created_at_epoch_ms(),
+            updated_at_epoch_ms,
+            expected.task().ttl_ms(),
+            expected.task().poll_interval_ms(),
+            task_record_version,
+        )
+        .map_err(application_corruption)?;
+        let mutation_sequence = next_sequence(writer.mutation_sequence)?;
+        let record = build_task_bound(
+            expected.key().clone(),
+            expected.link().clone(),
+            task,
+            next_sequence(expected.lifecycle_link_version())?,
+            mutation_sequence,
+            task_record_version,
+            expected.bind_epoch_ms(),
+            AttemptPhase::Begun,
+            self.limits,
+        )?;
+        let result = record.clone();
+        let mut next = writer.clone();
+        next.mutation_sequence = mutation_sequence;
+        next.insert_exact(CatalogEntry::Link(TaskLifecycleLinkRecord::TaskBound(
+            record,
+        )))?;
+        let committed = self.publish_and_readback(&next, expected.key_digest(), deadline)?;
+        *writer = committed;
+        Ok(result)
+    }
+
+    pub fn refresh_task_bound_projection(
+        &self,
+        expected: &TaskBoundReceipt,
+        task: ReceiptTaskProjection,
+        deadline: ProviderDeadline,
+    ) -> Result<TaskBoundReceipt, TaskLifecycleLinkStoreError> {
+        let mut writer = self.lock_writer(deadline)?;
+        let current = exact_task_bound(
+            &writer,
+            expected.key_digest(),
+            expected.lifecycle_link_version(),
+        )?;
+        if current != expected {
+            return Err(TaskLifecycleLinkStoreError::StateMismatch);
+        }
+        let mutation_sequence = next_sequence(writer.mutation_sequence)?;
+        let record = build_task_bound(
+            expected.key().clone(),
+            expected.link().clone(),
+            task.clone(),
+            next_sequence(expected.lifecycle_link_version())?,
+            mutation_sequence,
+            task.version(),
+            expected.bind_epoch_ms(),
+            expected.phase(),
+            self.limits,
+        )?;
+        let result = record.clone();
+        let mut next = writer.clone();
+        next.mutation_sequence = mutation_sequence;
+        next.insert_exact(CatalogEntry::Link(TaskLifecycleLinkRecord::TaskBound(
+            record,
+        )))?;
+        let committed = self.publish_and_readback(&next, expected.key_digest(), deadline)?;
+        *writer = committed;
+        match writer.entries.get(expected.key_digest()) {
+            Some(CatalogEntry::Link(TaskLifecycleLinkRecord::TaskBound(readback)))
+                if readback == &result =>
+            {
+                Ok(readback.clone())
+            }
+            _ => Err(TaskLifecycleLinkStoreError::Corrupt(
+                "durable refreshed TaskBound readback changed",
+            )),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn publish_task_terminal_bound(
+        &self,
+        expected: &TaskBoundReceipt,
+        terminal_task: ReceiptTaskProjection,
+        task_record_version: u64,
+        terminal_status: ClosedTerminalStatus,
+        terminal_digest: TerminalDigest,
+        terminal_epoch_ms: u64,
+        deadline: ProviderDeadline,
+    ) -> Result<TaskTerminalBoundReceipt, TaskLifecycleLinkStoreError> {
+        let mut writer = self.lock_writer(deadline)?;
+        let current = exact_task_bound(
+            &writer,
+            expected.key_digest(),
+            expected.lifecycle_link_version(),
+        )?;
+        if current != expected {
+            return Err(TaskLifecycleLinkStoreError::StateMismatch);
+        }
+        let mutation_sequence = next_sequence(writer.mutation_sequence)?;
+        let expires_at_epoch_ms = terminal_epoch_ms
+            .checked_add(terminal_task.ttl_ms())
+            .ok_or(TaskLifecycleLinkStoreError::Corrupt(
+                "terminal retention timestamp overflowed",
+            ))?;
+        let record = build_task_terminal_bound(
+            expected.key().clone(),
+            expected.link().clone(),
+            terminal_task,
+            next_sequence(expected.lifecycle_link_version())?,
+            mutation_sequence,
+            task_record_version,
+            terminal_status,
+            terminal_digest,
+            terminal_epoch_ms,
+            expires_at_epoch_ms,
+            self.limits,
+        )?;
+        let result = record.clone();
+        let mut next = writer.clone();
+        next.mutation_sequence = mutation_sequence;
+        next.insert_exact(CatalogEntry::Link(
+            TaskLifecycleLinkRecord::TaskTerminalBound(record),
+        ))?;
+        let committed = self.publish_and_readback(&next, expected.key_digest(), deadline)?;
+        *writer = committed;
+        Ok(result)
+    }
+
+    pub fn begin_task_retirement(
+        &self,
+        expected: &TaskTerminalBoundReceipt,
+        invocation_index_bytes: u64,
+        reserved_task_index_bytes: u64,
+        deadline: ProviderDeadline,
+    ) -> Result<TaskRetirementPendingReceipt, TaskLifecycleLinkStoreError> {
+        let mut writer = self.lock_writer(deadline)?;
+        let current = exact_task_terminal_bound(
+            &writer,
+            expected.key_digest(),
+            expected.lifecycle_link_version(),
+        )?;
+        if current != expected {
+            return Err(TaskLifecycleLinkStoreError::StateMismatch);
+        }
+        let mutation_sequence = next_sequence(writer.mutation_sequence)?;
+        let record = build_task_retirement_pending(
+            expected,
+            next_sequence(expected.lifecycle_link_version())?,
+            mutation_sequence,
+            invocation_index_bytes,
+            reserved_task_index_bytes,
+            self.limits,
+        )?;
+        let result = record.clone();
+        let mut next = writer.clone();
+        next.mutation_sequence = mutation_sequence;
+        next.insert_exact(CatalogEntry::Link(
+            TaskLifecycleLinkRecord::TaskRetirementPending(record),
+        ))?;
+        let committed = self.publish_and_readback(&next, expected.key_digest(), deadline)?;
+        *writer = committed;
+        Ok(result)
+    }
+
+    pub fn finalize_task_retirement(
+        &self,
+        expected: &TaskRetirementPendingReceipt,
+        deadline: ProviderDeadline,
+    ) -> Result<(), TaskLifecycleLinkStoreError> {
+        let mut writer = self.lock_writer(deadline)?;
+        let mut next = writer.clone();
+        next.remove_exact_pending(expected)?;
+        next.mutation_sequence = next_sequence(writer.mutation_sequence)?;
+        let committed = self.publish_and_readback(&next, expected.key_digest(), deadline)?;
+        *writer = committed;
+        Ok(())
+    }
+
+    /// Replaces the catalog in memory with the durable snapshot. A mutation
+    /// that failed after its rename leaves memory at the last confirmed
+    /// catalog while the disk may already hold the new one; a caller that
+    /// keeps serving after such a failure adopts the durable catalog first.
+    pub fn reload_durable_catalog(
+        &self,
+        deadline: ProviderDeadline,
+    ) -> Result<(), TaskLifecycleLinkStoreError> {
+        let mut writer = self.lock_writer(deadline)?;
+        self.verify_root_authority()?;
+        *writer = self.read_catalog_from_disk(deadline)?;
+        Ok(())
+    }
+
+    /// The catalog this store serves from memory, kept opaque for a test that
+    /// later puts it back to reproduce a commit whose outcome was uncertain.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn memory_catalog_for_test(&self) -> TaskLifecycleLinkMemoryForTest {
+        TaskLifecycleLinkMemoryForTest(
+            self.writer
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone(),
+        )
+    }
+
+    /// Puts back an earlier memory catalog without touching the disk: the
+    /// state a failed publication leaves after its rename reached the disk.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn restore_memory_catalog_for_test(&self, memory: TaskLifecycleLinkMemoryForTest) {
+        *self
+            .writer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = memory.0;
+    }
+
+    pub fn read_by_task_id(
+        &self,
+        task_id: TaskId,
+        deadline: ProviderDeadline,
+    ) -> Result<TaskLifecycleLinkRecord, TaskLifecycleLinkStoreError> {
+        let writer = self.lock_writer(deadline)?;
+        self.verify_root_authority()?;
+        let key_digest = writer
+            .task_index
+            .get(&task_id)
+            .ok_or(TaskLifecycleLinkStoreError::NotFound { task_id })?;
+        match writer.entries.get(key_digest) {
+            Some(CatalogEntry::Link(record)) => Ok(record.clone()),
+            Some(CatalogEntry::Reservation(_)) => {
+                Err(TaskLifecycleLinkStoreError::NotFound { task_id })
+            }
+            None => Err(TaskLifecycleLinkStoreError::Corrupt(
+                "Task lifecycle-link task index points to no record",
+            )),
+        }
+    }
+
+    fn inspect_and_recover(
+        &self,
+        deadline: ProviderDeadline,
+    ) -> Result<StoreCatalog, TaskLifecycleLinkStoreError> {
+        self.verify_root_authority()?;
+        let mut snapshot_present = false;
+        let mut abandoned_staging = Vec::new();
+        self.root
+            .visit_immediate_names(|name| -> Result<(), TaskLifecycleLinkStoreError> {
+                check_deadline(deadline)?;
+                let encoded = name.to_str().ok_or(TaskLifecycleLinkStoreError::Corrupt(
+                    "Task lifecycle-link entry name is not UTF-8",
+                ))?;
+                if encoded == STORE_LOCK_FILE {
+                    return Ok(());
+                }
+                if encoded == STORE_SNAPSHOT_FILE {
+                    if snapshot_present {
+                        return Err(TaskLifecycleLinkStoreError::Corrupt(
+                            "duplicate Task lifecycle-link snapshot entry",
+                        ));
+                    }
+                    snapshot_present = true;
+                    return Ok(());
+                }
+                if encoded.starts_with(STORE_STAGING_PREFIX)
+                    && encoded.ends_with(STORE_STAGING_SUFFIX)
+                {
+                    let staged =
+                        open_state_regular_child(&self.root_file, &name).map_err(|_| {
+                            TaskLifecycleLinkStoreError::Corrupt(
+                                "Task lifecycle-link staging entry is not a regular file",
+                            )
+                        })?;
+                    verify_state_owner_only(&staged).map_err(|error| {
+                        storage_error("verify Task lifecycle-link staging ownership", error)
+                    })?;
+                    let identity = state_file_identity(&staged).map_err(|error| {
+                        storage_error("identify Task lifecycle-link staging entry", error)
+                    })?;
+                    abandoned_staging.push((name, identity));
+                    return Ok(());
+                }
+                Err(TaskLifecycleLinkStoreError::Corrupt(
+                    "Task lifecycle-link root contains an unsupported entry",
+                ))
+            })?;
+        let catalog = if snapshot_present {
+            self.read_catalog_from_disk(deadline)?
+        } else {
+            StoreCatalog::default()
+        };
+        let staging_removed = !abandoned_staging.is_empty();
+        for (name, identity) in abandoned_staging {
+            self.remove_verified_staging(&name, identity, deadline)?;
+        }
+        if staging_removed {
+            sync_state_directory(&self.root_file).map_err(|error| {
+                storage_error("sync Task lifecycle-link staging cleanup", error)
+            })?;
+        }
+        self.verify_root_authority()?;
+        Ok(catalog)
+    }
+
+    fn read_catalog_from_disk(
+        &self,
+        deadline: ProviderDeadline,
+    ) -> Result<StoreCatalog, TaskLifecycleLinkStoreError> {
+        check_deadline(deadline)?;
+        let file = open_state_regular_child(&self.root_file, OsStr::new(STORE_SNAPSHOT_FILE))
+            .map_err(|error| storage_error("open Task lifecycle-link snapshot", error))?;
+        verify_state_owner_only(&file).map_err(|error| {
+            storage_error("verify Task lifecycle-link snapshot ownership", error)
+        })?;
+        use serde::de::DeserializeSeed;
+        let mut decoder = serde_json::Deserializer::from_reader(BufReader::new(CheckpointReader {
+            inner: file,
+            deadline,
+        }));
+        let mut failure = None;
+        let result = CatalogReadSeed {
+            limits: self.limits,
+            failure: &mut failure,
+        }
+        .deserialize(&mut decoder);
+        let catalog = match result {
+            Ok(catalog) => catalog,
+            Err(error) => {
+                if let Some(failure) = failure {
+                    return Err(failure);
+                }
+                return Err(snapshot_decode_error(error));
+            }
+        };
+        decoder.end().map_err(snapshot_decode_error)?;
+        check_deadline(deadline)?;
+        self.verify_root_authority()?;
+        Ok(catalog)
+    }
+
+    fn publish_and_readback(
+        &self,
+        catalog: &StoreCatalog,
+        receipt_key_digest: &ReceiptKeyDigest,
+        deadline: ProviderDeadline,
+    ) -> Result<StoreCatalog, TaskLifecycleLinkStoreError> {
+        check_deadline(deadline)?;
+        self.verify_root_authority()?;
+        let temporary_name = format!(
+            "{STORE_STAGING_PREFIX}{}{STORE_STAGING_SUFFIX}",
+            Uuid::new_v4()
+        );
+        let temporary_name = OsStr::new(&temporary_name);
+        let mut staged = create_state_file_child(&self.root_file, temporary_name)
+            .map_err(|error| storage_error("create Task lifecycle-link staging file", error))?;
+        let staged_identity = state_file_identity(&staged)
+            .map_err(|error| storage_error("identify Task lifecycle-link staging file", error))?;
+        if let Err(error) = restrict_state_stage_to_owner(&staged) {
+            let _ = remove_state_regular_child(
+                &self.root_file,
+                temporary_name,
+                staged_identity,
+                &staged,
+            );
+            return Err(storage_error(
+                "restrict Task lifecycle-link staging file",
+                error,
+            ));
+        }
+        let serialized = {
+            let mut writer = CheckpointWriter {
+                inner: BufWriter::new(&mut staged),
+                deadline,
+            };
+            serde_json::to_writer(&mut writer, &borrowed_catalog(catalog))
+                .map_err(snapshot_write_error)
+                .and_then(|()| {
+                    writer.flush().map_err(|error| {
+                        if error.kind() == io::ErrorKind::TimedOut {
+                            TaskLifecycleLinkStoreError::DeadlineExceeded
+                        } else {
+                            storage_error("flush Task lifecycle-link staging buffer", error)
+                        }
+                    })
+                })
+        };
+        let flushed = serialized.and_then(|()| {
+            staged
+                .sync_all()
+                .map_err(|error| storage_error("sync Task lifecycle-link staging file", error))
+        });
+        if let Err(error) = flushed {
+            let _ = remove_state_regular_child(
+                &self.root_file,
+                temporary_name,
+                staged_identity,
+                &staged,
+            );
+            return Err(error);
+        }
+        check_deadline(deadline)?;
+        self.verify_root_authority()?;
+        let target = OsStr::new(STORE_SNAPSHOT_FILE);
+        let publication = match open_state_regular_child(&self.root_file, target) {
+            Ok(existing) => {
+                verify_state_owner_only(&existing).map_err(|error| {
+                    storage_error("verify existing Task lifecycle-link snapshot", error)
+                })?;
+                replace_state_regular_child(
+                    &self.root_file,
+                    temporary_name,
+                    staged_identity,
+                    &staged,
+                    target,
+                )
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                rename_state_regular_child_no_replace(
+                    &self.root_file,
+                    temporary_name,
+                    staged_identity,
+                    &staged,
+                    &self.root_file,
+                    target,
+                )
+            }
+            Err(error) => return Err(storage_error("inspect Task lifecycle-link snapshot", error)),
+        };
+        if let Err(error) = publication {
+            let _ = remove_state_regular_child(
+                &self.root_file,
+                temporary_name,
+                staged_identity,
+                &staged,
+            );
+            return Err(storage_error("publish Task lifecycle-link snapshot", error));
+        }
+        check_deadline(deadline).map_err(|_| TaskLifecycleLinkStoreError::CommitUncertain {
+            receipt_key_digest: receipt_key_digest.clone(),
+        })?;
+        sync_state_directory(&self.root_file).map_err(|_| {
+            TaskLifecycleLinkStoreError::CommitUncertain {
+                receipt_key_digest: receipt_key_digest.clone(),
+            }
+        })?;
+        let readback = self
+            .read_catalog_from_disk(deadline)
+            .map_err(|error| match error {
+                TaskLifecycleLinkStoreError::DeadlineExceeded => {
+                    TaskLifecycleLinkStoreError::CommitUncertain {
+                        receipt_key_digest: receipt_key_digest.clone(),
+                    }
+                }
+                other => other,
+            })?;
+        if &readback != catalog {
+            return Err(TaskLifecycleLinkStoreError::Corrupt(
+                "Task lifecycle-link exact durable readback changed the committed catalog",
+            ));
+        }
+        Ok(readback)
+    }
+
+    fn remove_verified_staging(
+        &self,
+        name: &OsStr,
+        identity: FileIdentity,
+        deadline: ProviderDeadline,
+    ) -> Result<(), TaskLifecycleLinkStoreError> {
+        check_deadline(deadline)?;
+        self.verify_root_authority()?;
+        let staged = open_state_regular_child(&self.root_file, name)
+            .map_err(|error| storage_error("reopen Task lifecycle-link staging", error))?;
+        verify_state_owner_only(&staged).map_err(|error| {
+            storage_error(
+                "verify reopened Task lifecycle-link staging ownership",
+                error,
+            )
+        })?;
+        if state_file_identity(&staged)
+            .map_err(|error| storage_error("identify reopened lifecycle-link staging", error))?
+            != identity
+        {
+            return Err(TaskLifecycleLinkStoreError::Corrupt(
+                "abandoned lifecycle-link staging identity changed",
+            ));
+        }
+        remove_state_regular_child(&self.root_file, name, identity, &staged).map_err(|error| {
+            storage_error("remove abandoned Task lifecycle-link staging", error)
+        })?;
+        Ok(())
+    }
+
+    fn lock_writer(
+        &self,
+        deadline: ProviderDeadline,
+    ) -> Result<MutexGuard<'_, StoreCatalog>, TaskLifecycleLinkStoreError> {
+        loop {
+            check_deadline(deadline)?;
+            match self.writer.try_lock() {
+                Ok(writer) => return Ok(writer),
+                Err(TryLockError::Poisoned(poisoned)) => return Ok(poisoned.into_inner()),
+                Err(TryLockError::WouldBlock) => {
+                    std::thread::sleep(deadline.wait_slice(STORE_WRITER_WAIT_SLICE));
+                }
+            }
+        }
+    }
+
+    fn verify_root_authority(&self) -> Result<(), TaskLifecycleLinkStoreError> {
+        self.root
+            .validate_named_identity()
+            .map_err(|error| storage_error("validate Task lifecycle-link root", error))?;
+        verify_state_owner_only(&self.root_file)
+            .map_err(|error| storage_error("verify Task lifecycle-link root ownership", error))
+    }
+}
+
+fn build_reservation(
+    key: ReceiptKey,
+    link: TaskLinkReference,
+    mutation_sequence: u64,
+    limits: StoreLimits,
+) -> Result<TaskLinkReservation, TaskLifecycleLinkStoreError> {
+    let key_digest = receipt_key_digest(&key);
+    validate_exact_identity(&key, &key_digest, &link)?;
+    let mut reservation = TaskLinkReservation {
+        key,
+        key_digest,
+        link,
+        reservation_version: 1,
+        mutation_sequence,
+        encoded_bytes: 0,
+    };
+    let stored = StoredEntryV1::from_catalog_entry(&CatalogEntry::Reservation(reservation.clone()));
+    let encoded_len = stored.encoded_len()?;
+    ensure_record_size(encoded_len, limits)?;
+    reservation.encoded_bytes = u64::try_from(encoded_len)
+        .map_err(|_| TaskLifecycleLinkStoreError::Corrupt("reservation length does not fit u64"))?;
+    Ok(reservation)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_task_bound(
+    key: ReceiptKey,
+    link: TaskLinkReference,
+    task: ReceiptTaskProjection,
+    lifecycle_link_version: u64,
+    mutation_sequence: u64,
+    task_record_version: u64,
+    bind_epoch_ms: u64,
+    phase: AttemptPhase,
+    limits: StoreLimits,
+) -> Result<TaskBoundReceipt, TaskLifecycleLinkStoreError> {
+    let provisional_header = LifecycleLinkRecordHeader::new(
+        key.clone(),
+        link.clone(),
+        lifecycle_link_version,
+        mutation_sequence,
+        1,
+    )
+    .map_err(application_corruption)?;
+    let provisional = TaskBoundReceipt::new(
+        provisional_header,
+        task.clone(),
+        task_record_version,
+        bind_epoch_ms,
+        phase,
+    )
+    .map_err(application_corruption)?;
+    let stored = StoredEntryV1::from_catalog_entry(&CatalogEntry::Link(
+        TaskLifecycleLinkRecord::TaskBound(provisional),
+    ));
+    let encoded_len = stored.encoded_len()?;
+    ensure_record_size(encoded_len, limits)?;
+    let header = LifecycleLinkRecordHeader::new(
+        key,
+        link,
+        lifecycle_link_version,
+        mutation_sequence,
+        encoded_len as u64,
+    )
+    .map_err(application_corruption)?;
+    TaskBoundReceipt::new(header, task, task_record_version, bind_epoch_ms, phase)
+        .map_err(application_corruption)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_task_terminal_bound(
+    key: ReceiptKey,
+    link: TaskLinkReference,
+    task: ReceiptTaskProjection,
+    lifecycle_link_version: u64,
+    mutation_sequence: u64,
+    task_record_version: u64,
+    terminal_status: ClosedTerminalStatus,
+    terminal_digest: TerminalDigest,
+    terminal_epoch_ms: u64,
+    expires_at_epoch_ms: u64,
+    limits: StoreLimits,
+) -> Result<TaskTerminalBoundReceipt, TaskLifecycleLinkStoreError> {
+    let provisional_header = LifecycleLinkRecordHeader::new(
+        key.clone(),
+        link.clone(),
+        lifecycle_link_version,
+        mutation_sequence,
+        1,
+    )
+    .map_err(application_corruption)?;
+    let provisional = TaskTerminalBoundReceipt::new(
+        provisional_header,
+        task.clone(),
+        task_record_version,
+        terminal_status,
+        terminal_digest.clone(),
+        terminal_epoch_ms,
+        expires_at_epoch_ms,
+    )
+    .map_err(application_corruption)?;
+    let stored = StoredEntryV1::from_catalog_entry(&CatalogEntry::Link(
+        TaskLifecycleLinkRecord::TaskTerminalBound(provisional),
+    ));
+    let encoded_len = stored.encoded_len()?;
+    ensure_record_size(encoded_len, limits)?;
+    let header = LifecycleLinkRecordHeader::new(
+        key,
+        link,
+        lifecycle_link_version,
+        mutation_sequence,
+        encoded_len as u64,
+    )
+    .map_err(application_corruption)?;
+    TaskTerminalBoundReceipt::new(
+        header,
+        task,
+        task_record_version,
+        terminal_status,
+        terminal_digest,
+        terminal_epoch_ms,
+        expires_at_epoch_ms,
+    )
+    .map_err(application_corruption)
+}
+
+fn build_task_retirement_pending(
+    expected: &TaskTerminalBoundReceipt,
+    lifecycle_link_version: u64,
+    mutation_sequence: u64,
+    invocation_index_bytes: u64,
+    reserved_task_index_bytes: u64,
+    limits: StoreLimits,
+) -> Result<TaskRetirementPendingReceipt, TaskLifecycleLinkStoreError> {
+    let accounting =
+        RetainedDualIdAccounting::new(invocation_index_bytes, reserved_task_index_bytes)
+            .map_err(application_corruption)?;
+    let provisional_header = LifecycleLinkRecordHeader::new(
+        expected.key().clone(),
+        expected.link().clone(),
+        lifecycle_link_version,
+        mutation_sequence,
+        1,
+    )
+    .map_err(application_corruption)?;
+    let provisional = TaskRetirementPendingReceipt::new(
+        provisional_header,
+        expected.task().clone(),
+        expected.task_record_version(),
+        expected.terminal_status(),
+        expected.terminal_digest().clone(),
+        expected.terminal_epoch_ms(),
+        expected.expires_at_epoch_ms(),
+        expected.encoded_bytes(),
+        accounting.clone(),
+    )
+    .map_err(application_corruption)?;
+    let stored = StoredEntryV1::from_catalog_entry(&CatalogEntry::Link(
+        TaskLifecycleLinkRecord::TaskRetirementPending(provisional),
+    ));
+    let encoded_len = stored.encoded_len()?;
+    ensure_record_size(encoded_len, limits)?;
+    let header = LifecycleLinkRecordHeader::new(
+        expected.key().clone(),
+        expected.link().clone(),
+        lifecycle_link_version,
+        mutation_sequence,
+        encoded_len as u64,
+    )
+    .map_err(application_corruption)?;
+    TaskRetirementPendingReceipt::new(
+        header,
+        expected.task().clone(),
+        expected.task_record_version(),
+        expected.terminal_status(),
+        expected.terminal_digest().clone(),
+        expected.terminal_epoch_ms(),
+        expected.expires_at_epoch_ms(),
+        expected.encoded_bytes(),
+        accounting,
+    )
+    .map_err(application_corruption)
+}
+
+fn exact_task_bound<'a>(
+    catalog: &'a StoreCatalog,
+    key_digest: &ReceiptKeyDigest,
+    expected_version: u64,
+) -> Result<&'a TaskBoundReceipt, TaskLifecycleLinkStoreError> {
+    let entry = catalog
+        .entries
+        .get(key_digest)
+        .ok_or(TaskLifecycleLinkStoreError::StateMismatch)?;
+    let CatalogEntry::Link(record) = entry else {
+        return Err(TaskLifecycleLinkStoreError::StateMismatch);
+    };
+    if record.lifecycle_link_version() != expected_version {
+        return Err(TaskLifecycleLinkStoreError::VersionMismatch {
+            expected: expected_version,
+            actual: record.lifecycle_link_version(),
+        });
+    }
+    match record {
+        TaskLifecycleLinkRecord::TaskBound(record) => Ok(record),
+        TaskLifecycleLinkRecord::TaskTerminalBound(_)
+        | TaskLifecycleLinkRecord::TaskRetirementPending(_) => {
+            Err(TaskLifecycleLinkStoreError::StateMismatch)
+        }
+    }
+}
+
+fn exact_task_terminal_bound<'a>(
+    catalog: &'a StoreCatalog,
+    key_digest: &ReceiptKeyDigest,
+    expected_version: u64,
+) -> Result<&'a TaskTerminalBoundReceipt, TaskLifecycleLinkStoreError> {
+    let entry = catalog
+        .entries
+        .get(key_digest)
+        .ok_or(TaskLifecycleLinkStoreError::StateMismatch)?;
+    let CatalogEntry::Link(record) = entry else {
+        return Err(TaskLifecycleLinkStoreError::StateMismatch);
+    };
+    if record.lifecycle_link_version() != expected_version {
+        return Err(TaskLifecycleLinkStoreError::VersionMismatch {
+            expected: expected_version,
+            actual: record.lifecycle_link_version(),
+        });
+    }
+    match record {
+        TaskLifecycleLinkRecord::TaskTerminalBound(record) => Ok(record),
+        TaskLifecycleLinkRecord::TaskBound(_)
+        | TaskLifecycleLinkRecord::TaskRetirementPending(_) => {
+            Err(TaskLifecycleLinkStoreError::StateMismatch)
+        }
+    }
+}
+
+struct CatalogReadSeed<'a> {
+    limits: StoreLimits,
+    failure: &'a mut Option<TaskLifecycleLinkStoreError>,
+}
+
+impl<'de> serde::de::DeserializeSeed<'de> for CatalogReadSeed<'_> {
+    type Value = StoreCatalog;
+
+    fn deserialize<D: serde::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_map(self)
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for CatalogReadSeed<'_> {
+    type Value = StoreCatalog;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("strict schema-v1 lifecycle-link catalog")
+    }
+
+    fn visit_map<M: serde::de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+        use serde::de::Error;
+        let mut schema = None;
+        let mut sequence = None;
+        let mut catalog = None;
+        while let Some(field) = map.next_key::<String>()? {
+            match field.as_str() {
+                "schemaVersion" => {
+                    if schema.is_some() {
+                        return Err(M::Error::duplicate_field("schemaVersion"));
+                    }
+                    schema = Some(map.next_value::<u32>()?);
+                }
+                "mutationSequence" => {
+                    if sequence.is_some() {
+                        return Err(M::Error::duplicate_field("mutationSequence"));
+                    }
+                    sequence = Some(map.next_value::<u64>()?);
+                }
+                "entries" => {
+                    if catalog.is_some() {
+                        return Err(M::Error::duplicate_field("entries"));
+                    }
+                    catalog = Some(map.next_value_seed(CatalogEntriesSeed {
+                        limits: self.limits,
+                        failure: &mut *self.failure,
+                    })?);
+                }
+                _ => {
+                    return Err(M::Error::unknown_field(
+                        &field,
+                        &["schemaVersion", "mutationSequence", "entries"],
+                    ))
+                }
+            }
+        }
+        let schema = schema.ok_or_else(|| M::Error::missing_field("schemaVersion"))?;
+        if let Err(error) = require_schema_v1(schema) {
+            *self.failure = Some(error);
+            return Err(M::Error::custom("unsupported catalog schema"));
+        }
+        let sequence = sequence.ok_or_else(|| M::Error::missing_field("mutationSequence"))?;
+        let mut catalog = catalog.ok_or_else(|| M::Error::missing_field("entries"))?;
+        if catalog
+            .entries
+            .values()
+            .any(|entry| entry.mutation_sequence() > sequence)
+        {
+            *self.failure = Some(TaskLifecycleLinkStoreError::Corrupt(
+                "Task lifecycle-link entry mutation exceeds the durable high-water mark",
+            ));
+            return Err(M::Error::custom("entry exceeds catalog high-water mark"));
+        }
+        catalog.mutation_sequence = sequence;
+        Ok(catalog)
+    }
+}
+
+// This is a private owner-only store of validated identity records. Reading
+// retains one parsed record, not the serialized corpus. The canonical per-record
+// bound below does not bound serde's allocation for a malformed large scalar.
+struct CatalogEntriesSeed<'a> {
+    limits: StoreLimits,
+    failure: &'a mut Option<TaskLifecycleLinkStoreError>,
+}
+
+impl<'de> serde::de::DeserializeSeed<'de> for CatalogEntriesSeed<'_> {
+    type Value = StoreCatalog;
+
+    fn deserialize<D: serde::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_seq(self)
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for CatalogEntriesSeed<'_> {
+    type Value = StoreCatalog;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an array of exact lifecycle-link records")
+    }
+
+    fn visit_seq<S: serde::de::SeqAccess<'de>>(self, mut seq: S) -> Result<Self::Value, S::Error> {
+        use serde::de::Error;
+        let mut catalog = StoreCatalog::default();
+        while let Some(stored) = seq.next_element::<StoredEntryV1>()? {
+            let result = (|| {
+                ensure_record_size(stored.encoded_len()?, self.limits)?;
+                let entry = stored.into_catalog_entry()?;
+                if catalog.entries.contains_key(entry.key_digest()) {
+                    return Err(TaskLifecycleLinkStoreError::Corrupt(
+                        "Task lifecycle-link snapshot contains a duplicate exact key",
+                    ));
+                }
+                catalog.insert_exact(entry)
+            })();
+            if let Err(error) = result {
+                *self.failure = Some(error);
+                return Err(S::Error::custom("invalid exact lifecycle-link entry"));
+            }
+        }
+        Ok(catalog)
+    }
+}
+
+struct CheckpointReader<R> {
+    inner: R,
+    deadline: ProviderDeadline,
+}
+
+impl<R: Read> Read for CheckpointReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        checkpoint_io(self.deadline)?;
+        self.inner.read(buffer)
+    }
+}
+
+struct CheckpointWriter<W> {
+    inner: W,
+    deadline: ProviderDeadline,
+}
+
+impl<W: Write> Write for CheckpointWriter<W> {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        checkpoint_io(self.deadline)?;
+        self.inner.write(buffer)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        checkpoint_io(self.deadline)?;
+        self.inner.flush()
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BorrowedCatalog<'a> {
+    schema_version: u32,
+    mutation_sequence: u64,
+    entries: BorrowedCatalogEntries<'a>,
+}
+
+struct BorrowedCatalogEntries<'a>(Vec<&'a CatalogEntry>);
+
+impl Serialize for BorrowedCatalogEntries<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
+        for entry in &self.0 {
+            seq.serialize_element(&StoredEntryV1::from_catalog_entry(entry))?;
+        }
+        seq.end()
+    }
+}
+
+fn borrowed_catalog(catalog: &StoreCatalog) -> BorrowedCatalog<'_> {
+    let mut entries: Vec<_> = catalog
+        .entries
+        .values()
+        .map(|entry| {
+            let state = match entry {
+                CatalogEntry::Reservation(_) => "reservation",
+                CatalogEntry::Link(TaskLifecycleLinkRecord::TaskBound(_)) => "task_bound",
+                CatalogEntry::Link(TaskLifecycleLinkRecord::TaskTerminalBound(_)) => {
+                    "task_terminal_bound"
+                }
+                CatalogEntry::Link(TaskLifecycleLinkRecord::TaskRetirementPending(_)) => {
+                    "task_retirement_pending"
+                }
+            };
+            (state, entry.key().invocation_id().to_string(), entry)
+        })
+        .collect();
+    entries.sort_unstable_by(|left, right| (left.0, &left.1).cmp(&(right.0, &right.1)));
+    BorrowedCatalog {
+        schema_version: STORE_SCHEMA_VERSION,
+        mutation_sequence: catalog.mutation_sequence,
+        entries: BorrowedCatalogEntries(entries.into_iter().map(|(_, _, entry)| entry).collect()),
+    }
+}
+
+fn snapshot_decode_error(error: serde_json::Error) -> TaskLifecycleLinkStoreError {
+    match error.io_error_kind() {
+        Some(io::ErrorKind::TimedOut) => TaskLifecycleLinkStoreError::DeadlineExceeded,
+        Some(_) => storage_message("read Task lifecycle-link snapshot", error),
+        None => TaskLifecycleLinkStoreError::Corrupt(
+            "Task lifecycle-link snapshot is not strict schema-v1 JSON",
+        ),
+    }
+}
+
+fn snapshot_write_error(error: serde_json::Error) -> TaskLifecycleLinkStoreError {
+    if error.io_error_kind() == Some(io::ErrorKind::TimedOut) {
+        TaskLifecycleLinkStoreError::DeadlineExceeded
+    } else {
+        storage_message("serialize Task lifecycle-link snapshot", error)
+    }
+}
+
+#[cfg(test)]
+fn stored_catalog(catalog: &StoreCatalog) -> Result<StoredCatalogV1, TaskLifecycleLinkStoreError> {
+    let mut entries: Vec<_> = catalog
+        .entries
+        .values()
+        .map(StoredEntryV1::from_catalog_entry)
+        .map(|entry| {
+            serialize_stored_entry_for_order(&entry)
+                .map(|canonical_bytes| (canonical_bytes, entry))
+                .map_err(|error| {
+                    storage_message("serialize Task lifecycle-link catalog entry", error)
+                })
+        })
+        .collect::<Result<_, _>>()?;
+    entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+    let entries = entries.into_iter().map(|(_, entry)| entry).collect();
+    Ok(StoredCatalogV1 {
+        schema_version: STORE_SCHEMA_VERSION,
+        mutation_sequence: catalog.mutation_sequence,
+        entries,
+    })
+}
+
+#[cfg(test)]
+fn serialize_stored_entry_for_order(entry: &StoredEntryV1) -> Result<Vec<u8>, serde_json::Error> {
+    #[cfg(test)]
+    STORED_ENTRY_SERIALIZATION_CALLS.with(|calls| calls.set(calls.get() + 1));
+    serde_json::to_vec(entry)
+}
+
+#[cfg(test)]
+thread_local! {
+    static STORED_ENTRY_SERIALIZATION_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn validate_exact_identity(
+    key: &ReceiptKey,
+    key_digest: &ReceiptKeyDigest,
+    link: &TaskLinkReference,
+) -> Result<(), TaskLifecycleLinkStoreError> {
+    if receipt_key_digest(key) != *key_digest
+        || link.receipt_key_digest() != key_digest
+        || link.task_id() != key.reserved_task_id()
+        || link.invocation_id() != key.invocation_id()
+    {
+        return Err(TaskLifecycleLinkStoreError::IdentityMismatch);
+    }
+    Ok(())
+}
+
+fn ensure_record_size(
+    encoded_len: usize,
+    limits: StoreLimits,
+) -> Result<(), TaskLifecycleLinkStoreError> {
+    if encoded_len > limits.max_record_bytes {
+        Err(TaskLifecycleLinkStoreError::RecordTooLarge {
+            actual: encoded_len,
+            maximum: limits.max_record_bytes,
+        })
+    } else {
+        Ok(())
+    }
+}
+
+fn next_sequence(current: u64) -> Result<u64, TaskLifecycleLinkStoreError> {
+    current
+        .checked_add(1)
+        .ok_or(TaskLifecycleLinkStoreError::Corrupt(
+            "Task lifecycle-link sequence overflowed",
+        ))
+}
+
+fn require_schema_v1(schema_version: u32) -> Result<(), TaskLifecycleLinkStoreError> {
+    if schema_version == STORE_SCHEMA_VERSION {
+        Ok(())
+    } else {
+        Err(TaskLifecycleLinkStoreError::Corrupt(
+            "Task lifecycle-link schema version is not 1",
+        ))
+    }
+}
+
+fn application_corruption(_: ReceiptLedgerError) -> TaskLifecycleLinkStoreError {
+    TaskLifecycleLinkStoreError::Corrupt(
+        "Task lifecycle-link application model rejected persisted exact state",
+    )
+}
+
+fn check_deadline(deadline: ProviderDeadline) -> Result<(), TaskLifecycleLinkStoreError> {
+    if deadline.is_elapsed() {
+        Err(TaskLifecycleLinkStoreError::DeadlineExceeded)
+    } else {
+        Ok(())
+    }
+}
+
+fn checkpoint_io(deadline: ProviderDeadline) -> io::Result<()> {
+    check_deadline(deadline).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            "Task lifecycle-link inspection deadline expired",
+        )
+    })
+}
+
+fn lock_is_contended(error: &io::Error) -> bool {
+    let expected = fs2::lock_contended_error();
+    error.kind() == io::ErrorKind::WouldBlock
+        || error
+            .raw_os_error()
+            .zip(expected.raw_os_error())
+            .is_some_and(|(actual, expected)| actual == expected)
+}
+
+impl From<io::Error> for TaskLifecycleLinkStoreError {
+    fn from(error: io::Error) -> Self {
+        storage_error("enumerate Task lifecycle-link root", error)
+    }
+}
+
+fn storage_error(operation: &'static str, error: io::Error) -> TaskLifecycleLinkStoreError {
+    TaskLifecycleLinkStoreError::Storage {
+        operation,
+        message: error.to_string(),
+    }
+}
+
+fn storage_message(
+    operation: &'static str,
+    error: impl fmt::Display,
+) -> TaskLifecycleLinkStoreError {
+    TaskLifecycleLinkStoreError::Storage {
+        operation,
+        message: error.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::receipt_ledger::{
+        receipt_key_digest, request_scope_hash, AttemptPhase, ClosedTerminalStatus,
+        CoreIdentityDigest, ReceiptKey, ReceiptTaskProjection, RequestIdentity, TaskLinkReference,
+        TerminalDigest, V5ToolIdentity,
+    };
+    use std::fs;
+    use std::str::FromStr;
+    use std::time::Duration;
+    use unica_execution_contract::invocation::{
+        InvocationId, NormalizedArgumentsHash, SafeIdentityHash, TaskId,
+    };
+    use unica_work_control::provider_deadline::ProviderDeadline;
+    use unica_workspace::state_fs::{create_state_directory_child, open_state_directory_nofollow};
+
+    const INVOCATION_A: &str = "11111111-1111-4111-8111-111111111111";
+    const INVOCATION_B: &str = "22222222-2222-4222-8222-222222222222";
+    const TASK_A: &str = "33333333-3333-4333-8333-333333333333";
+    const TASK_B: &str = "44444444-4444-4444-8444-444444444444";
+
+    fn generated_fixture(index: u128) -> (ReceiptKey, TaskLinkReference, ReceiptTaskProjection) {
+        let invocation_id = Uuid::from_u128(0x11111111_1111_4111_8111_000000000000 + index);
+        let task_id = Uuid::from_u128(0x33333333_3333_4333_8333_000000000000 + index);
+        fixture(
+            &invocation_id.to_string(),
+            &task_id.to_string(),
+            &format!("workspace-{index}"),
+        )
+    }
+
+    fn deadline() -> ProviderDeadline {
+        ProviderDeadline::from_budget(Duration::from_secs(7))
+    }
+
+    fn physical_root(root: &tempfile::TempDir) -> std::path::PathBuf {
+        let parent = fs::canonicalize(root.path()).expect("physical temporary parent");
+        let parent_file = open_state_directory_nofollow(&parent).expect("open temporary parent");
+        create_state_directory_child(&parent_file, std::ffi::OsStr::new("links"))
+            .expect("create owner-only lifecycle-link root");
+        parent.join("links")
+    }
+
+    fn fixture(
+        invocation_id: &str,
+        task_id: &str,
+        workspace_hint: &str,
+    ) -> (ReceiptKey, TaskLinkReference, ReceiptTaskProjection) {
+        let invocation_id = InvocationId::from_str(invocation_id).expect("canonical invocation");
+        let task_id = TaskId::from_str(task_id).expect("canonical task");
+        let key = ReceiptKey::new(
+            invocation_id,
+            task_id,
+            RequestIdentity::new(
+                CoreIdentityDigest::from_sha256([0x55; 32]),
+                V5ToolIdentity::View,
+                NormalizedArgumentsHash::from_sha256([0x66; 32]),
+                request_scope_hash(workspace_hint).expect("bounded request scope"),
+            ),
+        );
+        let link = TaskLinkReference::new(
+            receipt_key_digest(&key),
+            task_id,
+            invocation_id,
+            SafeIdentityHash::from_sha256([0x77; 32]),
+        );
+        let task =
+            ReceiptTaskProjection::new(task_id, invocation_id, 1_000, 1_000, 3_600_000, 100, 1)
+                .expect("valid Task projection");
+        (key, link, task)
+    }
+
+    fn terminal_digest() -> TerminalDigest {
+        TerminalDigest::from_str(&"88".repeat(32)).expect("terminal digest")
+    }
+
+    fn seed_reservation_snapshot(root: &Path, count: u128) -> Vec<(ReceiptKey, TaskLinkReference)> {
+        let mut entries = Vec::new();
+        let mut identities = Vec::new();
+        for index in 0..count {
+            let (key, link, _) = generated_fixture(index);
+            let reservation = build_reservation(
+                key.clone(),
+                link.clone(),
+                index as u64 + 1,
+                StoreLimits::production(),
+            )
+            .unwrap();
+            entries.push(StoredEntryV1::from_catalog_entry(
+                &CatalogEntry::Reservation(reservation),
+            ));
+            identities.push((key, link));
+        }
+        let snapshot = StoredCatalogV1 {
+            schema_version: 1,
+            mutation_sequence: count as u64,
+            entries,
+        };
+        let directory = open_state_directory_nofollow(root).unwrap();
+        let mut file =
+            create_state_file_child(&directory, OsStr::new(STORE_SNAPSHOT_FILE)).unwrap();
+        restrict_state_stage_to_owner(&file).unwrap();
+        serde_json::to_writer(&mut file, &snapshot).unwrap();
+        file.sync_all().unwrap();
+        identities
+    }
+
+    #[test]
+    fn production_links_reserve_and_materialize_past_4096_and_reopen() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = physical_root(&root);
+        let identities = seed_reservation_snapshot(&root_path, 4096);
+        let budget = || ProviderDeadline::from_budget(Duration::from_secs(60));
+        let store = TaskLifecycleLinkStoreV5::open(&root_path, budget()).unwrap();
+        let (key, link, task) = generated_fixture(4096);
+        let reservation = store
+            .reserve_task_link(key.clone(), link.clone(), budget())
+            .expect("reserve 4097th exact link");
+        let bound = store
+            .materialize_task_bound(
+                &reservation,
+                task,
+                1,
+                1_000,
+                AttemptPhase::NotBegun,
+                budget(),
+            )
+            .expect("materialize 4097th");
+        drop(store);
+        let reopened =
+            TaskLifecycleLinkStoreV5::open(&root_path, budget()).expect("reopen all links");
+        assert_eq!(
+            reopened
+                .read_by_task_id(key.reserved_task_id(), budget())
+                .unwrap(),
+            TaskLifecycleLinkRecord::TaskBound(bound)
+        );
+        for (key, link) in identities {
+            assert_eq!(
+                reopened
+                    .reserve_task_link(key, link, budget())
+                    .unwrap()
+                    .reservation_version(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn real_snapshot_over_8mib_can_reopen_mutate() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = physical_root(&root);
+        seed_reservation_snapshot(&root_path, 13000);
+        assert!(
+            std::fs::metadata(root_path.join(STORE_SNAPSHOT_FILE))
+                .unwrap()
+                .len()
+                > 8 * 1024 * 1024
+        );
+        let budget = || ProviderDeadline::from_budget(Duration::from_secs(60));
+        let store =
+            TaskLifecycleLinkStoreV5::open(&root_path, budget()).expect("read real large snapshot");
+        let (key, link, _) = generated_fixture(13000);
+        let reservation = store
+            .reserve_task_link(key.clone(), link.clone(), budget())
+            .expect("publish real large snapshot");
+        drop(store);
+        let reopened = TaskLifecycleLinkStoreV5::open(&root_path, budget()).unwrap();
+        assert_eq!(
+            reopened.reserve_task_link(key, link, budget()).unwrap(),
+            reservation
+        );
+        for entry in std::fs::read_dir(root_path).unwrap() {
+            assert!(matches!(
+                entry.unwrap().file_name().to_str(),
+                Some(STORE_SNAPSHOT_FILE | STORE_LOCK_FILE)
+            ));
+        }
+    }
+
+    #[test]
+    fn inspection_cleans_links_staging_past_former_directory_bound() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = physical_root(&root);
+        seed_reservation_snapshot(&root_path, 1);
+        let committed = fs::read(root_path.join(STORE_SNAPSHOT_FILE)).unwrap();
+        let directory = open_state_directory_nofollow(&root_path).unwrap();
+        for index in 0..100 {
+            let file = create_state_file_child(
+                &directory,
+                OsStr::new(&format!(
+                    "{STORE_STAGING_PREFIX}{index}{STORE_STAGING_SUFFIX}"
+                )),
+            )
+            .unwrap();
+            restrict_state_stage_to_owner(&file).unwrap();
+        }
+        let store =
+            TaskLifecycleLinkStoreV5::open(&root_path, deadline()).expect("inspect all staging");
+        assert_eq!(store.capacity_snapshot().live_reservations(), 1);
+        assert_eq!(
+            fs::read(root_path.join(STORE_SNAPSHOT_FILE)).unwrap(),
+            committed
+        );
+        for entry in fs::read_dir(root_path).unwrap() {
+            assert!(matches!(
+                entry.unwrap().file_name().to_str(),
+                Some(STORE_SNAPSHOT_FILE | STORE_LOCK_FILE)
+            ));
+        }
+    }
+
+    #[test]
+    fn reservation_consumes_task_store_slot_before_materialization_and_reopens_exactly() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let root_path = physical_root(&root);
+        let (key, link, task) = fixture(INVOCATION_A, TASK_A, "workspace-a");
+        let store = TaskLifecycleLinkStoreV5::open(&root_path, deadline()).expect("open store");
+
+        let reservation = store
+            .reserve_task_link(key.clone(), link.clone(), deadline())
+            .expect("reserve lifecycle-link and TaskStore slot");
+        assert!(reservation.encoded_bytes() <= 1_024);
+        assert_eq!(store.capacity_snapshot().live_reservations(), 1);
+        assert_eq!(store.capacity_snapshot().task_store_slots_accounted(), 1);
+        assert_eq!(store.capacity_snapshot().accounted_bytes(), 1_024);
+
+        let bound = store
+            .materialize_task_bound(
+                &reservation,
+                task,
+                1,
+                1_000,
+                AttemptPhase::NotBegun,
+                deadline(),
+            )
+            .expect("materialize exact TaskBound");
+        assert_eq!(bound.lifecycle_link_version(), 2);
+        assert_eq!(bound.phase(), AttemptPhase::NotBegun);
+        assert_eq!(store.capacity_snapshot().live_reservations(), 0);
+        assert_eq!(store.capacity_snapshot().materialized_links(), 1);
+
+        drop(store);
+        let reopened =
+            TaskLifecycleLinkStoreV5::open(&root_path, deadline()).expect("reopen store");
+        assert_eq!(
+            reopened
+                .read_by_task_id(key.reserved_task_id(), deadline())
+                .expect("exact reopened link"),
+            TaskLifecycleLinkRecord::TaskBound(bound)
+        );
+    }
+
+    #[test]
+    fn no_deadline_links_preserve_exact_cas_and_reopen_terminal_winner() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = physical_root(&root);
+        let deadline = ProviderDeadline::no_deadline();
+        let (key, link, task) = fixture(INVOCATION_A, TASK_A, "workspace-a");
+        let store = TaskLifecycleLinkStoreV5::open(&root_path, deadline).unwrap();
+        let reservation = store
+            .reserve_task_link(key.clone(), link, deadline)
+            .unwrap();
+        let queued = store
+            .materialize_task_bound(
+                &reservation,
+                task,
+                1,
+                1_000,
+                AttemptPhase::NotBegun,
+                deadline,
+            )
+            .unwrap();
+        let working = store
+            .mark_task_bound_begun(&queued, 2, 1_100, deadline)
+            .unwrap();
+        let terminal_task = ReceiptTaskProjection::new(
+            key.reserved_task_id(),
+            key.invocation_id(),
+            1_000,
+            2_000,
+            3_600_000,
+            100,
+            3,
+        )
+        .unwrap();
+        let terminal = store
+            .publish_task_terminal_bound(
+                &working,
+                terminal_task,
+                3,
+                ClosedTerminalStatus::Completed,
+                terminal_digest(),
+                2_000,
+                deadline,
+            )
+            .unwrap();
+        assert!(matches!(
+            store.mark_task_bound_begun(&queued, 2, 1_100, deadline),
+            Err(TaskLifecycleLinkStoreError::VersionMismatch {
+                expected: 2,
+                actual: 4
+            })
+        ));
+        assert_eq!(
+            store
+                .read_by_task_id(key.reserved_task_id(), deadline)
+                .unwrap(),
+            TaskLifecycleLinkRecord::TaskTerminalBound(terminal.clone())
+        );
+        drop(store);
+        let reopened = TaskLifecycleLinkStoreV5::open(&root_path, deadline).unwrap();
+        assert_eq!(
+            reopened
+                .read_by_task_id(key.reserved_task_id(), deadline)
+                .unwrap(),
+            TaskLifecycleLinkRecord::TaskTerminalBound(terminal)
+        );
+    }
+
+    #[test]
+    fn catalog_snapshot_lists_exact_live_entries_and_separates_actual_from_reserved_bytes() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let root_path = physical_root(&root);
+        let (reserved_key, reserved_link, _) = fixture(INVOCATION_A, TASK_A, "workspace-a");
+        let (bound_key, bound_link, bound_task) = fixture(INVOCATION_B, TASK_B, "workspace-b");
+        let store = TaskLifecycleLinkStoreV5::open(&root_path, deadline()).expect("open store");
+        let reservation = store
+            .reserve_task_link(reserved_key, reserved_link, deadline())
+            .expect("retain exact reservation");
+        let bound_reservation = store
+            .reserve_task_link(bound_key, bound_link, deadline())
+            .expect("reserve exact bound link");
+        let bound = store
+            .materialize_task_bound(
+                &bound_reservation,
+                bound_task,
+                1,
+                1_000,
+                AttemptPhase::NotBegun,
+                deadline(),
+            )
+            .expect("materialize exact TaskBound");
+        drop(store);
+        let store =
+            TaskLifecycleLinkStoreV5::open(&root_path, deadline()).expect("reopen durable store");
+        let persisted_before =
+            fs::read(root_path.join(STORE_SNAPSHOT_FILE)).expect("read snapshot before inspection");
+
+        let snapshot = store
+            .catalog_snapshot(deadline())
+            .expect("inspect exact live catalog");
+
+        assert_eq!(snapshot.generation(), 3);
+        assert_eq!(snapshot.count(), 2);
+        assert_eq!(snapshot.reserved_count(), 1);
+        assert_eq!(snapshot.actual_bytes(), bound.encoded_bytes());
+        assert_eq!(
+            snapshot.reserved_bytes(),
+            u64::try_from(MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES).expect("record limit fits u64")
+        );
+        assert_eq!(
+            snapshot.actual_bytes() + snapshot.reserved_bytes(),
+            u64::try_from(store.capacity_snapshot().accounted_bytes())
+                .expect("capacity accounting fits u64")
+        );
+        assert_eq!(snapshot.entries().len(), snapshot.count());
+        assert!(snapshot.entries().windows(2).all(|entries| {
+            entries[0].key_digest().to_string() <= entries[1].key_digest().to_string()
+        }));
+        assert!(snapshot
+            .entries()
+            .contains(&TaskLifecycleLinkCatalogEntry::Reservation(reservation)));
+        assert!(snapshot
+            .entries()
+            .contains(&TaskLifecycleLinkCatalogEntry::Record(
+                TaskLifecycleLinkRecord::TaskBound(bound)
+            )));
+        assert_eq!(
+            fs::read(root_path.join(STORE_SNAPSHOT_FILE)).expect("read snapshot after inspection"),
+            persisted_before
+        );
+        assert_eq!(
+            store
+                .catalog_snapshot(deadline())
+                .expect("repeat read-only inspection"),
+            snapshot
+        );
+    }
+
+    #[test]
+    fn task_bound_terminal_and_retirement_transitions_are_exact_cas_and_reopen_stable() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let root_path = physical_root(&root);
+        let (key, link, task) = fixture(INVOCATION_A, TASK_A, "workspace-a");
+        let store = TaskLifecycleLinkStoreV5::open(&root_path, deadline()).expect("open store");
+        let reservation = store
+            .reserve_task_link(key.clone(), link, deadline())
+            .expect("reserve link");
+        let not_begun = store
+            .materialize_task_bound(
+                &reservation,
+                task,
+                1,
+                1_000,
+                AttemptPhase::NotBegun,
+                deadline(),
+            )
+            .expect("materialize TaskBound");
+        assert!(not_begun.encoded_bytes() <= 1_024);
+        let begun = store
+            .mark_task_bound_begun(&not_begun, 2, 1_100, deadline())
+            .expect("exact not-begun to begun CAS");
+        assert!(begun.encoded_bytes() <= 1_024);
+        let terminal_task = ReceiptTaskProjection::new(
+            key.reserved_task_id(),
+            key.invocation_id(),
+            1_000,
+            2_000,
+            3_600_000,
+            100,
+            3,
+        )
+        .expect("terminal projection");
+        let terminal = store
+            .publish_task_terminal_bound(
+                &begun,
+                terminal_task,
+                3,
+                ClosedTerminalStatus::Completed,
+                terminal_digest(),
+                2_000,
+                deadline(),
+            )
+            .expect("exact TaskTerminalBound CAS");
+        assert!(terminal.encoded_bytes() <= 1_024);
+        let pending = store
+            .begin_task_retirement(&terminal, 64, 64, deadline())
+            .expect("exact TaskRetirementPending CAS");
+        assert!(pending.encoded_bytes() <= 1_024);
+
+        let mut legacy =
+            serde_json::to_value(StoredEntryV1::from_catalog_entry(&CatalogEntry::Link(
+                TaskLifecycleLinkRecord::TaskRetirementPending(pending.clone()),
+            )))
+            .expect("encode pending link");
+        let legacy_fields = legacy.as_object_mut().expect("pending link object");
+        for (compact, expanded) in [
+            ("lv", "lifecycleLinkVersion"),
+            ("ms", "mutationSequence"),
+            ("tv", "expectedTerminalTaskVersion"),
+            ("ts", "terminalStatus"),
+            ("td", "terminalDigest"),
+            ("te", "terminalEpochMs"),
+            ("ex", "expiresAtEpochMs"),
+        ] {
+            let value = legacy_fields
+                .remove(compact)
+                .expect("compact pending field");
+            legacy_fields.insert(expanded.to_owned(), value);
+        }
+        assert!(
+            serde_json::to_vec(&legacy)
+                .expect("encode legacy pending")
+                .len()
+                <= MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES
+        );
+        let decoded: StoredEntryV1 =
+            serde_json::from_value(legacy.clone()).expect("read legacy pending fields");
+        assert_eq!(
+            decoded
+                .into_catalog_entry()
+                .expect("validate legacy pending"),
+            CatalogEntry::Link(TaskLifecycleLinkRecord::TaskRetirementPending(
+                pending.clone()
+            ))
+        );
+
+        assert!(matches!(
+            store.mark_task_bound_begun(&not_begun, 2, 1_100, deadline()),
+            Err(TaskLifecycleLinkStoreError::VersionMismatch {
+                expected: 2,
+                actual: 5
+            })
+        ));
+        drop(store);
+
+        let snapshot_path = root_path.join(STORE_SNAPSHOT_FILE);
+        let mut snapshot: serde_json::Value =
+            serde_json::from_slice(&fs::read(&snapshot_path).expect("read pending snapshot"))
+                .expect("decode pending snapshot");
+        let entries = snapshot["entries"]
+            .as_array_mut()
+            .expect("pending snapshot entries");
+        assert_eq!(entries.len(), 1);
+        entries[0] = legacy;
+        fs::write(
+            &snapshot_path,
+            serde_json::to_vec(&snapshot).expect("encode legacy snapshot"),
+        )
+        .expect("persist legacy pending snapshot");
+
+        let reopened =
+            TaskLifecycleLinkStoreV5::open(&root_path, deadline()).expect("reopen legacy store");
+        assert_eq!(
+            reopened
+                .read_by_task_id(key.reserved_task_id(), deadline())
+                .expect("reopened legacy pending link"),
+            TaskLifecycleLinkRecord::TaskRetirementPending(pending.clone())
+        );
+        reopened
+            .finalize_task_retirement(&pending, deadline())
+            .expect("finalize reopened legacy pending link");
+        assert!(matches!(
+            reopened.read_by_task_id(key.reserved_task_id(), deadline()),
+            Err(TaskLifecycleLinkStoreError::NotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn real_epoch_terminal_link_can_enter_pending_retirement_within_reserved_bytes() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let root_path = physical_root(&root);
+        let (key, link, _) = fixture(INVOCATION_A, TASK_A, "workspace-a");
+        let store = TaskLifecycleLinkStoreV5::open(&root_path, deadline()).expect("open store");
+        let epoch = 1_790_000_000_000;
+        let task = ReceiptTaskProjection::new(
+            key.reserved_task_id(),
+            key.invocation_id(),
+            epoch,
+            epoch,
+            3_600_000,
+            100,
+            1,
+        )
+        .expect("real-epoch Task projection");
+        let reservation = store
+            .reserve_task_link(key.clone(), link, deadline())
+            .expect("reserve Task link");
+        let bound = store
+            .materialize_task_bound(
+                &reservation,
+                task,
+                1,
+                epoch,
+                AttemptPhase::Begun,
+                deadline(),
+            )
+            .expect("materialize TaskBound");
+        let terminal_epoch = epoch + 100;
+        let terminal_task = ReceiptTaskProjection::new(
+            key.reserved_task_id(),
+            key.invocation_id(),
+            epoch,
+            terminal_epoch,
+            3_600_000,
+            100,
+            2,
+        )
+        .expect("real-epoch terminal projection");
+        let terminal = store
+            .publish_task_terminal_bound(
+                &bound,
+                terminal_task,
+                2,
+                ClosedTerminalStatus::Completed,
+                terminal_digest(),
+                terminal_epoch,
+                deadline(),
+            )
+            .expect("publish terminal link");
+        let pending = store
+            .begin_task_retirement(&terminal, 64, 64, deadline())
+            .expect("real-epoch terminal Task can enter pending retirement");
+        assert!(pending.encoded_bytes() <= MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES as u64);
+
+        drop(store);
+        let reopened =
+            TaskLifecycleLinkStoreV5::open(&root_path, deadline()).expect("reopen pending store");
+        assert_eq!(
+            reopened
+                .read_by_task_id(key.reserved_task_id(), deadline())
+                .expect("reopened real-epoch pending link"),
+            TaskLifecycleLinkRecord::TaskRetirementPending(pending)
+        );
+    }
+
+    #[test]
+    fn finalized_retirement_removes_exact_link_and_both_indexes_across_reopen() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let root_path = physical_root(&root);
+        let (key, link, task) = fixture(INVOCATION_A, TASK_A, "workspace-a");
+        let store = TaskLifecycleLinkStoreV5::open(&root_path, deadline()).expect("open store");
+        let reservation = store
+            .reserve_task_link(key.clone(), link, deadline())
+            .expect("reserve link");
+        let bound = store
+            .materialize_task_bound(
+                &reservation,
+                task,
+                1,
+                1_000,
+                AttemptPhase::Begun,
+                deadline(),
+            )
+            .expect("materialize TaskBound");
+        let terminal_task = ReceiptTaskProjection::new(
+            key.reserved_task_id(),
+            key.invocation_id(),
+            1_000,
+            2_000,
+            3_600_000,
+            100,
+            2,
+        )
+        .expect("terminal projection");
+        let terminal = store
+            .publish_task_terminal_bound(
+                &bound,
+                terminal_task,
+                2,
+                ClosedTerminalStatus::Completed,
+                terminal_digest(),
+                2_000,
+                deadline(),
+            )
+            .expect("publish terminal link");
+        let pending = store
+            .begin_task_retirement(&terminal, 64, 64, deadline())
+            .expect("commit pending retirement");
+
+        let mut catalog = store.lock_writer(deadline()).unwrap().clone();
+        assert_eq!(
+            catalog.task_index.get(&key.reserved_task_id()),
+            Some(pending.key_digest())
+        );
+        assert_eq!(
+            catalog.invocation_index.get(&key.invocation_id()),
+            Some(pending.key_digest())
+        );
+        // Publication rebuilds indexes from entries. Observe the removal itself
+        // before that readback can hide an index left behind in memory.
+        catalog
+            .remove_exact_pending(&pending)
+            .expect("remove exact pending catalog entry");
+        assert!(catalog.entries.is_empty());
+        assert!(catalog.task_index.is_empty());
+        assert!(catalog.invocation_index.is_empty());
+
+        store
+            .finalize_task_retirement(&pending, deadline())
+            .expect("finalize exact retirement");
+        let catalog = store.lock_writer(deadline()).unwrap();
+        assert!(catalog.task_index.is_empty());
+        assert!(catalog.invocation_index.is_empty());
+        drop(catalog);
+        assert!(matches!(
+            store.read_by_task_id(key.reserved_task_id(), deadline()),
+            Err(TaskLifecycleLinkStoreError::NotFound { .. })
+        ));
+        assert_eq!(store.catalog_snapshot(deadline()).unwrap().count(), 0);
+        drop(store);
+
+        let reopened =
+            TaskLifecycleLinkStoreV5::open(&root_path, deadline()).expect("reopen store");
+        let catalog = reopened.lock_writer(deadline()).unwrap();
+        assert!(catalog.task_index.is_empty());
+        assert!(catalog.invocation_index.is_empty());
+        drop(catalog);
+        assert!(matches!(
+            reopened.read_by_task_id(key.reserved_task_id(), deadline()),
+            Err(TaskLifecycleLinkStoreError::NotFound { .. })
+        ));
+        assert_eq!(reopened.catalog_snapshot(deadline()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn corrupt_snapshot_preserves_verified_orphan_before_cleanup() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = physical_root(&root);
+        seed_reservation_snapshot(&root_path, 1);
+        fs::write(root_path.join(STORE_SNAPSHOT_FILE), b"{malformed").unwrap();
+        let directory = open_state_directory_nofollow(&root_path).unwrap();
+        let name = format!("{STORE_STAGING_PREFIX}abandoned{STORE_STAGING_SUFFIX}");
+        let mut file = create_state_file_child(&directory, OsStr::new(&name)).unwrap();
+        file.write_all(b"retained").unwrap();
+        drop(file);
+        assert!(matches!(
+            TaskLifecycleLinkStoreV5::open(&root_path, deadline()),
+            Err(TaskLifecycleLinkStoreError::Corrupt(_))
+        ));
+        assert_eq!(
+            fs::read(root_path.join(name)).expect("failed validation must preserve orphan"),
+            b"retained"
+        );
+    }
+
+    #[test]
+    fn second_pass_refuses_replaced_link_staging_without_deleting_either_file() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = physical_root(&root);
+        let store = TaskLifecycleLinkStoreV5::open(&root_path, deadline()).unwrap();
+        let name = OsStr::new(".task-lifecycle-links-v1.abandoned.tmp");
+        let mut original = create_state_file_child(&store.root_file, name).unwrap();
+        original.write_all(b"original").unwrap();
+        let identity = state_file_identity(&original).unwrap();
+        drop(original);
+        fs::rename(
+            root_path.join(name),
+            root_path.join(".task-lifecycle-links-v1.saved.tmp"),
+        )
+        .unwrap();
+        let mut replacement = create_state_file_child(&store.root_file, name).unwrap();
+        replacement.write_all(b"replacement").unwrap();
+        drop(replacement);
+        assert!(store
+            .remove_verified_staging(name, identity, deadline())
+            .is_err());
+        assert_eq!(fs::read(root_path.join(name)).unwrap(), b"replacement");
+        assert_eq!(
+            fs::read(root_path.join(".task-lifecycle-links-v1.saved.tmp")).unwrap(),
+            b"original"
+        );
+    }
+
+    #[test]
+    fn second_pass_refuses_link_staging_symlink_and_preserves_external_bytes() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = physical_root(&root);
+        let store = TaskLifecycleLinkStoreV5::open(&root_path, deadline()).unwrap();
+        let name = OsStr::new(".task-lifecycle-links-v1.abandoned.tmp");
+        let original = create_state_file_child(&store.root_file, name).unwrap();
+        let identity = state_file_identity(&original).unwrap();
+        drop(original);
+        fs::remove_file(root_path.join(name)).unwrap();
+        let outside = root.path().join("outside");
+        fs::write(&outside, b"external").unwrap();
+        let Some(created) = unica_workspace::state_fs::test_support::create_file_symlink_for_test(
+            &outside,
+            root_path.join(name),
+        ) else {
+            return;
+        };
+        created.expect("create a file symlink on the supported test host");
+        assert!(store
+            .remove_verified_staging(name, identity, deadline())
+            .is_err());
+        assert_eq!(fs::read(outside).unwrap(), b"external");
+        assert!(fs::symlink_metadata(root_path.join(name))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
+    #[test]
+    fn catalog_schema_rejects_duplicate_unknown_missing_and_trailing_fields() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = physical_root(&root);
+        seed_reservation_snapshot(&root_path, 1);
+        let snapshot_path = root_path.join(STORE_SNAPSHOT_FILE);
+        let original = fs::read_to_string(&snapshot_path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&original).unwrap();
+        let entries = serde_json::to_string(&value["entries"]).unwrap();
+        for invalid in [
+            format!("{{\"schemaVersion\":1,\"schemaVersion\":1,\"mutationSequence\":1,\"entries\":{entries}}}"),
+            format!("{{\"schemaVersion\":1,\"mutationSequence\":1,\"mutationSequence\":1,\"entries\":{entries}}}"),
+            format!("{{\"schemaVersion\":1,\"mutationSequence\":1,\"entries\":{entries},\"entries\":{entries}}}"),
+            format!("{{\"schemaVersion\":1,\"mutationSequence\":1,\"entries\":{entries},\"unexpected\":null}}"),
+            format!("{{\"mutationSequence\":1,\"entries\":{entries}}}"),
+            format!("{{\"schemaVersion\":1,\"entries\":{entries}}}"),
+            "{\"schemaVersion\":1,\"mutationSequence\":1}".to_owned(),
+            format!("{original} {{}}"),
+        ] {
+            fs::write(&snapshot_path, invalid).unwrap();
+            assert!(matches!(TaskLifecycleLinkStoreV5::open(&root_path, deadline()), Err(TaskLifecycleLinkStoreError::Corrupt(_))));
+        }
+        fs::write(
+            &snapshot_path,
+            format!("{{\"entries\":{entries},\"mutationSequence\":1,\"schemaVersion\":1}}"),
+        )
+        .unwrap();
+        let store = TaskLifecycleLinkStoreV5::open(&root_path, deadline())
+            .expect("field order remains independent");
+        assert_eq!(store.capacity_snapshot().live_reservations(), 1);
+    }
+
+    #[test]
+    fn persisted_record_schema_is_v1_strict_and_revalidates_the_link_digest() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let root_path = physical_root(&root);
+        let (key, link, _) = fixture(INVOCATION_A, TASK_A, "workspace-a");
+        let store = TaskLifecycleLinkStoreV5::open(&root_path, deadline()).expect("open store");
+        store
+            .reserve_task_link(key, link, deadline())
+            .expect("reserve link");
+        drop(store);
+
+        let snapshot_path = root_path.join(STORE_SNAPSHOT_FILE);
+        let mut snapshot: serde_json::Value = serde_json::from_slice(
+            &fs::read(&snapshot_path).expect("read lifecycle-link snapshot"),
+        )
+        .expect("strict snapshot fixture");
+        {
+            let entry = snapshot["entries"][0]
+                .as_object_mut()
+                .expect("stored lifecycle-link entry");
+            assert_eq!(entry.get("schemaVersion"), Some(&serde_json::json!(1)));
+            assert_eq!(entry.get("state"), Some(&serde_json::json!("reservation")));
+            entry.insert("unexpected".to_owned(), serde_json::json!(true));
+        }
+        fs::write(
+            &snapshot_path,
+            serde_json::to_vec(&snapshot).expect("serialize corrupt fixture"),
+        )
+        .expect("write corrupt fixture");
+
+        assert!(matches!(
+            TaskLifecycleLinkStoreV5::open(&root_path, deadline()),
+            Err(TaskLifecycleLinkStoreError::Corrupt(
+                "Task lifecycle-link snapshot is not strict schema-v1 JSON"
+            ))
+        ));
+
+        {
+            let entry = snapshot["entries"][0]
+                .as_object_mut()
+                .expect("stored lifecycle-link entry");
+            entry.remove("unexpected");
+            entry
+                .get_mut("link")
+                .and_then(serde_json::Value::as_object_mut)
+                .expect("stored exact link")
+                .insert(
+                    "taskLinkDigest".to_owned(),
+                    serde_json::json!("99".repeat(32)),
+                );
+        }
+        fs::write(
+            &snapshot_path,
+            serde_json::to_vec(&snapshot).expect("serialize digest mismatch fixture"),
+        )
+        .expect("write digest mismatch fixture");
+        assert!(matches!(
+            TaskLifecycleLinkStoreV5::open(&root_path, deadline()),
+            Err(TaskLifecycleLinkStoreError::Corrupt(
+                "persisted lifecycle-link digest does not match its exact identity"
+            ))
+        ));
+    }
+
+    #[test]
+    fn production_single_link_limit_remains_until_its_payload_path_changes() {
+        assert_eq!(MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES, 1_024);
+    }
+
+    #[test]
+    fn streaming_catalog_preserves_canonical_bytes_for_all_states_and_id_orders() {
+        let mut catalog = StoreCatalog::default();
+        for index in [19, 1, 31, 2, 17, 3, 29, 4] {
+            let (key, link, task) = generated_fixture(index);
+            let sequence = index as u64 + 1;
+            let entry = match index % 4 {
+                0 => CatalogEntry::Reservation(
+                    build_reservation(key, link, sequence, StoreLimits::production()).unwrap(),
+                ),
+                1 => CatalogEntry::Link(TaskLifecycleLinkRecord::TaskBound(
+                    build_task_bound(
+                        key,
+                        link,
+                        task,
+                        2,
+                        sequence,
+                        1,
+                        1_000,
+                        AttemptPhase::Begun,
+                        StoreLimits::production(),
+                    )
+                    .unwrap(),
+                )),
+                2 | 3 => {
+                    let terminal_task = ReceiptTaskProjection::new(
+                        key.reserved_task_id(),
+                        key.invocation_id(),
+                        1_000,
+                        2_000,
+                        3_600_000,
+                        100,
+                        2,
+                    )
+                    .unwrap();
+                    let terminal = build_task_terminal_bound(
+                        key,
+                        link,
+                        terminal_task,
+                        3,
+                        sequence,
+                        2,
+                        ClosedTerminalStatus::Completed,
+                        terminal_digest(),
+                        2_000,
+                        3_602_000,
+                        StoreLimits::production(),
+                    )
+                    .unwrap();
+                    if index % 4 == 2 {
+                        CatalogEntry::Link(TaskLifecycleLinkRecord::TaskTerminalBound(terminal))
+                    } else {
+                        CatalogEntry::Link(TaskLifecycleLinkRecord::TaskRetirementPending(
+                            build_task_retirement_pending(
+                                &terminal,
+                                4,
+                                sequence,
+                                64,
+                                64,
+                                StoreLimits::production(),
+                            )
+                            .unwrap(),
+                        ))
+                    }
+                }
+                _ => unreachable!(),
+            };
+            catalog.insert_exact(entry).unwrap();
+            catalog.mutation_sequence = catalog.mutation_sequence.max(sequence);
+        }
+        let previous = serde_json::to_vec(&stored_catalog(&catalog).unwrap()).unwrap();
+        let streaming = serde_json::to_vec(&borrowed_catalog(&catalog)).unwrap();
+        assert_eq!(streaming, previous);
+    }
+
+    #[test]
+    fn canonical_catalog_order_serializes_each_entry_once() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let root_path = physical_root(&root);
+        let store = TaskLifecycleLinkStoreV5::open(&root_path, deadline()).expect("open store");
+        for index in 0..8 {
+            let (key, link, _) = generated_fixture(index);
+            store
+                .reserve_task_link(key, link, deadline())
+                .expect("reserve distinct link");
+        }
+        let catalog = store.lock_writer(deadline()).expect("lock live catalog");
+        STORED_ENTRY_SERIALIZATION_CALLS.with(|calls| calls.set(0));
+
+        let snapshot = stored_catalog(&catalog).expect("build canonical stored catalog");
+
+        assert_eq!(snapshot.entries.len(), catalog.entries.len());
+        STORED_ENTRY_SERIALIZATION_CALLS.with(|calls| {
+            assert_eq!(
+                calls.get(),
+                catalog.entries.len(),
+                "canonical ordering must serialize each entry exactly once"
+            );
+        });
+    }
+}

@@ -1,8 +1,8 @@
 ---
 id: INV.CACHE.RLM-STATE-LOCATION
 check:
-  - crates/unica-coder/src/infrastructure/workspace_index.rs::rlm_provider_state_moves_outside_a_workspace_wide_source_root
-  - crates/unica-coder/src/infrastructure/workspace_index.rs::safe_root_failure_never_falls_back_to_generation_markers_inside_sources
+  - crates/unica-adapter-rlm/tests/platform/index.rs::rlm_provider_state_moves_outside_a_workspace_wide_source_root
+  - crates/unica-adapter-rlm/tests/platform/index.rs::safe_root_failure_never_falls_back_to_generation_markers_inside_sources
 ---
 
 # Состояние RLM размещается вне индексируемых исходников

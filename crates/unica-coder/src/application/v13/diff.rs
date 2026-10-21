@@ -1,10 +1,10 @@
-use crate::domain::address::QualifiedAddress;
-use crate::domain::refusal::RefusalCode;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::sync::Mutex;
+use unica_address::address::QualifiedAddress;
+use unica_refusal::RefusalCode;
 use uuid::Uuid;
 
 const DEFAULT_LIMIT: usize = 100;
@@ -344,8 +344,8 @@ fn source_backed(data: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::{DiffError, DiffHandler, DiffRequest, DiffSource};
-    use crate::domain::address::QualifiedAddress;
     use serde_json::json;
+    use unica_address::address::QualifiedAddress;
 
     fn source(at: &str, kind: &str, _snapshot_label: &str, value: i64) -> DiffSource {
         DiffSource::new(

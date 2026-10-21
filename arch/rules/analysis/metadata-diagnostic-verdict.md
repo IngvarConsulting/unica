@@ -1,7 +1,7 @@
 ---
 id: INV.ANALYSIS.METADATA-DIAGNOSTIC-VERDICT
 check:
-  - crates/unica-coder/src/domain/metadata/diagnostics.rs::diagnostic_codes_serialize_to_the_stable_exhaustive_vocabulary
+  - crates/unica-metadata/src/diagnostics.rs::diagnostic_codes_serialize_to_the_stable_exhaustive_vocabulary
   - crates/unica-coder/src/infrastructure/native_operations/meta/validation.rs::legacy_metadata_warnings_use_a_warning_code_and_keep_error_verdicts
   - crates/unica-coder/src/infrastructure/native_operations/meta/validation.rs::internal_malformed_xml_is_a_hard_failure_matching_legacy_classification
   - crates/unica-coder/src/application/meta_info_surface_tests.rs::info_localizes_an_unknown_but_valid_platform_type_as_a_warning

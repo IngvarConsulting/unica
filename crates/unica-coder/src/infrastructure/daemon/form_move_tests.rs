@@ -1,6 +1,6 @@
 use super::actor_capacity_tests::direct_v5;
 use super::*;
-use crate::application::invocation_store::ToolIdentity;
+use unica_execution::invocation_store::ToolIdentity;
 
 #[test]
 fn canonical_form_move_composes_tabs_events_and_preserves_atomic_noops() {
@@ -40,14 +40,17 @@ fn canonical_form_move_composes_tabs_events_and_preserves_atomic_noops() {
         direct_v5(&runtime, request).unwrap()
     };
     let apply_pair = |at: &str, ops: serde_json::Value| {
-        let before = crate::test_support::tree_snapshot(&source);
+        let before = unica_workspace::test_support::tree_snapshot(&source);
         let view_before = call(ToolIdentity::View, serde_json::json!({"at": at}));
         let preview = call(
             ToolIdentity::Apply,
             serde_json::json!({"at": at, "ops": ops}),
         );
         assert!(preview.ok, "preview failed: {preview:?}");
-        assert_eq!(crate::test_support::tree_snapshot(&source), before);
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&source),
+            before
+        );
         if view_before.ok {
             let view_after = call(ToolIdentity::View, serde_json::json!({"at": at}));
             assert!(view_after.ok, "{view_after:?}");
@@ -184,7 +187,7 @@ fn canonical_form_move_composes_tabs_events_and_preserves_atomic_noops() {
     // contents nor the subsequent cached logical view may expose the move.
     let viewed_before = call(ToolIdentity::View, serde_json::json!({"at":at}));
     assert!(viewed_before.ok, "{viewed_before:?}");
-    let tree_before = crate::test_support::tree_snapshot(&source);
+    let tree_before = unica_workspace::test_support::tree_snapshot(&source);
     let refused = call(
         ToolIdentity::Apply,
         serde_json::json!({"at":at,"ops":[
@@ -198,7 +201,10 @@ fn canonical_form_move_composes_tabs_events_and_preserves_atomic_noops() {
         .as_ref()
         .is_none_or(|d| d.get("executionToken").is_none()));
     assert!(refused.changed.is_empty(), "{refused:?}");
-    assert_eq!(crate::test_support::tree_snapshot(&source), tree_before);
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&source),
+        tree_before
+    );
     let viewed_after = call(ToolIdentity::View, serde_json::json!({"at":at}));
     assert!(viewed_after.ok, "{viewed_after:?}");
     assert_eq!(viewed_after.data, viewed_before.data);

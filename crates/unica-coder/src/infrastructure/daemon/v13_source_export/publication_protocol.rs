@@ -1,11 +1,12 @@
 //! Caller-owned publication over the runner's versioned process protocol.
 use super::*;
-use crate::infrastructure::internal_adapters::{ProcessLineReply, ProcessStreamFailure};
-use crate::infrastructure::platform::full_dump_publication::{
-    FullDumpFailure, FullDumpPhase, PublishedFullDump, RunnerProjectLockFailure,
-};
 use serde::Deserialize;
 use std::time::Duration;
+use unica_process::runner::ProcessStreamFailure;
+use unica_process::ProcessLineReply;
+use unica_workspace::full_dump::{
+    FullDumpFailure, FullDumpPhase, PublishedFullDump, RunnerProjectLockFailure,
+};
 
 const PROTOCOL_VERSION: u32 = 1;
 const FINISH_TIMEOUT: Duration = Duration::from_secs(120);
@@ -164,7 +165,7 @@ pub(super) fn execute(
             )
         }
     };
-    let mut guard = match VerifiedFullDumpPublication::prepare(
+    let mut guard = match unica_adapter_v8_runner::full_dump::prepare_publication(
         &prepared.context,
         FullDumpSelection {
             config_path: &prepared.context.workspace_root.join(CONFIG_NAME),
@@ -177,6 +178,7 @@ pub(super) fn execute(
         &cancellation,
         normalize_full_export_config,
         project_full_export_config,
+        crate::infrastructure::runtime_composition::full_dump_semantics(),
     ) {
         Ok(value) => value,
         Err(error) => return failure(&root, error),
@@ -237,7 +239,7 @@ pub(super) fn execute(
                     || !matches!(provider["selected"].as_str(), Some("designer" | "ibcmd" | "agent")) {
                     problem = Some(DomainResult::canonical_rejection_detailed(
                         Some(OPERATION.to_owned()),
-                        crate::domain::refusal::RefusalDetail::ProviderAbsent,
+                        unica_refusal::RefusalDetail::ProviderAbsent,
                         "pull requires a verifiable local platform executor",
                     ));
                     phase = Phase::Terminal;
@@ -249,7 +251,7 @@ pub(super) fn execute(
                     return reply(nonce.as_deref().unwrap(), "selected", "reject");
                 };
                 let check = guard.recheck_before_dispatch()
-                    .and_then(|()| guard.attest_selected_local(&executable, runner, &cancellation))
+                    .and_then(|()| unica_adapter_v8_runner::full_dump::attest_selected_local(&mut guard, &executable, runner, &cancellation))
                     .and_then(|()| if prepared.dry_run { Ok(()) } else { guard.prepare_dispatch_parent(&cancellation) });
                 if let Err(error) = check {
                     problem = Some(failure(&root, error));

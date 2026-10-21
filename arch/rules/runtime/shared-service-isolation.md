@@ -1,8 +1,9 @@
 ---
 id: INV.APP.EXACT-LONG-WORK-OWNERSHIP
 check:
-  - crates/unica-coder/src/application/shared_work.rs::exact_key_vocabulary_covers_delivery_index_provider_and_runtime
-  - crates/unica-coder/src/application/shared_work.rs::typed_provider_and_runtime_keys_reject_weak_identity_and_remain_exact
+  - crates/unica-coder/tests/shared_work_identity.rs::exact_key_vocabulary_covers_delivery_index_provider_and_runtime
+  - crates/unica-analysis-services/src/provider_host.rs::typed_provider_key_rejects_weak_identity_and_remains_exact
+  - crates/unica-execution/src/runtime_jobs.rs::typed_runtime_keys_remain_exact
   - crates/unica-coder/src/infrastructure/daemon/server.rs::daemon_long_work_capabilities_handoff_before_wait_and_preserve_exact_ownership
   - crates/unica-coder/src/infrastructure/daemon/server.rs::daemon_index_work_separates_worktrees_and_build_generations
   - crates/unica-coder/src/infrastructure/daemon/server.rs::daemon_long_work_rejects_replaced_actor_root_before_reuse_or_publication

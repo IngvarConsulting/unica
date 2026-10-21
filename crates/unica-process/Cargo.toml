@@ -1,0 +1,26 @@
+[package]
+name = "unica-process"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+test-support = ["dep:tempfile"]
+
+[dependencies]
+tempfile = { workspace = true, optional = true }
+unica-redaction = { path = "../unica-redaction" }
+serde_json.workspace = true
+unica-work-control = { path = "../unica-work-control" }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[dev-dependencies]
+uuid.workspace = true
+tempfile.workspace = true

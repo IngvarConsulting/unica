@@ -1,13 +1,13 @@
 ---
 id: INV.APP.LEXICAL-SEARCH-PREFIX
 check:
-  - crates/unica-coder/src/infrastructure/code_intelligence.rs::git_grep_is_literal_source_scoped_and_uses_the_upstream_deadline
-  - crates/unica-coder/src/infrastructure/code_intelligence.rs::git_grep_returns_the_first_unranked_provider_traversal_prefix
-  - crates/unica-coder/src/infrastructure/code_intelligence.rs::git_grep_timeout_preserves_already_streamed_hits_as_a_lower_bound
-  - crates/unica-coder/src/infrastructure/code_intelligence.rs::git_grep_cancellation_discards_already_streamed_hits
-  - crates/unica-coder/src/infrastructure/code_intelligence.rs::git_grep_exit_one_without_stderr_is_empty
-  - crates/unica-coder/src/infrastructure/code_intelligence.rs::git_grep_non_empty_malformed_output_is_failed
-  - crates/unica-coder/src/domain/code_intelligence.rs::empty_section_rejects_an_incomplete_count
+  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::git_grep_is_literal_source_scoped_and_uses_the_upstream_deadline
+  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::git_grep_returns_the_first_unranked_provider_traversal_prefix
+  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::git_grep_timeout_preserves_already_streamed_hits_as_a_lower_bound
+  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::git_grep_cancellation_discards_already_streamed_hits
+  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::git_grep_exit_one_without_stderr_is_empty
+  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::git_grep_non_empty_malformed_output_is_failed
+  - crates/unica-code-intelligence/src/model/mod.rs::empty_section_rejects_an_incomplete_count
 ---
 
 # Ограниченный буквальный поиск не выдаёт первые совпадения за лучшие

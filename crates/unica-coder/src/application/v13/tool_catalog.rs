@@ -1,8 +1,8 @@
-use crate::application::source_navigation::{
-    SOURCE_NAVIGATION_LIMIT_DEFAULT, SOURCE_NAVIGATION_LIMIT_MAX,
-};
 use crate::application::tool_contracts::SurfaceRelease;
 use serde_json::{json, Value};
+use unica_navigation::source_navigation::{
+    SOURCE_NAVIGATION_LIMIT_DEFAULT, SOURCE_NAVIGATION_LIMIT_MAX,
+};
 
 #[derive(Debug)]
 pub(crate) struct V13ToolContract {

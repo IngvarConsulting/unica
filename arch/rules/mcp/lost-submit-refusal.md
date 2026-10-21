@@ -12,7 +12,7 @@ check:
   - crates/unica-coder/src/interfaces/daemon_router.rs::a_read_whose_answer_was_lost_inline_is_readable_by_its_task_id
   - crates/unica-coder/src/interfaces/daemon_router.rs::the_task_id_of_a_call_still_inline_can_be_cancelled
   - crates/unica-coder/src/interfaces/daemon_router.rs::a_fenced_frame_never_runs_and_a_held_one_is_answered_by_its_state
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/joining.rs::a_fence_stays_bounded_and_ends_after_its_retention
+  - crates/unica-execution/src/receipt_runtime/joining.rs::a_fence_stays_bounded_and_ends_after_its_retention
 gap: https://github.com/IngvarConsulting/unica/issues/1743
 ---
 

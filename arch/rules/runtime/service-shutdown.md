@@ -1,7 +1,7 @@
 ---
 id: INV.RUNTIME.SERVICE-SHUTDOWN
 check:
-  - crates/unica-coder/src/infrastructure/workspace_services.rs::workspace_service_control_path_shutdown_cancels_all_and_rejects_new_work
+  - crates/unica-coder/tests/platform/workspace_services_integration.rs::workspace_service_control_path_shutdown_cancels_all_and_rejects_new_work
 ---
 
 # Остановка внутреннего сервиса отменяет принятую работу

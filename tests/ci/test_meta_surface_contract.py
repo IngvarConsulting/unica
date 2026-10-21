@@ -16,15 +16,17 @@ OPERATION_DESCRIPTORS = (
     REPO_ROOT / "crates/unica-coder/src/application/operation_descriptors.rs"
 )
 META_RUNTIME = REPO_ROOT / "crates/unica-coder/src/infrastructure/native_operations/meta"
-META_DOMAIN = REPO_ROOT / "crates/unica-coder/src/domain/metadata"
+META_DOMAIN = REPO_ROOT / "crates/unica-metadata/src"
+META_REQUEST = META_DOMAIN / "request.rs"
+META_DESIGNER = REPO_ROOT / "crates/unica-metadata-designer/src"
 FORMAT_GUARD = REPO_ROOT / "crates/unica-coder/src/infrastructure/format_guard.rs"
 CF_RUNTIME = REPO_ROOT / "crates/unica-coder/src/infrastructure/native_operations/cf.rs"
 TOOL_CONTEXT = REPO_ROOT / "crates/unica-coder/src/infrastructure/tool_context.rs"
 META_PROPERTY_REGISTRY = (
-    REPO_ROOT / "crates/unica-coder/src/domain/metadata/properties.rs"
+    REPO_ROOT / "crates/unica-metadata/src/properties.rs"
 )
 META_OPERATION_REGISTRY = (
-    REPO_ROOT / "crates/unica-coder/src/domain/metadata/operations.rs"
+    REPO_ROOT / "crates/unica-metadata/src/operations.rs"
 )
 META_CAPABILITY_LEDGER = REPO_ROOT / "tests/fixtures/migration/meta-capability-parity.json"
 META_INFO_FIXTURE_MANIFEST = (
@@ -142,6 +144,120 @@ def registered_tool_blocks() -> dict[str, str]:
     return blocks
 
 
+def owned_designer_source_closure(
+    roots: dict[Path, str], owners: dict[Path, str]
+) -> tuple[dict[Path, str], set[str]]:
+    """Scan helpers referenced by live Meta producers, including shared codecs.
+
+    Identifier matching deliberately over-approximates Rust resolution: all
+    same-named methods and function references are followed, including aliases.
+    Other codec entrypoints do not become Meta merely by sharing a crate.
+    Signatures, imports, types, attributes and macro bodies stay in the scan.
+    """
+    from tree_sitter import Language, Parser
+    import tree_sitter_rust
+
+    parser = Parser(Language(tree_sitter_rust.language()))
+
+    def walk(node):
+        yield node
+        for child in node.named_children:
+            yield from walk(child)
+
+    def identifiers(node) -> set[str]:
+        found = {
+            child.text.decode("utf-8")
+            for child in walk(node)
+            if child.type in {"identifier", "field_identifier", "type_identifier"}
+        }
+        # The pinned parser treats some valid `&raw` identifier expressions as
+        # ERROR nodes. Conservatively keep identifier-like references from
+        # those spans; rustc remains the syntax authority.
+        for child in walk(node):
+            if child.type in {"ERROR", "string_literal", "raw_string_literal"}:
+                found.update(re.findall(r"[A-Za-z_]\w*", child.text.decode("utf-8")))
+        return found
+
+    def outside_free_functions(node) -> set[str]:
+        if node.type in {"function_item", "use_declaration"}:
+            return set()
+        found = identifiers(node) if not node.named_children or node.type in {
+            "ERROR", "string_literal", "raw_string_literal"
+        } else set()
+        for child in node.named_children:
+            found.update(outside_free_functions(child))
+        return found
+
+    def is_method(node) -> bool:
+        parent = node.parent
+        while parent is not None:
+            if parent.type in {"impl_item", "trait_item"}:
+                return True
+            parent = parent.parent
+        return False
+
+    parsed = {
+        path: parser.parse(source.encode("utf-8")).root_node
+        for path, source in {**roots, **owners}.items()
+    }
+    aliases: dict[str, set[str]] = defaultdict(set)
+    for tree in parsed.values():
+        for node in walk(tree):
+            if node.type == "use_as_clause":
+                alias = node.child_by_field_name("alias")
+                original = node.child_by_field_name("path")
+                assert alias is not None and original is not None
+                aliases[alias.text.decode("utf-8")].update(identifiers(original))
+
+    functions = {}
+    by_name: dict[str, set[tuple[Path, int]]] = defaultdict(set)
+    for path in owners:
+        for node in walk(parsed[path]):
+            if node.type == "function_item":
+                name = node.child_by_field_name("name")
+                body = node.child_by_field_name("body")
+                assert name is not None and body is not None, (path, node.start_point)
+                key = (path, node.start_byte)
+                functions[key] = (node, body)
+                by_name[name.text.decode("utf-8")].add(key)
+
+    pending = set().union(*(identifiers(parsed[path]) for path in roots))
+    for path in owners:
+        pending.update(outside_free_functions(parsed[path]))
+    seen: set[str] = set()
+    # Trait dispatch and implicit Drop/Deref do not spell the method name at
+    # the call site. Scan every method and follow its free-function helpers.
+    selected = {key for key, (node, _) in functions.items() if is_method(node)}
+    for key in selected:
+        pending.update(identifiers(functions[key][0]))
+    while pending:
+        name = pending.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        pending.update(aliases[name] - seen)
+        for key in by_name[name] - selected:
+            selected.add(key)
+            pending.update(identifiers(functions[key][0]) - seen)
+
+    result = {}
+    for path, source in owners.items():
+        raw = source.encode("utf-8")
+        scanned = bytearray(raw)
+        for (function_path, start), (_, body) in functions.items():
+            if function_path == path and (function_path, start) not in selected:
+                scanned[body.start_byte:body.end_byte] = re.sub(
+                    rb"[^\n]", b" ", raw[body.start_byte:body.end_byte]
+                )
+        # A selected nested function can live inside an unselected outer body.
+        for key in selected:
+            node, _ = functions[key]
+            if key[0] == path:
+                scanned[node.start_byte:node.end_byte] = raw[node.start_byte:node.end_byte]
+        result[path] = scanned.decode("utf-8")
+    return result, {name for name, keys in by_name.items() if keys & selected}
+
+
 class MetaSurfaceContractTests(unittest.TestCase):
     def test_meta_observation_and_mutation_capability_contract_is_published(
         self,
@@ -213,35 +329,69 @@ class MetaSurfaceContractTests(unittest.TestCase):
         ports = (REPO_ROOT / "crates/unica-coder/src/application/ports.rs").read_text(
             encoding="utf-8"
         )
-        info = (META_RUNTIME / "info.rs").read_text(encoding="utf-8")
-        validation = (META_RUNTIME / "validation.rs").read_text(encoding="utf-8")
-        validation_context = (META_RUNTIME / "validation_context.rs").read_text(
+        info_binding = (META_RUNTIME / "info.rs").read_text(encoding="utf-8")
+        info = (META_DESIGNER / "info_read.rs").read_text(encoding="utf-8")
+        validation = (META_DESIGNER / "validation.rs").read_text(encoding="utf-8")
+        validation_context = (META_DESIGNER / "validation_context.rs").read_text(
             encoding="utf-8"
         )
-        results = (
-            REPO_ROOT / "crates/unica-coder/src/domain/metadata/results.rs"
-        ).read_text(encoding="utf-8")
+        subject = (META_DOMAIN / "validation_subject.rs").read_text(encoding="utf-8")
+        results = (META_DOMAIN / "results.rs").read_text(encoding="utf-8")
+        topology = (META_DESIGNER / "subsystem_topology.rs").read_text(encoding="utf-8")
 
-        self.assertIn("enum MetadataSubsystemEvidence", ports)
+        self.assertIn("enum MetadataSubsystemEvidence", subject)
+        self.assertNotIn("enum MetadataSubsystemEvidence", ports)
+        self.assertIn("unica_metadata::validation_subject::MetadataValidationSubject", ports)
         for marker in ("functional_subsystems", "interface_subsystems"):
-            self.assertIn(marker, ports)
+            self.assertIn(marker, subject)
             self.assertIn(marker, results)
-        self.assertIn("capture_registered_subsystem_topology", info)
-        self.assertIn("MetadataObjectIdentity", info)
-        self.assertIn("Uuid::parse_str", validation_context)
-        self.assertIn("uuid: identity.object_uuid", info)
+        projection = rust_function(info, "pub fn read_typed_meta_info")
+        evidence = rust_function(info, "fn typed_subsystem_evidence")
+        retained_open = rust_function(info_binding, "fn open_retained_read")
+        topology_read = rust_function(topology, "pub fn read_registered_subsystem_topology")
+        native_read = rust_function(info_binding, "pub(crate) fn read_typed_meta_info")
+
+        self.assertIn("MetadataObjectIdentity", projection)
+        identity_parser = rust_function(
+            validation_context, "fn inspect_metadata_image_identity_for_kinds"
+        )
+        self.assertIn("Uuid::parse_str", identity_parser)
+        self.assertIn("uuid: identity.object_uuid", projection)
         self.assertNotIn("Uuid::parse_str", info)
-        self.assertIn("functional_memberships_for", info)
-        self.assertIn("interface_memberships_for", info)
+        self.assertIn("functional_memberships_for(identity)", evidence)
+        self.assertIn("interface_memberships_for(identity)", evidence)
         self.assertNotIn("functional_memberships(target.as_str())", info)
         self.assertNotIn("interface_memberships(target.as_str())", info)
+        self.assertIn(".open_retained_read(", evidence)
+        self.assertIn("crate::subsystem_topology::read_registered_subsystem_topology", evidence)
+        self.assertLess(
+            evidence.index(".open_retained_read("),
+            evidence.index("crate::subsystem_topology::read_registered_subsystem_topology"),
+        )
+        for limit in (
+            "maximum_depth: SUBSYSTEM_ADDRESS_MAX_DEPTH * 2",
+            "maximum_entries: crate::subsystem_topology::SUBSYSTEM_SCAN_MAX_ENTRIES",
+            "maximum_files: crate::subsystem_topology::SUBSYSTEM_SCAN_MAX_FILES",
+            "maximum_bytes: crate::subsystem_topology::SUBSYSTEM_SCAN_MAX_BYTES",
+        ):
+            self.assertIn(limit, evidence)
+        self.assertIn("reader.complete(&mut checkpoint)?", topology_read)
+        self.assertIn("reader.as_mut()", topology_read)
+        self.assertIn(".read_regular_file(&configuration_path, &mut checkpoint)", topology_read)
+        self.assertIn(
+            "unica_workspace::read::RetainedRootSecureRead::open(root, limits, checkpoint)",
+            retained_open,
+        )
+        self.assertIn("unica_metadata_designer::info_read::read_typed_meta_info(", native_read)
+        self.assertIn("&MetadataDependencyReadAdapter::new(context)", native_read)
+        self.assertNotIn("ProjectDiscoveryReader", evidence + topology_read)
         for retired in (
             "typed_subsystem_images",
             "subsystem_names_from_logical_path",
             "meta_validate_subsystem_command_interface_scan",
             "SubsystemDescriptorFacts",
         ):
-            self.assertNotIn(retired, info + validation + validation_context)
+            self.assertNotIn(retired, info + validation + validation_context + info_binding)
 
     def test_meta_info_public_contract_distinguishes_empty_from_unavailable_memberships(
         self,
@@ -439,14 +589,44 @@ class MetaSurfaceContractTests(unittest.TestCase):
         )
 
     def test_live_meta_runtime_has_no_file_or_string_dsl_grammar(self) -> None:
-        sources = sorted(
-            [
-                path
-                for path in META_RUNTIME.glob("*.rs")
-                if not path.name.endswith("_tests.rs")
-            ]
-            + list(META_DOMAIN.glob("*.rs"))
+        sources = {
+            path: path.read_text(encoding="utf-8")
+            for path in sorted(
+                [
+                    path
+                    for path in META_RUNTIME.glob("*.rs")
+                    if not path.name.endswith("_tests.rs")
+                ]
+                + list(META_DOMAIN.glob("*.rs"))
+            )
+        }
+        # Canonical typed Metadata decode/staging, borrowing and resource
+        # producers are composition roots alongside native Meta add/edit/info.
+        adapters = META_RUNTIME.parent / "apply_families"
+        roots = {
+            **sources,
+            **{
+                adapters / name: (adapters / name).read_text(encoding="utf-8")
+                for name in ("mod.rs", "borrow.rs", "form_resource.rs")
+            },
+        }
+        designer_sources, selected = owned_designer_source_closure(
+            roots,
+            {
+                path: path.read_text(encoding="utf-8")
+                for path in sorted(META_DESIGNER.glob("*.rs"))
+            },
         )
+        self.assertTrue(
+            {
+                "parse_metadata_plan_operation_in", "plan_metadata_batch",
+                "build_typed_operation_post_image", "read_typed_meta_info",
+                "plan_borrow_object_with_identity", "plan_borrow_enum_value",
+                "stage_metadata_resource_plan",
+            } <= selected,
+            "actual typed Meta producer roots must remain inside the DSL guard",
+        )
+        sources.update(designer_sources)
         retired_grammar = {
             "module-wide dead-or-unused suppression": re.compile(
                 r"^#!\[allow\([^\]]*(?:dead_code|unused_imports|unused\b)",
@@ -481,8 +661,7 @@ class MetaSurfaceContractTests(unittest.TestCase):
         }
 
         violations: list[str] = []
-        for path in sources:
-            source = path.read_text(encoding="utf-8")
+        for path, source in sorted(sources.items()):
             for contract, pattern in retired_grammar.items():
                 if pattern.search(source):
                     violations.append(f"{path.relative_to(REPO_ROOT)}: {contract}")
@@ -499,6 +678,42 @@ class MetaSurfaceContractTests(unittest.TestCase):
             "live Meta runtime still contains the retired file/string grammar:\n"
             + "\n".join(violations),
         )
+
+    def test_meta_designer_dsl_scope_follows_helpers_and_shared_codec_calls(self) -> None:
+        root = Path("meta_producer.rs")
+        owner = Path("shared_codec.rs")
+        roots = {root: "fn meta_add() { typed_plan(); }"}
+        source = '''
+            use crate::shared::owned_helper as helper_alias;
+            use crate::legacy::other_codec_entrypoint as legacy_alias;
+            fn typed_plan() { helper_alias(); shared_xml(); }
+            fn owned_helper() { typed_argument(); }
+            fn typed_argument() {}
+            fn shared_xml() {}
+            fn other_codec_entrypoint() { value.split(";;"); }
+        '''
+        sources, selected = owned_designer_source_closure(roots, {owner: source})
+        self.assertNotIn('.split(";;")', sources[owner])
+        self.assertTrue({"typed_plan", "owned_helper", "typed_argument", "shared_xml"} <= selected)
+        for implicit in (
+            'struct Typed; impl Drop for Typed { fn drop(&mut self) { let _ = "a;;b".split(";;"); } } fn typed_plan() { let _owned = Typed; }',
+            'struct Typed; impl Drop for Typed { fn drop(&mut self) { legacy_parse(); } } fn legacy_parse() { let _ = "a;;b".split(";;"); } fn typed_plan() { let _owned = Typed; }',
+            'fn legacy_parse() { let _ = "a;;b".split(";;"); } const CALLBACK: fn() = legacy_parse; fn typed_plan() { CALLBACK(); }',
+        ):
+            with self.subTest(implicit=implicit):
+                scanned, _ = owned_designer_source_closure(roots, {owner: implicit})
+                self.assertIn('.split(";;")', scanned[owner])
+        for label, needle, replacement in (
+            ("typed parser", "fn typed_argument() {}", 'fn typed_argument() { value.split(";;"); }'),
+            ("shared XML helper", "fn shared_xml() {}", 'fn shared_xml() { value.split(";;"); }'),
+            ("legacy decoder becomes reachable", "fn owned_helper() { typed_argument(); }",
+             "fn owned_helper() { typed_argument(); legacy_alias(); }"),
+        ):
+            with self.subTest(label=label):
+                changed = source.replace(needle, replacement)
+                self.assertNotEqual(changed, source)
+                mutated, _ = owned_designer_source_closure(roots, {owner: changed})
+                self.assertIn('.split(";;")', mutated[owner])
 
     def test_tracked_tree_has_no_executable_legacy_meta_dsl_bridge(self) -> None:
         tracked = subprocess.run(
@@ -605,7 +820,7 @@ class MetaSurfaceContractTests(unittest.TestCase):
                 self.assertIn("handler: ToolHandler::Metadata {", block)
                 self.assertRegex(
                     block,
-                    rf"operation:\s*metadata::MetadataOperation::{operation},",
+                    rf"operation:\s*unica_metadata::request::MetadataOperation::{operation},",
                 )
                 self.assertNotIn("ToolHandler::NativeOperation", block)
                 self.assertNotIn("ToolHandler::CodeIntelligence", block)
@@ -623,8 +838,8 @@ class MetaSurfaceContractTests(unittest.TestCase):
         self.assertIn("ordered operations", add_description)
 
     def test_schema_path_has_exact_lower_camel_arguments_and_typed_edit_items(self) -> None:
-        metadata = METADATA.read_text(encoding="utf-8")
-        schema = rust_function(metadata, "pub(crate) fn metadata_input_schema")
+        metadata = META_REQUEST.read_text(encoding="utf-8")
+        schema = rust_function(metadata, "pub fn metadata_input_schema")
         expected_required = {
             "Info": '["sourceSet", "metadataPath"]',
             "Add": '["sourceSet", "kind", "name"]',
@@ -685,7 +900,7 @@ class MetaSurfaceContractTests(unittest.TestCase):
         self.assertIn('"oneOf"', edit_items)
         for composition in ("anyOf", "allOf", '"if"', '"then"'):
             self.assertNotIn(composition, edit_items)
-        schema_fn = rust_function(metadata, "pub(crate) fn metadata_input_schema")
+        schema_fn = rust_function(metadata, "pub fn metadata_input_schema")
         self.assertIn('"items": host_visible_operation_schema()', schema_fn)
         self.assertNotIn('"allOf"', schema_fn)
         for forbidden in (
@@ -710,7 +925,9 @@ class MetaSurfaceContractTests(unittest.TestCase):
             ),
             2,
         )
-        success = rust_function(metadata, "fn metadata_success")
+        success = rust_function(
+            METADATA.read_text(encoding="utf-8"), "fn metadata_success"
+        )
         self.assertIn("adapter: AdapterOutcome::ok(summary)", success)
         self.assertIn("data: Some(data)", success)
 
@@ -724,15 +941,15 @@ class MetaSurfaceContractTests(unittest.TestCase):
             contracts, "pub fn validate_tool_argument_semantics"
         )
         self.assertIn("ToolHandler::Metadata", schema_path)
-        self.assertIn("metadata_input_schema(operation)", schema_path)
+        self.assertIn("unica_metadata::request::metadata_input_schema(operation)", schema_path)
         self.assertIn("ToolHandler::Metadata", shape_validation_path)
         self.assertIn(
-            "validate_metadata_argument_shape(operation, args)",
+            "unica_metadata::request::validate_metadata_argument_shape(operation, args)",
             shape_validation_path,
         )
         self.assertIn("ToolHandler::Metadata", semantic_validation_path)
         self.assertIn(
-            "parse_metadata_request_after_shape(operation, args)",
+            "unica_metadata::request::parse_metadata_request_after_shape(operation, args)",
             semantic_validation_path,
         )
 

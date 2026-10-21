@@ -11,9 +11,9 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/v13_client_run.rs::launch_reports_the_session_the_provider_attests
   - crates/unica-coder/src/infrastructure/daemon/v13_client_run.rs::unverified_launch_receipts_discard_owned_processes
   - crates/unica-coder/src/infrastructure/daemon/v13_client_run.rs::cancellation_before_verified_handoff_discards_the_client
-  - crates/unica-coder/src/infrastructure/platform/process.rs::pending_launch_release_preserves_detached_descendant
-  - crates/unica-coder/src/infrastructure/platform/process.rs::pending_launch_rejection_drops_owned_descendant
-  - crates/unica-coder/src/infrastructure/platform/process.rs::pending_launch_complete_json_without_eof_remains_cancelable
+  - crates/unica-process/src/platform/process.rs::pending_launch_release_preserves_detached_descendant
+  - crates/unica-process/src/platform/process.rs::pending_launch_rejection_drops_owned_descendant
+  - crates/unica-process/src/platform/process.rs::pending_launch_complete_json_without_eof_remains_cancelable
   - crates/unica-coder/src/infrastructure/daemon/v13_client_run.rs::waited_launch_reports_the_exit_code_and_the_timeout
   - crates/unica-coder/src/infrastructure/daemon/v13_client_run.rs::waited_launch_real_process_has_private_writable_logs_until_terminal_and_cleans_up
   - crates/unica-coder/src/infrastructure/daemon/v13_client_run.rs::waiting_requires_a_thin_epf_but_nonwait_launch_modes_stay_available

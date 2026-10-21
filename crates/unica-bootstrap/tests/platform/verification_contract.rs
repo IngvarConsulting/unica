@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::json;
-use unica_bootstrap::{verify_mcp_runtime, Failure};
+use unica_artifact_delivery::Failure;
+use unica_bootstrap::verify_mcp_runtime;
 
 #[test]
 fn verify_requires_both_lifecycles_and_the_exact_v13_compatibility_surface() {

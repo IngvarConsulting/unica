@@ -1,0 +1,19 @@
+[package]
+name = "unica-templates"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+test-support = []
+
+[dependencies]
+unica-operations = { path = "../unica-operations" }
+unica-source-contract = { path = "../unica-source-contract" }
+unica-address = { path = "../unica-address" }
+unica-operation-contract = { path = "../unica-operation-contract" }
+unica-metadata = { path = "../unica-metadata" }
+serde.workspace = true
+serde_json.workspace = true

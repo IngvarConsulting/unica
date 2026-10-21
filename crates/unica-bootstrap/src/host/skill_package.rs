@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use crate::error::{BootstrapError, Result};
+use unica_artifact_delivery::{BootstrapError, Result};
 
 use super::plugin_manifest::verify_installed_plugin_metadata;
 

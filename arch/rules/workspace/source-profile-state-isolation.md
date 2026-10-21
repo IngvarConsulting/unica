@@ -1,13 +1,13 @@
 ---
 id: INV.CACHE.ACTOR-AUTHENTICATED-STATE-SCOPE
 check:
-  - crates/unica-coder/src/infrastructure/workspace_actor.rs::same_name_root_changed_kind_rotates_actor_and_state_scope
-  - crates/unica-coder/src/infrastructure/workspace_actor.rs::same_name_root_changed_format_or_platform_profile_rotates_actor
-  - crates/unica-coder/src/infrastructure/workspace_actor.rs::workspace_actor_registry_keys_exact_identity_and_separates_worktrees_and_source_roots
-  - crates/unica-coder/src/infrastructure/workspace_actor.rs::two_frontends_reuse_the_actor_for_one_canonical_worktree
-  - crates/unica-coder/src/infrastructure/workspace_actor.rs::remapped_names_and_profiles_do_not_share_index_or_coordination_state
-  - crates/unica-coder/src/infrastructure/workspace_actor.rs::active_platform_actor_cannot_select_the_legacy_state_scope
-  - crates/unica-coder/src/infrastructure/workspace_actor.rs::actor_state_scope_digest_is_fallible_and_bounded
+  - crates/unica-workspace/src/actor_local_tests.rs::same_name_root_changed_kind_rotates_actor_and_state_scope
+  - crates/unica-workspace/src/actor_local_tests.rs::same_name_root_changed_format_or_platform_profile_rotates_actor
+  - crates/unica-workspace/src/actor_local_tests.rs::workspace_actor_registry_keys_exact_identity_and_separates_worktrees_and_source_roots
+  - crates/unica-workspace/src/actor_local_tests.rs::two_frontends_reuse_the_actor_for_one_canonical_worktree
+  - crates/unica-coder/src/infrastructure/workspace_actor_contract_tests.rs::remapped_names_and_profiles_do_not_share_index_or_coordination_state
+  - crates/unica-workspace/src/actor_local_tests.rs::active_platform_actor_cannot_select_the_legacy_state_scope
+  - crates/unica-workspace/src/actor_local_tests.rs::actor_state_scope_digest_is_fallible_and_bounded
   - crates/unica-coder/src/infrastructure/workspace_index.rs::rlm_coordination_paths_separate_source_roots_under_the_pair_root
 ---
 
