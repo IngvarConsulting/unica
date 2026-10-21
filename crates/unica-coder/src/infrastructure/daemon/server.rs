@@ -4265,7 +4265,26 @@ pub(crate) mod actor_capacity_tests {
                     Err(error) => panic!("{error:?}"),
                 }
             };
-            let before = unica_workspace::test_support::tree_snapshot(&workspace);
+            // Файлы и каталоги: пустой каталог, созданный отказом, тоже изменение.
+            let image = |root: &std::path::Path| {
+                fn directories(
+                    root: &std::path::Path,
+                    current: &std::path::Path,
+                    found: &mut std::collections::BTreeSet<std::path::PathBuf>,
+                ) {
+                    for entry in std::fs::read_dir(current).unwrap() {
+                        let entry = entry.unwrap();
+                        if entry.file_type().unwrap().is_dir() {
+                            found.insert(entry.path().strip_prefix(root).unwrap().to_path_buf());
+                            directories(root, &entry.path(), found);
+                        }
+                    }
+                }
+                let mut found = std::collections::BTreeSet::new();
+                directories(root, root, &mut found);
+                (unica_workspace::test_support::tree_snapshot(root), found)
+            };
+            let before = image(&workspace);
             for (case, arguments, code) in [
                 (
                     "configured connection",
@@ -4304,10 +4323,7 @@ pub(crate) mod actor_capacity_tests {
                     );
                 }
             }
-            assert_eq!(
-                unica_workspace::test_support::tree_snapshot(&workspace),
-                before
-            );
+            assert_eq!(image(&workspace), before);
             return;
         }
 
