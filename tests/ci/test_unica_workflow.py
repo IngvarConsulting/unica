@@ -12,12 +12,17 @@ from __future__ import annotations
 import fnmatch
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 from collections.abc import Iterator
 from pathlib import Path
 
 import yaml
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts/ci"))
+import ci_rust_lanes as lanes  # noqa: E402
+import prepared_binary  # noqa: E402
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -577,6 +582,14 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             # rust-cache вычищает перед записью и не включает их обратно.
             self.assertNotIn("lookup-only", cache["with"])
             self.assertNotIn("cache-workspace-crates", cache["with"])
+            # Кешируется тот каталог, куда собирает архив: `<root>/target`.
+            self.assertNotIn("workspaces", cache["with"])
+            archive = lanes.archive_command(lane, Path("tests.tar.zst"))
+            self.assertEqual(Path(archive[archive.index("--target-dir") + 1]), lanes.ROOT / "target")
+            # nextest ставится до восстановления: rust-cache исключает уже
+            # лежащие в ~/.cargo/bin файлы из записи и не подменяет их.
+            steps = producer["steps"]
+            self.assertLess(steps.index(steps_using(producer, "taiki-e/install-action")[0]), steps.index(cache))
             self.assertEqual(producer["env"]["CARGO_PROFILE_DEV_DEBUG"], executor["env"]["CARGO_PROFILE_DEV_DEBUG"])
             for found in (producer, executor):
                 self.assertEqual(steps_using(found, "taiki-e/install-action")[0]["with"]["tool"], "cargo-nextest@0.9.148")
@@ -585,6 +598,8 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertEqual(len(product_cache), 1)
         self.assertNotIn("lookup-only", product_cache[0]["with"])
         self.assertNotIn("cache-workspace-crates", product_cache[0]["with"])
+        # Продукт собирается в собственный target-dir: кешироваться должен он.
+        self.assertEqual(product_cache[0]["with"]["workspaces"], f". -> {prepared_binary.PRODUCT_TARGET.as_posix()}")
 
     def test_release_assessment_uses_affected_mechanism_contour(self) -> None:
         assessment = job(self.release, "release-assessment")
