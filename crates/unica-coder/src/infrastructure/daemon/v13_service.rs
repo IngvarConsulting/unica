@@ -7210,6 +7210,31 @@ mod tests {
                 .unwrap()
         };
         for (scope, _, metadata_path) in modules {
+            if !scope.starts_with("main:CommonModule.") {
+                let request = InvocationRequest::new(
+                    ToolIdentity::Search,
+                    json!({"query":"Needle", "scope":scope}),
+                    std::fs::canonicalize(workspace.path())
+                        .unwrap()
+                        .to_string_lossy(),
+                    7_000,
+                )
+                .unwrap();
+                let refused = runtime
+                    .bind(request)
+                    .unwrap()
+                    .prepare()
+                    .unwrap()
+                    .execute(CancellationToken::new())
+                    .unwrap();
+                assert!(!refused.ok, "default must not change roles: {scope}");
+                let diagnostic = &refused.diagnostics[0];
+                assert_eq!(diagnostic["code"], "unsupported_scope");
+                let message = diagnostic["message"].as_str().unwrap();
+                assert!(message.contains("role: \"lexical\""), "{message}");
+                assert!(message.contains(scope), "{message}");
+            }
+            // Execute the suggested role with exactly the same scope and query.
             let result = search(scope);
             assert!(result.ok, "{scope}: {result:?}");
             assert!(result.diagnostics.is_empty(), "{scope}: {result:?}");

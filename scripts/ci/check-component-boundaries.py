@@ -14,6 +14,9 @@ SEMANTIC_DEPENDENCIES = {
     "bsl": frozenset({"metadata"}),
 }
 ABSTRACTIONS = frozenset({"address", "source-contract", "operation-contract", "work-control", "refusal", "execution-contract", "xml-format", "redaction"})
+# Named apart from ABSTRACTIONS so that a new shared contract does not widen
+# what the publication owner may import without a review of this list.
+WORKSPACE_DEPENDENCIES = frozenset({"address", "source-contract", "operation-contract", "work-control", "refusal", "execution-contract", "xml-format", "redaction"})
 COORDINATORS = frozenset({"operations", "bindings", "navigation", "code-intelligence", "diagnostics", "documentation"})
 CODEC_DEPENDENCIES = {"xdto": frozenset({"metadata-designer"})}
 
@@ -44,7 +47,10 @@ def edge_errors(owner: str, dependency: str, kind: str) -> list[str]:
     if name == "source-designer" and dependency.startswith("unica-") and target not in ABSTRACTIONS:
         reasons.append("source layout uses source contracts without concrete families")
     if name == "workspace" and dependency.startswith("unica-"):
-        if target in FAMILIES | COORDINATORS or target.endswith("-designer") or target.startswith("adapter-") or target in {"analysis-services", "daemon", "execution", "coder"}:
+        # A closed list: any other component is a consumer, codec or backend,
+        # and an edge to it would let the publication owner depend on them.
+        allowed = WORKSPACE_DEPENDENCIES | (frozenset({"process"}) if kind == "dev-dependencies" else frozenset())
+        if target not in allowed:
             reasons.append("the workspace owner must not import consumers, codecs or analysis implementations")
     if name == "project-health" and dependency.startswith("unica-"):
         allowed = ABSTRACTIONS | frozenset({"workspace", "process", "source-designer"})
@@ -67,6 +73,29 @@ def edge_errors(owner: str, dependency: str, kind: str) -> list[str]:
     if name == "bsl-parser" and dependency.startswith("unica-") and target not in {"work-control"}:
         reasons.append("the syntax boundary remains a leaf without family policy")
     return [prefix + reason for reason in reasons]
+
+
+def cycle_errors(graph: dict[str, set[str]], owner: str) -> list[str]:
+    """Report a cycle through `owner`, the shortest one per dependency edge.
+
+    Every edge kind counts: Cargo admits a dev-dependency cycle, but it would
+    still let the owner's consumers become its own dependencies."""
+    errors: list[str] = []
+    for start in sorted(graph.get(owner, ())):
+        previous: dict[str, str | None] = {start: None}
+        queue = [start]
+        while queue and owner not in previous:
+            node = queue.pop(0)
+            for dependency in sorted(graph.get(node, ())):
+                if dependency not in previous:
+                    previous[dependency] = node
+                    queue.append(dependency)
+        if owner in previous:
+            path = [owner]
+            while path[-1] != start:
+                path.append(previous[path[-1]])
+            errors.append("component cycle: " + " -> ".join([owner, *reversed(path)]))
+    return errors
 
 
 def manifests(root: Path) -> dict[str, tuple[Path, dict]]:
@@ -93,6 +122,7 @@ def check(root: Path) -> list[str]:
     workspace = tomllib.loads((root / "Cargo.toml").read_text())["workspace"]
     shared = workspace.get("dependencies", {})
     diagnostics: list[str] = []
+    graph: dict[str, set[str]] = {owner: set() for owner in members}
     for owner, (directory, document) in sorted(members.items()):
         for table in (document, *document.get("target", {}).values()):
             for kind in ("dependencies", "build-dependencies", "dev-dependencies"):
@@ -107,7 +137,9 @@ def check(root: Path) -> list[str]:
                             raise ValueError(f"{owner}: local dependency {alias} is not a workspace member")
                         if name != paths[path]:
                             raise ValueError(f"{owner}: dependency {alias} names {name}, path provides {paths[path]}")
+                        graph[owner].add(name)
                     diagnostics.extend(edge_errors(owner, name, kind))
+    diagnostics.extend(cycle_errors(graph, "unica-workspace"))
     return sorted(set(diagnostics))
 
 

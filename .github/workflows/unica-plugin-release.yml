@@ -86,6 +86,8 @@ jobs:
       # возвращает полную матрицу.
       # Windows — только в ночном ярусе `large`: с остальных матриц он снят за
       # нестабильность раннера, а ночью сбой виден и никого не блокирует.
+      # Известные отказы Windows large — #1523; отдельные регрессии — #1714,
+      # #1746, #1776, #1777, #1786. Advisory снимается вместе с ними.
       - id: runners
         env:
           PROFILE: ${{ github.event_name == 'workflow_dispatch' && inputs.profile || '' }}
@@ -312,6 +314,7 @@ jobs:
     if: ${{ needs.classify-changes.outputs.rust_required == 'true' }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.profile == 'large' && 180 || 60 }}
+    # Windows advisory до устранения известных отказов large (#1523).
     continue-on-error: ${{ matrix.runner == 'windows-latest' }}
     strategy:
       fail-fast: false
@@ -369,6 +372,7 @@ jobs:
     if: ${{ needs.classify-changes.outputs.rust_required == 'true' }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.profile == 'large' && 180 || 60 }}
+    # Windows advisory до устранения известных отказов large (#1523).
     continue-on-error: ${{ matrix.runner == 'windows-latest' }}
     strategy:
       fail-fast: false
@@ -420,6 +424,7 @@ jobs:
     if: ${{ needs.classify-changes.outputs.rust_required == 'true' && github.event_name != 'pull_request' }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.profile == 'large' && 180 || 60 }}
+    # Windows advisory до устранения известных отказов large (#1523).
     continue-on-error: ${{ matrix.runner == 'windows-latest' }}
     strategy:
       fail-fast: false
@@ -477,6 +482,7 @@ jobs:
     if: ${{ needs.classify-changes.outputs.rust_required == 'true' && github.event_name != 'pull_request' }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.profile == 'large' && 180 || 60 }}
+    # Windows advisory до устранения известных отказов large (#1523).
     continue-on-error: ${{ matrix.runner == 'windows-latest' }}
     strategy:
       fail-fast: false
@@ -528,6 +534,7 @@ jobs:
     if: ${{ needs.classify-changes.outputs.rust_required == 'true' && github.event_name != 'pull_request' }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.profile == 'large' && 180 || 60 }}
+    # Windows advisory до устранения известных отказов large (#1523).
     continue-on-error: ${{ matrix.runner == 'windows-latest' }}
     strategy:
       fail-fast: false
@@ -585,6 +592,7 @@ jobs:
     if: ${{ needs.classify-changes.outputs.rust_required == 'true' && github.event_name != 'pull_request' }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.profile == 'large' && 180 || 60 }}
+    # Windows advisory до устранения известных отказов large (#1523).
     continue-on-error: ${{ matrix.runner == 'windows-latest' }}
     strategy:
       fail-fast: false
@@ -676,7 +684,7 @@ jobs:
       security-events: write
     env:
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
-    # Ночной Windows остаётся advisory, как у тестов на той же платформе.
+    # Ночной Windows остаётся advisory, как у тестов на той же платформе (#1523).
     continue-on-error: ${{ matrix.runner == 'windows-latest' }}
     strategy:
       fail-fast: false
