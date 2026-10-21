@@ -2258,7 +2258,15 @@ impl CanonicalV13ReadService {
             }
             let view_arguments =
                 Map::from_iter([("at".to_string(), Value::String(at.to_string()))]);
-            let viewed = self.execute_view_arguments(invocation, &view_arguments, cancellation);
+            let (viewed, mut prepared_xdto) = match QualifiedAddress::parse(at) {
+                Ok(address) if matches!(address.segments(), [owner] if owner.kind() == NodeKind::XdtoPackage && owner.name().is_some()) => {
+                    prepare_xdto_check(invocation, &address, cancellation)
+                }
+                _ => (
+                    self.execute_view_arguments(invocation, &view_arguments, cancellation),
+                    None,
+                ),
+            };
             if !viewed.ok {
                 if let Some(refusal) = unreadable_target_format_refusal(invocation, at) {
                     return refusal;
@@ -2297,6 +2305,7 @@ impl CanonicalV13ReadService {
                 &kind,
                 viewed.data.as_ref(),
                 cancellation,
+                prepared_xdto.take(),
             );
             if result.ok {
                 if cancellation.is_cancelled() {
@@ -4300,6 +4309,49 @@ fn bsl_findings_passed(items: &[unica_diagnostics::model::DiagnosticItem]) -> bo
     })
 }
 
+/// Internal check evidence only: it never becomes a public `view` response.
+/// The complete native verdict is consumed by the common plan and pager.
+fn prepare_xdto_check(
+    invocation: &ActorBoundExecution,
+    address: &QualifiedAddress,
+    cancellation: &CancellationToken,
+) -> (
+    DomainResult,
+    Option<crate::application::v13::check::NativeCheckOutcome>,
+) {
+    let at = address.to_string();
+    let prepared = (|| {
+        let sources = invocation
+            .read_sources()
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+        let source = sources
+            .into_iter()
+            .find(|source| source.source_set_name() == address.source_set())
+            .ok_or_else(|| {
+                ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
+                    "XDTO source was not admitted",
+                )
+            })?;
+        let authority = source
+            .logical_view_read_authority(cancellation)
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+        authority.check_xdto(address)
+    })();
+    match prepared {
+        Err(refusal) => (view_error_result(Some(at.clone()), refusal), None),
+        Ok((snapshot, outcome)) => {
+            let mut evidence = DomainResult::success("XDTO check source admitted");
+            evidence.at = Some(at);
+            evidence.rev = Some(snapshot.revision);
+            evidence.data = Some(
+                json!({"kind":"XDTOPackage", "props": if outcome.is_none() { json!({"content":"inherited"}) } else { json!({}) }}),
+            );
+            (evidence, outcome)
+        }
+    }
+}
+
 fn run_node_checks(
     ports: &crate::infrastructure::application_ports::InfrastructureApplicationPorts,
     invocation: &ActorBoundExecution,
@@ -4307,6 +4359,7 @@ fn run_node_checks(
     kind: &str,
     viewed: Option<&Value>,
     cancellation: &CancellationToken,
+    mut prepared_xdto: Option<crate::application::v13::check::NativeCheckOutcome>,
 ) -> DomainResult {
     use crate::application::v13::check::{plan_for_node, CheckStep};
     use crate::infrastructure::native_operations::v13_analysis::node_facts;
@@ -4341,10 +4394,15 @@ fn run_node_checks(
     let mut validators = Vec::new();
     for step in plan {
         let verdict = match step {
-            CheckStep::Native(validator) => {
-                run_native_validator(&address, kind, validator, invocation, cancellation)
-                    .map(CheckStepVerdict::from)
-            }
+            CheckStep::Native(validator) => run_native_validator(
+                &address,
+                kind,
+                validator,
+                invocation,
+                cancellation,
+                prepared_xdto.take(),
+            )
+            .map(CheckStepVerdict::from),
             CheckStep::Meta => {
                 run_meta_validator(&address, at, context, cancellation).map(CheckStepVerdict::from)
             }
@@ -4392,13 +4450,22 @@ fn run_native_validator(
     validator: crate::application::v13::check::CheckValidator,
     invocation: &ActorBoundExecution,
     cancellation: &CancellationToken,
+    prepared_xdto: Option<crate::application::v13::check::NativeCheckOutcome>,
 ) -> Result<(bool, Vec<Value>), Box<DomainResult>> {
     use crate::application::v13::check::normalize_native_outcome;
     use crate::infrastructure::native_operations::v13_analysis::{validate, validator_selector};
 
     let context = invocation.workspace_context();
     let at = address.to_string();
-    let native = if matches!(
+    let native = if validator == crate::application::v13::check::CheckValidator::Xdto {
+        prepared_xdto.ok_or_else(|| {
+            Box::new(error_result(
+                Some(at.clone()),
+                RefusalCode::InvalidState,
+                "XDTO check has no retained source evidence",
+            ))
+        })?
+    } else if matches!(
         validator,
         crate::application::v13::check::CheckValidator::Subsystem
             | crate::application::v13::check::CheckValidator::Dcs

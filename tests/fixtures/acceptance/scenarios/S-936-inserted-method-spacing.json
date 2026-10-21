@@ -1,0 +1,159 @@
+{
+ "id": "S-936-inserted-method-spacing",
+ "issue": 936,
+ "area": "Код BSL",
+ "task": "Вставить методы в начало, середину и конец модуля: пустые строки, целая голова соседнего метода, preview без записи и повтор без изменений",
+ "wire": [
+  {
+   "tool": "unica.view",
+   "args": {
+    "at": "main:CommonModule.GoogleПереводчик.Body"
+   },
+   "expect": [
+    "ok"
+   ],
+   "captures": {
+    "original": {
+     "file": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+     "kind": "sha256"
+    }
+   }
+  },
+  {
+   "tool": "unica.apply",
+   "args": {
+    "at": "main:CommonModule.GoogleПереводчик.Body",
+    "ops": [
+     {
+      "op": "code.replace",
+      "args": {
+       "text": "Procedure First()\nEndProcedure\n// Second docs.\n&AtServer\nProcedure Second()\nEndProcedure\n"
+      }
+     }
+    ]
+   },
+   "expect": [
+    "ok"
+   ],
+   "fileAssertions": [
+    {
+     "kind": "sha256",
+     "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+     "eq": "$capture.original"
+    }
+   ]
+  },
+  {
+   "tool": "unica.apply",
+   "args": {
+    "executionToken": "$executionToken"
+   },
+   "expect": [
+    "ok"
+   ],
+   "fileAssertions": [
+    {
+     "kind": "sha256",
+     "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+     "eq": "8d90bd7e6d80882a35b7fc11be4b663e962a2b0694d41f74bf43ccd9e59e9348"
+    }
+   ]
+  },
+  {
+   "tool": "unica.apply",
+   "args": {
+    "at": "main:CommonModule.GoogleПереводчик",
+    "ops": [
+     {
+      "op": "code.insert",
+      "args": {
+       "at": "main:CommonModule.GoogleПереводчик.Method.First",
+       "text": "Procedure Start()\nEndProcedure",
+       "position": "before"
+      }
+     },
+     {
+      "op": "code.insert",
+      "args": {
+       "at": "main:CommonModule.GoogleПереводчик.Method.Second",
+       "text": "Procedure Middle()\nEndProcedure",
+       "position": "before"
+      }
+     },
+     {
+      "op": "code.insert",
+      "args": {
+       "text": "Procedure Tail()\nEndProcedure"
+      }
+     }
+    ]
+   },
+   "expect": [
+    "ok"
+   ],
+   "fileAssertions": [
+    {
+     "kind": "sha256",
+     "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+     "eq": "8d90bd7e6d80882a35b7fc11be4b663e962a2b0694d41f74bf43ccd9e59e9348"
+    }
+   ]
+  },
+  {
+   "tool": "unica.apply",
+   "args": {
+    "executionToken": "$executionToken"
+   },
+   "expect": [
+    "ok"
+   ],
+   "fileAssertions": [
+    {
+     "kind": "sha256",
+     "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+     "eq": "71f446479c01db4503598144f2977920ab895fab79dd1b431b28757cfa6d2af8"
+    }
+   ]
+  },
+  {
+   "tool": "unica.apply",
+   "args": {
+    "at": "main:CommonModule.GoogleПереводчик",
+    "ops": [
+     {
+      "op": "code.insert",
+      "args": {
+       "at": "main:CommonModule.GoogleПереводчик.Method.First",
+       "text": "Procedure Start()\nEndProcedure",
+       "position": "before"
+      }
+     },
+     {
+      "op": "code.insert",
+      "args": {
+       "at": "main:CommonModule.GoogleПереводчик.Method.Second",
+       "text": "Procedure Middle()\nEndProcedure",
+       "position": "before"
+      }
+     },
+     {
+      "op": "code.insert",
+      "args": {
+       "text": "Procedure Tail()\nEndProcedure"
+      }
+     }
+    ]
+   },
+   "expect": [
+    "ok"
+   ],
+   "fileAssertions": [
+    {
+     "kind": "sha256",
+     "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+     "eq": "71f446479c01db4503598144f2977920ab895fab79dd1b431b28757cfa6d2af8"
+    }
+   ]
+  }
+ ]
+}

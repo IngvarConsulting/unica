@@ -32,7 +32,7 @@ RUBRIC = (
     "его логический адрес экранирует буквальную точку. Удалены СоставнойЛюбойОбъект и EnterpriseData.Версия. "
     "Каждая публикация потребляет именно наблюдённый executionToken/planHash; исходники не меняются от preview/чтения/отказа. "
     "После последней публикации прочитаны пакет, созданные типы и свойства, проверено отсутствие удалённых узлов. "
-    "Check пакета readable, validators=[]: это подтверждение читаемости, а не независимая семантическая проверка XDTO или загрузка в 1С. "
+    "Check пакета passed, validators=[xdto]: находки профиля Unica, а не загрузка в 1С и не вердикт платформы. "
     "FileObservations независимо проверяют полный буквальный Package.bin до/после, namespace, BOM/CRLF, порядок узлов, "
     "сохранённые descriptor/Configuration UUID/Name/version/Namespace, readonly соседний пакет и полную карту исходников. "
     "Агент использовал values-only add, no-payload remove и корректно объяснил математический integer 0/1 для minOccurs, "
@@ -201,9 +201,9 @@ def audit(records):
                         and 1 <= call["params"]["arguments"]["limit"] <= 50))
                and call["params"]["arguments"].get("cursor") in (None, "")
                and (call["result"] or {}).get("ok") is True and (call["result"] or {}).get("at") == PACKAGE
-               and ((call["result"] or {}).get("data") or {}).get("status") == "readable"
-               and ((call["result"] or {}).get("data") or {}).get("validators") == [] for call in later):
-        raise ValueError("agent omitted the honest final XDTO readability check")
+               and ((call["result"] or {}).get("data") or {}).get("status") == "passed"
+               and ((call["result"] or {}).get("data") or {}).get("validators") == ["xdto"] for call in later):
+        raise ValueError("agent omitted the final XDTO package check")
     return allowed, raw_calls
 
 
