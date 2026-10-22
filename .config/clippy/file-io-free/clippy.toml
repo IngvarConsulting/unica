@@ -1,0 +1,22 @@
+# Пакеты без файлового ввода-вывода (INV.APP.DOMAIN-INPUTS) получают эти
+# запреты отдельным проходом Clippy по `src/`, включая `#[cfg(test)]`
+# и код под признаками:
+# `scripts/ci/check-file-io-methods.py`. Разрешение типов ловит и вызов
+# методом (`path.exists()`), которого не видит текстовый страж.
+# `PathBuf` разыменовывается в `Path`, поэтому методы `Path` закрывают оба.
+disallowed-methods = [
+    { path = "std::path::Path::exists", reason = "file IO goes through workspace read ports (INV.APP.DOMAIN-INPUTS)" },
+    { path = "std::path::Path::try_exists", reason = "file IO goes through workspace read ports (INV.APP.DOMAIN-INPUTS)" },
+    { path = "std::path::Path::is_file", reason = "file IO goes through workspace read ports (INV.APP.DOMAIN-INPUTS)" },
+    { path = "std::path::Path::is_dir", reason = "file IO goes through workspace read ports (INV.APP.DOMAIN-INPUTS)" },
+    { path = "std::path::Path::is_symlink", reason = "file IO goes through workspace read ports (INV.APP.DOMAIN-INPUTS)" },
+    { path = "std::path::Path::metadata", reason = "file IO goes through workspace read ports (INV.APP.DOMAIN-INPUTS)" },
+    { path = "std::path::Path::symlink_metadata", reason = "file IO goes through workspace read ports (INV.APP.DOMAIN-INPUTS)" },
+    { path = "std::path::Path::read_dir", reason = "file IO goes through workspace read ports (INV.APP.DOMAIN-INPUTS)" },
+    { path = "std::path::Path::read_link", reason = "file IO goes through workspace read ports (INV.APP.DOMAIN-INPUTS)" },
+    { path = "std::path::Path::canonicalize", reason = "file IO goes through workspace read ports (INV.APP.DOMAIN-INPUTS)" },
+    { path = "std::fs::File::open", reason = "file IO goes through workspace read ports (INV.APP.DOMAIN-INPUTS)" },
+    { path = "std::fs::File::create", reason = "file IO goes through workspace read ports (INV.APP.DOMAIN-INPUTS)" },
+    { path = "std::fs::File::create_new", reason = "file IO goes through workspace read ports (INV.APP.DOMAIN-INPUTS)" },
+    { path = "std::fs::OpenOptions::open", reason = "file IO goes through workspace read ports (INV.APP.DOMAIN-INPUTS)" },
+]

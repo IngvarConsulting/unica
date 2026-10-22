@@ -7,6 +7,7 @@ import argparse
 import re
 import subprocess
 import sys
+import tomllib
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 
@@ -92,6 +93,35 @@ FILE_IO_COMPONENTS = frozenset({
     "unica-code-intelligence", "unica-xml-format", "unica-work-control",
 })
 DESIGNER_CODEC_PACKAGE = re.compile(r"unica-[a-z0-9-]+-designer")
+
+
+# Third-party file crates would bypass the same boundary without naming
+# `std::fs` (#1894). Their dependency is refused in the package manifest and
+# their paths in `src/`, where a dev-dependency still reaches `#[cfg(test)]`.
+FILE_IO_CRATES = frozenset({
+    "walkdir", "fs-err", "fs_err", "ignore", "glob", "globwalk", "jwalk", "notify",
+    "tempfile", "tempdir", "remove_dir_all", "fs_extra", "async-fs", "async-std",
+    "cap-std", "same-file", "smol", "filetime", "fs2", "fs4", "memmap2", "camino",
+})
+# These crates are file-free unless a feature opens their file module.
+FILE_IO_FEATURES = {"tokio": frozenset({"fs", "full"})}
+FILE_IO_CRATE_PATH = re.compile(
+    r"(?<![\w:])(?:::)?(?P<crate>"
+    + "|".join(sorted({name.replace("-", "_") for name in FILE_IO_CRATES}))
+    + r")\s*::|(?<![\w:])(?:::)?(?P<module>tokio\s*::\s*fs\b)"
+)
+TOKIO_GROUP = re.compile(r"(?<![\w:])(?:::)?tokio\s*::\s*\{")
+FILE_IO_CRATE_IMPORT = re.compile(
+    r"\b(?:use|extern\s+crate)\s+(?:::)?(?P<crate>"
+    + "|".join(sorted({name.replace("-", "_") for name in FILE_IO_CRATES}))
+    + r")\b"
+)
+
+
+def is_file_io_free_package(name: str) -> bool:
+    """Packages whose `src/` reads files only through workspace ports."""
+    return (name in DOMAIN_COMPONENTS or name in FILE_IO_COMPONENTS
+            or DESIGNER_CODEC_PACKAGE.fullmatch(name) is not None)
 
 
 def _is_file_io_free_source(path: PurePosixPath) -> bool:
@@ -708,10 +738,83 @@ def _path_io_ufcs_method_pattern(
 
 def _domain_io_diagnostics(path: PurePosixPath, source: str, masked: str) -> list[str]:
     if _is_domain_source(path):
-        return _std_io_diagnostics(path, source, masked, "domain", DOMAIN_STD_IO_MODULES)
+        return (_std_io_diagnostics(path, source, masked, "domain", DOMAIN_STD_IO_MODULES)
+                + _file_crate_diagnostics(path, source, masked, "domain"))
     if _is_file_io_free_source(path):
-        return _std_io_diagnostics(path, source, masked, "component", frozenset({"fs"}))
+        return (_std_io_diagnostics(path, source, masked, "component", frozenset({"fs"}))
+                + _file_crate_diagnostics(path, source, masked, "component"))
     return []
+
+
+def _file_crate_diagnostics(path: PurePosixPath, source: str, masked: str, layer: str) -> list[str]:
+    # A module of the package that happens to share a crate name is its own code.
+    local = set(re.findall(r"\bmod\s+(" + RUST_IDENTIFIER_PATTERN + r")", masked))
+    # `use walkdir::WalkDir` is both an import and a path: report the line once.
+    found = {(_line_number(source, match.start()), "tokio::fs" if match.group("module") else match.group("crate"))
+             for match in FILE_IO_CRATE_PATH.finditer(masked)}
+    found |= {(_line_number(source, match.start()), match.group("crate")) for match in FILE_IO_CRATE_IMPORT.finditer(masked)}
+    # `use tokio::{io::{AsyncReadExt}, fs}`: only a top-level entry names the module.
+    for match in TOKIO_GROUP.finditer(masked):
+        depth, entry = 0, ""
+        for character in masked[match.end() - 1:]:
+            depth += {"{": 1, "}": -1}.get(character, 0)
+            if depth == 1 and character not in "{,":
+                entry += character
+            if depth == 1 and character == "," or depth == 0:
+                if re.fullmatch(r"\s*fs\b.*", entry, re.DOTALL):
+                    found.add((_line_number(source, match.start()), "tokio::fs"))
+                entry = ""
+            if depth == 0:
+                break
+    return [_diagnostic(path, line, f"{layer} must not use file crate {crate}")
+            for line, crate in sorted(found) if crate not in local]
+
+
+def _dependency_tables(manifest: dict) -> list[tuple[str, dict]]:
+    """Normal and build dependency tables; tests in `tests/` may use dev-dependencies."""
+    tables = [(kind, manifest.get(kind, {})) for kind in ("dependencies", "build-dependencies")]
+    for target, section in manifest.get("target", {}).items():
+        tables += [(f"target.{target}.{kind}", section.get(kind, {})) for kind in ("dependencies", "build-dependencies")]
+    return tables
+
+
+def check_manifest(path: str, text: str, workspace_dependencies: Mapping[str, object]) -> list[str]:
+    """Refuse third-party file crates in a file-IO-free package manifest."""
+    manifest = tomllib.loads(text)
+    name = manifest.get("package", {}).get("name", "")
+    if not isinstance(name, str) or not is_file_io_free_package(name):
+        return []
+    diagnostics = []
+    # A renamed dev-dependency would hide a file crate from the `src/` text guard.
+    for kind, table in [(kind, manifest.get(kind, {})) for kind in ("dev-dependencies",)] + [
+            (f"target.{target}.dev-dependencies", section.get("dev-dependencies", {}))
+            for target, section in manifest.get("target", {}).items()]:
+        for key, specification in sorted(table.items()):
+            specification = specification if isinstance(specification, dict) else {}
+            inherited = workspace_dependencies.get(key, {}) if specification.get("workspace") else {}
+            inherited = inherited if isinstance(inherited, dict) else {}
+            crate = specification.get("package") or inherited.get("package") or key
+            if crate != key and crate in FILE_IO_CRATES:
+                diagnostics.append(f"{path}:0: {name} must not rename file crate {crate} as {key} in [{kind}]")
+    # `[features]` may open a dependency's file module: `tokio/fs`, `tokio?/fs`.
+    enabled: dict[str, set[str]] = {}
+    for entries in manifest.get("features", {}).values():
+        for entry in entries if isinstance(entries, list) else []:
+            dependency, separator, feature = str(entry).partition("/")
+            if separator:
+                enabled.setdefault(dependency.rstrip("?"), set()).add(feature)
+    for kind, table in _dependency_tables(manifest):
+        for key, specification in sorted(table.items()):
+            specification = specification if isinstance(specification, dict) else {}
+            inherited = workspace_dependencies.get(key, {}) if specification.get("workspace") else {}
+            inherited = inherited if isinstance(inherited, dict) else {}
+            crate = specification.get("package") or inherited.get("package") or key
+            features = set(specification.get("features", [])) | set(inherited.get("features", [])) | enabled.get(key, set())
+            opened = FILE_IO_FEATURES.get(crate, frozenset()) & features
+            if crate in FILE_IO_CRATES or opened:
+                detail = f" with feature {', '.join(sorted(opened))}" if opened else ""
+                diagnostics.append(f"{path}:0: {name} must not depend on file crate {crate}{detail} in [{kind}]")
+    return diagnostics
 
 
 def _std_io_diagnostics(
@@ -803,18 +906,45 @@ def collect_repository_sources(repo_root: Path) -> dict[str, str]:
     return sources
 
 
+def collect_repository_manifests(repo_root: Path) -> tuple[dict[str, str], dict[str, object]]:
+    """Package manifests under `crates/` and the root workspace dependency table."""
+    result = subprocess.run(["git", "-C", str(repo_root), "ls-files", "-z", "--", "crates/*/Cargo.toml"],
+                            text=False, capture_output=True, check=True)
+    manifests = {raw.decode("utf-8"): (repo_root / raw.decode("utf-8")).read_text(encoding="utf-8")
+                 for raw in sorted(set(result.stdout.split(b"\0")) - {b""})}
+    root_manifest = repo_root / "Cargo.toml"
+    root = tomllib.loads(root_manifest.read_text(encoding="utf-8")) if root_manifest.is_file() else {}
+    return manifests, root.get("workspace", {}).get("dependencies", {})
+
+
+def file_io_free_packages(repo_root: Path) -> dict[str, str]:
+    """Package name → repository directory of every file-IO-free package."""
+    manifests, _ = collect_repository_manifests(repo_root)
+    found = {name: str(PurePosixPath(path).parent) for path, text in manifests.items()
+             if isinstance(name := tomllib.loads(text).get("package", {}).get("name", ""), str)}
+    return {name: found[name] for name in sorted(found) if is_file_io_free_package(name)}
+
+
 def check_repository(repo_root: Path) -> list[str]:
-    return check_sources(collect_repository_sources(repo_root))
+    manifests, workspace_dependencies = collect_repository_manifests(repo_root)
+    manifest_diagnostics = [diagnostic for path in sorted(manifests)
+                            for diagnostic in check_manifest(path, manifests[path], workspace_dependencies)]
+    return check_sources(collect_repository_sources(repo_root)) + manifest_diagnostics
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-root", type=Path, default=Path("."))
+    parser.add_argument("--file-io-free-packages", action="store_true",
+                        help="print the packages the Clippy file-IO pass covers, one per line")
     args = parser.parse_args()
+    if args.file_io_free_packages:
+        print("\n".join(file_io_free_packages(args.repo_root.resolve())))
+        return 0
 
     try:
         diagnostics = check_repository(args.repo_root.resolve())
-    except (OSError, subprocess.CalledProcessError, UnicodeDecodeError, ValueError) as error:
+    except (OSError, subprocess.CalledProcessError, UnicodeDecodeError, ValueError, tomllib.TOMLDecodeError) as error:
         print(f"rust platform boundary error: {error}", file=sys.stderr)
         return 1
 
