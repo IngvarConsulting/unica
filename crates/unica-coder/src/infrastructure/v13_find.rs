@@ -1,26 +1,22 @@
 use crate::application::v13::find::{
     normalize_layout_path, FindDocument, FindFact, FindFactKind, FindIndex, FindPathAlias,
 };
-use crate::domain::address::{NodeKind, QualifiedAddress};
-use crate::domain::cancellation::CancellationToken;
-use crate::domain::code_intelligence::ProviderDeadline;
-use crate::domain::platform_profile::PlatformProfile;
-use crate::domain::project_sources::SourceSetKind;
-use crate::domain::refusal::{RefusalCode, RefusalDetail};
 use crate::infrastructure::capacity_observation::CapacityObserver;
-use crate::infrastructure::logical_event_source::{
-    module_address_for_relative, module_relative, module_source_address,
-};
-use crate::infrastructure::metadata_kinds::metadata_kind_by_directory;
-use crate::infrastructure::platform::filesystem::{
-    FileIdentity, RetainedChildCapability, RetainedDirectoryCapability,
-    RetainedRegularFileCapability,
-};
+use crate::infrastructure::event_sources::module_address_for_relative;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use unica_address::address::{NodeKind, QualifiedAddress};
+use unica_bsl::profile::PlatformProfile;
+use unica_refusal::{RefusalCode, RefusalDetail};
+use unica_source_contract::read::{FileIdentity, SourceDirectory, SourceEntry, SourceFile};
+use unica_source_contract::SourceSetKind;
+use unica_source_designer::layout::metadata_kind_by_directory;
+use unica_source_designer::module_layout::{module_relative, module_source_address};
+use unica_work_control::cancellation::CancellationToken;
+use unica_work_control::provider_deadline::ProviderDeadline;
 
 const MAX_SOURCE_SETS: usize = 64;
 const MAX_POINT_PATH_DEPTH: usize = 7;
@@ -76,15 +72,11 @@ impl AttachedPathResource {
 pub(crate) struct LayoutFindSource<'a> {
     name: &'a str,
     kind: SourceSetKind,
-    root: &'a RetainedDirectoryCapability,
+    root: &'a SourceDirectory,
 }
 
 impl<'a> LayoutFindSource<'a> {
-    pub(crate) const fn new(
-        name: &'a str,
-        kind: SourceSetKind,
-        root: &'a RetainedDirectoryCapability,
-    ) -> Self {
+    pub(crate) const fn new(name: &'a str, kind: SourceSetKind, root: &'a SourceDirectory) -> Self {
         Self { name, kind, root }
     }
 }
@@ -152,9 +144,8 @@ pub(crate) struct WorkspaceFindDirectoryBuilder {
     capacity_observer: Option<Arc<CapacityObserver>>,
 }
 
-type HeadReader = dyn Fn(&RetainedRegularFileCapability, &Path) -> Result<Vec<u8>, DescriptorHeadReadError>
-    + Send
-    + Sync;
+type HeadReader =
+    dyn Fn(&SourceFile, &Path) -> Result<Vec<u8>, DescriptorHeadReadError> + Send + Sync;
 
 #[derive(Clone, Copy)]
 enum DescriptorHeadReadError {
@@ -599,7 +590,7 @@ impl WorkspaceFindDirectoryBuilder {
                     let file =
                         match retain_enumerated_child(source.root, &entry, deadline, cancellation)?
                         {
-                            RetainedChildCapability::RegularFile(file) => file,
+                            SourceEntry::RegularFile(file) => file,
                             _ => return Err(unsafe_layout_entry()),
                         };
                     let (_, synonym) = require_target_identity(self.read_target_identity(
@@ -656,7 +647,7 @@ impl WorkspaceFindDirectoryBuilder {
                 deadline,
                 cancellation,
             )? {
-                let RetainedChildCapability::RegularFile(file) = child else {
+                let SourceEntry::RegularFile(file) = child else {
                     return Err(unsafe_layout_entry());
                 };
                 let relative = Path::new("Configuration.xml");
@@ -700,7 +691,7 @@ impl WorkspaceFindDirectoryBuilder {
                 let collection =
                     match retain_enumerated_child(source.root, &directory, deadline, cancellation)?
                     {
-                        RetainedChildCapability::Directory(collection) => collection,
+                        SourceEntry::Directory(collection) => collection,
                         _ => return Err(unsafe_layout_entry()),
                     };
                 for entry in matching_names(
@@ -718,7 +709,7 @@ impl WorkspaceFindDirectoryBuilder {
                     let file =
                         match retain_enumerated_child(&collection, &entry, deadline, cancellation)?
                         {
-                            RetainedChildCapability::RegularFile(file) => file,
+                            SourceEntry::RegularFile(file) => file,
                             _ => return Err(unsafe_layout_entry()),
                         };
                     let (_, synonym) = require_target_identity(self.read_target_identity(
@@ -772,7 +763,7 @@ impl WorkspaceFindDirectoryBuilder {
                 let collection =
                     match retain_enumerated_child(source.root, &directory, deadline, cancellation)?
                     {
-                        RetainedChildCapability::Directory(collection) => collection,
+                        SourceEntry::Directory(collection) => collection,
                         _ => return Err(unsafe_layout_entry()),
                     };
                 self.locate_nested_path(
@@ -833,7 +824,7 @@ impl WorkspaceFindDirectoryBuilder {
         let at = format!("{form_address}{address_suffix}");
         let address = QualifiedAddress::parse(&at).map_err(|_| unsafe_layout_entry())?;
         if is_module
-            && crate::domain::platform_profile::PlatformProfile::v8_3_27()
+            && unica_bsl::profile::PlatformProfile::v8_3_27()
                 .module_capability(&address)
                 .is_none()
         {
@@ -912,7 +903,13 @@ impl WorkspaceFindDirectoryBuilder {
             .module_children(&branch)
             .into_iter()
             .filter_map(|child| {
-                let target = module_source_address(child.at(), child.capability()).ok()?;
+                let target = module_source_address(
+                    child.at(),
+                    child.capability().owner_kind(),
+                    child.capability().role(),
+                    child.capability().route_kind(),
+                )
+                .ok()?;
                 let relative = module_relative(&target, source.kind).ok()?;
                 (normalize_layout_path(&relative.to_string_lossy()) == requested)
                     .then_some((child, relative))
@@ -983,7 +980,7 @@ impl WorkspaceFindDirectoryBuilder {
                 deadline,
                 cancellation,
             )? {
-                RetainedChildCapability::Directory(collection) => collection,
+                SourceEntry::Directory(collection) => collection,
                 _ => return Err(unsafe_layout_entry()),
             };
             for owner_name in matching_names(
@@ -1012,7 +1009,7 @@ impl WorkspaceFindDirectoryBuilder {
                     deadline,
                     cancellation,
                 )? {
-                    RetainedChildCapability::Directory(owner_root) => owner_root,
+                    SourceEntry::Directory(owner_root) => owner_root,
                     _ => return Err(unsafe_layout_entry()),
                 };
                 let Some(module_relative) = common_module_path(
@@ -1036,7 +1033,7 @@ impl WorkspaceFindDirectoryBuilder {
                 else {
                     continue;
                 };
-                let RetainedChildCapability::RegularFile(owner_file) = owner_file else {
+                let SourceEntry::RegularFile(owner_file) = owner_file else {
                     return Err(unsafe_layout_entry());
                 };
                 let descriptor_relative = PathBuf::from(collection_text).join(&owner_descriptor);
@@ -1081,7 +1078,7 @@ impl WorkspaceFindDirectoryBuilder {
     fn locate_nested_path(
         &self,
         source: &LayoutFindSource<'_>,
-        collection: Option<(&RetainedDirectoryCapability, &str)>,
+        collection: Option<(&SourceDirectory, &str)>,
         parts: &[&str],
         physical: Option<&[&OsStr]>,
         owner_kind: &str,
@@ -1111,8 +1108,8 @@ impl WorkspaceFindDirectoryBuilder {
             };
             let owner_root =
                 match retain_enumerated_child(parent, &owner_name, deadline, cancellation)? {
-                    RetainedChildCapability::Directory(owner_root) => owner_root,
-                    RetainedChildCapability::RegularFile(_) => continue,
+                    SourceEntry::Directory(owner_root) => owner_root,
+                    SourceEntry::RegularFile(_) => continue,
                     _ => return Err(unsafe_layout_entry()),
                 };
             for (family_name, family_kind) in NESTED_FAMILIES {
@@ -1136,7 +1133,7 @@ impl WorkspaceFindDirectoryBuilder {
                 else {
                     continue;
                 };
-                let RetainedChildCapability::Directory(family) = family else {
+                let SourceEntry::Directory(family) = family else {
                     return Err(unsafe_layout_entry());
                 };
                 for child_name in matching_names(
@@ -1169,7 +1166,7 @@ impl WorkspaceFindDirectoryBuilder {
                             ),
                         ));
                     };
-                    let RetainedChildCapability::RegularFile(owner_file) = owner_descriptor else {
+                    let SourceEntry::RegularFile(owner_file) = owner_descriptor else {
                         return Err(unsafe_layout_entry());
                     };
                     let owner_descriptor_relative = collection.map_or_else(
@@ -1194,9 +1191,9 @@ impl WorkspaceFindDirectoryBuilder {
                         retain_enumerated_child(&family, &child_name, deadline, cancellation)?;
                     let (nested_name, synonym) = if family_kind == NodeKind::Command {
                         let command = match child {
-                            RetainedChildCapability::Directory(command) => command,
+                            SourceEntry::Directory(command) => command,
                             // The platform has no Commands/<Name>.xml owner file.
-                            RetainedChildCapability::RegularFile(_) => continue,
+                            SourceEntry::RegularFile(_) => continue,
                             _ => return Err(unsafe_layout_entry()),
                         };
                         command
@@ -1207,7 +1204,7 @@ impl WorkspaceFindDirectoryBuilder {
                         let Some(stem) = child_name_text.strip_suffix(".xml") else {
                             continue;
                         };
-                        let RetainedChildCapability::RegularFile(file) = child else {
+                        let SourceEntry::RegularFile(file) = child else {
                             return Err(unsafe_layout_entry());
                         };
                         let (_, synonym) = require_target_identity(self.read_target_identity(
@@ -1245,7 +1242,7 @@ impl WorkspaceFindDirectoryBuilder {
     #[allow(clippy::too_many_arguments)]
     fn read_target_identity(
         &self,
-        file: &RetainedRegularFileCapability,
+        file: &SourceFile,
         relative: &Path,
         source: &LayoutFindSource<'_>,
         kind: &str,
@@ -1308,7 +1305,7 @@ impl WorkspaceFindDirectoryBuilder {
             deadline,
             cancellation,
         ) {
-            Ok(Some(RetainedChildCapability::RegularFile(file))) => Some(file),
+            Ok(Some(SourceEntry::RegularFile(file))) => Some(file),
             Ok(Some(_)) => return Err(unsafe_layout_entry()),
             Ok(None) => None,
             Err(error) if error.is_local_unreadable() => {
@@ -1359,7 +1356,7 @@ impl WorkspaceFindDirectoryBuilder {
             };
             let collection =
                 match retain_enumerated_child(source.root, &entry, deadline, cancellation)? {
-                    RetainedChildCapability::Directory(collection) => collection,
+                    SourceEntry::Directory(collection) => collection,
                     _ => return Err(unsafe_layout_entry()),
                 };
             let mut proved_owners = HashMap::new();
@@ -1388,7 +1385,7 @@ impl WorkspaceFindDirectoryBuilder {
                         Err(error) => return Err(error),
                     };
                 match owner_child {
-                    RetainedChildCapability::RegularFile(file) => {
+                    SourceEntry::RegularFile(file) => {
                         let Some(stem) = owner_name.strip_suffix(".xml") else {
                             continue;
                         };
@@ -1426,15 +1423,14 @@ impl WorkspaceFindDirectoryBuilder {
                             (build.documents.len() > document_index).then_some(document_index),
                         );
                     }
-                    RetainedChildCapability::Directory(owner_root) => {
+                    SourceEntry::Directory(owner_root) => {
                         if owner_name.ends_with(".xml") {
                             return Err(unsafe_layout_entry());
                         }
                         owner_directories.push((owner_name.to_string(), owner_root.identity()));
                     }
                     _ if owner_name.ends_with(".xml") => return Err(unsafe_layout_entry()),
-                    RetainedChildCapability::ReparsePoint
-                    | RetainedChildCapability::Unsupported => {
+                    SourceEntry::ReparsePoint | SourceEntry::Unsupported => {
                         // The descriptor is the proof that this directory is
                         // an owner. A linked or unsupported matching directory
                         // must not silently hide its nested objects.
@@ -1457,7 +1453,7 @@ impl WorkspaceFindDirectoryBuilder {
                         deadline,
                         cancellation,
                     )? {
-                        RetainedChildCapability::Directory(owner_root)
+                        SourceEntry::Directory(owner_root)
                             if owner_root.identity() == original_identity =>
                         {
                             owner_root
@@ -1549,7 +1545,7 @@ impl WorkspaceFindDirectoryBuilder {
                 continue;
             };
             let file = match retain_enumerated_child(source.root, &entry, deadline, cancellation) {
-                Ok(RetainedChildCapability::RegularFile(file)) => file,
+                Ok(SourceEntry::RegularFile(file)) => file,
                 Err(error) if error.is_local_unreadable() => {
                     build.record_omission(source.name, "descriptor_unreadable");
                     continue;
@@ -1580,7 +1576,7 @@ impl WorkspaceFindDirectoryBuilder {
                 &relative,
             )?;
             match retain_optional_child(source.root, OsStr::new(stem), deadline, cancellation)? {
-                Some(RetainedChildCapability::Directory(owner_root)) => {
+                Some(SourceEntry::Directory(owner_root)) => {
                     self.add_nested_families(
                         source,
                         build,
@@ -1606,7 +1602,7 @@ impl WorkspaceFindDirectoryBuilder {
         &self,
         source: &LayoutFindSource<'_>,
         build: &mut DirectoryBuild,
-        owner_root: &RetainedDirectoryCapability,
+        owner_root: &SourceDirectory,
         owner_kind: &str,
         owner_name: &str,
         owner_relative: &Path,
@@ -1621,7 +1617,7 @@ impl WorkspaceFindDirectoryBuilder {
                 deadline,
                 cancellation,
             )? {
-                Some(RetainedChildCapability::Directory(family)) => family,
+                Some(SourceEntry::Directory(family)) => family,
                 Some(_) => return Err(unsafe_layout_entry()),
                 None => continue,
             };
@@ -1645,7 +1641,7 @@ impl WorkspaceFindDirectoryBuilder {
                     Err(error) => return Err(error),
                 };
                 let (child_name, relative, descriptor) = match child {
-                    RetainedChildCapability::RegularFile(file) => {
+                    SourceEntry::RegularFile(file) => {
                         let Some(stem) = entry_name.strip_suffix(".xml") else {
                             continue;
                         };
@@ -1657,14 +1653,13 @@ impl WorkspaceFindDirectoryBuilder {
                     }
                     // A command has no descriptor file: its directory carries
                     // only the module, and the name is the directory itself.
-                    RetainedChildCapability::Directory(_) if family_kind == NodeKind::Command => (
+                    SourceEntry::Directory(_) if family_kind == NodeKind::Command => (
                         entry_name.to_string(),
                         owner_relative.join(family_directory).join(entry_name),
                         None,
                     ),
                     _ if entry_name.ends_with(".xml") => return Err(unsafe_layout_entry()),
-                    RetainedChildCapability::ReparsePoint
-                    | RetainedChildCapability::Unsupported
+                    SourceEntry::ReparsePoint | SourceEntry::Unsupported
                         if family_kind == NodeKind::Command =>
                     {
                         return Err(unsafe_layout_entry());
@@ -1759,7 +1754,7 @@ impl WorkspaceFindDirectoryBuilder {
 
     fn read_descriptor_head(
         &self,
-        file: &RetainedRegularFileCapability,
+        file: &SourceFile,
         relative: &Path,
         source: &LayoutFindSource<'_>,
         build: &mut DirectoryBuild,
@@ -1800,7 +1795,7 @@ impl WorkspaceFindDirectoryBuilder {
 }
 
 fn matching_names(
-    directory: &RetainedDirectoryCapability,
+    directory: &SourceDirectory,
     normalized_name: &str,
     physical_name: Option<&OsStr>,
     deadline: ProviderDeadline,
@@ -1920,7 +1915,7 @@ fn add_path_match(
 }
 
 fn common_module_path(
-    owner: &RetainedDirectoryCapability,
+    owner: &SourceDirectory,
     relative: &Path,
     physical_ext: Option<&OsStr>,
     physical_module: Option<&OsStr>,
@@ -1936,7 +1931,7 @@ fn common_module_path(
         }
     }
     let ext = match retain_optional_child(owner, OsStr::new("Ext"), deadline, cancellation)? {
-        Some(RetainedChildCapability::Directory(ext)) => ext,
+        Some(SourceEntry::Directory(ext)) => ext,
         None => return Ok(None),
         Some(_) => return Err(unsafe_layout_entry()),
     };
@@ -1949,7 +1944,7 @@ fn common_module_path(
         }
     }
     match retain_optional_child(&ext, OsStr::new("Module.bsl"), deadline, cancellation)? {
-        Some(RetainedChildCapability::RegularFile(file)) => {
+        Some(SourceEntry::RegularFile(file)) => {
             file.validate_named_identity()
                 .map_err(|_| unsafe_layout_entry())?;
             ext.validate_named_identity()
@@ -2049,7 +2044,7 @@ fn absolute_query_relative_path(
             return Ok(None);
         }
         let mut current =
-            RetainedDirectoryCapability::open(query_anchor).map_err(child_read_error)?;
+            unica_workspace::read::open_source_directory(query_anchor).map_err(child_read_error)?;
         for (source_prefix, query_prefix) in prefixes {
             find_checkpoint(deadline, cancellation)?;
             let (Some(source_name), Some(query_name)) =
@@ -2064,7 +2059,7 @@ fn absolute_query_relative_path(
                 return Ok(None);
             }
             current = match retain_optional_child(&current, query_name, deadline, cancellation)? {
-                Some(RetainedChildCapability::Directory(child)) => {
+                Some(SourceEntry::Directory(child)) => {
                     child.validate_named_identity().map_err(child_read_error)?;
                     child
                 }
@@ -2111,13 +2106,13 @@ fn retain_absolute_target(
         let child = retain_optional_child(&current, name, deadline, cancellation)?;
         if index + 1 == depth {
             let identity = match child {
-                Some(RetainedChildCapability::Directory(child)) => {
+                Some(SourceEntry::Directory(child)) => {
                     child
                         .validate_named_identity()
                         .map_err(|_| unsafe_layout_entry())?;
                     child.identity()
                 }
-                Some(RetainedChildCapability::RegularFile(child)) => {
+                Some(SourceEntry::RegularFile(child)) => {
                     child
                         .validate_named_identity()
                         .map_err(|_| unsafe_layout_entry())?;
@@ -2132,7 +2127,7 @@ fn retain_absolute_target(
             }));
         }
         current = match child {
-            Some(RetainedChildCapability::Directory(child)) => child,
+            Some(SourceEntry::Directory(child)) => child,
             None => return Ok(None),
             Some(_) => return Err(unsafe_layout_entry()),
         };
@@ -2181,7 +2176,7 @@ fn absolute_query_matches_placement(
         }
         if index + 1 != depth {
             parent = match retain_optional_child(&parent, requested, deadline, cancellation)? {
-                Some(RetainedChildCapability::Directory(next)) => next,
+                Some(SourceEntry::Directory(next)) => next,
                 None => return Ok(false),
                 Some(_) => return Err(unsafe_layout_entry()),
             };
@@ -2198,7 +2193,7 @@ fn absolute_query_matches_placement(
 }
 
 fn read_descriptor_head_prefix(
-    file: &RetainedRegularFileCapability,
+    file: &SourceFile,
     _relative: &Path,
 ) -> Result<Vec<u8>, DescriptorHeadReadError> {
     use io::{Read, Seek, SeekFrom};
@@ -2218,11 +2213,11 @@ fn read_descriptor_head_prefix(
 }
 
 fn retain_optional_child(
-    directory: &RetainedDirectoryCapability,
+    directory: &SourceDirectory,
     name: &OsStr,
     deadline: ProviderDeadline,
     cancellation: &CancellationToken,
-) -> Result<Option<RetainedChildCapability>, FindBuildError> {
+) -> Result<Option<SourceEntry>, FindBuildError> {
     find_checkpoint(deadline, cancellation)?;
     match directory.retain_immediate_child_nofollow(name) {
         Ok(child) => Ok(Some(child)),
@@ -2232,11 +2227,11 @@ fn retain_optional_child(
 }
 
 fn retain_enumerated_child(
-    directory: &RetainedDirectoryCapability,
+    directory: &SourceDirectory,
     name: &OsStr,
     deadline: ProviderDeadline,
     cancellation: &CancellationToken,
-) -> Result<RetainedChildCapability, FindBuildError> {
+) -> Result<SourceEntry, FindBuildError> {
     find_checkpoint(deadline, cancellation)?;
     directory
         .retain_immediate_child_nofollow(name)
@@ -2268,7 +2263,7 @@ fn unsafe_layout_entry() -> FindBuildError {
 }
 
 fn immediate_names(
-    directory: &RetainedDirectoryCapability,
+    directory: &SourceDirectory,
     maximum_entries: usize,
     deadline: ProviderDeadline,
     cancellation: &CancellationToken,
@@ -2379,17 +2374,17 @@ fn find_checkpoint(
 mod tests {
     use super::{LayoutFindSource, WorkspaceFindDirectoryBuilder, DESCRIPTOR_HEAD_BYTES};
     use crate::application::v13::find::FindRequest;
-    use crate::domain::cancellation::CancellationToken;
-    use crate::domain::code_intelligence::ProviderDeadline;
-    use crate::domain::project_sources::SourceSetKind;
-    use crate::domain::refusal::RefusalCode;
     use crate::infrastructure::capacity_observation::CapacityObserver;
-    use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
     use std::fs;
     use std::io;
     use std::path::Path;
     use std::sync::Arc;
     use std::time::Duration;
+    use unica_refusal::RefusalCode;
+
+    use unica_source_contract::SourceSetKind;
+    use unica_work_control::cancellation::CancellationToken;
+    use unica_work_control::provider_deadline::ProviderDeadline;
 
     fn write(path: &Path, contents: &str) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -2459,7 +2454,7 @@ mod tests {
         }
 
         fn directory_for_paths(&self) -> crate::application::v13::find::FindIndex {
-            let root = RetainedDirectoryCapability::open(&self.source).unwrap();
+            let root = unica_workspace::read::open_source_directory(&self.source).unwrap();
             WorkspaceFindDirectoryBuilder::default()
                 .build_for_path(
                     &[LayoutFindSource::new(
@@ -2474,7 +2469,7 @@ mod tests {
         }
 
         fn directory(&self) -> crate::application::v13::find::FindIndex {
-            let root = RetainedDirectoryCapability::open(&self.source).unwrap();
+            let root = unica_workspace::read::open_source_directory(&self.source).unwrap();
             WorkspaceFindDirectoryBuilder::default()
                 .build(
                     &[LayoutFindSource::new(
@@ -2654,7 +2649,7 @@ mod tests {
             &fixture.source.join("CommonModules/Main/Ext/Module.bsl"),
             "",
         );
-        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
         let index = WorkspaceFindDirectoryBuilder::default()
             .build_for_path(
                 &[
@@ -2691,8 +2686,8 @@ mod tests {
             );
             write(&source.join("CommonModules/Main/Ext/Module.bsl"), "");
         }
-        let main_root = RetainedDirectoryCapability::open(&main.source).unwrap();
-        let extension_root = RetainedDirectoryCapability::open(&extension).unwrap();
+        let main_root = unica_workspace::read::open_source_directory(&main.source).unwrap();
+        let extension_root = unica_workspace::read::open_source_directory(&extension).unwrap();
         let index = WorkspaceFindDirectoryBuilder::default()
             .build_for_path(
                 &[
@@ -2749,7 +2744,8 @@ mod tests {
             &owner("Main", "CommonModule", "Main", ""),
         );
         let capability =
-            RetainedDirectoryCapability::open(&root.path().canonicalize().unwrap()).unwrap();
+            unica_workspace::read::open_source_directory(&root.path().canonicalize().unwrap())
+                .unwrap();
         let sources = [LayoutFindSource::new(
             "main",
             SourceSetKind::Configuration,
@@ -2797,7 +2793,7 @@ mod tests {
             &owner("Main", "CommonModule", "Main", ""),
         );
         fs::create_dir_all(fixture.source.join("CommonModules/Main/Ext/Module.bsl")).unwrap();
-        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
         let sources = [LayoutFindSource::new(
             "main",
             SourceSetKind::Configuration,
@@ -2831,7 +2827,7 @@ mod tests {
 
     #[test]
     fn a_linked_common_module_alias_refuses_the_layout() {
-        use crate::infrastructure::platform::testing::{
+        use unica_workspace::test_support::{
             create_file_link_fixture_for_test, FileLinkFixtureOutcome,
         };
 
@@ -2847,9 +2843,15 @@ mod tests {
         match create_file_link_fixture_for_test(&physical, &alias).unwrap() {
             FileLinkFixtureOutcome::Created => {}
             FileLinkFixtureOutcome::Unsupported
-            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "creating a link fixture needs the symlink privilege",
+                );
+                return;
+            }
         }
-        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
         let failure = WorkspaceFindDirectoryBuilder::default()
             .build_for_path(
                 &[LayoutFindSource::new(
@@ -2869,8 +2871,9 @@ mod tests {
         let fixture = Fixture::new();
         let empty = tempfile::tempdir().unwrap();
         let empty_root =
-            RetainedDirectoryCapability::open(&empty.path().canonicalize().unwrap()).unwrap();
-        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+            unica_workspace::read::open_source_directory(&empty.path().canonicalize().unwrap())
+                .unwrap();
+        let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
         let sources = [
             LayoutFindSource::new("empty", SourceSetKind::Configuration, &empty_root),
             LayoutFindSource::new("main", SourceSetKind::Configuration, &root),
@@ -2963,7 +2966,7 @@ mod tests {
                 .join("CommonCommands/Open/Ext/CommandModule.bsl"),
             "Процедура Probe() Экспорт\nКонецПроцедуры\n",
         );
-        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
         let builder = WorkspaceFindDirectoryBuilder::default();
         let locate = |path: &str| {
             builder.locate_path(
@@ -3010,7 +3013,7 @@ mod tests {
         let descriptor = fixture.source.join("CommonModules/Main.xml");
         let module = fixture.source.join("CommonModules/Main/Ext/Module.bsl");
         write(&descriptor, &owner("Main", "CommonModule", "Main", ""));
-        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
         let lookup = |query: &str| {
             WorkspaceFindDirectoryBuilder::with_fact_byte_limit_for_test(1).locate_path(
                 &[LayoutFindSource::new(
@@ -3071,8 +3074,8 @@ mod tests {
         }
         write(&first.source.join(relative), "// valid\n");
         fs::create_dir_all(second.source.join(relative)).unwrap();
-        let first_root = RetainedDirectoryCapability::open(&first.source).unwrap();
-        let second_root = RetainedDirectoryCapability::open(&second.source).unwrap();
+        let first_root = unica_workspace::read::open_source_directory(&first.source).unwrap();
+        let second_root = unica_workspace::read::open_source_directory(&second.source).unwrap();
         let sources = [
             LayoutFindSource::new("main", SourceSetKind::Configuration, &first_root),
             LayoutFindSource::new("other", SourceSetKind::Extension, &second_root),
@@ -3115,7 +3118,7 @@ mod tests {
         match fs::create_dir(&lower) {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                let root = RetainedDirectoryCapability::open(&upper).unwrap();
+                let root = unica_workspace::read::open_source_directory(&upper).unwrap();
                 let found = WorkspaceFindDirectoryBuilder::default()
                     .locate_path(
                         &[LayoutFindSource::new(
@@ -3151,8 +3154,8 @@ mod tests {
             Err(error) => panic!("could not create case-distinct source root: {error}"),
         }
         write(&lower.join("Catalogs/X.xml"), "<broken");
-        let upper_root = RetainedDirectoryCapability::open(&upper).unwrap();
-        let lower_root = RetainedDirectoryCapability::open(&lower).unwrap();
+        let upper_root = unica_workspace::read::open_source_directory(&upper).unwrap();
+        let lower_root = unica_workspace::read::open_source_directory(&lower).unwrap();
         assert_ne!(upper_root.identity(), lower_root.identity());
         let lookup = |query: &str| {
             WorkspaceFindDirectoryBuilder::default().locate_path(
@@ -3169,7 +3172,8 @@ mod tests {
             .unwrap()
             .expect("absolute path belongs only to the case-exact source");
         assert_eq!(found.at(), "main:Catalog.X");
-        let collection = RetainedDirectoryCapability::open(&upper.join("Catalogs")).unwrap();
+        let collection =
+            unica_workspace::read::open_source_directory(&upper.join("Catalogs")).unwrap();
         if !collection
             .child_names_equivalent(OsStr::new("X.xml"), OsStr::new("x.xml"))
             .unwrap()
@@ -3210,7 +3214,7 @@ mod tests {
             &source.join("CommonModules/Main/Ext/Module.bsl"),
             "// module\n",
         );
-        let parent = RetainedDirectoryCapability::open(&source_parent).unwrap();
+        let parent = unica_workspace::read::open_source_directory(&source_parent).unwrap();
         assert_ne!(
             super::normalize_layout_path(&source.to_string_lossy()),
             super::normalize_layout_path(&alias.to_string_lossy()),
@@ -3220,10 +3224,14 @@ mod tests {
             .child_names_equivalent(std::ffi::OsStr::new("Й"), std::ffi::OsStr::new("И\u{306}"))
             .unwrap()
         {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::NormalizationInsensitiveFilesystem,
+                "Unicode aliases need a normalization-insensitive volume",
+            );
             return;
         }
         assert!(alias.is_dir(), "the filesystem must resolve the alias");
-        let retained = RetainedDirectoryCapability::open(&source).unwrap();
+        let retained = unica_workspace::read::open_source_directory(&source).unwrap();
         let sources = [LayoutFindSource::new(
             "main",
             SourceSetKind::Configuration,
@@ -3250,6 +3258,10 @@ mod tests {
     #[test]
     fn windows_drive_and_unc_prefixes_keep_the_same_root_anchor_shape() {
         if std::path::MAIN_SEPARATOR != '\\' {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::WindowsPathSyntax,
+                "drive and UNC prefixes exist only on Windows",
+            );
             return;
         }
         for (ordinary, extended) in [
@@ -3280,10 +3292,14 @@ mod tests {
             &source.join("Catalogs/X.xml"),
             &owner("X", "Catalog", "X", ""),
         );
-        let retained = RetainedDirectoryCapability::open(&source).unwrap();
+        let retained = unica_workspace::read::open_source_directory(&source).unwrap();
         let moved = workspace.join("moved-src");
         if let Err(error) = fs::rename(&source, &moved) {
             if error.kind() == io::ErrorKind::PermissionDenied {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+                    "the platform keeps an open directory from being renamed",
+                );
                 return;
             }
             panic!("could not replace retained source root: {error}");
@@ -3314,8 +3330,9 @@ mod tests {
             &owner("X", "Catalog", "X", ""),
         );
         fs::create_dir_all(workspace.join("Other/Deep")).unwrap();
-        let main = RetainedDirectoryCapability::open(&workspace).unwrap();
-        let foreign = RetainedDirectoryCapability::open(&workspace.join("Other/Deep")).unwrap();
+        let main = unica_workspace::read::open_source_directory(&workspace).unwrap();
+        let foreign =
+            unica_workspace::read::open_source_directory(&workspace.join("Other/Deep")).unwrap();
         let found = WorkspaceFindDirectoryBuilder::default()
             .locate_path(
                 &[
@@ -3339,11 +3356,16 @@ mod tests {
             &workspace.join("Catalogs/X.xml"),
             &owner("X", "Catalog", "X", ""),
         );
-        let collection = RetainedDirectoryCapability::open(&workspace.join("Catalogs")).unwrap();
+        let collection =
+            unica_workspace::read::open_source_directory(&workspace.join("Catalogs")).unwrap();
         if collection
             .child_names_equivalent(std::ffi::OsStr::new("X.xml"), std::ffi::OsStr::new("x.xml"))
             .unwrap()
         {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::CaseSensitiveFilesystem,
+                "case-distinct names need a case-sensitive volume",
+            );
             return;
         }
         let foreign_path = workspace.join("Catalogs/x.xml");
@@ -3351,8 +3373,8 @@ mod tests {
             &foreign_path.join("Configuration.xml"),
             &owner("Foreign", "Configuration", "Foreign", ""),
         );
-        let main = RetainedDirectoryCapability::open(&workspace).unwrap();
-        let foreign = RetainedDirectoryCapability::open(&foreign_path).unwrap();
+        let main = unica_workspace::read::open_source_directory(&workspace).unwrap();
+        let foreign = unica_workspace::read::open_source_directory(&foreign_path).unwrap();
         let found = WorkspaceFindDirectoryBuilder::default()
             .locate_path(
                 &[
@@ -3398,18 +3420,26 @@ mod tests {
             Ok(()) => {}
             Err(error) => panic!("could not create foreign parent: {error}"),
         }
-        let src = RetainedDirectoryCapability::open(&workspace.join("src")).unwrap();
+        let src = unica_workspace::read::open_source_directory(&workspace.join("src")).unwrap();
         if src
             .child_names_equivalent(std::ffi::OsStr::new("A"), std::ffi::OsStr::new("a"))
             .unwrap()
         {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::CaseSensitiveFilesystem,
+                "case-distinct names need a case-sensitive volume",
+            );
             return;
         }
-        let main = RetainedDirectoryCapability::open(&lower.join("nested")).unwrap();
-        let foreign = RetainedDirectoryCapability::open(&upper.join("nested")).unwrap();
+        let main = unica_workspace::read::open_source_directory(&lower.join("nested")).unwrap();
+        let foreign = unica_workspace::read::open_source_directory(&upper.join("nested")).unwrap();
         let moved = workspace.join("moved-A");
         if let Err(error) = fs::rename(&upper, &moved) {
             if error.kind() == io::ErrorKind::PermissionDenied {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+                    "the platform keeps an open directory from being renamed",
+                );
                 return;
             }
             panic!("could not replace foreign source parent: {error}");
@@ -3433,7 +3463,7 @@ mod tests {
 
     #[test]
     fn relative_source_prefix_skips_linked_collections_in_another_source() {
-        use crate::infrastructure::platform::testing::{
+        use unica_workspace::test_support::{
             create_directory_link_fixture_for_test, FileLinkFixtureOutcome,
         };
 
@@ -3461,11 +3491,17 @@ mod tests {
             {
                 FileLinkFixtureOutcome::Created => {}
                 FileLinkFixtureOutcome::Unsupported
-                | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+                | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                    unica_process::test_support::skip_without_host_capability(
+                        unica_process::test_support::HostCapability::Symlink,
+                        "creating a link fixture needs the symlink privilege",
+                    );
+                    return;
+                }
             }
         }
-        let main_root = RetainedDirectoryCapability::open(&workspace).unwrap();
-        let extension_root = RetainedDirectoryCapability::open(&extension).unwrap();
+        let main_root = unica_workspace::read::open_source_directory(&workspace).unwrap();
+        let extension_root = unica_workspace::read::open_source_directory(&extension).unwrap();
         let sources = [
             LayoutFindSource::new("main", SourceSetKind::Configuration, &main_root),
             LayoutFindSource::new("extension", SourceSetKind::Extension, &extension_root),
@@ -3504,8 +3540,8 @@ mod tests {
     fn point_lookup_refuses_ambiguous_paths_across_admitted_sources() {
         let first = Fixture::new();
         let second = Fixture::new();
-        let first_root = RetainedDirectoryCapability::open(&first.source).unwrap();
-        let second_root = RetainedDirectoryCapability::open(&second.source).unwrap();
+        let first_root = unica_workspace::read::open_source_directory(&first.source).unwrap();
+        let second_root = unica_workspace::read::open_source_directory(&second.source).unwrap();
         let error = WorkspaceFindDirectoryBuilder::default()
             .locate_path(
                 &[
@@ -3528,7 +3564,7 @@ mod tests {
             &owner("Configuration", "Catalog", "Configuration", ""),
         );
         write(&fixture.source.join("Configuration.xml"), "<broken");
-        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
         let entry = WorkspaceFindDirectoryBuilder::default()
             .locate_path(
                 &[LayoutFindSource::new(
@@ -3567,7 +3603,7 @@ mod tests {
     #[test]
     fn point_lookup_checks_the_owner_of_a_nested_object() {
         let fixture = Fixture::new();
-        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
         let path = "Catalogs/Валюты/Forms/ФормаЭлемента.xml";
         let lookup = |builder: WorkspaceFindDirectoryBuilder| {
             builder.locate_path(
@@ -3596,7 +3632,7 @@ mod tests {
         .expect_err("an unreadable owner must block the nested path");
         assert_eq!(
             error.detail(),
-            Some(crate::domain::refusal::RefusalDetail::SourceUnreadable)
+            Some(unica_refusal::RefusalDetail::SourceUnreadable)
         );
     }
 
@@ -3607,7 +3643,7 @@ mod tests {
             &fixture.source.join("Catalogs/Валюты/Commands/Ложная.xml"),
             &owner("Ложная", "Command", "Ложная", ""),
         );
-        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
         let builder = WorkspaceFindDirectoryBuilder::default();
         let source = [LayoutFindSource::new(
             "main",
@@ -3640,7 +3676,7 @@ mod tests {
 
     #[test]
     fn point_lookup_refuses_a_linked_target_descriptor() {
-        use crate::infrastructure::platform::testing::{
+        use unica_workspace::test_support::{
             create_file_link_fixture_for_test, FileLinkFixtureOutcome,
         };
 
@@ -3651,9 +3687,15 @@ mod tests {
         match create_file_link_fixture_for_test(&physical, &descriptor).unwrap() {
             FileLinkFixtureOutcome::Created => {}
             FileLinkFixtureOutcome::Unsupported
-            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "creating a link fixture needs the symlink privilege",
+                );
+                return;
+            }
         }
-        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
         let error = WorkspaceFindDirectoryBuilder::default()
             .locate_path(
                 &[LayoutFindSource::new(
@@ -3676,7 +3718,7 @@ mod tests {
             &fixture.source.join("Catalogs/Валюты.xml"),
             "<MetaDataObject><Catalog><Properties></Properties></Catalog></MetaDataObject>",
         );
-        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
         let error = WorkspaceFindDirectoryBuilder::default()
             .locate_path(
                 &[LayoutFindSource::new(
@@ -3700,7 +3742,7 @@ mod tests {
             &path.join("Импорт.xml"),
             "<MetaDataObject><ExternalReport><Properties><Name>Импорт</Name></Properties></ExternalReport></MetaDataObject>",
         );
-        let root = RetainedDirectoryCapability::open(&path).unwrap();
+        let root = unica_workspace::read::open_source_directory(&path).unwrap();
         let error = WorkspaceFindDirectoryBuilder::default()
             .locate_path(
                 &[LayoutFindSource::new(
@@ -3719,7 +3761,7 @@ mod tests {
     #[test]
     fn point_lookup_observes_cancellation_and_deadline() {
         let fixture = Fixture::new();
-        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
         let source = [LayoutFindSource::new(
             "main",
             SourceSetKind::Configuration,
@@ -3773,7 +3815,7 @@ mod tests {
             );
             write(&descriptor, &late);
         }
-        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
         for path in ["Catalogs/Валюты.xml", "Configuration.xml"] {
             let error = WorkspaceFindDirectoryBuilder::default()
                 .locate_path(
@@ -3795,7 +3837,7 @@ mod tests {
     fn point_lookup_ignores_the_search_collection_entry_limit() {
         let fixture = Fixture::new();
         fs::write(fixture.source.join("Catalogs/unrelated.xml"), []).unwrap();
-        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
         let source = [LayoutFindSource::new(
             "main",
             SourceSetKind::Configuration,
@@ -3839,7 +3881,7 @@ mod tests {
 
     #[test]
     fn linked_configuration_descriptor_refuses_the_layout_build() {
-        use crate::infrastructure::platform::testing::{
+        use unica_workspace::test_support::{
             create_file_link_fixture_for_test, FileLinkFixtureOutcome,
         };
 
@@ -3850,10 +3892,16 @@ mod tests {
         match create_file_link_fixture_for_test(&physical, &descriptor).unwrap() {
             FileLinkFixtureOutcome::Created => {}
             FileLinkFixtureOutcome::Unsupported
-            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "creating a link fixture needs the symlink privilege",
+                );
+                return;
+            }
         }
 
-        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
         let refusal = WorkspaceFindDirectoryBuilder::default()
             .build_for_search(
                 &[LayoutFindSource::new(
@@ -3870,7 +3918,7 @@ mod tests {
 
     #[test]
     fn point_lookup_nested_path_ignores_an_unrelated_linked_owner_directory() {
-        use crate::infrastructure::platform::testing::{
+        use unica_workspace::test_support::{
             create_directory_link_fixture_for_test, FileLinkFixtureOutcome,
         };
 
@@ -3889,10 +3937,16 @@ mod tests {
         {
             FileLinkFixtureOutcome::Created => {}
             FileLinkFixtureOutcome::Unsupported
-            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "creating a link fixture needs the symlink privilege",
+                );
+                return;
+            }
         }
 
-        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
         let found = WorkspaceFindDirectoryBuilder::default()
             .locate_path(
                 &[LayoutFindSource::new(
@@ -3914,7 +3968,7 @@ mod tests {
 
     #[test]
     fn linked_nested_descriptor_refuses_instead_of_looking_complete() {
-        use crate::infrastructure::platform::testing::{
+        use unica_workspace::test_support::{
             create_file_link_fixture_for_test, FileLinkFixtureOutcome,
         };
 
@@ -3927,9 +3981,15 @@ mod tests {
         match create_file_link_fixture_for_test(&physical, &descriptor).unwrap() {
             FileLinkFixtureOutcome::Created => {}
             FileLinkFixtureOutcome::Unsupported
-            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "creating a link fixture needs the symlink privilege",
+                );
+                return;
+            }
         }
-        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
         let refusal = WorkspaceFindDirectoryBuilder::default()
             .build_for_search(
                 &[LayoutFindSource::new(
@@ -3946,7 +4006,7 @@ mod tests {
 
     #[test]
     fn linked_proven_owner_directory_refuses_instead_of_hiding_nested_names() {
-        use crate::infrastructure::platform::testing::{
+        use unica_workspace::test_support::{
             create_directory_link_fixture_for_test, FileLinkFixtureOutcome,
         };
 
@@ -3957,10 +4017,16 @@ mod tests {
         match create_directory_link_fixture_for_test(&physical, &owner_root).unwrap() {
             FileLinkFixtureOutcome::Created => {}
             FileLinkFixtureOutcome::Unsupported
-            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "creating a link fixture needs the symlink privilege",
+                );
+                return;
+            }
         }
 
-        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
         let refusal = WorkspaceFindDirectoryBuilder::default()
             .build_for_search(
                 &[LayoutFindSource::new(
@@ -3990,7 +4056,7 @@ mod tests {
 
     #[test]
     fn linked_command_directory_refuses_instead_of_looking_complete() {
-        use crate::infrastructure::platform::testing::{
+        use unica_workspace::test_support::{
             create_directory_link_fixture_for_test, FileLinkFixtureOutcome,
         };
 
@@ -4001,10 +4067,16 @@ mod tests {
         match create_directory_link_fixture_for_test(&physical, &command).unwrap() {
             FileLinkFixtureOutcome::Created => {}
             FileLinkFixtureOutcome::Unsupported
-            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => return,
+            | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "creating a link fixture needs the symlink privilege",
+                );
+                return;
+            }
         }
 
-        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
         let refusal = WorkspaceFindDirectoryBuilder::default()
             .build_for_search(
                 &[LayoutFindSource::new(
@@ -4049,10 +4121,9 @@ mod tests {
     #[test]
     fn unreadable_descriptor_makes_name_search_partial_but_resolve_refuses() {
         let fixture = Fixture::new();
-        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
         let reader = Arc::new(
-            |file: &crate::infrastructure::platform::filesystem::RetainedRegularFileCapability,
-             relative: &Path| {
+            |file: &unica_source_contract::read::SourceFile, relative: &Path| {
                 if relative == Path::new("Catalogs/Валюты.xml") {
                     Err(super::DescriptorHeadReadError::Local(
                         io::ErrorKind::PermissionDenied,
@@ -4108,7 +4179,7 @@ mod tests {
     #[test]
     fn a_local_io_error_is_partial_but_handle_failure_is_a_refusal() {
         let fixture = Fixture::new();
-        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
         let sources = [LayoutFindSource::new(
             "main",
             SourceSetKind::Configuration,
@@ -4116,8 +4187,7 @@ mod tests {
         )];
         let build_with = |fault| {
             let reader = Arc::new(
-                move |file: &crate::infrastructure::platform::filesystem::RetainedRegularFileCapability,
-                      relative: &Path| {
+                move |file: &unica_source_contract::read::SourceFile, relative: &Path| {
                     if relative == Path::new("Catalogs/Валюты.xml") {
                         Err(fault)
                     } else {
@@ -4146,12 +4216,11 @@ mod tests {
     #[test]
     fn cancellation_during_a_failed_descriptor_read_refuses_instead_of_returning_partial() {
         let fixture = Fixture::new();
-        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
         let cancellation = CancellationToken::new();
         let cancel_during_read = cancellation.clone();
         let reader = Arc::new(
-            move |file: &crate::infrastructure::platform::filesystem::RetainedRegularFileCapability,
-                  relative: &Path| {
+            move |file: &unica_source_contract::read::SourceFile, relative: &Path| {
                 if relative == Path::new("Catalogs/Валюты.xml") {
                     cancel_during_read.cancel();
                     Err(super::DescriptorHeadReadError::Local(
@@ -4197,7 +4266,7 @@ mod tests {
     #[test]
     fn find_observation_reports_attempted_entry_as_censored_on_capacity_refusal() {
         let fixture = Fixture::new();
-        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
         let sources = [LayoutFindSource::new(
             "main",
             SourceSetKind::Configuration,
@@ -4242,7 +4311,7 @@ mod tests {
             );
             fs::create_dir_all(fixture.source.join(format!("Catalogs/{name}/Forms"))).unwrap();
         }
-        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
         let built = WorkspaceFindDirectoryBuilder::default()
             .build_for_search(
                 &[LayoutFindSource::new(
@@ -4261,11 +4330,10 @@ mod tests {
     #[test]
     fn descriptor_identity_drift_remains_a_refusal() {
         let fixture = Fixture::new();
-        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
         let descriptor = fixture.source.join("Catalogs/Валюты.xml");
         let reader = Arc::new(
-            move |file: &crate::infrastructure::platform::filesystem::RetainedRegularFileCapability,
-                  relative: &Path| {
+            move |file: &unica_source_contract::read::SourceFile, relative: &Path| {
                 if relative == Path::new("Catalogs/Валюты.xml") {
                     fs::rename(&descriptor, descriptor.with_extension("old")).unwrap();
                     fs::write(&descriptor, "replacement").unwrap();
@@ -4307,7 +4375,7 @@ mod tests {
     #[test]
     fn the_directory_refuses_to_exceed_resource_bounds() {
         let fixture = Fixture::new();
-        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
         let build = |builder: &WorkspaceFindDirectoryBuilder, count: usize| {
             let names = (0..count)
                 .map(|index| format!("source{index}"))
@@ -4359,7 +4427,7 @@ mod tests {
     #[test]
     fn the_directory_observes_cancellation() {
         let fixture = Fixture::new();
-        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
         let cancellation = CancellationToken::new();
         cancellation.cancel();
         let error = WorkspaceFindDirectoryBuilder::default()
@@ -4398,7 +4466,7 @@ mod tests {
             &source.join("ConfigDumpInfo.xml"),
             r#"<?xml version="1.0" encoding="UTF-8"?><ConfigDumpInfo xmlns="http://v8.1c.ru/8.3/xcf/dumpinfo" format="Hierarchical" version="2.20"/>"#,
         );
-        let retained = RetainedDirectoryCapability::open(&source).unwrap();
+        let retained = unica_workspace::read::open_source_directory(&source).unwrap();
         let index = WorkspaceFindDirectoryBuilder::default()
             .build(
                 &[LayoutFindSource::new(
@@ -4476,7 +4544,7 @@ mod tests {
     #[test]
     fn the_directory_observes_its_operation_deadline() {
         let fixture = Fixture::new();
-        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
         let error = WorkspaceFindDirectoryBuilder::default()
             .build(
                 &[LayoutFindSource::new(
@@ -4508,7 +4576,7 @@ mod tests {
             &fixture.source.join("Catalogs/Валюты/Forms/Чужая.xml"),
             &owner("Другая", "Form", "Другая форма", ""),
         );
-        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
         let index = WorkspaceFindDirectoryBuilder::default()
             .build(
                 &[LayoutFindSource::new(
@@ -4546,7 +4614,7 @@ mod tests {
             &fixture.source.join("Catalogs/Склады.xml"),
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" version=\"2.20\">\n  <Catalog\n    uuid=\"10000000-0000-4000-8000-000000000002\">\n    <Properties><Name>Склады</Name></Properties>\n    <ChildObjects/>\n  </Catalog>\n</MetaDataObject>",
         );
-        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let root = unica_workspace::read::open_source_directory(&fixture.source).unwrap();
         let index = WorkspaceFindDirectoryBuilder::default()
             .build(
                 &[LayoutFindSource::new(

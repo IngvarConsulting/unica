@@ -1,35 +1,34 @@
 ---
 id: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
 check:
-  - crates/unica-coder/src/infrastructure/workspace_services.rs::real_index_queue_and_worker_state_reach_serialized_search_and_navigation
-  - crates/unica-coder/src/infrastructure/workspace_services.rs::maintenance_queue_execution_and_failure_keep_the_published_index_readable
+  - crates/unica-coder/tests/platform/workspace_services_integration.rs::real_index_queue_and_worker_state_reach_serialized_search_and_navigation
+  - crates/unica-coder/tests/platform/workspace_services_integration.rs::maintenance_queue_execution_and_failure_keep_the_published_index_readable
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::maintenance_transition_invalidates_the_cursor_for_the_previous_answer
-  - crates/unica-coder/src/application/code_intelligence.rs::coordinator_preserves_the_replaceable_provider_identity_for_a_role
-  - crates/unica-coder/src/application/code_intelligence.rs::coordinator_preserves_provider_local_ranks_and_limit_claim
-  - crates/unica-coder/src/domain/code_intelligence.rs::search_section_serializes_role_provenance_completeness_and_logical_location
-  - crates/unica-coder/src/domain/code_intelligence.rs::timed_out_section_serializes_a_machine_readable_terminal_reason
-  - crates/unica-coder/src/domain/code_intelligence.rs::section_rejects_an_invalid_terminal_reason_contract
-  - crates/unica-coder/src/domain/code_intelligence.rs::partial_section_requires_proven_hits_and_diagnostics
-  - crates/unica-coder/src/application/mod.rs::code_search_schema_accepts_a_real_partial_provider_section
-  - crates/unica-coder/src/application/code_intelligence.rs::malformed_provider_subset_remains_useful_without_claiming_complete_coverage
+  - crates/unica-code-intelligence/src/coordinator.rs::coordinator_preserves_the_replaceable_provider_identity_for_a_role
+  - crates/unica-code-intelligence/src/coordinator.rs::coordinator_preserves_provider_local_ranks_and_limit_claim
+  - crates/unica-code-intelligence/src/model/mod.rs::search_section_serializes_role_provenance_completeness_and_logical_location
+  - crates/unica-code-intelligence/src/model/mod.rs::timed_out_section_serializes_a_machine_readable_terminal_reason
+  - crates/unica-code-intelligence/src/model/mod.rs::section_rejects_an_invalid_terminal_reason_contract
+  - crates/unica-code-intelligence/src/model/mod.rs::partial_section_requires_proven_hits_and_diagnostics
+  - crates/unica-code-intelligence/src/coordinator.rs::malformed_provider_subset_remains_useful_without_claiming_complete_coverage
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::public_role_search_surfaces_partial_provider_warning_and_hit
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::canonical_role_search_preserves_typed_failure_without_private_provider_text
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::provider_search_failure_requires_one_selected_section_and_yields_to_cancellation
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::provider_limit_remains_visible_after_the_last_received_page
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::provider_search_pages_all_received_hits_and_rejects_changed_answers
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::late_oversized_provider_hit_refuses_before_first_cursor
-  - crates/unica-coder/src/infrastructure/code_intelligence.rs::bsl_analyzer_at_requested_limit_does_not_claim_exhaustion
-  - crates/unica-coder/src/infrastructure/code_intelligence.rs::bsl_analyzer_at_its_internal_cap_does_not_claim_exhaustion
-  - crates/unica-coder/src/infrastructure/code_intelligence.rs::bsl_analyzer_output_budget_truncation_does_not_claim_exhaustion
-  - crates/unica-coder/src/infrastructure/code_intelligence.rs::bsl_analyzer_empty_results_with_index_ready_footer_are_empty
-  - crates/unica-coder/src/infrastructure/code_intelligence.rs::bsl_analyzer_empty_marker_does_not_hide_untrusted_tail
-  - crates/unica-coder/src/infrastructure/code_intelligence.rs::rlm_at_requested_limit_does_not_claim_exhaustion
-  - crates/unica-coder/src/infrastructure/code_intelligence.rs::rlm_at_one_source_quota_does_not_claim_exhaustion
-  - crates/unica-coder/src/infrastructure/code_intelligence.rs::bsl_analyzer_does_not_claim_complete_when_one_header_is_unreadable
-  - crates/unica-coder/src/infrastructure/code_intelligence.rs::rlm_parser_keeps_valid_rows_and_reports_malformed_siblings
-  - crates/unica-coder/src/infrastructure/code_intelligence.rs::git_grep_keeps_valid_hits_but_reports_malformed_siblings_as_partial
-  - crates/unica-coder/src/infrastructure/platform/process.rs::completed_line_drain_keeps_stop_only_for_successful_children
-  - crates/unica-coder/src/infrastructure/code_intelligence.rs::cancelled_projection_is_not_reported_as_a_malformed_search_result
+  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::bsl_analyzer_at_requested_limit_does_not_claim_exhaustion
+  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::bsl_analyzer_at_its_internal_cap_does_not_claim_exhaustion
+  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::bsl_analyzer_output_budget_truncation_does_not_claim_exhaustion
+  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::bsl_analyzer_empty_results_with_index_ready_footer_are_empty
+  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::bsl_analyzer_empty_marker_does_not_hide_untrusted_tail
+  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::rlm_at_requested_limit_does_not_claim_exhaustion
+  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::rlm_at_one_source_quota_does_not_claim_exhaustion
+  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::bsl_analyzer_does_not_claim_complete_when_one_header_is_unreadable
+  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::rlm_parser_keeps_valid_rows_and_reports_malformed_siblings
+  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::git_grep_keeps_valid_hits_but_reports_malformed_siblings_as_partial
+  - crates/unica-process/src/platform/process.rs::completed_line_drain_keeps_stop_only_for_successful_children
+  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::cancelled_projection_is_not_reported_as_a_malformed_search_result
 ---
 
 # Результат поиска сохраняет источник и пределы достоверности

@@ -1,0 +1,21 @@
+{
+  "platformVersion": "8.3.27.2074",
+  "formatVersion": "2.20",
+  "source": "Unmodified ru.html exported by native ibcmd after importing the template-add-html-document corpus checkpoint. Two isolated import/apply/check/export rounds produced identical bytes.",
+  "normalization": "none; UTF-8 BOM, original internal LF and no terminal newline retained",
+  "files": {
+    "native-ru.html": {
+      "sha256": "84d44700a2db2c62ea25077ab5791770ced70b26e6c01f9e7cd37937b3b94f07",
+      "size": 268
+    }
+  },
+  "input": {
+    "sha256": "21ae091df4888da94b57fd309ebd3d8f78f2becb14c01412fb9d9dbc917bdb7a",
+    "size": 265
+  },
+  "observation": "export1 = one UTF-8 BOM + input; export2 = export1",
+  "ibcmdSha256": "e00f3c945fb6f60bb2802151df1b4e7ee4f3caaf7c9e24a981020af575fda6e5",
+  "platformInstallSha256": "5eb8897c4f7e95876572f2f36943439b0d57e47688314b622f5771e5a22df0ef",
+  "sourceReportSha256": "cc365fac3752f9eb4f15b9b3fb12b4acbc45a6425fc97fffdf2cc40e27c2668e",
+  "caseContractSha256": "7b9ecc3dbe53a0feb0c90a3e004b7a69c8f6062616235ed41d45de8461445df9"
+}

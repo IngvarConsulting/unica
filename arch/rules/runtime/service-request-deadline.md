@@ -1,9 +1,9 @@
 ---
 id: INV.PERF.SERVICE-OPERATION-DEADLINE
 check:
-  - crates/unica-coder/src/infrastructure/workspace_services.rs::cancellable_connector_cancel_control_uses_one_aggregate_500ms_budget
-  - crates/unica-coder/src/infrastructure/workspace_services.rs::control_flush_success_cannot_cross_aggregate_500ms_budget
-  - crates/unica-coder/src/infrastructure/workspace_services.rs::service_request_kind_deadline_matrix_is_exhaustive
+  - crates/unica-coder/tests/platform/workspace_services_integration.rs::cancellable_connector_cancel_control_uses_one_aggregate_500ms_budget
+  - crates/unica-coder/tests/platform/workspace_services_integration.rs::control_flush_success_cannot_cross_aggregate_500ms_budget
+  - crates/unica-coder/tests/platform/workspace_services_integration.rs::service_request_kind_deadline_matrix_is_exhaustive
 ---
 
 # Обращение к внутреннему сервису имеет единый срок ожидания

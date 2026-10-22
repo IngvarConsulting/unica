@@ -1,0 +1,186 @@
+#!/usr/bin/env python3
+"""Check the production component graph, including target and test edges."""
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+import re
+import tomllib
+
+FAMILIES = frozenset({"metadata", "forms", "roles", "dcs", "xdto", "templates", "bsl"})
+SEMANTIC_DEPENDENCIES = {
+    "metadata": frozenset(), "forms": frozenset({"metadata"}),
+    "roles": frozenset({"metadata"}), "dcs": frozenset({"metadata", "templates"}),
+    "xdto": frozenset(), "templates": frozenset({"metadata"}),
+    "bsl": frozenset({"metadata"}),
+}
+ABSTRACTIONS = frozenset({"address", "source-contract", "operation-contract", "work-control", "refusal", "execution-contract", "xml-format", "redaction"})
+# Named apart from ABSTRACTIONS so that a new shared contract does not widen
+# what the publication owner may import without a review of this list.
+WORKSPACE_DEPENDENCIES = frozenset({"address", "source-contract", "operation-contract", "work-control", "refusal", "execution-contract", "xml-format", "redaction"})
+COORDINATORS = frozenset({"operations", "bindings", "navigation", "code-intelligence", "diagnostics", "documentation"})
+CODEC_DEPENDENCIES = {"xdto": frozenset({"metadata-designer"})}
+# Families whose codec sits behind the family port (#1826). Product composition
+# selects the implementation in one module; everyone else calls the trait.
+PORTED_FAMILIES = frozenset({"dcs"})
+CODEC_SELECTION = "crates/unica-coder/src/infrastructure/family_codecs.rs"
+
+
+def edge_errors(owner: str, dependency: str, kind: str) -> list[str]:
+    """All edge kinds matter: a dev backedge also rebuilds a monolithic target."""
+    name = owner.removeprefix("unica-")
+    target = dependency.removeprefix("unica-")
+    prefix = f"{owner} {kind} -> {dependency}: "
+    reasons: list[str] = []
+    if dependency == "rmcp" and owner != "unica-coder":
+        reasons.append("the MCP SDK belongs to the product composition")
+    if dependency in {"bsl-parser", "bsl-syntax", "parser", "syntax"} and owner != "unica-bsl-parser":
+        reasons.append("upstream parser types belong to the parser boundary")
+    if dependency == "unica-coder" and owner != "unica-coder":
+        reasons.append("a component or its unit target must not depend on the product composition")
+    if name in FAMILIES and dependency.startswith("unica-"):
+        allowed = ABSTRACTIONS | frozenset({"operations"}) | SEMANTIC_DEPENDENCIES[name]
+        if name == "bsl":
+            allowed |= frozenset({"bsl-parser"})
+        if target not in allowed:
+            reasons.append("semantic families use contracts and their declared semantic dependencies")
+    if name == "operations" and dependency.startswith("unica-") and target not in ABSTRACTIONS:
+        reasons.append("generic operation orchestration must not import a family or backend")
+    if name in COORDINATORS | {"analysis-services"} and dependency.startswith("unica-"):
+        if target.startswith("adapter-") or target.endswith("-designer"):
+            reasons.append("coordinators invoke ports without importing their concrete implementations")
+    if name == "source-designer" and dependency.startswith("unica-") and target not in ABSTRACTIONS:
+        reasons.append("source layout uses source contracts without concrete families")
+    if name == "workspace" and dependency.startswith("unica-"):
+        # A closed list: any other component is a consumer, codec or backend,
+        # and an edge to it would let the publication owner depend on them.
+        allowed = WORKSPACE_DEPENDENCIES | (frozenset({"process"}) if kind == "dev-dependencies" else frozenset())
+        if target not in allowed:
+            reasons.append("the workspace owner must not import consumers, codecs or analysis implementations")
+    if name == "project-health" and dependency.startswith("unica-"):
+        allowed = ABSTRACTIONS | frozenset({"workspace", "process", "source-designer"})
+        if target not in allowed:
+            reasons.append("project health observes source and resource facts without execution or family backends")
+    if name.endswith("-designer") and name != "source-designer" and dependency.startswith("unica-"):
+        family = name.removesuffix("-designer")
+        allowed = ABSTRACTIONS | frozenset({"source-designer", "operations", "bsl-parser", family, "metadata"})
+        allowed |= CODEC_DEPENDENCIES.get(family, frozenset())
+        if target not in allowed:
+            reasons.append("a representation codec consumes neutral ports and its own family")
+    if name == "execution" and dependency.startswith("unica-"):
+        allowed = ABSTRACTIONS | frozenset({"workspace", "process", "runner"})
+        if target not in allowed:
+            reasons.append("execution owns outcomes and invokes typed backend ports")
+    if name == "daemon" and dependency.startswith("unica-"):
+        allowed = ABSTRACTIONS | frozenset({"execution", "workspace", "process", "bootstrap", "artifact-delivery"})
+        if target not in allowed:
+            reasons.append("daemon owns transport and identity without product dispatch or family backends")
+    if name == "bsl-parser" and dependency.startswith("unica-") and target not in {"work-control"}:
+        reasons.append("the syntax boundary remains a leaf without family policy")
+    return [prefix + reason for reason in reasons]
+
+
+def cycle_errors(graph: dict[str, set[str]], owner: str) -> list[str]:
+    """Report a cycle through `owner`, the shortest one per dependency edge.
+
+    Every edge kind counts: Cargo admits a dev-dependency cycle, but it would
+    still let the owner's consumers become its own dependencies."""
+    errors: list[str] = []
+    for start in sorted(graph.get(owner, ())):
+        previous: dict[str, str | None] = {start: None}
+        queue = [start]
+        while queue and owner not in previous:
+            node = queue.pop(0)
+            for dependency in sorted(graph.get(node, ())):
+                if dependency not in previous:
+                    previous[dependency] = node
+                    queue.append(dependency)
+        if owner in previous:
+            path = [owner]
+            while path[-1] != start:
+                path.append(previous[path[-1]])
+            errors.append("component cycle: " + " -> ".join([owner, *reversed(path)]))
+    return errors
+
+
+def codec_selection_errors(path: str, text: str) -> list[str]:
+    """Rust source outside a family's codec and its integration tests names the
+    concrete codec only at the composition's selection point."""
+    if path == CODEC_SELECTION:
+        return []
+    errors = []
+    for family in sorted(PORTED_FAMILIES):
+        if path.startswith((f"crates/unica-{family}-designer/", f"crates/unica-{family}-integration-tests/")):
+            continue
+        crate = f"unica_{family}_designer"
+        for number, line in enumerate(text.splitlines(), 1):
+            if re.search(rf"\b{crate}\b", line):
+                errors.append(f"{path}:{number}: {crate} is selected only in {CODEC_SELECTION}; call the family port")
+    return errors
+
+
+def manifests(root: Path) -> dict[str, tuple[Path, dict]]:
+    document = tomllib.loads((root / "Cargo.toml").read_text())
+    result: dict[str, tuple[Path, dict]] = {}
+    for pattern in document["workspace"]["members"]:
+        candidates = sorted(root.glob(pattern))
+        if not candidates:
+            raise ValueError(f"unresolved member {pattern}")
+        for directory in candidates:
+            manifest = directory / "Cargo.toml"
+            parsed = tomllib.loads(manifest.read_text())
+            name = parsed["package"]["name"]
+            if name in result:
+                raise ValueError(f"duplicate member {name}")
+            result[name] = (directory, parsed)
+    return result
+
+
+def check(root: Path) -> list[str]:
+    root = root.resolve()
+    members = manifests(root)
+    paths = {directory.resolve(): name for name, (directory, _) in members.items()}
+    workspace = tomllib.loads((root / "Cargo.toml").read_text())["workspace"]
+    shared = workspace.get("dependencies", {})
+    diagnostics: list[str] = []
+    graph: dict[str, set[str]] = {owner: set() for owner in members}
+    for owner, (directory, document) in sorted(members.items()):
+        for table in (document, *document.get("target", {}).values()):
+            for kind in ("dependencies", "build-dependencies", "dev-dependencies"):
+                for alias, raw in table.get(kind, {}).items():
+                    inherited = isinstance(raw, dict) and raw.get("workspace")
+                    dependency = shared[alias] if inherited else raw
+                    name = dependency.get("package", alias) if isinstance(dependency, dict) else alias
+                    if isinstance(dependency, dict) and "path" in dependency:
+                        dependency_root = root if inherited else directory
+                        path = (dependency_root / dependency["path"]).resolve()
+                        if path not in paths:
+                            raise ValueError(f"{owner}: local dependency {alias} is not a workspace member")
+                        if name != paths[path]:
+                            raise ValueError(f"{owner}: dependency {alias} names {name}, path provides {paths[path]}")
+                        graph[owner].add(name)
+                    diagnostics.extend(edge_errors(owner, name, kind))
+    diagnostics.extend(cycle_errors(graph, "unica-workspace"))
+    for source in sorted((root / "crates").glob("*/**/*.rs")):
+        relative = source.relative_to(root).as_posix()
+        if "/target/" not in relative:
+            diagnostics.extend(codec_selection_errors(relative, source.read_text(encoding="utf-8")))
+    return sorted(set(diagnostics))
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[2])
+    arguments = parser.parse_args()
+    try:
+        diagnostics = check(arguments.repo_root)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        print(f"component boundary input error: {error}")
+        return 1
+    for diagnostic in diagnostics:
+        print(diagnostic)
+    return int(bool(diagnostics))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

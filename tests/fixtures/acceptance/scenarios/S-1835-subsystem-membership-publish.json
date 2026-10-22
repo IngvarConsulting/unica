@@ -1,0 +1,451 @@
+{
+  "id": "S-1835-subsystem-membership-publish",
+  "issue": 1835,
+  "area": "Подсистемы и интерфейс",
+  "task": "Убрать валюты из состава Администрирования, добавить дочернюю подсистему НастройкиПользователей и удалить КонтрольРаботыПользователей: каждый шаг публикуется по своему плану, состав и файлы дочерних подсистем проверяются после каждой публикации; байты описания не закреплены до #1889",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.Администрирование"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before": {
+          "file": "src/Subsystems/Администрирование.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Subsystem.Администрирование",
+        "ops": [
+          {
+            "op": "content.remove",
+            "args": {
+              "items": [
+                {
+                  "object": "Catalog.Валюты"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Subsystems/Администрирование.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Subsystems/Администрирование.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Subsystem/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Content/{http://v8.1c.ru/8.3/xcf/readable}Item",
+          "eq": [
+            "CommonCommand.НастройкаСистемнойУчетнойЗаписиЭлектроннойПочты",
+            "DataProcessor.АктивныеПользователи",
+            "DataProcessor.БлокировкаРаботыПользователей",
+            "DataProcessor.ЖурналРегистрации",
+            "DataProcessor.РегламентныеИФоновыеЗадания",
+            "DataProcessor.УдалениеПомеченныхОбъектов",
+            "DataProcessor.НастройкиПользователей",
+            "Catalog.Пользователи",
+            "Catalog.ГруппыДоступа",
+            "Catalog.ГруппыПользователей",
+            "Catalog.ВнешниеПользователи",
+            "Catalog.ГруппыВнешнихПользователей",
+            "Catalog.ТомаХраненияФайлов",
+            "Catalog.ВидыКонтактнойИнформации",
+            "Catalog.НаборыДополнительныхРеквизитовИСведений",
+            "InformationRegister.ПользовательскиеМакетыПечати",
+            "Catalog.УчетныеЗаписиЭлектроннойПочты",
+            "Catalog.ПрофилиГруппДоступа",
+            "Catalog.ДополнительныеОтчетыИОбработки",
+            "CommonForm.ОписаниеИзмененийПрограммы",
+            "InformationRegister.ИсполнителиЗадач",
+            "DataProcessor.УстановкаОбновлений",
+            "DataProcessor.АвтоматическоеИзвлечениеТекстов",
+            "DataProcessor.УправлениеИтогамиИАгрегатами",
+            "CommonCommand.НастройкиСинхронизацииДанных",
+            "Catalog.СценарииОбменовДанными",
+            "Catalog.ВариантыОтчетов",
+            "InformationRegister.ДатыЗапретаИзменения",
+            "DataProcessor.РезервноеКопированиеИБ",
+            "DataProcessor.НастройкаРезервногоКопированияИБ",
+            "DataProcessor.ЗащитаПерсональныхДанных",
+            "CommonPicture.РазделАдминистрирование48",
+            "Catalog.РассылкиОтчетов",
+            "CommonCommand.АвтономнаяРаботаВМоделиСервиса",
+            "CommonCommand.АвтономнаяРабота",
+            "DataProcessor.ИнформацияПриЗапуске",
+            "CommonCommand.НастройкиСинхронизацииДанныхВМоделиСервиса",
+            "DataProcessor.ПанельАдминистрированияБСП",
+            "CommonForm.ПараметрыПроксиСервера",
+            "InformationRegister.НомераОтсканированныхФайлов",
+            "DataProcessor.ОценкаПроизводительности",
+            "CommonForm.НастройкаОтправкиSMS",
+            "CommonForm.НастройкиРегистрацииСобытийДоступаКПерсональнымДанным",
+            "DataProcessor.ЗагрузкаКурсовВалют",
+            "Catalog.КлассификаторБанков",
+            "CommonCommand.ДобавитьПользователейСервиса",
+            "InformationRegister.ВерсииПодсистемОбластейДанных",
+            "Report.ДатыЗапретаЗагрузки",
+            "Report.ДатыЗапретаИзменения",
+            "DataProcessor.ГрупповоеИзменениеРеквизитов",
+            "DataProcessor.РезультатыОбновленияПрограммы",
+            "Catalog.КлючевыеОперации",
+            "DataProcessor.УниверсальныйОбменДаннымиXML",
+            "CommonCommand.ПанельОтчетовАдминистрирование",
+            "DataProcessor.ЗагрузкаДанныхИзФайла",
+            "CommonCommand.ДополнительныеОбработкиАдминистрирование",
+            "CommonCommand.ДополнительныеОтчетыАдминистрирование",
+            "InformationRegister.НастройкиВерсионированияОбъектов",
+            "DataProcessor.СдвигГраницыИтогов",
+            "DataProcessor.ПереносФайлов",
+            "Report.ОбъемНенужныхФайлов",
+            "DataProcessor.ПоискИУдалениеДублей",
+            "InformationRegister.ПравилаДляОбменаДанными",
+            "Report.ПрогрессОтложенногоОбновления",
+            "CommonForm.НастройкиЭлектроннойПодписиИШифрования",
+            "Report.УниверсальныйОтчет",
+            "CommonForm.НастройкаДоступаКСервисуMorpher",
+            "CommonForm.НастройкаКомандПечати",
+            "CommonCommand.ПредупрежденияПриСинхронизацииДанных",
+            "CommonForm.Расширения",
+            "InformationRegister.НастройкиОчисткиФайлов",
+            "CommonCommand.ВремяВПриложении",
+            "CommonForm.НастройкиВходаПользователей",
+            "DataProcessor.ВыгрузкаЗагрузкаEnterpriseData",
+            "Catalog.ПрофилиКлючевыхОпераций",
+            "Report.ОценкаПроизводительности",
+            "DataProcessor.ПодключениеОбсуждений",
+            "DataProcessor.НастройкиЦентраМониторинга",
+            "Catalog.ПравилаПроверкиУчета",
+            "Report.ИспользуемыеВнешниеРесурсы",
+            "Report.РезультатыПроверкиУчета",
+            "InformationRegister.АдресныеОбъекты",
+            "CommonForm.УстановленныеИсправления",
+            "DataProcessor.НастройкаСтандартногоИнтерфейсаOData",
+            "Catalog.ВнешниеКомпоненты",
+            "Catalog.ШаблоныСообщений",
+            "Catalog.СостоянияОригиналовПервичныхДокументов",
+            "CommonForm.ВосстановлениеПаролей",
+            "Report.ПродлениеСрокаДействияЭлектронныхПодписей",
+            "CommonForm.РазрешенныеНеаккредитованныеУЦ",
+            "Report.ДлительностьОтложенногоОбновления",
+            "CommonForm.НастройкиРегистрацииСобытийДоступаКДанным",
+            "Report.СертификатыЭлектроннойПодписи"
+          ]
+        }
+      ],
+      "captures": {
+        "afterContent": {
+          "file": "src/Subsystems/Администрирование.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Subsystem.Администрирование",
+        "ops": [
+          {
+            "op": "childSubsystem.add",
+            "args": {
+              "items": [
+                {
+                  "name": "НастройкиПользователей"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Subsystems/Администрирование.xml",
+          "kind": "sha256",
+          "eq": "$capture.afterContent"
+        },
+        {
+          "path": "src/Subsystems/Администрирование/Subsystems/НастройкиПользователей.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Subsystems/Администрирование.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Subsystem/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Subsystem",
+          "eq": [
+            "КонтрольРаботыПользователей",
+            "НастройкиПользователей"
+          ]
+        },
+        {
+          "path": "src/Subsystems/Администрирование/Subsystems/НастройкиПользователей.xml",
+          "kind": "exists",
+          "eq": true
+        },
+        {
+          "path": "src/Subsystems/Администрирование/Subsystems/НастройкиПользователей.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Subsystem/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "НастройкиПользователей"
+          ]
+        }
+      ],
+      "captures": {
+        "afterAdd": {
+          "file": "src/Subsystems/Администрирование.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Subsystem.Администрирование.Subsystem.КонтрольРаботыПользователей",
+        "ops": [
+          {
+            "op": "childSubsystem.remove",
+            "args": {}
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Subsystems/Администрирование.xml",
+          "kind": "sha256",
+          "eq": "$capture.afterAdd"
+        },
+        {
+          "path": "src/Subsystems/Администрирование/Subsystems/КонтрольРаботыПользователей.xml",
+          "kind": "exists",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Subsystems/Администрирование.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Subsystem/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Subsystem",
+          "eq": [
+            "НастройкиПользователей"
+          ]
+        },
+        {
+          "path": "src/Subsystems/Администрирование/Subsystems/КонтрольРаботыПользователей.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Subsystems/Администрирование.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Subsystem/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Content/{http://v8.1c.ru/8.3/xcf/readable}Item",
+          "eq": [
+            "CommonCommand.НастройкаСистемнойУчетнойЗаписиЭлектроннойПочты",
+            "DataProcessor.АктивныеПользователи",
+            "DataProcessor.БлокировкаРаботыПользователей",
+            "DataProcessor.ЖурналРегистрации",
+            "DataProcessor.РегламентныеИФоновыеЗадания",
+            "DataProcessor.УдалениеПомеченныхОбъектов",
+            "DataProcessor.НастройкиПользователей",
+            "Catalog.Пользователи",
+            "Catalog.ГруппыДоступа",
+            "Catalog.ГруппыПользователей",
+            "Catalog.ВнешниеПользователи",
+            "Catalog.ГруппыВнешнихПользователей",
+            "Catalog.ТомаХраненияФайлов",
+            "Catalog.ВидыКонтактнойИнформации",
+            "Catalog.НаборыДополнительныхРеквизитовИСведений",
+            "InformationRegister.ПользовательскиеМакетыПечати",
+            "Catalog.УчетныеЗаписиЭлектроннойПочты",
+            "Catalog.ПрофилиГруппДоступа",
+            "Catalog.ДополнительныеОтчетыИОбработки",
+            "CommonForm.ОписаниеИзмененийПрограммы",
+            "InformationRegister.ИсполнителиЗадач",
+            "DataProcessor.УстановкаОбновлений",
+            "DataProcessor.АвтоматическоеИзвлечениеТекстов",
+            "DataProcessor.УправлениеИтогамиИАгрегатами",
+            "CommonCommand.НастройкиСинхронизацииДанных",
+            "Catalog.СценарииОбменовДанными",
+            "Catalog.ВариантыОтчетов",
+            "InformationRegister.ДатыЗапретаИзменения",
+            "DataProcessor.РезервноеКопированиеИБ",
+            "DataProcessor.НастройкаРезервногоКопированияИБ",
+            "DataProcessor.ЗащитаПерсональныхДанных",
+            "CommonPicture.РазделАдминистрирование48",
+            "Catalog.РассылкиОтчетов",
+            "CommonCommand.АвтономнаяРаботаВМоделиСервиса",
+            "CommonCommand.АвтономнаяРабота",
+            "DataProcessor.ИнформацияПриЗапуске",
+            "CommonCommand.НастройкиСинхронизацииДанныхВМоделиСервиса",
+            "DataProcessor.ПанельАдминистрированияБСП",
+            "CommonForm.ПараметрыПроксиСервера",
+            "InformationRegister.НомераОтсканированныхФайлов",
+            "DataProcessor.ОценкаПроизводительности",
+            "CommonForm.НастройкаОтправкиSMS",
+            "CommonForm.НастройкиРегистрацииСобытийДоступаКПерсональнымДанным",
+            "DataProcessor.ЗагрузкаКурсовВалют",
+            "Catalog.КлассификаторБанков",
+            "CommonCommand.ДобавитьПользователейСервиса",
+            "InformationRegister.ВерсииПодсистемОбластейДанных",
+            "Report.ДатыЗапретаЗагрузки",
+            "Report.ДатыЗапретаИзменения",
+            "DataProcessor.ГрупповоеИзменениеРеквизитов",
+            "DataProcessor.РезультатыОбновленияПрограммы",
+            "Catalog.КлючевыеОперации",
+            "DataProcessor.УниверсальныйОбменДаннымиXML",
+            "CommonCommand.ПанельОтчетовАдминистрирование",
+            "DataProcessor.ЗагрузкаДанныхИзФайла",
+            "CommonCommand.ДополнительныеОбработкиАдминистрирование",
+            "CommonCommand.ДополнительныеОтчетыАдминистрирование",
+            "InformationRegister.НастройкиВерсионированияОбъектов",
+            "DataProcessor.СдвигГраницыИтогов",
+            "DataProcessor.ПереносФайлов",
+            "Report.ОбъемНенужныхФайлов",
+            "DataProcessor.ПоискИУдалениеДублей",
+            "InformationRegister.ПравилаДляОбменаДанными",
+            "Report.ПрогрессОтложенногоОбновления",
+            "CommonForm.НастройкиЭлектроннойПодписиИШифрования",
+            "Report.УниверсальныйОтчет",
+            "CommonForm.НастройкаДоступаКСервисуMorpher",
+            "CommonForm.НастройкаКомандПечати",
+            "CommonCommand.ПредупрежденияПриСинхронизацииДанных",
+            "CommonForm.Расширения",
+            "InformationRegister.НастройкиОчисткиФайлов",
+            "CommonCommand.ВремяВПриложении",
+            "CommonForm.НастройкиВходаПользователей",
+            "DataProcessor.ВыгрузкаЗагрузкаEnterpriseData",
+            "Catalog.ПрофилиКлючевыхОпераций",
+            "Report.ОценкаПроизводительности",
+            "DataProcessor.ПодключениеОбсуждений",
+            "DataProcessor.НастройкиЦентраМониторинга",
+            "Catalog.ПравилаПроверкиУчета",
+            "Report.ИспользуемыеВнешниеРесурсы",
+            "Report.РезультатыПроверкиУчета",
+            "InformationRegister.АдресныеОбъекты",
+            "CommonForm.УстановленныеИсправления",
+            "DataProcessor.НастройкаСтандартногоИнтерфейсаOData",
+            "Catalog.ВнешниеКомпоненты",
+            "Catalog.ШаблоныСообщений",
+            "Catalog.СостоянияОригиналовПервичныхДокументов",
+            "CommonForm.ВосстановлениеПаролей",
+            "Report.ПродлениеСрокаДействияЭлектронныхПодписей",
+            "CommonForm.РазрешенныеНеаккредитованныеУЦ",
+            "Report.ДлительностьОтложенногоОбновления",
+            "CommonForm.НастройкиРегистрацииСобытийДоступаКДанным",
+            "Report.СертификатыЭлектроннойПодписи"
+          ]
+        }
+      ]
+    }
+  ]
+}

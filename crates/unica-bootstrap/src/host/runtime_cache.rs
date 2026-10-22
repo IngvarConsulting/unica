@@ -2,7 +2,7 @@ use std::env;
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use crate::error::{BootstrapError, Result};
+use unica_artifact_delivery::{BootstrapError, Result};
 
 use super::descriptor::{PluginHost, KNOWN};
 

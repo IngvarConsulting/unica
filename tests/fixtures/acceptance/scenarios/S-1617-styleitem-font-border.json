@@ -1,0 +1,282 @@
+{
+  "id": "S-1617-styleitem-font-border",
+  "issue": 1617,
+  "area": "Метаданные",
+  "task": "Прочитать оба варианта Font и Border через возвращенные адреса элементов стиля с сохранением явных false и отсутствующих свойств без записи исходников",
+  "workspace": "tests/fixtures/acceptance/workspace-styleitem-values",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:StyleItem",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "at": "main:StyleItem.AbsoluteFont",
+              "kind": "StyleItem",
+              "title": "AbsoluteFont"
+            },
+            {
+              "at": "main:StyleItem.SingleBorder",
+              "kind": "StyleItem",
+              "title": "SingleBorder"
+            },
+            {
+              "at": "main:StyleItem.StyleFont",
+              "kind": "StyleItem",
+              "title": "StyleFont"
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "AbsoluteFont": {
+          "pointer": "/data/items/0/at"
+        },
+        "SingleBorder": {
+          "pointer": "/data/items/1/at"
+        },
+        "StyleFont": {
+          "pointer": "/data/items/2/at"
+        },
+        "input0": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "input1": {
+          "file": "src/StyleItems/AbsoluteFont.xml",
+          "kind": "sha256"
+        },
+        "input2": {
+          "file": "src/StyleItems/SingleBorder.xml",
+          "kind": "sha256"
+        },
+        "input3": {
+          "file": "src/StyleItems/StyleFont.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.AbsoluteFont",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Type",
+          "eq": "Font"
+        },
+        {
+          "pointer": "/data/props/fontKind",
+          "eq": "Absolute"
+        },
+        {
+          "pointer": "/data/props/fontFaceName",
+          "eq": "Arial"
+        },
+        {
+          "pointer": "/data/props/fontHeight",
+          "eq": 16
+        },
+        {
+          "pointer": "/data/props/fontScale",
+          "eq": 100
+        },
+        {
+          "pointer": "/data/props/fontBold",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/fontItalic",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/fontUnderline",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/fontStrikeout",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/borderStyle",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/borderWidth",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/fontRef",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/kind",
+          "eq": "StyleItem"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.SingleBorder",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Type",
+          "eq": "Border"
+        },
+        {
+          "pointer": "/data/props/borderWidth",
+          "eq": 1
+        },
+        {
+          "pointer": "/data/props/borderStyle",
+          "eq": "Single"
+        },
+        {
+          "pointer": "/data/props/fontBold",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/fontFaceName",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/fontHeight",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/fontItalic",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/fontKind",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/fontRef",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/fontScale",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/fontStrikeout",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/fontUnderline",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/kind",
+          "eq": "StyleItem"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.StyleFont",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Type",
+          "eq": "Font"
+        },
+        {
+          "pointer": "/data/props/fontRef",
+          "eq": "style:NormalTextFont"
+        },
+        {
+          "pointer": "/data/props/fontKind",
+          "eq": "StyleItem"
+        },
+        {
+          "pointer": "/data/props/fontBold",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/fontItalic",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/fontUnderline",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/fontStrikeout",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/borderStyle",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/borderWidth",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/fontFaceName",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/fontHeight",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/fontScale",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/kind",
+          "eq": "StyleItem"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.input0"
+        },
+        {
+          "path": "src/StyleItems/AbsoluteFont.xml",
+          "kind": "sha256",
+          "eq": "$capture.input1"
+        },
+        {
+          "path": "src/StyleItems/SingleBorder.xml",
+          "kind": "sha256",
+          "eq": "$capture.input2"
+        },
+        {
+          "path": "src/StyleItems/StyleFont.xml",
+          "kind": "sha256",
+          "eq": "$capture.input3"
+        }
+      ]
+    }
+  ]
+}

@@ -1,23 +1,23 @@
 ---
 id: INV.APP.DIAGNOSTIC-SUPPRESSION-EVIDENCE
 check:
-  - crates/unica-coder/src/application/diagnostics.rs::diagnostics_baseline_suppression_is_a_named_filter_not_incompleteness
-  - crates/unica-coder/src/infrastructure/diagnostics_baseline.rs::baseline_verdict_is_a_filter_unless_broken_or_unclassified
-  - crates/unica-coder/src/infrastructure/diagnostics.rs::resident_baseline_is_a_named_filter_and_a_broken_one_names_its_cause
-  - crates/unica-coder/src/infrastructure/diagnostics.rs::resident_filters_preserve_captured_baseline_and_authors_together
-  - crates/unica-coder/src/infrastructure/diagnostics.rs::resident_analysis_scope_is_incomplete_without_erasing_proven_findings_or_filters
-  - crates/unica-coder/src/infrastructure/diagnostics.rs::resident_filter_absence_and_zero_are_clean_but_malformed_flags_are_rejected
-  - crates/unica-coder/src/infrastructure/diagnostics_filters.rs::effective_cli_config_matches_pinned_precedence_and_module_scope
-  - crates/unica-coder/src/infrastructure/diagnostics_filters.rs::cli_missing_filter_counts_preserves_findings_baseline_and_failure_states
-  - crates/unica-coder/src/application/diagnostics.rs::diagnostics_authors_and_baseline_survive_named_analysis_incompleteness
+  - crates/unica-diagnostics/src/coordinator.rs::diagnostics_baseline_suppression_is_a_named_filter_not_incompleteness
+  - crates/unica-adapter-bsl-analyzer/src/baseline.rs::baseline_verdict_is_a_filter_unless_broken_or_unclassified
+  - crates/unica-coder/tests/platform/bsl_diagnostics_provider.rs::resident_baseline_is_a_named_filter_and_a_broken_one_names_its_cause
+  - crates/unica-coder/tests/platform/bsl_diagnostics_provider.rs::resident_filters_preserve_captured_baseline_and_authors_together
+  - crates/unica-coder/tests/platform/bsl_diagnostics_provider.rs::resident_analysis_scope_is_incomplete_without_erasing_proven_findings_or_filters
+  - crates/unica-coder/tests/platform/bsl_diagnostics_provider.rs::resident_filter_absence_and_zero_are_clean_but_malformed_flags_are_rejected
+  - crates/unica-adapter-bsl-analyzer/src/filters.rs::effective_cli_config_matches_pinned_precedence_and_module_scope
+  - crates/unica-adapter-bsl-analyzer/src/filters.rs::cli_missing_filter_counts_preserves_findings_baseline_and_failure_states
+  - crates/unica-diagnostics/src/coordinator.rs::diagnostics_authors_and_baseline_survive_named_analysis_incompleteness
   - tests/ci/test_acceptance_scenarios.py::AcceptanceDeliveryCorpusRunTests.test_analyzer_delivery_wires_have_terminal_content
   - tests/ci/test_acceptance_scenarios.py::AcceptanceDeliveryCorpusRunTests.test_pinned_resident_reports_real_baseline_author_and_scope_facts
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::bsl_check_passes_under_a_proven_baseline_and_names_a_broken_one
-  - crates/unica-coder/src/application/diagnostics.rs::diagnostics_named_suppression_failure_cannot_claim_a_complete_section
-  - crates/unica-coder/src/infrastructure/diagnostics_baseline.rs::cli_names_every_broken_baseline_it_reports_before_start
-  - crates/unica-coder/src/infrastructure/diagnostics_baseline.rs::baseline_detail_hides_a_spaced_physical_path_whole
+  - crates/unica-diagnostics/src/coordinator.rs::diagnostics_named_suppression_failure_cannot_claim_a_complete_section
+  - crates/unica-adapter-bsl-analyzer/src/baseline.rs::cli_names_every_broken_baseline_it_reports_before_start
+  - crates/unica-adapter-bsl-analyzer/src/baseline.rs::baseline_detail_hides_a_spaced_physical_path_whole
   - crates/unica-coder/src/infrastructure/internal_adapters.rs::analyze_names_a_broken_baseline_the_cli_refused_before_start
-  - crates/unica-coder/src/infrastructure/diagnostics_jsonl.rs::done_baseline_is_a_named_filter_and_only_a_broken_one_is_incomplete
+  - crates/unica-adapter-bsl-analyzer/src/jsonl.rs::done_baseline_is_a_named_filter_and_only_a_broken_one_is_incomplete
 ---
 
 # Подавление диагностик сохраняет доказанные факты и границы покрытия

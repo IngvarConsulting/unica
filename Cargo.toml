@@ -1,14 +1,15 @@
 [workspace]
-members = ["crates/unica-bootstrap", "crates/unica-coder"]
+members = ["crates/unica-daemon", "crates/unica-bindings", "crates/unica-bindings-integration-tests", "crates/unica-metadata-integration-tests", "crates/unica-forms-integration-tests", "crates/unica-dcs-integration-tests", "crates/unica-analysis-services", "crates/unica-adapter-rlm", "crates/unica-adapter-bsl-analyzer", "crates/unica-adapter-lexical", "crates/unica-source-integration-tests", "crates/unica-dcs-designer", "crates/unica-roles-designer", "crates/unica-templates-designer", "crates/unica-forms-designer", "crates/unica-metadata-designer", "crates/unica-xdto-designer", "crates/unica-runner", "crates/unica-adapter-v8-runner", "crates/unica-bootstrap", "crates/unica-coder", "crates/unica-workspace", "crates/unica-redaction", "crates/unica-operations", "crates/unica-templates", "crates/unica-dcs", "crates/unica-xdto", "crates/unica-bsl", "crates/unica-diagnostics", "crates/unica-navigation", "crates/unica-code-intelligence", "crates/unica-network", "crates/unica-work-control", "crates/unica-operation-contract", "crates/unica-xml-format", "crates/unica-artifact-delivery", "crates/unica-process", "crates/unica-address", "crates/unica-documentation", "crates/unica-refusal", "crates/unica-execution-contract", "crates/unica-execution", "crates/unica-roles", "crates/unica-bsl-parser", "crates/unica-source-contract", "crates/unica-source-designer", "crates/unica-metadata", "crates/unica-configuration", "crates/unica-project-health", "crates/unica-forms", "crates/unica-documentation-sources"]
 resolver = "2"
 
 [workspace.package]
-version = "0.13.0"
+version = "0.14.0-rc.1"
 edition = "2021"
 license = "LGPL-3.0-or-later"
 repository = "https://github.com/IngvarConsulting/unica"
 
 [workspace.dependencies]
+base64 = "0.22.1"
 # Keep these revisions aligned with the bundled analyzer in tools.lock.json.
 bsl-parser = { package = "parser", git = "https://github.com/itrous/bsl-analyzer", rev = "53d8765288adf3b9277b7a4112dba167e51690b7" }
 bsl-syntax = { package = "syntax", git = "https://github.com/itrous/bsl-analyzer", rev = "53d8765288adf3b9277b7a4112dba167e51690b7" }
@@ -87,3 +88,7 @@ cap-fs-ext = "4.0.2"
 # on a debug binary.
 [profile.dev.package.sha2]
 opt-level = 3
+
+[patch.crates-io]
+# Preserve completed HTTP responses when connection reuse preparation fails.
+ureq = { path = "vendor/ureq" }

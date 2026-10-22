@@ -11,7 +11,7 @@ check:
   - crates/unica-bootstrap/src/host/workspace_context.rs::a_supplied_root_satisfies_required_context_and_a_malformed_one_never_falls_back
   - crates/unica-coder/tests/host_workspace_context.rs::view_names_the_channel_that_chose_the_workspace_and_hints_only_for_stale_ones
   - crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs::workspace_origin_is_named_next_to_every_workspace_root
-  - crates/unica-coder/src/infrastructure/daemon/protocol_v5.rs::workspace_origin_is_not_part_of_the_strict_submit_receipt_identity
+  - crates/unica-daemon/src/protocol_v5.rs::workspace_origin_is_not_part_of_the_strict_submit_receipt_identity
 ---
 
 # Рабочую папку вызова передаёт приложение-хост

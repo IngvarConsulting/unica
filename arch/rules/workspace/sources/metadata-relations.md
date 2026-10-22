@@ -1,7 +1,7 @@
 ---
 id: INV.SOURCE.RELATIONS-ANSWER-IN-ONE-BRANCH
 check:
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::every_reference_of_an_object_answers_in_one_relation_branch
+  - crates/unica-coder/src/infrastructure/v13_read/tests/metadata.rs::every_reference_of_an_object_answers_in_one_relation_branch
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::a_subsystem_shows_its_content_and_reads_registered_children_at_depth
 ---
 

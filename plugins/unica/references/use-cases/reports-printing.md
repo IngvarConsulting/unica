@@ -5,10 +5,10 @@
 Use this when the user needs reports, DCS/DCS schemas, tabular document layouts,
 print forms, BSP external processing registration, or EPF/ERF build/export.
 
-`make` in `unica.run` takes `.cf`/`.cfe` only, and `upload` is unavailable.
-External processors and reports live in external source-sets. Target `push`
-and `pull` source transfer is unavailable for them, and their publication as `.epf`/`.erf`
-is outside the v0.13 surface.
+External processors and reports live in external source-sets. `make` in
+`unica.run` builds one `.epf`/`.erf` from a singleton external source-set when
+the main configuration source-set is declared; `upload` is unavailable, and
+target `push`/`pull` source transfer is unavailable for external sets.
 
 ## Primary path
 
@@ -38,9 +38,10 @@ Runtime идёт через `unica.run`: вызов без `op` отдаёт с�
   the operation catalogue.
 - Add or remove metadata templates using the owning node's `can` dictionary.
 - `epf-init` and `erf-init` for make-ready artifact scaffolds inside external
-  source-sets, with an optional managed form. These skills call
-  `unica.epf.init` or `unica.erf.init`
-  and do not synthesize `Configuration.xml` or a platform-generated CDFI sidecar.
+  source-sets, with an optional managed form. No canonical operation creates
+  an external descriptor; this is a contract gap. The skills give the file
+  formats to write, then admit the source-set with `unica.check {}`. They do
+  not synthesize `Configuration.xml` or a platform-generated CDFI sidecar.
 - `epf-bsp-init` and `epf-bsp-add-command` for BSP registration code.
 - For source transfer, inspect the `unica.run` dictionary of the current
   source-set. External processor/report transfer and `.epf`/`.erf`
@@ -142,6 +143,12 @@ supplied properties and keeps unspecified settings. A `clear` operation
 clears its whole selected collection; use an individual removal operation
 when its contract is available and only one item should be removed.
 
+Query fields derive their types from the query: `field.add` and `field.set`
+refuse an explicit `type` on them. An Auto order item refuses `direction`;
+Field order defaults to Asc. A `valueType` modifier needs its value or value
+list; an explicitly empty parameter list is valid. Removing a dataset link
+takes its selector and refuses properties used to patch that link.
+
 Read `Setting.<name>.Item` to see the grouping structure in document order.
 A named item that is unique among its siblings is a node with `at`
 (`Setting.<name>.Item.<item>`), `kind`, `axis` and `groupBy`, and its own
@@ -166,6 +173,14 @@ form one group by both fields, not two nested groups. `structure.set`
 replaces the variant's structure; with `details:true` it adds detail records
 under that group. Empty `groupBy` means detail records. Choose a targeted
 patch or addition when other structure should be preserved.
+
+`groupBy` belongs to a group; table and chart additions refuse it. Add their
+grouping on the appropriate axis. Collection `index` and `parentIndexes`
+accept JSON integers such as `0`, `0.0` and `0e0`; fractions are refused.
+
+Source removal checks references in the batch's final schema. One batch can
+remove a source before removing its referring dataset. If a dataset still
+refers to the removed source at the end, the whole batch is refused.
 
 Preview the complete `ops` batch. Preview writes no sources; execute only
 its successful `data.executionToken`. If the response contains a Task,

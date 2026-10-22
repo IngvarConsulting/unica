@@ -1,294 +1,24 @@
-use super::metadata::{owner_registration_image, qualified_target};
+//! Typed family dispatch and batch ownership; codec-owned plans have no publication authority.
 use super::validate_platform_xml_binding;
-use crate::domain::address::{member_address, NodeKind, QualifiedAddress};
-use crate::domain::apply::{FormItemRole, OperationDescriptor, OperationFamily};
-use crate::domain::events::{DomainEvent, DomainEventKind};
-use crate::domain::form_operation::FormOperation;
-use crate::domain::role_operation::RoleOperation;
-use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
-use crate::domain::support_operation::SupportOperation;
-use crate::infrastructure::logical_event_source::attached_resource_relative;
-use crate::infrastructure::native_operations::apply::{
+use serde_json::Value;
+#[cfg(test)]
+use unica_address::address::QualifiedAddress;
+
+use unica_metadata_designer::resource_planner::{self, MetadataResourcePlan};
+use unica_operations::{OperationDescriptor, OperationFamily};
+use unica_source_contract::proposal::{
     empty_apply_family_batch, hidden_apply_family_unimplemented, ApplyPlanError,
-    ApplyPlanErrorKind, ApplyStagedState,
+    ApplyPlanErrorKind, ApplyProposal, ApplySourceAuthority, IndexedPlanOperation,
+    ProvisionalApplyEffect,
 };
-use crate::infrastructure::native_operations::apply_families::request::{
-    IndexedPlanOperation, ProvisionalApplyEffect,
-};
-use crate::infrastructure::native_operations::form::FormInfoElement;
-use crate::infrastructure::native_operations::interface::{
-    interface_order_membership, interface_text_direct_item_values, interface_text_do_group_order,
-    interface_text_do_hide, interface_text_do_order, interface_text_do_place,
-    interface_text_do_show, interface_text_do_subsystem_order, interface_text_group_command_order,
-    normalize_interface_command_name, InterfaceEditCounters,
-};
-use crate::infrastructure::native_operations::support::{SupportCapability, SupportObjectRule};
-use crate::infrastructure::workspace_actor::{FormResourceApplyAuthority, ProviderRootBinding};
-use serde_json::{json, Map, Value};
-use std::path::PathBuf;
-
-#[derive(Debug, Clone)]
-enum FormEditStep {
-    Definition(Value),
-    Move {
-        request: super::super::form_move::FormItemMove,
-        location: String,
-    },
-}
-
-const UTF8_BOM: &[u8] = b"\xef\xbb\xbf";
-
-#[derive(Debug, Clone)]
-enum SubsystemEdit {
-    ContentAdd(Vec<String>),
-    ContentRemove(Vec<String>),
-    ChildAdd(Vec<String>),
-    ChildRemove(Vec<String>),
-}
-
-/// Что именно правится в командном интерфейсе. Каждый вариант — одна секция
-/// файла: писатель не трогает соседние и тем сохраняет то, чего читатель не
-/// показывает, — в первую очередь значения видимости по ролям.
-#[derive(Debug, Clone)]
-enum InterfaceEdit {
-    Visibility(Vec<(String, bool)>),
-    Placement(Vec<(String, Option<String>, Option<String>)>),
-    CommandOrder {
-        group: String,
-        commands: Vec<String>,
-    },
-    GroupOrder(Vec<String>),
-    SubsystemOrder(Vec<String>),
-}
-
-/// Новая запись прав роли: объект и его начальные права.
-#[derive(Debug, Clone)]
-struct RightEntry {
-    object: String,
-    rights: Vec<(String, bool)>,
-}
+use unica_workspace::actor::ProviderRootBinding;
 
 #[derive(Debug, Clone)]
 enum FormResourcePlanKind {
-    /// `role.create`: descriptor, empty rights document and registration.
-    CreateRole {
-        name: String,
-    },
-    /// `subsystem.create`: descriptor and registration.
-    CreateSubsystem {
-        name: String,
-    },
-    /// `right.set` на существующей записи прав `Role.R.Right.<Вид_Имя>`.
-    RightSet {
-        role: MetadataAddress,
-        /// Квалифицированный адрес роли для текста отказа.
-        role_at: String,
-        object: String,
-        right: String,
-        value: Option<bool>,
-        rls: Option<String>,
-    },
-    /// `right.add` на роли: новые записи прав с начальным набором прав.
-    RightAdd {
-        role: MetadataAddress,
-        role_at: String,
-        entries: Vec<RightEntry>,
-    },
-    Subsystem {
-        address: String,
-        relative: PathBuf,
-        edit: SubsystemEdit,
-    },
-    /// Правка `CommandInterface.xml`: видимость, размещение и три порядка.
-    CommandInterface {
-        address: String,
-        relative: PathBuf,
-        edit: InterfaceEdit,
-    },
-    SupportCapability(SupportCapability),
-    SupportRule {
-        target: MetadataAddress,
-        rule: SupportObjectRule,
-    },
-    /// `form.add` on the owner: managed forms from the platform shapes.
-    FormAdd {
-        owner: MetadataAddress,
-        forms: Vec<(String, String)>,
-    },
-    /// `form.set`: default-form slots of the owner.
-    FormSet {
-        owner: MetadataAddress,
-        defaults: Vec<(String, String)>,
-    },
-    FormRemove {
-        owner: MetadataAddress,
-        form: String,
-    },
-    /// Definition-driven edits of one form's Form.xml.
-    FormEdit {
-        owner: MetadataAddress,
-        form: String,
-        subject: FormEditSubject,
-        definitions: Vec<FormEditStep>,
-    },
+    Form(unica_forms_designer::planner::FormPlan),
+    Role(unica_roles_designer::planner::RolePlan),
+    Metadata(MetadataResourcePlan),
     Unsupported,
-}
-
-/// Узел формы, который задаёт адрес правки (#1355): цепочка элементов от
-/// формы, пустая у самой формы. Узел проверяется по прочитанной форме до
-/// записи: отсутствующий даёт `not_found`, а не правку другого узла.
-#[derive(Debug, Clone)]
-enum FormEditSubject {
-    /// Форма или элемент, на который пишется событие или реквизит.
-    Node(Vec<String>),
-    /// Форма или элемент-контейнер, куда добавляются элементы.
-    Container(Vec<String>),
-    /// Удаляемый элемент.
-    Removed(Vec<String>),
-}
-
-impl FormEditSubject {
-    fn items(&self) -> &[String] {
-        match self {
-            Self::Node(items) | Self::Container(items) | Self::Removed(items) => items,
-        }
-    }
-}
-
-/// Элемент формы по цепочке имён от корня, как её адресует `view`.
-pub(super) fn form_item_at<'a>(
-    elements: &'a [FormInfoElement],
-    chain: &[String],
-) -> Option<&'a FormInfoElement> {
-    let (first, rest) = chain.split_first()?;
-    let item = elements.iter().find(|element| &element.name == first)?;
-    if rest.is_empty() {
-        Some(item)
-    } else {
-        form_item_at(&item.children, rest)
-    }
-}
-
-/// Путь элемента с именем `name` от корня формы: один, ни одного или
-/// несколько элементов с этим именем.
-pub(super) fn form_item_path(
-    elements: &[FormInfoElement],
-    name: &str,
-) -> crate::domain::apply::NamedLookup {
-    fn collect(
-        elements: &[FormInfoElement],
-        name: &str,
-        prefix: &mut Vec<String>,
-        found: &mut Vec<Vec<String>>,
-    ) {
-        for element in elements {
-            prefix.push(element.name.clone());
-            if element.name == name {
-                found.push(prefix.clone());
-            }
-            collect(&element.children, name, prefix, found);
-            prefix.pop();
-        }
-    }
-    let mut found = Vec::new();
-    collect(elements, name, &mut Vec::new(), &mut found);
-    match found.len() {
-        0 => crate::domain::apply::NamedLookup::Missing,
-        1 => crate::domain::apply::NamedLookup::Found(found.remove(0)),
-        _ => crate::domain::apply::NamedLookup::Ambiguous(found),
-    }
-}
-
-/// Дерево элементов формы, как его читает `view`.
-pub(super) fn form_items_of(text: &str) -> Result<Vec<FormInfoElement>, String> {
-    crate::infrastructure::native_operations::form::parse_form_event_evidence_xml(text)
-        .map(|evidence| evidence.elements)
-}
-
-/// Узел правки есть в форме и подходит операции; сосед `after` нового
-/// элемента лежит в том же контейнере.
-fn check_form_edit_subject(
-    xml_text: &str,
-    subject: &FormEditSubject,
-    definitions: &[FormEditStep],
-    op_index: usize,
-) -> Result<(), ApplyPlanError> {
-    let at_path = format!("ops[{op_index}].args.at");
-    let elements = form_items_of(xml_text).map_err(|error| {
-        ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, error).at_path(at_path.clone())
-    })?;
-    let chain = subject.items();
-    let siblings = match chain {
-        [] => &elements[..],
-        chain => {
-            let item = form_item_at(&elements, chain).ok_or_else(|| {
-                ApplyPlanError::new(
-                    ApplyPlanErrorKind::NotFound,
-                    format!(
-                        "form item `Item.{}` was not found; read the form items to address an existing one",
-                        chain.join(".Item.")
-                    ),
-                )
-                .at_path(at_path.clone())
-            })?;
-            let role = FormItemRole::from_tag(&item.tag);
-            match (subject, role) {
-                (FormEditSubject::Container(_), FormItemRole::Leaf) => {
-                    return Err(bad(
-                        op_index,
-                        "at",
-                        format!(
-                            "form item `{}` {} does not hold elements; item.add targets the form or a container item",
-                            item.name, item.tag
-                        ),
-                    ))
-                }
-                (FormEditSubject::Removed(_), FormItemRole::AutoCommandBar) => {
-                    return Err(bad(
-                        op_index,
-                        "at",
-                        format!(
-                            "`{}` is the automatic command bar of its owner and is removed only with it",
-                            item.name
-                        ),
-                    ))
-                }
-                _ => {}
-            }
-            &item.children[..]
-        }
-    };
-    if matches!(subject, FormEditSubject::Container(_)) {
-        // Элементы, добавленные раньше в том же `items`, к моменту
-        // следующего уже стоят в контейнере и тоже служат соседями.
-        let mut added: Vec<&str> = Vec::new();
-        for (index, step) in definitions.iter().enumerate() {
-            let FormEditStep::Definition(definition) = step else {
-                continue;
-            };
-            if let Some(after) = definition.get("after").and_then(Value::as_str) {
-                if !siblings.iter().any(|sibling| sibling.name == after) && !added.contains(&after)
-                {
-                    return Err(bad(
-                        op_index,
-                        &format!("items[{index}].after"),
-                        format!(
-                            "`after` names a sibling inside the addressed container; `{after}` is not there"
-                        ),
-                    ));
-                }
-            }
-            added.extend(
-                definition
-                    .get("elements")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|element| element.get("name").and_then(Value::as_str)),
-            );
-        }
-    }
-    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -301,410 +31,6 @@ impl FormResourcePlanOperation {
     pub(crate) fn operation(&self) -> &str {
         &self.operation
     }
-}
-
-fn bad(op_index: usize, field: &str, message: impl Into<String>) -> ApplyPlanError {
-    ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message.into())
-        .at_path(format!("ops[{op_index}].args.{field}"))
-}
-
-fn required_values<'a>(
-    args: &'a Map<String, Value>,
-    op_index: usize,
-    allowed: &[&str],
-) -> Result<&'a Map<String, Value>, ApplyPlanError> {
-    let values = args
-        .get("values")
-        .and_then(Value::as_object)
-        .ok_or_else(|| bad(op_index, "values", "`values` must be an object"))?;
-    if let Some(field) = values
-        .keys()
-        .find(|field| !allowed.contains(&field.as_str()))
-    {
-        return Err(bad(
-            op_index,
-            &format!("values.{field}"),
-            format!(
-                "values accept only {}, not `{field}`",
-                allowed
-                    .iter()
-                    .map(|name| format!("`{name}`"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-        ));
-    }
-    Ok(values)
-}
-
-fn required_string<'a>(
-    values: &'a Map<String, Value>,
-    field: &str,
-    op_index: usize,
-    location: &str,
-) -> Result<&'a str, ApplyPlanError> {
-    values
-        .get(field)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            bad(
-                op_index,
-                &format!("{location}.{field}"),
-                format!("`{field}` is required and must be a non-empty string"),
-            )
-        })
-}
-
-/// Разбор операций командного интерфейса.
-///
-/// Адрес несёт интерфейс, а команда лежит в аргументах: предмет операции —
-/// пара «интерфейс и ссылка на команду», а адрес может нести только одно.
-/// Приписать факт подсистемы адресу команды, живущей в другом месте, было бы
-/// неверно. Порядок команд принадлежит группе, и группа — узел интерфейса:
-/// `commandOrder.set` адресует `…Interface.Group.<g>`, имя с точкой
-/// экранируется (`CommandGroup\.X`).
-fn parse_command_interface_operation(
-    section: &str,
-    target: &QualifiedAddress,
-    args: &Map<String, Value>,
-    op_index: usize,
-) -> Result<FormResourcePlanKind, ApplyPlanError> {
-    let (segments, group) = match target.segments() {
-        [interface @ .., group] if group.kind() == NodeKind::Group => match group.name() {
-            Some(name) => (interface, Some(name)),
-            // Ветвь групп — коллекция, а не группа: порядок пишется в группу.
-            None => {
-                return Err(bad(
-                    op_index,
-                    "at",
-                    format!("`{section}.set` does not target the group collection; name the group: `Subsystem.Name.Interface.Group.G`"),
-                ))
-            }
-        },
-        segments => (segments, None),
-    };
-    if (section == "commandOrder") != group.is_some() {
-        return Err(bad(
-            op_index,
-            "at",
-            if section == "commandOrder" {
-                "`commandOrder.set` targets a command group: `Subsystem.Name.Interface.Group.G`"
-                    .to_string()
-            } else {
-                format!("`{section}.set` does not target a command group")
-            },
-        ));
-    }
-    let interface = QualifiedAddress {
-        line_range: None,
-        source_set: target.source_set().to_string(),
-        segments: segments.to_vec(),
-    };
-    let target = &interface;
-    let (address, relative) = match segments {
-        // Порядок подсистем верхнего уровня живёт в корневом документе.
-        [root] if root.kind() == NodeKind::Configuration => {
-            if section != "subsystemOrder" {
-                return Err(bad(
-                    op_index,
-                    "at",
-                    format!("`{section}.set` targets a subsystem command interface: `Subsystem.Name.Interface`"),
-                ));
-            }
-            (
-                target.to_string(),
-                PathBuf::from("Ext").join("CommandInterface.xml"),
-            )
-        }
-        // Владелец — вся цепочка подсистем: `Subsystem.A.Subsystem.B.Interface`
-        // живёт в `Subsystems/A/Subsystems/B/Ext`, и одноимённая корневая `B`
-        // целью не становится.
-        [owners @ .., facet]
-            if facet.kind() == NodeKind::Interface
-                && !owners.is_empty()
-                && owners
-                    .iter()
-                    .all(|owner| owner.kind() == NodeKind::Subsystem) =>
-        {
-            if section == "subsystemOrder" {
-                return Err(bad(
-                    op_index,
-                    "at",
-                    "`subsystemOrder.set` targets the configuration root: `<set>:Configuration`",
-                ));
-            }
-            let mut relative = PathBuf::new();
-            for owner in owners {
-                let name = owner
-                    .name()
-                    .ok_or_else(|| bad(op_index, "at", "the subsystem must be named"))?;
-                relative.push("Subsystems");
-                relative.push(name);
-            }
-            relative.push("Ext");
-            relative.push("CommandInterface.xml");
-            (target.to_string(), relative)
-        }
-        _ => return Err(bad(
-            op_index,
-            "at",
-            "a command-interface operation targets `Subsystem.Name[.Subsystem.Child].Interface`",
-        )),
-    };
-    let edit = match section {
-        "commandVisibility" => {
-            let items = interface_items(args, op_index)?;
-            let mut values = Vec::with_capacity(items.len());
-            for (index, item) in items.iter().enumerate() {
-                let item = item.as_object().ok_or_else(|| {
-                    bad(
-                        op_index,
-                        &format!("items[{index}]"),
-                        "each item is an object",
-                    )
-                })?;
-                let command =
-                    required_string(item, "command", op_index, &format!("items[{index}]"))?;
-                let visible = match item.get("visible") {
-                    Some(Value::Bool(visible)) => visible,
-                    _ => {
-                        return Err(bad(
-                            op_index,
-                            &format!("items[{index}].visible"),
-                            "`visible` must be a boolean",
-                        ))
-                    }
-                };
-                values.push((command.to_string(), *visible));
-            }
-            InterfaceEdit::Visibility(values)
-        }
-        "commandPlacement" => {
-            let items = interface_items(args, op_index)?;
-            let mut values = Vec::with_capacity(items.len());
-            for (index, item) in items.iter().enumerate() {
-                let item = item.as_object().ok_or_else(|| {
-                    bad(
-                        op_index,
-                        &format!("items[{index}]"),
-                        "each item is an object",
-                    )
-                })?;
-                let command =
-                    required_string(item, "command", op_index, &format!("items[{index}]"))?;
-                let group = item
-                    .get("group")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-                let placement = item
-                    .get("placement")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-                if group.is_none() && placement.is_none() {
-                    return Err(bad(
-                        op_index,
-                        &format!("items[{index}]"),
-                        "placement needs `group` and/or `placement`",
-                    ));
-                }
-                values.push((command.to_string(), group, placement));
-            }
-            InterfaceEdit::Placement(values)
-        }
-        "commandOrder" => {
-            let values = required_values(args, op_index, &["commands"])?;
-            // Порядок команд принадлежит группе адреса: без неё нечего
-            // сравнивать с сохранённым составом.
-            InterfaceEdit::CommandOrder {
-                group: group
-                    .expect("a command order target names its group")
-                    .to_string(),
-                commands: listed_strings(values, "commands", op_index)?,
-            }
-        }
-        "groupOrder" => {
-            let values = required_values(args, op_index, &["groups"])?;
-            InterfaceEdit::GroupOrder(listed_strings(values, "groups", op_index)?)
-        }
-        _ => {
-            let values = required_values(args, op_index, &["subsystems"])?;
-            InterfaceEdit::SubsystemOrder(listed_strings(values, "subsystems", op_index)?)
-        }
-    };
-    Ok(FormResourcePlanKind::CommandInterface {
-        address,
-        relative,
-        edit,
-    })
-}
-
-fn interface_items(
-    args: &Map<String, Value>,
-    op_index: usize,
-) -> Result<&Vec<Value>, ApplyPlanError> {
-    args.get("items")
-        .and_then(Value::as_array)
-        .filter(|items| !items.is_empty())
-        .ok_or_else(|| bad(op_index, "items", "`items` must be a non-empty array"))
-}
-
-/// Полная последовательность, а не добавка: порядок — отношение между всеми
-/// элементами, и частичный список некуда вставить.
-fn listed_strings(
-    values: &Map<String, Value>,
-    key: &str,
-    op_index: usize,
-) -> Result<Vec<String>, ApplyPlanError> {
-    let array = values.get(key).and_then(Value::as_array).ok_or_else(|| {
-        bad(
-            op_index,
-            &format!("values.{key}"),
-            format!("`{key}` must be an array"),
-        )
-    })?;
-    let mut names = Vec::with_capacity(array.len());
-    for (index, item) in array.iter().enumerate() {
-        let name = item
-            .as_str()
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-            .ok_or_else(|| {
-                bad(
-                    op_index,
-                    &format!("values.{key}[{index}]"),
-                    "each entry is a non-empty name",
-                )
-            })?;
-        names.push(name.to_string());
-    }
-    if names.is_empty() {
-        return Err(bad(
-            op_index,
-            &format!("values.{key}"),
-            "the order is a complete sequence and cannot be empty",
-        ));
-    }
-    Ok(names)
-}
-
-/// Names listed in `items` (objects with `key`, or bare strings), or a single
-/// `values.<key>`; the closed argument shapes for list-like operations.
-fn listed_names(
-    args: &Map<String, Value>,
-    key: &str,
-    op_index: usize,
-) -> Result<Vec<String>, ApplyPlanError> {
-    if let Some(items) = args.get("items") {
-        let items = items
-            .as_array()
-            .ok_or_else(|| bad(op_index, "items", "`items` must be an array"))?;
-        let mut names = Vec::with_capacity(items.len());
-        for (index, item) in items.iter().enumerate() {
-            let name = match item {
-                Value::String(name) => name.trim().to_string(),
-                Value::Object(object) => {
-                    required_string(object, key, op_index, &format!("items[{index}]"))?.to_string()
-                }
-                _ => {
-                    return Err(bad(
-                        op_index,
-                        &format!("items[{index}]"),
-                        format!("each item must be an object with `{key}` or a string"),
-                    ))
-                }
-            };
-            if name.is_empty() {
-                return Err(bad(
-                    op_index,
-                    &format!("items[{index}].{key}"),
-                    "name is empty",
-                ));
-            }
-            names.push(name);
-        }
-        if names.is_empty() {
-            return Err(bad(
-                op_index,
-                "items",
-                "`items` must list at least one entry",
-            ));
-        }
-        return Ok(names);
-    }
-    if let Some(values) = args.get("values").and_then(Value::as_object) {
-        return Ok(vec![
-            required_string(values, key, op_index, "values")?.to_string()
-        ]);
-    }
-    Err(bad(
-        op_index,
-        "items",
-        format!("`items` (objects with `{key}`) is required"),
-    ))
-}
-
-/// `Subsystems/A/Subsystems/B.xml` for `Subsystem.A.Subsystem.B`.
-fn subsystem_descriptor_relative(
-    target: &QualifiedAddress,
-    op_index: usize,
-) -> Result<(String, PathBuf), ApplyPlanError> {
-    let mut relative = PathBuf::new();
-    let mut address = Vec::new();
-    let segments = target.segments();
-    if segments.is_empty() {
-        return Err(bad(op_index, "at", "the target must be a subsystem"));
-    }
-    for (index, segment) in segments.iter().enumerate() {
-        if segment.kind() != NodeKind::Subsystem {
-            return Err(bad(
-                op_index,
-                "at",
-                "the target must be a subsystem: `Subsystem.Name[.Subsystem.Child]`",
-            ));
-        }
-        let name = segment
-            .name()
-            .ok_or_else(|| bad(op_index, "at", "the subsystem must be named"))?;
-        relative.push("Subsystems");
-        if index + 1 == segments.len() {
-            relative.push(format!("{name}.xml"));
-        } else {
-            relative.push(name);
-        }
-        address.push(format!("Subsystem.{name}"));
-    }
-    Ok((address.join("."), relative))
-}
-
-fn creation_name(
-    target: &QualifiedAddress,
-    kind: NodeKind,
-    values: &Map<String, Value>,
-    op_index: usize,
-) -> Result<String, ApplyPlanError> {
-    let name = required_string(values, "name", op_index, "values")?.to_string();
-    if !crate::infrastructure::native_operations::common::is_1c_identifier(&name) {
-        return Err(bad(
-            op_index,
-            "values.name",
-            format!("`{name}` is not a valid 1C identifier"),
-        ));
-    }
-    // Узел создаёт операция родителя: `at` всегда называет существующий
-    // узел, а имя нового — аргумент.
-    if !matches!(target.segments(), [root] if root.kind() == NodeKind::Configuration) {
-        return Err(bad(
-            op_index,
-            "at",
-            format!(
-                "`{}` creation targets the configuration root; name the new object in `values.name`",
-                kind.as_str()
-            ),
-        ));
-    }
-    Ok(name)
 }
 
 /// Разбор без семейства, выбранного вызывающим: общее имя (`attribute.add`
@@ -743,30 +69,66 @@ pub(crate) fn parse_form_resource_plan_operation_in(
     })?;
     let kind = match descriptor.map(OperationDescriptor::family) {
         Some(OperationFamily::Role) => {
-            match descriptor.and_then(OperationDescriptor::role_operation) {
-                Some(operation) => parse_role_operation(operation, object, op_index, binding)?,
+            match descriptor
+                .and_then(OperationDescriptor::operation::<unica_roles::operations::RoleOperation>)
+            {
+                Some(operation) => {
+                    FormResourcePlanKind::Role(unica_roles_designer::planner::parse_role_operation(
+                        operation,
+                        object,
+                        op_index,
+                        binding.source_set_name(),
+                    )?)
+                }
                 None => return Err(hidden_apply_family_unimplemented(op_index)),
             }
         }
         Some(OperationFamily::Subsystem) => {
-            parse_subsystem_operation(operation, object, op_index, binding)?
+            FormResourcePlanKind::Metadata(resource_planner::parse_subsystem_operation(
+                operation,
+                object,
+                op_index,
+                binding.source_set_name(),
+            )?)
         }
         Some(OperationFamily::Interface) => {
-            parse_subsystem_operation(operation, object, op_index, binding)?
+            FormResourcePlanKind::Metadata(resource_planner::parse_subsystem_operation(
+                operation,
+                object,
+                op_index,
+                binding.source_set_name(),
+            )?)
         }
         Some(OperationFamily::Support) => {
-            match descriptor.and_then(OperationDescriptor::support_operation) {
-                Some(operation) => parse_support_operation(operation, object, op_index, binding)?,
+            match descriptor.and_then(
+                OperationDescriptor::operation::<unica_metadata::support::SupportOperation>,
+            ) {
+                Some(operation) => {
+                    FormResourcePlanKind::Metadata(resource_planner::parse_support_operation(
+                        operation,
+                        object,
+                        op_index,
+                        binding.source_set_name(),
+                    )?)
+                }
                 None => return Err(hidden_apply_family_unimplemented(op_index)),
             }
         }
-        Some(OperationFamily::Form) => parse_form_operation(
-            descriptor.and_then(OperationDescriptor::form_operation),
-            operation,
-            object,
-            op_index,
-            binding,
-        )?,
+        Some(OperationFamily::Form) => {
+            match descriptor
+                .and_then(OperationDescriptor::operation::<unica_forms::operations::FormOperation>)
+            {
+                Some(operation) => {
+                    FormResourcePlanKind::Form(unica_forms_designer::planner::parse_form_operation(
+                        operation,
+                        object,
+                        op_index,
+                        binding.source_set_name(),
+                    )?)
+                }
+                None => return Err(hidden_apply_family_unimplemented(op_index)),
+            }
+        }
         _ => FormResourcePlanKind::Unsupported,
     };
     Ok(FormResourcePlanOperation {
@@ -775,2734 +137,84 @@ pub(crate) fn parse_form_resource_plan_operation_in(
     })
 }
 
-/// Вид владельца записи прав: вид метаданных или корень конфигурации.
-/// Имя записи `<Вид>_<Имя>` делится по первому `_`, и вид без `_` отличает
-/// каноническое имя от короткого псевдонима чтения.
-fn role_right_owner_kind(kind: &str) -> bool {
-    kind == NodeKind::Configuration.as_str()
-        || crate::infrastructure::metadata_kinds::metadata_kind(kind).is_some()
-}
-
-/// Роль адреса: `Role.R` для `right.add`, `Role.R.Right.<Вид_Имя>` для
-/// `right.set`.
-fn role_of(
-    target: &QualifiedAddress,
-    entry: bool,
-    op_index: usize,
-) -> Result<MetadataAddress, ApplyPlanError> {
-    let shape = if entry {
-        "right.set addresses a rights entry: `Role.Name.Right.<Kind>_<Name>`"
-    } else {
-        "right.add targets one role: `Role.Name`"
-    };
-    let role_name = match (target.segments(), entry) {
-        ([role], false) if role.kind() == NodeKind::Role => role.name(),
-        ([role, right], true)
-            if role.kind() == NodeKind::Role && right.kind() == NodeKind::Right =>
-        {
-            role.name()
-        }
-        _ => None,
-    }
-    .ok_or_else(|| bad(op_index, "at", shape))?;
-    MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("Role.{role_name}"),
-    )
-    .map_err(|error| bad(op_index, "at", error.to_string()))
-}
-
-fn parse_role_operation(
-    operation: RoleOperation,
-    args: &Map<String, Value>,
-    op_index: usize,
-    binding: &ProviderRootBinding,
-) -> Result<FormResourcePlanKind, ApplyPlanError> {
-    let target = qualified_target(args, op_index, binding)?;
-    // Опубликованный контракт и разбор планировщиком принимают одну форму
-    // аргументов (#1354): после адреса схема проверяется до ручного разбора.
-    // Нормализованный JSON не подменяет исходные аргументы планировщика.
-    operation
-        .contract()
-        .normalize(
-            &Value::Object(args.clone()),
-            &format!("ops[{op_index}].args"),
-        )
-        .map_err(|error| {
-            ApplyPlanError::new(
-                ApplyPlanErrorKind::BadValue,
-                format!("{}: {}", error.path, error.message),
-            )
-            .at_path(error.path)
-        })?;
-    match operation {
-        RoleOperation::Create => {
-            let values = required_values(args, op_index, &["name"])?;
-            let name = creation_name(&target, NodeKind::Role, values, op_index)?;
-            Ok(FormResourcePlanKind::CreateRole { name })
-        }
-        RoleOperation::RightAdd => {
-            let role = role_of(&target, false, op_index)?;
-            let items = args
-                .get("items")
-                .and_then(Value::as_array)
-                .filter(|items| !items.is_empty())
-                .ok_or_else(|| bad(op_index, "items", "`items` must list at least one object"))?;
-            let mut entries = Vec::with_capacity(items.len());
-            for (index, item) in items.iter().enumerate() {
-                let location = format!("items[{index}]");
-                let item = item
-                    .as_object()
-                    .ok_or_else(|| bad(op_index, &location, "each item must be an object"))?;
-                if let Some(field) = item
-                    .keys()
-                    .find(|field| !matches!(field.as_str(), "object" | "rights"))
-                {
-                    return Err(bad(
-                        op_index,
-                        &format!("{location}.{field}"),
-                        format!("an item accepts only `object` and `rights`, not `{field}`"),
-                    ));
-                }
-                let object = required_string(item, "object", op_index, &location)?.to_string();
-                // Запись адресуется `Right.<Вид>_<Имя>`; у вложенного объекта
-                // (`Kind.X.Command.Y`) остальные точки имени экранируются.
-                match object.split_once('.') {
-                    Some((kind, name))
-                        if role_right_owner_kind(kind)
-                            && !name.is_empty()
-                            && name.split('.').all(|part| !part.is_empty()) => {}
-                    _ => {
-                        return Err(bad(
-                            op_index,
-                            &format!("{location}.object"),
-                            "`object` names a metadata object as `Kind.Name` or a nested one as `Kind.Name.Command.C`",
-                        ))
-                    }
-                }
-                // Вложенный объект роли — закрытый набор раскладок, которые
-                // платформа пишет в Rights.xml: команда, реквизит, стандартный
-                // реквизит, табличная часть и её реквизиты, измерение, ресурс,
-                // операция веб-сервиса, метод шаблона URL, канал сервиса
-                // интеграции, реквизит адресации задачи, вложенная подсистема.
-                // Опечатка вида (`Comand`) или вложенный объект у корня
-                // конфигурации иначе ушли бы в Rights.xml записью, которой
-                // у платформы нет.
-                let nested = object.split('.').count() > 2;
-                if nested && !crate::domain::role::nested_right_shape_is_modelled(&object) {
-                    return Err(bad(
-                        op_index,
-                        &format!("{location}.object"),
-                        format!(
-                            "`{object}` is not a nested object a role lists: use Kind.Name.Command|Attribute|StandardAttribute|TabularSection|Dimension|Resource|Operation|AddressingAttribute|IntegrationServiceChannel.X, Kind.Name.TabularSection.T.Attribute|StandardAttribute.X, HTTPService.S.URLTemplate.T.Method.M or Subsystem.S.Subsystem.X"
-                        ),
-                    ));
-                }
-                // Созданную запись `right.set` правит по адресу
-                // `Right.<Вид>_<Имя>`; адрес, который грамматика не разбирает,
-                // оставил бы запись без адреса.
-                let entry_name = object.replacen('.', "_", 1);
-                if QualifiedAddress::parse(&member_address(&format!("{target}.Right"), &entry_name))
-                    .ok()
-                    .and_then(|address| {
-                        address
-                            .segments()
-                            .last()
-                            .and_then(|s| s.name().map(str::to_string))
-                    })
-                    .as_deref()
-                    != Some(entry_name.as_str())
-                {
-                    return Err(bad(
-                        op_index,
-                        &format!("{location}.object"),
-                        "the object has no addressable `Right.<Kind>_<Name>` entry",
-                    ));
-                }
-                if entries
-                    .iter()
-                    .any(|entry: &RightEntry| entry.object == object)
-                {
-                    return Err(bad(
-                        op_index,
-                        &format!("{location}.object"),
-                        format!("`{object}` is listed twice"),
-                    ));
-                }
-                let rights = item
-                    .get("rights")
-                    .and_then(Value::as_object)
-                    .filter(|rights| !rights.is_empty())
-                    .ok_or_else(|| {
-                        bad(
-                            op_index,
-                            &format!("{location}.rights"),
-                            "`rights` maps at least one right name to true/false",
-                        )
-                    })?
-                    .iter()
-                    .map(|(right, value)| match value {
-                        Value::Bool(value) if !right.trim().is_empty() => {
-                            Ok((right.trim().to_string(), *value))
-                        }
-                        _ => Err(bad(
-                            op_index,
-                            &format!("{location}.rights.{right}"),
-                            "a right takes true or false",
-                        )),
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                if nested {
-                    // Право вложенного объекта — из его закрытого набора
-                    // (View/Edit, Use у операций и каналов), а не права объекта.
-                    if let Some((right, message)) = rights.iter().find_map(|(right, _)| {
-                        crate::domain::role::validate_nested_right(&object, right)
-                            .err()
-                            .map(|message| (right, message))
-                    }) {
-                        return Err(bad(
-                            op_index,
-                            &format!("{location}.rights.{right}"),
-                            message,
-                        ));
-                    }
-                }
-                entries.push(RightEntry { object, rights });
-            }
-            Ok(FormResourcePlanKind::RightAdd {
-                role,
-                role_at: target.to_string(),
-                entries,
-            })
-        }
-        RoleOperation::RightSet => {
-            let role = role_of(&target, true, op_index)?;
-            // Объект записи задаёт адрес `Role.R.Right.<Вид_Имя>` (#1354).
-            let object = target
-                .segments()
-                .get(1)
-                .and_then(|segment| segment.name())
-                .and_then(|name| name.split_once('_'))
-                .filter(|(kind, name)| role_right_owner_kind(kind) && !name.is_empty())
-                .map(|(kind, name)| format!("{kind}.{name}"))
-                .ok_or_else(|| {
-                    bad(
-                        op_index,
-                        "at",
-                        "right.set addresses a rights entry by its canonical name: `Role.Name.Right.<Kind>_<Name>`",
-                    )
-                })?;
-            let values = required_values(args, op_index, &["right", "value", "rls"])?;
-            let right = required_string(values, "right", op_index, "values")?.to_string();
-            let value = match values.get("value") {
-                None => None,
-                Some(Value::Bool(value)) => Some(*value),
-                Some(_) => return Err(bad(op_index, "values.value", "`value` must be a boolean")),
-            };
-            let rls = match values.get("rls") {
-                None => None,
-                Some(Value::String(condition)) if !condition.trim().is_empty() => {
-                    Some(condition.trim().to_string())
-                }
-                Some(_) => {
-                    return Err(bad(
-                        op_index,
-                        "values.rls",
-                        "`rls` must be a non-empty restriction condition",
-                    ))
-                }
-            };
-            if value.is_none() && rls.is_none() {
-                return Err(bad(
-                    op_index,
-                    "values",
-                    "right.set needs `value` (true/false) and/or `rls` (a restriction condition)",
-                ));
-            }
-            Ok(FormResourcePlanKind::RightSet {
-                role_at: format!("{}:{}", target.source_set(), role.as_str()),
-                role,
-                object,
-                right,
-                value,
-                rls,
-            })
-        }
-    }
-}
-
-fn parse_subsystem_operation(
-    operation: &str,
-    args: &Map<String, Value>,
-    op_index: usize,
-    binding: &ProviderRootBinding,
-) -> Result<FormResourcePlanKind, ApplyPlanError> {
-    let target = qualified_target(args, op_index, binding)?;
-    if let Some(section) = operation.strip_suffix(".set").filter(|section| {
-        matches!(
-            *section,
-            "commandVisibility" | "commandPlacement" | "commandOrder" | "groupOrder"
-        ) || (*section == "subsystemOrder")
-    }) {
-        return parse_command_interface_operation(section, &target, args, op_index);
-    }
-    if operation == "subsystem.create" {
-        let values = required_values(args, op_index, &["name"])?;
-        let name = creation_name(&target, NodeKind::Subsystem, values, op_index)?;
-        return Ok(FormResourcePlanKind::CreateSubsystem { name });
-    }
-    let edit = match operation {
-        "content.add" => SubsystemEdit::ContentAdd(listed_names(args, "object", op_index)?),
-        "content.remove" => SubsystemEdit::ContentRemove(listed_names(args, "object", op_index)?),
-        "childSubsystem.add" => SubsystemEdit::ChildAdd(listed_names(args, "name", op_index)?),
-        "childSubsystem.remove" => {
-            // The child travels only in the address
-            // (`...Subsystem.Parent.Subsystem.Child`, #1353).
-            if let Some(key) = ["items", "values"]
-                .into_iter()
-                .find(|key| args.contains_key(*key))
-            {
-                return Err(bad(
-                    op_index,
-                    key,
-                    "childSubsystem.remove takes the child from its address: `Subsystem.Parent.Subsystem.Child`",
-                ));
-            }
-            let segments = target.segments();
-            let [_, .., child] = segments else {
-                return Err(bad(
-                    op_index,
-                    "at",
-                    "childSubsystem.remove addresses the child: `Subsystem.Parent.Subsystem.Child`",
-                ));
-            };
-            let child_name = child
-                .name()
-                .ok_or_else(|| bad(op_index, "at", "the child subsystem must be named"))?
-                .to_string();
-            let parent = QualifiedAddress::resolve_input(
-                &format!(
-                    "{}:{}",
-                    target.source_set(),
-                    segments[..segments.len() - 1]
-                        .iter()
-                        .map(|segment| {
-                            format!(
-                                "{}.{}",
-                                segment.kind().as_str(),
-                                segment.name().unwrap_or("")
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .join(".")
-                ),
-                &[binding.source_set_name()],
-            )
-            .map_err(|error| bad(op_index, "at", error.to_string()))?;
-            let (address, relative) = subsystem_descriptor_relative(&parent, op_index)?;
-            return Ok(FormResourcePlanKind::Subsystem {
-                address,
-                relative,
-                edit: SubsystemEdit::ChildRemove(vec![child_name]),
-            });
-        }
-        _ => return Ok(FormResourcePlanKind::Unsupported),
-    };
-    let (address, relative) = subsystem_descriptor_relative(&target, op_index)?;
-    Ok(FormResourcePlanKind::Subsystem {
-        address,
-        relative,
-        edit,
-    })
-}
-
-fn parse_support_operation(
-    operation: SupportOperation,
-    args: &Map<String, Value>,
-    op_index: usize,
-    binding: &ProviderRootBinding,
-) -> Result<FormResourcePlanKind, ApplyPlanError> {
-    let target = qualified_target(args, op_index, binding)?;
-    operation
-        .contract()
-        .normalize(
-            &Value::Object(args.clone()),
-            &format!("ops[{op_index}].args"),
-        )
-        .map_err(|error| {
-            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(error.path)
-        })?;
-
-    match operation {
-        SupportOperation::CapabilitySet => {
-            // Возможность изменения — свойство всей конфигурации; вызов на
-            // объекте писал бы не в тот узел.
-            if !matches!(target.segments(), [root] if root.kind() == NodeKind::Configuration) {
-                return Err(bad(
-                    op_index,
-                    "at",
-                    "supportCapability.set targets the configuration root",
-                ));
-            }
-            let values = required_values(args, op_index, &["enabled", "rule"])?;
-            let enabled =
-                match (values.get("enabled"), values.get("rule")) {
-                    (Some(Value::Bool(enabled)), None) => *enabled,
-                    (None, Some(Value::String(rule))) => match rule.as_str() {
-                        "on" | "EditableSupportEnabled" | "enabled" => true,
-                        "off" | "EditableSupportDisabled" | "disabled" => false,
-                        other => {
-                            return Err(bad(
-                                op_index,
-                                "values.rule",
-                                format!("unknown support capability `{other}`; use `on` or `off`"),
-                            ))
-                        }
-                    },
-                    _ => return Err(bad(
-                        op_index,
-                        "values",
-                        "supportCapability.set takes `enabled` (boolean) or `rule` (`on`/`off`)",
-                    )),
-                };
-            Ok(FormResourcePlanKind::SupportCapability(if enabled {
-                SupportCapability::On
-            } else {
-                SupportCapability::Off
-            }))
-        }
-        SupportOperation::RuleSet => {
-            let values = required_values(args, op_index, &["rule"])?;
-            let rule = required_string(values, "rule", op_index, "values")?;
-            let rule = match rule {
-                "NotEditable" | "locked" => SupportObjectRule::Locked,
-                "EditableWithSupport" | "editable" => SupportObjectRule::Editable,
-                "NotSupported" | "off-support" => SupportObjectRule::OffSupport,
-                other => {
-                    return Err(bad(
-                        op_index,
-                        "values.rule",
-                        format!(
-                        "unknown support rule `{other}`; use `locked`, `editable` or `off-support`"
-                    ),
-                    ))
-                }
-            };
-            let raw = match target.segments() {
-                [owner] if owner.name().is_some() => {
-                    format!("{}.{}", owner.kind().as_str(), owner.name().unwrap())
-                }
-                [owner, form]
-                    if owner.name().is_some()
-                        && form.kind() == NodeKind::Form
-                        && form.name().is_some() =>
-                {
-                    format!(
-                        "{}.{}.Form.{}",
-                        owner.kind().as_str(),
-                        owner.name().unwrap(),
-                        form.name().unwrap()
-                    )
-                }
-                _ => {
-                    return Err(bad(
-                        op_index,
-                        "at",
-                        "supportRule.set targets a top-level metadata object or its form",
-                    ))
-                }
-            };
-            let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &raw)
-                .map_err(|error| bad(op_index, "at", error.to_string()))?;
-            Ok(FormResourcePlanKind::SupportRule { target, rule })
-        }
-    }
-}
-
-/// Узел формы по адресу `Owner.Name[.Form.F[.Item.A[.Item.B…]][.Event.E]]`.
-struct FormTarget {
-    owner: MetadataAddress,
-    form: Option<String>,
-    /// Цепочка элементов от формы: `Item.A.Item.B` даёт `[A, B]`.
-    items: Vec<String>,
-    /// Событие формы или последнего элемента цепочки.
-    event: Option<String>,
-}
-
-const FORM_ADDRESS_SHAPE: &str =
-    "form operations address `Owner.Name`, `Owner.Name.Form.F`, `Owner.Name.Form.F.Item.A[.Item.B…]` or `….Event.E` of the form or its item";
-
-fn form_target(target: &QualifiedAddress, op_index: usize) -> Result<FormTarget, ApplyPlanError> {
-    let segments = target.segments();
-    let [owner, rest @ ..] = segments else {
-        return Err(bad(op_index, "at", FORM_ADDRESS_SHAPE));
-    };
-    if owner.kind() == NodeKind::Configuration || owner.kind() == NodeKind::Form {
-        return Err(bad(op_index, "at", FORM_ADDRESS_SHAPE));
-    }
-    let owner_name = owner
-        .name()
-        .ok_or_else(|| bad(op_index, "at", "the form owner must be named"))?;
-    let address = MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("{}.{owner_name}", owner.kind().as_str()),
-    )
-    .map_err(|error| bad(op_index, "at", error.to_string()))?;
-    let named = |segment: &crate::domain::address::AddressSegment, what: &str| {
-        segment
-            .name()
-            .map(str::to_string)
-            .ok_or_else(|| bad(op_index, "at", format!("the {what} must be named")))
-    };
-    let (form, items, event) = match rest {
-        [] => (None, Vec::new(), None),
-        [form, tail @ ..] if form.kind() == NodeKind::Form => {
-            let (items, event) = match tail {
-                [items @ .., last] if last.kind() == NodeKind::Event => {
-                    (items, Some(named(last, "form event")?))
-                }
-                items => (items, None),
-            };
-            let items = items
-                .iter()
-                .map(|item| {
-                    if item.kind() == NodeKind::Item {
-                        named(item, "form item")
-                    } else {
-                        Err(bad(op_index, "at", FORM_ADDRESS_SHAPE))
-                    }
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            (Some(named(form, "form")?), items, event)
-        }
-        _ => return Err(bad(op_index, "at", FORM_ADDRESS_SHAPE)),
-    };
-    Ok(FormTarget {
-        owner: address,
-        form,
-        items,
-        event,
-    })
-}
-
-fn form_purpose(
-    kind: Option<&str>,
-    op_index: usize,
-    location: &str,
-) -> Result<String, ApplyPlanError> {
-    Ok(match kind.map(str::trim).filter(|kind| !kind.is_empty()) {
-        None | Some("ObjectForm") | Some("Object") | Some("object") => "Object".to_string(),
-        Some("ListForm") | Some("List") | Some("list") => "List".to_string(),
-        Some("ChoiceForm") | Some("Choice") | Some("choice") => "Choice".to_string(),
-        Some("RecordForm") | Some("RecordSetForm") | Some("Record") | Some("record") => {
-            "Record".to_string()
-        }
-        Some("SettingsForm") | Some("Settings") | Some("FolderForm") | Some("Generic") => {
-            "Object".to_string()
-        }
-        Some(other) => {
-            return Err(bad(
-                op_index,
-                &format!("{location}.type"),
-                format!(
-                    "unknown form type `{other}`; use ObjectForm, ListForm, ChoiceForm, RecordSetForm or SettingsForm"
-                ),
-            ))
-        }
-    })
-}
-
-fn default_form_property(key: &str) -> Option<&'static str> {
-    Some(match key {
-        "defaultObjectForm" => "DefaultObjectForm",
-        "defaultListForm" => "DefaultListForm",
-        "defaultChoiceForm" => "DefaultChoiceForm",
-        "defaultFolderForm" => "DefaultFolderForm",
-        "defaultFolderChoiceForm" => "DefaultFolderChoiceForm",
-        "defaultRecordForm" => "DefaultRecordForm",
-        "defaultForm" => "DefaultForm",
-        "defaultSettingsForm" => "DefaultSettingsForm",
-        "defaultVariantForm" => "DefaultVariantForm",
-        "defaultSaveForm" => "DefaultSaveForm",
-        "auxiliaryObjectForm" => "AuxiliaryObjectForm",
-        "auxiliaryListForm" => "AuxiliaryListForm",
-        "auxiliaryChoiceForm" => "AuxiliaryChoiceForm",
-        _ => return None,
-    })
-}
-
-fn form_attribute_type(type_name: &str) -> String {
-    match type_name {
-        "Boolean" | "boolean" | "Булево" => "xs:boolean".to_string(),
-        "String" | "string" | "Строка" => "xs:string".to_string(),
-        "Number" | "number" | "Число" => "xs:decimal".to_string(),
-        "Date" | "date" | "Дата" => "xs:dateTime".to_string(),
-        other => other.to_string(),
-    }
-}
-
-/// The legacy element definition for one typed v0.13 item: the discriminator
-/// key named after the element type, every other property passed through.
-/// The item has passed the closed `item.add` contract: its keys are the
-/// ones the writer of its kind writes.
-fn legacy_element_definition(
-    item: &Map<String, Value>,
-    op_index: usize,
-    location: &str,
-) -> Result<(Value, Option<String>), ApplyPlanError> {
-    let name = required_string(item, "name", op_index, location)?.to_string();
-    let kind = item
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or("InputField");
-    let mut definition = Map::new();
-    definition.insert("name".to_string(), Value::String(name.clone()));
-    let orientation = || {
-        Value::String(
-            item.get("orientation")
-                .and_then(Value::as_str)
-                .unwrap_or("vertical")
-                .to_string(),
-        )
-    };
-    match kind {
-        "InputField" | "Input" | "Field" => {}
-        "HTMLDocumentField" => {
-            definition.insert("html".to_string(), Value::String(name.clone()));
-        }
-        "TextDocumentField" => {
-            definition.insert("textDoc".to_string(), Value::String(name.clone()));
-        }
-        "Group" | "UsualGroup" => {
-            definition.insert("group".to_string(), orientation());
-        }
-        "Table" => {
-            definition.insert("table".to_string(), Value::String(name.clone()));
-        }
-        "Button" => {
-            definition.insert("button".to_string(), Value::String(name.clone()));
-        }
-        "Label" | "LabelDecoration" => {
-            definition.insert("label".to_string(), Value::String(name.clone()));
-        }
-        "LabelField" => {
-            definition.insert("labelField".to_string(), Value::String(name.clone()));
-        }
-        "CheckBox" | "CheckBoxField" => {
-            definition.insert("check".to_string(), Value::String(name.clone()));
-        }
-        "Pages" => {
-            definition.insert("pages".to_string(), Value::String(name.clone()));
-        }
-        "Page" => {
-            definition.insert("page".to_string(), Value::String(name.clone()));
-            // Ориентацию страницы пишет её `group`; прежде `orientation`
-            // у страницы молча пропадал (#1447).
-            if item.contains_key("orientation") {
-                definition.insert("group".to_string(), orientation());
-            }
-        }
-        "CommandBar" => {
-            definition.insert("cmdBar".to_string(), Value::String(name.clone()));
-        }
-        other => {
-            return Err(bad(
-                op_index,
-                &format!("{location}.type"),
-                format!(
-                    "unknown form element type `{other}`; use InputField, Group, Table, Button, Label, LabelField, CheckBox, Pages, Page, CommandBar, HTMLDocumentField or TextDocumentField"
-                ),
-            ))
-        }
-    }
-    let mut after = None;
-    for (key, value) in item {
-        match key.as_str() {
-            "name" | "type" | "orientation" => {}
-            "after" => after = value.as_str().map(str::to_string),
-            _ => {
-                definition.insert(key.clone(), value.clone());
-            }
-        }
-    }
-    Ok((Value::Object(definition), after))
-}
-
-/// Ключи, которые `item.add` снял по Р2 (#1447), и внутренние различители
-/// вида: отказ с продолжением до проверки контракта, чтобы агент получил
-/// следующий вызов, а не общий «неизвестный аргумент».
-fn refuse_nested_element_content(
-    at: &str,
-    item: &Map<String, Value>,
-    op_index: usize,
-    location: &str,
-) -> Result<(), ApplyPlanError> {
-    use crate::domain::operation_contract::{FORM_ELEMENT_EVENT_KEYS, FORM_ELEMENT_NESTED_KEYS};
-    let name = item
-        .get("name")
-        .and_then(Value::as_str)
-        .unwrap_or("<Element>");
-    let container = format!("{at}.Item.{}", crate::domain::address::escape_name(name));
-    let contract = serde_json::json!({
-        "tool": "unica.view",
-        "args": {"at": format!("{at}.Can.item.add")},
-        "reason": "контракт item.add: один элемент на запись, ключи по виду",
-    });
-    if item.contains_key("html") {
-        return Err(bad(
-            op_index,
-            &format!("{location}.html"),
-            "html is an internal discriminator; use name and type: HTMLDocumentField in item.add",
-        )
-        .with_next(contract));
-    }
-    if item.contains_key("textDoc") {
-        return Err(bad(
-            op_index,
-            &format!("{location}.textDoc"),
-            "textDoc is an internal discriminator; use name and type: TextDocumentField in item.add",
-        )
-        .with_next(contract));
-    }
-    if let Some(key) = FORM_ELEMENT_NESTED_KEYS
-        .iter()
-        .find(|key| item.contains_key(**key))
-    {
-        return Err(bad(
-            op_index,
-            &format!("{location}.{key}"),
-            format!(
-                "item.add adds one element without nested content; drop `{key}` and add each nested element with a separate item.add at `{container}` once this element exists"
-            ),
-        )
-        .with_next(contract));
-    }
-    if let Some(key) = FORM_ELEMENT_EVENT_KEYS
-        .iter()
-        .find(|key| item.contains_key(**key))
-    {
-        return Err(bad(
-            op_index,
-            &format!("{location}.{key}"),
-            format!(
-                "item.add does not bind events; drop `{key}` and bind each handler with event.bind at `{container}.Event.<Event>` once this element exists, naming the handler explicitly"
-            ),
-        )
-        .with_next(contract));
-    }
-    Ok(())
-}
-
-/// Перекрёстные правила ключей элемента, которых схема не выражает.
-fn check_element_cross_fields(
-    item: &Map<String, Value>,
-    op_index: usize,
-    location: &str,
-) -> Result<(), ApplyPlanError> {
-    use crate::domain::operation_contract::FORM_DYNAMIC_LIST_KEYS;
-    if item.get("_dynList").and_then(Value::as_bool) != Some(true) {
-        if let Some(key) = FORM_DYNAMIC_LIST_KEYS
-            .iter()
-            .find(|key| item.contains_key(**key))
-        {
-            return Err(bad(
-                op_index,
-                &format!("{location}.{key}"),
-                format!("`{key}` is a dynamic-list table property: it is written only with `_dynList: true`"),
-            ));
-        }
-    }
-    let commands = ["command", "commandName", "stdCommand"]
-        .into_iter()
-        .filter(|key| item.contains_key(*key))
-        .collect::<Vec<_>>();
-    if let [_, second, ..] = commands.as_slice() {
-        return Err(bad(
-            op_index,
-            &format!("{location}.{second}"),
-            format!(
-                "a button runs one command: give one of `command`, `commandName`, `stdCommand`, not {}",
-                commands
-                    .iter()
-                    .map(|key| format!("`{key}`"))
-                    .collect::<Vec<_>>()
-                    .join(" and ")
-            ),
-        ));
-    }
-    Ok(())
-}
-
-fn parse_typed_form_operation(
-    operation: FormOperation,
-    target: FormTarget,
-    args: &Map<String, Value>,
-    op_index: usize,
-) -> Result<FormResourcePlanKind, ApplyPlanError> {
-    let form = target.form.ok_or_else(|| {
-        bad(
-            op_index,
-            "at",
-            "this operation addresses one form: `Owner.Name.Form.F`",
-        )
-    })?;
-    let items = args
-        .get("items")
-        .and_then(Value::as_array)
-        .ok_or_else(|| bad(op_index, "items", "`items` must be an array"))?;
-    let mut entries = Vec::new();
-    for (index, item) in items.iter().enumerate() {
-        let location = format!("items[{index}]");
-        let item = item
-            .as_object()
-            .ok_or_else(|| bad(op_index, &location, "each item must be an object"))?;
-        let name = required_string(item, "name", op_index, &location)?.to_string();
-        let mut entry = item.clone();
-        entry.insert("name".to_string(), Value::String(name.clone()));
-        match operation {
-            FormOperation::AttributeAdd => {
-                if let Some(type_name) = item.get("type").and_then(Value::as_str) {
-                    entry.insert(
-                        "type".to_string(),
-                        Value::String(form_attribute_type(type_name)),
-                    );
-                }
-            }
-            FormOperation::CommandAdd => {
-                if !entry.contains_key("action") {
-                    entry.insert("action".to_string(), Value::String(name));
-                }
-            }
-        }
-        entries.push(Value::Object(entry));
-    }
-    if entries.is_empty() {
-        return Err(bad(
-            op_index,
-            &format!("ops[{op_index}].args.items"),
-            "`items` must list at least one entry",
-        ));
-    }
-    let key = match operation {
-        FormOperation::AttributeAdd => "attributes",
-        FormOperation::CommandAdd => "commands",
-    };
-    let mut wrapper = Map::new();
-    wrapper.insert(key.to_string(), Value::Array(entries));
-    Ok(FormResourcePlanKind::FormEdit {
-        owner: target.owner,
-        form,
-        subject: FormEditSubject::Node(Vec::new()),
-        definitions: vec![FormEditStep::Definition(Value::Object(wrapper))],
-    })
-}
-
-fn parse_form_operation(
-    typed_operation: Option<FormOperation>,
-    operation: &str,
-    args: &Map<String, Value>,
-    op_index: usize,
-    binding: &ProviderRootBinding,
-) -> Result<FormResourcePlanKind, ApplyPlanError> {
-    let address = qualified_target(args, op_index, binding)?;
-    let target = form_target(&address, op_index)?;
-    // Узел, на котором исполняется операция, — ровно её `at`: элемент и
-    // событие задаются адресом, а операция другого узла отказывает, а не
-    // пишет молча в форму, элемент или владельца (#1351, #1355).
-    let placed = match operation {
-        "form.add" | "form.set" => target.form.is_none(),
-        "item.add" => target.form.is_some() && target.event.is_none(),
-        "item.remove" | "item.move" => !target.items.is_empty() && target.event.is_none(),
-        "event.bind" => target.event.is_some(),
-        _ => target.form.is_some() && target.items.is_empty() && target.event.is_none(),
-    };
-    if !placed {
-        let shape = match operation {
-            "form.add" | "form.set" => "the form owner `Owner.Name`, not a form",
-            "item.add" => {
-                "the form `Owner.Name.Form.F` or its item `….Item.A[.Item.B…]` that receives the elements"
-            }
-            "item.remove" | "item.move" => {
-                "the existing item `Owner.Name.Form.F.Item.A[.Item.B…]`"
-            }
-            "event.bind" => "the event `Owner.Name.Form.F[.Item.A…].Event.E`",
-            _ => "the form `Owner.Name.Form.F`",
-        };
-        return Err(bad(op_index, "at", format!("{operation} targets {shape}")));
-    }
-    if operation == "item.add" {
-        if let Some(items) = args.get("items").and_then(Value::as_array) {
-            for (index, item) in items.iter().enumerate() {
-                if let Some(item) = item.as_object() {
-                    refuse_nested_element_content(
-                        &address.to_string(),
-                        item,
-                        op_index,
-                        &format!("items[{index}]"),
-                    )?;
-                }
-            }
-        }
-    }
-    // Опубликованный контракт и разбор планировщиком принимают одну форму
-    // аргументов: ключ, которого писатель не пишет, отказывает до записи,
-    // а не теряется молча (#1447).
-    let contract = typed_operation
-        .map(FormOperation::contract)
-        .or_else(|| crate::domain::operation_contract::OperationContract::form(operation));
-    if let Some(contract) = contract {
-        let mut checked = args.clone();
-        // `at` операции уже разобран в адрес; контракт сверяет остальное.
-        checked.insert("at".to_string(), Value::String(address.to_string()));
-        contract
-            .normalize(&Value::Object(checked), &format!("ops[{op_index}].args"))
-            .map_err(|error| {
-                let contract_at = format!("{address}.Can.{operation}");
-                ApplyPlanError::new(
-                    ApplyPlanErrorKind::BadValue,
-                    format!(
-                        "{}: {}; `{operation}` writes only the arguments listed at `{contract_at}`",
-                        error.path, error.message
-                    ),
-                )
-                .at_path(error.path)
-                .with_next(serde_json::json!({
-                    "tool": "unica.view",
-                    "args": {"at": contract_at},
-                    "reason": "аргументы, которые операция записывает на этом узле",
-                }))
-            })?;
-    }
-    if let Some(operation) = typed_operation {
-        return parse_typed_form_operation(operation, target, args, op_index);
-    }
-    let items_path = format!("ops[{op_index}].args.items");
-    let form_of = |target: &FormTarget| -> Result<String, ApplyPlanError> {
-        target.form.clone().ok_or_else(|| {
-            bad(
-                op_index,
-                "at",
-                "this operation addresses one form: `Owner.Name.Form.F`",
-            )
-        })
-    };
-    match operation {
-        "form.add" => {
-            if target.form.is_some() {
-                return Err(bad(
-                    op_index,
-                    "at",
-                    "form.add targets the owner; name the forms in `items`",
-                ));
-            }
-            let items = args
-                .get("items")
-                .and_then(Value::as_array)
-                .ok_or_else(|| bad(op_index, "items", "`items` must be an array"))?;
-            let mut forms = Vec::with_capacity(items.len());
-            for (index, item) in items.iter().enumerate() {
-                let location = format!("items[{index}]");
-                let item = item
-                    .as_object()
-                    .ok_or_else(|| bad(op_index, &location, "each item must be an object"))?;
-                let name = required_string(item, "name", op_index, &location)?.to_string();
-                let purpose = form_purpose(
-                    item.get("type").and_then(Value::as_str),
-                    op_index,
-                    &location,
-                )?;
-                forms.push((name, purpose));
-            }
-            if forms.is_empty() {
-                return Err(bad(
-                    op_index,
-                    "items",
-                    "`items` must list at least one form",
-                ));
-            }
-            Ok(FormResourcePlanKind::FormAdd {
-                owner: target.owner,
-                forms,
-            })
-        }
-        "form.set" => {
-            let values = args
-                .get("values")
-                .and_then(Value::as_object)
-                .ok_or_else(|| bad(op_index, "values", "`values` must be an object"))?;
-            let mut defaults = Vec::new();
-            for (key, value) in values {
-                let property = default_form_property(key).ok_or_else(|| {
-                    bad(
-                        op_index,
-                        &format!("values.{key}"),
-                        format!("unknown form slot `{key}`; use defaultObjectForm, defaultListForm, defaultChoiceForm, defaultRecordForm, defaultForm, defaultSettingsForm, ..."),
-                    )
-                })?;
-                let form_name = value
-                    .as_str()
-                    .map(str::trim)
-                    .filter(|name| !name.is_empty())
-                    .ok_or_else(|| {
-                        bad(
-                            op_index,
-                            &format!("values.{key}"),
-                            "the form slot takes a form name",
-                        )
-                    })?;
-                let form_name = form_name
-                    .rsplit(".Form.")
-                    .next()
-                    .unwrap_or(form_name)
-                    .to_string();
-                defaults.push((property.to_string(), form_name));
-            }
-            if defaults.is_empty() {
-                return Err(bad(
-                    op_index,
-                    "values",
-                    "form.set needs at least one form slot",
-                ));
-            }
-            Ok(FormResourcePlanKind::FormSet {
-                owner: target.owner,
-                defaults,
-            })
-        }
-        "form.remove" => {
-            let form = form_of(&target)?;
-            Ok(FormResourcePlanKind::FormRemove {
-                owner: target.owner,
-                form,
-            })
-        }
-        "item.add" => {
-            let form = form_of(&target)?;
-            let items = args
-                .get("items")
-                .and_then(Value::as_array)
-                .ok_or_else(|| bad(op_index, "items", "`items` must be an array"))?;
-            // Контейнер — последний элемент адреса; у самой формы — корень.
-            // Сосед `after` лежит в том же контейнере и задаёт место сам.
-            let container = target.items.last().cloned();
-            let mut definitions = Vec::new();
-            for (index, item) in items.iter().enumerate() {
-                let location = format!("items[{index}]");
-                let item = item
-                    .as_object()
-                    .ok_or_else(|| bad(op_index, &location, "each item must be an object"))?;
-                check_element_cross_fields(item, op_index, &location)?;
-                let (definition, after) = legacy_element_definition(item, op_index, &location)?;
-                let mut wrapper = Map::new();
-                wrapper.insert("elements".to_string(), Value::Array(vec![definition]));
-                match (after, &container) {
-                    (Some(after), _) => {
-                        wrapper.insert("after".to_string(), Value::String(after));
-                    }
-                    (None, Some(container)) => {
-                        wrapper.insert("into".to_string(), Value::String(container.clone()));
-                    }
-                    (None, None) => {}
-                }
-                definitions.push(FormEditStep::Definition(Value::Object(wrapper)));
-            }
-            if definitions.is_empty() {
-                return Err(bad(
-                    op_index,
-                    &items_path,
-                    "`items` must list at least one element",
-                ));
-            }
-            Ok(FormResourcePlanKind::FormEdit {
-                owner: target.owner,
-                form,
-                subject: FormEditSubject::Container(target.items),
-                definitions,
-            })
-        }
-        "item.move" => {
-            let form = form_of(&target)?;
-            let normalized = crate::domain::operation_contract::OperationContract::form_move()
-                .normalize(
-                    &Value::Object(args.clone()),
-                    &format!("ops[{op_index}].args"),
-                )
-                .map_err(|error| {
-                    ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message)
-                        .at_path(error.path)
-                })?;
-            let values = &normalized["values"];
-            let into = match values.get("into") {
-                Some(Value::Null) => super::super::form_move::FormMoveDestination::Root,
-                Some(Value::String(name)) => {
-                    super::super::form_move::FormMoveDestination::Named(name.clone())
-                }
-                _ => unreachable!("the item.move contract normalizes an explicit into"),
-            };
-            let request = super::super::form_move::FormItemMove {
-                name: target.items.last().expect("move addresses an item").clone(),
-                source_path: Some(target.items.clone()),
-                into,
-                after: values
-                    .get("after")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-            };
-            Ok(FormResourcePlanKind::FormEdit {
-                owner: target.owner,
-                form,
-                subject: FormEditSubject::Node(target.items),
-                definitions: vec![FormEditStep::Move {
-                    request,
-                    location: format!("ops[{op_index}].args.values"),
-                }],
-            })
-        }
-        "item.remove" => {
-            let form = form_of(&target)?;
-            // Элемент назван адресом: список в аргументах называл бы другие
-            // узлы, и молча его не отбрасываем.
-            if let Some(key) = ["items", "values"]
-                .into_iter()
-                .find(|key| args.contains_key(*key))
-            {
-                return Err(bad(
-                    op_index,
-                    key,
-                    "item.remove removes the item named by its address; drop the argument",
-                ));
-            }
-            let name = target
-                .items
-                .last()
-                .cloned()
-                .expect("item.remove target carries an item");
-            Ok(FormResourcePlanKind::FormEdit {
-                owner: target.owner,
-                form,
-                subject: FormEditSubject::Removed(target.items),
-                definitions: vec![FormEditStep::Definition(
-                    serde_json::json!({"removeElements": [{"name": name}]}),
-                )],
-            })
-        }
-        "event.bind" => {
-            let form = form_of(&target)?;
-            // Событие и его элемент задаются адресом: `values` несут только
-            // обработчик и `callType`.
-            let values = required_values(args, op_index, &["handler", "callType"])?;
-            let handler = required_string(values, "handler", op_index, "values")?;
-            let event = target
-                .event
-                .as_deref()
-                .expect("event.bind target carries an event");
-            // Имя события в адресе — имя реестра, как его публикует `view`;
-            // псевдонимов у адреса нет.
-            let mut entry = Map::new();
-            entry.insert("name".to_string(), Value::String(event.to_string()));
-            entry.insert("handler".to_string(), Value::String(handler.to_string()));
-            if let Some(call_type) = values.get("callType").and_then(Value::as_str) {
-                entry.insert("callType".to_string(), Value::String(call_type.to_string()));
-            }
-            let definition = match target.items.last() {
-                Some(element) => {
-                    entry.insert("element".to_string(), Value::String(element.clone()));
-                    serde_json::json!({"elementEvents": [Value::Object(entry)]})
-                }
-                None => serde_json::json!({"formEvents": [Value::Object(entry)]}),
-            };
-            Ok(FormResourcePlanKind::FormEdit {
-                owner: target.owner,
-                form,
-                subject: FormEditSubject::Node(target.items),
-                definitions: vec![FormEditStep::Definition(definition)],
-            })
-        }
-        _ => Ok(FormResourcePlanKind::Unsupported),
-    }
-}
-
-/// `Kind.Name` → `Kinds/Name.xml`, the owner descriptor of a form.
-fn owner_descriptor_relative(
-    owner: &MetadataAddress,
-    authority: &FormResourceApplyAuthority<'_>,
-    op_index: usize,
-) -> Result<PathBuf, ApplyPlanError> {
-    crate::infrastructure::logical_event_source::metadata_descriptor_relative(
-        owner,
-        authority.source_kind(),
-    )
-    .map_err(|message| bad(op_index, "at", message))
-}
-
-fn read_required(
-    staged: &mut ApplyStagedState,
-    relative: &std::path::Path,
-    what: &str,
-    at_path: &str,
-) -> Result<Vec<u8>, ApplyPlanError> {
-    staged
-        .read(relative)
-        .map_err(|error| ApplyPlanError::staging(error, at_path.to_string()))?
-        .ok_or_else(|| {
-            ApplyPlanError::new(
-                ApplyPlanErrorKind::NotFound,
-                format!("{what} was not found"),
-            )
-            .at_path(at_path.to_string())
-        })
-}
-
-fn utf8_body(bytes: &[u8], what: &str, at_path: &str) -> Result<String, ApplyPlanError> {
-    String::from_utf8(bytes.strip_prefix(UTF8_BOM).unwrap_or(bytes).to_vec()).map_err(|_| {
-        ApplyPlanError::new(
-            ApplyPlanErrorKind::InvalidSource,
-            format!("{what} is not UTF-8"),
-        )
-        .at_path(at_path.to_string())
-    })
-}
-
-fn with_bom(text: &str) -> Vec<u8> {
-    let mut bytes = UTF8_BOM.to_vec();
-    bytes.extend_from_slice(text.as_bytes());
-    bytes
-}
-
-/// Clears every default-form slot of the owner that points at `form`.
-fn clear_default_form_slots(owner_text: &str, reference: &str) -> String {
-    let mut text = owner_text.to_string();
-    for property in [
-        "DefaultObjectForm",
-        "DefaultListForm",
-        "DefaultChoiceForm",
-        "DefaultFolderForm",
-        "DefaultFolderChoiceForm",
-        "DefaultRecordForm",
-        "DefaultForm",
-        "DefaultSettingsForm",
-        "DefaultVariantForm",
-        "DefaultSaveForm",
-        "AuxiliaryObjectForm",
-        "AuxiliaryListForm",
-        "AuxiliaryChoiceForm",
-    ] {
-        let filled = format!("<{property}>{reference}</{property}>");
-        if text.contains(&filled) {
-            text = text.replace(&filled, &format!("<{property}/>"));
-        }
-    }
-    text
-}
-
-fn stage_form_add(
-    staged: &mut ApplyStagedState,
-    authority: &FormResourceApplyAuthority<'_>,
-    owner: &MetadataAddress,
-    forms: &[(String, String)],
-    op_index: usize,
-    provisional: &mut Vec<ProvisionalApplyEffect>,
-) -> Result<(), ApplyPlanError> {
-    use crate::infrastructure::native_operations::form::{
-        form_add_content_xml, form_add_metadata_xml, form_add_module_bsl, form_default_property,
-        replace_form_default_property,
-    };
-    let at_path = format!("ops[{op_index}].args.at");
-    let owner_relative = owner_descriptor_relative(owner, authority, op_index)?;
-    let owner_preimage = read_required(
-        staged,
-        &owner_relative,
-        "the form owner descriptor",
-        &at_path,
-    )?;
-    let owner_source = utf8_body(&owner_preimage, "the form owner descriptor", &at_path)?;
-    let (object_type, object_name) =
-        crate::infrastructure::native_operations::common::detect_form_add_object(&owner_source)
-            .map_err(|message| {
-                ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(at_path.clone())
-            })?;
-    let mut owner_text = owner_source.clone();
-    let format_version = authority.expected_format();
-    let forms_dir = owner_relative.with_extension("").join("Forms");
-    let mut touched = Vec::new();
-    for (index, (form_name, purpose)) in forms.iter().enumerate() {
-        let name_path = format!("ops[{op_index}].args.items[{index}].name");
-        if !crate::infrastructure::native_operations::common::is_1c_identifier(form_name) {
-            return Err(bad(
-                op_index,
-                &format!("items[{index}].name"),
-                format!("`{form_name}` is not a valid 1C identifier"),
-            ));
-        }
-        crate::infrastructure::native_operations::common::validate_form_purpose(
-            &object_type,
-            purpose,
-        )
-        .map_err(|message| bad(op_index, &format!("items[{index}].type"), message))?;
-        if owner_text.contains(&format!("<Form>{form_name}</Form>")) {
-            return Err(ApplyPlanError::new(
-                ApplyPlanErrorKind::InvalidState,
-                format!("form `{form_name}` already exists on `{}`", owner.as_str()),
-            )
-            .at_path(name_path));
-        }
-        let uuid = seeded_uuid(&format!(
-            "{}\0{}.Form.{form_name}",
-            authority.source_set_name(),
-            owner.as_str()
-        ));
-        let lang =
-            super::metadata::staged_text_language(staged, authority.source_kind(), op_index)?;
-        let descriptor = form_add_metadata_xml(
-            form_name,
-            form_name,
-            &object_type,
-            format_version,
-            &uuid,
-            &lang,
-        );
-        let content = form_add_content_xml(&object_type, &object_name, purpose, format_version)
-            .map_err(|message| bad(op_index, &format!("items[{index}].type"), message))?;
-        let descriptor_relative = forms_dir.join(format!("{form_name}.xml"));
-        let content_relative = forms_dir.join(form_name).join("Ext/Form.xml");
-        let module_relative = forms_dir.join(form_name).join("Ext/Form/Module.bsl");
-        stage_new_file(
-            staged,
-            &descriptor_relative,
-            descriptor.as_bytes(),
-            &name_path,
-        )?;
-        stage_new_file(staged, &content_relative, content.as_bytes(), &name_path)?;
-        stage_new_file(
-            staged,
-            &module_relative,
-            form_add_module_bsl().as_bytes(),
-            &name_path,
-        )?;
-        touched.push(descriptor_relative);
-        touched.push(content_relative);
-        touched.push(module_relative);
-        owner_text = crate::infrastructure::native_operations::common::register_form_in_object_text(
-            &owner_text,
-            form_name,
-        );
-        let property = form_default_property(&object_type, purpose);
-        let (updated, _) = replace_form_default_property(
-            &owner_text,
-            property,
-            &format!("{object_type}.{object_name}.Form.{form_name}"),
-            false,
-        );
-        owner_text = updated;
-    }
-    let owner_postimage = with_bom(
-        &crate::infrastructure::native_operations::common::lxml_tree_serialized_text_like_source_preserving_final_newline(
-            &owner_text,
-            &owner_source,
-        ),
-    );
-    if owner_postimage != owner_preimage {
-        staged
-            .replace(&owner_relative, &owner_preimage, owner_postimage)
-            .map_err(|error| ApplyPlanError::staging(error, at_path))?;
-        touched.push(owner_relative);
-    }
-    provisional.push(ProvisionalApplyEffect::spanning(
-        touched,
-        DomainEvent::new(DomainEventKind::FormChanged, owner.as_str().to_string()),
-        op_index,
-    ));
-    Ok(())
-}
-
-fn stage_form_set(
-    staged: &mut ApplyStagedState,
-    authority: &FormResourceApplyAuthority<'_>,
-    owner: &MetadataAddress,
-    defaults: &[(String, String)],
-    op_index: usize,
-    provisional: &mut Vec<ProvisionalApplyEffect>,
-) -> Result<(), ApplyPlanError> {
-    let at_path = format!("ops[{op_index}].args.at");
-    let owner_relative = owner_descriptor_relative(owner, authority, op_index)?;
-    let owner_preimage = read_required(
-        staged,
-        &owner_relative,
-        "the form owner descriptor",
-        &at_path,
-    )?;
-    let owner_source = utf8_body(&owner_preimage, "the form owner descriptor", &at_path)?;
-    let mut owner_text = owner_source.clone();
-    for (property, form_name) in defaults {
-        if !owner_text.contains(&format!("<Form>{form_name}</Form>")) {
-            return Err(ApplyPlanError::new(
-                ApplyPlanErrorKind::NotFound,
-                format!("form `{form_name}` is not a form of `{}`", owner.as_str()),
-            )
-            .at_path(format!("ops[{op_index}].args.values")));
-        }
-        if !owner_text.contains(&format!("<{property}>"))
-            && !owner_text.contains(&format!("<{property}/>"))
-        {
-            return Err(bad(
-                op_index,
-                "values",
-                format!("`{}` has no `{property}` slot", owner.as_str()),
-            ));
-        }
-        let (updated, _) =
-            crate::infrastructure::native_operations::form::replace_form_default_property(
-                &owner_text,
-                property,
-                &format!("{}.Form.{form_name}", owner.as_str()),
-                true,
-            );
-        owner_text = updated;
-    }
-    let owner_postimage = with_bom(
-        &crate::infrastructure::native_operations::common::lxml_tree_serialized_text_like_source_preserving_final_newline(
-            &owner_text,
-            &owner_source,
-        ),
-    );
-    if owner_postimage == owner_preimage {
-        return Ok(());
-    }
-    staged
-        .replace(&owner_relative, &owner_preimage, owner_postimage)
-        .map_err(|error| ApplyPlanError::staging(error, at_path))?;
-    provisional.push(ProvisionalApplyEffect::single(
-        owner_relative,
-        DomainEvent::new(DomainEventKind::MetadataChanged, owner.as_str().to_string()),
-        op_index,
-    ));
-    Ok(())
-}
-
-fn stage_form_remove(
-    staged: &mut ApplyStagedState,
-    authority: &FormResourceApplyAuthority<'_>,
-    owner: &MetadataAddress,
-    form: &str,
-    op_index: usize,
-    provisional: &mut Vec<ProvisionalApplyEffect>,
-) -> Result<(), ApplyPlanError> {
-    let at_path = format!("ops[{op_index}].args.at");
-    super::metadata::require_untouched_staged_state(staged, "form.remove", &at_path)?;
-    let owner_relative = owner_descriptor_relative(owner, authority, op_index)?;
-    let owner_preimage = read_required(
-        staged,
-        &owner_relative,
-        "the form owner descriptor",
-        &at_path,
-    )?;
-    let owner_source = utf8_body(&owner_preimage, "the form owner descriptor", &at_path)?;
-    let forms_dir = owner_relative.with_extension("").join("Forms");
-    let descriptor_relative = forms_dir.join(format!("{form}.xml"));
-    let descriptor_preimage = read_required(
-        staged,
-        &descriptor_relative,
-        "the form descriptor",
-        &at_path,
-    )?;
-    let mut touched = Vec::new();
-    let payload_relative = forms_dir.join(form);
-    let files = staged
-        .enumerate_tree(&payload_relative)
-        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
-    for relative in files {
-        let preimage = read_required(staged, &relative, "a form payload file", &at_path)?;
-        staged
-            .remove(&relative, &preimage)
-            .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
-        touched.push(relative);
-    }
-    staged
-        .remove(&descriptor_relative, &descriptor_preimage)
-        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
-    touched.push(descriptor_relative);
-    let (deregistered, removed) =
-        crate::infrastructure::native_operations::meta::remove::remove_metadata_child_text_with_flag(
-            &owner_source,
-            "Form",
-            form,
-        );
-    if !removed {
-        return Err(ApplyPlanError::new(
-            ApplyPlanErrorKind::InvalidSource,
-            format!("`{}` does not register form `{form}`", owner.as_str()),
-        )
-        .at_path(at_path));
-    }
-    let owner_text =
-        clear_default_form_slots(&deregistered, &format!("{}.Form.{form}", owner.as_str()));
-    let owner_postimage =
-        super::metadata::preserve_descriptor_image(&owner_preimage, &owner_source, &owner_text);
-    staged
-        .replace(&owner_relative, &owner_preimage, owner_postimage)
-        .map_err(|error| ApplyPlanError::staging(error, at_path))?;
-    touched.push(owner_relative);
-    provisional.push(ProvisionalApplyEffect::spanning(
-        touched,
-        DomainEvent::new(
-            DomainEventKind::FormChanged,
-            format!("{}.Form.{form}", owner.as_str()),
-        ),
-        op_index,
-    ));
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn stage_form_edit(
-    staged: &mut ApplyStagedState,
-    authority: &FormResourceApplyAuthority<'_>,
-    owner: &MetadataAddress,
-    form: &str,
-    subject: &FormEditSubject,
-    definitions: &[FormEditStep],
-    op_index: usize,
-    provisional: &mut Vec<ProvisionalApplyEffect>,
-) -> Result<(), ApplyPlanError> {
-    let at_path = format!("ops[{op_index}].args.at");
-    let owner_relative = owner_descriptor_relative(owner, authority, op_index)?;
-    let relative = owner_relative
-        .with_extension("")
-        .join("Forms")
-        .join(form)
-        .join("Ext/Form.xml");
-    let preimage = read_required(staged, &relative, "the form (Ext/Form.xml)", &at_path)?;
-    let mut xml_text = utf8_body(&preimage, "the form", &at_path)?;
-    let root_start = {
-        let document = roxmltree::Document::parse(&xml_text).map_err(|error| {
-            ApplyPlanError::new(
-                ApplyPlanErrorKind::InvalidSource,
-                format!("the form is not well-formed XML: {error}"),
-            )
-            .at_path(at_path.clone())
-        })?;
-        let root = document.root_element();
-        crate::infrastructure::native_operations::form::require_form_root(root).map_err(
-            |error| {
-                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, error)
-                    .at_path(at_path.clone())
-            },
-        )?;
-        root.range().start
-    };
-    check_form_edit_subject(&xml_text, subject, definitions, op_index)?;
-    let absolute = authority.source_root().join(&relative);
-    let args_path = format!("ops[{op_index}].args");
-    // Plain-string titles, tooltips and input hints are written in the
-    // default language of the source set (#1257). It is read only when a
-    // definition writes such text: the definition is first applied without a
-    // language and, if it needs one, applied again from the same image.
-    let mut lang: Option<String> = None;
-    for step in definitions {
-        let definition = match step {
-            FormEditStep::Definition(definition) => definition,
-            FormEditStep::Move { request, location } => {
-                xml_text =
-                    super::super::form_move::move_item(&xml_text, request).map_err(|error| {
-                        ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(
-                            if error.field == "name" {
-                                at_path.clone()
-                            } else {
-                                format!("{location}.{}", error.field)
-                            },
-                        )
-                    })?;
-                continue;
-            }
-        };
-        let apply = |xml_text: &mut String, lang: Option<&str>| {
-            crate::infrastructure::native_operations::form::form_edit_apply_definition(
-                xml_text, definition, &absolute, root_start, lang,
-            )
-        };
-        let before = xml_text.clone();
-        let result = match apply(&mut xml_text, lang.as_deref()) {
-            Err(message)
-                if lang.is_none()
-                    && message
-                        == crate::infrastructure::native_operations::form::FORM_TEXT_LANGUAGE_REQUIRED =>
-            {
-                xml_text = before;
-                let resolved = super::metadata::staged_text_language(
-                    staged,
-                    authority.source_kind(),
-                    op_index,
-                )?;
-                apply(&mut xml_text, Some(&resolved)).map(|_| lang = Some(resolved))
-            }
-            result => result.map(|_| ()),
-        };
-        result.map_err(|message| {
-            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(args_path.clone())
-        })?;
-    }
-    // Перенос сохраняет исходное состояние BOM. Остальные определения
-    // используют прежнюю нормализацию писателя формы.
-    let is_move = definitions
-        .iter()
-        .any(|step| matches!(step, FormEditStep::Move { .. }));
-    let postimage = if is_move && !preimage.starts_with(UTF8_BOM) {
-        xml_text.as_bytes().to_vec()
-    } else {
-        with_bom(&xml_text)
-    };
-    if !is_move && postimage == preimage {
-        return Ok(());
-    }
-    let validation = crate::infrastructure::native_operations::form::validate_form_with_source(
-        &Map::new(),
-        authority.workspace_context(),
-        Some((&absolute, &xml_text)),
-    );
-    crate::infrastructure::native_operations::form::form_edit_require_valid(validation).map_err(
-        |message| {
-            ApplyPlanError::new(ApplyPlanErrorKind::Postcondition, message).at_path(args_path)
-        },
-    )?;
-    if postimage == preimage {
-        return Ok(());
-    }
-    staged
-        .replace(&relative, &preimage, postimage)
-        .map_err(|error| ApplyPlanError::staging(error, at_path))?;
-    provisional.push(ProvisionalApplyEffect::single(
-        relative,
-        DomainEvent::new(
-            DomainEventKind::FormChanged,
-            format!("{}.Form.{form}", owner.as_str()),
-        ),
-        op_index,
-    ));
-    Ok(())
-}
-
-fn minimal_rights_xml() -> String {
-    concat!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
-        "<Rights xmlns=\"http://v8.1c.ru/8.2/roles\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:type=\"Rights\" version=\"2.20\">\n",
-        "\t<setForNewObjects>false</setForNewObjects>\n",
-        "\t<setForAttributesByDefault>true</setForAttributesByDefault>\n",
-        "\t<independentRightsOfChildObjects>false</independentRightsOfChildObjects>\n",
-        "</Rights>\n",
-    )
-    .to_string()
-}
-
-fn xml_escape(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
-
-/// Ensures `<object><name>X</name></object>` exists in the rights document.
-/// Читает права роли, применяет правку и стадирует результат с проверкой
-/// документа до и после. Неизменный документ не пишется.
-fn stage_role_rights(
-    staged: &mut ApplyStagedState,
-    authority: &FormResourceApplyAuthority<'_>,
-    role: &MetadataAddress,
-    op_index: usize,
-    provisional: &mut Vec<ProvisionalApplyEffect>,
-    edit: impl FnOnce(String) -> Result<String, ApplyPlanError>,
-) -> Result<(), ApplyPlanError> {
-    let at_path = format!("ops[{op_index}].args.at");
-    let relative = attached_resource_relative(role, "Rights.xml", authority.source_kind())
-        .map_err(|message| {
-            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(at_path.clone())
-        })?;
-    let preimage = staged
-        .read(&relative)
-        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
-        .ok_or_else(|| {
-            ApplyPlanError::new(
-                ApplyPlanErrorKind::NotFound,
-                "the role rights document (Ext/Rights.xml) was not found",
-            )
-            .at_path(at_path.clone())
-        })?;
-    let invalid = |message: String| {
-        ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path(at_path.clone())
-    };
-    let (bom, body) = crate::infrastructure::native_operations::role::decode_role_xml(&preimage)
-        .map_err(invalid)?;
-    crate::infrastructure::native_operations::role::validate_role_rights_document(
-        &body,
-        crate::infrastructure::native_operations::role::RoleValueScope::SourceImage,
-    )
-    .map_err(invalid)?;
-    let body = edit(body)?;
-    crate::infrastructure::native_operations::role::validate_role_rights_document(
-        &body,
-        crate::infrastructure::native_operations::role::RoleValueScope::SourceImage,
-    )
-    .map_err(|message| {
-        ApplyPlanError::new(ApplyPlanErrorKind::Postcondition, message)
-            .at_path(format!("ops[{op_index}].args"))
-    })?;
-    let postimage = crate::infrastructure::native_operations::role::encode_role_xml(bom, &body);
-    if postimage == preimage {
-        return Ok(());
-    }
-    staged
-        .replace(&relative, &preimage, postimage)
-        .map_err(|error| ApplyPlanError::staging(error, at_path))?;
-    provisional.push(ProvisionalApplyEffect::single(
-        relative,
-        DomainEvent::new(DomainEventKind::RoleChanged, role.as_str().to_string()),
-        op_index,
-    ));
-    Ok(())
-}
-
-/// Одно право объекта роли через общий редактор прав.
-fn set_role_right(
-    body: &str,
-    object: &str,
-    right: &str,
-    value: bool,
-    op_index: usize,
-) -> Result<String, ApplyPlanError> {
-    let edit = crate::domain::role::RoleEditOperation {
-        object_name: object.to_string(),
-        right: right.to_string(),
-        value,
-    };
-    crate::infrastructure::native_operations::role::apply_role_edit_operation(body, &edit, op_index)
-        .map(|(updated, _effect)| updated)
-        .map_err(|message| ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message))
-}
-
-/// Есть ли запись прав на объект в стадированном документе прав роли.
-/// `None` — документ не читается.
-pub(super) fn staged_rights_entry_exists(bytes: &[u8], object: &str) -> Option<bool> {
-    let (_, body) = crate::infrastructure::native_operations::role::decode_role_xml(bytes).ok()?;
-    rights_object_exists(&body, object).ok()
-}
-
-/// Есть ли у роли запись прав на объект.
-fn rights_object_exists(body: &str, object: &str) -> Result<bool, ApplyPlanError> {
-    Ok(rights_entry_size(body, object)?.is_some())
-}
-
-/// Число прав в записи роли на объект; `None` — записи нет.
-fn rights_entry_size(body: &str, object: &str) -> Result<Option<usize>, ApplyPlanError> {
-    let document = roxmltree::Document::parse(body).map_err(|_| {
-        ApplyPlanError::new(
-            ApplyPlanErrorKind::InvalidSource,
-            "Rights.xml is not well-formed XML",
-        )
-    })?;
-    let named = |node: &roxmltree::Node<'_, '_>, tag: &str| {
-        node.is_element() && node.tag_name().name() == tag
-    };
-    Ok(document
-        .root_element()
-        .children()
-        .filter(|node| named(node, "object"))
-        .find(|node| {
-            node.children()
-                .any(|child| named(&child, "name") && child.text().map(str::trim) == Some(object))
-        })
-        .map(|node| {
-            node.children()
-                .filter(|child| named(child, "right"))
-                .count()
-        }))
-}
-
-fn ensure_rights_object(body: &str, object: &str) -> Result<String, String> {
-    let document = roxmltree::Document::parse(body)
-        .map_err(|_| "Rights.xml is not well-formed XML".to_string())?;
-    let root = document.root_element();
-    let exists = root
-        .children()
-        .filter(|node| node.is_element() && node.tag_name().name() == "object")
-        .any(|node| {
-            node.children().any(|child| {
-                child.is_element()
-                    && child.tag_name().name() == "name"
-                    && child.text().map(str::trim) == Some(object)
-            })
-        });
-    if exists {
-        return Ok(body.to_string());
-    }
-    // Insert before the first restriction template, else before the root close.
-    let insert_at = root
-        .children()
-        .find(|node| node.is_element() && node.tag_name().name() == "restrictionTemplate")
-        .map(|node| node.range().start)
-        .or_else(|| body.rfind("</Rights>"))
-        .ok_or_else(|| "Rights.xml has no closing root element".to_string())?;
-    let line_start = body[..insert_at]
-        .rfind('\n')
-        .map_or(insert_at, |index| index + 1);
-    let indent = body[line_start..insert_at]
-        .chars()
-        .take_while(|ch| *ch == '\t' || *ch == ' ')
-        .collect::<String>();
-    let unit = if indent.starts_with(' ') {
-        " ".repeat(4)
-    } else {
-        "\t".to_string()
-    };
-    let block = format!(
-        "{indent}<object>\n{indent}{unit}<name>{}</name>\n{indent}</object>\n",
-        xml_escape(object)
-    );
-    let mut updated = body.to_string();
-    updated.insert_str(line_start, &block);
-    Ok(updated)
-}
-
-/// Sets or replaces the restriction condition of one right, creating the
-/// right (granted) when the object does not list it yet.
-fn set_rights_restriction(
-    body: &str,
-    object: &str,
-    right: &str,
-    condition: &str,
-) -> Result<String, String> {
-    let document = roxmltree::Document::parse(body)
-        .map_err(|_| "Rights.xml is not well-formed XML".to_string())?;
-    let root = document.root_element();
-    let object_node = root
-        .children()
-        .filter(|node| node.is_element() && node.tag_name().name() == "object")
-        .find(|node| {
-            node.children().any(|child| {
-                child.is_element()
-                    && child.tag_name().name() == "name"
-                    && child.text().map(str::trim) == Some(object)
-            })
-        })
-        .ok_or_else(|| format!("role object `{object}` was not found"))?;
-    let right_node = object_node
-        .children()
-        .filter(|node| node.is_element() && node.tag_name().name() == "right")
-        .find(|node| {
-            node.children().any(|child| {
-                child.is_element()
-                    && child.tag_name().name() == "name"
-                    && child.text().map(str::trim) == Some(right)
-            })
-        })
-        .ok_or_else(|| format!("right `{right}` of `{object}` is not set; set its value first"))?;
-    let escaped = xml_escape(condition);
-    if let Some(existing) = right_node
-        .children()
-        .find(|node| node.is_element() && node.tag_name().name() == "restrictionByCondition")
-    {
-        let condition_node = existing
-            .children()
-            .find(|node| node.is_element() && node.tag_name().name() == "condition");
-        let range = match condition_node {
-            Some(node) => node.range(),
-            None => existing.range(),
-        };
-        let indent = body[..range.start]
-            .rfind('\n')
-            .map(|index| {
-                body[index + 1..range.start]
-                    .chars()
-                    .take_while(|ch| *ch == '\t' || *ch == ' ')
-                    .collect::<String>()
-            })
-            .unwrap_or_default();
-        let replacement = if condition_node.is_some() {
-            format!("<condition>{escaped}</condition>")
-        } else {
-            format!(
-                "<restrictionByCondition>\n{indent}\t<condition>{escaped}</condition>\n{indent}</restrictionByCondition>"
-            )
-        };
-        let mut updated = body.to_string();
-        updated.replace_range(range, &replacement);
-        return Ok(updated);
-    }
-    let value_node = right_node
-        .children()
-        .find(|node| node.is_element() && node.tag_name().name() == "value")
-        .ok_or_else(|| format!("right `{right}` of `{object}` has no value element"))?;
-    let range = value_node.range();
-    let indent = body[..range.start]
-        .rfind('\n')
-        .map(|index| {
-            body[index + 1..range.start]
-                .chars()
-                .take_while(|ch| *ch == '\t' || *ch == ' ')
-                .collect::<String>()
-        })
-        .unwrap_or_default();
-    let unit = if indent.starts_with(' ') {
-        " ".repeat(4)
-    } else {
-        "\t".to_string()
-    };
-    let block = format!(
-        "\n{indent}<restrictionByCondition>\n{indent}{unit}<condition>{escaped}</condition>\n{indent}</restrictionByCondition>"
-    );
-    let mut updated = body.to_string();
-    updated.insert_str(range.end, &block);
-    Ok(updated)
-}
-
-/// A version-4 shaped uuid derived from the plan identity, so a preview and
-/// its publication produce the same descriptor bytes.
-fn seeded_uuid(seed: &str) -> String {
-    use sha2::Digest;
-    let digest = sha2::Sha256::digest(format!("unica-v13-form-resource-uuid-v1\0{seed}"));
-    let mut bytes = [0_u8; 16];
-    bytes.copy_from_slice(&digest[..16]);
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    uuid::Uuid::from_bytes(bytes).to_string()
-}
-
-fn subsystem_stub_xml(name: &str, format_version: &str, uuid: &str) -> String {
-    let model = crate::infrastructure::native_operations::subsystem::SubsystemEditModel {
-        version: format_version.to_string(),
-        uuid: uuid.to_string(),
-        name: name.to_string(),
-        synonym: String::new(),
-        comment: String::new(),
-        include_help: "true".to_string(),
-        include_ci: "true".to_string(),
-        use_one_command: "false".to_string(),
-        explanation: String::new(),
-        picture: String::new(),
-        picture_load_transparent: None,
-        content: Vec::new(),
-        children: Vec::new(),
-    };
-    crate::infrastructure::native_operations::common::emit_subsystem_edit_model(&model)
-}
-
-fn stage_new_file(
-    staged: &mut ApplyStagedState,
-    relative: &std::path::Path,
-    text: &[u8],
-    at_path: &str,
-) -> Result<(), ApplyPlanError> {
-    let existing = staged
-        .read(relative)
-        .map_err(|error| ApplyPlanError::staging(error, at_path.to_string()))?;
-    if existing.is_some() {
-        return Err(ApplyPlanError::new(
-            ApplyPlanErrorKind::InvalidState,
-            format!("`{}` already exists", relative.display()),
-        )
-        .at_path(at_path.to_string()));
-    }
-    let mut bytes = UTF8_BOM.to_vec();
-    bytes.extend_from_slice(text.strip_prefix(UTF8_BOM).unwrap_or(text));
-    staged
-        .create(relative, bytes)
-        .map_err(|error| ApplyPlanError::staging(error, at_path.to_string()))
-}
-
-/// Adds `<Kind>Name</Kind>` to the configuration's child objects.
-fn register_child(
-    staged: &mut ApplyStagedState,
-    kind: &str,
-    name: &str,
-    op_index: usize,
-) -> Result<PathBuf, ApplyPlanError> {
-    let at_path = format!("ops[{op_index}].args.at");
-    let owner = PathBuf::from("Configuration.xml");
-    let preimage = staged
-        .read(&owner)
-        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
-        .ok_or_else(|| {
-            ApplyPlanError::new(
-                ApplyPlanErrorKind::NotFound,
-                "the configuration descriptor was not found",
-            )
-            .at_path(at_path.clone())
-        })?;
-    let Some(postimage) = owner_registration_image(&preimage, kind, name, true, op_index)? else {
-        return Err(ApplyPlanError::new(
-            ApplyPlanErrorKind::InvalidState,
-            format!("the configuration already registers `{kind}.{name}`"),
-        )
-        .at_path(format!("ops[{op_index}].args.values.name")));
-    };
-    staged
-        .replace(&owner, &preimage, postimage)
-        .map_err(|error| ApplyPlanError::staging(error, at_path))?;
-    Ok(owner)
-}
-
 pub(crate) fn plan_form_resource_batch(
-    staged: ApplyStagedState,
-    authority: FormResourceApplyAuthority<'_>,
+    staged: &mut ApplyProposal<'_>,
+    authority: &dyn ApplySourceAuthority,
     operations: &[IndexedPlanOperation<FormResourcePlanOperation>],
-) -> Result<(ApplyStagedState, Vec<ProvisionalApplyEffect>), ApplyPlanError> {
+) -> Result<Vec<ProvisionalApplyEffect>, ApplyPlanError> {
     if operations.is_empty() {
         return Err(empty_apply_family_batch());
     }
-    if !authority.owns_staged_state(&staged) {
+    if !authority.owns_staged_state(staged) {
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::InvalidState,
             "form/resource planner authority does not own the staged state",
         )
         .at_path("ops"));
     }
-    let mut staged = staged;
     let mut provisional = Vec::new();
     for operation in operations {
         let op_index = operation.index();
         match &operation.operation().kind {
+            FormResourcePlanKind::Form(plan) => {
+                let reader = unica_workspace::discovery::ProjectDiscoveryReader::new(
+                    &authority.workspace_context().cwd,
+                );
+                unica_forms_designer::planner::stage_form_plan(
+                    staged,
+                    authority,
+                    plan,
+                    op_index,
+                    &mut provisional,
+                    &reader,
+                )?;
+            }
             FormResourcePlanKind::Unsupported => {
                 return Err(hidden_apply_family_unimplemented(op_index));
             }
-            FormResourcePlanKind::CreateRole { name } => {
-                let name_path = format!("ops[{op_index}].args.values.name");
-                let uuid = seeded_uuid(&format!("{}\0Role.{name}", authority.source_set_name()));
-                let lang = super::metadata::staged_text_language(
-                    &mut staged,
-                    authority.source_kind(),
-                    op_index,
-                )?;
-                let descriptor = crate::infrastructure::native_operations::role::role_metadata_xml(
-                    name,
-                    name,
-                    "",
-                    authority.expected_format(),
-                    &uuid,
-                    &lang,
-                );
-                let mut touched = Vec::new();
-                let descriptor_relative = PathBuf::from("Roles").join(format!("{name}.xml"));
-                stage_new_file(
-                    &mut staged,
-                    &descriptor_relative,
-                    descriptor.as_bytes(),
-                    &name_path,
-                )?;
-                touched.push(descriptor_relative);
-                let rights_relative = PathBuf::from("Roles").join(name).join("Ext/Rights.xml");
-                stage_new_file(
-                    &mut staged,
-                    &rights_relative,
-                    minimal_rights_xml().as_bytes(),
-                    &name_path,
-                )?;
-                touched.push(rights_relative);
-                touched.push(register_child(&mut staged, "Role", name, op_index)?);
-                provisional.push(ProvisionalApplyEffect::spanning(
-                    touched,
-                    DomainEvent::new(DomainEventKind::RoleChanged, format!("Role.{name}")),
-                    op_index,
-                ));
-            }
-            FormResourcePlanKind::CreateSubsystem { name } => {
-                let name_path = format!("ops[{op_index}].args.values.name");
-                let descriptor = subsystem_stub_xml(
-                    name,
-                    authority.expected_format(),
-                    &seeded_uuid(&format!(
-                        "{}\0Subsystem.{name}",
-                        authority.source_set_name()
-                    )),
-                );
-                let mut touched = Vec::new();
-                let descriptor_relative = PathBuf::from("Subsystems").join(format!("{name}.xml"));
-                stage_new_file(
-                    &mut staged,
-                    &descriptor_relative,
-                    descriptor.as_bytes(),
-                    &name_path,
-                )?;
-                touched.push(descriptor_relative);
-                touched.push(register_child(&mut staged, "Subsystem", name, op_index)?);
-                provisional.push(ProvisionalApplyEffect::spanning(
-                    touched,
-                    DomainEvent::new(
-                        DomainEventKind::SubsystemChanged,
-                        format!("Subsystem.{name}"),
-                    ),
-                    op_index,
-                ));
-            }
-            FormResourcePlanKind::RightSet {
-                role,
-                role_at,
-                object,
-                right,
-                value,
-                rls,
-            } => {
-                let value_path = format!("ops[{op_index}].args.values");
-                stage_role_rights(
-                    &mut staged,
-                    &authority,
-                    role,
-                    op_index,
-                    &mut provisional,
-                    |mut body| {
-                        // `right.set` пишет только в существующую запись:
-                        // опечатка в адресе не создаёт объект роли (#1354).
-                        if !rights_object_exists(&body, object)? {
-                            return Err(ApplyPlanError::new(
-                                ApplyPlanErrorKind::NotFound,
-                                format!(
-                                    "the role has no rights entry for `{object}`; create it with right.add at `{role_at}`"
-                                ),
-                            )
-                            .at_path(format!("ops[{op_index}].args.at")));
-                        }
-                        let granted = value.or(if rls.is_some() { Some(true) } else { None });
-                        if let Some(granted) = granted {
-                            body = set_role_right(&body, object, right, granted, op_index)
-                                .map_err(|error| error.at_path(value_path.clone()))?;
-                        }
-                        if let Some(condition) = rls {
-                            body = set_rights_restriction(&body, object, right, condition)
-                                .map_err(|message| {
-                                    ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message)
-                                        .at_path(format!("{value_path}.rls"))
-                                })?;
-                        }
-                        Ok(body)
-                    },
-                )?;
-            }
-            FormResourcePlanKind::RightAdd {
-                role,
-                role_at,
-                entries,
-            } => {
-                stage_role_rights(
-                    &mut staged,
-                    &authority,
-                    role,
-                    op_index,
-                    &mut provisional,
-                    |mut body| {
-                        for (index, entry) in entries.iter().enumerate() {
-                            let location = format!("ops[{op_index}].args.items[{index}]");
-                            // Новая запись не перекрывает существующую: её
-                            // права меняет `right.set` по её адресу.
-                            if rights_object_exists(&body, &entry.object)? {
-                                return Err(ApplyPlanError::new(
-                                    ApplyPlanErrorKind::BadValue,
-                                    format!(
-                                        "the role already has a rights entry for `{}`; change it with right.set at `{}`",
-                                        entry.object,
-                                        member_address(
-                                            &format!("{role_at}.Right"),
-                                            &entry.object.replacen('.', "_", 1)
-                                        )
-                                    ),
-                                )
-                                .at_path(format!("{location}.object")));
-                            }
-                            body =
-                                ensure_rights_object(&body, &entry.object).map_err(|message| {
-                                    ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
-                                        .at_path(location.clone())
-                                })?;
-                            for (right, granted) in &entry.rights {
-                                body =
-                                    set_role_right(&body, &entry.object, right, *granted, op_index)
-                                        .map_err(|error| {
-                                            error.at_path(format!("{location}.rights.{right}"))
-                                        })?;
-                            }
-                            // Права, равные умолчанию роли, платформа не хранит:
-                            // такая запись осталась бы пустой и не появилась бы.
-                            if rights_entry_size(&body, &entry.object)?.unwrap_or(0) == 0 {
-                                return Err(ApplyPlanError::new(
-                                    ApplyPlanErrorKind::BadValue,
-                                    format!(
-                                        "every right of `{}` equals the role default for new objects; the entry would stay empty",
-                                        entry.object
-                                    ),
-                                )
-                                .at_path(format!("{location}.rights")));
-                            }
-                        }
-                        Ok(body)
-                    },
-                )?;
-            }
-            FormResourcePlanKind::CommandInterface {
-                address,
-                relative,
-                edit,
-            } => {
-                let at_path = format!("ops[{op_index}].args.at");
-                let preimage = staged
-                    .read(relative)
-                    .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
-                    .ok_or_else(|| {
-                        ApplyPlanError::new(
-                            ApplyPlanErrorKind::NotFound,
-                            "the command interface document was not found",
-                        )
-                        .at_path(at_path.clone())
-                    })?;
-                let mut text = String::from_utf8(preimage.clone()).map_err(|_| {
-                    ApplyPlanError::new(
-                        ApplyPlanErrorKind::InvalidSource,
-                        "the command interface document is not UTF-8",
-                    )
-                    .at_path(at_path.clone())
-                })?;
-                let mut counters = InterfaceEditCounters::default();
-                let mut log = String::new();
-                let fail = |message: String| {
-                    ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
-                        .at_path(at_path.clone())
-                };
-                let order_refusal = |message: String, key: &str| {
-                    ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message)
-                        .at_path(format!("ops[{op_index}].args.values.{key}"))
-                };
-                match edit {
-                    InterfaceEdit::Visibility(values) => {
-                        // Правится только `Common`; значения по ролям —
-                        // соседние элементы того же блока — остаются как были.
-                        let (shown, hidden): (Vec<_>, Vec<_>) =
-                            values.iter().partition(|(_, visible)| *visible);
-                        let names = |group: Vec<&(String, bool)>| {
-                            group
-                                .into_iter()
-                                .map(|(command, _)| command.clone())
-                                .collect::<Vec<_>>()
-                        };
-                        let hidden = names(hidden);
-                        if !hidden.is_empty() {
-                            interface_text_do_hide(&mut text, hidden, &mut counters, &mut log)
-                                .map_err(fail)?;
-                        }
-                        let shown = names(shown);
-                        if !shown.is_empty() {
-                            interface_text_do_show(&mut text, shown, &mut counters, &mut log)
-                                .map_err(fail)?;
-                        }
-                    }
-                    InterfaceEdit::Placement(values) => {
-                        for (command, group, placement) in values {
-                            let mut request = Map::new();
-                            request.insert("command".to_string(), json!(command));
-                            if let Some(group) = group {
-                                request.insert("group".to_string(), json!(group));
-                            }
-                            if let Some(placement) = placement {
-                                request.insert("placement".to_string(), json!(placement));
-                            }
-                            interface_text_do_place(
-                                &mut text,
-                                &Value::Object(request),
-                                &mut counters,
-                                &mut log,
-                            )
-                            .map_err(fail)?;
-                        }
-                    }
-                    InterfaceEdit::CommandOrder { group, commands } => {
-                        // Группа — узел адреса, а `*.set` правит только
-                        // существующий узел: группа объявлена в `GroupsOrder`,
-                        // как её видит чтение. Порядок не создаёт группу.
-                        if !interface_text_direct_item_values(&text, "GroupsOrder", "Group")
-                            .iter()
-                            .any(|declared| declared == group)
-                        {
-                            return Err(ApplyPlanError::new(
-                                ApplyPlanErrorKind::NotFound,
-                                format!(
-                                    "the command interface declares no group `{group}`; read its groups at `…Interface.Group`"
-                                ),
-                            )
-                            .at_path(at_path.clone()));
-                        }
-                        let commands = commands
-                            .iter()
-                            .map(|command| normalize_interface_command_name(command, &mut log))
-                            .collect::<Vec<_>>();
-                        interface_order_membership(
-                            &interface_text_group_command_order(&text, group),
-                            &commands,
-                            &format!("commands of group `{group}`"),
-                        )
-                        .map_err(|message| order_refusal(message, "commands"))?;
-                        interface_text_do_order(
-                            &mut text,
-                            &json!({"group": group, "commands": commands}),
-                            &mut counters,
-                            &mut log,
-                        )
-                        .map_err(fail)?;
-                    }
-                    InterfaceEdit::GroupOrder(groups) => {
-                        interface_order_membership(
-                            &interface_text_direct_item_values(&text, "GroupsOrder", "Group"),
-                            groups,
-                            "groups",
-                        )
-                        .map_err(|message| order_refusal(message, "groups"))?;
-                        interface_text_do_group_order(
-                            &mut text,
-                            &json!(groups),
-                            &mut counters,
-                            &mut log,
-                        )
-                        .map_err(fail)?;
-                    }
-                    InterfaceEdit::SubsystemOrder(subsystems) => {
-                        interface_order_membership(
-                            &interface_text_direct_item_values(
-                                &text,
-                                "SubsystemsOrder",
-                                "Subsystem",
-                            ),
-                            subsystems,
-                            "subsystems",
-                        )
-                        .map_err(|message| order_refusal(message, "subsystems"))?;
-                        interface_text_do_subsystem_order(
-                            &mut text,
-                            &json!(subsystems),
-                            &mut counters,
-                            &mut log,
-                        )
-                        .map_err(fail)?;
-                    }
-                }
-                let postimage = text.into_bytes();
-                if postimage != preimage {
-                    staged
-                        .replace(relative, &preimage, postimage)
-                        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
-                    provisional.push(ProvisionalApplyEffect::spanning(
-                        vec![relative.clone()],
-                        DomainEvent::new(DomainEventKind::SubsystemChanged, address.clone()),
-                        op_index,
-                    ));
-                }
-            }
-            FormResourcePlanKind::Subsystem {
-                address,
-                relative,
-                edit,
-            } => {
-                let at_path = format!("ops[{op_index}].args.at");
-                let preimage = staged
-                    .read(relative)
-                    .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
-                    .ok_or_else(|| {
-                        ApplyPlanError::new(
-                            ApplyPlanErrorKind::NotFound,
-                            "the subsystem descriptor was not found",
-                        )
-                        .at_path(at_path.clone())
-                    })?;
-                let text = String::from_utf8(preimage.clone()).map_err(|_| {
-                    ApplyPlanError::new(
-                        ApplyPlanErrorKind::InvalidSource,
-                        "the subsystem descriptor is not UTF-8",
-                    )
-                    .at_path(at_path.clone())
-                })?;
-                let mut model =
-                    crate::infrastructure::native_operations::common::parse_subsystem_edit_model(
-                        &text,
-                        &relative.display().to_string(),
-                    )
-                    .map_err(|message| {
-                        ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
-                            .at_path(at_path.clone())
-                    })?;
-                let mut touched = Vec::new();
-                match edit {
-                    SubsystemEdit::ContentAdd(names) => {
-                        for name in names {
-                            if !model.content.iter().any(|existing| existing == name) {
-                                model.content.push(name.clone());
-                            }
-                        }
-                    }
-                    SubsystemEdit::ContentRemove(names) => {
-                        model.content.retain(|existing| !names.contains(existing));
-                    }
-                    SubsystemEdit::ChildAdd(names) => {
-                        let children_dir = relative.with_extension("").join("Subsystems");
-                        for name in names {
-                            if !crate::infrastructure::native_operations::common::is_1c_identifier(
-                                name,
-                            ) {
-                                return Err(bad(
-                                    op_index,
-                                    "items",
-                                    format!("`{name}` is not a valid 1C identifier"),
-                                ));
-                            }
-                            if !model.children.iter().any(|existing| existing == name) {
-                                model.children.push(name.clone());
-                            }
-                            let child_relative = children_dir.join(format!("{name}.xml"));
-                            let existing = staged
-                                .read(&child_relative)
-                                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
-                            if existing.is_none() {
-                                let stub = subsystem_stub_xml(
-                                    name,
-                                    &model.version,
-                                    &seeded_uuid(&format!(
-                                        "{}\0{address}.Subsystem.{name}",
-                                        authority.source_set_name()
-                                    )),
-                                );
-                                stage_new_file(
-                                    &mut staged,
-                                    &child_relative,
-                                    stub.as_bytes(),
-                                    &at_path,
-                                )?;
-                                touched.push(child_relative);
-                            }
-                        }
-                    }
-                    SubsystemEdit::ChildRemove(names) => {
-                        let children_dir = relative.with_extension("").join("Subsystems");
-                        model.children.retain(|existing| !names.contains(existing));
-                        for name in names {
-                            let child_relative = children_dir.join(format!("{name}.xml"));
-                            if let Some(child_preimage) = staged
-                                .read(&child_relative)
-                                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
-                            {
-                                staged.remove(&child_relative, &child_preimage).map_err(
-                                    |error| ApplyPlanError::staging(error, at_path.clone()),
-                                )?;
-                                touched.push(child_relative);
-                            }
-                        }
-                    }
-                }
-                let original = staged
-                    .original_image(relative)
-                    .map(std::str::from_utf8)
-                    .transpose()
-                    .map_err(|_| {
-                        ApplyPlanError::new(
-                            ApplyPlanErrorKind::InvalidSource,
-                            "the original subsystem descriptor is not UTF-8",
-                        )
-                        .at_path(at_path.clone())
-                    })?;
-                let postimage =
-                    crate::infrastructure::native_operations::common::patch_subsystem_lists(
-                        &text, &model, original,
-                    )
-                    .map_err(|message| {
-                        ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
-                            .at_path(at_path.clone())
-                    })?
-                    .into_bytes();
-                if postimage != preimage {
-                    staged
-                        .replace(relative, &preimage, postimage)
-                        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
-                    touched.push(relative.clone());
-                }
-                if !touched.is_empty() {
-                    provisional.push(ProvisionalApplyEffect::spanning(
-                        touched,
-                        DomainEvent::new(DomainEventKind::SubsystemChanged, address.clone()),
-                        op_index,
-                    ));
-                }
-            }
-            FormResourcePlanKind::FormAdd { owner, forms } => {
-                stage_form_add(
-                    &mut staged,
-                    &authority,
-                    owner,
-                    forms,
+
+            FormResourcePlanKind::Role(plan) => {
+                unica_roles_designer::planner::stage_role_plan(
+                    staged,
+                    authority,
+                    plan,
                     op_index,
                     &mut provisional,
                 )?;
             }
-            FormResourcePlanKind::FormSet { owner, defaults } => {
-                stage_form_set(
-                    &mut staged,
-                    &authority,
-                    owner,
-                    defaults,
+            FormResourcePlanKind::Metadata(plan) => {
+                resource_planner::stage_metadata_resource_plan(
+                    staged,
+                    authority,
+                    plan,
                     op_index,
-                    &mut provisional,
-                )?;
-            }
-            FormResourcePlanKind::FormRemove { owner, form } => {
-                stage_form_remove(
-                    &mut staged,
-                    &authority,
-                    owner,
-                    form,
-                    op_index,
-                    &mut provisional,
-                )?;
-            }
-            FormResourcePlanKind::FormEdit {
-                owner,
-                form,
-                subject,
-                definitions,
-            } => {
-                stage_form_edit(
-                    &mut staged,
-                    &authority,
-                    owner,
-                    form,
-                    subject,
-                    definitions,
-                    op_index,
-                    &mut provisional,
-                )?;
-            }
-            FormResourcePlanKind::SupportCapability(capability) => {
-                let at_path = format!("ops[{op_index}].args.at");
-                let relative = PathBuf::from("Ext/ParentConfigurations.bin");
-                let (preimage, text) = read_support_state(&mut staged, &relative, &at_path)?;
-                let (global_flag, _) =
-                    crate::infrastructure::native_operations::common::parse_support_header(&text)
-                        .expect("read_support_state proved the header");
-                // Already in the requested state: nothing to switch, and the
-                // object rules must not be reset as a side effect.
-                if (global_flag == 0) == capability.enabled() {
-                    continue;
-                }
-                let root = authority.source_root();
-                let (_, updated, _) =
-                    crate::infrastructure::native_operations::support::plan_capability(
-                        &root.join(&relative),
-                        &text,
-                        *capability,
-                        root,
-                    )
-                    .map_err(|message| {
-                        ApplyPlanError::new(ApplyPlanErrorKind::InvalidState, message)
-                            .at_path(at_path.clone())
-                    })?;
-                stage_support_state(
-                    &mut staged,
-                    &relative,
-                    &preimage,
-                    &updated,
-                    op_index,
-                    &at_path,
-                    &mut provisional,
-                )?;
-            }
-            FormResourcePlanKind::SupportRule { target, rule } => {
-                let at_path = format!("ops[{op_index}].args.at");
-                let relative = PathBuf::from("Ext/ParentConfigurations.bin");
-                let (preimage, text) = read_support_state(&mut staged, &relative, &at_path)?;
-                let descriptor_relative =
-                    crate::infrastructure::logical_event_source::metadata_descriptor_relative(
-                        target,
-                        authority.source_kind(),
-                    )
-                    .map_err(|message| {
-                        ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message)
-                            .at_path(at_path.clone())
-                    })?;
-                let descriptor = staged
-                    .read(&descriptor_relative)
-                    .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
-                    .ok_or_else(|| {
-                        ApplyPlanError::new(
-                            ApplyPlanErrorKind::NotFound,
-                            "metadata descriptor was not found",
-                        )
-                        .at_path(at_path.clone())
-                    })?;
-                prove_support_form_owner(
-                    &mut staged,
-                    target,
-                    &descriptor_relative,
-                    &descriptor,
-                    &authority,
-                    &at_path,
-                )?;
-                let uuid =
-                    crate::infrastructure::native_operations::common::support_root_uuid_from_bytes(
-                        &descriptor,
-                    )
-                    .ok_or_else(|| {
-                        ApplyPlanError::new(
-                            ApplyPlanErrorKind::InvalidSource,
-                            "the metadata descriptor carries no object uuid",
-                        )
-                        .at_path(at_path.clone())
-                    })?;
-                let root = authority.source_root();
-                let (_, updated, _) =
-                    crate::infrastructure::native_operations::support::plan_object_rule(
-                        &root.join(&relative),
-                        &text,
-                        &uuid,
-                        *rule,
-                        &root.join(&descriptor_relative),
-                    )
-                    .map_err(|message| {
-                        ApplyPlanError::new(ApplyPlanErrorKind::InvalidState, message)
-                            .at_path(at_path.clone())
-                    })?;
-                stage_support_state(
-                    &mut staged,
-                    &relative,
-                    &preimage,
-                    &updated,
-                    op_index,
-                    &at_path,
                     &mut provisional,
                 )?;
             }
         }
     }
-    Ok((staged, provisional))
+    Ok(provisional)
 }
 
-// Вложенный адрес сначала доказывает регистрацию и идентичность описания,
-// только затем его UUID выбирает запись поддержки. Все чтения входят
-// в барьер исходного состояния подготовленного применения.
-fn prove_support_form_owner(
-    staged: &mut ApplyStagedState,
-    target: &MetadataAddress,
-    relative: &std::path::Path,
-    descriptor: &[u8],
-    authority: &FormResourceApplyAuthority<'_>,
-    at_path: &str,
-) -> Result<(), ApplyPlanError> {
-    use crate::infrastructure::platform_xml_owner::{
-        prove_already_read_metadata_owner, prove_already_read_source_set_owner,
-    };
-    let parts: Vec<_> = target.as_str().split('.').collect();
-    let [kind, name, "Form", form] = parts.as_slice() else {
-        return Ok(());
-    };
-    let invalid = || {
-        ApplyPlanError::new(
-            ApplyPlanErrorKind::InvalidSource,
-            "form support target does not match its registered metadata descriptor",
-        )
-        .at_path(at_path)
-    };
-    let root_path = std::path::Path::new("Configuration.xml");
-    let root = read_required(staged, root_path, "configuration descriptor", at_path)?;
-    let root = prove_already_read_source_set_owner(root_path, &root, authority.source_kind())
-        .map_err(|_| invalid())?;
-    if !root.registers(kind, name) {
-        return Err(invalid());
-    }
-    let owner = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &format!("{kind}.{name}"))
-        .map_err(|_| invalid())?;
-    let owner_path = crate::infrastructure::logical_event_source::metadata_descriptor_relative(
-        &owner,
-        authority.source_kind(),
-    )
-    .map_err(|_| invalid())?;
-    let owner_bytes = read_required(staged, &owner_path, "form owner descriptor", at_path)?;
-    let owner =
-        prove_already_read_metadata_owner(&owner_path, &owner_bytes).map_err(|_| invalid())?;
-    let child = prove_already_read_metadata_owner(relative, descriptor).map_err(|_| invalid())?;
-    if owner.artifact_kind() != *kind
-        || owner.artifact_name() != Some(*name)
-        || !owner.registers("Form", form)
-        || child.artifact_kind() != "Form"
-        || child.artifact_name() != Some(*form)
-        || root.version() != Some(authority.expected_format())
-        || owner.version() != Some(authority.expected_format())
-        || child.version() != Some(authority.expected_format())
-    {
-        return Err(invalid());
-    }
-    // Контейнер не является владельцем формы. Его UUID отклоняется, чтобы
-    // общий читатель поддержки не выбрал запись другого объекта.
-    let text = std::str::from_utf8(descriptor).map_err(|_| invalid())?;
-    let document =
-        roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).map_err(|_| invalid())?;
-    if document.root_element().attribute("uuid").is_some() {
-        return Err(invalid());
-    }
-    let uuid =
-        crate::infrastructure::native_operations::common::support_root_uuid_from_bytes(descriptor)
-            .ok_or_else(invalid)?;
-    uuid::Uuid::parse_str(&uuid).map_err(|_| invalid())?;
-    Ok(())
-}
-
-fn read_support_state(
-    staged: &mut ApplyStagedState,
-    relative: &std::path::Path,
-    at_path: &str,
-) -> Result<(Vec<u8>, String), ApplyPlanError> {
-    let preimage = staged
-        .read(relative)
-        .map_err(|error| ApplyPlanError::staging(error, at_path.to_string()))?
-        .ok_or_else(|| {
-            ApplyPlanError::new(
-                ApplyPlanErrorKind::InvalidState,
-                "the configuration is not on vendor support (no Ext/ParentConfigurations.bin); there is no support state to switch",
-            )
-            .at_path(at_path.to_string())
-        })?;
-    let text =
-        crate::infrastructure::native_operations::support::decode_parent_configurations(&preimage)
-            .map_err(|message| {
-                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
-                    .at_path(at_path.to_string())
-            })?;
-    if crate::infrastructure::native_operations::common::parse_support_header(&text).is_none() {
-        return Err(ApplyPlanError::new(
-            ApplyPlanErrorKind::InvalidSource,
-            "Ext/ParentConfigurations.bin has an unknown format",
-        )
-        .at_path(at_path.to_string()));
-    }
-    Ok((preimage, text))
-}
-
-fn stage_support_state(
-    staged: &mut ApplyStagedState,
-    relative: &std::path::Path,
-    preimage: &[u8],
-    updated: &str,
-    op_index: usize,
-    at_path: &str,
-    provisional: &mut Vec<ProvisionalApplyEffect>,
-) -> Result<(), ApplyPlanError> {
-    let postimage =
-        crate::infrastructure::native_operations::support::parent_configurations_bytes(updated);
-    if postimage == preimage {
-        return Ok(());
-    }
-    staged
-        .replace(relative, preimage, postimage)
-        .map_err(|error| ApplyPlanError::staging(error, at_path.to_string()))?;
-    provisional.push(ProvisionalApplyEffect::single(
-        relative.to_path_buf(),
-        DomainEvent::new(
-            DomainEventKind::ConfigXmlChanged,
-            "Configuration".to_string(),
-        ),
-        op_index,
-    ));
-    Ok(())
+#[cfg(test)]
+pub(crate) fn plan_form_resource_batch_owned_for_test(
+    mut staged: unica_workspace::apply::ApplyStagedState,
+    authority: unica_workspace::actor::FormResourceApplyAuthority<'_>,
+    operations: &[IndexedPlanOperation<FormResourcePlanOperation>],
+) -> Result<
+    (
+        unica_workspace::apply::ApplyStagedState,
+        Vec<ProvisionalApplyEffect>,
+    ),
+    ApplyPlanError,
+> {
+    let effects = plan_form_resource_batch(&mut staged.proposal(), &authority, operations)?;
+    Ok((staged, effects))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_form_resource_plan_operation, plan_form_resource_batch};
+    use super::{parse_form_resource_plan_operation, plan_form_resource_batch_owned_for_test};
 
     #[test]
     fn a_dynamic_list_table_keeps_its_discriminator() {
@@ -3513,17 +225,20 @@ mod tests {
             "_dynList": true,
             "autoRefresh": true,
         });
-        let (definition, _) =
-            super::legacy_element_definition(item.as_object().unwrap(), 0, "ops[0].args.items[0]")
-                .expect("a dynamic-list table is a valid element definition");
+        let (definition, _) = unica_forms_designer::planner::legacy_element_definition(
+            item.as_object().unwrap(),
+            0,
+            "ops[0].args.items[0]",
+        )
+        .expect("a dynamic-list table is a valid element definition");
         assert_eq!(definition["_dynList"], true);
         assert_eq!(definition["autoRefresh"], true);
     }
-    use crate::infrastructure::native_operations::apply::ApplyPlanErrorKind;
-    use crate::infrastructure::native_operations::apply_families::request::IndexedPlanOperation;
     use crate::infrastructure::native_operations::apply_families::tests::ApplySeamFixture;
     use serde_json::json;
     use std::path::Path;
+    use unica_source_contract::proposal::ApplyPlanErrorKind;
+    use unica_source_contract::proposal::IndexedPlanOperation;
 
     const RIGHTS: &str = concat!(
         "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
@@ -3535,18 +250,13 @@ mod tests {
         "</Rights>\n",
     );
 
-    fn staged_text(
-        staged: &crate::infrastructure::native_operations::apply::ApplyStagedState,
-        relative: &str,
-    ) -> String {
+    fn staged_text(staged: &unica_workspace::apply::ApplyStagedState, relative: &str) -> String {
         let change = staged
             .planned_changes()
             .into_iter()
             .find(|change| change.relative_path == Path::new(relative))
             .unwrap_or_else(|| panic!("`{relative}` is staged"));
-        let crate::infrastructure::native_operations::apply::StagedFileState::Bytes(bytes) =
-            change.current
-        else {
+        let unica_source_contract::proposal::StagedFileState::Bytes(bytes) = change.current else {
             panic!("`{relative}` keeps bytes");
         };
         String::from_utf8(bytes).unwrap()
@@ -3559,9 +269,9 @@ mod tests {
     fn item_add_refuses_nested_content_and_events_with_the_next_call() {
         let fixture = ApplySeamFixture::new();
         let at = "main:Document.First.Form.ФормаДокумента";
-        for key in crate::domain::operation_contract::FORM_ELEMENT_NESTED_KEYS
+        for key in unica_forms::contracts::FORM_ELEMENT_NESTED_KEYS
             .iter()
-            .chain(crate::domain::operation_contract::FORM_ELEMENT_EVENT_KEYS)
+            .chain(unica_forms::contracts::FORM_ELEMENT_EVENT_KEYS)
             .chain(&["html", "textDoc"])
         {
             let mut item = json!({"name": "Parent", "type": "Group"});
@@ -3654,17 +364,20 @@ mod tests {
     /// писатель вида не пишет, в контракт не попадает.
     #[test]
     fn every_published_element_key_reaches_the_xml_of_its_kind() {
-        use crate::infrastructure::native_operations::form::{emit_form_element, FormIdAllocator};
+        use unica_forms_designer::codec::{emit_form_element, FormIdAllocator};
         let fixture = ApplySeamFixture::new();
-        let contract =
-            crate::domain::operation_contract::OperationContract::form("item.add").unwrap();
+        let contract = unica_forms::operations::FormOperation::ItemAdd.contract();
         let variants = contract.schema["properties"]["items"]["items"]["anyOf"]
             .as_array()
             .unwrap()
             .clone();
         let emit = |item: &serde_json::Value| {
-            let (definition, _) =
-                super::legacy_element_definition(item.as_object().unwrap(), 0, "items[0]").unwrap();
+            let (definition, _) = unica_forms_designer::planner::legacy_element_definition(
+                item.as_object().unwrap(),
+                0,
+                "items[0]",
+            )
+            .unwrap();
             let mut lines = Vec::new();
             emit_form_element(
                 &mut lines,
@@ -3676,7 +389,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("{item}: {error}"));
             lines.join("\n")
         };
-        for kind in crate::domain::operation_contract::FORM_ELEMENT_KINDS {
+        for kind in unica_forms::contracts::FORM_ELEMENT_KINDS {
             let variant = variants
                 .iter()
                 .find(|variant| variant["properties"]["type"]["enum"][0] == json!(kind.kind))
@@ -3693,7 +406,7 @@ mod tests {
                 if kind.kind == "TextDocumentField" {
                     baseline["path"] = json!("Protocol");
                 }
-                if crate::domain::operation_contract::FORM_DYNAMIC_LIST_KEYS.contains(key) {
+                if unica_forms::contracts::FORM_DYNAMIC_LIST_KEYS.contains(key) {
                     baseline["_dynList"] = json!(true);
                 }
                 let before = emit(&baseline);
@@ -3717,8 +430,8 @@ mod tests {
     /// Перечисления контракта элемента совпадают со справочником писателя.
     #[test]
     fn element_enums_match_the_writer_enum_contract() {
-        use crate::domain::operation_contract::form_element_enum;
-        use crate::infrastructure::native_operations::form::form_8_3_27_enum_values_for_test as writer;
+        use unica_forms::contracts::form_element_enum;
+        use unica_forms_designer::codec::form_8_3_27_enum_values_for_test as writer;
         for (kind, key, xml) in [
             ("InputField", "titleLocation", "FormElementTitleLocation"),
             ("CheckBox", "checkBoxType", "CheckBoxType"),
@@ -3781,7 +494,7 @@ mod tests {
             assert_eq!(error.path(), Some(path.as_str()), "{key}");
         }
         let mut lines = Vec::new();
-        crate::infrastructure::native_operations::form::emit_form_edit_attribute_item(
+        unica_forms_designer::codec::emit_form_edit_attribute_item(
             &mut lines,
             json!({"name": "A", "type": "xs:string", "savedData": true, "fillChecking": "ShowError"})
                 .as_object()
@@ -3827,7 +540,7 @@ mod tests {
                 1,
             ),
         ];
-        let (staged, _) = plan_form_resource_batch(staged, authority, &operations)
+        let (staged, _) = plan_form_resource_batch_owned_for_test(staged, authority, &operations)
             .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
         for relative in ["Roles/Manager.xml", "Documents/First/Forms/Main.xml"] {
             let text = staged_text(&staged, relative);
@@ -3888,7 +601,7 @@ mod tests {
                 3,
             ),
         ];
-        let (staged, _) = plan_form_resource_batch(staged, authority, &operations)
+        let (staged, _) = plan_form_resource_batch_owned_for_test(staged, authority, &operations)
             .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
         let text = staged_text(&staged, "Documents/First/Forms/Main/Ext/Form.xml");
         assert!(!text.contains("<v8:lang>ru</v8:lang>"), "{text}");
@@ -3950,7 +663,8 @@ mod tests {
                     )
                 })
                 .collect::<Vec<_>>();
-            plan_form_resource_batch(staged, authority, &operations).map(|(staged, _)| staged)
+            plan_form_resource_batch_owned_for_test(staged, authority, &operations)
+                .map(|(staged, _)| staged)
         };
         let staged = plan(&[
             (
@@ -4060,12 +774,13 @@ mod tests {
                 4,
             ),
         ];
-        let (staged, effects) = plan_form_resource_batch(staged, authority, &operations)
-            .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+        let (staged, effects) =
+            plan_form_resource_batch_owned_for_test(staged, authority, &operations)
+                .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
         assert_eq!(effects.len(), 5);
         let form = staged_text(&staged, "Documents/First/Forms/ФормаДокумента/Ext/Form.xml");
-        let elements = super::form_items_of(&form).unwrap();
-        let field = super::form_item_at(
+        let elements = unica_forms_designer::planner::form_items_of(&form).unwrap();
+        let field = unica_forms_designer::planner::form_item_at(
             &elements,
             &["ГруппаИтог".to_string(), "ПолеИтог".to_string()],
         )
@@ -4161,10 +876,11 @@ mod tests {
                 )
                 .unwrap(),
             );
-            plan_form_resource_batch(staged, authority, &operations).map(|(staged, _)| staged)
+            plan_form_resource_batch_owned_for_test(staged, authority, &operations)
+                .map(|(staged, _)| staged)
         };
 
-        let before = crate::test_support::tree_snapshot(&fixture.source_dir());
+        let before = unica_workspace::test_support::tree_snapshot(&fixture.source_dir());
         for attribute_type in [None, Some("String")] {
             let error = plan(attribute_type).unwrap_err();
             assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{error:?}");
@@ -4175,7 +891,7 @@ mod tests {
                 "{error:?}"
             );
             assert_eq!(
-                crate::test_support::tree_snapshot(&fixture.source_dir()),
+                unica_workspace::test_support::tree_snapshot(&fixture.source_dir()),
                 before,
                 "planning an invalid field must not write the source tree"
             );
@@ -4284,14 +1000,17 @@ mod tests {
             let authority = admission
                 .form_resource_planning_authority(&fixture.binding)
                 .unwrap();
-            plan_form_resource_batch(admission.staged_state().unwrap(), authority, &operations).map(
-                |(staged, _)| {
-                    let text = staged_text(&staged, "Documents/First/Forms/Main/Ext/Form.xml");
-                    super::form_items_of(&text).unwrap()
-                },
+            plan_form_resource_batch_owned_for_test(
+                admission.staged_state().unwrap(),
+                authority,
+                &operations,
             )
+            .map(|(staged, _)| {
+                let text = staged_text(&staged, "Documents/First/Forms/Main/Ext/Form.xml");
+                unica_forms_designer::planner::form_items_of(&text).unwrap()
+            })
         };
-        let names = |elements: &[super::FormInfoElement]| {
+        let names = |elements: &[unica_forms::facts::FormInfoElement]| {
             elements
                 .iter()
                 .map(|element| element.name.clone())
@@ -4347,7 +1066,8 @@ mod tests {
             json!({"at": format!("{form}.Item.Header"), "items": [{"name": "X", "path": "Объект.Total", "after": "Total"}]}),
         )
         .unwrap();
-        let header = super::form_item_at(&elements, &chain(&["Header"])).unwrap();
+        let header =
+            unica_forms_designer::planner::form_item_at(&elements, &chain(&["Header"])).unwrap();
         assert_eq!(names(&header.children), ["Total", "X", "Count"]);
         // Удаление вложенного элемента оставляет контейнер и соседа.
         let elements = plan(
@@ -4360,7 +1080,8 @@ mod tests {
             names(&elements),
             ["ФормаКоманднаяПанель", "Header", "Footer"]
         );
-        let header = super::form_item_at(&elements, &chain(&["Header"])).unwrap();
+        let header =
+            unica_forms_designer::planner::form_item_at(&elements, &chain(&["Header"])).unwrap();
         assert_eq!(names(&header.children), ["Count"]);
         // Событие ложится только на названный элемент.
         let elements = plan(
@@ -4368,10 +1089,14 @@ mod tests {
             json!({"at": format!("{form}.Item.Header.Item.Count.Event.OnChange"), "values": {"handler": "CountOnChange"}}),
         )
         .unwrap();
-        let count = super::form_item_at(&elements, &chain(&["Header", "Count"])).unwrap();
+        let count =
+            unica_forms_designer::planner::form_item_at(&elements, &chain(&["Header", "Count"]))
+                .unwrap();
         assert_eq!(count.events.len(), 1);
         assert_eq!(count.events[0].handler, "CountOnChange");
-        let total = super::form_item_at(&elements, &chain(&["Header", "Total"])).unwrap();
+        let total =
+            unica_forms_designer::planner::form_item_at(&elements, &chain(&["Header", "Total"]))
+                .unwrap();
         assert!(total.events.is_empty());
         // Снятые аргументы разбор семейства отвергает и в обход реестра.
         for (op, args, path) in [
@@ -4440,12 +1165,17 @@ mod tests {
         let authority = admission
             .form_resource_planning_authority(&fixture.binding)
             .unwrap();
-        let (staged, _) =
-            plan_form_resource_batch(admission.staged_state().unwrap(), authority, &operations)
-                .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+        let (staged, _) = plan_form_resource_batch_owned_for_test(
+            admission.staged_state().unwrap(),
+            authority,
+            &operations,
+        )
+        .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
         let text = staged_text(&staged, "Documents/First/Forms/Main/Ext/Form.xml");
-        let elements = super::form_items_of(&text).unwrap();
-        let header = super::form_item_at(&elements, &["Header".to_string()]).unwrap();
+        let elements = unica_forms_designer::planner::form_items_of(&text).unwrap();
+        let header =
+            unica_forms_designer::planner::form_item_at(&elements, &["Header".to_string()])
+                .unwrap();
         let names = header
             .children
             .iter()
@@ -4514,9 +1244,12 @@ mod tests {
         let authority = admission
             .form_resource_planning_authority(&fixture.binding)
             .unwrap();
-        let (staged, _) =
-            plan_form_resource_batch(admission.staged_state().unwrap(), authority, &operations)
-                .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+        let (staged, _) = plan_form_resource_batch_owned_for_test(
+            admission.staged_state().unwrap(),
+            authority,
+            &operations,
+        )
+        .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
         let main = staged_text(&staged, "Documents/First/Forms/Main/Ext/Form.xml");
         assert!(
             main.contains("<Event name=\"ValueChoice\">ОбработкаВыбораЗначения</Event>"),
@@ -4594,8 +1327,9 @@ mod tests {
             ),
         ];
 
-        let (staged, effects) = plan_form_resource_batch(staged, authority, &operations)
-            .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+        let (staged, effects) =
+            plan_form_resource_batch_owned_for_test(staged, authority, &operations)
+                .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
 
         assert_eq!(effects.len(), 2);
         let text = staged_text(&staged, "Subsystems/Sales/Ext/CommandInterface.xml");
@@ -4673,8 +1407,9 @@ mod tests {
                 4,
             ),
         ];
-        let (staged, effects) = plan_form_resource_batch(staged, authority, &operations)
-            .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+        let (staged, effects) =
+            plan_form_resource_batch_owned_for_test(staged, authority, &operations)
+                .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
         assert_eq!(effects.len(), 5);
         let text = staged_text(&staged, "Roles/Reader/Ext/Rights.xml");
         assert!(text.starts_with('\u{feff}'), "byte-order mark survives");
@@ -4723,8 +1458,11 @@ mod tests {
             let authority = admission
                 .form_resource_planning_authority(&fixture.binding)
                 .unwrap();
-            let Err(error) = plan_form_resource_batch(staged, authority, &[parse(op, at, args, 0)])
-            else {
+            let Err(error) = plan_form_resource_batch_owned_for_test(
+                staged,
+                authority,
+                &[parse(op, at, args, 0)],
+            ) else {
                 panic!("{op} at {at}: the existing entry decides");
             };
             assert_eq!(error.kind(), kind, "{op}");
@@ -4871,7 +1609,7 @@ mod tests {
     #[test]
     fn role_create_contract_preserves_typed_names_and_rejects_unknown_args() {
         let fixture = ApplySeamFixture::new();
-        let contract = crate::domain::role_operation::RoleOperation::Create.contract();
+        let contract = unica_roles::operations::RoleOperation::Create.contract();
         for (input, expected) in [
             ("Reader", "Reader"),
             ("МенеджерПродаж", "МенеджерПродаж"),
@@ -4888,7 +1626,10 @@ mod tests {
             let parsed =
                 parse_form_resource_plan_operation("role.create", &args, 0, &fixture.binding)
                     .unwrap_or_else(|error| panic!("{input:?}: {error:?}"));
-            let super::FormResourcePlanKind::CreateRole { name } = parsed.kind else {
+            let super::FormResourcePlanKind::Role(
+                unica_roles_designer::planner::RolePlan::CreateRole { name },
+            ) = parsed.kind
+            else {
                 panic!("role.create must produce a typed role creation");
             };
             assert_eq!(name, expected);
@@ -4943,7 +1684,7 @@ mod tests {
                 &fixture.binding,
             )
             .unwrap();
-            let (staged, _) = plan_form_resource_batch(
+            let (staged, _) = plan_form_resource_batch_owned_for_test(
                 staged,
                 authority,
                 &[IndexedPlanOperation::new(0, operation)],
@@ -4983,8 +1724,11 @@ mod tests {
     fn subsystem_edits_update_content_and_children_of_the_staged_descriptor() {
         let fixture = ApplySeamFixture::new();
         std::fs::create_dir_all(fixture.source_dir().join("Subsystems")).unwrap();
-        let stub =
-            super::subsystem_stub_xml("Sales", "2.20", "55555555-5555-4555-8555-555555555555");
+        let stub = unica_metadata_designer::resource_planner::test_support::subsystem_stub_xml(
+            "Sales",
+            "2.20",
+            "55555555-5555-4555-8555-555555555555",
+        );
         let stub = stub
             .replace("<Properties>", "<InternalInfo><xr:PropertyState><xr:Property>CommandInterface</xr:Property><xr:State>Extended</xr:State></xr:PropertyState></InternalInfo><Properties><ObjectBelonging>Adopted</ObjectBelonging><ExtendedConfigurationObject>66666666-6666-4666-8666-666666666666</ExtendedConfigurationObject>")
             .replace("<Synonym/>", "<Synonym><v8:item><v8:lang>en</v8:lang><v8:content>Sales original</v8:content></v8:item></Synonym>")
@@ -5019,8 +1763,9 @@ mod tests {
                 1,
             ),
         ];
-        let (staged, effects) = plan_form_resource_batch(staged, authority, &operations)
-            .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+        let (staged, effects) =
+            plan_form_resource_batch_owned_for_test(staged, authority, &operations)
+                .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
         assert_eq!(effects.len(), 2);
         let text = staged_text(&staged, "Subsystems/Sales.xml");
         assert!(text.contains("Document.First"), "{text}");
@@ -5053,9 +1798,13 @@ mod tests {
             let fixture = ApplySeamFixture::new();
             std::fs::create_dir_all(fixture.source_dir().join("Subsystems")).unwrap();
             let original =
-                super::subsystem_stub_xml("Sales", "2.20", "55555555-5555-4555-8555-555555555555")
-                    .replace("<Content/>", empty)
-                    .replace('\n', "\r\n");
+                unica_metadata_designer::resource_planner::test_support::subsystem_stub_xml(
+                    "Sales",
+                    "2.20",
+                    "55555555-5555-4555-8555-555555555555",
+                )
+                .replace("<Content/>", empty)
+                .replace('\n', "\r\n");
             let path = fixture.source_dir().join("Subsystems/Sales.xml");
             std::fs::write(&path, original.as_bytes()).unwrap();
             let admission = fixture.admission();
@@ -5067,7 +1816,8 @@ mod tests {
                 let args = json!({"at": "main:Subsystem.Sales", "items": [{"object": "Document.First"}]});
                 IndexedPlanOperation::new(index, parse_form_resource_plan_operation(op, &args, index, &fixture.binding).unwrap())
             }).collect();
-            let (mut staged, _) = plan_form_resource_batch(staged, authority, &operations).unwrap();
+            let (mut staged, _) =
+                plan_form_resource_batch_owned_for_test(staged, authority, &operations).unwrap();
             assert!(staged.planned_changes().is_empty(), "{empty}");
             assert_eq!(
                 staged
@@ -5084,8 +1834,11 @@ mod tests {
     fn subsystem_membership_restores_original_lists_across_family_batches() {
         let fixture = ApplySeamFixture::new();
         std::fs::create_dir_all(fixture.source_dir().join("Subsystems")).unwrap();
-        let original =
-            super::subsystem_stub_xml("Sales", "2.20", "55555555-5555-4555-8555-555555555555");
+        let original = unica_metadata_designer::resource_planner::test_support::subsystem_stub_xml(
+            "Sales",
+            "2.20",
+            "55555555-5555-4555-8555-555555555555",
+        );
         std::fs::write(fixture.source_dir().join("Subsystems/Sales.xml"), &original).unwrap();
         let admission = fixture.admission();
         let mut staged = admission.staged_state().unwrap();
@@ -5100,7 +1853,8 @@ mod tests {
                 index,
                 parse_form_resource_plan_operation(op, &args, index, &fixture.binding).unwrap(),
             );
-            (staged, _) = plan_form_resource_batch(staged, authority, &[operation]).unwrap();
+            (staged, _) =
+                plan_form_resource_batch_owned_for_test(staged, authority, &[operation]).unwrap();
             if index == 0 {
                 // An intervening family can edit the same descriptor. Restoration
                 // must be scoped to membership and keep that staged property.
@@ -5123,7 +1877,9 @@ mod tests {
 
     #[test]
     fn subsystem_membership_after_props_set_keeps_valid_namespace_bindings() {
-        use super::super::metadata::{parse_metadata_plan_operation, plan_metadata_batch};
+        use super::super::metadata::{
+            parse_metadata_plan_operation, plan_metadata_batch_owned_for_test,
+        };
         let fixture = ApplySeamFixture::new();
         std::fs::create_dir_all(fixture.source_dir().join("Subsystems")).unwrap();
         let source = "<m:MetaDataObject xmlns:m=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:r=\"http://v8.1c.ru/8.3/xcf/readable\" version=\"2.20\"><m:Subsystem uuid=\"55555555-5555-4555-8555-555555555555\"><m:Properties><m:Name>Sales</m:Name><m:Comment/><m:Content/></m:Properties><m:ChildObjects/></m:Subsystem></m:MetaDataObject>";
@@ -5140,7 +1896,8 @@ mod tests {
                 index * 2,
                 parse_form_resource_plan_operation(op, &args, index * 2, &fixture.binding).unwrap(),
             );
-            (staged, _) = plan_form_resource_batch(staged, authority, &[operation]).unwrap();
+            (staged, _) =
+                plan_form_resource_batch_owned_for_test(staged, authority, &[operation]).unwrap();
             if index == 0 {
                 let authority = admission
                     .metadata_planning_authority(&fixture.binding)
@@ -5150,7 +1907,8 @@ mod tests {
                     1,
                     parse_metadata_plan_operation("props.set", &args, 1, &fixture.binding).unwrap(),
                 );
-                (staged, _) = plan_metadata_batch(staged, authority, &[operation]).unwrap();
+                (staged, _) =
+                    plan_metadata_batch_owned_for_test(staged, authority, &[operation]).unwrap();
             }
         }
         let actual = staged_text(&staged, "Subsystems/Sales.xml");
@@ -5165,7 +1923,6 @@ mod tests {
 
     #[test]
     fn support_contracts_and_productive_parser_agree_on_closed_arguments() {
-        use crate::domain::apply::OperationRegistry;
         let fixture = ApplySeamFixture::new();
         let capability = [
             (json!({"enabled": true}), true),
@@ -5211,7 +1968,9 @@ mod tests {
                 rule.as_slice(),
             ),
         ] {
-            let descriptor = OperationRegistry::closed().lookup(operation).unwrap();
+            let descriptor = crate::domain::apply::operation_registry()
+                .lookup(operation)
+                .unwrap();
             let contract = descriptor
                 .argument_contract()
                 .expect("implemented support operation must publish its argument contract");
@@ -5269,7 +2028,8 @@ mod tests {
 
     #[test]
     fn support_aliases_select_the_exact_capability_and_object_rule() {
-        use super::{FormResourcePlanKind, SupportCapability, SupportObjectRule};
+        use super::FormResourcePlanKind;
+        use unica_metadata::support_edit::{SupportCapability, SupportObjectRule};
         let fixture = ApplySeamFixture::new();
         for (values, expected) in [
             (json!({"enabled": true}), SupportCapability::On),
@@ -5296,7 +2056,9 @@ mod tests {
             )
             .unwrap();
             match parsed.kind {
-                FormResourcePlanKind::SupportCapability(actual) => {
+                FormResourcePlanKind::Metadata(super::MetadataResourcePlan::SupportCapability(
+                    actual,
+                )) => {
                     assert_eq!(actual, expected, "{args}")
                 }
                 other => panic!("support capability selected {other:?}: {args}"),
@@ -5323,10 +2085,10 @@ mod tests {
                 )
                 .unwrap();
                 match parsed.kind {
-                    FormResourcePlanKind::SupportRule {
+                    FormResourcePlanKind::Metadata(super::MetadataResourcePlan::SupportRule {
                         target,
                         rule: actual,
-                    } => {
+                    }) => {
                         assert_eq!(actual, expected, "{args}");
                         assert_eq!(target.as_str(), expected_target, "{args}");
                     }
@@ -5430,7 +2192,7 @@ mod tests {
                 None => std::fs::remove_file(&form_path).unwrap(),
             }
             let admission = fixture.admission();
-            let result = plan_form_resource_batch(
+            let result = plan_form_resource_batch_owned_for_test(
                 admission.staged_state().unwrap(),
                 admission
                     .form_resource_planning_authority(&fixture.binding)
@@ -5453,7 +2215,9 @@ mod tests {
                     .actor()
                     .save_prepared_apply(
                         batch,
-                        crate::domain::invocation::DomainResult::success("support preview"),
+                        unica_execution_contract::invocation::DomainResult::success(
+                            "support preview",
+                        ),
                     )
                     .unwrap();
                 std::fs::write(
@@ -5465,10 +2229,10 @@ mod tests {
                     .actor()
                     .execute_saved_apply(
                         &token,
-                        crate::domain::code_intelligence::ProviderDeadline::from_budget(
+                        unica_work_control::provider_deadline::ProviderDeadline::from_budget(
                             std::time::Duration::from_secs(5),
                         ),
-                        &crate::domain::cancellation::CancellationToken::new(),
+                        &unica_work_control::cancellation::CancellationToken::new(),
                         |mut result, publication| {
                             let error = publication
                                 .expect_err("changed form descriptor must refuse publication");
@@ -5503,7 +2267,7 @@ mod tests {
             &fixture.binding,
         )
         .unwrap();
-        let error = plan_form_resource_batch(
+        let error = plan_form_resource_batch_owned_for_test(
             staged,
             authority,
             &[IndexedPlanOperation::new(0, operation.clone())],
@@ -5522,7 +2286,7 @@ mod tests {
         let authority = admission
             .form_resource_planning_authority(&fixture.binding)
             .unwrap();
-        let (staged, effects) = plan_form_resource_batch(
+        let (staged, effects) = plan_form_resource_batch_owned_for_test(
             staged,
             authority,
             &[IndexedPlanOperation::new(0, operation)],
@@ -5606,12 +2370,18 @@ mod tests {
         )
         .expect("every published key is accepted")
         .kind;
-        let super::FormResourcePlanKind::FormEdit { definitions, .. } = plan else {
+        let super::FormResourcePlanKind::Form(unica_forms_designer::planner::FormPlan::FormEdit {
+            definitions,
+            ..
+        }) = plan
+        else {
             panic!("command.add plans a form edit");
         };
         let mut expected = item.as_object().unwrap().clone();
         expected.insert("action".into(), json!("Refresh"));
-        let [super::FormEditStep::Definition(definition)] = definitions.as_slice() else {
+        let [unica_forms_designer::planner::FormEditStep::Definition(definition)] =
+            definitions.as_slice()
+        else {
             panic!("expected one command definition");
         };
         assert_eq!(definition, &json!({"commands": [expected]}));
@@ -5657,10 +2427,10 @@ mod tests {
 
     #[test]
     fn typed_form_additions_keep_target_precedence_and_entry_transformations() {
-        use crate::domain::apply::{OperationFamily, OperationRegistry};
+        use unica_operations::OperationFamily;
         let fixture = ApplySeamFixture::new();
         for operation in ["attribute.add", "command.add"] {
-            let descriptor = OperationRegistry::closed()
+            let descriptor = crate::domain::apply::operation_registry()
                 .named(operation)
                 .find(|d| d.family() == OperationFamily::Form)
                 .unwrap();
@@ -5715,18 +2485,22 @@ mod tests {
                 &fixture.binding,
             )
             .unwrap();
-            let super::FormResourcePlanKind::FormEdit {
-                owner,
-                form,
-                definitions,
-                ..
-            } = parsed.kind
+            let super::FormResourcePlanKind::Form(
+                unica_forms_designer::planner::FormPlan::FormEdit {
+                    owner,
+                    form,
+                    definitions,
+                    ..
+                },
+            ) = parsed.kind
             else {
                 panic!("{operation} must plan a form edit")
             };
             assert_eq!(owner.as_str(), "Document.First");
             assert_eq!(form, "Main");
-            let [super::FormEditStep::Definition(definition)] = definitions.as_slice() else {
+            let [unica_forms_designer::planner::FormEditStep::Definition(definition)] =
+                definitions.as_slice()
+            else {
                 panic!("expected one definition")
             };
             assert_eq!(definition, &expected);

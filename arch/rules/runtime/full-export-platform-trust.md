@@ -1,7 +1,10 @@
 ---
 id: INV.RUNTIME.FULL-EXPORT-PLATFORM-TRUST
-check: []
-gap: https://github.com/IngvarConsulting/unica/issues/981
+check:
+  - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::selected_executor_must_be_attested_locally_before_continue_or_stage_writes
+  - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::full_export_rejects_invalid_results_before_replacing_sources
+  - crates/unica-coder/tests/platform/full_dump_integration.rs::platform_resolver_does_not_trust_an_explicit_platform_path_or_broad_claim
+  - crates/unica-coder/tests/platform/full_dump_integration.rs::platform_executable_or_install_swap_after_runner_prevents_publication
 ---
 
 # Полная выгрузка запускает проверенную неизменяемую платформу
@@ -16,7 +19,3 @@ gap: https://github.com/IngvarConsulting/unica/issues/981
 или подменять её предков. Создание постороннего соседнего объекта выше
 установки само по себе не считается её подменой. Неоднозначные ACL,
 reparse points, несколько жёстких ссылок на файл и сетевые тома отклоняются.
-
-Публичный `pull` доступен в ограниченном режиме с `force:true`.
-Его текущие проверки не доказывают эту гарантию; подключение защиты
-остаётся разрывом из `gap`.

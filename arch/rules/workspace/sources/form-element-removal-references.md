@@ -1,7 +1,7 @@
 ---
 id: INV.SOURCE.FORM-ELEMENT-REMOVAL-REFERENCES
-check:
-  - crates/unica-coder/src/infrastructure/native_operations/form.rs::form_edit_remove_rejects_surviving_supported_xml_references
+check: []
+gap: https://github.com/IngvarConsulting/unica/issues/1937
 ---
 
 # Удаление элемента не оставляет поддержанные ссылки формы без цели
@@ -12,5 +12,5 @@ check:
 и связи `AdditionSource/Item`, включая имена с точками.
 
 Это проверка поддержанных связей XML формы, а не поиск всех обращений
-в BSL-коде. Проверка проходит внутренний редактор и сравнивает отказ
-предпросмотра и применения с сохранением исходных байтов.
+в BSL-коде. На каноническом удалении элемента формы отказ по оставшейся
+ссылке пока не проверен; это разрыв.

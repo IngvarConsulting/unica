@@ -3388,6 +3388,34 @@
       "at": "main:Enum.LanguageAware",
       "ops": [
        {
+        "op": "supportRule.set",
+        "args": {
+         "values": {
+          "rule": "off-support"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.LanguageAware",
+      "ops": [
+       {
         "op": "object.remove"
        }
       ]
@@ -3409,6 +3437,34 @@
       "at": "main:Catalog.Валюты",
       "ops": [
        {
+        "op": "supportRule.set",
+        "args": {
+         "values": {
+          "rule": "off-support"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
         "op": "object.remove"
        }
       ]
@@ -3417,6 +3473,25 @@
       "refused"
      ],
      "refusal": "invalid_state: `Catalog.Валюты` is still referenced by 1 source file(s): Roles/SalesReader/Ext/Rights.xml; remove the references first"
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Catalog.Валюты"
+      },
+      {
+       "pointer": "/data/props/support",
+       "eq": "unsupported"
+      }
+     ]
     }
    ],
    "id": "S112"
@@ -7583,7 +7658,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` first"
+     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
     }
    ]
   },
@@ -7612,7 +7687,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` first"
+     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
     }
    ]
   },
@@ -7642,7 +7717,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` first"
+     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
     }
    ]
   },
@@ -7672,7 +7747,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` first"
+     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
     }
    ]
   },
@@ -7695,7 +7770,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` first"
+     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; set `off-support` with `supportRule.set` in a separate apply before removal"
     }
    ]
   },
@@ -7830,7 +7905,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "invalid_state: the configuration is on vendor support with changes disabled; enable editing with `supportCapability.set` first"
+     "refusal": "invalid_state: the configuration is on vendor support with changes disabled; enable editing with `supportCapability.set` in a separate apply before ordinary edits"
     }
    ]
   },
@@ -7923,6 +7998,34 @@
       "at": "main:Catalog.Валюты",
       "ops": [
        {
+        "op": "supportRule.set",
+        "args": {
+         "values": {
+          "rule": "off-support"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
         "op": "object.remove",
         "args": {
          "force": true
@@ -7977,7 +8080,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` first"
+     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits"
     }
    ]
   },
@@ -7986,6 +8089,34 @@
    "area": "Объекты метаданных",
    "task": "Опубликовать удаление объекта без ссылок — результат несёт событие и влияние на кеш",
    "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.LanguageAware",
+      "ops": [
+       {
+        "op": "supportRule.set",
+        "args": {
+         "values": {
+          "rule": "off-support"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
     {
      "tool": "unica.apply",
      "args": {
@@ -10600,14 +10731,15 @@
        "pointer": "/data/items",
        "eq": [
         {
-         "index": 0,
-         "parentIndex": null,
-         "axis": null,
-         "kind": "Group",
-         "name": "F05Group",
-         "groupBy": [
-          "Amount"
-         ]
+         "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Item.F05Group",
+         "kind": "Item",
+         "title": "F05Group",
+         "props": {
+          "kind": "Group",
+          "groupBy": [
+           "Amount"
+          ]
+         }
         }
        ]
       }
@@ -30494,10 +30626,10 @@
   },
   {
    "id": "S382",
-   "name": "kb-developer-guide-pinned-older-family",
-   "issue": 1329,
+   "name": "kb-guide-key-left-from-an-older-version",
+   "issue": 1892,
    "area": "Документация и стандарты",
-   "task": "Найти Developer Guide закреплённой 8.3.26 и прочитать обзор и вложенный раздел",
+   "task": "Строка [providers.kb-1ci] прежней версии не ломает справку: поиск отвечает, локаторы Developer Guide 8.3.26 больше не открываются, ответ предупреждает об удалённом поставщике",
    "workspace": "tests/fixtures/acceptance/workspace-docs-8.3.26",
    "wire": [
     {
@@ -30519,9 +30651,22 @@
       "source": "platform-help"
      },
      "expect": [
-      "ok",
-      "provider",
-      "task"
+      "refused"
+     ],
+     "refusal": "not_found: documentation page `https://kb.1ci.com/1C_Enterprise_Platform/Guides/Developer_Guides/1C_Enterprise_Developer_Guide/8.3.26/Introduction/Overview/` was not found",
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/warnings/0/code",
+       "eq": "retired_provider"
+      }
      ]
     },
     {
@@ -30531,19 +30676,32 @@
       "source": "platform-help"
      },
      "expect": [
-      "ok",
-      "provider",
-      "task"
+      "refused"
+     ],
+     "refusal": "not_found: documentation page `https://kb.1ci.com/1C_Enterprise_Platform/Guides/Developer_Guides/1C_Enterprise_Developer_Guide/8.3.26/Chapter_11._Accounting/11.1._Overview",
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/warnings/0/code",
+       "eq": "retired_provider"
+      }
      ]
     }
    ]
   },
   {
    "id": "S383",
-   "name": "kb-administrator-guide-pinned-family",
-   "issue": 1329,
+   "name": "kb-administrator-guide-locators-retired",
+   "issue": 1892,
    "area": "Документация и стандарты",
-   "task": "Найти Administrator Guide закреплённой 8.3.27 и прочитать обзор обоих режимов",
+   "task": "Секция [providers.kb-1ci] с прежними настройками (network, endpoint) игнорируется целиком: локаторы Administrator Guide 8.3.27 обоих режимов больше не открываются, ответ называет строку удалённого поставщика",
    "workspace": "tests/fixtures/acceptance/workspace-docs-8.3.27",
    "wire": [
     {
@@ -30565,9 +30723,22 @@
       "source": "platform-help"
      },
      "expect": [
-      "ok",
-      "provider",
-      "task"
+      "refused"
+     ],
+     "refusal": "not_found: documentation page `https://kb.1ci.com/1C_Enterprise_Platform/Guides/Administrator_Guides/Administrator_Guide_File_Mode/8.3.27/Introduction/Overview/` was not f",
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/warnings/0/code",
+       "eq": "retired_provider"
+      }
      ]
     },
     {
@@ -30577,9 +30748,22 @@
       "source": "platform-help"
      },
      "expect": [
-      "ok",
-      "provider",
-      "task"
+      "refused"
+     ],
+     "refusal": "not_found: documentation page `https://kb.1ci.com/1C_Enterprise_Platform/Guides/Administrator_Guides/Administrator_Guide_Client_Server_Mode/8.3.27/Introduction/Overview/` ",
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/warnings/0/code",
+       "eq": "retired_provider"
+      }
      ]
     }
    ]
@@ -33890,7 +34074,11 @@
        "contains": {
         "relation": "source",
         "at": "ext:Catalog.ПР_НастройкиВалют",
-        "kind": "Catalog"
+        "kind": "Catalog",
+        "target": {
+         "kind": "object",
+         "metadataPath": "Catalog.ПР_НастройкиВалют"
+        }
        }
       }
      ]
@@ -38437,7 +38625,7 @@
       },
       {
        "pointer": "/next/0/args/at",
-       "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект"
+       "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект.Can.property.add"
       },
       {
        "pointer": "/next/1/args/at",
@@ -38500,7 +38688,7 @@
       },
       {
        "pointer": "/next/0/args/at",
-       "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект"
+       "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект.Can.property.remove"
       },
       {
        "pointer": "/next/1/args/at",

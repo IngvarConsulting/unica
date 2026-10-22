@@ -1,10 +1,14 @@
 """Real pinned analyzer drivers for diagnostic acceptance, with private Git state."""
 from __future__ import annotations
 
+from contextlib import ExitStack, contextmanager
+import hashlib
 import json
 import os
+import platform
 import queue
 import subprocess
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -44,7 +48,12 @@ def configure_case(source: Path, case: str) -> None:
         raise ValueError(f"unsupported diagnostic case {case!r}")
 
 
-def prepare_diagnostic_case(server, scenario):
+def prepare_diagnostic_case(server, scenario, *, plugin=None, fixtures=None):
+    if scenario.get("driver") == "bsl-analyzer-invalidation":
+        if plugin is None or fixtures is None:
+            raise ValueError("helper invalidation requires the staged analyzer and owned fixtures")
+        assert_held = fixtures.enter_context(legacy_broker_for_invalidation(plugin, server.workspace))
+        return lambda verification: assert_held()
     if scenario.get("driver") != "bsl-analyzer-diagnostics":
         return None
     source = server.workspace / "src"
@@ -169,6 +178,150 @@ class ResidentSession:
                     time.sleep(.1)
         finally:
             self.stderr_file.close()
+
+
+def legacy_analyzer_cache_key(workspace: str, source: str) -> str:
+    digest = hashlib.sha256(b"unica-provider-state-v1\0")
+    digest.update(workspace.encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(source.encode("utf-8"))
+    return f"source-{digest.hexdigest()}"
+
+
+def legacy_analyzer_cache(workspace: Path, source: Path) -> Path:
+    """The cache layout used by the core that allowed an implicit broker."""
+    key = legacy_analyzer_cache_key(str(workspace.resolve()), str(source.resolve()))
+    return workspace / ".build/unica/providers/bsl-analyzer" / key
+
+
+def stop_owned_process(process) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
+class LegacyBrokerProxy(ResidentSession):
+    """A public broker client; its fixture separately owns the daemon process."""
+    def __init__(self, binary, source, cache, runtime, environment):
+        self.records = []
+        self.cache = cache
+        self.next_id = 0
+        self._closed = False
+        self.stderr_path = cache.parent / "legacy-proxy.stderr.log"
+        self.stderr_file = open(self.stderr_path, "wb")
+        try:
+            self.process = subprocess.Popen([
+                str(binary), "mcp", "serve", "--profile", "workspace",
+                "--source-dir", str(source), "--cache-dir", str(cache), "--mode", "broker",
+            ], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.stderr_file,
+                cwd=runtime, env=environment)
+        except BaseException:
+            self.stderr_file.close()
+            raise
+        self.lines = queue.Queue()
+        self.reader = threading.Thread(target=self._pump, daemon=True)
+        self.reader.start()
+
+    def close(self):
+        if self._closed:
+            return
+        try:
+            try:
+                self.process.stdin.close()
+            except OSError:
+                pass
+            try:
+                self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                stop_owned_process(self.process)
+            self.reader.join(timeout=5)
+            self.process.stdout.close()
+            if self.reader.is_alive():
+                raise TimeoutError("legacy proxy reader did not stop after EOF")
+        finally:
+            self.stderr_file.close()
+            self._closed = True
+
+
+def assert_owned_legacy_broker(backend, cache: Path, runtime: Path):
+    if backend.poll() is not None:
+        raise AssertionError("owned legacy backend exited during the upgrade scenario")
+    record = json.loads((cache / "writer.lease").read_text(encoding="utf-8"))
+    if record.get("pid") != backend.pid:
+        raise AssertionError("the legacy lease belongs to another process")
+    if os.name != "nt":
+        sockets = [path for path in (runtime / "bsl-mcp").glob("*.sock") if path.is_socket()]
+        if not sockets:
+            raise FileNotFoundError("the owned legacy endpoint is not ready")
+        if len(sockets) != 1:
+            raise AssertionError("the owned legacy endpoint is ambiguous")
+
+
+@contextmanager
+def legacy_broker_for_invalidation(plugin: Path, workspace: Path):
+    from tests.ci.acceptance_profiles import host_target
+
+    lock = json.loads((plugin / "third-party/tools.lock.json").read_text())
+    target = host_target(lock, platform.system(), platform.machine())
+    tool = next(tool for tool in lock["tools"] if tool["name"] == "bsl-analyzer")
+    binary = plugin / "bin" / target / (tool["binaryName"] + lock["targets"][target]["exe"])
+    source = workspace / "src"
+    cache = legacy_analyzer_cache(workspace, source)
+    cache.mkdir(parents=True, exist_ok=True)
+    with ExitStack() as resources:
+        # dirs::runtime_dir() is None on macOS; the pinned backend then uses TMPDIR.
+        raw = resources.enter_context(tempfile.TemporaryDirectory(
+            prefix="u978-", dir="/tmp" if platform.system() == "Darwin" else None))
+        runtime = Path(raw)
+        runtime.chmod(0o700)
+        environment = dict(os.environ)
+        environment.update(XDG_RUNTIME_DIR=str(runtime), TMPDIR=str(runtime))
+        for key in ["BSL_MCP_BROKER", "BSL_MCP_IDLE_TTL_SECS", "BSL_MCP_ORPHAN_GRACE_SECS",
+                    "EMBEDDING_URL", "EMBEDDING_API_KEY"]:
+            environment.pop(key, None)
+        stderr = resources.enter_context(open(runtime / "legacy-backend.stderr.log", "wb"))
+        backend = subprocess.Popen([
+            str(binary), "mcp", "serve", "--profile", "workspace", "--source-dir", str(source),
+            "--cache-dir", str(cache), "--mode", "daemon",
+        ], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=stderr,
+            cwd=runtime, env=environment)
+        resources.callback(stop_owned_process, backend)
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                assert_owned_legacy_broker(backend, cache, runtime)
+                break
+            except (FileNotFoundError, json.JSONDecodeError):
+                pass
+            if time.monotonic() >= deadline:
+                raise TimeoutError("owned legacy backend did not publish its endpoint and lease")
+            time.sleep(.01)
+        proxy = LegacyBrokerProxy(binary, source, cache, runtime, environment)
+        resources.callback(proxy.close)
+        proxy.request("initialize", {"protocolVersion": "2025-03-26", "capabilities": {},
+                                    "clientInfo": {"name": "unica-upgrade-acceptance", "version": "0"}})
+        proxy.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        deadline = time.monotonic() + 30
+        while True:
+            result = proxy.request("tools/call", {"name": "search", "arguments": {
+                "action": "search_code", "query": "AcceptanceExistingSymbol1306", "limit": 20}})
+            text = "\n".join(item.get("text", "") for item in result.get("content", []))
+            if ":: AcceptanceExistingSymbol1306 (procedure)" in text:
+                break
+            if "not_ready" not in json.dumps(result):
+                raise AssertionError("legacy broker did not return its initial symbol or pending state")
+            if time.monotonic() >= deadline:
+                raise TimeoutError("legacy broker search did not become ready")
+            time.sleep(.1)
+        assert_owned_legacy_broker(backend, cache, runtime)
+        proxy.close()
+        assert_owned_legacy_broker(backend, cache, runtime)
+        yield lambda: assert_owned_legacy_broker(backend, cache, runtime)
 
 
 def resident_filter_evidence(binary: Path, workspace: Path, root: Path):

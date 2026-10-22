@@ -1,0 +1,167 @@
+{
+  "id": "S-1845-empty-design-time-ref",
+  "name": "add-boolean-next-to-empty-typed-reference",
+  "issue": 1845,
+  "area": "Metadata",
+  "task": "Preserve an unset typed reference while adding a Boolean attribute",
+  "workspace": "tests/fixtures/acceptance/workspace-empty-design-time-ref",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Values.Attribute.EmptyItem"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/incomplete",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/fillValue",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/type",
+          "eq": "{\"variants\":[{\"kind\":\"reference\",\"metadataPath\":\"Catalog.Items\"}],\"mutationCapability\":\"editable\"}"
+        }
+      ],
+      "captures": {
+        "before": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Values.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Values",
+        "ops": [
+          {
+            "op": "attribute.add",
+            "args": {
+              "items": [
+                {
+                  "name": "NewFlag",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "boolean"
+                      }
+                    ]
+                  },
+                  "fillValue": {
+                    "kind": "boolean",
+                    "value": false
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "token": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Values.xml",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "xml",
+          "path": "src/Catalogs/Values.xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Attribute[@uuid=\"13d19544-06f8-5db0-a868-317d3f458750\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}FillValue[@{http://www.w3.org/2001/XMLSchema-instance}type=\"xr:DesignTimeRef\"]",
+          "eq": [
+            ""
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Values.Attribute.NewFlag"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/fillValue",
+          "eq": "{\"kind\":\"boolean\",\"value\":false}"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Values.Attribute.EmptyItem"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/incomplete",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/type",
+          "eq": "{\"variants\":[{\"kind\":\"reference\",\"metadataPath\":\"Catalog.Items\"}],\"mutationCapability\":\"editable\"}"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "xml",
+          "path": "src/Catalogs/Values.xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Attribute[@uuid=\"13d19544-06f8-5db0-a868-317d3f458750\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}FillValue[@{http://www.w3.org/2001/XMLSchema-instance}type=\"xr:DesignTimeRef\"]",
+          "eq": [
+            ""
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Values.Attribute.Flag"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/fillValue",
+          "eq": "{\"kind\":\"reference\",\"metadataPath\":\"Enum.Flags\",\"item\":\"EnumValue.Yes\"}"
+        }
+      ]
+    }
+  ]
+}

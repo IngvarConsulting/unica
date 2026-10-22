@@ -155,9 +155,9 @@ Within one source-set the format cannot be mixed: conflicting platform XML and
 EDT markers mean the source-set is invalid/ambiguous and must be fixed or
 converted before XML metadata tools are used.
 
-Format discovery remains per source-set, but `unica.epf.init` and
-`unica.erf.init` specifically require the global `format` value to be exact
-`DESIGNER` or omitted. v8-runner selects the external-project layout from that
+Format discovery remains per source-set, but external processor and report
+scaffolds written by the `epf-init` and `erf-init` skills specifically require
+the global `format` value to be exact `DESIGNER` or omitted. v8-runner selects the external-project layout from that
 global value; use a separate Designer workspace/config when the active config
 has global `format: EDT`.
 
@@ -201,7 +201,7 @@ directory named `main` keeps it.
 | Replace one source set from the working configuration | `pull`, `force:true`, optional `sourceSet`, `extension`; no local-work protection |
 | Export the configuration or an extension as `.cf`/`.cfe` | `download`, `state=working` or `state=database`, `output`, optional `extension` |
 | Load a `.cf`/`.cfe` into the working configuration only | `upload` — unavailable: the v8-runner 0.15 upload still applies the database configuration, and the adapter does not run `apply` or `reset` yet ([#1246](https://github.com/IngvarConsulting/unica/issues/1246)) |
-| Build a `.cf`/`.cfe` from sources | `make`, `output`, optional `sourceSet`, `extension`; `.epf`/`.erf` are not published |
+| Build a `.cf`/`.cfe`/`.epf`/`.erf` from sources | `make`, `output`; for CF/CFE optional `sourceSet` and `extension` (CFE); EPF/ERF require `sourceSet` naming a singleton matching Designer external source set and a declared main configuration |
 | Export the whole infobase as `.dt` | `infobase.dump`, `output` |
 | Load a `.dt` | `infobase.restore`, `input`, `mode=create` or `mode=replace` |
 | Launch a 1C client | `launch`, `clientMode`, optional `execute`; `waitForExit` with `waitTimeoutMs` supports `thin` + `.epf`; terminal, no preview required |
@@ -240,5 +240,4 @@ the runner can load without applying and apply separately
 - When credentials are absent, do not initiate a runtime probe to discover them. Ask the user; classify only authentication evidence already supplied by a verified boundary.
 - If a command reports a 1C license problem, stop and ask the user to fix licensing. Do not edit license services, HASP settings, registry, or license files.
 - If a runtime flag or debug-server step is missing from the `unica.run`
-  dictionary, treat it as a Unica MCP contract gap. `.epf`/`.erf` publication
-  is one such gap: `make` builds `.cf` and `.cfe` only.
+  dictionary, treat it as a Unica MCP contract gap.

@@ -6,35 +6,34 @@
 //! that the derived path is still a direct regular file inside the selected
 //! source set — the resolver proves the descriptor, not what hangs off it.
 
-use crate::domain::refusal::RefusalCode;
 use serde_json::{Map, Value};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use unica_refusal::RefusalCode;
+use unica_source_designer::owner::PlatformXmlResourceEvidence;
+use unica_workspace::paths::normalize_path_identity;
 
-use crate::application::source_navigation::{LocateRejection, SourceLocateRequest};
-use crate::domain::address::QualifiedAddress;
-use crate::domain::cancellation::CancellationToken;
-use crate::domain::project_sources::SourceFormat;
-use crate::domain::source_target::{
+use crate::infrastructure::platform_xml_source_targets::{
+    locate_platform_xml_reader_path, platform_xml_resource_evidence, resolve_platform_xml_target,
+    TargetKindPolicy,
+};
+use crate::infrastructure::project_sources::discover_project_source_map;
+use unica_address::address::QualifiedAddress;
+use unica_address::source_target::{
     MetadataAddress, ResolvedTarget, SourceTarget, SourceTargetErrorCode, TargetKind,
     PLATFORM_XML_8_3_27_FORMAT_2_20,
 };
-use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::native_operations::common::string_arg;
-use crate::infrastructure::path_policy::WorkspacePathPolicy;
-use crate::infrastructure::platform::filesystem::{
+use unica_navigation::source_navigation::{LocateRejection, SourceLocateRequest};
+use unica_source_contract::workspace::WorkspaceContext;
+use unica_source_contract::SourceFormat;
+use unica_source_designer::selection::select_unique_deepest_source_set_match;
+use unica_work_control::cancellation::CancellationToken;
+use unica_workspace::discovery::normalize_contained_source_root;
+use unica_workspace::path_policy::WorkspacePathPolicy;
+use unica_workspace::paths::{
     metadata_is_link_or_reparse_point, path_starts_with_host_root,
     strip_windows_extended_length_prefix,
-};
-use crate::infrastructure::platform_xml_source_targets::{
-    locate_platform_xml_reader_path, platform_xml_resource_evidence, resolve_platform_xml_target,
-    PlatformXmlResourceEvidence, TargetKindPolicy,
-};
-use crate::infrastructure::project_sources::discover_project_source_map;
-use crate::infrastructure::source_roots::{
-    normalize_contained_source_root, normalize_path_identity,
-    select_unique_deepest_source_set_match,
 };
 
 /// What a subject reader opens once its logical target is resolved. The kind of
@@ -113,7 +112,7 @@ pub(crate) fn logical_selection(
     want: AttachedResource,
     accepted_kinds: &[&str],
 ) -> Option<Result<ResolvedReadTarget, LogicalSelectorFailure>> {
-    if string_arg(args, &["sourceSet"]).is_none() {
+    if unica_operation_contract::input::string_arg(args, &["sourceSet"]).is_none() {
         if args.contains_key("sourceSet") {
             return Some(Err(LogicalSelectorFailure::new(
                 RefusalCode::SourceSetUnknown,
@@ -155,7 +154,7 @@ fn resolve(
     want: AttachedResource,
     accepted_kinds: &[&str],
 ) -> Result<ResolvedReadTarget, LogicalSelectorFailure> {
-    let source_set = string_arg(args, &["sourceSet"])
+    let source_set = unica_operation_contract::input::string_arg(args, &["sourceSet"])
         .ok_or_else(|| {
             LogicalSelectorFailure::new(
                 RefusalCode::SourceSetUnknown,
@@ -163,7 +162,7 @@ fn resolve(
             )
         })?
         .to_string();
-    let metadata_path = match string_arg(args, &["metadataPath"]) {
+    let metadata_path = match unica_operation_contract::input::string_arg(args, &["metadataPath"]) {
         Some(raw) => Some(
             MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw)
                 .map_err(|error| selector_failure(error.code))?,
@@ -595,16 +594,16 @@ fn ensure_no_link_components(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::workspace::WorkspaceContext;
-    use crate::infrastructure::platform::testing::{
-        create_directory_link_fixture_for_test, remove_dir_symlink_for_test,
-        windows_extended_length_path_for_test, FileLinkFixtureOutcome,
-    };
     use serde_json::{Map, Value};
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+    use unica_source_contract::workspace::WorkspaceContext;
+    use unica_workspace::test_support::{
+        create_directory_link_fixture_for_test, remove_dir_symlink_for_test,
+        windows_extended_length_path_for_test, FileLinkFixtureOutcome,
+    };
 
     static TEMP_NONCE: AtomicU64 = AtomicU64::new(0);
 
@@ -936,6 +935,10 @@ mod tests {
         let resource = context.workspace_root.join("src/Configuration.xml");
         let Some(verbatim) = windows_extended_length_path_for_test(&resource) else {
             cleanup(&context);
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::WindowsPathSyntax,
+                "verbatim paths exist only on Windows",
+            );
             return;
         };
 
@@ -968,6 +971,10 @@ mod tests {
             FileLinkFixtureOutcome::Created => {}
             FileLinkFixtureOutcome::Unsupported
             | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "creating a link fixture needs the symlink privilege",
+                );
                 cleanup(&context);
                 return;
             }
@@ -1038,16 +1045,11 @@ mod tests {
         let planted = src.join("planted.xml");
         fs::write(&planted, "<Rights/>").unwrap();
         fs::remove_file(src.join("Roles/Sales/Ext/Rights.xml")).unwrap();
-        let Some(created) =
-            crate::infrastructure::platform::filesystem::create_file_symlink_for_test(
-                &planted,
-                src.join("Roles/Sales/Ext/Rights.xml"),
-            )
-        else {
-            // The host cannot create symlinks, so there is nothing to refuse.
-            cleanup(&context);
-            return;
-        };
+        let created = unica_workspace::test_support::create_file_symlink_for_test(
+            &planted,
+            src.join("Roles/Sales/Ext/Rights.xml"),
+        )
+        .expect("symlink fixtures exist on Unix and Windows");
         created.unwrap();
 
         let failure = selection(&context, "Role.Sales", AttachedResource::Rights, &["Role"])

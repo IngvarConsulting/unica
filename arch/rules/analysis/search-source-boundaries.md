@@ -1,10 +1,10 @@
 ---
 id: INV.APP.CODE-SEARCH-SOURCE-BOUNDARIES
 check:
-  - crates/unica-coder/src/infrastructure/code_intelligence.rs::bsl_analyzer_does_not_broaden_metadata_scoped_search
-  - crates/unica-coder/src/infrastructure/code_intelligence.rs::rlm_does_not_broaden_metadata_scoped_search
-  - crates/unica-coder/src/infrastructure/code_intelligence.rs::git_grep_excludes_the_generated_cache_from_the_lexical_corpus
-  - crates/unica-coder/src/infrastructure/code_intelligence.rs::git_grep_does_not_publish_a_parent_escape_as_a_location
+  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::bsl_analyzer_does_not_broaden_metadata_scoped_search
+  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::rlm_does_not_broaden_metadata_scoped_search
+  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::git_grep_excludes_the_generated_cache_from_the_lexical_corpus
+  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::git_grep_does_not_publish_a_parent_escape_as_a_location
 ---
 
 # Поставщик не расширяет неподдерживаемую область поиска

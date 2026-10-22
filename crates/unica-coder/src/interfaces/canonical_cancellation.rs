@@ -1,6 +1,6 @@
 //! Manual cancellation and its exact daemon control acknowledgement.
-use crate::domain::cancellation::CancellationToken;
 use std::sync::{Arc, Condvar, Mutex};
+use unica_work_control::cancellation::CancellationToken;
 
 type Control = Arc<dyn Fn() -> Result<(), ControlFailure> + Send + Sync>;
 

@@ -1,7 +1,8 @@
 ---
 id: INV.SOURCE.BORROWED-OBJECT-INHERITED-CONTENT
 check:
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::inherited_form_metadata_is_local_without_claiming_a_local_form_payload
+  - crates/unica-coder/src/infrastructure/v13_read/tests/form.rs::inherited_form_metadata_is_local_without_claiming_a_local_form_payload
+  - crates/unica-coder/src/infrastructure/v13_read/tests/form.rs::borrowed_form_with_its_own_form_xml_reads_as_local_content
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::borrowed_objects_without_companion_files_read_their_content_as_inherited
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::missing_companion_file_stays_a_source_error_outside_borrowing
   - crates/unica-coder/src/infrastructure/metadata_operations.rs::borrowed_children_of_a_borrowed_owner_validate_without_payload

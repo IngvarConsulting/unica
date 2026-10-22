@@ -1,0 +1,19 @@
+[package]
+name = "unica-bindings"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+test-support = []
+
+[dependencies]
+unica-source-contract = { path = "../unica-source-contract" }
+unica-address = { path = "../unica-address" }
+unica-bsl = { path = "../unica-bsl" }
+unica-bsl-parser = { path = "../unica-bsl-parser" }
+unica-forms = { path = "../unica-forms" }
+unica-metadata = { path = "../unica-metadata" }
+unica-refusal = { path = "../unica-refusal" }

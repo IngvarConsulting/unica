@@ -9,9 +9,9 @@ check:
   - crates/unica-coder/src/infrastructure/engine_delivery.rs::a_failed_engine_delivery_carries_the_missing_engine_fields
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::only_a_failed_launch_of_the_runner_is_a_missing_engine
   - crates/unica-coder/src/infrastructure/daemon/server.rs::module_check_answers_working_while_the_analyzer_is_being_delivered
-  - crates/unica-coder/src/application/diagnostics.rs::absent_engine_reason_is_published_only_in_its_canonical_shape
+  - crates/unica-diagnostics/src/coordinator.rs::absent_engine_reason_is_published_only_in_its_canonical_shape
   - crates/unica-coder/src/infrastructure/daemon/v13_client_run.rs::owned_launch_that_never_started_is_a_missing_engine
-  - crates/unica-coder/src/infrastructure/platform/process.rs::only_a_refused_launch_is_a_launch_failure
+  - crates/unica-process/src/platform/process.rs::only_a_refused_launch_is_a_launch_failure
   - crates/unica-coder/src/infrastructure/internal_adapters.rs::a_missing_working_directory_is_not_a_failed_launch
 ---
 

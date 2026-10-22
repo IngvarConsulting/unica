@@ -515,6 +515,56 @@ fn public_body_line_ranges_open_search_hits_and_refuse_line_edits() {
 }
 
 #[test]
+fn oversized_error_recovery_is_a_closed_size_refusal_without_poisoning_the_daemon() {
+    let root = tempfile::tempdir().unwrap();
+    body_workspace(root.path(), b"Procedure Small() Export\nEndProcedure\n");
+    let mut mcp = McpProcess::start(root.path());
+    initialize_body_mcp(&mut mcp);
+    // The retired filter route echoes at in next before address validation.
+    // Canonical JSON fits; duplicating complete recovery does not.
+    let mut response = mcp.exchange(call_tool(
+        2,
+        "unica.view",
+        json!({
+            "at": "x".repeat(4_300_000), "filter": {}
+        }),
+    ));
+    for poll in 0..=10 {
+        if response["error"].is_object() {
+            assert_eq!(
+                response["error"]["data"]["code"], "result_too_large",
+                "{response:#}"
+            );
+            break;
+        }
+        let result = domain_result(&response);
+        if result["ok"] == false {
+            assert_eq!(
+                result["diagnostics"][0]["code"], "result_too_large",
+                "{result:#}"
+            );
+            break;
+        }
+        assert!(poll < 10, "oversized refusal did not terminate: {result:#}");
+        let task_id = result["data"]["task"]["taskId"]
+            .as_str()
+            .expect("pending Task");
+        response = mcp.exchange(call_tool(
+            format!("large-recovery:{poll}"),
+            "unica.task.result",
+            json!({"taskId":task_id,"waitMs":7000}),
+        ));
+    }
+    let next = mcp.completed_tool_call(call_tool(
+        3,
+        "unica.view",
+        json!({"at":"main:CommonModule.Main"}),
+    ));
+    assert_eq!(next["ok"], true, "daemon remains usable: {next:#}");
+    mcp.finish();
+}
+
+#[test]
 fn public_view_refuses_bsl_text_over_the_default_budget_whole_with_structural_next() {
     let root = tempfile::tempdir().unwrap();
     let mut source = String::from(
@@ -538,11 +588,26 @@ fn public_view_refuses_bsl_text_over_the_default_budget_whole_with_structural_ne
             .collect::<Vec<_>>()
     };
 
-    let body = mcp.completed_tool_call(call_tool(
-        2,
-        "unica.view",
-        json!({"at": format!("{module}.Body")}),
-    ));
+    let mut recovery_was_visible = false;
+    let body = completed_tool_result(
+        call_tool(2, "unica.view", json!({"at": format!("{module}.Body")})),
+        |request| {
+            let response = mcp.exchange(request);
+            let result = &response["result"];
+            if result["isError"] == true {
+                let recovery: Value = serde_json::from_str(
+                    result["content"][1]["text"]
+                        .as_str()
+                        .expect("refusal exposes recovery to text-only hosts"),
+                )
+                .expect("recovery is complete JSON");
+                assert_eq!(recovery["next"], result["structuredContent"]["next"]);
+                recovery_was_visible = true;
+            }
+            response
+        },
+    );
+    assert!(recovery_was_visible);
     assert_eq!(body["ok"], false, "{body:#}");
     assert_eq!(
         body["diagnostics"][0]["code"], "result_too_large",
@@ -745,8 +810,12 @@ fn public_view_budget_belongs_to_the_client_and_the_summary_marks_the_body() {
 
 #[path = "platform/v13_command_lifecycle.rs"]
 mod command_lifecycle;
+#[path = "platform/v13_metadata_members.rs"]
+mod metadata_members;
 #[path = "platform/v13_resolve_resources.rs"]
 mod resolve_resources;
+#[path = "platform/v13_support_policy_warning.rs"]
+mod support_policy_warning;
 #[path = "platform/v13_resolve_target_isolation.rs"]
 mod target_isolation;
 
@@ -2193,5 +2262,97 @@ fn broad_text_search_scopes_name_the_module_of_every_hit() {
             "main:Catalog.Валюты.Module.Object",
         ]
     );
+    mcp.finish();
+}
+
+#[test]
+fn text_search_enumerates_wide_and_aggregate_corpora_without_an_entry_quota() {
+    for distributed in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        body_workspace(
+            root.path(),
+            b"// WideNeedle\n// WideNeedle\n// WideNeedle\n",
+        );
+        for index in 0..16_385 {
+            let directory = if distributed {
+                root.path().join(format!("ZNoise/part{}", index % 8))
+            } else {
+                root.path().join("ZNoise")
+            };
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(directory.join(format!("noise{index:05}.txt")), b"").unwrap();
+        }
+        let mut mcp = McpProcess::start(root.path());
+        initialize_body_mcp(&mut mcp);
+        let first = mcp.completed_tool_call(call_tool(
+            2,
+            "unica.search",
+            json!({
+                "query": "WideNeedle", "scope": "main:Configuration", "limit": 2
+            }),
+        ));
+        assert_eq!(first["ok"], true, "{first:#}");
+        assert_eq!(first["data"]["matches"].as_array().unwrap().len(), 2);
+        assert_eq!(first["page"]["stoppedBy"], "limit");
+        let args = json!({"query":"WideNeedle", "scope":"main:Configuration", "limit":2, "cursor":first["cursor"]});
+        let tail = mcp.completed_tool_call(call_tool(3, "unica.search", args.clone()));
+        assert_eq!(tail["ok"], true, "{tail:#}");
+        assert_eq!(tail["data"]["matches"].as_array().unwrap().len(), 1);
+        assert_eq!(tail["page"]["stoppedBy"], "complete");
+        let replay = mcp.completed_tool_call(call_tool(4, "unica.search", args));
+        assert_eq!(replay, tail);
+        let empty = mcp.completed_tool_call(call_tool(
+            5,
+            "unica.search",
+            json!({"query":"AbsentNeedle", "scope":"main:Configuration"}),
+        ));
+        assert_eq!(empty["ok"], true, "{empty:#}");
+        assert_eq!(empty["data"]["matches"].as_array().unwrap().len(), 0);
+        assert_eq!(empty["page"]["stoppedBy"], "complete");
+        mcp.finish();
+    }
+}
+
+#[test]
+fn text_search_keeps_nested_module_order_across_pages() {
+    let root = tempfile::tempdir().unwrap();
+    body_workspace(root.path(), b"// OrderedNeedle\n");
+    let configuration = root.path().join("Configuration.xml");
+    let source = std::fs::read_to_string(&configuration).unwrap().replace(
+        "<CommonModule>Main</CommonModule>",
+        "<CommonModule>A</CommonModule><CommonModule>Main</CommonModule><CommonModule>Z</CommonModule>",
+    );
+    std::fs::write(configuration, source).unwrap();
+    for name in ["A", "Z"] {
+        let descriptor = std::fs::read_to_string(root.path().join("CommonModules/Main.xml"))
+            .unwrap()
+            .replace("<Name>Main</Name>", &format!("<Name>{name}</Name>"));
+        std::fs::write(
+            root.path().join(format!("CommonModules/{name}.xml")),
+            descriptor,
+        )
+        .unwrap();
+        let ext = root.path().join(format!("CommonModules/{name}/Ext"));
+        std::fs::create_dir_all(&ext).unwrap();
+        std::fs::write(ext.join("Module.bsl"), b"// OrderedNeedle\n").unwrap();
+    }
+    let mut mcp = McpProcess::start(root.path());
+    initialize_body_mcp(&mut mcp);
+    let mut args = json!({"query":"OrderedNeedle", "scope":"main:Configuration", "limit":1});
+    for (index, owner) in ["Z", "Main", "A"].into_iter().enumerate() {
+        let page =
+            mcp.completed_tool_call(call_tool(2 + index as u64, "unica.search", args.clone()));
+        assert_eq!(page["ok"], true, "{page:#}");
+        assert_eq!(page["data"]["matches"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            page["data"]["matches"][0]["at"],
+            format!("main:CommonModule.{owner}.Body#L1")
+        );
+        if index == 2 {
+            assert_eq!(page["page"]["stoppedBy"], "complete");
+        } else {
+            args["cursor"] = page["cursor"].clone();
+        }
+    }
     mcp.finish();
 }

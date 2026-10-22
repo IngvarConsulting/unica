@@ -2,8 +2,8 @@
 id: INV.SOURCE.EXACT-VERSION
 check:
   - crates/unica-coder/src/infrastructure/native_operations/meta/validation.rs::readable_child_graph_does_not_authorize_materializing_unsupported_descriptors
-  - crates/unica-coder/src/infrastructure/format_guard.rs::version_owning_target_cannot_hide_behind_supported_source_set_owner
-  - crates/unica-coder/src/infrastructure/format_guard.rs::code_patch_inside_older_source_set_uses_the_same_format_boundary
+  - crates/unica-coder/src/infrastructure/native_operations/apply_families/dcs_mxl_guard_tests.rs::canonical_dcs_supported_source_still_requires_each_exact_owner_version
+  - crates/unica-coder/tests/platform/code_patch_composition.rs::canonical_code_insert_inside_older_source_set_is_refused_without_writes
   - crates/unica-coder/src/infrastructure/platform_xml_owner.rs::existing_form_content_resolves_exact_wrapper_and_source_set_owners
 ---
 

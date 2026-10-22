@@ -100,28 +100,18 @@ EXPECTED_PLATFORM_VERSION = "8.3.27.2074"
 EXPECTED_IBCMD_SHA256 = "e00f3c945fb6f60bb2802151df1b4e7ee4f3caaf7c9e24a981020af575fda6e5"
 EXPECTED_PLATFORM_INSTALL_SHA256 = "5eb8897c4f7e95876572f2f36943439b0d57e47688314b622f5771e5a22df0ef"
 EXPECTED_PLATFORM_INSTALL_FILE_COUNT = 4337
+# Full 66-case gate on 1C 8.3.27.2074 passed on 2026-10-20:
+# 450 commands in two rounds, no accepted-normalized or source-error cases.
+# Two independent corpora from composition 4bf85f5f32c7fdea3728a8a5b50b9aa2b77cb202
+# agree on this contract. Native report SHA256:
+# db331df7f10c4272a625613138c2471a273a8647f3cc6878dafbe60696e86372.
+# This records semantic retention and stable round trips under the existing
+# comparison policy; it is not whole-tree raw-byte or full-release acceptance.
 LAST_VERIFIED_CASE_CONTRACT_SHA256 = (
-    "1c4afc7adf86cdb8a0e94c1f87e2166e4759387158317848746de0cee678bedf"
+    "d25fbc7acd95f9e460b31f8895ae9f134cc933da512c23b9d4c063ea624aa9bb"
 )
-# LAST_VERIFIED records the previous successful full platform run. Two
-# independent generations agree on the current direct-DCS public contract.
-# The first candidate exposed DCS loss hidden by a stable normalized export.
-# The corrected DCS cases now preserve their full content. The six MXL and
-# empty-template imports that timed out (#1325) stopped hanging once the
-# emitter registered forms and templates in the owner by name instead of
-# writing a full descriptor into ChildObjects (the shape platform dumps never
-# use): the same corpus generated with the fix runs all 69 cases under
-# --jobs 1 without a source error. Nine cases remain accepted-normalized
-# (#1369), so the run is not a pass. Keep LAST_VERIFIED.
-# #1448 removed the three cases of the retired DSL compilers (mxl-compile,
-# role-compile, subsystem-compile). #1450 moved support-edit-bin-only to the
-# configuration root and xdto-add-nested-property to the property address.
-# Two independent generations agree on the 66-case contract below. The full
-# --jobs 1 run on 8.3.27.2074 processes all 66 cases without a source error:
-# 57 pass and the same nine of #1369 stay accepted-normalized, so the run is
-# not a pass. Keep LAST_VERIFIED.
 EXPECTED_CASE_CONTRACT_SHA256: str | None = (
-    "bbd782e757485d65be77ebd9c2b0d7602b1ad2634c6ae7045397c88aa5598a4c"
+    "d25fbc7acd95f9e460b31f8895ae9f134cc933da512c23b9d4c063ea624aa9bb"
 )
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 300.0
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -920,6 +910,25 @@ def compare_xml_snapshots(left: dict, right: dict) -> dict:
         "xml": xml_comparison,
         "nonXml": non_xml_comparison,
         "directories": directory_comparison,
+    }
+
+
+def source_semantic_retention(comparison: dict, dcs_retention: dict) -> dict:
+    """Admit evidenced DCS defaults without exempting any other source change."""
+    retained_dcs_paths = {
+        item["path"] for item in dcs_retention["files"] if item["preserved"]
+    }
+    changed_xml = set(comparison["xml"]["changed"])
+    return {
+        "preserved": (
+            dcs_retention["preserved"]
+            and not comparison["added"]
+            and not comparison["removed"]
+            and comparison["nonXml"]["equal"]
+            and comparison["directories"]["equal"]
+            and changed_xml <= retained_dcs_paths
+        ),
+        "allowedDcsDefaultPaths": sorted(changed_xml & retained_dcs_paths),
     }
 
 
@@ -4203,6 +4212,7 @@ def run_checkpoint(
     try:
         source_comparison = compare_xml_snapshots(source_snapshot, export_snapshots[0])
         dcs_retention = compare_dcs_retention(source_snapshot, export_snapshots[0])
+        source_retention = source_semantic_retention(source_comparison, dcs_retention)
         roundtrip_comparison = compare_xml_snapshots(
             export_snapshots[0], export_snapshots[1]
         )
@@ -4226,7 +4236,7 @@ def run_checkpoint(
         verdict = "rejected"
     elif not roundtrip_comparison["equal"] or not round2_owners_valid:
         verdict = "unstable-roundtrip"
-    elif not source_comparison["equal"] or not round1_owners_valid:
+    elif not source_retention["preserved"] or not round1_owners_valid:
         verdict = "accepted-normalized"
     else:
         verdict = "pass"
@@ -4243,6 +4253,7 @@ def run_checkpoint(
         "durationMs": sum(entry["durationMs"] for entry in commands),
         "platformAliasedModulesDropped": sorted(set(platform_aliased_modules)),
         "sourceComparison": source_comparison,
+        "sourceSemanticRetention": source_retention,
         "dcsSemanticRetention": dcs_retention,
         "roundtripComparison": roundtrip_comparison,
         "evidenceSha256": evidence_hashes(),

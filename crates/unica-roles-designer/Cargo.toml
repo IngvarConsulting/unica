@@ -1,0 +1,20 @@
+[package]
+name = "unica-roles-designer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+test-support = []
+
+[dependencies]
+serde_json.workspace = true
+unica-source-contract = { path = "../unica-source-contract" }
+unica-address = { path = "../unica-address" }
+unica-metadata = { path = "../unica-metadata" }
+unica-roles = { path = "../unica-roles" }
+unica-source-designer = { path = "../unica-source-designer" }
+unica-xml-format = { path = "../unica-xml-format" }
+roxmltree.workspace = true

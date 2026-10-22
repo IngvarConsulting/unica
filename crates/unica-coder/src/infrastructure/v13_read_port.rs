@@ -1,50 +1,12 @@
-use crate::application::ports::{MetaLocalInfo, MetadataChildProfile};
 use crate::application::v13::source_text::{ModuleText, ModuleTextAccumulator};
-use crate::application::v13::view::ViewError;
-use crate::domain::address::NodeKind;
-use crate::domain::address::QualifiedAddress;
-use crate::domain::cancellation::CancellationToken;
-use crate::domain::code_intelligence::ProviderDeadline;
-use crate::domain::metadata::{MetaPredefinedItemsData, MetaSupportStatus, MetadataKind};
-use crate::domain::project_sources::{
-    classify_already_read_config_dump_info_xml, ConfigDumpInfoXmlKind, SourceSetKind,
-};
-use crate::domain::refusal::{RefusalCode, RefusalDetail};
-use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
-use crate::domain::support_state::{
-    ConfigurationSupportData, ConfigurationSupportState, ObjectSupportData, ObjectSupportState,
-    SupportCounts,
-};
-use crate::infrastructure::logical_event_source::{
-    attached_resource_relative as shared_attached_resource_relative,
-    metadata_descriptor_relative as shared_metadata_descriptor_relative,
-    module_relative as shared_module_relative,
-};
-use crate::infrastructure::native_operations::cf::{
+use unica_execution_contract::view_error::ViewError;
+use unica_metadata::configuration::{CfHomePageData, CfInterfaceData};
+use unica_metadata_designer::configuration::{
     cf_home_page_item_data, parse_cf_command_interface_xml, parse_cf_home_page_xml_strict,
-    parse_cf_info_xml, CfHomePageData, CfInterfaceData,
+    parse_cf_info_xml,
 };
-use crate::infrastructure::native_operations::common::{
-    parse_subsystem_info_xml, support_root_uuid_from_bytes, SupportState, SupportStateStreamParser,
-};
-use crate::infrastructure::native_operations::dcs::parse_dcs_info_xml;
-use crate::infrastructure::native_operations::form::parse_form_info_xml;
-use crate::infrastructure::native_operations::form::FormInfoData;
-use crate::infrastructure::native_operations::meta::{
-    descriptor_extends_parent, parse_child_profile_from_bytes, parse_meta_borrowing,
-    parse_typed_meta_local_info, MetaBorrowing,
-};
-use crate::infrastructure::native_operations::mxl::parse_mxl_info_xml;
-use crate::infrastructure::native_operations::role::parse_role_info_xml;
-use crate::infrastructure::native_operations::subsystem::{
-    build_subsystem_info_result, parse_subsystem_command_interface_data,
-};
-use crate::infrastructure::native_operations::xdto::parse_xdto_info_bytes;
-use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
-use crate::infrastructure::platform_xml_owner::{
-    prove_already_read_metadata_owner, prove_already_read_source_set_owner,
-    PlatformXmlSourceSetOwnerEvidence,
-};
+use unica_source_designer::module_layout::module_relative as shared_module_relative;
+
 use crate::infrastructure::v13_large_configuration::{
     read_configuration_root, RegistrationCache, RegistrationIndex, RetainedSupportState,
     StreamedConfigurationRoot,
@@ -55,6 +17,42 @@ use std::cell::RefCell;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use unica_address::address::NodeKind;
+use unica_address::address::QualifiedAddress;
+use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_forms::facts::{FormInfoData, FormSupportDetails, FormSupportRuleReason};
+use unica_forms_designer::codec::parse_form_info_xml;
+use unica_metadata::support_state::{
+    ConfigurationSupportData, ConfigurationSupportState, ObjectSupportData, ObjectSupportState,
+    SupportCounts,
+};
+use unica_metadata::{MetaPredefinedItemsData, MetaSupportStatus, MetadataKind};
+use unica_metadata_designer::subsystem::{
+    build_subsystem_info_result, parse_subsystem_command_interface_data,
+};
+use unica_metadata_designer::support::{
+    support_root_uuid_from_bytes, SupportState, SupportStateStreamParser,
+};
+use unica_metadata_designer::validation::parse_child_profile_from_bytes;
+use unica_refusal::{RefusalCode, RefusalDetail};
+use unica_roles_designer::info::parse_role_info_xml;
+use unica_source_contract::read::SourceDirectory;
+use unica_source_contract::SourceSetKind;
+use unica_source_designer::layout::{
+    attached_resource_relative as shared_attached_resource_relative,
+    metadata_descriptor_relative as shared_metadata_descriptor_relative,
+};
+use unica_source_designer::owner::{
+    prove_already_read_metadata_owner, prove_already_read_source_set_owner,
+    PlatformXmlSourceSetOwnerEvidence,
+};
+use unica_source_designer::probe::{
+    classify_already_read_config_dump_info_xml, ConfigDumpInfoXmlKind,
+};
+use unica_templates_designer::mxl_codec::parse_mxl_info_xml;
+use unica_work_control::cancellation::CancellationToken;
+use unica_work_control::provider_deadline::ProviderDeadline;
+use unica_xdto_designer::info::{parse_xdto_info_bytes, XdtoInfoError};
 
 #[cfg(test)]
 thread_local! {
@@ -89,9 +87,9 @@ const MAX_CONFIGURATION_BYTES: usize = 8 * 1024 * 1024;
 
 /// Один разбор дескриптора объекта: свойства и заимствование из тех же байтов.
 pub(crate) struct MetadataLocalRead {
-    pub(crate) info: MetaLocalInfo,
+    pub(crate) info: unica_metadata::validation_subject::MetaLocalInfo,
     /// `None` — набор не вида `extension`: заимствования там не бывает.
-    pub(crate) borrowing: Option<MetaBorrowing>,
+    pub(crate) borrowing: Option<unica_metadata_designer::xml_model::MetaBorrowing>,
 }
 
 /// One actor-issued read authority for one admitted source set. Reads are
@@ -101,7 +99,7 @@ pub(crate) struct ProviderReadAuthority {
     source_set: String,
     source_set_identity: String,
     source_set_kind: SourceSetKind,
-    root: Arc<RetainedDirectoryCapability>,
+    root: Arc<SourceDirectory>,
     snapshot_identity: String,
     /// Parsed root artifacts retained by the workspace actor across calls.
     artifacts: Arc<RegistrationCache>,
@@ -125,7 +123,7 @@ impl ProviderReadAuthority {
         source_set: impl Into<String>,
         source_set_identity: impl Into<String>,
         source_set_kind: SourceSetKind,
-        root: Arc<RetainedDirectoryCapability>,
+        root: Arc<SourceDirectory>,
     ) -> Self {
         Self::new_local_snapshot(
             source_set,
@@ -140,7 +138,7 @@ impl ProviderReadAuthority {
         source_set: impl Into<String>,
         source_set_identity: impl Into<String>,
         source_set_kind: SourceSetKind,
-        root: Arc<RetainedDirectoryCapability>,
+        root: Arc<SourceDirectory>,
         snapshot_identity: String,
     ) -> Self {
         Self {
@@ -580,12 +578,10 @@ impl ProviderReadAuthority {
             checkpoint,
         )?;
         let (mut properties, limits) =
-            crate::infrastructure::native_operations::meta::parse_form_metadata_properties(
-                &bytes, target,
-            )
-            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+            unica_metadata_designer::form_metadata::parse_form_metadata_properties(&bytes, target)
+                .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
         if self.source_set_kind == SourceSetKind::Extension {
-            let borrowing = parse_meta_borrowing(&bytes)
+            let borrowing = unica_metadata_designer::xml_model::parse_meta_borrowing(&bytes)
                 .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
             properties.extend(crate::infrastructure::v13_read_projection::borrowing_props(
                 &borrowing,
@@ -611,7 +607,7 @@ impl ProviderReadAuthority {
         target: &MetadataAddress,
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<FormInfoData, ViewError> {
-        self.metadata_descriptor(target)?;
+        let descriptor = self.metadata_descriptor(target)?;
         let relative = self.attached_resource_relative(target, "Form.xml")?;
         let bytes = self.read_relative(&relative, MAX_CONFIGURATION_BYTES)?;
         let text = std::str::from_utf8(&bytes).map_err(|_| {
@@ -624,13 +620,49 @@ impl ProviderReadAuthority {
         } else {
             parts[..parts.len().saturating_sub(2)].join(".")
         };
-        parse_form_info_xml(
-            text,
-            form_name,
-            object_context,
-            self.object_support(target, checkpoint)?,
-        )
-        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
+        // Keep one retained marker for the form and its top-level owner.
+        let state = self.support_state(checkpoint)?;
+        let own_rule = form_support_rule(state.as_deref(), &descriptor)?;
+        let support = object_support_from_state(state.as_deref(), own_rule);
+        let owner_support = if object_context.is_empty() {
+            None
+        } else {
+            let owner =
+                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &parts[..2].join("."))
+                    .map_err(|error| {
+                        ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+                    })?;
+            let owner_descriptor = self.metadata_descriptor(&owner)?;
+            let owner_rule = form_support_rule(state.as_deref(), &owner_descriptor)?;
+            Some(object_support_from_state(state.as_deref(), owner_rule))
+        };
+        let direct_edit_safe = match (
+            support.direct_edit_safe,
+            owner_support
+                .as_ref()
+                .map_or(Some(true), |owner| owner.direct_edit_safe),
+        ) {
+            (Some(false), _) | (_, Some(false)) => Some(false),
+            (Some(true), Some(true)) => Some(true),
+            _ => None,
+        };
+        let support_rule_reason = if own_rule.is_some() {
+            None
+        } else {
+            Some(match state.as_deref() {
+                None => FormSupportRuleReason::MarkerAbsent,
+                Some(state) if state.removed() => FormSupportRuleReason::ConfigurationRemoved,
+                Some(_) => FormSupportRuleReason::RuleAbsent,
+            })
+        };
+        let mut data = parse_form_info_xml(text, form_name, object_context, support)
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+        data.support_details = Some(FormSupportDetails {
+            support_rule: own_rule,
+            support_rule_reason,
+            direct_edit_safe,
+        });
+        Ok(data)
     }
 
     pub(crate) fn dcs_payload(
@@ -639,7 +671,8 @@ impl ProviderReadAuthority {
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<Value, ViewError> {
         let (_, text) = self.dcs_input(target)?;
-        let data = parse_dcs_info_xml(&text, self.object_support(target, checkpoint)?)
+        let data = crate::infrastructure::family_codecs::dcs_codec()
+            .read(&text, self.object_support(target, checkpoint)?)
             .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
         serde_json::to_value(data)
             .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
@@ -700,7 +733,7 @@ impl ProviderReadAuthority {
         let format_guard =
             crate::infrastructure::format_guard::evaluate_retained_template_format_guard(
                 "mxl-validate",
-                crate::infrastructure::platform_xml_owner::MXL_ROOT,
+                unica_source_designer::owner::MXL_ROOT,
                 &artifact,
                 &text,
                 (self.root_path().join(wrapper_relative), wrapper),
@@ -801,7 +834,7 @@ impl ProviderReadAuthority {
         &self,
         target: &MetadataAddress,
         resource: &str,
-    ) -> Result<Option<MetaBorrowing>, ViewError> {
+    ) -> Result<Option<unica_metadata_designer::xml_model::MetaBorrowing>, ViewError> {
         inherited_companion(&self.root, self.source_set_kind, target, resource)
             .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
     }
@@ -829,18 +862,65 @@ impl ProviderReadAuthority {
         // каждого объекта незачем.
         let borrowing = if self.source_set_kind == SourceSetKind::Extension {
             Some(
-                parse_meta_borrowing(&descriptor)
+                unica_metadata_designer::xml_model::parse_meta_borrowing(&descriptor)
                     .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?,
             )
         } else {
             None
         };
-        let info =
-            parse_typed_meta_local_info(&descriptor, target, support).map_err(|failure| {
-                let message = serde_json::to_string(&failure.diagnostics)
-                    .unwrap_or_else(|_| "metadata reader failed".to_string());
-                ViewError::detailed(RefusalDetail::SourceUnreadable, message)
-            })?;
+        let mut info = unica_metadata_designer::info::parse_typed_meta_local_info_for_source(
+            &descriptor,
+            target,
+            support,
+            self.source_set_kind,
+        )
+        .map_err(|failure| {
+            let message = serde_json::to_string(&failure.diagnostics)
+                .unwrap_or_else(|_| "metadata reader failed".to_string());
+            ViewError::detailed(RefusalDetail::SourceUnreadable, message)
+        })?;
+        if info.kind == MetadataKind::ExchangePlan {
+            let relative = Path::new("ExchangePlans")
+                .join(&info.name)
+                .join("Ext/Content.xml");
+            let observation = match self.read_optional_relative_with_checkpoint(
+                &relative,
+                Some(MAX_CONFIGURATION_BYTES),
+                checkpoint,
+            ) {
+                Ok(Some(bytes)) => std::str::from_utf8(&bytes)
+                    .map_err(|e| e.to_string())
+                    .and_then(unica_metadata_designer::exchange_content::read_content)
+                    .map(Some),
+                Ok(None) => Ok(None),
+                Err(error) if matches!(error.detail(), Some(RefusalDetail::SourceUnreadable)) => {
+                    Err(error.to_string())
+                }
+                Err(error) => return Err(error),
+            };
+            let errors = match observation {
+                Ok(Some(observation)) => {
+                    info.relations.content = Some(Some(observation.items));
+                    observation.errors
+                }
+                // The platform omits Content.xml for an empty composition.
+                Ok(None) => {
+                    info.relations.content = Some(Some(Vec::new()));
+                    Vec::new()
+                }
+                Err(error) => vec![error],
+            };
+            for error in errors {
+                info.diagnostics.push(
+                    unica_metadata::MetaDiagnostic::error(
+                        unica_metadata::MetaDiagnosticCode::ValidationFailed,
+                        error,
+                    )
+                    .with_metadata_path(target.clone())
+                    .with_field("relations.content"),
+                );
+            }
+        }
         Ok(MetadataLocalRead { info, borrowing })
     }
 
@@ -859,17 +939,16 @@ impl ProviderReadAuthority {
         code_type: Option<&str>,
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<Option<MetaPredefinedItemsData>, ViewError> {
-        if !crate::domain::metadata::metadata_kind_collections(kind)
-            .contains(&crate::domain::metadata::MetaCollection::PredefinedItems)
+        if !unica_metadata::metadata_kind_collections(kind)
+            .contains(&unica_metadata::MetaCollection::PredefinedItems)
         {
             return Ok(None);
         }
         let name = target.as_str().split('.').nth(1).unwrap_or_default();
-        let relative =
-            Path::new(crate::infrastructure::metadata_kinds::metadata_layout(kind).directory)
-                .join(name)
-                .join("Ext")
-                .join("Predefined.xml");
+        let relative = Path::new(unica_metadata_designer::layout::metadata_layout(kind).directory)
+            .join(name)
+            .join("Ext")
+            .join("Predefined.xml");
         let Some(bytes) = self.read_optional_relative_with_checkpoint(
             &relative,
             Some(MAX_CONFIGURATION_BYTES),
@@ -886,11 +965,11 @@ impl ProviderReadAuthority {
         let code_type = match code_type.ok_or_else(|| {
             ViewError::detailed(
                 RefusalDetail::SourceUnreadable,
-                crate::infrastructure::native_operations::meta::MISSING_PREDEFINED_CODE_TYPE,
+                unica_metadata_designer::predefined::MISSING_PREDEFINED_CODE_TYPE,
             )
         })? {
-            "String" => crate::infrastructure::native_operations::meta::PredefinedCodeType::String,
-            "Number" => crate::infrastructure::native_operations::meta::PredefinedCodeType::Number,
+            "String" => unica_metadata_designer::predefined::PredefinedCodeType::String,
+            "Number" => unica_metadata_designer::predefined::PredefinedCodeType::Number,
             other => {
                 return Err(ViewError::detailed(
                     RefusalDetail::SourceUnreadable,
@@ -899,13 +978,19 @@ impl ProviderReadAuthority {
             }
         };
         let mut interrupted = None;
-        let result = crate::infrastructure::native_operations::meta::read_complete_predefined_items_for_code_type(
-            &bytes, kind, code_type, &mut || checkpoint().map_err(|error| {
-                let message = error.to_string();
-                interrupted = Some(error);
-                message
-            }),
-        );
+        let result =
+            unica_metadata_designer::predefined::read_complete_predefined_items_for_code_type(
+                &bytes,
+                kind,
+                code_type,
+                &mut || {
+                    checkpoint().map_err(|error| {
+                        let message = error.to_string();
+                        interrupted = Some(error);
+                        message
+                    })
+                },
+            );
         if let Some(error) = interrupted {
             return Err(error);
         }
@@ -958,7 +1043,12 @@ impl ProviderReadAuthority {
         let relative = self.metadata_descriptor_relative(target)?;
         let evidence = prove_already_read_metadata_owner(&relative, &descriptor)
             .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.message))?;
-        identity_metadata_payload_from_evidence(target, &evidence)
+        let mut payload = identity_metadata_payload_from_evidence(target, &evidence)?;
+        if evidence.artifact_kind() == "StyleItem" {
+            unica_metadata_designer::style_item_read::enrich_style_item(&descriptor, &mut payload)
+                .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?;
+        }
+        Ok(payload)
     }
 
     pub(crate) fn metadata_owner_evidence(
@@ -1012,6 +1102,26 @@ impl ProviderReadAuthority {
             .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
     }
 
+    pub(crate) fn xdto_check_outcome(
+        &self,
+        target: &MetadataAddress,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<crate::application::v13::check::NativeCheckOutcome, ViewError> {
+        checkpoint()?;
+        let descriptor = self.metadata_descriptor(target)?;
+        let package = self.read_relative_with_checkpoint(
+            &self.attached_resource_relative(target, "Package.bin")?,
+            Some(MAX_CONFIGURATION_BYTES),
+            checkpoint,
+        )?;
+        let data = parse_xdto_info_bytes(&package, &descriptor, self.source_set(), target, None)
+            .map_err(|error| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+            })?;
+        checkpoint()?;
+        Ok(crate::infrastructure::native_operations::xdto::xdto_check_outcome(data))
+    }
+
     pub(crate) fn xdto_payload(
         &self,
         target: &MetadataAddress,
@@ -1024,7 +1134,17 @@ impl ProviderReadAuthority {
         )?;
         let data =
             parse_xdto_info_bytes(&package, &descriptor, self.source_set(), target, type_name)
-                .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+                .map_err(|error| {
+                    let message = error.to_string();
+                    match error {
+                        XdtoInfoError::TypeNotFound(_) => {
+                            ViewError::new(RefusalCode::NotFound, message)
+                        }
+                        XdtoInfoError::Source(_) => {
+                            ViewError::detailed(RefusalDetail::SourceUnreadable, message)
+                        }
+                    }
+                })?;
         serde_json::to_value(data)
             .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
     }
@@ -1061,7 +1181,7 @@ impl ProviderReadAuthority {
                     .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
             })
             .transpose()?;
-        let (data, _) = parse_subsystem_info_xml(
+        let (data, _) = unica_metadata_designer::subsystem::parse_subsystem_info_xml(
             if nested.is_empty() {
                 Path::new(target.as_str())
             } else {
@@ -1112,8 +1232,10 @@ impl ProviderReadAuthority {
                     "subsystem descriptor is not UTF-8",
                 )
             })?;
-            let (parent, _) = parse_subsystem_info_xml(&relative, text, false)
-                .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+            let (parent, _) = unica_metadata_designer::subsystem::parse_subsystem_info_xml(
+                &relative, text, false,
+            )
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
             // Промежуточный дескриптор обязан называть ту подсистему, по
             // регистрации которой к нему пришли; корень сверен владельцем.
             if let Some(expected) = depth.checked_sub(1).map(|index| &nested[index]) {
@@ -1157,12 +1279,12 @@ impl ProviderReadAuthority {
         address: &QualifiedAddress,
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<crate::application::v13::check::NativeCheckOutcome, ViewError> {
-        use crate::infrastructure::native_operations::subsystem::{
-            subsystem_validation_outcome, validate_subsystem_content, SubsystemInfoFormatDocument,
-        };
+        use crate::infrastructure::subsystem_composition::subsystem_validation_outcome;
+        use unica_metadata::subsystem::SubsystemInfoFormatDocument;
+        use unica_metadata_designer::subsystem::validate_subsystem_content;
         let route = crate::infrastructure::logical_tree::route_logical_address(
             address,
-            crate::domain::platform_profile::PlatformProfile::v8_3_27(),
+            unica_bsl::profile::PlatformProfile::v8_3_27(),
         )
         .map_err(|error| ViewError::new(RefusalCode::BadValue, error.to_string()))?;
         let target = route.reader_metadata_path().ok_or_else(|| {
@@ -1173,8 +1295,9 @@ impl ProviderReadAuthority {
         let text = std::str::from_utf8(&bytes).map_err(|error| {
             ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
         })?;
-        let (data, _) = parse_subsystem_info_xml(&relative, text, false)
-            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+        let (data, _) =
+            unica_metadata_designer::subsystem::parse_subsystem_info_xml(&relative, text, false)
+                .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
         let expected = address
             .segments()
             .last()
@@ -1317,7 +1440,7 @@ impl ProviderReadAuthority {
     pub(crate) fn metadata_child_profile(
         &self,
         target: &MetadataAddress,
-    ) -> Result<MetadataChildProfile, ViewError> {
+    ) -> Result<unica_metadata::validation_subject::MetadataChildProfile, ViewError> {
         let descriptor = self.metadata_descriptor(target)?;
         let owner_text = target
             .as_str()
@@ -1331,7 +1454,7 @@ impl ProviderReadAuthority {
         let Some((parsed_target, profile)) = parse_child_profile_from_bytes(
             &descriptor,
             &owner,
-            crate::infrastructure::native_operations::meta::MetadataAdmission::Read,
+            unica_metadata_designer::validation::MetadataAdmission::Read,
         )
         .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?
         else {
@@ -1459,7 +1582,7 @@ impl ProviderReadAuthority {
     pub(crate) fn module_text_range(
         &self,
         target: &MetadataAddress,
-        range: crate::domain::address::BodyLineRange,
+        range: unica_address::address::BodyLineRange,
         checkpoint: impl FnMut() -> Result<(), ViewError>,
     ) -> Result<ModuleText, ViewError> {
         let mut text = ModuleTextAccumulator::with_range(range);
@@ -1595,15 +1718,11 @@ impl ProviderReadAuthority {
         let Some(state) = self.support_state(checkpoint)? else {
             return Ok(unsupported_object());
         };
-        let data = |state, direct_edit_safe| ObjectSupportData {
-            state,
-            direct_edit_safe,
-        };
-        if state.removed() {
-            return Ok(data(ObjectSupportState::RemovedFromSupport, Some(true)));
-        }
-        if !state.global_editing_enabled() {
-            return Ok(data(ObjectSupportState::ConfigurationReadOnly, Some(false)));
+        // Preserve the established early global answer for other readers:
+        // only the form-specific own-rule projection requires UUID evidence
+        // even when the global state already determines effective support.
+        if state.removed() || !state.global_editing_enabled() {
+            return Ok(object_support_from_state(Some(&state), None));
         }
         let owned;
         let descriptor = match descriptor {
@@ -1619,12 +1738,10 @@ impl ProviderReadAuthority {
                 "metadata descriptor has no support-state UUID evidence",
             )
         })?;
-        Ok(match state.object_rule(&uuid) {
-            Some(0) => data(ObjectSupportState::Locked, Some(false)),
-            Some(1) => data(ObjectSupportState::EditableWithSupport, Some(true)),
-            Some(2) => data(ObjectSupportState::RemovedFromSupport, Some(true)),
-            _ => unsupported_object(),
-        })
+        Ok(object_support_from_state(
+            Some(&state),
+            object_support_rule(state.object_rule(&uuid)),
+        ))
     }
 
     fn configuration_support(
@@ -1777,7 +1894,7 @@ impl ProviderReadAuthority {
 /// или форма владельца для `Form.xml` (её модуль тоже), общий макет или макет
 /// владельца для `Template.xml`. `None` — адрес вне такого содержимого.
 pub(crate) fn companion_owner(
-    at: &crate::domain::address::QualifiedAddress,
+    at: &unica_address::address::QualifiedAddress,
     resource: &str,
 ) -> Option<MetadataAddress> {
     let (top, child) = match resource {
@@ -1824,11 +1941,11 @@ pub(crate) fn companion_owner(
 /// унаследовал бы содержимое. Единственный владелец этого решения: его
 /// спрашивают и чтение, и запись.
 pub(crate) fn inherited_companion(
-    root: &RetainedDirectoryCapability,
+    root: &SourceDirectory,
     source_kind: SourceSetKind,
     target: &MetadataAddress,
     resource: &str,
-) -> Result<Option<MetaBorrowing>, String> {
+) -> Result<Option<unica_metadata_designer::xml_model::MetaBorrowing>, String> {
     if source_kind != SourceSetKind::Extension {
         return Ok(None);
     }
@@ -1844,18 +1961,18 @@ pub(crate) fn inherited_companion(
             .map_err(|error| error.to_string())
     };
     let descriptor = descriptor_of(target)?;
-    if !descriptor_extends_parent(&descriptor) {
+    if !unica_metadata_designer::xml_model::descriptor_extends_parent(&descriptor) {
         return Ok(None);
     }
     let parts = target.as_str().split('.').collect::<Vec<_>>();
     if parts.len() > 2 {
         let owner = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &parts[..2].join("."))
             .map_err(|error| error.to_string())?;
-        if !descriptor_extends_parent(&descriptor_of(&owner)?) {
+        if !unica_metadata_designer::xml_model::descriptor_extends_parent(&descriptor_of(&owner)?) {
             return Ok(None);
         }
     }
-    parse_meta_borrowing(&descriptor).map(Some)
+    unica_metadata_designer::xml_model::parse_meta_borrowing(&descriptor).map(Some)
 }
 
 /// `Subsystems/A.xml` → `Subsystems/A/Subsystems/B.xml`.
@@ -1967,6 +2084,58 @@ fn encode_export_path_components<'a>(
     Ok(encoded)
 }
 
+/// Missing marker is proven absence; with a marker the descriptor UUID is
+/// required even when a global restriction would hide the own rule.
+fn form_support_rule(
+    state: Option<&SupportState>,
+    descriptor: &[u8],
+) -> Result<Option<ObjectSupportState>, ViewError> {
+    let Some(state) = state else { return Ok(None) };
+    let uuid = support_root_uuid_from_bytes(descriptor).ok_or_else(|| {
+        ViewError::detailed(
+            RefusalDetail::SourceUnreadable,
+            "metadata descriptor has no support-state UUID evidence",
+        )
+    })?;
+    Ok(object_support_rule(state.object_rule(&uuid)))
+}
+
+fn object_support_rule(rule: Option<u8>) -> Option<ObjectSupportState> {
+    match rule {
+        Some(0) => Some(ObjectSupportState::Locked),
+        Some(1) => Some(ObjectSupportState::EditableWithSupport),
+        Some(2) => Some(ObjectSupportState::RemovedFromSupport),
+        _ => None,
+    }
+}
+
+fn object_support_from_state(
+    state: Option<&SupportState>,
+    own_rule: Option<ObjectSupportState>,
+) -> ObjectSupportData {
+    let Some(state) = state else {
+        return unsupported_object();
+    };
+    let state = if state.removed() {
+        ObjectSupportState::RemovedFromSupport
+    } else if !state.global_editing_enabled() {
+        ObjectSupportState::ConfigurationReadOnly
+    } else {
+        own_rule.unwrap_or(ObjectSupportState::NotSupported)
+    };
+    let direct_edit_safe = match state {
+        ObjectSupportState::Locked | ObjectSupportState::ConfigurationReadOnly => Some(false),
+        ObjectSupportState::EditableWithSupport | ObjectSupportState::RemovedFromSupport => {
+            Some(true)
+        }
+        ObjectSupportState::NotSupported => None,
+    };
+    ObjectSupportData {
+        state,
+        direct_edit_safe,
+    }
+}
+
 fn unsupported_object() -> ObjectSupportData {
     ObjectSupportData {
         state: ObjectSupportState::NotSupported,
@@ -1989,11 +2158,9 @@ fn metadata_support_status(support: ObjectSupportData) -> MetaSupportStatus {
 /// Streams `Ext/ParentConfigurations.bin` through the support-state parser in
 /// bounded chunks, observing the caller's checkpoint before each chunk.
 fn parse_support_state(
-    mut file: std::fs::File,
+    mut file: impl std::io::Read,
     checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
 ) -> Result<SupportState, ViewError> {
-    use std::io::Read;
-
     let mut parser = SupportStateStreamParser::default();
     let mut buffer = [0_u8; 64 * 1024];
     loop {

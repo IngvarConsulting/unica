@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from tests.ci.acceptance_controls import load_acceptance_corpus
 
@@ -885,6 +886,19 @@ class V013ParityInventoryTest(unittest.TestCase):
             tracked_paths=tracked_paths,
         )
 
+    def test_acceptance_evidence_cannot_cite_a_successful_setup_instead_of_its_operation(self) -> None:
+        documents, baseline_names, tracked_paths = load_repository_inputs(REPO_ROOT)
+        documents = copy.deepcopy(documents)
+        cases = documents["tests/fixtures/v013/domain-parity/apply-metadata.json"]["cases"]
+        case = next(case for case in cases if case["caseId"] == "batch2-object-remove-unreferenced")
+        case["expected"]["wireStep"] = 1
+        with patch(
+            f"{__name__}.load_repository_inputs",
+            return_value=(documents, baseline_names, tracked_paths),
+        ):
+            with self.assertRaisesRegex(AssertionError, "batch2-object-remove-unreferenced.*object.remove"):
+                self.test_repository_cases_on_the_acceptance_corpus_name_real_scenarios()
+
     def test_repository_cases_on_the_acceptance_corpus_name_real_scenarios(self) -> None:
         """A case that cites the acceptance corpus must cite a scenario that
         exists and freezes the same answer; a dangling or mismatched citation
@@ -911,7 +925,26 @@ class V013ParityInventoryTest(unittest.TestCase):
                 if scenario is None:
                     offenders.append(f"{shard}:{case['caseId']} cites {expected.get('scenario')!r}")
                     continue
-                step = scenario["wire"][0]
+                wire_step = expected.get("wireStep", 1)
+                if type(wire_step) is not int or not 1 <= wire_step <= len(scenario["wire"]):
+                    offenders.append(
+                        f"{shard}:{case['caseId']} cites invalid wireStep {wire_step!r}"
+                    )
+                    continue
+                step = scenario["wire"][wire_step - 1]
+                if step.get("tool") != f"unica.{case['entry']}":
+                    offenders.append(
+                        f"{shard}:{case['caseId']} cites {scenario['id']} wireStep {wire_step} "
+                        f"for {step.get('tool')!r}, expected unica.{case['entry']}"
+                    )
+                if case["entry"] == "apply" and not any(
+                    operation.get("op") == case["operation"]
+                    for operation in step.get("args", {}).get("ops", [])
+                ):
+                    offenders.append(
+                        f"{shard}:{case['caseId']} cites {scenario['id']} wireStep {wire_step} "
+                        f"without operation {case['operation']}"
+                    )
                 if expected["class"] not in step["expect"]:
                     offenders.append(
                         f"{shard}:{case['caseId']} expects {expected['class']!r}, "

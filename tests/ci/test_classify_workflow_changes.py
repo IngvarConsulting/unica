@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -27,6 +31,220 @@ OUTPUT_NAMES = (
     "release_required",
     "assessment_required",
 )
+
+
+class GitEventClassificationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.module = load_classifier_module()
+
+    def git(self, repo: Path, *arguments: str) -> str:
+        return subprocess.run(["git", *arguments], cwd=repo, check=True, capture_output=True, text=True).stdout.strip()
+
+    def repository(self) -> tuple[Path, str]:
+        temporary = tempfile.TemporaryDirectory(prefix="ci-event-")
+        self.addCleanup(temporary.cleanup)
+        repo = Path(temporary.name)
+        self.git(repo, "init", "-b", "main")
+        self.git(repo, "config", "user.name", "CI test")
+        self.git(repo, "config", "user.email", "ci@example.invalid")
+        self.git(repo, "config", "commit.gpgsign", "false")
+        self.git(repo, "config", "core.filemode", "true")
+        (repo / "README.md").write_text("Before\n")
+        (repo / "Cargo.toml").write_text("# manifest fixture\n")
+        return repo, self.commit(repo)
+
+    def commit(self, repo: Path) -> str:
+        self.git(repo, "add", "--all")
+        self.git(repo, "commit", "-m", "fixture")
+        return self.git(repo, "rev-parse", "HEAD")
+
+    def queue(self, repo: Path, base: str, head: str):
+        return self.module.classify_event(repo, "merge_group", "refs/heads/gh-readonly-queue/main/pr-1", head,
+            {"merge_group": {"base_sha": base, "head_sha": head}})
+
+    def assert_full(self, scope) -> None:
+        self.assertFalse(scope.docs_only)
+        self.assertTrue(all(scope.classification.as_dict().values()), scope)
+
+    def invoke_workflow(self, repo: Path, event: dict, head: str):
+        payload = repo / "event.json"
+        payload.write_text(json.dumps(event))
+        script = Path(__file__).resolve().parents[2] / "scripts/ci/classify-workflow-changes.py"
+        environment = {**os.environ, "GITHUB_EVENT_PATH": str(payload),
+            "GITHUB_EVENT_NAME": "merge_group", "GITHUB_REF": "refs/heads/gh-readonly-queue/main/pr-1",
+            "GITHUB_SHA": head, "GATE_PROFILE": "queue", "GITHUB_REPOSITORY": "owner/repo",
+            "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2"}
+        return subprocess.run([sys.executable, str(script), "--github-event", "--runner-matrix",
+            '["ubuntu-latest", "macos-14"]', "--line", "main", "--results", str(repo / "routing")],
+            cwd=repo, env=environment, capture_output=True, text=True)
+
+    def test_workflow_cli_routes_docs_and_signs_skip_without_fabricating_results(self) -> None:
+        repo, base = self.repository()
+        (repo / "README.md").write_text("After\n")
+        head = self.commit(repo)
+        result = self.invoke_workflow(repo, {"merge_group": {"base_sha": base, "head_sha": head}}, head)
+        self.assertEqual(0, result.returncode, result.stderr)
+        outputs = dict(line.split("=", 1) for line in result.stdout.splitlines())
+        self.assertEqual("true", outputs["docs_only"])
+        self.assertEqual("false", outputs["rust_required"])
+        self.assertEqual("false", outputs["cache_required"])
+        self.assertTrue(all(outputs[name] == "false" for name in OUTPUT_NAMES))
+        self.assertFalse((repo / "routing/run.json").exists())
+        self.assertEqual(2, len(list((repo / "routing").rglob("*.*"))))
+        for runner in ("ubuntu-latest", "macos-14"):
+            marker = json.loads((repo / f"routing/results-rust-{runner}/run.json").read_text())
+            self.assertEqual(("rust", "queue", "main", runner, head),
+                tuple(marker[field] for field in ("ecosystem", "profile", "ref", "runner", "sha")))
+            self.assertEqual("https://github.com/owner/repo/actions/runs/123", marker["run_url"])
+            self.assertEqual("2", marker["run_attempt"])
+            self.assertEqual({"reason": "docs_only", "base_sha": base, "head_sha": head}, marker["scope_skip"])
+        # Exercise the artifact handoff through the skipped inventory aggregate.
+        # No previous inventory means no test cases.
+        collector_path = Path(__file__).resolve().parents[2] / "scripts/ci/collect-results.py"
+        spec = importlib.util.spec_from_file_location("collect_event_results", collector_path)
+        collector = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(collector)
+        jobs = repo / "jobs.json"
+        jobs.write_text(json.dumps({"jobs": [{"name": "Rust tests (complete inventory)", "conclusion": "skipped"}]}))
+        collector.collect(repo / "routing", repo / "report", jobs, "", "")
+        report = json.loads((repo / "report/main/run.json").read_text())
+        self.assertEqual(head, report["sha"])
+        self.assertEqual({"ubuntu-latest", "macos-14"}, {item["runner"] for item in report["routing_skips"]})
+        self.assertTrue(all(item["inventory_count"] == 0 for item in report["routing_skips"]))
+        self.assertEqual([], list((repo / "report").rglob("*-result.json")))
+
+    def test_workflow_cli_unknown_diff_runs_full_queue_and_emits_no_skip_artifact(self) -> None:
+        repo, base = self.repository()
+        (repo / "README.md").write_text("After\n")
+        head = self.commit(repo)
+        result = self.invoke_workflow(repo, {"merge_group": {"head_sha": head}}, head)
+        self.assertEqual(0, result.returncode, result.stderr)
+        outputs = dict(line.split("=", 1) for line in result.stdout.splitlines())
+        self.assertEqual("false", outputs["docs_only"])
+        self.assertEqual("true", outputs["rust_required"])
+        self.assertTrue(all(outputs[name] == "true" for name in OUTPUT_NAMES))
+        self.assertFalse((repo / "routing").exists())
+
+    def test_queue_known_prose_only_has_immutable_scope(self) -> None:
+        repo, base = self.repository()
+        (repo / "README.md").write_text("After\n")
+        (repo / "arch/rules").mkdir(parents=True)
+        (repo / "arch/rules/example.md").write_text("Editorial rule\n")
+        head = self.commit(repo)
+        scope = self.queue(repo, base, head)
+        self.assertTrue(scope.docs_only)
+        self.assertFalse(any(scope.classification.as_dict().values()))
+        self.assertEqual((base, head), (scope.base_sha, scope.head_sha))
+
+    def test_entire_group_including_non_prose_inputs_keeps_full_queue(self) -> None:
+        for path in (
+            "crates/example/src/lib.rs", "scripts/ci/helper.py", "tests/fixtures/README.md",
+            "plugins/unica/skills/test/SKILL.md", "plugins/unica/references/specs/test.md",
+            "docs/tool-surface.md", "docs/provenance/skill-upstreams.json",
+            "docs/pages/site.js", "docs/unknown.md", "Cargo.lock", ".github/workflows/test.yml",
+        ):
+            with self.subTest(path=path):
+                repo, base = self.repository()
+                (repo / "README.md").write_text("Docs commit\n")
+                self.commit(repo)
+                target = repo / path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text("Another PR in this group\n")
+                self.assert_full(self.queue(repo, base, self.commit(repo)))
+
+    def test_renames_deletions_symlinks_and_executable_modes_never_skip_rust(self) -> None:
+        for kind in ("rename", "delete", "symlink", "mode"):
+            with self.subTest(kind=kind):
+                repo, base = self.repository()
+                readme = repo / "README.md"
+                if kind == "rename":
+                    readme.rename(repo / "CONTRIBUTING.md")
+                elif kind == "mode":
+                    readme.chmod(0o755)
+                else:
+                    readme.unlink()
+                    if kind == "symlink":
+                        readme.symlink_to("Cargo.toml")
+                incoming = self.commit(repo)
+                self.assert_full(self.queue(repo, base, incoming))
+                self.git(repo, "checkout", "--detach", base)
+                self.git(repo, "merge", "--no-ff", incoming, "-m", "event merge")
+                merged = self.git(repo, "rev-parse", "HEAD")
+                event = {"pull_request": {"base": {"sha": base}, "head": {"sha": incoming}, "labels": []}}
+                self.assert_full(self.module.classify_event(repo, "pull_request", "refs/pull/1/merge", merged, event))
+
+    def test_bad_or_stale_queue_identity_falls_back_to_all_contours(self) -> None:
+        repo, base = self.repository()
+        (repo / "README.md").write_text("After\n")
+        head = self.commit(repo)
+        for event in ({}, {"merge_group": {}},
+            {"merge_group": {"base_sha": "0" * 40, "head_sha": head}},
+            {"merge_group": {"base_sha": base, "head_sha": base}},
+        ):
+            with self.subTest(event=event):
+                self.assert_full(self.module.classify_event(repo, "merge_group", "refs/heads/queue", head, event))
+        self.assert_full(self.queue(repo, head, head))
+        self.git(repo, "checkout", "--detach", base)
+        self.assert_full(self.queue(repo, base, head))
+
+    def test_pr_uses_event_merge_parents_not_a_moving_base_branch(self) -> None:
+        repo, base = self.repository()
+        self.git(repo, "checkout", "-b", "topic")
+        (repo / "README.md").write_text("PR prose\n")
+        incoming = self.commit(repo)
+        self.git(repo, "checkout", "main")
+        self.git(repo, "merge", "--no-ff", "topic", "-m", "event merge")
+        merged = self.git(repo, "rev-parse", "HEAD")
+        event = {"pull_request": {"base": {"sha": base}, "head": {"sha": incoming}, "labels": []}}
+        # Moving main does not alter the event's verified merge tree.
+        (repo / "Cargo.toml").write_text("# later code change\n")
+        moved = self.commit(repo)
+        self.git(repo, "checkout", "--detach", merged)
+        scope = self.module.classify_event(repo, "pull_request", "refs/pull/1/merge", merged, event)
+        self.assertTrue(scope.docs_only)
+        event["pull_request"]["base"]["sha"] = moved
+        self.assert_full(self.module.classify_event(repo, "pull_request", "refs/pull/1/merge", merged, event))
+        event["pull_request"]["base"]["sha"] = base
+        event["pull_request"]["labels"] = [{"name": "ci:full"}]
+        self.assert_full(self.module.classify_event(repo, "pull_request", "refs/pull/1/merge", merged, event))
+
+    def test_pr_keeps_existing_non_rust_contours_but_the_same_code_queue_is_full(self) -> None:
+        repo, base = self.repository()
+        self.git(repo, "checkout", "-b", "topic")
+        (repo / "README.md").write_text("Docs plus a plugin instruction\n")
+        instruction = repo / "plugins/unica/skills/example/SKILL.md"
+        instruction.parent.mkdir(parents=True)
+        instruction.write_text("A shipped instruction is not editorial prose\n")
+        incoming = self.commit(repo)
+        self.git(repo, "checkout", "main")
+        self.git(repo, "merge", "--no-ff", "topic", "-m", "event merge")
+        head = self.git(repo, "rev-parse", "HEAD")
+        event = {"pull_request": {"base": {"sha": base}, "head": {"sha": incoming}, "labels": []}}
+        scope = self.module.classify_event(repo, "pull_request", "refs/pull/1/merge", head, event)
+        self.assertFalse(scope.docs_only)
+        self.assertTrue(scope.classification.plugin_content_changed)
+        self.assertFalse(scope.classification.rust_changed)
+        self.assertFalse(scope.classification.ci_changed)
+        self.assert_full(self.queue(repo, base, head))
+
+    def test_tag_manual_and_release_branch_do_not_use_documentation_exception(self) -> None:
+        repo, base = self.repository()
+        (repo / "README.md").write_text("After\n")
+        head = self.commit(repo)
+        for event, ref in (("push", "refs/tags/v1.0.0"), ("push", "refs/heads/release-v1.0"), ("workflow_dispatch", "refs/heads/main")):
+            with self.subTest(event=event, ref=ref):
+                self.assert_full(self.module.classify_event(repo, event, ref, head, {"before": base, "after": head}))
+        scope = self.module.classify_event(repo, "push", "refs/heads/main", head, {"before": base, "after": head})
+        self.assertFalse(scope.docs_only)
+        self.assertFalse(any(scope.classification.as_dict().values()))
+
+    def test_raw_diff_does_not_split_paths_on_newlines_or_normalize_unsafe_names(self) -> None:
+        raw = ":100644 100644 aaaaaaa bbbbbbb M\0arch/a\nb.md\0"
+        changes = self.module.parse_raw_diff(raw)
+        self.assertEqual(["arch/a\nb.md"], [change.path for change in changes])
+        for path in ("./README.md", "../README.md", "/README.md", "arch/../README.md", "arch\\a.md", "arch/a\nb.md"):
+            with self.subTest(path=path):
+                self.assertFalse(self.module.is_prose_path(path))
 
 
 class ClassifyWorkflowChangesTests(unittest.TestCase):
@@ -61,6 +279,8 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
         for path in (
             "crates/unica-coder/src/domain/cache.rs",
             "crates/unica-coder/src/application/metadata.rs",
+            "vendor/ureq/src/response.rs",
+            "vendor/ureq/src/completed_response_recycling.rs",
         ):
             with self.subTest(path=path):
                 self.assert_classification([path], rust_changed=True, release_required=True)
@@ -103,6 +323,9 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             "rust-toolchain.toml",
             ".config/nextest.toml",
             ".config/python-sizes.toml",
+            "vendor/ureq/Cargo.toml",
+            "vendor/ureq/Cargo.lock",
+            "vendor/ureq/.config/nextest.toml",
         ):
             with self.subTest(path=path):
                 self.assert_classification(
@@ -114,6 +337,11 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
                     release_required=True,
                     assessment_required=True,
                 )
+
+    def test_vendor_routing_is_scoped_to_the_patched_dependency_build_inputs(self) -> None:
+        for path in ("vendor/other/src/response.rs", "vendor/ureq/README.md", "vendor/ureq/Cargo.toml.orig"):
+            with self.subTest(path=path):
+                self.assert_classification([path])
 
     def test_search_and_rlm_mechanism_changes_route_the_long_integration_test(self) -> None:
         for path in (
@@ -156,6 +384,25 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
                     release_required=True,
                     assessment_required=True,
                 )
+
+    def test_extracted_analysis_owners_keep_their_real_search_consumers(self) -> None:
+        for path in (
+            "crates/unica-code-intelligence/src/coordinator.rs",
+            "crates/unica-code-intelligence/src/model.rs",
+            "crates/unica-configuration/src/operational.rs",
+            "crates/unica-source-contract/src/location.rs",
+            "crates/unica-source-contract/src/workspace.rs",
+        ):
+            with self.subTest(path=path):
+                self.assert_classification(
+                    [path], rust_changed=True, search_integration_changed=True,
+                    release_required=True, assessment_required=True,
+                )
+        self.assert_classification(["crates/unica-code-intelligence/README.md"])
+        self.assert_classification(
+            ["crates/unica-code-intelligence-extra/src/model.rs"],
+            rust_changed=True, release_required=True,
+        )
 
     def test_package_contract_changes_require_package_contour(self) -> None:
         for path in (
@@ -236,6 +483,24 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             ["scripts/dev/install-local-unica.sh"],
             ci_changed=True,
         )
+
+    def test_archive_prepared_and_shadow_changes_cannot_take_the_prose_or_source_route(self) -> None:
+        module = load_classifier_module()
+        for path in (
+            "scripts/ci/ci_rust_lanes.py", "scripts/ci/prepared_binary.py", "scripts/ci/ci_shadow_selector.py",
+            "scripts/ci/rust_inventory_baseline.py", "tests/ci/test_rust_inventory_baseline.py",
+            "tests/ci/test_ci_rust_lanes.py", "tests/ci/test_ci_prepared_binary.py", "tests/ci/test_ci_shadow_selector.py",
+        ):
+            with self.subTest(path=path):
+                classification = module.classify_paths([path])
+                self.assertTrue(classification.ci_changed)
+                self.assertFalse(module.is_prose_path(path))
+                flags = classification._asdict()
+                self.assertTrue(module.rust_route("pull_request", "refs/pull/1/merge", flags, docs_only=False).required)
+                self.assertTrue(module.rust_route("merge_group", "refs/heads/queue", flags, docs_only=False).required)
+        prose = module.classify_paths(["CONTRIBUTING.md"])
+        self.assertFalse(prose.ci_changed)
+        self.assertFalse(module.rust_route("pull_request", "refs/pull/1/merge", prose._asdict(), docs_only=True).required)
 
     def test_the_test_seam_and_its_guard_require_the_ci_contour(self) -> None:
         """Шов решает, что гоняет каждая джоба: его правка — правка конвейера.

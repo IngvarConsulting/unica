@@ -14,7 +14,6 @@ from tests.ci.acceptance_controls import load_corpus, tool_result
 REPO = Path(__file__).resolve().parents[2]
 SYMBOL_WORKSPACE = "tests/fixtures/acceptance/workspace-symbol"
 DIAGNOSTICS_WORKSPACE = "tests/fixtures/acceptance/workspace-diagnostics"
-KB_BOUNDARY_WORKSPACE = "tests/fixtures/acceptance/workspace-kb-boundary"
 FAULT_CASES = {"empty", "invalid-event", "unknown-severity", "exit-failure", "missing-engine", "checksum-mismatch"}
 DIAGNOSTIC_CASES = {"plain", "authors-toml", "authors-json", "diff-base", "precedence"}
 # A call graph branch orders the missing analyzer in the same call; the
@@ -34,7 +33,9 @@ EXTERNAL_CHECK_ADDRESSES = {
     "epf:ExternalDataProcessor.Import.Form.Main.Module.Form",
     "erf:ExternalReport.Sales.Module.Object",
 }
-AGENT_EVALUATIONS = {"dcs-contract": DCS_WORKSPACE, "mxl-contract": MXL_WORKSPACE}
+AGENT_EVALUATIONS = {"dcs-contract": DCS_WORKSPACE, "mxl-contract": MXL_WORKSPACE,
+                     "props-contract": "tests/fixtures/acceptance/workspace",
+                     "xdto-contract": "tests/fixtures/acceptance/workspace-xdto-contract"}
 ACCEPTANCE_ROOT = REPO / "tests/fixtures/acceptance"
 SOURCE_PROFILE_DIR = "source-profiles"
 
@@ -68,6 +69,30 @@ def load_source_workspaces(root: Path = ACCEPTANCE_ROOT) -> set[str]:
 SOURCE_WORKSPACES = load_source_workspaces()
 
 
+def helper_invalidation_step(step):
+    arguments = step["args"]
+    if step["tool"] == "unica.search":
+        return (set(arguments) == {"query", "role"}
+                and isinstance(arguments["query"], str)
+                and arguments["role"] == "symbol")
+    if step["tool"] != "unica.apply":
+        return False
+    if arguments == {"executionToken": "$executionToken"}:
+        return True
+    if set(arguments) != {"at", "ops"} or arguments["at"] != "main:CommonModule.SearchProbe":
+        return False
+    operations = arguments["ops"]
+    if not isinstance(operations, list) or len(operations) != 1:
+        return False
+    operation = operations[0]
+    return (isinstance(operation, dict) and set(operation) == {"op", "args"}
+            and operation["op"] == "code.replace"
+            and isinstance(operation["args"], dict)
+            and set(operation["args"]) == {"at", "text"}
+            and operation["args"]["at"] == "main:CommonModule.SearchProbe.Body"
+            and isinstance(operation["args"]["text"], str))
+
+
 def select_profile(corpus, profile):
     if profile not in {"source", "delivery", "agent-evaluation", "fault-injection"}:
         raise ValueError(f"profile {profile!r} has no executable driver")
@@ -98,6 +123,9 @@ def select_profile(corpus, profile):
                 if any(step["tool"] != "unica.search" or step["args"].get("role") != "symbol"
                        for step in scenario["wire"]):
                     raise ValueError(f"{scenario['id']}: analyzer driver supports symbol search only")
+            elif driver == "bsl-analyzer-invalidation" and workspace == SYMBOL_WORKSPACE:
+                if "evaluation" in scenario or not all(helper_invalidation_step(step) for step in scenario["wire"]):
+                    raise ValueError(f"{scenario['id']}: invalid analyzer invalidation wire")
             elif driver == "bsl-analyzer-diagnostics" and workspace == DIAGNOSTICS_WORKSPACE:
                 if scenario.get("evaluation") not in DIAGNOSTIC_CASES or any(
                     step["tool"] != "unica.check" or step["args"] != {"at": "main:CommonModule.Пример"}

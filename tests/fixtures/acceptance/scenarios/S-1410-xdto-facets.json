@@ -121,6 +121,31 @@
               },
               "at": "main:XDTOPackage.ПримерФормата.Type.Пример"
             }
+          },
+          {
+            "op": "property.add",
+            "args": {
+              "at": "main:XDTOPackage.ПримерФормата.Type.Пример",
+              "values": {
+                "property": {
+                  "name": "Строки",
+                  "maxOccurs": -1,
+                  "objectType": {
+                    "properties": [
+                      {
+                        "name": "Код",
+                        "valueType": {
+                          "base": "xs:string",
+                          "facets": {
+                            "maxLength": 10
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
           }
         ]
       },
@@ -206,6 +231,25 @@
       ]
     },
     {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.ПримерФормата.Type.Пример.Property.Строки.Property.Код"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/anonymousType",
+          "eq": "ValueType"
+        },
+        {
+          "pointer": "/data/props/facets",
+          "eq": "{\"maxLength\":10}"
+        }
+      ]
+    },
+    {
       "tool": "unica.apply",
       "args": {
         "at": "main:XDTOPackage.ПримерФормата",
@@ -276,6 +320,31 @@
                 }
               },
               "at": "main:XDTOPackage.ПримерФормата.Type.Пример"
+            }
+          },
+          {
+            "op": "property.add",
+            "args": {
+              "at": "main:XDTOPackage.ПримерФормата.Type.Пример",
+              "values": {
+                "property": {
+                  "name": "Строки",
+                  "maxOccurs": -1,
+                  "objectType": {
+                    "properties": [
+                      {
+                        "name": "Код",
+                        "valueType": {
+                          "base": "xs:string",
+                          "facets": {
+                            "maxLength": 10
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
             }
           }
         ]

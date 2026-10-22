@@ -1,14 +1,12 @@
-use crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES;
-use crate::application::result_store::{ViewCursorBinding, ViewCursorStore};
 use crate::application::v13::view::PREFERRED_PAGE_BYTES;
-use crate::domain::address::QualifiedAddress;
-use crate::domain::invocation::DomainResult;
-use crate::domain::refusal::{RefusalCode, RefusalDetail};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::fmt;
-
-const CURSOR_SIZE_PLACEHOLDER: &str = "vc1.00000000000000000000000000000000";
+use unica_address::address::QualifiedAddress;
+use unica_execution_contract::invocation::DomainResult;
+use unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES;
+use unica_navigation::result_store::{ViewCursorBinding, ViewCursorStore};
+use unica_refusal::{RefusalCode, RefusalDetail};
 
 /// Page the diagnostics of one completed node check. The immutable snapshot
 /// holds the verdict and every finding; no first page is published unless
@@ -22,34 +20,28 @@ pub(crate) fn page_diagnostics(
 ) -> DomainResult {
     let at = Some(binding.canonical_at.clone());
     if let Some(cursor) = cursor {
-        let stored = match cursors.read(cursor, &binding, &binding.snapshot_id) {
+        let stored = match cursors.read(cursor, &binding.question()) {
             Ok(stored) => stored,
-            Err(error) => {
-                return DomainResult::canonical_rejection(
-                    at,
-                    error.code(),
-                    "check cursor is invalid or its source revision changed",
-                )
-            }
+            Err(error) => return error.into_result(at),
         };
         let page = match prepare_check_page(
-            &stored.snapshot.node,
-            &stored.snapshot.items,
+            stored.snapshot.node(),
+            stored.snapshot.items(),
             stored.offset,
             binding.page_limit,
         ) {
             Ok(page) => page,
             Err(message) => return check_page_refusal(at, message),
         };
-        let next = if page.next_offset < stored.snapshot.items.len() {
+        let next = if page.next_offset < stored.snapshot.items().len() {
             match cursors.insert_next(&stored, page.next_offset, cursor) {
-                Some(next) => Some(next),
-                None => return check_page_refusal(at, "check continuation could not be retained"),
+                Ok(next) => Some(next),
+                Err(error) => return error.into_result(at),
             }
         } else {
             None
         };
-        return check_page_result(&stored.snapshot.node, page.items, next, page.stopped_by);
+        return check_page_result(stored.snapshot.node(), page.items, next, page.stopped_by);
     }
 
     let Some(mut result) = fresh else {
@@ -84,13 +76,8 @@ pub(crate) fn page_diagnostics(
     };
     let next = if page.next_offset < items.len() {
         match cursors.insert_snapshot(binding, node.clone(), items, page.next_offset) {
-            Some(next) => Some(next),
-            None => {
-                return check_page_refusal(
-                    at,
-                    "check diagnostics exceed the bounded snapshot store",
-                )
-            }
+            Ok(next) => Some(next),
+            Err(error) => return error.into_result(at),
         }
     } else {
         None
@@ -128,7 +115,7 @@ fn prepare_check_page(
         let probe = check_page_result(
             node,
             candidate.clone(),
-            (offset + 1 < items.len()).then(|| CURSOR_SIZE_PLACEHOLDER.to_string()),
+            (offset + 1 < items.len()).then(ViewCursorStore::token_probe),
             "complete",
         );
         let bytes = serialized_result_size(&probe);
@@ -158,7 +145,7 @@ fn preflight_check_pages(node: &Value, items: &[Value]) -> Result<(), &'static s
         return Err("check result metadata exceed the transport result limit");
     }
     for (index, item) in items.iter().enumerate() {
-        let cursor = (index + 1 < items.len()).then(|| CURSOR_SIZE_PLACEHOLDER.to_string());
+        let cursor = (index + 1 < items.len()).then(ViewCursorStore::token_probe);
         // `complete` is the longest stop reason. The last page may be three
         // bytes larger than an intermediate page even without a cursor.
         let probe = check_page_result(node, vec![item.clone()], cursor, "complete");
@@ -204,6 +191,7 @@ pub(crate) const NATIVE_VALIDATORS: &[CheckValidator] = &[
     CheckValidator::Role,
     CheckValidator::Subsystem,
     CheckValidator::Interface,
+    CheckValidator::Xdto,
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -216,6 +204,7 @@ pub(crate) enum CheckValidator {
     Role,
     Subsystem,
     Interface,
+    Xdto,
 }
 
 impl CheckValidator {
@@ -232,6 +221,7 @@ impl CheckValidator {
             Self::Role => "role-validate",
             Self::Subsystem => "subsystem-validate",
             Self::Interface => "interface-validate",
+            Self::Xdto => "xdto-validate",
         }
     }
 
@@ -245,6 +235,7 @@ impl CheckValidator {
             Self::Role => "role",
             Self::Subsystem => "subsystem",
             Self::Interface => "interface",
+            Self::Xdto => "xdto",
         }
     }
 
@@ -331,7 +322,7 @@ pub(crate) fn plan_for_node(kind: &str, facts: NodeFacts) -> Vec<CheckStep> {
         // Заимствованный узел без своего файла читается по дескриптору;
         // валидатор файла прав, формы или макета проверял бы содержимое
         // родителя, которого в этом наборе нет.
-        "Role" | "Form" | "Template" if facts.inherited => Vec::new(),
+        "Role" | "Form" | "Template" | "XDTOPackage" if facts.inherited => Vec::new(),
         // Срезы `Interface` модуля — проекция его методов, а не командный
         // интерфейс подсистемы; как и метод, они читаются без своего шага:
         // код модуля проверяет шаг `bsl` на самом модуле (#1467).
@@ -353,6 +344,7 @@ pub(crate) fn plan_for_node(kind: &str, facts: NodeFacts) -> Vec<CheckStep> {
         },
         // The typed metadata validator reads object descriptors only; roles
         // and subsystems keep their own validators.
+        "XDTOPackage" if facts.named => vec![CheckStep::Native(CheckValidator::Xdto)],
         "Role" => vec![CheckStep::Native(CheckValidator::Role)],
         "Subsystem" if facts.named => vec![CheckStep::Native(CheckValidator::Subsystem)],
         "Interface" | "CommandInterface" => vec![CheckStep::Native(CheckValidator::Interface)],
@@ -360,7 +352,7 @@ pub(crate) fn plan_for_node(kind: &str, facts: NodeFacts) -> Vec<CheckStep> {
         // пуст, и `check` отвечал «читается» — то есть молчал о находках,
         // ради которых его и зовут.
         "Module" | "Body" => vec![CheckStep::Bsl],
-        other if facts.named && crate::domain::metadata::MetadataKind::parse(other).is_ok() => {
+        other if facts.named && unica_metadata::MetadataKind::parse(other).is_ok() => {
             vec![CheckStep::Meta]
         }
         _ => Vec::new(),
@@ -447,6 +439,31 @@ pub(crate) struct NativeCheckOutcome {
 }
 
 impl NativeCheckOutcome {
+    /// Findings from a retained source model contain XML facts, not provider
+    /// paths. Keep expanded XML names and URIs intact; adapter stderr still
+    /// goes through the separate sanitized adapter constructor.
+    pub(crate) fn from_source_findings(
+        findings: impl IntoIterator<Item = (bool, String, String)>,
+    ) -> Self {
+        let mut ok = true;
+        let diagnostics = findings
+            .into_iter()
+            .map(|(error, code, message)| {
+                ok &= !error;
+                CheckDiagnostic {
+                    severity: if error { "error" } else { "warning" }.into(),
+                    code,
+                    message,
+                }
+            })
+            .collect();
+        Self {
+            ok,
+            diagnostics,
+            unavailable: false,
+        }
+    }
+
     pub(crate) fn passed() -> Self {
         Self {
             ok: true,
@@ -487,7 +504,9 @@ impl NativeCheckOutcome {
         }
     }
 
-    pub(crate) fn from_adapter(outcome: &crate::application::AdapterOutcome) -> Self {
+    pub(crate) fn from_adapter(
+        outcome: &unica_execution_contract::adapter_outcome::AdapterOutcome,
+    ) -> Self {
         let mut diagnostics = outcome
             .errors
             .iter()
@@ -569,10 +588,10 @@ mod tests {
         normalize_native_outcome, page_diagnostics, plan_for_node, CheckStep, CheckValidator,
         NativeCheckOutcome, NodeFacts, TemplateFlavour,
     };
-    use crate::application::result_store::{ViewCursorBinding, ViewCursorStore, DEFAULT_TTL};
-    use crate::domain::address::QualifiedAddress;
-    use crate::domain::invocation::DomainResult;
     use serde_json::json;
+    use unica_address::address::QualifiedAddress;
+    use unica_execution_contract::invocation::DomainResult;
+    use unica_navigation::result_store::{ViewCursorBinding, ViewCursorStore};
 
     fn check_binding(at: &str, revision: &str, limit: usize) -> ViewCursorBinding {
         ViewCursorBinding {
@@ -699,7 +718,7 @@ mod tests {
 
     #[test]
     fn check_refuses_before_first_page_when_snapshot_cannot_be_retained() {
-        let store = ViewCursorStore::new(DEFAULT_TTL, 128, 400);
+        let store = ViewCursorStore::new(400);
         let result = page_diagnostics(
             &store,
             check_binding("main:CommonModule.Example.Module", "revision-1", 20),
@@ -722,7 +741,7 @@ mod tests {
         let node = serde_json::to_value(node_result).unwrap();
         let item = result.data.as_ref().unwrap()["diagnostics"][1].clone();
         let baseline = super::check_page_result(&node, vec![item], None, "bytes");
-        let message_len = crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES
+        let message_len = unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES
             - super::serialized_result_size(&baseline);
         result.data.as_mut().unwrap()["diagnostics"][1]["message"] = json!("x".repeat(message_len));
 

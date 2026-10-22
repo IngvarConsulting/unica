@@ -1,16 +1,31 @@
-use crate::domain::address::{escape_name, AddressSegment, NodeKind, QualifiedAddress};
-use crate::domain::form_operation::FormOperation;
-use crate::domain::logical_route::{classify_route, RouteClass};
-use crate::domain::metadata::{metadata_kind_collections, MetaCollection, MetadataKind};
-use crate::domain::metadata_operation::MetadataOperation;
-use crate::domain::node_view::OperationRef;
-use crate::domain::platform_profile::PlatformProfile;
-use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
-use crate::domain::refusal::RefusalCode;
-use crate::domain::role_operation::RoleOperation;
-use crate::domain::support_operation::SupportOperation;
+use crate::domain::logical_route::classify_route;
+use unica_bsl::operations::CodeOperation;
+use unica_bsl::profile::PlatformProfile;
+use unica_dcs::operations::Primitive;
+use unica_forms::operations::FormOperation;
+use unica_forms::FormItemRole;
+
+use unica_metadata::event::EventOperation;
+use unica_metadata::MetadataKind;
+use unica_metadata::{
+    interface_operations::InterfaceOperation, subsystem_operations::SubsystemOperation,
+};
+use unica_operations::{OperationDescriptor, OperationFamily, OperationRegistry};
+use unica_source_contract::context::{OperationSite, RegistryContext, SourceSetTraits};
+use unica_source_contract::{SourceFormat, SourceProfile, SourceSetKind};
+use unica_templates::operations::MxlOperation;
+use unica_templates::TemplateFormat;
+
 use serde_json::{Map, Value};
 use std::fmt;
+use unica_address::address::{NodeKind, QualifiedAddress};
+use unica_metadata::descriptor_operations::PropertiesOperation;
+use unica_metadata::support::SupportOperation;
+#[cfg(test)]
+use unica_operation_contract::OperationSkeleton;
+use unica_refusal::RefusalCode;
+use unica_roles::operations::RoleOperation;
+use unica_xdto::operations::XdtoOperation;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ApplyRequest {
@@ -95,7 +110,11 @@ impl ApplyRequest {
                     "operation target must be the same logical node or its descendant in the top-level source set",
                 ));
             }
-            if name == "object.borrow" {
+            let metadata_operation =
+                unica_metadata::apply_operations::MetadataOperation::named(&name);
+            if metadata_operation
+                == Some(unica_metadata::apply_operations::MetadataOperation::ObjectBorrow)
+            {
                 let location = format!("{args_location}.from");
                 let raw = args.get("from").and_then(Value::as_str).ok_or_else(|| {
                     ApplyValidationError::bad_value(
@@ -109,7 +128,7 @@ impl ApplyRequest {
                 if !available_source_sets.contains(&parent.source_set())
                     || !valid_borrow_source(&parent, at.source_set())
                 {
-                    return Err(ApplyValidationError::bad_value(&location, "from must name a top-level object or Enum.EnumValue in a distinct admitted parent source set"));
+                    return Err(ApplyValidationError::bad_value(&location, "from must name a top-level object, Enum.EnumValue or object Form in a distinct admitted parent source set"));
                 }
             }
             // Configuration owns newly created metadata although its address is
@@ -122,7 +141,9 @@ impl ApplyRequest {
                 "subsystem.create" => Some("Subsystem"),
                 _ => None,
             };
-            if (name == "object.create" || created_kind.is_some())
+            if (metadata_operation
+                == Some(unica_metadata::apply_operations::MetadataOperation::ObjectCreate)
+                || created_kind.is_some())
                 && matches!(operation_at.segments(), [root] if root.kind() == NodeKind::Configuration)
             {
                 let created = args.get("values").and_then(|value| {
@@ -134,9 +155,14 @@ impl ApplyRequest {
                         MetadataKind::parse(kind).ok()?;
                     }
                     let object_name = value.get("name")?.as_str()?;
-                    if !crate::domain::metadata::metadata_identifier_is_valid(object_name) {
-                        return None;
-                    }
+                    let object_name = if created_kind.is_some() {
+                        unica_metadata::canonical_creation_identifier(object_name)?
+                    } else {
+                        if !unica_metadata::identifier::is_1c_identifier(object_name) {
+                            return None;
+                        }
+                        object_name
+                    };
                     QualifiedAddress::parse(&format!(
                         "{}:{kind}.{object_name}",
                         operation_at.source_set()
@@ -218,8 +244,9 @@ pub(crate) fn valid_borrow_source(parent: &QualifiedAddress, destination_source_
     parent.source_set() != destination_source_set
         && (parent.segments().len() == 1
             || (parent.segments().len() == 2
-                && parent.segments()[0].kind() == NodeKind::Enum
-                && parent.segments()[1].kind() == NodeKind::EnumValue
+                && ((parent.segments()[0].kind() == NodeKind::Enum
+                    && parent.segments()[1].kind() == NodeKind::EnumValue)
+                    || parent.segments()[1].kind() == NodeKind::Form)
                 && parent.segments()[1].name().is_some()))
         && parent.segments()[0].name().is_some()
 }
@@ -303,78 +330,58 @@ impl fmt::Display for ApplyValidationError {
 
 impl std::error::Error for ApplyValidationError {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OperationFamily {
-    Metadata,
-    Properties,
-    Form,
-    Role,
-    Dcs,
-    Mxl,
-    Xdto,
-    Subsystem,
-    /// Командный интерфейс: видимость, размещение и порядок. Предмет не сам
-    /// объект, а место, которое подсистема ему отводит.
-    Interface,
-    Support,
-    Code,
-    Event,
-}
-
-/// Набор исходников как место записи: его вид и точный записываемый профиль
-/// платформы, если он есть.
-///
-/// Единственный владелец признака «набор записываемый»: его спрашивают словарь
-/// `can`, предварительная проверка `apply` и разбор семейства планировщиком.
-/// Гранулярность — вид набора × семейство операций; сегодня все семейства
-/// пишут конфигурацию и расширение с точным профилем Platform XML и не пишут
-/// внешние наборы.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SourceSetTraits {
+/// Exact writable identity is admitted here; classification keeps the historical
+/// read fallback separately so an unknown revision cannot gain write admission.
+pub(crate) fn source_set_traits_of_source(
     kind: SourceSetKind,
-    platform: Option<PlatformProfile>,
+    format: SourceFormat,
+    profile: SourceProfile,
+) -> SourceSetTraits {
+    let exact = (format == SourceFormat::PlatformXml && profile.serialization_format().is_some())
+        .then(|| crate::domain::source_capabilities::bsl_profile_for_source(profile))
+        .flatten()
+        .map(|_| profile);
+    SourceSetTraits::from_profiles(
+        kind,
+        exact,
+        exact.unwrap_or_else(SourceProfile::platform_xml_8_3_27_format_2_20),
+    )
 }
 
-impl SourceSetTraits {
-    /// Признаки допущенного набора: точный профиль есть только у Platform XML
-    /// с известным форматом выгрузки.
-    pub(crate) fn of_source(
-        kind: SourceSetKind,
-        format: SourceFormat,
-        profile: SourceProfile,
-    ) -> Self {
-        let platform = (format == SourceFormat::PlatformXml
-            && profile.serialization_format().is_some())
-        .then(|| profile.platform_profile())
-        .flatten();
-        Self { kind, platform }
-    }
+/// A logical reader has already admitted the closed semantic platform profile.
+pub(crate) fn source_set_traits_for_read(
+    kind: SourceSetKind,
+    platform: PlatformProfile,
+) -> SourceSetTraits {
+    let profile = SourceProfile::platform_xml_8_3_27_format_2_20();
+    debug_assert_eq!(
+        crate::domain::source_capabilities::bsl_profile_for_source(profile),
+        Some(platform)
+    );
+    SourceSetTraits::from_profiles(kind, Some(profile), profile)
+}
 
-    /// Признаки набора, который читается логическим читателем: тот существует
-    /// только для точного профиля платформы.
-    pub(crate) const fn read(kind: SourceSetKind, platform: PlatformProfile) -> Self {
-        Self {
-            kind,
-            platform: Some(platform),
-        }
-    }
+pub(crate) fn source_classification_profile(source: SourceSetTraits) -> PlatformProfile {
+    crate::domain::source_capabilities::bsl_profile_for_source(source.classification_profile())
+        .unwrap_or_else(PlatformProfile::v8_3_27)
+}
 
-    pub(crate) const fn kind(self) -> SourceSetKind {
-        self.kind
-    }
+/// The sole semantic classifier binds pure source facts to a logical address.
+pub(crate) fn operation_site(
+    at: &QualifiedAddress,
+    source: SourceSetTraits,
+) -> Option<OperationSite<'_>> {
+    let route = classify_route(at, source_classification_profile(source))?;
+    Some(OperationSite::from_route(at, source, route))
+}
 
-    /// Профиль, которым классифицируется адрес.
-    pub(crate) fn profile(self) -> PlatformProfile {
-        self.platform.unwrap_or_else(PlatformProfile::v8_3_27)
-    }
+/// Family write policy remains with operation composition during extraction.
+pub(crate) trait SourceSetWriteSupport {
+    fn writes(self, family: OperationFamily) -> bool;
+}
 
-    /// Пишет ли семейство `family` в этот набор.
-    pub(crate) fn writes(self, family: OperationFamily) -> bool {
-        let platform_xml = self.platform.is_some()
-            && matches!(
-                self.kind,
-                SourceSetKind::Configuration | SourceSetKind::Extension
-            );
+impl SourceSetWriteSupport for SourceSetTraits {
+    fn writes(self, family: OperationFamily) -> bool {
         match family {
             OperationFamily::Metadata
             | OperationFamily::Properties
@@ -387,7 +394,7 @@ impl SourceSetTraits {
             | OperationFamily::Interface
             | OperationFamily::Support
             | OperationFamily::Code
-            | OperationFamily::Event => platform_xml,
+            | OperationFamily::Event => self.is_writable(),
         }
     }
 }
@@ -396,690 +403,6 @@ impl SourceSetTraits {
 /// предварительной проверки и разбора планировщиком.
 pub(crate) const UNWRITABLE_SOURCE_MESSAGE: &str =
     "admitted source has no writable exact Platform XML profile";
-
-/// Узел, к которому обращена операция: адрес, признаки набора исходников и
-/// класс маршрута, выведенный из адреса профилем платформы.
-///
-/// Применимость — чистая функция этого места: файлы не читаются, поэтому один
-/// и тот же ответ получают словарь `can`, предварительная проверка `apply` и
-/// планировщик. Состояние узла (заимствование, поддержка, существование)
-/// сюда не входит: отказ по состоянию — не «не тот узел».
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct OperationSite<'a> {
-    at: &'a QualifiedAddress,
-    source: SourceSetTraits,
-    route: RouteClass,
-}
-
-impl<'a> OperationSite<'a> {
-    /// `None` — адрес не принадлежит ни одному дереву профиля.
-    pub(crate) fn new(at: &'a QualifiedAddress, source: SourceSetTraits) -> Option<Self> {
-        Some(Self {
-            at,
-            source,
-            route: classify_route(at, source.profile())?,
-        })
-    }
-
-    pub(crate) const fn source(&self) -> SourceSetTraits {
-        self.source
-    }
-
-    pub(crate) const fn route(&self) -> RouteClass {
-        self.route
-    }
-
-    pub(crate) fn at(&self) -> &QualifiedAddress {
-        self.at
-    }
-
-    fn segments(&self) -> &[AddressSegment] {
-        self.at.segments()
-    }
-
-    fn terminal(&self) -> &AddressSegment {
-        self.segments()
-            .last()
-            .expect("a parsed logical address has a terminal segment")
-    }
-
-    /// Объект метаданных верхнего уровня одного из типизированных видов:
-    /// `Catalog.X`, `CommonModule.X`. Маршрут не важен — общий модуль читается
-    /// как модуль, но остаётся объектом метаданных.
-    fn metadata_object(&self) -> Option<MetadataKind> {
-        match self.segments() {
-            [owner] if owner.name().is_some() => MetadataKind::parse(owner.kind().as_str()).ok(),
-            _ => None,
-        }
-    }
-
-    fn metadata_owner_with(&self, collection: MetaCollection) -> bool {
-        self.metadata_object()
-            .is_some_and(|kind| metadata_kind_collections(kind).contains(&collection))
-    }
-
-    /// Форма объекта: `Owner.X.Form.F`, где у владельца есть коллекция форм.
-    fn owned_form(&self) -> bool {
-        matches!(self.segments(), [owner, form]
-            if owner.name().is_some()
-                && form.kind() == NodeKind::Form
-                && form.name().is_some()
-                && metadata_collection_matches(owner.kind(), MetaCollection::Forms))
-    }
-
-    /// Цепочка элементов формы объекта: `Owner.X.Form.F[.Item.A[.Item.B…]]`
-    /// даёт сегменты `Item` после формы (пустые у самой формы). `None` —
-    /// `segments` не такой адрес или маршрут не формы.
-    fn form_items<'s>(&self, segments: &'s [AddressSegment]) -> Option<&'s [AddressSegment]> {
-        match segments {
-            [owner, form, items @ ..]
-                if self.route == RouteClass::Form
-                    && owner.name().is_some()
-                    && form.kind() == NodeKind::Form
-                    && form.name().is_some()
-                    && metadata_collection_matches(owner.kind(), MetaCollection::Forms)
-                    && items
-                        .iter()
-                        .all(|item| item.kind() == NodeKind::Item && item.name().is_some()) =>
-            {
-                Some(items)
-            }
-            _ => None,
-        }
-    }
-
-    /// Табличный документ или схема как узел владельца: `Owner.X.Template.T`.
-    fn owned_template(&self) -> bool {
-        self.metadata_member(NodeKind::Template, MetaCollection::Templates)
-    }
-
-    /// Член коллекции объекта метаданных верхнего уровня:
-    /// `Owner.X.<kind>.Name`, где у вида владельца есть коллекция `collection`.
-    fn metadata_member(&self, kind: NodeKind, collection: MetaCollection) -> bool {
-        self.route == RouteClass::Metadata
-            && matches!(self.segments(), [owner, member]
-                if owner.name().is_some()
-                    && member.kind() == kind
-                    && member.name().is_some()
-                    && metadata_collection_matches(owner.kind(), collection))
-    }
-
-    /// Узел схемы прямо под макетом владельца: `Owner.X.Template.T.<kind>.N`.
-    fn dcs_schema_member(&self, kind: NodeKind) -> bool {
-        self.route == RouteClass::Dcs
-            && matches!(self.segments(), [owner, template, member]
-                if owner.name().is_some()
-                    && template.kind() == NodeKind::Template
-                    && template.name().is_some()
-                    && member.kind() == kind
-                    && member.name().is_some()
-                    && metadata_collection_matches(owner.kind(), MetaCollection::Templates))
-    }
-
-    /// Вариант настроек макета владельца и цепочка именованных элементов его
-    /// структуры: число сегментов `Item` после `Setting`, `None` — адрес не
-    /// такой формы.
-    fn dcs_structure_depth(&self) -> Option<usize> {
-        if self.route != RouteClass::Dcs {
-            return None;
-        }
-        let [owner, template, setting, items @ ..] = self.segments() else {
-            return None;
-        };
-        (owner.name().is_some()
-            && template.kind() == NodeKind::Template
-            && template.name().is_some()
-            && setting.kind() == NodeKind::Setting
-            && setting.name().is_some()
-            && metadata_collection_matches(owner.kind(), MetaCollection::Templates)
-            && items
-                .iter()
-                .all(|item| item.kind() == NodeKind::Item && item.name().is_some()))
-        .then_some(items.len())
-    }
-
-    fn dcs_terminal(&self, kinds: &[NodeKind]) -> bool {
-        self.route == RouteClass::Dcs
-            && kinds.contains(&self.terminal().kind())
-            && self.terminal().name().is_some()
-    }
-}
-
-/// Где операция исполнима. Каждый вариант — форма адреса, которую принимает
-/// разбор цели планировщиком, а не только вид последнего сегмента.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum OperationApplicability {
-    /// Корень набора исходников.
-    Configuration,
-    /// Корень расширения: заимствование.
-    ExtensionRoot,
-    /// Объект метаданных верхнего уровня.
-    Metadata,
-    /// Объект метаданных, роль или подсистема верхнего уровня: свойства.
-    MetadataOrRoleOrSubsystem,
-    /// Объект метаданных с коллекцией: операция владельца над коллекцией.
-    /// Реквизиты добавляются и в табличную часть — по её адресу.
-    MetadataAttributeContainer,
-    MetadataTabularSections,
-    MetadataDimensions,
-    MetadataResources,
-    MetadataEnumValues,
-    MetadataColumns,
-    MetadataForms,
-    MetadataTemplates,
-    MetadataCommands,
-    MetadataPredefinedItems,
-    /// Сам реквизит объекта или его табличной части.
-    MetadataAttribute,
-    /// Сам член коллекции владельца: табличная часть, измерение, ресурс,
-    /// значение перечисления, графа журнала, команда, макет,
-    /// предопределённый элемент.
-    MetadataTabularSection,
-    MetadataDimension,
-    MetadataResource,
-    MetadataEnumValue,
-    MetadataColumn,
-    MetadataCommand,
-    MetadataTemplate,
-    MetadataPredefinedItem,
-    /// Форма объекта.
-    Form,
-    /// Форма объекта или её элемент любой вложенности: место нового элемента.
-    FormItemContainer,
-    /// Элемент формы любой вложенности: `Form.F.Item.A[.Item.B…]`.
-    FormItem,
-    /// Событие формы или её элемента: `Form.F[.Item.A…].Event.E`.
-    FormEvent,
-    /// Роль верхнего уровня.
-    Role,
-    /// Запись прав роли на один объект: `Role.R.Right.<Вид_Имя>`.
-    RoleRight,
-    /// Подсистема любой вложенности.
-    Subsystem,
-    /// Вложенная подсистема: исключение из состава её родителя.
-    NestedSubsystem,
-    /// Командный интерфейс подсистемы.
-    Interface,
-    /// Макет-схема компоновки как узел владельца.
-    DcsSchema,
-    /// Макет-схема или её набор данных: место нового набора.
-    DcsDataContainer,
-    /// Набор данных схемы.
-    DcsData,
-    /// Запрос набора данных схемы `DataSet.D.Query`.
-    DcsQuery,
-    /// Вариант настроек схемы.
-    DcsSettings,
-    /// Параметр схемы.
-    DcsParameter,
-    /// Поле набора данных.
-    DcsField,
-    /// Источник данных схемы: `Template.T.DataSource.S` (#1357).
-    DcsDataSource,
-    /// Вычисляемое поле схемы: `Template.T.CalculatedField.F`.
-    DcsCalculatedField,
-    /// Итог схемы: `Template.T.Total.F`.
-    DcsTotal,
-    /// Вариант настроек или именованный элемент его структуры любой
-    /// вложенности: `Setting.S[.Item.I…]`. Коллекции настроек элемента
-    /// (отбор, выбор, порядок, оформление, параметры вывода) и вложенные
-    /// элементы структуры берут контейнер из адреса.
-    DcsSettingsContainer,
-    /// Именованный элемент структуры варианта: `Setting.S.Item.I[.Item.J…]`.
-    DcsStructureItem,
-    /// Макет-табличный документ как узел владельца.
-    Mxl,
-    /// Именованная область макета-табличного документа.
-    MxlArea,
-    /// Пакет XDTO.
-    XdtoPackage,
-    /// Тип пакета XDTO.
-    XdtoType,
-    /// Свойство типа XDTO любой вложенности:
-    /// `Type.T.Property.A[.Property.B…]`.
-    XdtoProperty,
-    /// Место нового свойства XDTO: тип или свойство, во вложенный
-    /// анонимный тип которого оно добавляется.
-    XdtoPropertyContainer,
-    /// Группа командного интерфейса подсистемы.
-    InterfaceGroup,
-    /// Объект верхнего уровня любого вида: правило поддержки.
-    SupportRule,
-    /// Модуль, его тело или метод: вставка текста. У метода место вставки —
-    /// до или после него.
-    CodeInsert,
-    /// Модуль, его тело, метод или тело метода: замена текста.
-    Code,
-    /// Событие модуля или формы.
-    Event,
-}
-
-impl OperationApplicability {
-    const fn shape(self) -> &'static str {
-        match self {
-            Self::Configuration => "`Configuration`",
-            Self::ExtensionRoot => "`Configuration` of an extension",
-            Self::Metadata => "`Kind.Name`",
-            Self::SupportRule => "`Kind.Name` or `Kind.Name.Form.F`",
-            Self::MetadataOrRoleOrSubsystem => "`Kind.Name`, `Role.Name` or `Subsystem.Name`",
-            Self::MetadataAttributeContainer => {
-                "`Kind.Name` of a kind with attributes or `Kind.Name.TabularSection.T`"
-            }
-            Self::MetadataTabularSections => "`Kind.Name` of a kind with tabular sections",
-            Self::MetadataDimensions => "`Kind.Name` of a register with dimensions",
-            Self::MetadataResources => "`Kind.Name` of a register with resources",
-            Self::MetadataEnumValues => "`Enum.Name`",
-            Self::MetadataColumns => "`DocumentJournal.Name`",
-            Self::MetadataForms => "`Kind.Name` of a kind with forms",
-            Self::MetadataTemplates => "`Kind.Name` of a kind with templates",
-            Self::MetadataCommands => "`Kind.Name` of a kind with commands",
-            Self::MetadataPredefinedItems => "`Kind.Name` of a kind with predefined items",
-            Self::MetadataAttribute => "`Kind.Name[.TabularSection.T].Attribute.A`",
-            Self::MetadataTabularSection => "`Kind.Name.TabularSection.T`",
-            Self::MetadataDimension => "`Kind.Name.Dimension.D` of a register",
-            Self::MetadataResource => "`Kind.Name.Resource.R` of a register",
-            Self::MetadataEnumValue => "`Enum.Name.EnumValue.V`",
-            Self::MetadataColumn => "`DocumentJournal.Name.Column.C`",
-            Self::MetadataCommand => "`Kind.Name.Command.C`",
-            Self::MetadataTemplate => "`Kind.Name.Template.T`",
-            Self::MetadataPredefinedItem => "`Kind.Name.PredefinedItem.P`",
-            Self::Form => "`Kind.Name.Form.F`",
-            Self::FormItemContainer => "`Kind.Name.Form.F[.Item.I…]`",
-            Self::FormItem => "`Kind.Name.Form.F.Item.I[.Item.J…]`",
-            Self::FormEvent => "`Kind.Name.Form.F[.Item.I…].Event.E`",
-            Self::Role => "`Role.Name`",
-            Self::RoleRight => "`Role.Name.Right.<Kind>_<Name>`",
-            Self::Subsystem => "`Subsystem.Name[.Subsystem.Child]`",
-            Self::NestedSubsystem => "`Subsystem.Parent.Subsystem.Child`",
-            Self::Interface => "`Subsystem.Name[.Subsystem.Child].Interface`",
-            Self::DcsSchema => "`Kind.Name.Template.T` of a data composition schema",
-            Self::DcsDataContainer => "`Kind.Name.Template.T[.DataSet.D]` of a schema",
-            Self::DcsData => "`Kind.Name.Template.T.DataSet.D`",
-            Self::DcsQuery => "`Kind.Name.Template.T.DataSet.D.Query`",
-            Self::DcsSettings => "`Kind.Name.Template.T.Setting.S`",
-            Self::DcsParameter => "`Kind.Name.Template.T.Parameter.P`",
-            Self::DcsField => "`Kind.Name.Template.T.DataSet.D.Field.F`",
-            Self::DcsDataSource => "`Kind.Name.Template.T.DataSource.S`",
-            Self::DcsCalculatedField => "`Kind.Name.Template.T.CalculatedField.F`",
-            Self::DcsTotal => "`Kind.Name.Template.T.Total.F`",
-            Self::DcsSettingsContainer => "`Kind.Name.Template.T.Setting.S[.Item.I…]`",
-            Self::DcsStructureItem => "`Kind.Name.Template.T.Setting.S.Item.I[.Item.J…]`",
-            Self::Mxl => "`Kind.Name.Template.T` of a spreadsheet",
-            Self::MxlArea => "`Kind.Name.Template.T.Area.A` of a spreadsheet",
-            Self::XdtoPackage => "`XDTOPackage.Name`",
-            Self::XdtoType => "`XDTOPackage.Name.Type.T`",
-            Self::XdtoProperty => "`XDTOPackage.Name.Type.T.Property.P[.Property.Q…]`",
-            Self::XdtoPropertyContainer => "`XDTOPackage.Name.Type.T[.Property.P…]`",
-            Self::InterfaceGroup => "`Subsystem.Name[.Subsystem.Child].Interface.Group.G`",
-            Self::CodeInsert => "a module address, its `Body` or `Method.M`",
-            Self::Code => "a module address, its `Body`, `Method.M` or `Method.M.Body`",
-            Self::Event => "an `Event` of a module or a form",
-        }
-    }
-
-    fn matches(self, site: &OperationSite<'_>) -> bool {
-        let segments = site.segments();
-        let terminal = site.terminal();
-        match self {
-            Self::Configuration => site.route == RouteClass::Configuration,
-            Self::ExtensionRoot => {
-                site.route == RouteClass::Configuration
-                    && site.source.kind() == SourceSetKind::Extension
-            }
-            Self::Metadata => site.metadata_object().is_some(),
-            Self::MetadataOrRoleOrSubsystem => {
-                site.metadata_object().is_some()
-                    || matches!(segments, [only]
-                        if only.name().is_some()
-                            && matches!(only.kind(), NodeKind::Role | NodeKind::Subsystem))
-            }
-            Self::MetadataAttributeContainer => {
-                site.metadata_owner_with(MetaCollection::Attributes)
-                    || site
-                        .metadata_member(NodeKind::TabularSection, MetaCollection::TabularSections)
-            }
-            Self::MetadataTabularSections => {
-                site.metadata_owner_with(MetaCollection::TabularSections)
-            }
-            Self::MetadataDimensions => site.metadata_owner_with(MetaCollection::Dimensions),
-            Self::MetadataResources => site.metadata_owner_with(MetaCollection::Resources),
-            Self::MetadataEnumValues => site.metadata_owner_with(MetaCollection::EnumValues),
-            Self::MetadataColumns => site.metadata_owner_with(MetaCollection::Columns),
-            Self::MetadataForms => site.metadata_owner_with(MetaCollection::Forms),
-            Self::MetadataTemplates => site.metadata_owner_with(MetaCollection::Templates),
-            Self::MetadataCommands => site.metadata_owner_with(MetaCollection::Commands),
-            Self::MetadataPredefinedItems => {
-                site.metadata_owner_with(MetaCollection::PredefinedItems)
-            }
-            Self::MetadataAttribute => {
-                site.route == RouteClass::Metadata
-                    && terminal.kind() == NodeKind::Attribute
-                    && terminal.name().is_some()
-                    && match segments {
-                        [owner, _] => {
-                            owner.name().is_some()
-                                && metadata_collection_matches(
-                                    owner.kind(),
-                                    MetaCollection::Attributes,
-                                )
-                        }
-                        [owner, section, _] => {
-                            owner.name().is_some()
-                                && section.kind() == NodeKind::TabularSection
-                                && section.name().is_some()
-                                && metadata_collection_matches(
-                                    owner.kind(),
-                                    MetaCollection::TabularSections,
-                                )
-                        }
-                        _ => false,
-                    }
-            }
-            Self::MetadataTabularSection => {
-                site.metadata_member(NodeKind::TabularSection, MetaCollection::TabularSections)
-            }
-            Self::MetadataDimension => {
-                site.metadata_member(NodeKind::Dimension, MetaCollection::Dimensions)
-            }
-            Self::MetadataResource => {
-                site.metadata_member(NodeKind::Resource, MetaCollection::Resources)
-            }
-            Self::MetadataEnumValue => {
-                site.metadata_member(NodeKind::EnumValue, MetaCollection::EnumValues)
-            }
-            Self::MetadataColumn => site.metadata_member(NodeKind::Column, MetaCollection::Columns),
-            Self::MetadataCommand => {
-                site.metadata_member(NodeKind::Command, MetaCollection::Commands)
-            }
-            Self::MetadataTemplate => site.owned_template(),
-            Self::MetadataPredefinedItem => {
-                site.metadata_member(NodeKind::PredefinedItem, MetaCollection::PredefinedItems)
-            }
-            Self::Form => site.route == RouteClass::Form && site.owned_form(),
-            Self::FormItemContainer => site.form_items(segments).is_some(),
-            Self::FormItem => site
-                .form_items(segments)
-                .is_some_and(|items| !items.is_empty()),
-            Self::FormEvent => match segments {
-                [path @ .., event] => {
-                    event.kind() == NodeKind::Event
-                        && event.name().is_some()
-                        && site.form_items(path).is_some()
-                }
-                [] => false,
-            },
-            Self::Role => {
-                site.route == RouteClass::Role
-                    && matches!(segments, [role] if role.kind() == NodeKind::Role && role.name().is_some())
-            }
-            Self::RoleRight => {
-                site.route == RouteClass::Role
-                    && matches!(segments, [role, right]
-                        if role.kind() == NodeKind::Role
-                            && role.name().is_some()
-                            && right.kind() == NodeKind::Right
-                            && right.name().is_some())
-            }
-            Self::Subsystem => {
-                site.route == RouteClass::Subsystem
-                    && segments.iter().all(|segment| {
-                        segment.kind() == NodeKind::Subsystem && segment.name().is_some()
-                    })
-            }
-            Self::NestedSubsystem => Self::Subsystem.matches(site) && site.segments().len() > 1,
-            Self::Interface => {
-                site.route == RouteClass::Interface
-                    && terminal.kind() == NodeKind::Interface
-                    && segments[..segments.len() - 1].iter().all(|segment| {
-                        segment.kind() == NodeKind::Subsystem && segment.name().is_some()
-                    })
-            }
-            Self::DcsSchema | Self::Mxl => site.owned_template(),
-            Self::MxlArea => {
-                site.route == RouteClass::Mxl
-                    && matches!(segments, [owner, template, area]
-                        if owner.name().is_some()
-                            && template.kind() == NodeKind::Template
-                            && template.name().is_some()
-                            && area.kind() == NodeKind::Area
-                            && area.name().is_some()
-                            && metadata_collection_matches(owner.kind(), MetaCollection::Templates))
-            }
-            Self::DcsDataContainer => {
-                site.owned_template() || site.dcs_terminal(&[NodeKind::DataSet])
-            }
-            Self::DcsData => site.dcs_terminal(&[NodeKind::DataSet]),
-            Self::DcsQuery => {
-                site.route == RouteClass::Dcs
-                    && matches!(segments, [.., data_set, query]
-                        if query.kind() == NodeKind::Query
-                            && query.name().is_none()
-                            && data_set.kind() == NodeKind::DataSet
-                            && data_set.name().is_some())
-            }
-            Self::DcsSettings => site.dcs_terminal(&[NodeKind::Setting]),
-            Self::DcsParameter => site.dcs_terminal(&[NodeKind::Parameter]),
-            Self::DcsField => site.dcs_terminal(&[NodeKind::Field]),
-            Self::DcsDataSource => site.dcs_schema_member(NodeKind::DataSource),
-            Self::DcsCalculatedField => site.dcs_schema_member(NodeKind::CalculatedField),
-            Self::DcsTotal => site.dcs_schema_member(NodeKind::Total),
-            Self::DcsSettingsContainer => site.dcs_structure_depth().is_some(),
-            Self::DcsStructureItem => site.dcs_structure_depth().is_some_and(|depth| depth > 0),
-            Self::XdtoPackage => {
-                site.route == RouteClass::Xdto
-                    && matches!(segments, [package] if package.name().is_some())
-            }
-            Self::XdtoType => {
-                site.route == RouteClass::Xdto
-                    && matches!(segments, [package, ty]
-                        if package.name().is_some()
-                            && ty.kind() == NodeKind::Type
-                            && ty.name().is_some())
-            }
-            Self::XdtoProperty | Self::XdtoPropertyContainer => {
-                site.route == RouteClass::Xdto
-                    && match segments {
-                        [package, ty, properties @ ..] => {
-                            package.name().is_some()
-                                && ty.kind() == NodeKind::Type
-                                && ty.name().is_some()
-                                && (self == Self::XdtoPropertyContainer || !properties.is_empty())
-                                && properties.iter().all(|property| {
-                                    property.kind() == NodeKind::Property
-                                        && property.name().is_some()
-                                })
-                        }
-                        _ => false,
-                    }
-            }
-            Self::InterfaceGroup => {
-                site.route == RouteClass::Interface
-                    && matches!(segments, [owners @ .., interface, group]
-                    if interface.kind() == NodeKind::Interface
-                        && group.kind() == NodeKind::Group
-                        && group.name().is_some()
-                        && !owners.is_empty()
-                        && owners.iter().all(|segment| {
-                            segment.kind() == NodeKind::Subsystem && segment.name().is_some()
-                        }))
-            }
-            Self::SupportRule => match segments {
-                [owner] | [owner, _] => {
-                    owner.name().is_some()
-                        && owner.kind().is_metadata_kind()
-                        && !matches!(
-                            owner.kind(),
-                            NodeKind::Form | NodeKind::Template | NodeKind::Command
-                        )
-                        && (segments.len() == 1
-                            || (terminal.kind() == NodeKind::Form && terminal.name().is_some()))
-                }
-                _ => false,
-            },
-            Self::CodeInsert => {
-                site.route == RouteClass::Module
-                    && (module_terminal(segments)
-                        || (terminal.kind() == NodeKind::Body && !method_body(segments))
-                        || (terminal.kind() == NodeKind::Method && terminal.name().is_some()))
-            }
-            Self::Code => {
-                site.route == RouteClass::Module
-                    && (module_terminal(segments)
-                        || terminal.kind() == NodeKind::Body
-                        || (terminal.kind() == NodeKind::Method && terminal.name().is_some()))
-            }
-            Self::Event => {
-                terminal.kind() == NodeKind::Event
-                    && terminal.name().is_some()
-                    && match site.route {
-                        RouteClass::Form => true,
-                        // Событие объекта пишется в модуль платформы, которого
-                        // у расширения нет.
-                        RouteClass::Module | RouteClass::Metadata => {
-                            site.source.kind() == SourceSetKind::Configuration
-                        }
-                        _ => false,
-                    }
-            }
-        }
-    }
-}
-
-/// Адрес самого модуля: `CommonModule.X`, `Owner.X.Module.Object`,
-/// `Module.Session`.
-fn module_terminal(segments: &[AddressSegment]) -> bool {
-    match segments.last() {
-        Some(last) if last.kind() == NodeKind::Module => last.name().is_some(),
-        Some(last) if last.kind() == NodeKind::CommonModule => {
-            segments.len() == 1 && last.name().is_some()
-        }
-        _ => false,
-    }
-}
-
-fn method_body(segments: &[AddressSegment]) -> bool {
-    matches!(segments, [.., method, body]
-        if method.kind() == NodeKind::Method && body.kind() == NodeKind::Body)
-}
-
-fn metadata_collection_matches(kind: NodeKind, collection: MetaCollection) -> bool {
-    MetadataKind::parse(kind.as_str())
-        .ok()
-        .is_some_and(|kind| metadata_kind_collections(kind).contains(&collection))
-}
-
-/// Формат тела макета. Семейства СКД и табличного документа применимы к
-/// макету только своего формата; это единственный владелец фильтра —
-/// им пользуются и словарь `can`, и планировщик, в том числе на
-/// промежуточном состоянии пакета (`template.add` → `mxl.set`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TemplateFormat {
-    DataCompositionSchema,
-    SpreadsheetDocument,
-    Other,
-}
-
-impl TemplateFormat {
-    pub(crate) fn parse(raw: &str) -> Self {
-        match raw {
-            "DataCompositionSchema" => Self::DataCompositionSchema,
-            "SpreadsheetDocument" => Self::SpreadsheetDocument,
-            _ => Self::Other,
-        }
-    }
-
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::DataCompositionSchema => "DataCompositionSchema",
-            Self::SpreadsheetDocument => "SpreadsheetDocument",
-            Self::Other => "other",
-        }
-    }
-}
-
-/// Роль элемента формы для словаря операций. Единственный владелец
-/// отображения: `view` узнаёт роль по `props.tag` элемента, планировщик —
-/// по тому же признаку элемента прочитанной формы.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FormItemRole {
-    /// Принимает вложенные элементы: группа, страницы, страница, таблица,
-    /// группа колонок, командная панель, группа кнопок, подменю.
-    Container,
-    /// Автоматическая командная панель формы или таблицы: в неё добавляются
-    /// кнопки, но удалить её отдельно от владельца нельзя.
-    AutoCommandBar,
-    /// Поле, декорация, кнопка: вложенных элементов не принимает.
-    Leaf,
-}
-
-impl FormItemRole {
-    /// Роль по признаку `tag` элемента, как его публикует `view`
-    /// (`[Group:V]`, `[Table]`, `[AutoCommandBar]`, `[Input]`).
-    pub(crate) fn from_tag(tag: &str) -> Self {
-        let kind = tag
-            .trim_start_matches('[')
-            .split([':', ',', ']'])
-            .next()
-            .unwrap_or_default();
-        match kind {
-            "AutoCommandBar" => Self::AutoCommandBar,
-            "Group" | "Table" | "ColumnGroup" | "CmdBar" | "Pages" | "Page" | "Popup"
-            | "BtnGroup" => Self::Container,
-            _ => Self::Leaf,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TypedOperation {
-    Metadata(MetadataOperation),
-    Form(FormOperation),
-    Role(RoleOperation),
-    Support(SupportOperation),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct OperationDescriptor {
-    name: &'static str,
-    family: OperationFamily,
-    applicability: OperationApplicability,
-    skeleton: OperationSkeleton,
-    typed_operation: Option<TypedOperation>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum OperationSkeleton {
-    From,
-    Items,
-    Values,
-    Text,
-    Target,
-}
-
-impl OperationSkeleton {
-    /// The single root argument key the operation expects; the published
-    /// `can` dictionary and refusal texts both speak this name.
-    pub(crate) const fn key(self) -> &'static str {
-        match self {
-            Self::From => "from",
-            Self::Items => "items",
-            Self::Values => "values",
-            Self::Text => "text",
-            Self::Target => "at",
-        }
-    }
-
-    fn args(self) -> Map<String, Value> {
-        let value = match self {
-            Self::From => Value::String(String::new()),
-            Self::Items => Value::Array(Vec::new()),
-            Self::Values => Value::Object(Map::new()),
-            Self::Text => Value::String(String::new()),
-            Self::Target => Value::String(String::new()),
-        };
-        Map::from_iter([(self.key().to_string(), value)])
-    }
-}
 
 /// Apply operations with a proven end-to-end v0.13 planner and publication.
 /// The `can` dictionary prints this as `implemented`, mirroring the honesty
@@ -1195,6 +518,7 @@ pub(crate) const IMPLEMENTED_APPLY_OPERATIONS: &[&str] = &[
     "predefinedItem.add",
     "predefinedItem.set",
     "predefinedItem.remove",
+    "content.set",
     "relation.add",
     "relation.replace",
     "relation.remove",
@@ -1207,1617 +531,323 @@ pub(crate) const IMPLEMENTED_APPLY_OPERATIONS: &[&str] = &[
     "property.remove",
 ];
 
-impl OperationDescriptor {
-    const fn metadata(operation: MetadataOperation) -> Self {
-        Self {
-            name: operation.name(),
-            family: OperationFamily::Metadata,
-            applicability: operation.applicability(),
-            skeleton: operation.skeleton(),
-            typed_operation: Some(TypedOperation::Metadata(operation)),
-        }
-    }
-
-    pub(crate) const fn metadata_operation(self) -> Option<MetadataOperation> {
-        match self.typed_operation {
-            Some(TypedOperation::Metadata(operation)) => Some(operation),
-            _ => None,
-        }
-    }
-
-    const fn form(operation: FormOperation) -> Self {
-        Self {
-            name: operation.name(),
-            family: OperationFamily::Form,
-            applicability: operation.applicability(),
-            skeleton: operation.skeleton(),
-            typed_operation: Some(TypedOperation::Form(operation)),
-        }
-    }
-
-    pub(crate) const fn form_operation(self) -> Option<FormOperation> {
-        match self.typed_operation {
-            Some(TypedOperation::Form(operation)) => Some(operation),
-            _ => None,
-        }
-    }
-
-    const fn role(operation: RoleOperation) -> Self {
-        Self {
-            name: operation.name(),
-            family: OperationFamily::Role,
-            applicability: operation.applicability(),
-            skeleton: operation.skeleton(),
-            typed_operation: Some(TypedOperation::Role(operation)),
-        }
-    }
-
-    const fn support(operation: SupportOperation) -> Self {
-        Self {
-            name: operation.name(),
-            family: OperationFamily::Support,
-            applicability: operation.applicability(),
-            skeleton: operation.skeleton(),
-            typed_operation: Some(TypedOperation::Support(operation)),
-        }
-    }
-
-    pub(crate) const fn role_operation(self) -> Option<RoleOperation> {
-        match self.typed_operation {
-            Some(TypedOperation::Role(operation)) => Some(operation),
-            _ => None,
-        }
-    }
-
-    pub(crate) const fn support_operation(self) -> Option<SupportOperation> {
-        match self.typed_operation {
-            Some(TypedOperation::Support(operation)) => Some(operation),
-            _ => None,
-        }
-    }
-
-    pub(crate) const fn name(self) -> &'static str {
-        self.name
-    }
-
-    pub(crate) const fn skeleton_key(self) -> &'static str {
-        self.skeleton.key()
-    }
-
-    pub(crate) const fn family(self) -> OperationFamily {
-        self.family
-    }
-
-    /// Сопутствующий файл, содержимое которого пишет операция: права роли,
-    /// описание формы (её модуль и обработчики событий тоже), тело макета или
-    /// пакет XDTO. У заимствованного объекта без такого файла содержимое
-    /// унаследовано от родителя, и операция там не исполнима. `None` —
-    /// операция пишет описание объекта или вне такого содержимого.
-    pub(crate) fn content_resource(self) -> Option<&'static str> {
-        match self.family {
-            OperationFamily::Role => self
-                .role_operation()
-                .and_then(RoleOperation::content_resource),
-            OperationFamily::Form
-                if !matches!(self.name, "form.add" | "form.set" | "form.remove") =>
-            {
-                Some("Form.xml")
-            }
-            OperationFamily::Event | OperationFamily::Code => Some("Form.xml"),
-            OperationFamily::Dcs | OperationFamily::Mxl => Some("Template.xml"),
-            OperationFamily::Xdto => Some("Package.bin"),
-            _ => None,
-        }
-    }
-
-    /// Применима ли операция к месту: вид набора, маршрут и форма адреса.
-    /// Формат макета этим ответом не проверяется — см. `admits_template_format`.
-    pub(crate) fn applies_at(self, site: &OperationSite<'_>) -> bool {
-        site.at.line_range().is_none()
-            && site.source.writes(self.family)
-            && self.applicability.matches(site)
-    }
-
-    /// Фильтр формата макета. Операции СКД применимы к макету-схеме,
-    /// табличного документа — к макету-табличному документу; остальным
-    /// формат безразличен. `None` — формат не установлен.
-    pub(crate) fn admits_template_format(self, format: Option<TemplateFormat>) -> bool {
-        match self.family {
-            OperationFamily::Dcs => format == Some(TemplateFormat::DataCompositionSchema),
-            OperationFamily::Mxl => format == Some(TemplateFormat::SpreadsheetDocument),
-            _ => true,
-        }
-    }
-
-    /// Фильтр роли элемента формы. Элемент добавляется только в контейнер
-    /// (группу, страницы, страницу, таблицу, группу колонок, командную панель), а
-    /// автоматическая командная панель — часть своего владельца и не
-    /// удаляется. `None` — роль не установлена.
-    pub(crate) fn admits_form_item(self, role: Option<FormItemRole>) -> bool {
-        !matches!(
-            (self.name, role),
-            ("item.add", Some(FormItemRole::Leaf))
-                | (
-                    "item.remove" | "item.move",
-                    Some(FormItemRole::AutoCommandBar)
-                )
-        )
-    }
-
-    /// Применимость к прочитанному узлу: место и, для самого макета, формат
-    /// его тела, для элемента формы — его роль. Этим ответом строится
-    /// словарь `can`.
-    pub(crate) fn applies_to_node(
+/// Composition adapters for already-observed family facts. All semantic
+/// predicates/contracts are supplied by the bound family operation.
+pub(crate) trait OperationDescriptorExt {
+    fn admits_template_format(self, format: Option<TemplateFormat>) -> bool;
+    fn admits_form_item(self, role: Option<FormItemRole>) -> bool;
+    fn applies_to_node(
         self,
         site: &OperationSite<'_>,
-        template_format: Option<TemplateFormat>,
-        form_item: Option<FormItemRole>,
-    ) -> bool {
-        self.applies_at(site)
-            && (site.terminal().kind() != NodeKind::Template
-                || self.admits_template_format(template_format))
-            && (site.terminal().kind() != NodeKind::Item || self.admits_form_item(form_item))
-    }
+        format: Option<TemplateFormat>,
+        role: Option<FormItemRole>,
+    ) -> bool;
+    fn nearest_applicable_ancestor(
+        self,
+        site: &OperationSite<'_>,
+        context: RegistryContext,
+        template: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
+    ) -> Option<QualifiedAddress>;
+    fn nearest_applicable_ancestor_with(
+        self,
+        site: &OperationSite<'_>,
+        context: RegistryContext,
+        template: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
+        item: &dyn Fn(&QualifiedAddress) -> Option<FormItemRole>,
+    ) -> Option<QualifiedAddress>;
+}
 
+pub(crate) fn observation_lookup<'a>(
+    template: &'a dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
+    item: &'a dyn Fn(&QualifiedAddress) -> Option<FormItemRole>,
+) -> impl Fn(&QualifiedAddress, unica_operations::ObservationType) -> Option<Box<dyn std::any::Any>> + 'a
+{
+    move |at, requested| {
+        if requested.is::<TemplateFormat>() {
+            template(at).map(|value| Box::new(value) as Box<dyn std::any::Any>)
+        } else if requested.is::<FormItemRole>() {
+            item(at).map(|value| Box::new(value) as Box<dyn std::any::Any>)
+        } else {
+            None
+        }
+    }
+}
+
+impl OperationDescriptorExt for OperationDescriptor {
+    fn admits_template_format(self, format: Option<TemplateFormat>) -> bool {
+        !self.observation_type().is::<TemplateFormat>()
+            || self
+                .admits_context(&|_| format.map(|value| Box::new(value) as Box<dyn std::any::Any>))
+    }
+    fn admits_form_item(self, role: Option<FormItemRole>) -> bool {
+        !self.observation_type().is::<FormItemRole>()
+            || self.admits_context(&|_| role.map(|value| Box::new(value) as Box<dyn std::any::Any>))
+    }
+    fn applies_to_node(
+        self,
+        site: &OperationSite<'_>,
+        format: Option<TemplateFormat>,
+        role: Option<FormItemRole>,
+    ) -> bool {
+        self.applies_with_observations(site, &observation_lookup(&|_| format, &|_| role))
+    }
     /// Ближайший узел по цепочке предков `at` (до корня набора включительно),
     /// где операция исполнима. Туда ведёт `next` отказа «не тот узел».
     ///
     /// Для макета-предка учитывается и формат его тела: `template_format`
     /// читает его у вызывающего, домен файлов не читает. Неизвестный формат
     /// макет не принимает — `next` не уводит туда, где планировщик откажет.
-    pub(crate) fn nearest_applicable_ancestor(
+    fn nearest_applicable_ancestor(
         self,
         site: &OperationSite<'_>,
+        context: RegistryContext,
         template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
     ) -> Option<QualifiedAddress> {
-        self.nearest_applicable_ancestor_with(site, template_format, &|_| None)
+        self.nearest_ancestor_with_observations(
+            site,
+            context,
+            &observation_lookup(template_format, &|_| None),
+        )
     }
-
-    /// То же с ролью элемента-предка формы: `form_item` читает её у
-    /// вызывающего, и `next` не уводит в поле, куда элемент не добавить.
-    pub(crate) fn nearest_applicable_ancestor_with(
+    fn nearest_applicable_ancestor_with(
         self,
         site: &OperationSite<'_>,
+        context: RegistryContext,
         template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
         form_item: &dyn Fn(&QualifiedAddress) -> Option<FormItemRole>,
     ) -> Option<QualifiedAddress> {
-        let segments = site.segments();
-        // Запрос — безымянный узел набора: операцию запроса, вызванную на
-        // самом наборе, отказ ведёт к его `Query`.
-        // Только у набора: после вида с именем (`Group`, `Property`) `.Query`
-        // разобралось бы как имя несуществующего узла.
-        let query = (site.terminal().kind() == NodeKind::DataSet
-            && site.terminal().name().is_some())
-        .then(|| QualifiedAddress::parse(&format!("{}.Query", site.at)).ok())
-        .flatten();
-        let mut candidates = query
-            .into_iter()
-            .chain((1..segments.len()).rev().map(|length| QualifiedAddress {
-                line_range: None,
-                source_set: site.at.source_set().to_string(),
-                segments: segments[..length].to_vec(),
-            }))
-            .collect::<Vec<_>>();
-        if site.route != RouteClass::Configuration {
-            candidates.push(configuration_root(site.at.source_set()));
-        }
-        candidates.into_iter().find(|candidate| {
-            OperationSite::new(candidate, site.source).is_some_and(|candidate| {
-                self.applies_at(&candidate)
-                    && (candidate.terminal().kind() != NodeKind::Template
-                        || self.admits_template_format(template_format(candidate.at)))
-                    && (candidate.terminal().kind() != NodeKind::Item
-                        || self.admits_form_item(form_item(candidate.at)))
-            })
-        })
-    }
-
-    /// Операция родителя, которая создаёт узел этой операции: `*.set`
-    /// пишет только в существующий узел, а отсутствующий создаёт `*.add`
-    /// на родителе с именем в аргументах (#1354).
-    pub(crate) const fn creator(self) -> Option<&'static str> {
-        match self.name.as_bytes() {
-            b"right.set" => Some("right.add"),
-            b"mxl.set" => Some("area.add"),
-            _ => None,
-        }
-    }
-
-    /// Адрес, на котором операция исполнима вместо снятого псевдонима
-    /// запроса `Template.T.Query.D` (#1353): запрос набора
-    /// `Template.T.DataSet.D.Query` или сам набор.
-    pub(crate) fn retired_query_alias_target(
-        self,
-        site: &OperationSite<'_>,
-        data_sets: MemberPathLookup<'_>,
-    ) -> Option<QualifiedAddress> {
-        let segments = site.segments();
-        let position = segments
-            .iter()
-            .position(|segment| segment.kind() == NodeKind::Query && segment.name().is_some())?;
-        if site.route != RouteClass::Dcs
-            || position == 0
-            || segments[position - 1].kind() != NodeKind::Template
-        {
-            return None;
-        }
-        let name = segments[position].name()?;
-        let template = QualifiedAddress {
-            line_range: None,
-            source_set: site.at.source_set().to_string(),
-            segments: segments[..position].to_vec(),
-        };
-        let NamedNode::Found(data_set) = named_data_set(&template, name, data_sets)? else {
-            return None;
-        };
-        [".Query", ""].into_iter().find_map(|suffix| {
-            let candidate = QualifiedAddress::parse(&format!("{data_set}{suffix}")).ok()?;
-            OperationSite::new(&candidate, site.source)
-                .is_some_and(|target| self.applies_at(&target))
-                .then_some(candidate)
-        })
-    }
-
-    /// Форма адреса, на котором операция исполнима: подсказка отказа, когда
-    /// ближайшего такого узла нет.
-    pub(crate) const fn address_shape(self) -> &'static str {
-        self.applicability.shape()
-    }
-
-    pub(crate) fn argument_contract(self) -> Option<super::operation_contract::OperationContract> {
-        match self.family {
-            OperationFamily::Xdto => super::operation_contract::OperationContract::xdto(self.name),
-            OperationFamily::Dcs => super::operation_contract::OperationContract::dcs(self.name),
-            OperationFamily::Mxl => super::operation_contract::OperationContract::mxl(self.name),
-            OperationFamily::Metadata if self.name == "template.add" => {
-                super::operation_contract::OperationContract::mxl(self.name)
-            }
-            OperationFamily::Metadata => match self.metadata_operation() {
-                Some(operation) => Some(operation.contract_at(None)),
-                None => super::operation_contract::OperationContract::metadata(self.name),
-            },
-            OperationFamily::Role => self.role_operation().map(RoleOperation::contract),
-            OperationFamily::Support => self.support_operation().map(SupportOperation::contract),
-            OperationFamily::Form => match self.form_operation() {
-                Some(operation) => Some(operation.contract()),
-                None => super::operation_contract::OperationContract::form(self.name),
-            },
-            OperationFamily::Event => {
-                super::operation_contract::OperationContract::event(self.name)
-            }
-            _ => None,
-        }
-    }
-
-    /// Контракт на конкретном узле: для членов метаданных поля, допустимость
-    /// которых зависит от вида владельца и от табличной части, сужены до
-    /// этого узла.
-    pub(crate) fn argument_contract_at(
-        self,
-        site: &OperationSite<'_>,
-    ) -> Option<super::operation_contract::OperationContract> {
-        if self.family == OperationFamily::Metadata && self.name != "template.add" {
-            let owner = site
-                .segments()
-                .first()
-                .and_then(|segment| MetadataKind::parse(segment.kind().as_str()).ok());
-            let in_section = site
-                .segments()
-                .iter()
-                .any(|segment| segment.kind() == NodeKind::TabularSection);
-            let metadata_site =
-                owner.map(|owner| super::operation_contract::MetadataSite { owner, in_section });
-            return match self.metadata_operation() {
-                Some(operation) => Some(operation.contract_at(metadata_site)),
-                None => super::operation_contract::OperationContract::metadata_at(
-                    self.name,
-                    metadata_site,
-                ),
-            };
-        }
-        self.argument_contract()
-    }
-
-    pub(crate) fn copyable_skeleton(self) -> OperationRef {
-        OperationRef::new(self.name, self.skeleton.args())
-    }
-
-    fn copyable_skeleton_at(self, at: impl Into<String>) -> OperationRef {
-        let mut args = self.skeleton.args();
-        args.insert("at".to_string(), Value::String(at.into()));
-        OperationRef::new(self.name, args)
-    }
-}
-
-/// Const equality for the registration gate; operation names remain owned by
-/// each typed declaration table.
-pub(super) const fn operation_names_equal(left: &str, right: &str) -> bool {
-    let left = left.as_bytes();
-    let right = right.as_bytes();
-    if left.len() != right.len() {
-        return false;
-    }
-    let mut index = 0;
-    while index < left.len() {
-        if left[index] != right[index] {
-            return false;
-        }
-        index += 1;
-    }
-    true
-}
-
-macro_rules! operation_descriptor {
-    (($name:literal, Role, $applicability:ident, $skeleton:ident)) => {
-        compile_error!(
-            "Role operations must register a typed RoleOperation with a mandatory contract"
+        self.nearest_ancestor_with_observations(
+            site,
+            context,
+            &observation_lookup(template_format, form_item),
         )
-    };
-    (($name:literal, Support, $applicability:ident, $skeleton:ident)) => {
-        compile_error!(
-            "Support operations must register a typed SupportOperation with a mandatory contract"
-        )
-    };
-    ((RoleOperation::$variant:ident)) => {
-        OperationDescriptor::role(RoleOperation::$variant)
-    };
-    ((SupportOperation::$variant:ident)) => {
-        OperationDescriptor::support(SupportOperation::$variant)
-    };
-    ((MetadataOperation::$variant:ident)) => {
-        OperationDescriptor::metadata(MetadataOperation::$variant)
-    };
-    ((FormOperation::$variant:ident)) => {
-        OperationDescriptor::form(FormOperation::$variant)
-    };
-    (($name:literal, $family:ident, $applicability:ident, $skeleton:ident)) => {{
-        const {
-            match OperationFamily::$family {
-                OperationFamily::Metadata => assert!(
-                    !MetadataOperation::is_named($name),
-                    "Typed Metadata operations must register a MetadataOperation with a mandatory contextual contract"
-                ),
-                OperationFamily::Form => assert!(
-                    !FormOperation::is_named($name),
-                    "Form attribute.add and command.add must register a typed FormOperation with a mandatory contract"
-                ),
-                _ => (),
-            }
-        }
-        OperationDescriptor {
-            name: $name,
-            family: OperationFamily::$family,
-            applicability: OperationApplicability::$applicability,
-            skeleton: OperationSkeleton::$skeleton,
-            typed_operation: None,
-        }
-    }};
+    }
 }
 
 macro_rules! operation_descriptors {
-    ($($entry:tt),+ $(,)?) => {
-        const OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
-            $(operation_descriptor!($entry)),+
-        ];
+    ($(($operation:path)),+ $(,)?) => {
+        const OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[$($operation.descriptor()),+];
     };
 }
 
 operation_descriptors!(
-    ("object.borrow", Metadata, ExtensionRoot, From),
-    ("object.create", Metadata, Configuration, Values),
-    ("object.remove", Metadata, Metadata, Target),
-    ("props.set", Properties, MetadataOrRoleOrSubsystem, Values),
-    ("relation.add", Metadata, Metadata, Values),
-    ("relation.remove", Metadata, Metadata, Values),
-    ("relation.replace", Metadata, Metadata, Values),
-    ("help.create", Metadata, Metadata, Values),
-    (MetadataOperation::AttributeAdd),
-    (MetadataOperation::AttributeSet),
-    (MetadataOperation::AttributeRemove),
-    (
-        "tabularSection.add",
-        Metadata,
-        MetadataTabularSections,
-        Items
-    ),
-    (
-        "tabularSection.set",
-        Metadata,
-        MetadataTabularSection,
-        Values
-    ),
-    (
-        "tabularSection.remove",
-        Metadata,
-        MetadataTabularSection,
-        Target
-    ),
-    ("dimension.add", Metadata, MetadataDimensions, Items),
-    ("dimension.set", Metadata, MetadataDimension, Values),
-    ("dimension.remove", Metadata, MetadataDimension, Target),
-    ("resource.add", Metadata, MetadataResources, Items),
-    ("resource.set", Metadata, MetadataResource, Values),
-    ("resource.remove", Metadata, MetadataResource, Target),
-    ("enumValue.add", Metadata, MetadataEnumValues, Items),
-    ("enumValue.set", Metadata, MetadataEnumValue, Values),
-    ("enumValue.remove", Metadata, MetadataEnumValue, Target),
-    ("column.add", Metadata, MetadataColumns, Items),
-    ("column.set", Metadata, MetadataColumn, Values),
-    ("column.remove", Metadata, MetadataColumn, Target),
-    ("form.add", Form, MetadataForms, Items),
-    ("form.set", Form, MetadataForms, Values),
-    ("form.remove", Form, Form, Target),
-    ("template.add", Metadata, MetadataTemplates, Items),
-    ("template.set", Metadata, MetadataTemplate, Values),
-    ("template.remove", Metadata, MetadataTemplate, Target),
-    (MetadataOperation::CommandAdd),
-    (MetadataOperation::CommandSet),
-    (MetadataOperation::CommandRemove),
-    (
-        "predefinedItem.add",
-        Metadata,
-        MetadataPredefinedItems,
-        Items
-    ),
-    (
-        "predefinedItem.set",
-        Metadata,
-        MetadataPredefinedItem,
-        Values
-    ),
-    (
-        "predefinedItem.remove",
-        Metadata,
-        MetadataPredefinedItem,
-        Target
-    ),
-    ("item.add", Form, FormItemContainer, Items),
-    ("item.remove", Form, FormItem, Target),
-    ("item.move", Form, FormItem, Values),
+    (unica_metadata::apply_operations::MetadataOperation::ObjectBorrow),
+    (unica_metadata::apply_operations::MetadataOperation::ObjectCreate),
+    (unica_metadata::apply_operations::MetadataOperation::ObjectRemove),
+    (PropertiesOperation::Set),
+    (unica_metadata::apply_operations::MetadataOperation::ContentSet),
+    (unica_metadata::apply_operations::MetadataOperation::RelationAdd),
+    (unica_metadata::apply_operations::MetadataOperation::RelationRemove),
+    (unica_metadata::apply_operations::MetadataOperation::RelationReplace),
+    (unica_metadata::apply_operations::MetadataOperation::HelpCreate),
+    (unica_metadata::apply_operations::MetadataOperation::AttributeAdd),
+    (unica_metadata::apply_operations::MetadataOperation::AttributeSet),
+    (unica_metadata::apply_operations::MetadataOperation::AttributeRemove),
+    (unica_metadata::apply_operations::MetadataOperation::TabularSectionAdd),
+    (unica_metadata::apply_operations::MetadataOperation::TabularSectionSet),
+    (unica_metadata::apply_operations::MetadataOperation::TabularSectionRemove),
+    (unica_metadata::apply_operations::MetadataOperation::DimensionAdd),
+    (unica_metadata::apply_operations::MetadataOperation::DimensionSet),
+    (unica_metadata::apply_operations::MetadataOperation::DimensionRemove),
+    (unica_metadata::apply_operations::MetadataOperation::ResourceAdd),
+    (unica_metadata::apply_operations::MetadataOperation::ResourceSet),
+    (unica_metadata::apply_operations::MetadataOperation::ResourceRemove),
+    (unica_metadata::apply_operations::MetadataOperation::EnumValueAdd),
+    (unica_metadata::apply_operations::MetadataOperation::EnumValueSet),
+    (unica_metadata::apply_operations::MetadataOperation::EnumValueRemove),
+    (unica_metadata::apply_operations::MetadataOperation::ColumnAdd),
+    (unica_metadata::apply_operations::MetadataOperation::ColumnSet),
+    (unica_metadata::apply_operations::MetadataOperation::ColumnRemove),
+    (FormOperation::Add),
+    (FormOperation::Set),
+    (FormOperation::Remove),
+    (unica_metadata::apply_operations::MetadataOperation::TemplateAdd),
+    (unica_metadata::apply_operations::MetadataOperation::TemplateSet),
+    (unica_metadata::apply_operations::MetadataOperation::TemplateRemove),
+    (unica_metadata::apply_operations::MetadataOperation::CommandAdd),
+    (unica_metadata::apply_operations::MetadataOperation::CommandSet),
+    (unica_metadata::apply_operations::MetadataOperation::CommandRemove),
+    (unica_metadata::apply_operations::MetadataOperation::PredefinedItemAdd),
+    (unica_metadata::apply_operations::MetadataOperation::PredefinedItemSet),
+    (unica_metadata::apply_operations::MetadataOperation::PredefinedItemRemove),
+    (FormOperation::ItemAdd),
+    (FormOperation::ItemRemove),
+    (FormOperation::ItemMove),
     (FormOperation::AttributeAdd),
     (FormOperation::CommandAdd),
-    ("event.bind", Form, FormEvent, Values),
+    (FormOperation::EventBind),
     (RoleOperation::Create),
     (RoleOperation::RightAdd),
     (RoleOperation::RightSet),
-    ("dataSource.add", Dcs, DcsSchema, Items),
-    ("dataSource.set", Dcs, DcsDataSource, Values),
-    ("dataSource.remove", Dcs, DcsDataSource, Target),
-    ("dataSet.add", Dcs, DcsDataContainer, Items),
-    ("dataSet.set", Dcs, DcsData, Values),
-    ("dataSet.remove", Dcs, DcsData, Target),
-    ("field.add", Dcs, DcsData, Items),
-    ("field.set", Dcs, DcsField, Values),
-    ("field.remove", Dcs, DcsField, Target),
-    ("fieldRole.set", Dcs, DcsField, Values),
-    ("parameter.add", Dcs, DcsSchema, Items),
-    ("parameter.set", Dcs, DcsParameter, Values),
-    ("parameter.remove", Dcs, DcsParameter, Target),
-    ("parameter.rename", Dcs, DcsParameter, Values),
-    ("parameter.reorder", Dcs, DcsSchema, Items),
-    ("calculatedField.add", Dcs, DcsSchema, Items),
-    ("calculatedField.remove", Dcs, DcsCalculatedField, Target),
-    ("total.add", Dcs, DcsSchema, Items),
-    ("total.remove", Dcs, DcsTotal, Target),
-    ("variant.add", Dcs, DcsSchema, Items),
-    ("variant.set", Dcs, DcsSettings, Values),
-    ("variant.remove", Dcs, DcsSettings, Target),
-    ("query.set", Dcs, DcsQuery, Values),
-    ("query.patch", Dcs, DcsQuery, Values),
-    ("filter.add", Dcs, DcsSettingsContainer, Items),
-    ("filter.set", Dcs, DcsSettingsContainer, Values),
-    ("filter.remove", Dcs, DcsSettingsContainer, Values),
-    ("filter.clear", Dcs, DcsSettingsContainer, Values),
-    ("selection.add", Dcs, DcsSettingsContainer, Items),
-    ("selection.clear", Dcs, DcsSettingsContainer, Values),
-    ("order.add", Dcs, DcsSettingsContainer, Items),
-    ("order.clear", Dcs, DcsSettingsContainer, Values),
+    (Primitive::DataSourceAdd),
+    (Primitive::DataSourceSet),
+    (Primitive::DataSourceRemove),
+    (Primitive::DataSetAdd),
+    (Primitive::DataSetSet),
+    (Primitive::DataSetRemove),
+    (Primitive::FieldAdd),
+    (Primitive::FieldSet),
+    (Primitive::FieldRemove),
+    (Primitive::FieldRoleSet),
+    (Primitive::ParameterAdd),
+    (Primitive::ParameterSet),
+    (Primitive::ParameterRemove),
+    (Primitive::ParameterRename),
+    (Primitive::ParameterReorder),
+    (Primitive::CalculatedFieldAdd),
+    (Primitive::CalculatedFieldRemove),
+    (Primitive::TotalAdd),
+    (Primitive::TotalRemove),
+    (Primitive::VariantAdd),
+    (Primitive::VariantSet),
+    (Primitive::VariantRemove),
+    (Primitive::QuerySet),
+    (Primitive::QueryPatch),
+    (Primitive::FilterAdd),
+    (Primitive::FilterSet),
+    (Primitive::FilterRemove),
+    (Primitive::FilterClear),
+    (Primitive::SelectionAdd),
+    (Primitive::SelectionClear),
+    (Primitive::OrderAdd),
+    (Primitive::OrderClear),
     // Параметры данных есть только у самих настроек варианта: у элемента
     // структуры их коллекции нет.
-    ("dataParameter.add", Dcs, DcsSettings, Items),
-    ("dataParameter.set", Dcs, DcsSettings, Values),
-    ("outputParameter.set", Dcs, DcsSettingsContainer, Values),
-    (
-        "conditionalAppearance.add",
-        Dcs,
-        DcsSettingsContainer,
-        Items
-    ),
-    (
-        "conditionalAppearance.clear",
-        Dcs,
-        DcsSettingsContainer,
-        Values
-    ),
-    ("structure.add", Dcs, DcsSettingsContainer, Items),
-    ("structure.set", Dcs, DcsSettings, Values),
-    ("structure.patch", Dcs, DcsStructureItem, Values),
-    ("structure.remove", Dcs, DcsStructureItem, Target),
-    ("dataSetLink.add", Dcs, DcsSchema, Items),
-    ("calculatedField.set", Dcs, DcsCalculatedField, Values),
-    ("total.set", Dcs, DcsTotal, Values),
-    ("selection.set", Dcs, DcsSettingsContainer, Values),
-    ("selection.remove", Dcs, DcsSettingsContainer, Values),
-    ("order.set", Dcs, DcsSettingsContainer, Values),
-    ("order.remove", Dcs, DcsSettingsContainer, Values),
-    ("dataParameter.remove", Dcs, DcsSettings, Values),
-    ("outputParameter.remove", Dcs, DcsSettingsContainer, Values),
-    (
-        "conditionalAppearance.remove",
-        Dcs,
-        DcsSettingsContainer,
-        Values
-    ),
-    ("dataSetLink.set", Dcs, DcsSchema, Values),
-    ("dataSetLink.remove", Dcs, DcsSchema, Values),
-    ("mxl.set", Mxl, MxlArea, Values),
-    ("area.add", Mxl, Mxl, Items),
-    ("valueType.add", Xdto, XdtoPackage, Values),
-    ("objectType.add", Xdto, XdtoPackage, Values),
-    ("property.add", Xdto, XdtoPropertyContainer, Values),
-    ("type.remove", Xdto, XdtoType, Target),
-    ("property.remove", Xdto, XdtoProperty, Target),
-    ("subsystem.create", Subsystem, Configuration, Values),
-    ("content.add", Subsystem, Subsystem, Items),
-    ("content.remove", Subsystem, Subsystem, Target),
-    ("childSubsystem.add", Subsystem, Subsystem, Items),
-    ("childSubsystem.remove", Subsystem, NestedSubsystem, Target),
+    (Primitive::DataParameterAdd),
+    (Primitive::DataParameterSet),
+    (Primitive::OutputParameterSet),
+    (Primitive::ConditionalAppearanceAdd),
+    (Primitive::ConditionalAppearanceClear),
+    (Primitive::StructureAdd),
+    (Primitive::StructureSet),
+    (Primitive::StructurePatch),
+    (Primitive::StructureRemove),
+    (Primitive::DataSetLinkAdd),
+    (Primitive::CalculatedFieldSet),
+    (Primitive::TotalSet),
+    (Primitive::SelectionSet),
+    (Primitive::SelectionRemove),
+    (Primitive::OrderSet),
+    (Primitive::OrderRemove),
+    (Primitive::DataParameterRemove),
+    (Primitive::OutputParameterRemove),
+    (Primitive::ConditionalAppearanceRemove),
+    (Primitive::DataSetLinkSet),
+    (Primitive::DataSetLinkRemove),
+    (MxlOperation::Set),
+    (MxlOperation::AreaAdd),
+    (XdtoOperation::AddValueType),
+    (XdtoOperation::AddObjectType),
+    (XdtoOperation::AddProperty),
+    (XdtoOperation::RemoveType),
+    (XdtoOperation::RemoveProperty),
+    (SubsystemOperation::Create),
+    (SubsystemOperation::ContentAdd),
+    (SubsystemOperation::ContentRemove),
+    (SubsystemOperation::ChildAdd),
+    (SubsystemOperation::ChildRemove),
     (SupportOperation::CapabilitySet),
     (SupportOperation::RuleSet),
-    ("commandVisibility.set", Interface, Interface, Items),
-    ("commandPlacement.set", Interface, Interface, Items),
-    ("commandOrder.set", Interface, InterfaceGroup, Values),
-    ("groupOrder.set", Interface, Interface, Values),
+    (InterfaceOperation::VisibilitySet),
+    (InterfaceOperation::PlacementSet),
+    (InterfaceOperation::CommandOrderSet),
+    (InterfaceOperation::GroupOrderSet),
     // Порядок подсистем верхнего уровня живёт в корневом документе, а
     // маршрута `main:Interface` намеренно нет: корень описывается свойством,
     // а не узлом. Интерфейс подсистемы эту операцию не принимает.
-    ("subsystemOrder.set", Interface, Configuration, Values),
-    ("code.insert", Code, CodeInsert, Text),
-    ("code.replace", Code, Code, Text),
-    ("event.implement", Event, Event, Target),
+    (InterfaceOperation::SubsystemOrderSet),
+    (CodeOperation::Insert),
+    (CodeOperation::Replace),
+    (EventOperation::Implement),
 );
 
-/// Аргумент, которым операция раньше называла свой предмет, и шаблон
-/// адреса, где этот предмет теперь задаётся.
-///
-/// Предмет операции задаёт `at`; аргумент, называвший подузел, снимается,
-/// когда операция переезжает на адрес подузла, а аргумент, дублировавший
-/// или переопределявший `at`, — без переезда (П2, #1353). Таблица — единственный
-/// владелец этого отображения: предварительная проверка `apply` читает её до
-/// вердикта «не тот узел», и старый вызов получает `bad_value` с адресом в
-/// `next`, а не тупик «операция не применима здесь».
-///
-/// `key` — путь внутри `args`: точки разделяют ключи объектов, `[]` обходит
-/// массив (`items[].into`), а `items[]` без продолжения берёт элемент-строку. В `address` подставляются `{at}` — адрес вызова,
-/// `{at^Kind}` — начало адреса вызова до последнего сегмента вида `Kind`
-/// включительно (`Module` — и общий модуль), и `{value}` — строковое
-/// значение снятого ключа. `{right}` — то же значение, где первая точка
-/// заменена на `_`: объект роли `Catalog.Items` даёт имя записи прав
-/// `Catalog_Items`. Если в адресе вызова нет сегмента `Kind`, запись
-/// адреса не строит. `{dataSet}` — набор схемы, названный значением: сегмент
-/// `DataSet` адреса вызова с этим именем, иначе набор, найденный по имени
-/// в схеме макета (вложенный набор объединения тоже), иначе набор верхнего
-/// уровня; если наборов с этим именем несколько, отказ ведёт к ветви наборов
-/// макета и перечисляет их адреса. `{item}` — элемент, названный значением,
-/// под ближайшим контейнером адреса вызова: в форме — путь `Item.A.Item.B`
-/// элемента с этим именем, в варианте настроек — цепочка именованных
-/// элементов структуры `Setting.V.Item.<имя>[.Item.<имя>…]`; не найденное
-/// имя даёт элемент верхнего уровня `Item.<значение>`, повторённое ведёт
-/// к ветви `Item` контейнера и перечисляет совпавшие элементы. `{event}` —
-/// событие формы, названное `values.event` (русское имя переводится), иначе
-/// событие самого адреса вызова; без них запись адреса не строит.
-/// `{at-Event}` — адрес вызова без последнего сегмента `Event`. Шаблон, который
-/// кончается на `.{name}` вместо `{value}`, — для ключа, который называл
-/// подузел не его именем (идентификатором предопределённого элемента):
-/// адрес из значения не строится, и отказ ведёт к чтению коллекции, где
-/// у подузла видно имя.
-///
-/// Запись действует, когда операция переехала (`retired`) и исполнима по
-/// построенному адресу. Пока операция не переехала, прежний вызов работает
-/// без отказа; перенос (П1–П6) переключает `retired` вместе с применимостью
-/// операции, а адреса и места ключей таблица уже знает.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct RetiredArgument {
-    pub(crate) op: &'static str,
-    pub(crate) key: &'static str,
-    pub(crate) address: &'static str,
-    /// Операция переехала на адрес, и снятый ключ получает отказ.
-    pub(crate) retired: bool,
-}
-
-macro_rules! retired_arguments {
-    ($(($op:literal, $key:literal, $address:literal, $retired:literal)),+ $(,)?) => {
-        pub(crate) const RETIRED_ARGUMENTS: &[RetiredArgument] = &[
-            $(RetiredArgument { op: $op, key: $key, address: $address, retired: $retired }),+
-        ];
-    };
-}
-
-// Члены метаданных (П1, #1352): табличная часть, член коллекции и
-// предопределённый элемент задаются адресом листа. Формы — П4.
-retired_arguments!(
-    (
-        "attribute.add",
-        "scope.tabularSection",
-        "{at}.TabularSection.{value}",
-        true
-    ),
-    (
-        "tabularSection.set",
-        "values.name",
-        "{at}.TabularSection.{value}",
-        true
-    ),
-    (
-        "tabularSection.remove",
-        "values.name",
-        "{at}.TabularSection.{value}",
-        true
-    ),
-    (
-        "dimension.set",
-        "values.name",
-        "{at}.Dimension.{value}",
-        true
-    ),
-    (
-        "dimension.remove",
-        "values.name",
-        "{at}.Dimension.{value}",
-        true
-    ),
-    ("resource.set", "values.name", "{at}.Resource.{value}", true),
-    (
-        "resource.remove",
-        "values.name",
-        "{at}.Resource.{value}",
-        true
-    ),
-    (
-        "enumValue.set",
-        "values.name",
-        "{at}.EnumValue.{value}",
-        true
-    ),
-    (
-        "enumValue.remove",
-        "values.name",
-        "{at}.EnumValue.{value}",
-        true
-    ),
-    ("column.set", "values.name", "{at}.Column.{value}", true),
-    ("column.remove", "values.name", "{at}.Column.{value}", true),
-    ("command.set", "values.name", "{at}.Command.{value}", true),
-    (
-        "command.remove",
-        "values.name",
-        "{at}.Command.{value}",
-        true
-    ),
-    ("template.set", "values.name", "{at}.Template.{value}", true),
-    (
-        "template.remove",
-        "values.name",
-        "{at}.Template.{value}",
-        true
-    ),
-    // Предопределённый элемент прежде назывался идентификатором, а адрес
-    // называет его по имени: имя видно в коллекции.
-    (
-        "predefinedItem.set",
-        "values.id",
-        "{at}.PredefinedItem.{name}",
-        true
-    ),
-    (
-        "predefinedItem.remove",
-        "values.id",
-        "{at}.PredefinedItem.{name}",
-        true
-    ),
-    // Аргументы, дублировавшие `at` (П2, #1353). Значение называло узел
-    // в обход адреса: отказ ведёт к узлу, который оно называло.
-    // `{dataSet}` — набор, названный значением: см. `RetiredArgument`.
-    ("query.set", "values.dataSet", "{dataSet}.Query", true),
-    ("query.patch", "values.dataSet", "{dataSet}.Query", true),
-    (
-        "structure.set",
-        "values.variant",
-        "{at^Template}.Setting.{value}",
-        true
-    ),
-    // Правка элемента структуры переехала на его адрес (#1357): вариант,
-    // названный аргументом, ведёт к элементам его структуры.
-    (
-        "structure.patch",
-        "values.variant",
-        "{at^Template}.Setting.{value}.Item.{name}",
-        true
-    ),
-    (
-        "childSubsystem.remove",
-        "items[].name",
-        "{at}.Subsystem.{value}",
-        true
-    ),
-    (
-        "childSubsystem.remove",
-        "items[]",
-        "{at}.Subsystem.{value}",
-        true
-    ),
-    (
-        "childSubsystem.remove",
-        "values.name",
-        "{at}.Subsystem.{value}",
-        true
-    ),
-    (
-        "code.replace",
-        "selector.method",
-        "{at^Module}.Method.{value}",
-        true
-    ),
-    // Адресация (П5, #1356). Свойство XDTO любой вложенности задаётся
-    // адресом `Type.T.Property.A[.Property.B…]`: прежний `propertyPath`
-    // и имя удаляемого свойства переходят в `at`. Путь с удаляемым именем
-    // ведёт к коллекции свойств, где видно это имя.
-    (
-        "property.add",
-        "values.propertyPath",
-        "{at}.Property.{path}",
-        true
-    ),
-    (
-        "property.remove",
-        "values.propertyPath",
-        "{at}.Property.{path}.Property.{name}",
-        true
-    ),
-    (
-        "property.remove",
-        "values.name",
-        "{at}.Property.{value}",
-        true
-    ),
-    // Плоская форма XDTO без `values` ещё разбирается: её ключи снимаются
-    // так же.
-    ("property.add", "propertyPath", "{at}.Property.{path}", true),
-    (
-        "property.remove",
-        "propertyPath",
-        "{at}.Property.{path}.Property.{name}",
-        true
-    ),
-    ("property.remove", "name", "{at}.Property.{value}", true),
-    // Порядок команд принадлежит группе: она задаётся адресом
-    // `Interface.Group.<g>`, имя с точкой (`CommandGroup.X`) экранируется.
-    (
-        "commandOrder.set",
-        "values.group",
-        "{at}.Group.{value}",
-        true
-    ),
-    // Операции подузлов (П3, #1354): подузел, прежде названный аргументом
-    // на владельце, задаётся адресом. Узел создаёт операция родителя
-    // (`right.add`, `area.add`), а `*.set` пишет только в существующий.
-    ("right.set", "values.object", "{at}.Right.{right}", true),
-    ("mxl.set", "values.area", "{at}.Area.{value}", true),
-    (
-        "variant.set",
-        "values.name",
-        "{at^Template}.Setting.{value}",
-        true
-    ),
-    (
-        "variant.remove",
-        "values.name",
-        "{at^Template}.Setting.{value}",
-        true
-    ),
-    (
-        "parameter.set",
-        "values.name",
-        "{at^Template}.Parameter.{value}",
-        true
-    ),
-    (
-        "parameter.rename",
-        "values.name",
-        "{at^Template}.Parameter.{value}",
-        true
-    ),
-    // Составной `dataPath` (`Owner.Code`) становится одним экранированным
-    // именем поля: `Field.Owner\.Code`.
-    (
-        "field.set",
-        "values.field",
-        "{at^DataSet}.Field.{value}",
-        true
-    ),
-    (
-        "field.set",
-        "values.dataPath",
-        "{at^DataSet}.Field.{value}",
-        true
-    ),
-    (
-        "field.set",
-        "values.name",
-        "{at^DataSet}.Field.{value}",
-        true
-    ),
-    (
-        "fieldRole.set",
-        "values.field",
-        "{at^DataSet}.Field.{value}",
-        true
-    ),
-    (
-        "fieldRole.set",
-        "values.dataPath",
-        "{at^DataSet}.Field.{value}",
-        true
-    ),
-    (
-        "fieldRole.set",
-        "values.name",
-        "{at^DataSet}.Field.{value}",
-        true
-    ),
-    (
-        "code.insert",
-        "selector.method",
-        "{at^Module}.Method.{value}",
-        true
-    ),
-    // Новые узлы СКД (П6, #1357): источник, вычисляемое поле и итог
-    // адресуются под макетом, элемент структуры варианта — цепочкой
-    // `Setting.V.Item.<имя>[.Item.<имя>…]`. `{item}` — элемент, названный
-    // значением в структуре варианта адреса вызова: см. `RetiredArgument`.
-    (
-        "dataSource.set",
-        "values.name",
-        "{at^Template}.DataSource.{value}",
-        true
-    ),
-    (
-        "dataSource.remove",
-        "values.name",
-        "{at^Template}.DataSource.{value}",
-        true
-    ),
-    (
-        "calculatedField.set",
-        "values.name",
-        "{at^Template}.CalculatedField.{value}",
-        true
-    ),
-    (
-        "calculatedField.remove",
-        "values.name",
-        "{at^Template}.CalculatedField.{value}",
-        true
-    ),
-    (
-        "total.set",
-        "values.field",
-        "{at^Template}.Total.{value}",
-        true
-    ),
-    (
-        "total.remove",
-        "values.name",
-        "{at^Template}.Total.{value}",
-        true
-    ),
-    ("filter.add", "items[].group", "{item}", true),
-    ("filter.set", "values.group", "{item}", true),
-    ("filter.remove", "values.group", "{item}", true),
-    ("filter.clear", "values.group", "{item}", true),
-    ("selection.add", "items[].group", "{item}", true),
-    ("selection.set", "values.group", "{item}", true),
-    ("selection.remove", "values.group", "{item}", true),
-    ("selection.clear", "values.group", "{item}", true),
-    ("order.add", "items[].group", "{item}", true),
-    ("order.set", "values.group", "{item}", true),
-    ("order.remove", "values.group", "{item}", true),
-    ("order.clear", "values.group", "{item}", true),
-    ("conditionalAppearance.add", "items[].group", "{item}", true),
-    (
-        "conditionalAppearance.remove",
-        "values.group",
-        "{item}",
-        true
-    ),
-    (
-        "conditionalAppearance.clear",
-        "values.group",
-        "{item}",
-        true
-    ),
-    ("outputParameter.set", "values.group", "{item}", true),
-    ("outputParameter.remove", "values.group", "{item}", true),
-    ("structure.add", "items[].parent", "{item}", true),
-    ("structure.patch", "values.name", "{item}", true),
-    ("structure.remove", "values.name", "{item}", true),
-    // Формы (П4, #1355): контейнер нового элемента, удаляемый элемент и
-    // событие задаются адресом `Item…Item[.Event]`. Позиция `after` остаётся
-    // именем соседа.
-    ("item.add", "items[].into", "{item}", true),
-    ("item.remove", "items[].name", "{item}", true),
-    ("item.remove", "items[]", "{item}", true),
-    ("item.remove", "values.name", "{item}", true),
-    ("event.bind", "values.element", "{item}.Event.{event}", true),
-    // Без имени события `next` ведёт к событиям элемента, где видны имена.
-    ("event.bind", "values.element", "{item}.Event.{name}", true),
-    (
-        "event.bind",
-        "values.event",
-        "{at-Event}.Event.{event}",
-        true
-    ),
-);
-
-/// Отказ по снятому аргументу: где он записан и куда перенести вызов.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ArgumentRedirect {
-    /// Путь снятого ключа внутри `args`, с номером элемента массива.
-    pub(crate) location: String,
-    /// Адрес, на котором операция исполнима, или — при `listing` —
-    /// коллекция, где подузел виден по имени.
-    pub(crate) at: QualifiedAddress,
-    /// Значение ключа не было именем подузла: операция исполнима на
-    /// `<at>.<Имя>`, а имя читается в коллекции `at`.
-    pub(crate) listing: bool,
-    /// Значение называет несколько узлов: `at` — их ветвь, здесь — адреса
-    /// узлов, где операция исполнима. Пусто — значение назвало один узел.
-    pub(crate) candidates: Vec<QualifiedAddress>,
-    /// Узлов с таким именем несколько: `at` — ветвь, где они видны.
-    pub(crate) ambiguous: bool,
-}
-
-/// Подстановка цепочки имён: значение — путь, где неэкранированная точка
-/// разделяет имена, а `\.` — буквальная точка имени (прежний
-/// `propertyPath` XDTO). Каждая точка-разделитель становится переходом к
-/// члену того же вида, что стоит перед подстановкой: `{at}.Property.{path}`
-/// со значением `A\.B.C` — `{at}.Property.A\.B.Property.C`.
-const PATH_PLACEHOLDER: &str = "{path}";
-
-/// Путь из значения в записи адреса; `None` — путь пуст, содержит пустое имя
-/// или экранирование, которого грамматика адреса не знает.
-fn escaped_path(value: &str, kind: &str) -> Option<String> {
-    let mut names = vec![String::new()];
-    let mut characters = value.chars();
-    while let Some(character) = characters.next() {
-        match character {
-            '\\' => {
-                characters.next().filter(|next| *next == '.')?;
-                names.last_mut()?.push('.');
-            }
-            '.' => names.push(String::new()),
-            other => names.last_mut()?.push(other),
-        }
-    }
-    if names.iter().any(String::is_empty) {
-        return None;
-    }
-    Some(
-        names
-            .iter()
-            .map(|name| escape_name(name).into_owned())
-            .collect::<Vec<_>>()
-            .join(&format!(".{kind}.")),
+/// Product composition supplies the exact ordered family bindings and the
+/// sole semantic Site classifier. Generic operations imports no family owner.
+pub(crate) const fn operation_registry() -> OperationRegistry {
+    OperationRegistry::new(
+        OPERATION_DESCRIPTORS,
+        unica_forms::recovery::RETIRED_OPERATIONS,
+        RegistryContext::new(operation_site),
     )
 }
 
-/// Подстановка в шаблон адреса для записи, чей ключ называл подузел не
-/// именем: проверяет, что операция исполнима на члене коллекции.
-const LISTED_MEMBER: &str = "Member";
-
-impl RetiredArgument {
-    /// Адрес, который строит запись для вызова на `at` с `args`; `None`, если
-    /// снятого ключа в вызове нет или значение не даёт адреса.
-    pub(crate) fn redirect(
-        self,
-        at: &QualifiedAddress,
-        args: &Map<String, Value>,
-    ) -> Option<ArgumentRedirect> {
-        self.redirect_with(at, args, &no_member_lookup)
-    }
-
-    /// То же, что `redirect`, с поиском набора схемы и элемента формы по имени.
-    pub(crate) fn redirect_with(
-        self,
-        at: &QualifiedAddress,
-        args: &Map<String, Value>,
-        members: MemberPathLookup<'_>,
-    ) -> Option<ArgumentRedirect> {
-        let (location, value) = find_key(&Value::Object(args.clone()), self.key, String::new())?;
-        // Шаблон подставляется строкой и разбирается заново; имя из значения
-        // проходит `escape_name`, поэтому точка в нём остаётся внутри имени.
-        // Событие и владелец события подставляются до поиска узла: суффикс
-        // шаблона за найденным узлом уже не содержит подстановок.
-        let template = if self.address.contains("{event}") {
-            self.address
-                .replace("{event}", &escape_name(&named_form_event(at, args)?))
-        } else {
-            self.address.to_string()
-        };
-        let template = template.replace("{at-Event}", &without_event(at).to_string());
-        let named = if template.contains("{dataSet}") {
-            Some(("{dataSet}", named_data_set(at, &value, members)?))
-        } else if template.contains("{item}") {
-            Some(("{item}", named_item(at, &value, members)?))
-        } else {
-            None
-        };
-        let raw = match named {
-            Some((placeholder, NamedNode::Found(node))) => {
-                template.replace(placeholder, &node.to_string())
-            }
-            Some((placeholder, NamedNode::Ambiguous { branch, candidates })) => {
-                let suffix = template.split_once(placeholder)?.1;
-                let candidates = candidates
-                    .iter()
-                    .map(|candidate| QualifiedAddress::parse(&format!("{candidate}{suffix}")))
-                    .collect::<Result<Vec<_>, _>>()
-                    .ok()?;
-                return Some(ArgumentRedirect {
-                    location,
-                    at: branch,
-                    listing: false,
-                    candidates,
-                    ambiguous: true,
-                });
-            }
-            None => expand_anchor(&template, at)?.replace("{at}", &at.to_string()),
-        };
-        let raw = match raw.find(PATH_PLACEHOLDER) {
-            Some(index) => {
-                let separator = raw[..index].rsplit('.').nth(1)?;
-                raw.replace(PATH_PLACEHOLDER, &escaped_path(&value, separator)?)
-            }
-            None => raw,
-        };
-        if let Some(collection) = raw.strip_suffix(".{name}") {
-            return Some(ArgumentRedirect {
-                location,
-                at: QualifiedAddress::parse(&collection.replace("{value}", &escape_name(&value)))
-                    .ok()?,
-                listing: true,
-                candidates: Vec::new(),
-                ambiguous: false,
-            });
-        }
-        // Запись прав роли называется `<Вид>_<Имя>[.Вложенный…]`: первая
-        // точка ссылки на объект становится `_`, остальные экранируются.
-        let target = QualifiedAddress::parse(
-            &raw.replace("{value}", &escape_name(&value))
-                .replace("{right}", &escape_name(&value.replacen('.', "_", 1))),
-        )
-        .ok()?;
-        Some(ArgumentRedirect {
-            location,
-            at: target,
-            listing: false,
-            candidates: Vec::new(),
-            ambiguous: false,
-        })
-    }
-}
-
-impl ArgumentRedirect {
-    /// Адрес, на котором операция исполнима: для записи с `listing` — член
-    /// коллекции с подставленным именем.
-    fn executable_at(&self) -> Option<QualifiedAddress> {
-        if let Some(candidate) = self.candidates.first() {
-            return Some(candidate.clone());
-        }
-        if !self.listing && !self.ambiguous {
-            return Some(self.at.clone());
-        }
-        QualifiedAddress::parse(&format!("{}.{LISTED_MEMBER}", self.at)).ok()
-    }
-}
-
-/// Поиск узла по имени под контейнером. Контейнер — последний сегмент
-/// адреса: макет (набор данных, в том числе член объединения), вариант
-/// настроек (именованный элемент структуры) или форма (элемент формы).
-pub(crate) type MemberPathLookup<'a> = &'a dyn Fn(&QualifiedAddress, &str) -> NamedLookup;
-
-/// Ответ поиска узла по имени: путь имён от контейнера (`["A", "B"]` —
-/// `DataSet.A.DataSet.B` под макетом или `Item.A.Item.B` под формой
-/// и вариантом настроек).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum NamedLookup {
-    /// Узел с таким именем один.
-    Found(Vec<String>),
-    /// Такого узла нет или тело контейнера не читается.
-    Missing,
-    /// Узлов с таким именем несколько; пути тех, что адресуемы.
-    Ambiguous(Vec<Vec<String>>),
-}
-
-/// Поиск, который ничего не знает о телах контейнеров.
-pub(crate) fn no_member_lookup(_: &QualifiedAddress, _: &str) -> NamedLookup {
-    NamedLookup::Missing
-}
-
-/// Узел, который назвало значение снятого аргумента.
-enum NamedNode {
-    Found(QualifiedAddress),
-    /// Имя повторяется: ветвь узлов этого вида и адреса совпавших.
-    Ambiguous {
-        branch: QualifiedAddress,
-        candidates: Vec<QualifiedAddress>,
-    },
-}
-
-/// Адрес владельца с путём имён: `{owner}.Kind.A.Kind.B`.
-fn owner_path(owner: &QualifiedAddress, kind: &str, path: &[String]) -> Option<QualifiedAddress> {
-    QualifiedAddress::parse(&format!(
-        "{owner}{}",
-        path.iter()
-            .map(|name| format!(".{kind}.{}", escape_name(name)))
-            .collect::<String>()
-    ))
-    .ok()
-}
-
-/// Начало адреса до последнего сегмента, вид которого подходит `kind`,
-/// включительно.
-fn prefix_through(
-    at: &QualifiedAddress,
-    kind: impl Fn(NodeKind) -> bool,
-) -> Option<QualifiedAddress> {
-    let length = at
-        .segments()
-        .iter()
-        .rposition(|segment| kind(segment.kind()))?
-        + 1;
-    Some(QualifiedAddress {
-        line_range: None,
-        source_set: at.source_set().to_string(),
-        segments: at.segments()[..length].to_vec(),
-    })
-}
-
-/// Найденное по имени: один узел, несколько или ни одного (тогда — узел
-/// верхнего уровня с этим именем, адрес которого `view` честно не найдёт).
-fn resolve_named(
-    owner: &QualifiedAddress,
-    kind: &str,
+pub(crate) fn retired_operation(
     name: &str,
-    lookup: MemberPathLookup<'_>,
-) -> Option<NamedNode> {
-    match lookup(owner, name) {
-        NamedLookup::Found(path) => owner_path(owner, kind, &path).map(NamedNode::Found),
-        NamedLookup::Missing => owner_path(owner, kind, &[name.to_string()]).map(NamedNode::Found),
-        NamedLookup::Ambiguous(paths) => Some(NamedNode::Ambiguous {
-            branch: QualifiedAddress::parse(&format!("{owner}.{kind}")).ok()?,
-            candidates: paths
-                .iter()
-                .map(|path| owner_path(owner, kind, path))
-                .collect::<Option<Vec<_>>>()?,
-        }),
-    }
+) -> Option<unica_operations::recovery::RetiredOperation> {
+    operation_registry().retired(name)
 }
 
-/// Набор схемы, названный значением снятого `dataSet`: сегмент адреса вызова
-/// с этим именем; иначе найденный в схеме макета; иначе набор верхнего уровня.
-/// Несколько наборов с этим именем (члены разных объединений) — ветвь
-/// наборов макета и их адреса (#1357).
-fn named_data_set(
-    at: &QualifiedAddress,
-    name: &str,
-    data_sets: MemberPathLookup<'_>,
-) -> Option<NamedNode> {
-    let segments = at.segments();
-    if let Some(index) = segments
-        .iter()
-        .rposition(|segment| segment.kind() == NodeKind::DataSet && segment.name() == Some(name))
-    {
-        return Some(NamedNode::Found(QualifiedAddress {
-            line_range: None,
-            source_set: at.source_set().to_string(),
-            segments: segments[..=index].to_vec(),
-        }));
-    }
-    let template = prefix_through(at, |kind| kind == NodeKind::Template)?;
-    resolve_named(&template, "DataSet", name, data_sets)
+#[cfg(test)]
+fn retired_arguments() -> Vec<unica_operations::recovery::BoundRetiredArgument> {
+    operation_registry().retired_arguments()
 }
 
-/// Элемент, названный значением снятого аргумента, под ближайшим
-/// контейнером адреса вызова: элемент формы (`into`, `name`, `element`)
-/// или именованный элемент структуры варианта настроек (`group`, `parent`,
-/// `name`).
-fn named_item(at: &QualifiedAddress, name: &str, items: MemberPathLookup<'_>) -> Option<NamedNode> {
-    let container = prefix_through(at, |kind| {
-        matches!(kind, NodeKind::Form | NodeKind::Setting)
-    })?;
-    resolve_named(&container, "Item", name, items)
-}
-
-/// Событие формы для снятого аргумента `event.bind`: `values.event` в имени
-/// реестра, иначе событие самого адреса вызова.
-fn named_form_event(at: &QualifiedAddress, args: &Map<String, Value>) -> Option<String> {
-    if let Some(event) = args
-        .get("values")
-        .and_then(|values| values.get("event"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|event| !event.is_empty())
-    {
-        return Some(crate::domain::form_edit::canonical_form_event_name(event).to_string());
-    }
-    at.segments()
-        .last()
-        .filter(|segment| segment.kind() == NodeKind::Event)
-        .and_then(|segment| segment.name())
-        .map(str::to_string)
-}
-
-/// Адрес вызова без последнего сегмента `Event`: владелец события.
-fn without_event(at: &QualifiedAddress) -> QualifiedAddress {
-    match at.segments() {
-        [owner @ .., last] if last.kind() == NodeKind::Event && !owner.is_empty() => {
-            QualifiedAddress {
-                line_range: None,
-                source_set: at.source_set().to_string(),
-                segments: owner.to_vec(),
-            }
-        }
-        _ => at.clone(),
-    }
-}
-
-/// Подставляет `{at^Kind}`: начало `at` до последнего сегмента вида `Kind`
-/// включительно. `None` — такого сегмента в адресе нет.
-fn expand_anchor(template: &str, at: &QualifiedAddress) -> Option<String> {
-    let Some(start) = template.find("{at^") else {
-        return Some(template.to_string());
-    };
-    let rest = &template[start + "{at^".len()..];
-    let end = rest.find('}')?;
-    let kind = &rest[..end];
-    let matches = |segment: &AddressSegment| match kind {
-        "Module" => matches!(segment.kind(), NodeKind::Module | NodeKind::CommonModule),
-        kind => segment.kind().as_str() == kind,
-    };
-    let length = at.segments().iter().rposition(matches)? + 1;
-    let anchor = QualifiedAddress {
-        line_range: None,
-        source_set: at.source_set().to_string(),
-        segments: at.segments()[..length].to_vec(),
-    };
-    Some(format!(
-        "{}{anchor}{}",
-        &template[..start],
-        &rest[end + 1..]
-    ))
-}
-
-/// Первое строковое значение по пути `key` и его точное место.
-fn find_key(value: &Value, key: &str, prefix: String) -> Option<(String, String)> {
-    let (head, rest) = match key.split_once('.') {
-        Some((head, rest)) => (head, Some(rest)),
-        None => (key, None),
-    };
-    let join = |name: &str| {
-        if prefix.is_empty() {
-            name.to_string()
-        } else {
-            format!("{prefix}.{name}")
-        }
-    };
-    if let Some(name) = head.strip_suffix("[]") {
-        let items = value.get(name)?.as_array()?;
-        // `items[]` без продолжения — сам элемент массива строкой.
-        let Some(rest) = rest else {
-            return items.iter().enumerate().find_map(|(index, item)| {
-                item.as_str()
-                    .filter(|text| !text.is_empty())
-                    .map(|text| (format!("{}[{index}]", join(name)), text.to_string()))
-            });
-        };
-        return items
-            .iter()
-            .enumerate()
-            .find_map(|(index, item)| find_key(item, rest, format!("{}[{index}]", join(name))));
-    }
-    let child = value.get(head)?;
-    match rest {
-        Some(rest) => find_key(child, rest, join(head)),
-        None => child
-            .as_str()
-            .filter(|text| !text.is_empty())
-            .map(|text| (join(head), text.to_string())),
-    }
-}
-
-/// Отказ по снятому аргументу из таблицы `entries`: запись операции, которая
-/// переехала, чей ключ передан и по чьему адресу операция исполнима.
-fn retired_argument_redirect_in(
-    entries: &[RetiredArgument],
-    descriptor: OperationDescriptor,
-    site: &OperationSite<'_>,
-    args: &Map<String, Value>,
-    members: MemberPathLookup<'_>,
-) -> Option<ArgumentRedirect> {
-    entries
-        .iter()
-        .filter(|entry| entry.retired && entry.op == descriptor.name)
-        .filter_map(|entry| entry.redirect_with(site.at, args, members))
-        .find(|redirect| {
-            redirect.executable_at().is_some_and(|target| {
-                OperationSite::new(&target, site.source)
-                    .is_some_and(|target| descriptor.applies_at(&target))
-            })
-        })
-}
-
-/// Снятая операция и та, что её заменила (#1354, #1465). Узел создаёт
-/// операция родителя с именем в аргументах, а не адрес ещё несуществующего
-/// узла; операции элемента, реквизита и команды формы называются по виду
-/// своего узла (`Item`, `Attribute`, `Command`). Псевдонима нет — вызов
-/// снятой операции получает отказ без записи с адресом, где исполнима
-/// заменившая.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct RetiredOperation {
-    pub(crate) op: &'static str,
-    pub(crate) replacement: &'static str,
-    /// Семейство заменившей: имя `attribute.add` носит и объект
-    /// метаданных, и форма, а снятая `formAttribute.add` ведёт только
-    /// к форме.
-    pub(crate) family: OperationFamily,
-    /// Вид узла, который снятая операция создавала по своему адресу;
-    /// `None` — операция переименована и исполнима на том же адресе.
-    pub(crate) creates: Option<NodeKind>,
-    /// Как аргументы прежнего вызова выражаются в заменившей операции.
-    pub(crate) arguments: &'static str,
-}
-
-const RENAMED_ARGUMENTS: &str = "the arguments are unchanged";
-
-pub(crate) const RETIRED_OPERATIONS: &[RetiredOperation] = &[
-    RetiredOperation {
-        op: "form.create",
-        replacement: "form.add",
-        family: OperationFamily::Form,
-        creates: Some(NodeKind::Form),
-        arguments: "`items: [{name, type}]` names the form and its type",
-    },
-    RetiredOperation {
-        op: "element.add",
-        replacement: "item.add",
-        family: OperationFamily::Form,
-        creates: None,
-        arguments: RENAMED_ARGUMENTS,
-    },
-    RetiredOperation {
-        op: "element.remove",
-        replacement: "item.remove",
-        family: OperationFamily::Form,
-        creates: None,
-        arguments: RENAMED_ARGUMENTS,
-    },
-    RetiredOperation {
-        op: "formAttribute.add",
-        replacement: "attribute.add",
-        family: OperationFamily::Form,
-        creates: None,
-        arguments: RENAMED_ARGUMENTS,
-    },
-    RetiredOperation {
-        op: "formCommand.add",
-        replacement: "command.add",
-        family: OperationFamily::Form,
-        creates: None,
-        arguments: RENAMED_ARGUMENTS,
-    },
-];
-
-impl RetiredOperation {
-    pub(crate) fn lookup(op: &str) -> Option<Self> {
-        RETIRED_OPERATIONS
-            .iter()
-            .copied()
-            .find(|entry| entry.op == op)
-    }
-
-    /// Запись реестра заменившей операции в её семействе.
-    pub(crate) fn descriptor(self) -> Option<OperationDescriptor> {
-        OperationRegistry::closed()
-            .named(self.replacement)
-            .find(|descriptor| descriptor.family == self.family)
-    }
-
-    /// Узел, на котором исполнима заменившая операция: родитель узла вида
-    /// `creates` в адресе вызова, иначе сам адрес вызова.
-    pub(crate) fn replacement_at(self, at: &QualifiedAddress) -> QualifiedAddress {
-        let Some(creates) = self.creates else {
-            return at.clone();
-        };
-        match at
-            .segments()
-            .iter()
-            .rposition(|segment| segment.kind() == creates)
-        {
-            Some(index) if index > 0 => QualifiedAddress {
-                line_range: None,
-                source_set: at.source_set().to_string(),
-                segments: at.segments()[..index].to_vec(),
-            },
-            _ => at.clone(),
-        }
-    }
-
-    /// Ближайший узел, где исполнима заменившая операция. Создающая
-    /// операция исполнима на родителе созданного узла; переименованная —
-    /// на самом адресе вызова, если место и роль элемента её принимают,
-    /// иначе на ближайшем предке, как в отказе «не тот узел». `None` —
-    /// такого узла в цепочке адреса нет.
-    pub(crate) fn replacement_target(
-        self,
-        site: &OperationSite<'_>,
-        template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
-        form_item: &dyn Fn(&QualifiedAddress) -> Option<FormItemRole>,
-    ) -> Option<QualifiedAddress> {
-        if self.creates.is_some() {
-            return Some(self.replacement_at(site.at));
-        }
-        let replacement = self.descriptor()?;
-        let placed = replacement.applies_at(site);
-        let here = placed
-            && (site.terminal().kind() != NodeKind::Template
-                || replacement.admits_template_format(template_format(site.at)))
-            && (site.terminal().kind() != NodeKind::Item
-                || replacement.admits_form_item(form_item(site.at)));
-        if here {
-            return Some(site.at.clone());
-        }
-        // Операция над самим узлом (`item.remove`), которую его роль не
-        // принимает: автоматическую командную панель отдельно не удалить, и
-        // другой узел — например, её таблица — вместо неё не подставляется.
-        if placed && replacement.skeleton_key() == "at" {
-            return None;
-        }
-        replacement.nearest_applicable_ancestor_with(site, template_format, form_item)
-    }
-}
-
-fn configuration_root(source_set: &str) -> QualifiedAddress {
-    QualifiedAddress::parse(&format!("{source_set}:Configuration"))
-        .expect("an admitted source set name forms the configuration-root address")
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct OperationRegistry;
-
-impl OperationRegistry {
-    pub(crate) const fn closed() -> Self {
-        Self
-    }
-
-    pub(crate) const fn descriptors(self) -> &'static [OperationDescriptor] {
-        OPERATION_DESCRIPTORS
-    }
-
-    pub(crate) fn names(self) -> Vec<&'static str> {
-        self.descriptors()
-            .iter()
-            .map(|descriptor| descriptor.name)
-            .collect()
-    }
-
-    /// Снятый аргумент, который вызов `op` всё ещё передаёт, и адрес, где
-    /// операция исполнима. Читается до вердикта «не тот узел».
-    pub(crate) fn retired_argument_redirect(
-        self,
-        op: &str,
-        site: &OperationSite<'_>,
-        args: &Map<String, Value>,
-    ) -> Option<ArgumentRedirect> {
-        self.retired_argument_redirect_with(op, site, args, &no_member_lookup)
-    }
-
-    /// То же с поиском узла по имени: снятый `dataSet` ведёт к настоящему,
-    /// в том числе вложенному, набору, а имя элемента формы — к его пути.
-    pub(crate) fn retired_argument_redirect_with(
-        self,
-        op: &str,
-        site: &OperationSite<'_>,
-        args: &Map<String, Value>,
-        members: MemberPathLookup<'_>,
-    ) -> Option<ArgumentRedirect> {
-        let descriptor = self.lookup_at(op, site)?;
-        retired_argument_redirect_in(RETIRED_ARGUMENTS, descriptor, site, args, members)
-    }
-
-    /// Первая запись реестра с этим именем. Имя `attribute.add` и
-    /// `command.add` носят и объект метаданных, и форма (#1465): где адрес
-    /// известен, запись выбирает `lookup_at`.
-    pub(crate) fn lookup(self, name: &str) -> Option<OperationDescriptor> {
-        self.named(name).next()
-    }
-
-    /// Записи реестра с этим именем в порядке реестра.
-    pub(crate) fn named(self, name: &str) -> impl Iterator<Item = OperationDescriptor> + '_ {
-        self.descriptors()
-            .iter()
-            .copied()
-            .filter(move |descriptor| descriptor.name == name)
-    }
-
-    /// Запись с этим именем, применимая к месту, а если ни одна не
-    /// применима — первая: её отказ «не тот узел» называет ближайший узел.
-    pub(crate) fn lookup_at(
+pub(crate) trait OperationRegistryExt {
+    fn nearest_applicable_ancestor_with(
         self,
         name: &str,
         site: &OperationSite<'_>,
-    ) -> Option<OperationDescriptor> {
-        self.named(name)
-            .find(|descriptor| descriptor.applies_at(site))
-            .or_else(|| self.lookup(name))
-    }
-
-    /// Ближайший к адресу узел, где исполнима операция с этим именем, и её
-    /// запись: у общего имени побеждает запись с более близким узлом.
-    pub(crate) fn nearest_applicable_ancestor_with(
+        template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
+        form_item: &dyn Fn(&QualifiedAddress) -> Option<FormItemRole>,
+    ) -> Option<(OperationDescriptor, QualifiedAddress)>;
+}
+impl OperationRegistryExt for OperationRegistry {
+    fn nearest_applicable_ancestor_with(
         self,
         name: &str,
         site: &OperationSite<'_>,
         template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
         form_item: &dyn Fn(&QualifiedAddress) -> Option<FormItemRole>,
     ) -> Option<(OperationDescriptor, QualifiedAddress)> {
-        self.named(name)
-            .filter_map(|descriptor| {
-                descriptor
-                    .nearest_applicable_ancestor_with(site, template_format, form_item)
-                    .map(|target| (descriptor, target))
-            })
-            .max_by_key(|(_, target)| target.segments().len())
+        self.nearest_ancestor_with_observations(
+            name,
+            site,
+            &observation_lookup(template_format, form_item),
+        )
     }
+}
 
-    pub(crate) fn copyable_skeletons(self, site: &OperationSite<'_>) -> Vec<OperationRef> {
-        self.descriptors()
-            .iter()
-            .copied()
-            .filter(|descriptor| descriptor.applies_at(site))
-            .map(OperationDescriptor::copyable_skeleton)
-            .collect()
-    }
-
-    pub(crate) fn event_implementation_skeleton(
+pub(crate) trait RetiredOperationExt {
+    fn replacement_target(
         self,
-        at: impl Into<String>,
-        call_type: Option<&str>,
-    ) -> OperationRef {
-        let descriptor = self
-            .lookup("event.implement")
-            .expect("the closed operation registry owns event implementation");
-        let mut args = descriptor.skeleton.args();
-        args.insert("at".to_string(), Value::String(at.into()));
-        if let Some(call_type) = call_type {
-            args.insert("callType".to_string(), Value::String(call_type.to_string()));
-        }
-        OperationRef::new(descriptor.name, args)
+        site: &OperationSite<'_>,
+        context: RegistryContext,
+        template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
+        form_item: &dyn Fn(&QualifiedAddress) -> Option<FormItemRole>,
+    ) -> Option<QualifiedAddress>;
+}
+impl RetiredOperationExt for unica_operations::recovery::RetiredOperation {
+    fn replacement_target(
+        self,
+        site: &OperationSite<'_>,
+        context: RegistryContext,
+        template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
+        form_item: &dyn Fn(&QualifiedAddress) -> Option<FormItemRole>,
+    ) -> Option<QualifiedAddress> {
+        self.replacement_with_observations(
+            site,
+            context,
+            &observation_lookup(template_format, form_item),
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        ApplyRequest, FormOperation, MetadataOperation, OperationApplicability,
-        OperationDescriptor, OperationFamily, OperationRegistry, OperationSite, OperationSkeleton,
-        RoleOperation, SourceSetTraits, SupportOperation, TemplateFormat, TypedOperation,
-        RETIRED_ARGUMENTS,
+        operation_registry, operation_site, retired_arguments, source_set_traits_for_read,
+        ApplyRequest, EventOperation, FormOperation, MxlOperation, OperationDescriptor,
+        OperationFamily, OperationSkeleton, Primitive, RoleOperation, SupportOperation,
+        TemplateFormat, OPERATION_DESCRIPTORS,
     };
-    use crate::domain::address::QualifiedAddress;
-    use crate::domain::platform_profile::PlatformProfile;
-    use crate::domain::project_sources::SourceSetKind;
+    use super::{OperationDescriptorExt, OperationRegistryExt, RetiredOperationExt};
     use serde_json::{json, Value};
+    use unica_address::address::QualifiedAddress;
+    use unica_bsl::profile::PlatformProfile;
+    use unica_metadata::descriptor_operations::PropertiesOperation;
+    use unica_source_contract::route::RouteClass;
+    use unica_source_contract::SourceSetKind;
+    use unica_xdto::operations::XdtoOperation;
 
     fn address(raw: &str) -> QualifiedAddress {
         QualifiedAddress::parse(raw).unwrap_or_else(|error| panic!("{raw}: {error}"))
@@ -2825,12 +855,12 @@ mod tests {
 
     fn applies_in(source: SourceSetKind, op: &str, raw: &str) -> bool {
         let at = address(raw);
-        let site = OperationSite::new(
+        let site = operation_site(
             &at,
-            SourceSetTraits::read(source, PlatformProfile::v8_3_27()),
+            source_set_traits_for_read(source, PlatformProfile::v8_3_27()),
         )
         .unwrap_or_else(|| panic!("{raw} has no route"));
-        OperationRegistry::closed()
+        crate::domain::apply::operation_registry()
             .lookup_at(op, &site)
             .unwrap_or_else(|| panic!("{op} is registered"))
             .applies_at(&site)
@@ -2838,15 +868,15 @@ mod tests {
 
     #[test]
     fn form_metadata_does_not_advertise_or_accept_owner_and_content_writers() {
-        let registry = OperationRegistry::closed();
+        let registry = crate::domain::apply::operation_registry();
         let traits =
-            SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+            source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
         for raw in [
             "main:CommonForm.Main.Metadata",
             "main:Document.Order.Form.Main.Metadata",
         ] {
             let at = address(raw);
-            let site = OperationSite::new(&at, traits).unwrap();
+            let site = operation_site(&at, traits).unwrap();
             assert!(registry.copyable_skeletons(&site).is_empty(), "{raw}");
             for operation in registry.descriptors() {
                 assert!(
@@ -2892,7 +922,7 @@ mod tests {
     /// называют его; операции над описанием объекта — нет.
     #[test]
     fn content_writers_name_the_companion_file_they_write() {
-        let registry = OperationRegistry::closed();
+        let registry = crate::domain::apply::operation_registry();
         let resource = |op: &str| registry.lookup(op).unwrap().content_resource();
         for (op, expected) in [
             ("right.set", Some("Rights.xml")),
@@ -2925,7 +955,9 @@ mod tests {
             )
         };
         assert!(request("main:Enum.Operations.EnumValue.Costs").is_ok());
+        assert!(request("main:Catalog.Orders.Form.ItemForm").is_ok());
         for from in [
+            "main:Catalog.Orders.Form",
             "main:Enum.Operations.EnumValue",
             "main:Catalog.Orders.Attribute.Code",
             "extension:Enum.Operations.EnumValue.Costs",
@@ -2937,7 +969,7 @@ mod tests {
 
     #[test]
     fn object_borrow_is_available_only_at_the_configuration_root() {
-        let descriptor = OperationRegistry::closed()
+        let descriptor = crate::domain::apply::operation_registry()
             .lookup("object.borrow")
             .expect("canonical top-level borrowing must be registered");
         assert_eq!(descriptor.name(), "object.borrow");
@@ -3054,6 +1086,47 @@ mod tests {
         }
     }
 
+    fn padded_created_name_scope(create: &str, kind: &str) {
+        for source in ["main", "extension"] {
+            for (raw, canonical) in [
+                (" Reader ", "Reader"),
+                ("\u{a0}Читатель\u{2003}", "Читатель"),
+            ] {
+                let target = format!("{source}:{kind}.{canonical}");
+                let ops = json!([
+                    {"op":create,"args":{"values":{"name":raw}}},
+                    {"op":"props.set","args":{"at":target,"values":{"Comment":"x"}}}
+                ]);
+                let result =
+                    parse(json!({"at":format!("{source}:Configuration"),"ops":ops,"dryRun":true}));
+                assert!(result.is_ok(), "{create} {raw:?} {source}: {result:?}");
+                assert_eq!(result.unwrap().ops()[0].args()["values"]["name"], raw);
+            }
+        }
+    }
+
+    #[test]
+    fn padded_role_creation_scope_uses_the_canonical_name() {
+        padded_created_name_scope("role.create", "Role");
+    }
+
+    #[test]
+    fn padded_subsystem_creation_scope_uses_the_canonical_name() {
+        padded_created_name_scope("subsystem.create", "Subsystem");
+    }
+
+    #[test]
+    fn padded_object_create_does_not_extend_scope_with_a_trimmed_name() {
+        for raw in [" Enabled ", "\u{a0}Enabled\u{2003}"] {
+            let error = parse(json!({"at":"main:Configuration","ops":[
+                {"op":"object.create","args":{"values":{"kind":"Constant","name":raw}}},
+                {"op":"props.set","args":{"at":"main:Constant.Enabled","values":{"Comment":"x"}}}
+            ]}))
+            .unwrap_err();
+            assert_eq!(error.location(), "ops[1].args.at");
+        }
+    }
+
     #[test]
     fn create_then_configure_scope_only_accepts_earlier_created_object() {
         let create = json!({"op": "object.create", "args": {"values": {"kind": "Constant", "name": "Enabled"}}});
@@ -3097,135 +1170,193 @@ mod tests {
     }
 
     fn typed_registration_is_consistent(descriptor: OperationDescriptor) -> bool {
-        let (family, name, applicability, skeleton) = match descriptor.typed_operation {
-            Some(TypedOperation::Role(operation)) => (
-                OperationFamily::Role,
-                operation.name(),
-                operation.applicability(),
-                operation.skeleton(),
-            ),
-            Some(TypedOperation::Support(operation)) => (
-                OperationFamily::Support,
-                operation.name(),
-                operation.applicability(),
-                operation.skeleton(),
-            ),
-            Some(TypedOperation::Metadata(operation)) => (
-                OperationFamily::Metadata,
-                operation.name(),
-                operation.applicability(),
-                operation.skeleton(),
-            ),
-            Some(TypedOperation::Form(operation)) => (
-                OperationFamily::Form,
-                operation.name(),
-                operation.applicability(),
-                operation.skeleton(),
-            ),
-            None => {
-                return match descriptor.family() {
-                    OperationFamily::Role | OperationFamily::Support => false,
-                    OperationFamily::Metadata => !MetadataOperation::is_named(descriptor.name()),
-                    OperationFamily::Form => !FormOperation::is_named(descriptor.name()),
-                    _ => true,
-                }
-            }
-        };
-        descriptor.family() == family
-            && descriptor.name() == name
-            && descriptor.applicability == applicability
-            && descriptor.skeleton == skeleton
-            && descriptor.argument_contract().is_some()
+        fn typed<O: unica_operations::FamilyOperation>(
+            descriptor: OperationDescriptor,
+        ) -> Option<bool> {
+            descriptor.operation::<O>().map(|operation| {
+                descriptor.family() == operation.family()
+                    && descriptor.name() == operation.name()
+                    && descriptor.address_shape() == operation.address_shape()
+                    && descriptor.skeleton() == operation.skeleton()
+            })
+        }
+        let bindings = [
+            typed::<XdtoOperation>(descriptor),
+            typed::<PropertiesOperation>(descriptor),
+            typed::<Primitive>(descriptor),
+            typed::<MxlOperation>(descriptor),
+            typed::<EventOperation>(descriptor),
+            typed::<RoleOperation>(descriptor),
+            typed::<SupportOperation>(descriptor),
+            typed::<unica_metadata::apply_operations::MetadataOperation>(descriptor),
+            typed::<FormOperation>(descriptor),
+            typed::<unica_bsl::operations::CodeOperation>(descriptor),
+            typed::<unica_metadata::subsystem_operations::SubsystemOperation>(descriptor),
+            typed::<unica_metadata::interface_operations::InterfaceOperation>(descriptor),
+        ];
+        bindings.iter().flatten().count() == 1 && bindings.iter().flatten().all(|valid| *valid)
     }
 
     #[test]
-    fn role_registration_rejects_missing_and_mismatched_typed_operations() {
-        let valid = OperationDescriptor::role(RoleOperation::Create);
+    fn properties_registration_requires_its_typed_identity_and_proven_context() {
+        let valid = PropertiesOperation::descriptor(PropertiesOperation::Set);
         assert!(typed_registration_is_consistent(valid));
-        assert_eq!(valid.role_operation(), Some(RoleOperation::Create));
-        assert_eq!(valid.support_operation(), None);
-        for invalid in [
-            OperationDescriptor {
-                typed_operation: None,
-                ..valid
-            },
-            OperationDescriptor {
-                family: OperationFamily::Metadata,
-                ..valid
-            },
-            OperationDescriptor {
-                name: "role.uncontracted",
-                ..valid
-            },
-            OperationDescriptor {
-                applicability: OperationApplicability::Role,
-                ..valid
-            },
-            OperationDescriptor {
-                skeleton: OperationSkeleton::Items,
-                ..valid
-            },
-            OperationDescriptor {
-                typed_operation: Some(TypedOperation::Role(RoleOperation::RightSet)),
-                ..valid
-            },
-            OperationDescriptor {
-                typed_operation: Some(TypedOperation::Support(SupportOperation::CapabilitySet)),
-                ..valid
-            },
+        assert!(valid.argument_contract().is_none());
+        assert_eq!(
+            OPERATION_DESCRIPTORS
+                .iter()
+                .filter(|row| row.family() == OperationFamily::Properties)
+                .collect::<Vec<_>>(),
+            vec![&valid]
+        );
+        assert_eq!(valid.operation::<RoleOperation>(), None);
+        assert_eq!(
+            valid.operation::<unica_metadata::apply_operations::MetadataOperation>(),
+            None
+        );
+        assert_ne!(
+            valid,
+            unica_metadata::apply_operations::MetadataOperation::AttributeAdd.descriptor()
+        );
+        assert_eq!(valid.name(), "props.set");
+        assert_eq!(valid.family(), OperationFamily::Properties);
+        assert_eq!(valid.skeleton(), OperationSkeleton::Values);
+        let source =
+            source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+        for (raw, expected) in [
+            ("main:CommonModule.Utilities", true),
+            ("main:Role.Reader", true),
+            ("main:Subsystem.Sales", true),
+            ("main:Configuration", false),
+            ("main:Catalog.Items.Attribute.Code", false),
+            ("main:Subsystem.Sales.Subsystem.Child", false),
         ] {
-            assert!(!typed_registration_is_consistent(invalid), "{invalid:?}");
+            let at = QualifiedAddress::parse(raw).unwrap();
+            let site = operation_site(&at, source).unwrap();
+            assert_eq!(
+                valid.argument_contract_at(&site).is_some(),
+                expected,
+                "{raw}"
+            );
+            assert_eq!(valid.applies_at(&site), expected, "{raw}");
         }
     }
 
     #[test]
-    fn support_registration_rejects_missing_and_mismatched_typed_operations() {
-        let valid = OperationDescriptor::support(SupportOperation::CapabilitySet);
-        assert!(typed_registration_is_consistent(valid));
+    fn xdto_registration_requires_its_typed_identity_and_contract() {
+        for &operation in XdtoOperation::ALL {
+            let valid = operation.descriptor();
+            assert!(typed_registration_is_consistent(valid));
+            assert_eq!(valid.operation::<XdtoOperation>(), Some(operation));
+            assert_eq!(valid.operation::<RoleOperation>(), None);
+            assert_eq!(
+                valid.operation::<unica_metadata::apply_operations::MetadataOperation>(),
+                None
+            );
+            assert!(valid.argument_contract().is_some());
+            assert_eq!(
+                crate::domain::apply::operation_registry()
+                    .descriptors()
+                    .iter()
+                    .filter(|descriptor| descriptor.operation::<XdtoOperation>() == Some(operation))
+                    .count(),
+                1
+            );
+            assert_ne!(valid, RoleOperation::Create.descriptor());
+        }
         assert_eq!(
-            valid.support_operation(),
-            Some(SupportOperation::CapabilitySet)
+            crate::domain::apply::operation_registry()
+                .descriptors()
+                .iter()
+                .filter(|descriptor| descriptor.family() == OperationFamily::Xdto)
+                .count(),
+            XdtoOperation::ALL.len()
         );
-        assert_eq!(valid.role_operation(), None);
-        for invalid in [
-            OperationDescriptor {
-                typed_operation: None,
-                ..valid
-            },
-            OperationDescriptor {
-                family: OperationFamily::Metadata,
-                ..valid
-            },
-            OperationDescriptor {
-                name: "support.uncontracted",
-                ..valid
-            },
-            OperationDescriptor {
-                applicability: OperationApplicability::SupportRule,
-                ..valid
-            },
-            OperationDescriptor {
-                skeleton: OperationSkeleton::Items,
-                ..valid
-            },
-            OperationDescriptor {
-                typed_operation: Some(TypedOperation::Support(SupportOperation::RuleSet)),
-                ..valid
-            },
-            OperationDescriptor {
-                typed_operation: Some(TypedOperation::Role(RoleOperation::Create)),
-                ..valid
-            },
+    }
+
+    #[test]
+    fn role_registration_rejects_missing_and_mismatched_typed_operations() {
+        for operation in [
+            RoleOperation::Create,
+            RoleOperation::RightAdd,
+            RoleOperation::RightSet,
         ] {
-            assert!(!typed_registration_is_consistent(invalid), "{invalid:?}");
+            let valid = operation.descriptor();
+            assert!(typed_registration_is_consistent(valid));
+            assert_eq!(valid.operation::<RoleOperation>(), Some(operation));
+            assert_eq!(valid.operation::<SupportOperation>(), None);
+            assert_eq!(
+                valid.operation::<unica_metadata::apply_operations::MetadataOperation>(),
+                None
+            );
+            assert_ne!(valid, SupportOperation::CapabilitySet.descriptor());
+            assert_eq!(valid.skeleton(), operation.skeleton());
+            assert_eq!(valid.address_shape(), operation.applicability().shape());
+        }
+        assert_ne!(
+            RoleOperation::Create.descriptor(),
+            RoleOperation::RightSet.descriptor()
+        );
+    }
+
+    #[test]
+    fn support_registration_rejects_missing_and_mismatched_typed_operations() {
+        for operation in [SupportOperation::CapabilitySet, SupportOperation::RuleSet] {
+            let valid = operation.descriptor();
+            assert!(typed_registration_is_consistent(valid));
+            assert_eq!(valid.operation::<SupportOperation>(), Some(operation));
+            assert_eq!(valid.operation::<RoleOperation>(), None);
+            assert_eq!(
+                valid.operation::<unica_metadata::apply_operations::MetadataOperation>(),
+                None
+            );
+            assert_ne!(valid, RoleOperation::Create.descriptor());
+        }
+        assert_ne!(
+            SupportOperation::CapabilitySet.descriptor(),
+            SupportOperation::RuleSet.descriptor()
+        );
+    }
+
+    #[test]
+    fn dcs_mxl_and_event_registration_reject_missing_and_mismatched_typed_operations() {
+        let descriptors = Primitive::ALL
+            .iter()
+            .copied()
+            .map(Primitive::descriptor)
+            .chain(
+                MxlOperation::ALL
+                    .iter()
+                    .copied()
+                    .map(MxlOperation::descriptor),
+            )
+            .chain(
+                EventOperation::ALL
+                    .iter()
+                    .copied()
+                    .map(EventOperation::descriptor),
+            );
+        for valid in descriptors {
+            assert!(typed_registration_is_consistent(valid));
+            assert_eq!(valid.operation::<FormOperation>(), None);
+            assert_eq!(valid.operation::<PropertiesOperation>(), None);
+            assert_ne!(valid, FormOperation::EventBind.descriptor());
+            let rows = OPERATION_DESCRIPTORS
+                .iter()
+                .filter(|row| **row == valid)
+                .collect::<Vec<_>>();
+            assert_eq!(rows, vec![&valid]);
+        }
+        for descriptor in OPERATION_DESCRIPTORS {
+            assert!(typed_registration_is_consistent(*descriptor));
         }
     }
 
     #[test]
     fn contextual_member_contracts_keep_owner_and_section_discriminators() {
-        let registry = OperationRegistry::closed();
+        let registry = crate::domain::apply::operation_registry();
         let traits =
-            SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+            source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
         for (at, allows_fill) in [
             ("main:Document.Order", true),
             ("main:Document.Order.TabularSection.Lines", false),
@@ -3233,13 +1364,13 @@ mod tests {
             ("main:Report.Sales.TabularSection.Lines", true),
         ] {
             let at = QualifiedAddress::parse(at).unwrap();
-            let site = OperationSite::new(&at, traits).unwrap();
+            let site = operation_site(&at, traits).unwrap();
             let descriptor = registry.lookup_at("attribute.add", &site).unwrap();
             assert_eq!(
-                descriptor.metadata_operation(),
-                Some(MetadataOperation::AttributeAdd)
+                descriptor.operation::<unica_metadata::apply_operations::MetadataOperation>(),
+                Some(unica_metadata::apply_operations::MetadataOperation::AttributeAdd)
             );
-            assert_eq!(descriptor.form_operation(), None);
+            assert_eq!(descriptor.operation::<FormOperation>(), None);
             let contract = descriptor.argument_contract_at(&site).unwrap();
             assert_eq!(contract.help, "skills/meta-edit/SKILL.md");
             let fields = &contract.schema["properties"]["items"]["items"]["properties"];
@@ -3247,11 +1378,11 @@ mod tests {
             assert!(fields.get("savedData").is_none());
 
             let member = QualifiedAddress::parse(&format!("{at}.Attribute.Total")).unwrap();
-            let site = OperationSite::new(&member, traits).unwrap();
+            let site = operation_site(&member, traits).unwrap();
             let descriptor = registry.lookup_at("attribute.set", &site).unwrap();
             assert_eq!(
-                descriptor.metadata_operation(),
-                Some(MetadataOperation::AttributeSet)
+                descriptor.operation::<unica_metadata::apply_operations::MetadataOperation>(),
+                Some(unica_metadata::apply_operations::MetadataOperation::AttributeSet)
             );
             let contract = descriptor.argument_contract_at(&site).unwrap();
             let fields = &contract.schema["properties"]["values"]["properties"];
@@ -3263,10 +1394,13 @@ mod tests {
             ("command.add", FormOperation::CommandAdd),
         ] {
             let at = QualifiedAddress::parse("main:Document.Order.Form.Main").unwrap();
-            let site = OperationSite::new(&at, traits).unwrap();
+            let site = operation_site(&at, traits).unwrap();
             let descriptor = registry.lookup_at(name, &site).unwrap();
-            assert_eq!(descriptor.form_operation(), Some(expected));
-            assert_eq!(descriptor.metadata_operation(), None);
+            assert_eq!(descriptor.operation::<FormOperation>(), Some(expected));
+            assert_eq!(
+                descriptor.operation::<unica_metadata::apply_operations::MetadataOperation>(),
+                None
+            );
             let contract = descriptor.argument_contract_at(&site).unwrap();
             assert_eq!(contract.help, "skills/form-edit/SKILL.md");
             assert!(
@@ -3279,66 +1413,55 @@ mod tests {
 
     #[test]
     fn contextual_registration_rejects_missing_and_mismatched_typed_operations() {
-        for valid in [
-            OperationDescriptor::metadata(MetadataOperation::AttributeAdd),
-            OperationDescriptor::metadata(MetadataOperation::AttributeSet),
-            OperationDescriptor::metadata(MetadataOperation::AttributeRemove),
-            OperationDescriptor::metadata(MetadataOperation::CommandAdd),
-            OperationDescriptor::metadata(MetadataOperation::CommandSet),
-            OperationDescriptor::metadata(MetadataOperation::CommandRemove),
-            OperationDescriptor::form(FormOperation::AttributeAdd),
-            OperationDescriptor::form(FormOperation::CommandAdd),
-        ] {
+        let metadata = unica_metadata::apply_operations::MetadataOperation::ALL
+            .iter()
+            .copied()
+            .map(unica_metadata::apply_operations::MetadataOperation::descriptor);
+        let forms = [
+            FormOperation::descriptor(FormOperation::Add),
+            FormOperation::descriptor(FormOperation::Set),
+            FormOperation::descriptor(FormOperation::Remove),
+            FormOperation::descriptor(FormOperation::ItemAdd),
+            FormOperation::descriptor(FormOperation::ItemRemove),
+            FormOperation::descriptor(FormOperation::ItemMove),
+            FormOperation::descriptor(FormOperation::AttributeAdd),
+            FormOperation::descriptor(FormOperation::CommandAdd),
+            FormOperation::descriptor(FormOperation::EventBind),
+        ];
+        for valid in metadata.chain(forms) {
             assert!(typed_registration_is_consistent(valid));
-            let other = if valid.family() == OperationFamily::Metadata {
-                TypedOperation::Form(FormOperation::AttributeAdd)
+            assert_eq!(valid.operation::<PropertiesOperation>(), None);
+            if valid.family() == OperationFamily::Metadata {
+                assert!(valid
+                    .operation::<unica_metadata::apply_operations::MetadataOperation>()
+                    .is_some());
+                assert_eq!(valid.operation::<FormOperation>(), None);
             } else {
-                TypedOperation::Metadata(MetadataOperation::AttributeAdd)
-            };
-            for invalid in [
-                OperationDescriptor {
-                    typed_operation: None,
-                    ..valid
-                },
-                OperationDescriptor {
-                    typed_operation: Some(other),
-                    ..valid
-                },
-                OperationDescriptor {
-                    family: OperationFamily::Properties,
-                    ..valid
-                },
-                OperationDescriptor {
-                    name: "member.uncontracted",
-                    ..valid
-                },
-                OperationDescriptor {
-                    applicability: OperationApplicability::Configuration,
-                    ..valid
-                },
-                OperationDescriptor {
-                    skeleton: if valid.skeleton == OperationSkeleton::Values {
-                        OperationSkeleton::Items
-                    } else {
-                        OperationSkeleton::Values
-                    },
-                    ..valid
-                },
-            ] {
-                assert!(!typed_registration_is_consistent(invalid), "{invalid:?}");
+                assert!(valid.operation::<FormOperation>().is_some());
+                assert_eq!(
+                    valid.operation::<unica_metadata::apply_operations::MetadataOperation>(),
+                    None
+                );
             }
         }
-        for (name, family) in [
-            ("dimension.set", OperationFamily::Metadata),
-            ("item.add", OperationFamily::Form),
-        ] {
-            let descriptor = OperationRegistry::closed()
-                .named(name)
-                .find(|d| d.family() == family)
-                .unwrap();
-            assert_eq!(descriptor.typed_operation, None);
-            assert!(typed_registration_is_consistent(descriptor));
-        }
+        let metadata_attribute =
+            unica_metadata::apply_operations::MetadataOperation::AttributeAdd.descriptor();
+        let form_attribute = FormOperation::AttributeAdd.descriptor();
+        assert_eq!(metadata_attribute.name(), form_attribute.name());
+        assert_ne!(metadata_attribute, form_attribute);
+        assert_ne!(
+            metadata_attribute.address_shape(),
+            form_attribute.address_shape()
+        );
+        let descriptor = crate::domain::apply::operation_registry()
+            .named("template.set")
+            .find(|d| d.family() == OperationFamily::Metadata)
+            .unwrap();
+        assert_eq!(
+            descriptor.operation::<unica_metadata::apply_operations::MetadataOperation>(),
+            Some(unica_metadata::apply_operations::MetadataOperation::TemplateSet)
+        );
+        assert!(typed_registration_is_consistent(descriptor));
     }
 
     #[test]
@@ -3348,6 +1471,7 @@ mod tests {
             "object.create",
             "object.remove",
             "props.set",
+            "content.set",
             "relation.add",
             "relation.remove",
             "relation.replace",
@@ -3467,8 +1591,8 @@ mod tests {
             "code.replace",
             "event.implement",
         ];
-        let registry = OperationRegistry::closed();
-        assert_eq!(expected.len(), 122);
+        let registry = crate::domain::apply::operation_registry();
+        assert_eq!(expected.len(), 123);
         assert_eq!(registry.names(), expected);
         // Реквизит и команда формы названы по своему узлу, как у объекта
         // метаданных (#1465): имя одно, семейство выбирает адрес. Других
@@ -3482,6 +1606,31 @@ mod tests {
             assert!(
                 typed_registration_is_consistent(*descriptor),
                 "{descriptor:?}"
+            );
+        }
+        assert_eq!(
+            unica_metadata::apply_operations::MetadataOperation::ALL.len(),
+            35
+        );
+        assert_eq!(
+            registry
+                .descriptors()
+                .iter()
+                .filter(|descriptor| descriptor.family() == OperationFamily::Metadata)
+                .count(),
+            unica_metadata::apply_operations::MetadataOperation::ALL.len()
+        );
+        for operation in unica_metadata::apply_operations::MetadataOperation::ALL {
+            assert_eq!(
+                registry
+                    .descriptors()
+                    .iter()
+                    .filter(|descriptor| descriptor
+                        .operation::<unica_metadata::apply_operations::MetadataOperation>(
+                    ) == Some(*operation))
+                    .count(),
+                1,
+                "every Metadata identity must be registered exactly once: {operation:?}"
             );
         }
         for name in SHARED_NAMES {
@@ -3507,9 +1656,9 @@ mod tests {
         assert!(applies("props.set", "main:Document.Order"));
 
         let event_at = address("main:Catalog.Items.Module.Object.Event.OnWrite");
-        let event_site = OperationSite::new(
+        let event_site = operation_site(
             &event_at,
-            SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27()),
+            source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27()),
         )
         .unwrap();
         let skeletons = registry.copyable_skeletons(&event_site);
@@ -3915,12 +2064,12 @@ mod tests {
     #[test]
     fn template_format_is_a_separate_filter_for_dcs_and_mxl_families() {
         let at = address("main:Report.Sales.Template.Layout");
-        let site = OperationSite::new(
+        let site = operation_site(
             &at,
-            SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27()),
+            source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27()),
         )
         .unwrap();
-        let registry = OperationRegistry::closed();
+        let registry = crate::domain::apply::operation_registry();
         for (op, format, expected) in [
             ("area.add", Some(TemplateFormat::SpreadsheetDocument), true),
             (
@@ -3957,7 +2106,7 @@ mod tests {
     /// исполнима; для операции верхнего уровня это корень набора.
     #[test]
     fn a_misplaced_operation_names_the_nearest_node_where_it_applies() {
-        let registry = OperationRegistry::closed();
+        let registry = crate::domain::apply::operation_registry();
         let format_of = |at: &QualifiedAddress| match at.segments().last()?.name()? {
             "Print" => Some(TemplateFormat::SpreadsheetDocument),
             "Schema" => Some(TemplateFormat::DataCompositionSchema),
@@ -4003,9 +2152,12 @@ mod tests {
             ),
         ] {
             let at = address(raw);
-            let site = OperationSite::new(
+            let site = operation_site(
                 &at,
-                SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27()),
+                source_set_traits_for_read(
+                    SourceSetKind::Configuration,
+                    PlatformProfile::v8_3_27(),
+                ),
             )
             .unwrap();
             assert_eq!(
@@ -4018,6 +2170,189 @@ mod tests {
         }
     }
 
+    #[test]
+    fn recovery_reclassifies_dcs_and_form_ancestors_in_the_canonical_classifier() {
+        let registry = crate::domain::apply::operation_registry();
+        let traits =
+            source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+        for (raw, initial_route, op, expected, expected_route) in [
+            (
+                "main:Report.Sales.Template.Schema.DataSet.Main.Field.Amount",
+                RouteClass::Dcs,
+                "template.set",
+                "main:Report.Sales.Template.Schema",
+                RouteClass::Metadata,
+            ),
+            (
+                "main:Report.Sales.Template.Schema.DataSet.Main.Field.Amount",
+                RouteClass::Dcs,
+                "role.create",
+                "main:Configuration",
+                RouteClass::Configuration,
+            ),
+            (
+                "main:Document.Order.Form.Main.Module.Form.Body",
+                RouteClass::Module,
+                "code.replace",
+                "main:Document.Order.Form.Main.Module.Form",
+                RouteClass::Module,
+            ),
+            (
+                "main:Document.Order.Form.Main.Module.Form.Body",
+                RouteClass::Module,
+                "attribute.add",
+                "main:Document.Order.Form.Main",
+                RouteClass::Form,
+            ),
+            (
+                "main:Document.Order.Form.Main.Module.Form.Body",
+                RouteClass::Module,
+                "form.add",
+                "main:Document.Order",
+                RouteClass::Metadata,
+            ),
+        ] {
+            let at = address(raw);
+            let site = operation_site(&at, traits).unwrap();
+            assert_eq!(site.route(), initial_route, "{raw}");
+            let (_, target) = registry
+                .nearest_applicable_ancestor_with(op, &site, &|_| None, &|_| None)
+                .unwrap();
+            assert_eq!(target.to_string(), expected, "{op} at {raw}");
+            let target_site = operation_site(&target, traits).unwrap();
+            assert_eq!(target_site.route(), expected_route, "{target}");
+            assert_eq!(target_site.source(), site.source());
+        }
+    }
+
+    #[test]
+    fn recovery_candidates_use_the_registry_context_instead_of_the_original_route() {
+        use unica_source_contract::context::{OperationSite, RegistryContext, SourceSetTraits};
+        fn reject_candidate(_: &QualifiedAddress, _: SourceSetTraits) -> Option<OperationSite<'_>> {
+            None
+        }
+        let registry = crate::domain::apply::operation_registry();
+        let blocked = operation_registry().with_context(RegistryContext::new(reject_candidate));
+        let traits =
+            source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+        let child = address("main:Report.Sales.Template.Schema.DataSet.Main.Field.Amount");
+        let site = operation_site(&child, traits).unwrap();
+        assert!(registry
+            .nearest_applicable_ancestor_with("template.set", &site, &|_| None, &|_| None)
+            .is_some());
+        assert!(blocked
+            .nearest_applicable_ancestor_with("template.set", &site, &|_| None, &|_| None)
+            .is_none());
+
+        let alias = address("main:Report.Sales.Template.Schema.Query.Main");
+        let alias_site = operation_site(&alias, traits).unwrap();
+        let query = registry.lookup("query.set").unwrap();
+        assert_eq!(
+            query
+                .retired_query_alias_target(
+                    &alias_site,
+                    registry.context(),
+                    &unica_operations::recovery::no_member_lookup
+                )
+                .unwrap()
+                .to_string(),
+            "main:Report.Sales.Template.Schema.DataSet.Main.Query"
+        );
+        assert!(query
+            .retired_query_alias_target(
+                &alias_site,
+                blocked.context(),
+                &unica_operations::recovery::no_member_lookup
+            )
+            .is_none());
+
+        let data_set = address("main:Report.Sales.Template.Schema.DataSet.Main");
+        let data_site = operation_site(&data_set, traits).unwrap();
+        let args = json!({"values": {"field": "Amount", "title": "x"}});
+        let redirect = registry
+            .retired_argument_redirect("field.set", &data_site, args.as_object().unwrap())
+            .unwrap();
+        assert_eq!(redirect.at.to_string(), child.to_string());
+        assert!(blocked
+            .retired_argument_redirect("field.set", &data_site, args.as_object().unwrap())
+            .is_none());
+
+        let form_child = address("main:Document.Order.Form.Main.Item.Header.Event.OnChange");
+        let form_site = operation_site(&form_child, traits).unwrap();
+        let retired = crate::domain::apply::retired_operation("element.add").unwrap();
+        assert!(retired
+            .replacement_target(&form_site, registry.context(), &|_| None, &|_| Some(
+                super::FormItemRole::Container
+            ))
+            .is_some());
+        assert!(retired
+            .replacement_target(&form_site, blocked.context(), &|_| None, &|_| Some(
+                super::FormItemRole::Container
+            ))
+            .is_none());
+    }
+
+    #[test]
+    fn classification_fallback_never_grants_writes_or_crosses_source_isolation() {
+        use super::source_set_traits_of_source;
+        use unica_source_contract::{SourceFormat, SourceProfile};
+        let active = SourceProfile::platform_xml_8_3_27_format_2_20();
+        let registry = crate::domain::apply::operation_registry();
+        let root = address("main:Configuration");
+        for (format, profile) in [
+            (SourceFormat::Unknown, active),
+            (SourceFormat::Edt, active),
+            (SourceFormat::Invalid, active),
+            (
+                SourceFormat::PlatformXml,
+                SourceProfile::legacy_workspace_service_compatibility(),
+            ),
+            (
+                SourceFormat::PlatformXml,
+                SourceProfile::TestPlatform8_3_28Format2_20,
+            ),
+            (
+                SourceFormat::PlatformXml,
+                SourceProfile::TestPlatform8_3_27Format2_21,
+            ),
+        ] {
+            let traits = source_set_traits_of_source(SourceSetKind::Configuration, format, profile);
+            assert_eq!(
+                traits.exact_writable_profile(),
+                None,
+                "{format:?} {profile:?}"
+            );
+            assert_eq!(traits.classification_profile(), active);
+            let site = operation_site(&root, traits).unwrap();
+            assert!(registry.copyable_skeletons(&site).is_empty());
+        }
+        for kind in [
+            SourceSetKind::ExternalProcessor,
+            SourceSetKind::ExternalReport,
+        ] {
+            let traits = source_set_traits_of_source(kind, SourceFormat::PlatformXml, active);
+            assert_eq!(traits.exact_writable_profile(), Some(active));
+            let site = operation_site(&root, traits).unwrap();
+            assert!(registry.copyable_skeletons(&site).is_empty());
+        }
+        let extension = source_set_traits_of_source(
+            SourceSetKind::Extension,
+            SourceFormat::PlatformXml,
+            active,
+        );
+        let child = address("extension:Document.Order.Form.Main.Item.Header.Event.OnChange");
+        let site = operation_site(&child, extension).unwrap();
+        let (_, target) = registry
+            .nearest_applicable_ancestor_with("role.create", &site, &|_| None, &|_| None)
+            .unwrap();
+        assert_eq!(target.source_set(), "extension");
+        assert_eq!(target.to_string(), "extension:Configuration");
+        assert_eq!(
+            operation_site(&target, extension).unwrap().source(),
+            extension
+        );
+    }
+
     /// Каждая запись таблицы снятых аргументов строит адрес листа владельца
     /// того вида, который называет шаблон, и распознаёт снятый ключ по своему
     /// пути. Переехавшая операция на владельце больше не исполнима, и прежний
@@ -4025,7 +2360,7 @@ mod tests {
     /// таблице не получает. Запись ещё не переехавшей операции не срабатывает.
     #[test]
     fn every_retired_argument_entry_builds_a_routable_member_address() {
-        let registry = OperationRegistry::closed();
+        let registry = crate::domain::apply::operation_registry();
         let duplicates = [
             DUPLICATE_ARGUMENT_OPERATIONS,
             SUBNODE_OPERATIONS,
@@ -4034,7 +2369,7 @@ mod tests {
         ]
         .concat();
         let traits =
-            SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+            source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
         let owners = [
             "main:Document.Order",
             "main:Enum.Kinds",
@@ -4046,8 +2381,8 @@ mod tests {
             "main:XDTOPackage.Exchange.Type.Order",
             "main:Subsystem.Sales.Interface",
         ];
-        for entry in RETIRED_ARGUMENTS
-            .iter()
+        for entry in retired_arguments()
+            .into_iter()
             .filter(|entry| !duplicates.contains(&entry.op))
         {
             let descriptor = registry
@@ -4061,7 +2396,7 @@ mod tests {
             let mut proved = false;
             for owner in owners {
                 let at = address(owner);
-                let site = OperationSite::new(&at, traits).unwrap();
+                let site = operation_site(&at, traits).unwrap();
                 let redirect = entry
                     .redirect(&at, args)
                     .unwrap_or_else(|| panic!("{} {} builds no address", entry.op, entry.key));
@@ -4071,7 +2406,7 @@ mod tests {
                 } else {
                     redirect.at.clone()
                 };
-                let target = OperationSite::new(&member, traits)
+                let target = operation_site(&member, traits)
                     .unwrap_or_else(|| panic!("{member} is not routable"));
                 if !descriptor.applies_at(&target) {
                     continue;
@@ -4125,7 +2460,7 @@ mod tests {
     /// идентификатором, ведёт к коллекции, где видно его имя.
     #[test]
     fn metadata_member_entries_are_retired_and_predefined_items_route_to_their_listing() {
-        for entry in RETIRED_ARGUMENTS {
+        for entry in retired_arguments() {
             assert!(entry.retired, "{} {} has moved", entry.op, entry.key);
             assert_eq!(
                 entry.address.ends_with(".{name}"),
@@ -4139,11 +2474,11 @@ mod tests {
                 entry.op
             );
         }
-        let registry = OperationRegistry::closed();
+        let registry = crate::domain::apply::operation_registry();
         let owner = address("main:Catalog.Items");
-        let site = OperationSite::new(
+        let site = operation_site(
             &owner,
-            SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27()),
+            source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27()),
         )
         .unwrap();
         let redirect = registry
@@ -4170,18 +2505,21 @@ mod tests {
     /// повторивший адрес, отказывает тем же адресом.
     #[test]
     fn a_form_item_or_event_named_by_an_argument_is_refused_with_its_address() {
-        let registry = OperationRegistry::closed();
+        let registry = crate::domain::apply::operation_registry();
         let traits =
-            SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+            source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
         let form = "main:Catalog.Items.Form.Item";
         let lookup = |container: &QualifiedAddress, name: &str| {
             assert_eq!(container.to_string(), form);
             match name {
-                "Field" => {
-                    super::NamedLookup::Found(vec!["Header".to_string(), "Field".to_string()])
+                "Field" => unica_operations::recovery::NamedLookup::Found(vec![
+                    "Header".to_string(),
+                    "Field".to_string(),
+                ]),
+                "Header" => {
+                    unica_operations::recovery::NamedLookup::Found(vec!["Header".to_string()])
                 }
-                "Header" => super::NamedLookup::Found(vec!["Header".to_string()]),
-                _ => super::NamedLookup::Missing,
+                _ => unica_operations::recovery::NamedLookup::Missing,
             }
         };
         let cases = [
@@ -4269,7 +2607,7 @@ mod tests {
         ];
         for (op, raw, args, location, expected, listing) in cases {
             let at = address(&raw);
-            let site = OperationSite::new(&at, traits).unwrap();
+            let site = operation_site(&at, traits).unwrap();
             let redirect = registry
                 .retired_argument_redirect_with(op, &site, args.as_object().unwrap(), &lookup)
                 .unwrap_or_else(|| panic!("{op} at {raw} keeps its retired argument"));
@@ -4292,7 +2630,7 @@ mod tests {
             ),
         ] {
             let at = address(&raw);
-            let site = OperationSite::new(&at, traits).unwrap();
+            let site = operation_site(&at, traits).unwrap();
             assert_eq!(
                 registry.retired_argument_redirect_with(
                     op,
@@ -4306,8 +2644,8 @@ mod tests {
         }
         for op in FORM_OPERATIONS {
             assert!(
-                RETIRED_ARGUMENTS
-                    .iter()
+                retired_arguments()
+                    .into_iter()
                     .any(|entry| entry.op == *op && entry.retired),
                 "{op} has a retired entry"
             );
@@ -4318,11 +2656,11 @@ mod tests {
     /// элемент, автоматическую командную панель не удалить отдельно.
     #[test]
     fn a_form_item_role_narrows_element_operations() {
-        let registry = OperationRegistry::closed();
+        let registry = crate::domain::apply::operation_registry();
         let at = address("main:Catalog.Items.Form.Item.Item.Header");
-        let site = OperationSite::new(
+        let site = operation_site(
             &at,
-            SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27()),
+            source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27()),
         )
         .unwrap();
         for (tag, add, remove) in [
@@ -4373,9 +2711,9 @@ mod tests {
     /// представлена в таблице, и её запись переключена.
     #[test]
     fn a_subnode_named_by_an_argument_is_refused_with_its_address() {
-        let registry = OperationRegistry::closed();
+        let registry = crate::domain::apply::operation_registry();
         let traits =
-            SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+            source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
         let schema = "main:Report.Sales.Template.Schema";
         let cases = [
             (
@@ -4458,14 +2796,14 @@ mod tests {
         ];
         for (op, raw, args, location, expected) in cases {
             let at = address(&raw);
-            let site = OperationSite::new(&at, traits).unwrap();
+            let site = operation_site(&at, traits).unwrap();
             let args = args.as_object().unwrap();
             let redirect = registry
                 .retired_argument_redirect(op, &site, args)
                 .unwrap_or_else(|| panic!("{op} at {raw} keeps its retired argument"));
             assert_eq!(redirect.location, location, "{op} at {raw}");
             assert_eq!(redirect.at.to_string(), expected, "{op} at {raw}");
-            let target = OperationSite::new(&redirect.at, traits).unwrap();
+            let target = operation_site(&redirect.at, traits).unwrap();
             assert!(
                 registry.lookup(op).unwrap().applies_at(&target),
                 "{op} applies at {expected}"
@@ -4487,7 +2825,7 @@ mod tests {
         // Составной `dataPath` становится одним экранированным именем поля,
         // а вложенный объект роли — одной записью прав.
         let data_set = address(&format!("{schema}.DataSet.Main"));
-        let site = OperationSite::new(&data_set, traits).unwrap();
+        let site = operation_site(&data_set, traits).unwrap();
         let redirect = registry
             .retired_argument_redirect(
                 "field.set",
@@ -4506,7 +2844,7 @@ mod tests {
             Some("Owner.Code")
         );
         let role = address("main:Role.Reader");
-        let site = OperationSite::new(&role, traits).unwrap();
+        let site = operation_site(&role, traits).unwrap();
         let redirect = registry
             .retired_argument_redirect(
                 "right.set",
@@ -4522,8 +2860,8 @@ mod tests {
         );
         for op in SUBNODE_OPERATIONS {
             assert!(
-                RETIRED_ARGUMENTS
-                    .iter()
+                retired_arguments()
+                    .into_iter()
                     .any(|entry| entry.op == *op && entry.retired),
                 "{op} has a retired entry"
             );
@@ -4567,9 +2905,9 @@ mod tests {
     /// структуры, названный аргументом, — элемент верхнего уровня варианта.
     #[test]
     fn dcs_schema_nodes_and_structure_items_take_their_subject_from_the_address() {
-        let registry = OperationRegistry::closed();
+        let registry = crate::domain::apply::operation_registry();
         let traits =
-            SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+            source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
         let schema = "main:Report.Sales.Template.Schema";
         let setting = format!("{schema}.Setting.Main");
         let group = format!("{setting}.Item.ByCategory");
@@ -4651,7 +2989,7 @@ mod tests {
         ];
         for (raw, applicable) in matrix {
             let at = address(&raw);
-            let site = OperationSite::new(&at, traits).unwrap();
+            let site = operation_site(&at, traits).unwrap();
             for op in checked {
                 assert_eq!(
                     registry.lookup(op).unwrap().applies_at(&site),
@@ -4668,7 +3006,7 @@ mod tests {
             format!("{schema}.Item.Link"),
         ] {
             let at = address(&raw);
-            if let Some(site) = OperationSite::new(&at, traits) {
+            if let Some(site) = operation_site(&at, traits) {
                 for op in DCS_NODE_OPERATIONS {
                     assert!(
                         !registry.lookup(op).unwrap().applies_at(&site),
@@ -4765,7 +3103,7 @@ mod tests {
         ];
         for (op, raw, args, location, expected) in cases {
             let at = address(&raw);
-            let site = OperationSite::new(&at, traits).unwrap();
+            let site = operation_site(&at, traits).unwrap();
             let args = args.as_object().unwrap();
             let redirect = registry
                 .retired_argument_redirect(op, &site, args)
@@ -4773,7 +3111,7 @@ mod tests {
             assert_eq!(redirect.location, location, "{op} at {raw}");
             assert_eq!(redirect.at.to_string(), expected, "{op} at {raw}");
             assert!(!redirect.ambiguous, "{op} at {raw}");
-            let target = OperationSite::new(&redirect.at, traits).unwrap();
+            let target = operation_site(&redirect.at, traits).unwrap();
             assert!(
                 registry.lookup(op).unwrap().applies_at(&target),
                 "{op} applies at {expected}"
@@ -4781,8 +3119,8 @@ mod tests {
         }
         for op in DCS_NODE_OPERATIONS {
             assert!(
-                RETIRED_ARGUMENTS
-                    .iter()
+                retired_arguments()
+                    .into_iter()
                     .any(|entry| entry.op == *op && entry.retired),
                 "{op} has a retired entry"
             );
@@ -4794,32 +3132,37 @@ mod tests {
     /// выдуманный узел верхнего уровня.
     #[test]
     fn a_repeated_schema_name_routes_next_to_the_branch_and_every_match() {
-        let registry = OperationRegistry::closed();
+        let registry = crate::domain::apply::operation_registry();
         let traits =
-            SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+            source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
         let schema = "main:Report.Sales.Template.Schema";
         let lookup = |owner: &QualifiedAddress, name: &str| {
             let owner = owner.to_string();
             match (owner.as_str(), name) {
-                (owner, "Twin") if owner == schema => super::NamedLookup::Ambiguous(vec![
-                    vec!["Left".to_string(), "Twin".to_string()],
-                    vec!["Right".to_string(), "Twin".to_string()],
-                ]),
+                (owner, "Twin") if owner == schema => {
+                    unica_operations::recovery::NamedLookup::Ambiguous(vec![
+                        vec!["Left".to_string(), "Twin".to_string()],
+                        vec!["Right".to_string(), "Twin".to_string()],
+                    ])
+                }
                 (owner, "Rows") if owner.ends_with(".Setting.Main") => {
-                    super::NamedLookup::Ambiguous(vec![
+                    unica_operations::recovery::NamedLookup::Ambiguous(vec![
                         vec!["Table".to_string(), "Rows".to_string()],
                         vec!["Chart".to_string(), "Rows".to_string()],
                     ])
                 }
                 (owner, "Details") if owner.ends_with(".Setting.Main") => {
-                    super::NamedLookup::Found(vec!["Table".to_string(), "Details".to_string()])
+                    unica_operations::recovery::NamedLookup::Found(vec![
+                        "Table".to_string(),
+                        "Details".to_string(),
+                    ])
                 }
-                _ => super::NamedLookup::Missing,
+                _ => unica_operations::recovery::NamedLookup::Missing,
             }
         };
-        let lookup = &lookup as super::MemberPathLookup<'_>;
+        let lookup = &lookup as unica_operations::recovery::MemberPathLookup<'_>;
         let at = address(&format!("{schema}.DataSet.Main.Query"));
-        let site = OperationSite::new(&at, traits).unwrap();
+        let site = operation_site(&at, traits).unwrap();
         let redirect = registry
             .retired_argument_redirect_with(
                 "query.set",
@@ -4844,7 +3187,7 @@ mod tests {
             ]
         );
         let setting = address(&format!("{schema}.Setting.Main"));
-        let site = OperationSite::new(&setting, traits).unwrap();
+        let site = operation_site(&setting, traits).unwrap();
         let redirect = registry
             .retired_argument_redirect_with(
                 "filter.clear",
@@ -4887,7 +3230,8 @@ mod tests {
     /// отдельно не удалить, не подменяет её таблица.
     #[test]
     fn a_renamed_operation_target_respects_the_item_role() {
-        use super::{FormItemRole, RetiredOperation};
+        let registry = crate::domain::apply::operation_registry();
+        use super::FormItemRole;
         let form = "main:Catalog.Items.Form.List";
         let bar = format!("{form}.Item.List.Item.ListCommandBar");
         let field = format!("{form}.Item.Header.Item.Code");
@@ -4897,7 +3241,7 @@ mod tests {
             _ => Some(FormItemRole::Container),
         };
         let traits =
-            SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+            source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
         for (op, raw, expected) in [
             ("element.remove", bar.clone(), None),
             ("element.add", bar.clone(), Some(bar.clone())),
@@ -4914,11 +3258,10 @@ mod tests {
             ),
         ] {
             let at = address(&raw);
-            let site = OperationSite::new(&at, traits).unwrap();
-            let target =
-                RetiredOperation::lookup(op)
-                    .unwrap()
-                    .replacement_target(&site, &|_| None, &role);
+            let site = operation_site(&at, traits).unwrap();
+            let target = crate::domain::apply::retired_operation(op)
+                .unwrap()
+                .replacement_target(&site, registry.context(), &|_| None, &role);
             assert_eq!(
                 target.map(|target| target.to_string()),
                 expected,
@@ -4933,20 +3276,23 @@ mod tests {
     #[test]
     fn a_retired_creation_names_the_parent_operation() {
         let retired =
-            super::RetiredOperation::lookup("form.create").expect("form.create is retired");
-        assert_eq!(retired.replacement, "form.add");
-        let registry = OperationRegistry::closed();
+            crate::domain::apply::retired_operation("form.create").expect("form.create is retired");
+        assert_eq!(retired.replacement(), "form.add");
+        let registry = crate::domain::apply::operation_registry();
         assert!(registry.lookup("form.create").is_none());
-        assert!(registry.lookup(retired.replacement).is_some());
+        assert!(registry.lookup(retired.replacement()).is_some());
         for (raw, expected) in [
             ("main:Catalog.Items.Form.Choice", "main:Catalog.Items"),
             ("main:Catalog.Items", "main:Catalog.Items"),
         ] {
             let target = retired.replacement_at(&address(raw));
             assert_eq!(target.to_string(), expected, "{raw}");
-            let site = OperationSite::new(
+            let site = operation_site(
                 &target,
-                SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27()),
+                source_set_traits_for_read(
+                    SourceSetKind::Configuration,
+                    PlatformProfile::v8_3_27(),
+                ),
             )
             .unwrap();
             assert!(
@@ -4954,7 +3300,7 @@ mod tests {
                 "{raw}"
             );
         }
-        assert!(super::RetiredOperation::lookup("form.add").is_none());
+        assert!(crate::domain::apply::retired_operation("form.add").is_none());
         // Операции элемента, реквизита и команды формы переименованы по
         // своему узлу (#1465): заменившая формы исполнима на том же адресе,
         // снятого имени в реестре нет.
@@ -4981,15 +3327,19 @@ mod tests {
                 "main:Catalog.Items.Form.Choice",
             ),
         ] {
-            let retired = super::RetiredOperation::lookup(op).expect("the old name is retired");
-            assert_eq!(retired.replacement, replacement, "{op}");
+            let retired =
+                crate::domain::apply::retired_operation(op).expect("the old name is retired");
+            assert_eq!(retired.replacement(), replacement, "{op}");
             assert!(registry.lookup(op).is_none(), "{op}");
             let at = address(raw);
             let target = retired.replacement_at(&at);
             assert_eq!(target, at, "{op} at {raw}");
-            let site = OperationSite::new(
+            let site = operation_site(
                 &target,
-                SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27()),
+                source_set_traits_for_read(
+                    SourceSetKind::Configuration,
+                    PlatformProfile::v8_3_27(),
+                ),
             )
             .unwrap();
             assert!(
@@ -5024,9 +3374,9 @@ mod tests {
     /// пакета представлена в таблице.
     #[test]
     fn a_duplicate_argument_is_refused_with_the_node_its_value_named() {
-        let registry = OperationRegistry::closed();
+        let registry = crate::domain::apply::operation_registry();
         let traits =
-            SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+            source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
         let template = "main:Report.Sales.Template.Schema";
         let cases = [
             (
@@ -5112,7 +3462,7 @@ mod tests {
         ];
         for (op, raw, args, location, expected) in cases {
             let at = address(&raw);
-            let site = OperationSite::new(&at, traits).unwrap();
+            let site = operation_site(&at, traits).unwrap();
             let args = args.as_object().unwrap();
             let redirect = registry
                 .retired_argument_redirect(op, &site, args)
@@ -5120,7 +3470,7 @@ mod tests {
             assert_eq!(redirect.location, location, "{op} at {raw}");
             assert_eq!(redirect.at.to_string(), expected, "{op} at {raw}");
             assert!(!redirect.listing, "{op} at {raw}");
-            let target = OperationSite::new(&redirect.at, traits).unwrap();
+            let target = operation_site(&redirect.at, traits).unwrap();
             assert!(
                 registry.lookup(op).unwrap().applies_at(&target),
                 "{op} applies at {expected}"
@@ -5146,7 +3496,7 @@ mod tests {
         // Правка элемента структуры исполняется на его адресе (#1357):
         // вариант, названный аргументом, ведёт к элементам его структуры.
         let at = address(&format!("{template}.Setting.Main.Item.G"));
-        let site = OperationSite::new(&at, traits).unwrap();
+        let site = operation_site(&at, traits).unwrap();
         let redirect = registry
             .retired_argument_redirect(
                 "structure.patch",
@@ -5166,24 +3516,28 @@ mod tests {
         // объединения получает свой вложенный адрес; без схемы — верхний
         // уровень.
         let at = address(&format!("{template}.DataSet.Main.Query"));
-        let site = OperationSite::new(&at, traits).unwrap();
+        let site = operation_site(&at, traits).unwrap();
         let args = json!({"values": {"dataSet": "Member", "query": "ВЫБРАТЬ 1"}});
         let args = args.as_object().unwrap();
         let lookup = |schema: &QualifiedAddress, name: &str| {
             assert_eq!(schema.to_string(), template);
             if name == "Member" {
-                super::NamedLookup::Found(vec!["Union".to_string(), "Member".to_string()])
+                unica_operations::recovery::NamedLookup::Found(vec![
+                    "Union".to_string(),
+                    "Member".to_string(),
+                ])
             } else {
-                super::NamedLookup::Missing
+                unica_operations::recovery::NamedLookup::Missing
             }
         };
         for (lookup, expected) in [
             (
-                &lookup as super::MemberPathLookup<'_>,
+                &lookup as unica_operations::recovery::MemberPathLookup<'_>,
                 format!("{template}.DataSet.Union.DataSet.Member.Query"),
             ),
             (
-                &super::no_member_lookup as super::MemberPathLookup<'_>,
+                &unica_operations::recovery::no_member_lookup
+                    as unica_operations::recovery::MemberPathLookup<'_>,
                 format!("{template}.DataSet.Member.Query"),
             ),
         ] {
@@ -5194,18 +3548,18 @@ mod tests {
         }
         // Операция запроса на самом наборе ведёт к его запросу.
         let data_set = address(&format!("{template}.DataSet.Main"));
-        let site = OperationSite::new(&data_set, traits).unwrap();
+        let site = operation_site(&data_set, traits).unwrap();
         assert_eq!(
             registry
                 .lookup("query.set")
                 .unwrap()
-                .nearest_applicable_ancestor(&site, &|_| None)
+                .nearest_applicable_ancestor(&site, registry.context(), &|_| None)
                 .map(|at| at.to_string()),
             Some(format!("{template}.DataSet.Main.Query"))
         );
         // Якорь в коде — аргумент, а не адрес: он не снят.
         let module = address("main:CommonModule.Shared");
-        let site = OperationSite::new(&module, traits).unwrap();
+        let site = operation_site(&module, traits).unwrap();
         assert_eq!(
             registry.retired_argument_redirect(
                 "code.replace",
@@ -5218,8 +3572,8 @@ mod tests {
         );
         for op in DUPLICATE_ARGUMENT_OPERATIONS {
             assert!(
-                RETIRED_ARGUMENTS
-                    .iter()
+                retired_arguments()
+                    .into_iter()
                     .any(|entry| entry.op == *op && entry.retired),
                 "{op} has a retired entry"
             );
@@ -5232,12 +3586,12 @@ mod tests {
     /// точкой имени, а путь с удаляемым именем ведёт к коллекции свойств.
     #[test]
     fn retired_names_with_a_dot_route_to_escaped_addresses() {
-        let registry = OperationRegistry::closed();
+        let registry = crate::domain::apply::operation_registry();
         let traits =
-            SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+            source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
         let redirect = |op: &str, raw: &str, args: Value| {
             let at = address(raw);
-            let site = OperationSite::new(&at, traits).unwrap();
+            let site = operation_site(&at, traits).unwrap();
             registry
                 .retired_argument_redirect(op, &site, args.as_object().unwrap())
                 .unwrap_or_else(|| panic!("{op} at {raw} is redirected"))
@@ -5289,7 +3643,7 @@ mod tests {
         // Путь с пустым именем или чужим экранированием адреса не строит.
         for path in ["Lines..A", r"Lines\x", ""] {
             let at = address(type_at);
-            let site = OperationSite::new(&at, traits).unwrap();
+            let site = operation_site(&at, traits).unwrap();
             let args = json!({"values": {"propertyPath": path, "property": {}}});
             assert_eq!(
                 registry
@@ -5307,9 +3661,9 @@ mod tests {
     /// адреса.
     #[test]
     fn the_nearest_ancestor_never_invents_a_query_name_under_a_named_kind() {
-        let registry = OperationRegistry::closed();
+        let registry = crate::domain::apply::operation_registry();
         let traits =
-            SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+            source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
         for (op, raw) in [
             ("commandOrder.set", "main:Subsystem.Sales.Interface.Group"),
             (
@@ -5318,11 +3672,11 @@ mod tests {
             ),
         ] {
             let at = address(raw);
-            let site = OperationSite::new(&at, traits).unwrap();
+            let site = operation_site(&at, traits).unwrap();
             let nearest = registry
                 .lookup(op)
                 .unwrap()
-                .nearest_applicable_ancestor(&site, &|_| None)
+                .nearest_applicable_ancestor(&site, registry.context(), &|_| None)
                 .map(|at| at.to_string());
             assert!(
                 nearest.as_deref().is_none_or(|at| !at.ends_with(".Query")),
@@ -5336,11 +3690,11 @@ mod tests {
     /// построенному адресу не исполнима, не срабатывает.
     #[test]
     fn a_retired_argument_redirects_once_the_operation_has_moved() {
-        let registry = OperationRegistry::closed();
+        let registry = crate::domain::apply::operation_registry();
         let owner = address("main:Report.Sales");
-        let site = OperationSite::new(
+        let site = operation_site(
             &owner,
-            SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27()),
+            source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27()),
         )
         .unwrap();
         let args = json!({"values": {"name": "Print", "synonym": "x"}});
@@ -5352,30 +3706,31 @@ mod tests {
         assert!(!redirect.listing);
         // `attribute.set` не исполним на табличной части: даже переключённая
         // запись не уводит вызов туда, где его отвергнут.
-        let misdirected = super::RetiredArgument {
+        let misdirected = unica_operations::recovery::RetiredArgument {
             op: "attribute.set",
             key: "values.name",
             address: "{at}.TabularSection.{value}",
             retired: true,
         };
         let document = address("main:Document.Order");
-        let site = OperationSite::new(
+        let site = operation_site(
             &document,
-            SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27()),
+            source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27()),
         )
         .unwrap();
         assert_eq!(
-            super::retired_argument_redirect_in(
+            unica_operations::recovery::retired_argument_redirect_in(
                 &[misdirected],
                 registry.lookup("attribute.set").unwrap(),
                 &site,
+                registry.context(),
                 json!({"values": {"name": "Goods"}}).as_object().unwrap(),
-                &super::no_member_lookup,
+                &unica_operations::recovery::no_member_lookup,
             ),
             None
         );
         // Вложенная позиция в массиве называет номер элемента.
-        let nested = super::RetiredArgument {
+        let nested = unica_operations::recovery::RetiredArgument {
             op: "item.add",
             key: "items[].into",
             address: "{item}",
@@ -5383,6 +3738,7 @@ mod tests {
         };
         let form = address("main:Document.Order.Form.Main");
         let redirect = nested
+            .bind(FormOperation::ItemAdd.descriptor())
             .redirect(
                 &form,
                 json!({"items": [{"name": "A"}, {"name": "B", "into": "Header"}]})
@@ -5396,6 +3752,7 @@ mod tests {
             "main:Document.Order.Form.Main.Item.Header"
         );
         assert!(nested
+            .bind(FormOperation::ItemAdd.descriptor())
             .redirect(
                 &form,
                 json!({"items": [{"name": "A"}]}).as_object().unwrap()
@@ -5531,7 +3888,7 @@ mod tests {
 
     #[test]
     fn registry_skeletons_are_bounded_useful_and_copyable_operation_objects() {
-        let registry = OperationRegistry::closed();
+        let registry = crate::domain::apply::operation_registry();
         let cases = [
             (
                 "props.set",

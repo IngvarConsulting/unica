@@ -1,0 +1,20 @@
+[package]
+name = "unica-execution-contract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+test-support = []
+receipt-ledger-test-support = []
+
+[dependencies]
+unica-address = { path = "../unica-address" }
+unica-work-control = { path = "../unica-work-control" }
+unica-refusal = { path = "../unica-refusal" }
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+sha2.workspace = true

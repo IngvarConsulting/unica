@@ -1,40 +1,24 @@
 #![allow(dead_code, unused_imports)]
+use unica_roles::info::*;
+use unica_roles_designer::info::{
+    parse_role_info_xml, role_info_metadata_xml, validate_role_source,
+};
+use unica_source_designer::layout::role_read_layout;
+use unica_source_designer::owner::PlatformXmlResourceEvidence;
 
-use crate::application::AdapterOutcome;
-use crate::domain::cache::{CacheAccess, CacheReport};
-use crate::domain::events::{DomainEvent, DomainEventKind};
-use crate::domain::role::{
-    known_role_rights, nested_right_shape_is_modelled, parse_role_edit_request,
-    validate_nested_right, RoleEditData, RoleEditEffect, RoleEditEffectAction,
-};
-use crate::domain::source_target::{
-    MetadataAddress, SourceTarget, SourceTargetErrorCode, TargetKind,
-    PLATFORM_XML_8_3_27_FORMAT_2_20,
-};
-use crate::domain::support_state::{
-    ObjectSupportData as DomainObjectSupportData, SupportStateReader,
-};
-use crate::domain::workspace::WorkspaceContext;
+use crate::infrastructure::form_composition::*;
+use crate::infrastructure::interface_composition::*;
 use crate::infrastructure::native_operations::logical_selector::prove_attached_resource;
-use crate::infrastructure::native_operations::text_snapshot::{
-    resolve_line_ending, EolPolicy, LineEndingProfile, SourceTextSnapshot,
-};
-use crate::infrastructure::path_policy::WorkspacePathPolicy;
-use crate::infrastructure::platform::filesystem::metadata_is_link_or_reparse_point;
-use crate::infrastructure::platform_xml_roots::{
-    platform_xml_publication_policy, PlatformXmlPublicationPolicy,
-};
 use crate::infrastructure::platform_xml_source_targets::{
     platform_xml_resource_evidence, resolve_platform_xml_target, ClosedPlatformXmlTarget,
-    PlatformXmlResourceEvidence, TargetKindPolicy,
+    TargetKindPolicy,
 };
-use crate::infrastructure::source_roots::normalize_path_identity;
+use crate::infrastructure::subsystem_composition::*;
 use crate::infrastructure::support_guard::{
     bind_resolved_support_guard_evidence, evaluate_resolved_support_guard,
     ResolvedSupportGuardCheck,
 };
 use crate::infrastructure::support_state::WorkspaceSupportStateReader;
-use crate::infrastructure::workspace_state::WorkspaceStateRepository;
 use roxmltree::Document;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -42,13 +26,46 @@ use std::fs;
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+use unica_address::source_target::{
+    MetadataAddress, SourceTarget, SourceTargetErrorCode, TargetKind,
+    PLATFORM_XML_8_3_27_FORMAT_2_20,
+};
+use unica_execution_contract::adapter_outcome::AdapterOutcome;
+use unica_forms::facts::*;
+use unica_forms_designer::codec::*;
+use unica_metadata::interface::*;
+use unica_metadata::subsystem::*;
+use unica_metadata::support_state::{
+    ObjectSupportData as DomainObjectSupportData, SupportStateReader,
+};
+use unica_metadata_designer::interface::*;
+use unica_metadata_designer::subsystem::*;
+use unica_roles::{
+    known_role_rights, nested_right_shape_is_modelled, parse_role_edit_request,
+    validate_nested_right, RoleEditData, RoleEditEffect, RoleEditEffectAction,
+};
+use unica_roles_designer::descriptor::validate_role_edit_descriptor;
+use unica_roles_designer::writer::{
+    apply_role_edit_operation, decode_role_xml, direct_role_children, encode_role_xml,
+    right_insertion, role_text_content, validate_role_rights_document, RoleValueScope,
+    ROLE_METADATA_NAMESPACE, ROLE_RIGHTS_NAMESPACE, XSI_NAMESPACE,
+};
+use unica_source_contract::events::{DomainEvent, DomainEventKind};
+use unica_source_contract::workspace::WorkspaceContext;
+use unica_source_designer::roots::{platform_xml_publication_policy, PlatformXmlPublicationPolicy};
+use unica_workspace::cache::{CacheAccess, CacheReport};
+use unica_workspace::path_policy::WorkspacePathPolicy;
+use unica_workspace::paths::metadata_is_link_or_reparse_point;
+use unica_workspace::paths::normalize_path_identity;
+use unica_workspace::state::WorkspaceStateRepository;
+use unica_xml_format::text::{
+    resolve_line_ending, EolPolicy, LineEndingProfile, SourceTextSnapshot,
+};
 
 use super::common::*;
-use super::compile_transaction::{
+use super::{cf::*, cfe::*, dcs::*, meta::*};
+use unica_workspace::compile_transaction::{
     CommitFailure, CommitFailureKind, CompileTransaction, RegistrationStatus,
-};
-use super::{
-    cf::*, cfe::*, dcs::*, form::*, interface::*, meta::*, mxl::*, subsystem::*, template::*,
 };
 
 #[cfg(test)]
@@ -160,67 +177,6 @@ fn with_role_edit_post_validation_failure<T>(action: impl FnOnce() -> T) -> T {
     action()
 }
 
-#[derive(Clone)]
-pub(crate) struct RoleRight {
-    pub(crate) name: String,
-    pub(crate) value: String,
-    pub(crate) condition: Option<String>,
-}
-
-#[derive(Clone)]
-pub(crate) struct RoleObject {
-    pub(crate) name: String,
-    pub(crate) rights: Vec<RoleRight>,
-}
-
-pub(crate) struct RoleInfoRightSummary {
-    pub(crate) name: String,
-    pub(crate) rls: bool,
-}
-
-pub(crate) struct RoleInfoObjectSummary {
-    pub(crate) short_name: String,
-    pub(crate) rights: Vec<RoleInfoRightSummary>,
-}
-
-pub(crate) struct RoleInfoGroup {
-    pub(crate) type_prefix: String,
-    pub(crate) objects: Vec<RoleInfoObjectSummary>,
-}
-
-struct RoleReadLayout {
-    role_dir_name: String,
-    metadata_path: PathBuf,
-    configuration_path: PathBuf,
-}
-
-fn role_read_layout(rights_path: &Path) -> RoleReadLayout {
-    let ext_dir = rights_path.parent().unwrap_or_else(|| Path::new(""));
-    let role_dir = ext_dir
-        .parent()
-        .unwrap_or_else(|| Path::new(""))
-        .to_path_buf();
-    let roles_dir = role_dir
-        .parent()
-        .unwrap_or_else(|| Path::new(""))
-        .to_path_buf();
-    let role_dir_name = role_dir
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("")
-        .to_string();
-    let metadata_path = roles_dir.join(format!("{role_dir_name}.xml"));
-    let configuration_path = roles_dir
-        .parent()
-        .unwrap_or_else(|| Path::new(""))
-        .join("Configuration.xml");
-    RoleReadLayout {
-        role_dir_name,
-        metadata_path,
-        configuration_path,
-    }
-}
-
 pub(crate) fn role_read_format_dependency_paths(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
@@ -239,219 +195,9 @@ pub(crate) fn role_read_format_dependency_paths(
     Ok(paths)
 }
 
-/// Typed answer of `unica.role.info` (ADR-0023). Denied rights are always
-/// present: hiding them behind a flag made "no denied rights" and "you did not
-/// ask" the same observation.
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct RoleInfoData {
-    pub(crate) name: String,
-    pub(crate) synonym: Option<String>,
-    pub(crate) support: DomainObjectSupportData,
-    pub(crate) defaults: RoleDefaultsData,
-    pub(crate) allowed: Vec<RoleGroupData>,
-    pub(crate) denied: Vec<RoleGroupData>,
-    pub(crate) totals: RoleTotalsData,
-    pub(crate) restricted_objects: Vec<String>,
-    pub(crate) templates: Vec<String>,
-}
-
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct RoleDefaultsData {
-    pub(crate) set_for_new_objects: Option<String>,
-    pub(crate) set_for_attributes_by_default: Option<String>,
-    pub(crate) independent_rights_of_child_objects: Option<String>,
-}
-
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct RoleGroupData {
-    pub(crate) kind: String,
-    pub(crate) objects: Vec<RoleObjectData>,
-}
-
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct RoleObjectData {
-    pub(crate) name: String,
-    pub(crate) rights: Vec<RoleRightData>,
-}
-
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct RoleRightData {
-    pub(crate) name: String,
-    /// Row-level security restricts this right on this object.
-    pub(crate) restricted: bool,
-}
-
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct RoleTotalsData {
-    pub(crate) allowed: usize,
-    pub(crate) denied: usize,
-}
-
 pub(crate) struct RoleInfoExecution {
     pub(crate) outcome: AdapterOutcome,
     pub(crate) data: Option<RoleInfoData>,
-}
-
-fn role_group_data(groups: Vec<RoleInfoGroup>) -> Vec<RoleGroupData> {
-    groups
-        .into_iter()
-        .map(|group| RoleGroupData {
-            kind: group.type_prefix,
-            objects: group
-                .objects
-                .into_iter()
-                .map(|object| RoleObjectData {
-                    name: object.short_name,
-                    rights: object
-                        .rights
-                        .into_iter()
-                        .map(|right| RoleRightData {
-                            name: right.name,
-                            restricted: right.rls,
-                        })
-                        .collect(),
-                })
-                .collect(),
-        })
-        .collect()
-}
-
-fn role_attribute(value: &str) -> Option<String> {
-    (!value.is_empty()).then(|| value.to_string())
-}
-
-pub(crate) fn parse_role_info_xml(
-    rights_text: &str,
-    descriptor_text: Option<&str>,
-    fallback_name: &str,
-    support: DomainObjectSupportData,
-) -> Result<RoleInfoData, String> {
-    let (role_name, role_synonym) = role_info_metadata_xml(descriptor_text, fallback_name);
-    let doc = Document::parse(rights_text.trim_start_matches('\u{feff}'))
-        .map_err(|err| format!("XML parse error in Rights.xml: {err}"))?;
-    let root = doc.root_element();
-    let set_for_new = root.attribute("setForNewObjects").unwrap_or("");
-    let set_for_attrs = root.attribute("setForAttributesByDefault").unwrap_or("");
-    let independent_child = root
-        .attribute("independentRightsOfChildObjects")
-        .unwrap_or("");
-    let mut allowed = Vec::<RoleInfoGroup>::new();
-    let mut denied = Vec::<RoleInfoGroup>::new();
-    let mut rls_objects = Vec::<String>::new();
-    let mut total_allowed = 0usize;
-    let mut total_denied = 0usize;
-    for obj in root
-        .children()
-        .filter(|node| role_info_element(*node, "object", Some("http://v8.1c.ru/8.2/roles")))
-    {
-        let mut obj_name = String::new();
-        let mut rights = Vec::<RoleRight>::new();
-        for child in obj.children().filter(|node| node.is_element()) {
-            if role_info_element(child, "name", Some("http://v8.1c.ru/8.2/roles")) {
-                obj_name = child.text().unwrap_or("").to_string();
-            }
-            if role_info_element(child, "right", Some("http://v8.1c.ru/8.2/roles")) {
-                let mut right_name = String::new();
-                let mut right_value = String::new();
-                let mut has_rls = false;
-                for rc in child.children().filter(|node| node.is_element()) {
-                    match rc.tag_name().name() {
-                        "name" => right_name = rc.text().unwrap_or("").to_string(),
-                        "value" => right_value = rc.text().unwrap_or("").to_string(),
-                        "restrictionByCondition" => has_rls = true,
-                        _ => {}
-                    }
-                }
-                if !right_name.is_empty() && !right_value.is_empty() {
-                    rights.push(RoleRight {
-                        name: right_name,
-                        value: right_value,
-                        condition: has_rls.then(String::new),
-                    });
-                }
-            }
-        }
-        if obj_name.is_empty() || rights.is_empty() {
-            continue;
-        }
-        let Some(dot_idx) = obj_name.find('.') else {
-            continue;
-        };
-        let type_prefix = &obj_name[..dot_idx];
-        let short_name = &obj_name[dot_idx + 1..];
-        for right in rights {
-            if right.value == "true" {
-                total_allowed += 1;
-                if right.condition.is_some() {
-                    rls_objects.push(format!("{type_prefix}.{short_name} ({})", right.name));
-                }
-                add_role_info_right(
-                    &mut allowed,
-                    type_prefix,
-                    short_name,
-                    RoleInfoRightSummary {
-                        name: right.name,
-                        rls: right.condition.is_some(),
-                    },
-                );
-            } else {
-                total_denied += 1;
-                add_role_info_right(
-                    &mut denied,
-                    type_prefix,
-                    short_name,
-                    RoleInfoRightSummary {
-                        name: right.name,
-                        rls: false,
-                    },
-                );
-            }
-        }
-    }
-    let mut templates = Vec::<String>::new();
-    for template in root.children().filter(|node| {
-        role_info_element(
-            *node,
-            "restrictionTemplate",
-            Some("http://v8.1c.ru/8.2/roles"),
-        )
-    }) {
-        for child in template.children().filter(|node| node.is_element()) {
-            if child.tag_name().name() == "name" {
-                let mut name = child.text().unwrap_or("").to_string();
-                if let Some(paren_idx) = name.find('(') {
-                    if paren_idx > 0 {
-                        name.truncate(paren_idx);
-                    }
-                }
-                templates.push(name);
-            }
-        }
-    }
-    Ok(RoleInfoData {
-        name: role_name,
-        synonym: (!role_synonym.is_empty()).then_some(role_synonym),
-        support,
-        defaults: RoleDefaultsData {
-            set_for_new_objects: role_attribute(set_for_new),
-            set_for_attributes_by_default: role_attribute(set_for_attrs),
-            independent_rights_of_child_objects: role_attribute(independent_child),
-        },
-        allowed: role_group_data(allowed),
-        denied: role_group_data(denied),
-        totals: RoleTotalsData {
-            allowed: total_allowed,
-            denied: total_denied,
-        },
-        restricted_objects: rls_objects,
-        templates,
-    })
 }
 
 pub(crate) fn analyze_role_info(
@@ -522,452 +268,17 @@ pub(crate) fn role_info_metadata(rights_path: &Path) -> (String, String) {
     role_info_metadata_xml(descriptor.as_deref(), &layout.role_dir_name)
 }
 
-fn role_info_metadata_xml(descriptor_text: Option<&str>, fallback_name: &str) -> (String, String) {
-    let mut role_name = String::new();
-    let mut role_synonym = String::new();
-    if let Some(meta_text) = descriptor_text {
-        if let Ok(meta_doc) = Document::parse(meta_text.trim_start_matches('\u{feff}')) {
-            for role in meta_doc
-                .descendants()
-                .filter(|node| role_info_element(*node, "Role", None))
-            {
-                for props in role
-                    .children()
-                    .filter(|node| role_info_element(*node, "Properties", None))
-                {
-                    if role_name.is_empty() {
-                        role_name = props
-                            .children()
-                            .find(|node| role_info_element(*node, "Name", None))
-                            .and_then(|node| node.text())
-                            .unwrap_or("")
-                            .to_string();
-                    }
-                    if role_synonym.is_empty() {
-                        for synonym in props
-                            .children()
-                            .filter(|node| role_info_element(*node, "Synonym", None))
-                        {
-                            for item in synonym
-                                .children()
-                                .filter(|node| role_info_element(*node, "item", None))
-                            {
-                                let lang = item
-                                    .children()
-                                    .find(|node| role_info_element(*node, "lang", None))
-                                    .and_then(|node| node.text())
-                                    .unwrap_or("");
-                                if lang == "ru" {
-                                    role_synonym = item
-                                        .children()
-                                        .find(|node| role_info_element(*node, "content", None))
-                                        .and_then(|node| node.text())
-                                        .unwrap_or("")
-                                        .to_string();
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if role_name.is_empty() {
-        role_name = fallback_name.to_string();
-    }
-
-    (role_name, role_synonym)
-}
-
-pub(crate) fn role_info_element(
-    node: roxmltree::Node<'_, '_>,
-    local_name: &str,
-    namespace: Option<&str>,
-) -> bool {
-    node.is_element()
-        && node.tag_name().name() == local_name
-        && namespace
-            .map(|expected| node.tag_name().namespace() == Some(expected))
-            .unwrap_or(true)
-}
-
-pub(crate) struct RoleValidationReport {
-    pub(crate) lines: Vec<String>,
-    pub(crate) errors: usize,
-    pub(crate) warnings: usize,
-    pub(crate) ok_count: usize,
-    pub(crate) detailed: bool,
-}
-
-impl RoleValidationReport {
-    pub(crate) fn new(detailed: bool) -> Self {
-        Self {
-            lines: Vec::new(),
-            errors: 0,
-            warnings: 0,
-            ok_count: 0,
-            detailed,
-        }
-    }
-
-    pub(crate) fn ok(&mut self, msg: impl AsRef<str>) {
-        self.ok_count += 1;
-        if self.detailed {
-            self.lines.push(format!("[OK]    {}", msg.as_ref()));
-        }
-    }
-
-    pub(crate) fn warn(&mut self, msg: impl AsRef<str>) {
-        self.warnings += 1;
-        self.lines.push(format!("[WARN]  {}", msg.as_ref()));
-    }
-
-    pub(crate) fn error(&mut self, msg: impl AsRef<str>) {
-        self.errors += 1;
-        self.lines.push(format!("[ERROR] {}", msg.as_ref()));
-    }
-
-    pub(crate) fn finish(mut self, role_name: &str) -> String {
-        self.lines
-            .insert(0, format!("=== Validation: Role.{role_name} ==="));
-        let checks = self.ok_count + self.errors + self.warnings;
-        if self.errors == 0 && self.warnings == 0 && !self.detailed {
-            format!("=== Validation OK: Role.{role_name} ({checks} checks) ===")
-        } else {
-            self.lines.push(String::new());
-            self.lines.push(format!(
-                "=== Result: {} errors, {} warnings ({checks} checks) ===",
-                self.errors, self.warnings
-            ));
-            self.lines.join("\n")
-        }
-    }
-}
-
 pub(crate) fn validate_role(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
     let result = (|| -> Result<(bool, String, PathBuf), String> {
         let rights_path = resolve_role_read_rights_path(args, context)?;
-        let detailed = bool_arg(args, &["detailed", "Detailed"]);
+        let detailed = unica_operation_contract::input::bool_arg(args, &["detailed", "Detailed"]);
 
-        let layout = role_read_layout(&rights_path);
-        let metadata_path = layout.metadata_path;
-
-        let mut report = RoleValidationReport::new(detailed);
-        if !rights_path.exists() {
-            report.error(format!("File not found: {}", rights_path.display()));
-            let text = report.lines.join("\n");
-            return Ok((false, text, rights_path));
-        }
-
-        let rights_text = fs::read_to_string(&rights_path)
-            .map_err(|err| format!("failed to read {}: {err}", rights_path.display()))?;
-        let doc = match Document::parse(rights_text.trim_start_matches('\u{feff}')) {
-            Ok(doc) => {
-                report.ok("XML well-formed");
-                doc
-            }
-            Err(err) => {
-                report.error(format!("XML parse error: {err}"));
-                let text = report.lines.join("\n");
-                return Ok((false, text, rights_path));
-            }
-        };
-
-        let root = doc.root_element();
-        let root_local = root.tag_name().name();
-        let root_ns = root.tag_name().namespace().unwrap_or("");
-        const RIGHTS_NS: &str = "http://v8.1c.ru/8.2/roles";
-
-        if root_local != "Rights" {
-            report.error(format!("Root element is '{root_local}', expected 'Rights'"));
-        } else if root_ns != RIGHTS_NS {
-            report.warn(format!("Namespace is '{root_ns}', expected '{RIGHTS_NS}'"));
-        } else {
-            report.ok("Root element: <Rights> with correct namespace");
-        }
-
-        let mut flags_found = 0usize;
-        for flag in [
-            "setForNewObjects",
-            "setForAttributesByDefault",
-            "independentRightsOfChildObjects",
-        ] {
-            if let Some(node) = root
-                .children()
-                .find(|node| role_info_element(*node, flag, Some(RIGHTS_NS)))
-            {
-                let value = node.text().unwrap_or("");
-                if value != "true" && value != "false" {
-                    report.warn(format!("{flag} = '{value}' (expected 'true' or 'false')"));
-                }
-                flags_found += 1;
-            } else {
-                report.warn(format!("Missing global flag: {flag}"));
-            }
-        }
-        if flags_found == 3 {
-            report.ok("3 global flags present");
-        }
-
-        let objects = root
-            .children()
-            .filter(|node| role_info_element(*node, "object", Some(RIGHTS_NS)))
-            .collect::<Vec<_>>();
-        let mut right_count = 0usize;
-        let mut rls_count = 0usize;
-
-        for obj in &objects {
-            let mut obj_name = "";
-            for child in obj.children().filter(|node| node.is_element()) {
-                if role_info_element(child, "name", Some(RIGHTS_NS)) {
-                    obj_name = child.text().unwrap_or("");
-                    break;
-                }
-            }
-
-            if obj_name.is_empty() {
-                report.error("Object without <name>");
-                continue;
-            }
-
-            let object_type = role_validate_object_type(obj_name);
-            let is_nested = obj_name.matches('.').count() >= 2;
-            if !is_nested && role_validate_known_rights(object_type).is_empty() {
-                report.warn(format!("{obj_name}: unknown object type '{object_type}'"));
-            }
-
-            for child in obj.children().filter(|node| node.is_element()) {
-                if !role_info_element(child, "right", Some(RIGHTS_NS)) {
-                    continue;
-                }
-
-                let mut right_name = "";
-                let mut right_value = "";
-                for rc in child.children().filter(|node| node.is_element()) {
-                    if rc.tag_name().namespace() != Some(RIGHTS_NS) {
-                        continue;
-                    }
-                    match rc.tag_name().name() {
-                        "name" => right_name = rc.text().unwrap_or(""),
-                        "value" => right_value = rc.text().unwrap_or(""),
-                        "restrictionByCondition" => {
-                            rls_count += 1;
-                            let cond_node = rc.children().find(|node| {
-                                role_info_element(*node, "condition", Some(RIGHTS_NS))
-                            });
-                            if cond_node
-                                .and_then(|node| node.text())
-                                .unwrap_or("")
-                                .is_empty()
-                            {
-                                report.warn(format!(
-                                    "{obj_name}: RLS condition for '{right_name}' is empty"
-                                ));
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-
-                if right_name.is_empty() {
-                    report.error(format!("{obj_name}: <right> without <name>"));
-                    continue;
-                }
-                if right_value != "true" && right_value != "false" {
-                    report.error(format!(
-                        "{obj_name}: right '{right_name}' has invalid value '{right_value}'"
-                    ));
-                    continue;
-                }
-
-                right_count += 1;
-                if is_nested {
-                    // О раскладке вне закрытой модели наблюдение не судит:
-                    // иначе легальные адреса платформы получают ложное
-                    // предупреждение (см. `nested_right_shape_is_modelled`).
-                    if nested_right_shape_is_modelled(obj_name) {
-                        if let Err(message) = validate_nested_right(obj_name, right_name) {
-                            report.warn(message);
-                        }
-                    }
-                } else {
-                    let valid_rights = role_validate_known_rights(object_type);
-                    if !valid_rights.is_empty() && !valid_rights.contains(&right_name) {
-                        let similar = role_validate_find_similar(right_name, valid_rights);
-                        let suggestion = if similar.is_empty() {
-                            String::new()
-                        } else {
-                            format!(" Did you mean: {}?", similar.join(", "))
-                        };
-                        report.warn(format!(
-                            "{obj_name}: unknown right '{right_name}'.{suggestion}"
-                        ));
-                    } else if !valid_rights.is_empty()
-                        && right_value == "true"
-                        && right_name.ends_with("PredefinedData")
-                    {
-                        report.warn(format!(
-                            "{obj_name}: '{right_name}' = true grants interactive changes to predefined data (predefined data is part of the configuration and should not be available to end users)"
-                        ));
-                    }
-                }
-            }
-        }
-
-        report.ok(format!("{} objects, {right_count} rights", objects.len()));
-        if rls_count > 0 {
-            report.ok(format!("{rls_count} RLS restrictions"));
-        }
-
-        let templates = root
-            .children()
-            .filter(|node| role_info_element(*node, "restrictionTemplate", Some(RIGHTS_NS)))
-            .collect::<Vec<_>>();
-        if !templates.is_empty() {
-            let mut template_names = Vec::<String>::new();
-            for template in &templates {
-                let mut template_name = "";
-                let mut template_condition = "";
-                for child in template.children().filter(|node| node.is_element()) {
-                    if child.tag_name().namespace() != Some(RIGHTS_NS) {
-                        continue;
-                    }
-                    match child.tag_name().name() {
-                        "name" => template_name = child.text().unwrap_or(""),
-                        "condition" => template_condition = child.text().unwrap_or(""),
-                        _ => {}
-                    }
-                }
-                if template_name.is_empty() {
-                    report.warn("Restriction template without <name>");
-                } else {
-                    let short_name = template_name
-                        .find('(')
-                        .filter(|idx| *idx > 0)
-                        .map(|idx| &template_name[..idx])
-                        .unwrap_or(template_name);
-                    template_names.push(short_name.to_string());
-                }
-                if template_condition.is_empty() {
-                    report.warn(format!("Template '{template_name}': empty <condition>"));
-                }
-            }
-            report.ok(format!(
-                "{} templates: {}",
-                templates.len(),
-                template_names.join(", ")
-            ));
-        }
-
-        let mut inferred_role_name = String::new();
-        if metadata_path.is_file() {
-            report.lines.push(String::new());
-            match fs::read_to_string(&metadata_path) {
-                Ok(meta_text) => match Document::parse(meta_text.trim_start_matches('\u{feff}')) {
-                    Ok(meta_doc) => {
-                        if let Some(role_node) = meta_doc
-                            .descendants()
-                            .find(|node| role_info_element(*node, "Role", None))
-                        {
-                            let uuid_val = role_node.attribute("uuid").unwrap_or("");
-                            if is_valid_uuid(uuid_val) {
-                                report.ok(format!("Metadata: UUID valid ({uuid_val})"));
-                            } else {
-                                report.error(format!("Metadata: invalid UUID format '{uuid_val}'"));
-                            }
-
-                            let name_node = role_node
-                                .descendants()
-                                .find(|node| role_info_element(*node, "Name", None));
-                            if let Some(name_text) = name_node.and_then(|node| node.text()) {
-                                if !name_text.is_empty() {
-                                    report.ok(format!("Metadata: Name = {name_text}"));
-                                    inferred_role_name = name_text.to_string();
-                                } else {
-                                    report.error("Metadata: <Name> is empty or missing");
-                                }
-                            } else {
-                                report.error("Metadata: <Name> is empty or missing");
-                            }
-
-                            let syn_node = role_node
-                                .descendants()
-                                .find(|node| role_info_element(*node, "Synonym", None));
-                            if syn_node
-                                .map(|node| node.children().any(|child| child.is_element()))
-                                .unwrap_or(false)
-                            {
-                                report.ok("Metadata: Synonym present");
-                            } else {
-                                report.warn("Metadata: <Synonym> is empty");
-                            }
-                        } else {
-                            report.error("Metadata: <Role> element not found");
-                        }
-                    }
-                    Err(err) => report.error(format!("Metadata XML parse error: {err}")),
-                },
-                Err(err) => report.error(format!("Metadata XML parse error: {err}")),
-            }
-        }
-
-        let config_xml_path = layout.configuration_path;
-        if inferred_role_name.is_empty() {
-            inferred_role_name = layout.role_dir_name;
-        }
-
-        if config_xml_path.exists() {
-            report.lines.push(String::new());
-            match fs::read_to_string(&config_xml_path) {
-                Ok(config_text) => {
-                    match Document::parse(config_text.trim_start_matches('\u{feff}')) {
-                        Ok(cfg_doc) => {
-                            if let Some(child_obj) = cfg_doc.descendants().find(|node| {
-                                role_info_element(
-                                    *node,
-                                    "ChildObjects",
-                                    Some("http://v8.1c.ru/8.3/MDClasses"),
-                                ) && node.ancestors().any(|ancestor| {
-                                    role_info_element(
-                                        ancestor,
-                                        "Configuration",
-                                        Some("http://v8.1c.ru/8.3/MDClasses"),
-                                    )
-                                })
-                            }) {
-                                let found = child_obj.children().any(|node| {
-                                    role_info_element(
-                                        node,
-                                        "Role",
-                                        Some("http://v8.1c.ru/8.3/MDClasses"),
-                                    ) && node.text().unwrap_or("") == inferred_role_name
-                                });
-                                if found {
-                                    report.ok(format!(
-                                    "Configuration.xml: <Role>{inferred_role_name}</Role> registered"
-                                ));
-                                } else {
-                                    report.warn(format!(
-                                    "Configuration.xml: <Role>{inferred_role_name}</Role> NOT found in ChildObjects"
-                                ));
-                                }
-                            }
-                        }
-                        Err(err) => report.warn(format!("Configuration.xml: parse error — {err}")),
-                    }
-                }
-                Err(err) => report.warn(format!("Configuration.xml: parse error — {err}")),
-            }
-        }
-
-        let ok = report.errors == 0;
-        let text = report.finish(&inferred_role_name);
-        Ok((ok, text, rights_path))
+        let reader =
+            unica_workspace::discovery::ProjectDiscoveryReader::new(&context.workspace_root);
+        validate_role_source(&reader, rights_path, detailed)
     })();
 
     match result {
@@ -1002,98 +313,6 @@ pub(crate) fn validate_role(
             command: None,
         },
     }
-}
-
-pub(crate) fn role_validate_object_type(name: &str) -> &str {
-    name.split_once('.')
-        .map(|(prefix, _)| prefix)
-        .unwrap_or(name)
-}
-
-pub(crate) fn role_validate_find_similar(needle: &str, haystack: &[&str]) -> Vec<String> {
-    let needle_lower = needle.to_lowercase();
-    let mut result = Vec::new();
-    for item in haystack {
-        let item_lower = item.to_lowercase();
-        if needle_lower.contains(&item_lower) || item_lower.contains(&needle_lower) {
-            result.push((*item).to_string());
-        }
-        if result.len() >= 3 {
-            break;
-        }
-    }
-    result
-}
-
-pub(crate) fn role_validate_known_rights(object_type: &str) -> &'static [&'static str] {
-    known_role_rights(object_type)
-}
-
-const ROLE_RIGHTS_NAMESPACE: &str = "http://v8.1c.ru/8.2/roles";
-const ROLE_METADATA_NAMESPACE: &str = "http://v8.1c.ru/8.3/MDClasses";
-const XSI_NAMESPACE: &str = "http://www.w3.org/2001/XMLSchema-instance";
-
-/// `lang` is the `LanguageCode` the synonym is written in.
-pub(crate) fn role_metadata_xml(
-    role_name: &str,
-    synonym: &str,
-    comment: &str,
-    format_version: &str,
-    uid: &str,
-    lang: &str,
-) -> String {
-    let mut lines = Vec::<String>::new();
-    lines.push("<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string());
-    lines.push("<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\"".to_string());
-    lines.push("        xmlns:app=\"http://v8.1c.ru/8.2/managed-application/core\"".to_string());
-    lines.push(
-        "        xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\"".to_string(),
-    );
-    lines.push("        xmlns:cmi=\"http://v8.1c.ru/8.2/managed-application/cmi\"".to_string());
-    lines.push("        xmlns:ent=\"http://v8.1c.ru/8.1/data/enterprise\"".to_string());
-    lines.push("        xmlns:lf=\"http://v8.1c.ru/8.2/managed-application/logform\"".to_string());
-    lines.push("        xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\"".to_string());
-    lines.push("        xmlns:sys=\"http://v8.1c.ru/8.1/data/ui/fonts/system\"".to_string());
-    lines.push("        xmlns:v8=\"http://v8.1c.ru/8.1/data/core\"".to_string());
-    lines.push("        xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\"".to_string());
-    lines.push("        xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\"".to_string());
-    lines.push("        xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\"".to_string());
-    lines.push("        xmlns:xen=\"http://v8.1c.ru/8.3/xcf/enums\"".to_string());
-    lines.push("        xmlns:xpr=\"http://v8.1c.ru/8.3/xcf/predef\"".to_string());
-    lines.push("        xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\"".to_string());
-    lines.push("        xmlns:xs=\"http://www.w3.org/2001/XMLSchema\"".to_string());
-    lines.push("        xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"".to_string());
-    lines.push(format!("        version=\"{format_version}\">"));
-    lines.push(format!("    <Role uuid=\"{uid}\">"));
-    lines.push("        <Properties>".to_string());
-    lines.push(format!(
-        "            <Name>{}</Name>",
-        escape_xml(role_name)
-    ));
-    lines.push("            <Synonym>".to_string());
-    lines.push("                <v8:item>".to_string());
-    lines.push(format!(
-        "                    <v8:lang>{}</v8:lang>",
-        escape_xml(lang)
-    ));
-    lines.push(format!(
-        "                    <v8:content>{}</v8:content>",
-        escape_xml(synonym)
-    ));
-    lines.push("                </v8:item>".to_string());
-    lines.push("            </Synonym>".to_string());
-    if comment.is_empty() {
-        lines.push("            <Comment/>".to_string());
-    } else {
-        lines.push(format!(
-            "            <Comment>{}</Comment>",
-            escape_xml(comment)
-        ));
-    }
-    lines.push("        </Properties>".to_string());
-    lines.push("    </Role>".to_string());
-    lines.push("</MetaDataObject>".to_string());
-    format!("{}\n", lines.join("\n"))
 }
 
 pub(crate) fn invoke_read(
@@ -1216,7 +435,7 @@ pub(crate) fn resolve_role_edit_guard_path(
 
 fn resolve_role_descriptor(
     source_set: &str,
-    metadata_path: &crate::domain::source_target::MetadataAddress,
+    metadata_path: &unica_address::source_target::MetadataAddress,
     context: &WorkspaceContext,
 ) -> Result<(ClosedPlatformXmlTarget, PlatformXmlResourceEvidence), RoleResolutionFailure> {
     if !metadata_path.as_str().starts_with("Role.") {
@@ -1457,7 +676,7 @@ fn role_edit_failure(
 }
 
 fn plan_role_edit(
-    request: &crate::domain::role::RoleEditRequest,
+    request: &unica_roles::RoleEditRequest,
     context: &WorkspaceContext,
 ) -> Result<RoleEditPlan, (&'static str, String, Option<usize>)> {
     let (_handle, evidence) =
@@ -1722,1256 +941,19 @@ fn prove_role_rights_path(
     prove_attached_resource(evidence, "Rights.xml", context).map_err(|failure| failure.to_string())
 }
 
-fn validate_role_edit_descriptor(raw: &[u8], role_name: &str) -> Result<(), String> {
-    let (_, text) = decode_role_xml(raw)?;
-    let document =
-        Document::parse(&text).map_err(|_| "role descriptor is not well-formed XML".to_string())?;
-    let root = document.root_element();
-    if root.tag_name().name() != "MetaDataObject"
-        || root.tag_name().namespace() != Some(ROLE_METADATA_NAMESPACE)
-        || crate::infrastructure::platform_xml_owner::root_version_literal(&text, root).as_deref()
-            != Some("2.20")
-    {
-        return Err("role descriptor must use exact MDClasses format 2.20".to_string());
-    }
-    let roles = direct_role_children(root, "Role", ROLE_METADATA_NAMESPACE);
-    if roles.len() != 1 {
-        return Err("role descriptor must contain exactly one direct Role".to_string());
-    }
-    let properties = direct_role_children(roles[0], "Properties", ROLE_METADATA_NAMESPACE);
-    if properties.len() != 1 {
-        return Err("Role must contain exactly one direct Properties element".to_string());
-    }
-    let names = direct_role_children(properties[0], "Name", ROLE_METADATA_NAMESPACE);
-    if names.len() != 1 || role_text_content(names[0]) != role_name {
-        return Err("Role.Properties.Name does not match metadataPath".to_string());
-    }
-    Ok(())
-}
-
-pub(crate) fn decode_role_xml(raw: &[u8]) -> Result<(bool, String), String> {
-    let (bom, body) = if raw.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        (true, &raw[3..])
-    } else {
-        (false, raw)
-    };
-    let text = std::str::from_utf8(body)
-        .map_err(|_| "role XML must be UTF-8 with an optional BOM".to_string())?;
-    Ok((bom, text.to_string()))
-}
-
-pub(crate) fn encode_role_xml(bom: bool, body: &str) -> Vec<u8> {
-    let mut output = Vec::with_capacity(body.len() + usize::from(bom) * 3);
-    if bom {
-        output.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
-    }
-    output.extend_from_slice(body.as_bytes());
-    output
-}
-
-fn direct_role_children<'a, 'input>(
-    node: roxmltree::Node<'a, 'input>,
-    name: &str,
-    namespace: &str,
-) -> Vec<roxmltree::Node<'a, 'input>> {
-    node.children()
-        .filter(|child| {
-            child.is_element()
-                && child.tag_name().name() == name
-                && child.tag_name().namespace() == Some(namespace)
-        })
-        .collect()
-}
-
-fn role_text_content(node: roxmltree::Node<'_, '_>) -> String {
-    node.descendants()
-        .filter(|descendant| descendant.is_text())
-        .filter_map(|descendant| descendant.text())
-        .collect()
-}
-
-fn role_direct_boolean(node: roxmltree::Node<'_, '_>) -> Option<bool> {
-    let mut text_nodes = node.children().filter(|child| child.is_text());
-    let value = text_nodes.next()?.text()?;
-    if text_nodes.next().is_some() {
-        return None;
-    }
-    match value {
-        "true" => Some(true),
-        "false" => Some(false),
-        _ => None,
-    }
-}
-
-/// Чьё значение права обязано быть булевым. Прообраз источника писателю не
-/// принадлежит: небулевое значение соседнего права — свойство исходника, а не
-/// дефект мутации, и запрещать им правку другого права нельзя. Пост-образ
-/// строго проверяется ровно там, где писатель менял байты.
-#[derive(Clone, Copy)]
-pub(crate) enum RoleValueScope<'a> {
-    SourceImage,
-    WrittenRights(&'a [(String, String)]),
-}
-
-impl RoleValueScope<'_> {
-    fn requires_boolean(self, object_name: &str, right_name: &str) -> bool {
-        match self {
-            Self::SourceImage => false,
-            Self::WrittenRights(written) => written
-                .iter()
-                .any(|(object, right)| object == object_name && right == right_name),
-        }
-    }
-}
-
-pub(crate) fn validate_role_rights_document(
-    text: &str,
-    values: RoleValueScope<'_>,
-) -> Result<(), String> {
-    let document =
-        Document::parse(text).map_err(|_| "Rights.xml is not well-formed XML".to_string())?;
-    let root = document.root_element();
-    let namespace = root.tag_name().namespace().unwrap_or("");
-    if (namespace, root.tag_name().name()) != (ROLE_RIGHTS_NAMESPACE, "Rights")
-        || platform_xml_publication_policy(namespace, root.tag_name().name())
-            != Some(PlatformXmlPublicationPolicy::ExactRootVersion)
-        || crate::infrastructure::platform_xml_owner::root_version_literal(text, root).as_deref()
-            != Some("2.20")
-        || root.attribute((XSI_NAMESPACE, "type")) != Some("Rights")
-    {
-        return Err("Rights.xml must use exact roles format 2.20".to_string());
-    }
-    for flag in [
-        "setForNewObjects",
-        "setForAttributesByDefault",
-        "independentRightsOfChildObjects",
-    ] {
-        let nodes = direct_role_children(root, flag, ROLE_RIGHTS_NAMESPACE);
-        if nodes.len() != 1 || role_direct_boolean(nodes[0]).is_none() {
-            return Err(format!(
-                "Rights.xml must contain one direct boolean `{flag}` element"
-            ));
-        }
-    }
-
-    let mut seen_objects = HashSet::new();
-    for object in direct_role_children(root, "object", ROLE_RIGHTS_NAMESPACE) {
-        let names = direct_role_children(object, "name", ROLE_RIGHTS_NAMESPACE);
-        if names.len() > 1 {
-            return Err("a direct role object must not have duplicate direct names".to_string());
-        }
-        let Some(name) = names.first() else {
-            continue;
-        };
-        let object_name = role_text_content(*name);
-        if object_name.is_empty() {
-            continue;
-        }
-        if !seen_objects.insert(object_name.clone()) {
-            return Err(format!("duplicate role object `{object_name}`"));
-        }
-        let mut seen_rights = HashSet::new();
-        for right in direct_role_children(object, "right", ROLE_RIGHTS_NAMESPACE) {
-            let names = direct_role_children(right, "name", ROLE_RIGHTS_NAMESPACE);
-            if names.len() > 1 {
-                return Err(format!(
-                    "a right of `{object_name}` must not have duplicate direct names"
-                ));
-            }
-            let Some(name) = names.first() else {
-                continue;
-            };
-            let right_name = role_text_content(*name);
-            if right_name.is_empty() {
-                continue;
-            }
-            if !seen_rights.insert(right_name.clone()) {
-                return Err(format!(
-                    "duplicate right `{right_name}` for object `{object_name}`"
-                ));
-            }
-            let value_nodes = direct_role_children(right, "value", ROLE_RIGHTS_NAMESPACE);
-            if value_nodes.len() != 1 {
-                return Err(format!(
-                    "right `{right_name}` of `{object_name}` must have one direct value"
-                ));
-            }
-            if values.requires_boolean(&object_name, &right_name)
-                && role_direct_boolean(value_nodes[0]).is_none()
-            {
-                return Err(format!(
-                    "right `{right_name}` of `{object_name}` must have a boolean value"
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
-enum RoleTextEdit {
-    Replace(std::ops::Range<usize>, String),
-    Insert(usize, String),
-    Remove(std::ops::Range<usize>),
-    None,
-}
-
-pub(crate) fn apply_role_edit_operation(
-    text: &str,
-    operation: &crate::domain::role::RoleEditOperation,
-    operation_index: usize,
-) -> Result<(String, RoleEditEffect), String> {
-    let document =
-        Document::parse(text).map_err(|_| "Rights.xml is not well-formed XML".to_string())?;
-    let root = document.root_element();
-    let mut objects = direct_role_children(root, "object", ROLE_RIGHTS_NAMESPACE)
-        .into_iter()
-        .filter(|object| {
-            let names = direct_role_children(*object, "name", ROLE_RIGHTS_NAMESPACE);
-            names.len() == 1
-                && role_text_content(names[0]).as_str() == operation.object_name.as_str()
-        })
-        .collect::<Vec<_>>();
-    if objects.len() > 1 {
-        return Err(format!(
-            "role object `{}` is ambiguous",
-            operation.object_name
-        ));
-    }
-    let mut segments = operation.object_name.split('.');
-    let top_level =
-        segments.next().is_some() && segments.next().is_some() && segments.next().is_none();
-    let data_processor_cascade = !operation.value
-        && operation.right == "Use"
-        && top_level
-        && operation.object_name.starts_with("DataProcessor.");
-    // ibcmd 8.3.27.2074 хранит объектное право только при значении, отличном
-    // от умолчания роли (`setForNewObjects`), и выбрасывает опустевший блок
-    // `object`; явное право с умолчанием — не платформенная форма, и запись
-    // до умолчания выражается удалением элемента.
-    let stores_to_default =
-        top_level && !data_processor_cascade && operation.value == role_set_for_new_objects(root);
-    let Some(object) = objects.pop() else {
-        if data_processor_cascade {
-            return Ok((
-                text.to_string(),
-                RoleEditEffect {
-                    operation_index,
-                    operation: "setRight",
-                    object_name: operation.object_name.clone(),
-                    right: operation.right.clone(),
-                    before: None,
-                    after: false,
-                    action: RoleEditEffectAction::RemoveObject,
-                    changed: false,
-                },
-            ));
-        }
-        if stores_to_default {
-            return Ok((
-                text.to_string(),
-                RoleEditEffect {
-                    operation_index,
-                    operation: "setRight",
-                    object_name: operation.object_name.clone(),
-                    right: operation.right.clone(),
-                    before: None,
-                    after: operation.value,
-                    action: RoleEditEffectAction::SetRight,
-                    changed: false,
-                },
-            ));
-        }
-        return Err(format!(
-            "role object `{}` was not found",
-            operation.object_name
-        ));
-    };
-
-    let matching_rights = direct_role_children(object, "right", ROLE_RIGHTS_NAMESPACE)
-        .into_iter()
-        .filter(|right| {
-            let names = direct_role_children(*right, "name", ROLE_RIGHTS_NAMESPACE);
-            names.len() == 1 && role_text_content(names[0]).as_str() == operation.right.as_str()
-        })
-        .collect::<Vec<_>>();
-    if matching_rights.len() > 1 {
-        return Err(format!(
-            "right `{}` of `{}` is ambiguous",
-            operation.right, operation.object_name
-        ));
-    }
-    let before = matching_rights.first().and_then(|right| {
-        let values = direct_role_children(*right, "value", ROLE_RIGHTS_NAMESPACE);
-        (values.len() == 1)
-            .then(|| role_direct_boolean(values[0]))
-            .flatten()
-    });
-
-    let removes_whole_block = stores_to_default
-        && matching_rights.len() == 1
-        && before != Some(operation.value)
-        && direct_role_children(object, "right", ROLE_RIGHTS_NAMESPACE).len() == 1
-        && object.children().filter(|child| child.is_element()).count() == 2;
-    // `removeObject` — только платформенное правило DataProcessor; каноническое
-    // опустошение блока остаётся логическим `setRight`: физическая форма
-    // хранения не меняет смысла операции.
-    let action = if data_processor_cascade {
-        RoleEditEffectAction::RemoveObject
-    } else {
-        RoleEditEffectAction::SetRight
-    };
-    let edit = if data_processor_cascade {
-        RoleTextEdit::Remove(line_aware_removal_range(text, object.range()))
-    } else if let Some(right) = matching_rights.first() {
-        if before == Some(operation.value) {
-            RoleTextEdit::None
-        } else if stores_to_default {
-            // Переход к умолчанию — удаление элемента: платформа хранит только
-            // отличающиеся права, а опустевший блок `object` не переживает её
-            // экспорт. Блок с неизвестными детьми сохраняется — уходит лишь
-            // само право.
-            if removes_whole_block {
-                RoleTextEdit::Remove(line_aware_removal_range(text, object.range()))
-            } else {
-                RoleTextEdit::Remove(line_aware_removal_range(text, right.range()))
-            }
-        } else {
-            let values = direct_role_children(*right, "value", ROLE_RIGHTS_NAMESPACE);
-            if values.len() != 1 {
-                return Err(format!(
-                    "right `{}` of `{}` must have one direct value",
-                    operation.right, operation.object_name
-                ));
-            }
-            let value = values[0];
-            let range = value.range();
-            let raw = &text[range.clone()];
-            if raw.trim_end().ends_with("/>") {
-                let trimmed_end = raw.trim_end().len();
-                let slash = raw[..trimmed_end]
-                    .rfind("/>")
-                    .ok_or_else(|| "role value self-closing tag is malformed".to_string())?;
-                let name_start = raw
-                    .find('<')
-                    .map(|offset| offset + 1)
-                    .ok_or_else(|| "role value opening tag is malformed".to_string())?;
-                let name_end = raw[name_start..]
-                    .find(|character: char| {
-                        character.is_whitespace() || matches!(character, '/' | '>')
-                    })
-                    .map(|offset| name_start + offset)
-                    .ok_or_else(|| "role value QName is malformed".to_string())?;
-                let qualified_name = &raw[name_start..name_end];
-                RoleTextEdit::Replace(
-                    range,
-                    format!(
-                        "{}>{}</{}>{}",
-                        raw[..slash].trim_end(),
-                        operation.value,
-                        qualified_name,
-                        &raw[trimmed_end..]
-                    ),
-                )
-            } else if value.children().next().is_none() {
-                // `<value></value>` инфосет-эквивалентен self-closing форме:
-                // текст значения вставляется внутрь существующих тегов.
-                let open_end = raw
-                    .find('>')
-                    .map(|offset| range.start + offset + 1)
-                    .ok_or_else(|| "role value opening tag is malformed".to_string())?;
-                RoleTextEdit::Insert(open_end, operation.value.to_string())
-            } else {
-                let text_nodes = value
-                    .children()
-                    .filter(|child| child.is_text())
-                    .collect::<Vec<_>>();
-                if text_nodes.len() != 1 || !matches!(text_nodes[0].text(), Some("true" | "false"))
-                {
-                    return Err(format!(
-                        "right `{}` of `{}` must have one direct boolean text value",
-                        operation.right, operation.object_name
-                    ));
-                }
-                RoleTextEdit::Replace(text_nodes[0].range(), operation.value.to_string())
-            }
-        }
-    } else if stores_to_default {
-        // Отсутствующее право уже несёт умолчание роли: запись того же
-        // значения — семантический no-op без нормализации чужих байтов.
-        RoleTextEdit::None
-    } else {
-        let (offset, insertion) = right_insertion(text, object, &operation.right, operation.value)?;
-        RoleTextEdit::Insert(offset, insertion)
-    };
-    drop(document);
-
-    let mut updated = text.to_string();
-    let changed = !matches!(edit, RoleTextEdit::None);
-    match edit {
-        RoleTextEdit::Replace(range, replacement) => updated.replace_range(range, &replacement),
-        RoleTextEdit::Insert(offset, insertion) => updated.insert_str(offset, &insertion),
-        RoleTextEdit::Remove(range) => updated.replace_range(range, ""),
-        RoleTextEdit::None => {}
-    }
-    Ok((
-        updated,
-        RoleEditEffect {
-            operation_index,
-            operation: "setRight",
-            object_name: operation.object_name.clone(),
-            right: operation.right.clone(),
-            before,
-            after: operation.value,
-            action,
-            changed,
-        },
-    ))
-}
-
-fn role_set_for_new_objects(root: roxmltree::Node<'_, '_>) -> bool {
-    direct_role_children(root, "setForNewObjects", ROLE_RIGHTS_NAMESPACE)
-        .first()
-        .and_then(|node| role_direct_boolean(*node))
-        .unwrap_or(false)
-}
-
-fn line_aware_removal_range(text: &str, range: std::ops::Range<usize>) -> std::ops::Range<usize> {
-    // Начало и конец строки считаются по `\r|\n`, как в `right_insertion`:
-    // CR-only файл иначе оставлял бы после удаления пустую строку с отступом.
-    let bytes = text.as_bytes();
-    let line_start = bytes[..range.start]
-        .iter()
-        .rposition(|byte| matches!(byte, b'\r' | b'\n'))
-        .map(|offset| offset + 1)
-        .unwrap_or(0);
-    let starts_on_own_line = text[line_start..range.start]
-        .chars()
-        .all(|character| matches!(character, ' ' | '\t'));
-    let next_break = bytes[range.end..]
-        .iter()
-        .position(|byte| matches!(byte, b'\r' | b'\n'))
-        .map(|offset| range.end + offset);
-    let ends_on_own_line = next_break.is_some_and(|line_end| {
-        text[range.end..line_end]
-            .chars()
-            .all(|character| matches!(character, ' ' | '\t'))
-    });
-
-    if starts_on_own_line && ends_on_own_line {
-        let line_end = next_break.expect("ends_on_own_line requires a line break");
-        let after = if text[line_end..].starts_with("\r\n") {
-            line_end + 2
-        } else {
-            line_end + 1
-        };
-        line_start..after
-    } else {
-        range
-    }
-}
-
-fn right_insertion(
-    text: &str,
-    object: roxmltree::Node<'_, '_>,
-    right_name: &str,
-    value: bool,
-) -> Result<(usize, String), String> {
-    let range = object.range();
-    let raw = &text[range.clone()];
-    let direct_rights = direct_role_children(object, "right", ROLE_RIGHTS_NAMESPACE);
-    let object_prefix = lexical_role_prefix(text, object)?;
-    // The object's own QName binding is necessarily in scope for inserted
-    // descendants. A prefix copied from an existing right can be declared on
-    // that sibling only and would be unbound on the newly emitted element.
-    let right_prefix = object_prefix.clone();
-    let name_prefix = object_prefix.clone();
-    let value_prefix = object_prefix;
-    let close_relative = raw
-        .rfind("</")
-        .ok_or_else(|| "role object closing tag is malformed".to_string())?;
-    let close = range.start + close_relative;
-    let line_start = text.as_bytes()[..close]
-        .iter()
-        .rposition(|byte| matches!(byte, b'\r' | b'\n'))
-        .map(|offset| offset + 1)
-        .unwrap_or(close);
-    let has_line_layout = line_start < close
-        && text[line_start..close]
-            .chars()
-            .all(|character| character == ' ' || character == '\t' || character == '\r');
-    if !has_line_layout {
-        return Ok((
-            close,
-            format!(
-                "<{right_prefix}right><{name_prefix}name>{right_name}</{name_prefix}name><{value_prefix}value>{value}</{value_prefix}value></{right_prefix}right>"
-            ),
-        ));
-    }
-    let closing_indent = text[line_start..close].trim_end_matches('\r');
-    let eol = role_source_eol(text)?;
-    let right_indent = direct_rights
-        .first()
-        .map(|right| line_indent(text, right.range().start))
-        .or_else(|| {
-            direct_role_children(object, "name", ROLE_RIGHTS_NAMESPACE)
-                .first()
-                .map(|name| line_indent(text, name.range().start))
-        })
-        .filter(|indent| !indent.is_empty())
-        .unwrap_or_else(|| format!("{closing_indent}\t"));
-    let child_indent = format!("{right_indent}\t");
-    Ok((
-        line_start,
-        format!(
-            "{right_indent}<{right_prefix}right>{eol}{child_indent}<{name_prefix}name>{right_name}</{name_prefix}name>{eol}{child_indent}<{value_prefix}value>{value}</{value_prefix}value>{eol}{right_indent}</{right_prefix}right>{eol}"
-        ),
-    ))
-}
-
-fn role_source_eol(text: &str) -> Result<&'static str, String> {
-    let snapshot = SourceTextSnapshot::from_bytes(text.as_bytes())
-        .map_err(|error| format!("unsupported_node: {error}"))?;
-    let policy = if snapshot.line_endings() == LineEndingProfile::None {
-        EolPolicy::Lf
-    } else {
-        EolPolicy::Preserve
-    };
-    resolve_line_ending(policy, &snapshot, None)
-        .map(|ending| ending.as_str())
-        .map_err(|error| format!("unsupported_node: {error}"))
-}
-
-fn lexical_role_prefix(text: &str, node: roxmltree::Node<'_, '_>) -> Result<String, String> {
-    let raw = &text[node.range()];
-    let name_start = raw
-        .find('<')
-        .map(|offset| offset + 1)
-        .ok_or_else(|| "role element opening tag is malformed".to_string())?;
-    let name_end = raw[name_start..]
-        .find(|character: char| character.is_whitespace() || matches!(character, '/' | '>'))
-        .map(|offset| name_start + offset)
-        .ok_or_else(|| "role element QName is malformed".to_string())?;
-    let qname = &raw[name_start..name_end];
-    Ok(qname
-        .rsplit_once(':')
-        .map(|(prefix, _)| format!("{prefix}:"))
-        .unwrap_or_default())
-}
-
-fn line_indent(text: &str, offset: usize) -> String {
-    let start = text[..offset]
-        .rfind('\n')
-        .map(|index| index + 1)
-        .unwrap_or(0);
-    text[start..offset]
-        .chars()
-        .take_while(|character| matches!(character, ' ' | '\t' | '\r'))
-        .filter(|character| *character != '\r')
-        .collect()
-}
-
 #[cfg(test)]
 pub(crate) mod role_edit_contract_tests {
-    use super::super::single_file_publisher::{with_publish_failpoints, PublishCheckpoint};
     use super::*;
+    use unica_roles_designer::test_support::{operation, rights_xml, validate_every_role_value};
+    use unica_workspace::single_file_publisher::{with_publish_failpoints, PublishCheckpoint};
 
-    /// В фикстурах тестов документ целиком принадлежит писателю, поэтому
-    /// булевость требуется от каждого права: строгость прежнего флага
-    /// сохраняется, а продуктовый контракт остаётся адресным.
-    fn validate_every_role_value(text: &str) -> Result<(), String> {
-        let pairs = match Document::parse(text) {
-            Ok(document) => {
-                direct_role_children(document.root_element(), "object", ROLE_RIGHTS_NAMESPACE)
-                    .into_iter()
-                    .flat_map(|object| {
-                        let object_name =
-                            direct_role_children(object, "name", ROLE_RIGHTS_NAMESPACE)
-                                .first()
-                                .map(|node| role_text_content(*node))
-                                .unwrap_or_default();
-                        direct_role_children(object, "right", ROLE_RIGHTS_NAMESPACE)
-                            .into_iter()
-                            .map(move |right| {
-                                let right_name =
-                                    direct_role_children(right, "name", ROLE_RIGHTS_NAMESPACE)
-                                        .first()
-                                        .map(|node| role_text_content(*node))
-                                        .unwrap_or_default();
-                                (object_name.clone(), right_name)
-                            })
-                    })
-                    .collect::<Vec<_>>()
-            }
-            Err(_) => Vec::new(),
-        };
-        validate_role_rights_document(text, RoleValueScope::WrittenRights(&pairs))
-    }
-
-    use crate::infrastructure::platform::testing::{
-        create_dir_symlink_for_test, create_file_symlink_for_test, remove_dir_symlink_for_test,
-    };
     use serde_json::json;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use unica_workspace::test_support::{
+        create_dir_symlink_for_test, create_file_symlink_for_test, remove_dir_symlink_for_test,
+    };
 
     static NONCE: AtomicU64 = AtomicU64::new(0);
-
-    fn operation(
-        object_name: &str,
-        right: &str,
-        value: bool,
-    ) -> crate::domain::role::RoleEditOperation {
-        crate::domain::role::RoleEditOperation {
-            object_name: object_name.to_string(),
-            right: right.to_string(),
-            value,
-        }
-    }
-
-    fn rights_xml(eol: &str, self_closing: &str) -> String {
-        [
-            r#"<Rights xmlns="http://v8.1c.ru/8.2/roles" xmlns:r="http://v8.1c.ru/8.2/roles" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="Rights" version="2.20">"#,
-            "\t<setForNewObjects>false</setForNewObjects>",
-            "\t<setForAttributesByDefault>true</setForAttributesByDefault>",
-            "\t<independentRightsOfChildObjects>false</independentRightsOfChildObjects>",
-            "\t<object>",
-            "\t\t<name>Catalog.Demo</name>",
-            "\t\t<future><name>Delete</name><value>false</value></future>",
-            "\t\t<right>",
-            "\t\t\t<name>Delete</name>",
-            &format!("\t\t\t{self_closing}"),
-            "\t\t\t<restrictionByCondition><condition>WHERE false</condition></restrictionByCondition>",
-            "\t\t</right>",
-            "\t\t<right><name>FuturePlatformRight</name><value>true</value><future/></right>",
-            "\t</object>",
-            "\t<object>",
-            "\t\t<name>DataProcessor.Worker</name>",
-            "\t\t<right><name>Use</name><value>true</value></right>",
-            "\t\t<right><name>View</name><value>true</value></right>",
-            "\t</object>",
-            "\t<restrictionTemplate><name>Keep</name><condition>TRUE</condition></restrictionTemplate>",
-            "</Rights>",
-        ]
-        .join(eol)
-    }
-
-    #[test]
-    fn rights_profile_requires_registered_root_and_unprefixed_rights_xsi_type() {
-        let valid = rights_xml("\n", "<value>true</value>");
-        validate_every_role_value(&valid).unwrap();
-
-        let alias = valid
-            .replace("xmlns:xsi=", "xmlns:schemaInstance=")
-            .replace("xsi:type=", "schemaInstance:type=");
-        validate_every_role_value(&alias).unwrap();
-
-        for invalid in [
-            valid.replace(" xsi:type=\"Rights\"", ""),
-            valid.replace("xsi:type=\"Rights\"", "xsi:type=\"Role\""),
-            valid.replace(
-                "xsi:type=\"Rights\"",
-                "xmlns:roles=\"http://v8.1c.ru/8.2/roles\" xsi:type=\"roles:Rights\"",
-            ),
-            valid
-                .replace(
-                    "<Rights xmlns=\"http://v8.1c.ru/8.2/roles\"",
-                    "<PredefinedData xmlns=\"http://v8.1c.ru/8.3/xcf/predef\"",
-                )
-                .replace("</Rights>", "</PredefinedData>"),
-        ] {
-            assert!(
-                validate_every_role_value(&invalid).is_err(),
-                "accepted incompatible root contract: {invalid}"
-            );
-        }
-    }
-
-    #[test]
-    fn role_identity_matching_uses_complete_xml_string_values() {
-        let body = rights_xml("\n", "<value>true</value>");
-        let misleading_object = body.replacen(
-            "<name>Catalog.Demo</name>",
-            "<name>Catalog.Demo<!--future-->Suffix</name>",
-            1,
-        );
-        let error = apply_role_edit_operation(
-            &misleading_object,
-            &operation("Catalog.Demo", "Delete", true),
-            0,
-        )
-        .expect_err("a prefix text node must not identify the role object");
-        assert!(error.contains("was not found"), "{error}");
-        validate_every_role_value(&misleading_object).unwrap();
-
-        let misleading_right = body.replacen(
-            "\t\t\t<name>Delete</name>",
-            "\t\t\t<name>Delete<!--future-->Suffix</name>",
-            1,
-        );
-        let (updated, effect) = apply_role_edit_operation(
-            &misleading_right,
-            &operation("Catalog.Demo", "Delete", true),
-            0,
-        )
-        .unwrap();
-        assert_eq!(effect.before, None);
-        assert!(effect.changed);
-        assert!(updated.contains("<name>Delete<!--future-->Suffix</name>"));
-        let document = Document::parse(&updated).unwrap();
-        let object =
-            direct_role_children(document.root_element(), "object", ROLE_RIGHTS_NAMESPACE)[0];
-        let right_names = direct_role_children(object, "right", ROLE_RIGHTS_NAMESPACE)
-            .into_iter()
-            .map(|right| {
-                role_text_content(direct_role_children(right, "name", ROLE_RIGHTS_NAMESPACE)[0])
-            })
-            .collect::<Vec<_>>();
-        assert!(right_names.iter().any(|name| name == "DeleteSuffix"));
-        assert!(right_names.iter().any(|name| name == "Delete"));
-        validate_every_role_value(&updated).unwrap();
-
-        let descriptor = format!(
-            r#"<MetaDataObject xmlns="{ROLE_METADATA_NAMESPACE}" version="2.20"><Role><Properties><Name>Demo<!--future-->Suffix</Name></Properties></Role></MetaDataObject>"#
-        );
-        assert!(validate_role_edit_descriptor(descriptor.as_bytes(), "Demo").is_err());
-        validate_role_edit_descriptor(descriptor.as_bytes(), "DemoSuffix").unwrap();
-        let encoded_version = descriptor.replace("version=\"2.20\"", "version=\"2.2&#48;\"");
-        assert!(validate_role_edit_descriptor(encoded_version.as_bytes(), "DemoSuffix").is_err());
-
-        let split_boolean =
-            body.replacen("<value>true</value>", "<value>tr<!--future-->ue</value>", 1);
-        validate_role_rights_document(&split_boolean, RoleValueScope::SourceImage).unwrap();
-        assert!(validate_every_role_value(&split_boolean).is_err());
-        let error = apply_role_edit_operation(
-            &split_boolean,
-            &operation("Catalog.Demo", "Delete", true),
-            0,
-        )
-        .expect_err("a split boolean must not have a distinct no-op interpretation");
-        assert!(error.contains("one direct boolean text value"), "{error}");
-    }
-
-    #[test]
-    fn right_insertion_rejects_mixed_eol_and_preserves_uniform_lone_cr() {
-        let mixed = rights_xml("\n", "<value>true</value>").replacen('\n', "\r\n", 1);
-        let mixed_document = Document::parse(&mixed).unwrap();
-        let mixed_object = direct_role_children(
-            mixed_document.root_element(),
-            "object",
-            ROLE_RIGHTS_NAMESPACE,
-        )[0];
-        let error = right_insertion(&mixed, mixed_object, "Edit", true)
-            .expect_err("mixed EOL must not choose a global fallback");
-        assert!(error.contains("ambiguous"), "{error}");
-
-        let lone_cr = rights_xml("\r", "<value>true</value>");
-        let lone_cr_document = Document::parse(&lone_cr).unwrap();
-        let lone_cr_object = direct_role_children(
-            lone_cr_document.root_element(),
-            "object",
-            ROLE_RIGHTS_NAMESPACE,
-        )[0];
-        let (_, insertion) = right_insertion(&lone_cr, lone_cr_object, "Edit", true).unwrap();
-        assert!(insertion.contains('\r'));
-        assert!(!insertion.contains('\n'));
-    }
-
-    #[test]
-    fn range_writer_uses_direct_children_and_preserves_unknown_xml_bom_and_eol() {
-        for (self_closing, expected_value) in [
-            ("<value/>", "<value>true</value>"),
-            ("<value />", "<value>true</value>"),
-            ("<value></value>", "<value>true</value>"),
-            (
-                "<r:value future=\"x\"/>",
-                "<r:value future=\"x\">true</r:value>",
-            ),
-        ] {
-            let body = rights_xml("\r\n", self_closing);
-            let (updated, effect) =
-                apply_role_edit_operation(&body, &operation("Catalog.Demo", "Delete", true), 0)
-                    .unwrap();
-            assert_eq!(effect.before, None);
-            assert!(effect.changed);
-            assert!(updated.contains(expected_value), "{updated}");
-            assert!(updated.contains("<future><name>Delete</name><value>false</value></future>"));
-            assert!(updated.contains("restrictionByCondition"));
-            assert!(updated.contains("FuturePlatformRight"));
-            assert!(updated.contains("restrictionTemplate"));
-            assert!(!updated.replace("\r\n", "").contains('\n'));
-            validate_every_role_value(&updated).unwrap();
-
-            let encoded = encode_role_xml(true, &updated);
-            assert!(encoded.starts_with(&[0xEF, 0xBB, 0xBF]));
-        }
-    }
-
-    #[test]
-    fn range_writer_replaces_only_boolean_text_and_preserves_value_markup() {
-        let body = rights_xml(
-            "\n",
-            r#"<r:value future=">">false<!--future-value-marker--></r:value>"#,
-        );
-
-        let (updated, effect) =
-            apply_role_edit_operation(&body, &operation("Catalog.Demo", "Delete", true), 0)
-                .unwrap();
-
-        assert!(effect.changed);
-        assert!(updated.contains(r#"<r:value future=">">true<!--future-value-marker--></r:value>"#));
-        validate_every_role_value(&updated).unwrap();
-    }
-
-    #[test]
-    fn writer_ignores_and_preserves_unnamed_forward_compatible_blocks() {
-        let unnamed_right = "<right future=\"unnamed-right\"><value>true</value><future/></right>";
-        let unnamed_object =
-            "<object future=\"unnamed-object\"><right><value>false</value></right></object>";
-        let body = rights_xml("\n", "<value>true</value>")
-            .replacen(
-                "\t\t<right>",
-                &format!("\t\t{unnamed_right}\n\t\t<right>"),
-                1,
-            )
-            .replace("\n</Rights>", &format!("\n\t{unnamed_object}\n</Rights>"));
-
-        let (updated, effect) =
-            apply_role_edit_operation(&body, &operation("Catalog.Demo", "Delete", false), 0)
-                .unwrap();
-
-        assert!(effect.changed);
-        assert!(updated.contains(unnamed_right));
-        assert!(updated.contains(unnamed_object));
-        validate_every_role_value(&updated).unwrap();
-    }
-
-    #[test]
-    fn writer_inserts_with_existing_eol_and_data_processor_false_removes_whole_object() {
-        let body = rights_xml("\r\n", "<value>true</value>");
-        let (inserted, effect) =
-            apply_role_edit_operation(&body, &operation("Catalog.Demo", "View", true), 0).unwrap();
-        assert!(effect.changed);
-        assert_eq!(effect.before, None);
-        assert!(inserted.contains("<name>View</name>\r\n"));
-        assert!(!inserted.replace("\r\n", "").contains('\n'));
-
-        let (removed, effect) = apply_role_edit_operation(
-            &inserted,
-            &operation("DataProcessor.Worker", "Use", false),
-            1,
-        )
-        .unwrap();
-        assert_eq!(effect.action, RoleEditEffectAction::RemoveObject);
-        assert_eq!(effect.before, Some(true));
-        assert!(!removed.contains("DataProcessor.Worker"));
-        assert_eq!(removed.matches("<name>View</name>").count(), 1);
-        assert!(removed.contains("Catalog.Demo"));
-        assert!(removed.contains("restrictionTemplate"));
-    }
-
-    #[test]
-    fn data_processor_removal_preserves_eol_when_object_follows_an_inline_sibling() {
-        let body = rights_xml("\n", "<value>true</value>").replace(
-            "\t</object>\n\t<object>\n\t\t<name>DataProcessor.Worker</name>",
-            "\t</object><object>\n\t\t<name>DataProcessor.Worker</name>",
-        );
-        assert!(body.contains("\t</object><object>\n"), "{body}");
-
-        let (removed, effect) =
-            apply_role_edit_operation(&body, &operation("DataProcessor.Worker", "Use", false), 0)
-                .unwrap();
-
-        assert_eq!(effect.action, RoleEditEffectAction::RemoveObject);
-        assert_eq!(effect.before, Some(true));
-        assert!(!removed.contains("DataProcessor.Worker"));
-        assert!(
-            removed.contains("\t</object>\n\t<restrictionTemplate>"),
-            "{removed}"
-        );
-        validate_every_role_value(&removed).unwrap();
-    }
-
-    #[test]
-    fn missing_right_inherits_prefix_only_roles_qnames() {
-        let body = concat!(
-            "<r:Rights xmlns:r=\"http://v8.1c.ru/8.2/roles\" ",
-            "xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" ",
-            "xsi:type=\"Rights\" version=\"2.20\">\n",
-            "\t<r:setForNewObjects>false</r:setForNewObjects>\n",
-            "\t<r:setForAttributesByDefault>true</r:setForAttributesByDefault>\n",
-            "\t<r:independentRightsOfChildObjects>false</r:independentRightsOfChildObjects>\n",
-            "\t<r:object>\n",
-            "\t\t<r:name>Catalog.Demo</r:name>\n",
-            "\t\t<r:right><r:name>Delete</r:name><r:value>true</r:value></r:right>\n",
-            "\t</r:object>\n",
-            "</r:Rights>"
-        );
-        let (updated, effect) =
-            apply_role_edit_operation(body, &operation("Catalog.Demo", "View", true), 0).unwrap();
-        assert!(effect.changed);
-        assert!(updated.contains("<r:right>"), "{updated}");
-        assert!(updated.contains("<r:name>View</r:name>"), "{updated}");
-        assert!(updated.contains("<r:value>true</r:value>"), "{updated}");
-        assert!(!updated.contains("<right>"), "{updated}");
-        validate_every_role_value(&updated).unwrap();
-    }
-
-    #[test]
-    fn missing_right_does_not_copy_a_sibling_local_namespace_prefix() {
-        let local_right = concat!(
-            "<x:right xmlns:x=\"http://v8.1c.ru/8.2/roles\" future=\"keep\">",
-            "<x:name>Delete</x:name><x:value>true</x:value><x:future/>",
-            "</x:right>"
-        );
-        let body = concat!(
-            "<Rights xmlns=\"http://v8.1c.ru/8.2/roles\" ",
-            "xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" ",
-            "xsi:type=\"Rights\" version=\"2.20\">",
-            "<setForNewObjects>false</setForNewObjects>",
-            "<setForAttributesByDefault>true</setForAttributesByDefault>",
-            "<independentRightsOfChildObjects>false</independentRightsOfChildObjects>",
-            "<object><name>Catalog.Demo</name>",
-            "<x:right xmlns:x=\"http://v8.1c.ru/8.2/roles\" future=\"keep\">",
-            "<x:name>Delete</x:name><x:value>true</x:value><x:future/>",
-            "</x:right></object></Rights>"
-        );
-
-        let (updated, effect) =
-            apply_role_edit_operation(body, &operation("Catalog.Demo", "View", true), 0).unwrap();
-
-        assert!(effect.changed);
-        assert!(updated.contains(local_right));
-        assert!(updated.contains("<right><name>View</name><value>true</value></right>"));
-        assert_eq!(updated.matches("xmlns:x=").count(), 1);
-        validate_every_role_value(&updated).unwrap();
-    }
-
-    #[test]
-    fn duplicate_objects_and_rights_are_refused_before_any_mutation() {
-        // Шесть веток отказа структурной проверки: неоднозначный документ
-        // нельзя ни читать как истину, ни править «первым попавшимся».
-        let base = rights_xml("\n", "<value>true</value>");
-        for (label, body, expected) in [
-            (
-                "duplicate object",
-                base.replacen(
-                    "\t<object>\n\t\t<name>DataProcessor.Worker</name>",
-                    "\t<object>\n\t\t<name>Catalog.Demo</name>\n\t\t<right><name>Read</name><value>true</value></right>\n\t</object>\n\t<object>\n\t\t<name>DataProcessor.Worker</name>",
-                    1,
-                ),
-                "duplicate role object",
-            ),
-            (
-                "duplicate object name",
-                base.replacen(
-                    "\t\t<name>Catalog.Demo</name>",
-                    "\t\t<name>Catalog.Demo</name>\n\t\t<name>Catalog.Other</name>",
-                    1,
-                ),
-                "duplicate direct names",
-            ),
-            (
-                "duplicate right",
-                base.replacen(
-                    "\t\t<right><name>FuturePlatformRight</name><value>true</value><future/></right>",
-                    "\t\t<right><name>Delete</name><value>false</value></right>",
-                    1,
-                ),
-                "duplicate right `Delete`",
-            ),
-            (
-                "duplicate right name",
-                base.replacen(
-                    "\t\t\t<name>Delete</name>",
-                    "\t\t\t<name>Delete</name>\n\t\t\t<name>Insert</name>",
-                    1,
-                ),
-                "must not have duplicate direct names",
-            ),
-            (
-                "two direct values",
-                base.replacen(
-                    "\t\t\t<value>true</value>",
-                    "\t\t\t<value>true</value>\n\t\t\t<value>false</value>",
-                    1,
-                ),
-                "must have one direct value",
-            ),
-        ] {
-            let error = validate_role_rights_document(&body, RoleValueScope::SourceImage)
-                .expect_err(label);
-            assert!(error.contains(expected), "{label}: {error}");
-        }
-
-        // Неоднозначность до мутации ловит и сам writer.
-        let ambiguous_object = base.replacen(
-            "\t<object>\n\t\t<name>DataProcessor.Worker</name>",
-            "\t<object>\n\t\t<name>Catalog.Demo</name>\n\t\t<right><name>Read</name><value>true</value></right>\n\t</object>\n\t<object>\n\t\t<name>DataProcessor.Worker</name>",
-            1,
-        );
-        let error = apply_role_edit_operation(
-            &ambiguous_object,
-            &operation("Catalog.Demo", "Read", false),
-            0,
-        )
-        .expect_err("ambiguous object must not be resolved by picking the first");
-        assert!(error.contains("is ambiguous"), "{error}");
-
-        let ambiguous_right = base.replacen(
-            "\t\t<right><name>FuturePlatformRight</name><value>true</value><future/></right>",
-            "\t\t<right><name>Delete</name><value>false</value></right>",
-            1,
-        );
-        let error = apply_role_edit_operation(
-            &ambiguous_right,
-            &operation("Catalog.Demo", "Delete", false),
-            0,
-        )
-        .expect_err("ambiguous right must not be resolved by picking the first");
-        assert!(error.contains("is ambiguous"), "{error}");
-    }
-
-    #[test]
-    fn cdata_carries_identity_and_value_like_ordinary_text() {
-        // CDATA — та же строка инфосета: адресация и чтение значения не должны
-        // от неё зависеть.
-        let body = rights_xml("\n", "<value><![CDATA[true]]></value>").replacen(
-            "<name>Catalog.Demo</name>",
-            "<name><![CDATA[Catalog.Demo]]></name>",
-            1,
-        );
-
-        let (updated, effect) =
-            apply_role_edit_operation(&body, &operation("Catalog.Demo", "Delete", false), 0)
-                .unwrap();
-
-        assert_eq!(effect.before, Some(true), "CDATA-значение прочитано");
-        assert!(effect.changed);
-        assert!(
-            updated.contains("<![CDATA[Catalog.Demo]]>"),
-            "имя объекта сохранено как есть: {updated}"
-        );
-        validate_every_role_value(&updated).unwrap();
-    }
-
-    #[test]
-    fn an_untouched_non_boolean_neighbour_does_not_block_the_requested_edit() {
-        // Небулевое значение соседнего права принадлежит исходнику, а не
-        // писателю: раньше строгая пост-проверка отвергала весь вызов чужим
-        // правом и без `operationIndex`.
-        let body = rights_xml("\n", "<value>true</value>").replacen(
-            "<right><name>FuturePlatformRight</name><value>true</value><future/></right>",
-            "<right><name>FuturePlatformRight</name><value/><future/></right>",
-            1,
-        );
-        assert!(body.contains("<value/>"), "{body}");
-
-        let (updated, effect) =
-            apply_role_edit_operation(&body, &operation("Catalog.Demo", "Delete", false), 0)
-                .unwrap();
-
-        assert!(effect.changed);
-        assert!(updated.contains("<value/>"), "сосед сохранён как есть");
-        let written = [("Catalog.Demo".to_string(), "Delete".to_string())];
-        validate_role_rights_document(&updated, RoleValueScope::WrittenRights(&written)).unwrap();
-        // А если бы писатель тронул именно это право, строгость осталась бы.
-        let neighbour = [(
-            "Catalog.Demo".to_string(),
-            "FuturePlatformRight".to_string(),
-        )];
-        assert!(
-            validate_role_rights_document(&updated, RoleValueScope::WrittenRights(&neighbour))
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn default_valued_right_is_stored_as_absence_like_the_platform_export() {
-        // ibcmd 8.3.27.2074 хранит объектное право только при значении,
-        // отличном от `setForNewObjects`; переход к умолчанию — удаление
-        // элемента вместе с его RLS, а не явный `false`.
-        let body = rights_xml("\n", "<value>true</value>");
-        let (updated, effect) =
-            apply_role_edit_operation(&body, &operation("Catalog.Demo", "Delete", false), 0)
-                .unwrap();
-        assert!(effect.changed);
-        assert_eq!(effect.before, Some(true));
-        assert!(!effect.after);
-        assert_eq!(effect.action, RoleEditEffectAction::SetRight);
-        let document = Document::parse(&updated).unwrap();
-        let object =
-            direct_role_children(document.root_element(), "object", ROLE_RIGHTS_NAMESPACE)[0];
-        assert!(
-            !direct_role_children(object, "right", ROLE_RIGHTS_NAMESPACE)
-                .into_iter()
-                .any(|right| {
-                    role_text_content(direct_role_children(right, "name", ROLE_RIGHTS_NAMESPACE)[0])
-                        == "Delete"
-                }),
-            "{updated}"
-        );
-        drop(document);
-        assert!(!updated.contains("restrictionByCondition"), "{updated}");
-        // Блок не опустел (остался FuturePlatformRight и неизвестный child) —
-        // он сохраняется вместе с ними.
-        assert!(updated.contains("<name>Catalog.Demo</name>"), "{updated}");
-        assert!(updated.contains("FuturePlatformRight"), "{updated}");
-        assert!(
-            updated.contains("<future><name>Delete</name><value>false</value></future>"),
-            "{updated}"
-        );
-        assert!(updated.contains("restrictionTemplate"), "{updated}");
-        validate_every_role_value(&updated).unwrap();
-
-        // Повтор — no-op: право уже несёт умолчание отсутствием.
-        let (repeated, second) =
-            apply_role_edit_operation(&updated, &operation("Catalog.Demo", "Delete", false), 1)
-                .unwrap();
-        assert_eq!(repeated, updated);
-        assert!(!second.changed);
-        assert_eq!(second.before, None);
-    }
-
-    #[test]
-    fn removing_the_last_stored_right_drops_the_emptied_object_block() {
-        let body = [
-            "<Rights xmlns=\"http://v8.1c.ru/8.2/roles\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:type=\"Rights\" version=\"2.20\">",
-            "\t<setForNewObjects>false</setForNewObjects>",
-            "\t<setForAttributesByDefault>true</setForAttributesByDefault>",
-            "\t<independentRightsOfChildObjects>false</independentRightsOfChildObjects>",
-            "\t<object>",
-            "\t\t<name>Catalog.Solo</name>",
-            "\t\t<right>",
-            "\t\t\t<name>Read</name>",
-            "\t\t\t<value>true</value>",
-            "\t\t</right>",
-            "\t</object>",
-            "\t<object>",
-            "\t\t<name>Catalog.Kept</name>",
-            "\t\t<right><name>Read</name><value>true</value></right>",
-            "\t</object>",
-            "</Rights>",
-        ]
-        .join("\n");
-
-        let (updated, effect) =
-            apply_role_edit_operation(&body, &operation("Catalog.Solo", "Read", false), 0).unwrap();
-        assert!(effect.changed);
-        assert_eq!(effect.action, RoleEditEffectAction::SetRight);
-        assert!(!updated.contains("Catalog.Solo"), "{updated}");
-        assert!(updated.contains("Catalog.Kept"), "{updated}");
-        validate_every_role_value(&updated).unwrap();
-    }
-
-    #[test]
-    fn emptied_block_with_unknown_children_keeps_the_block_and_sheds_the_right() {
-        let body = [
-            "<Rights xmlns=\"http://v8.1c.ru/8.2/roles\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:type=\"Rights\" version=\"2.20\">",
-            "\t<setForNewObjects>false</setForNewObjects>",
-            "\t<setForAttributesByDefault>true</setForAttributesByDefault>",
-            "\t<independentRightsOfChildObjects>false</independentRightsOfChildObjects>",
-            "\t<object>",
-            "\t\t<name>Catalog.Solo</name>",
-            "\t\t<future keep=\"true\"/>",
-            "\t\t<right><name>Read</name><value>true</value></right>",
-            "\t</object>",
-            "</Rights>",
-        ]
-        .join("\n");
-
-        let (updated, effect) =
-            apply_role_edit_operation(&body, &operation("Catalog.Solo", "Read", false), 0).unwrap();
-        assert!(effect.changed);
-        assert_eq!(effect.action, RoleEditEffectAction::SetRight);
-        assert!(updated.contains("<name>Catalog.Solo</name>"), "{updated}");
-        assert!(updated.contains("<future keep=\"true\"/>"), "{updated}");
-        assert!(!updated.contains("<name>Read</name>"), "{updated}");
-        validate_every_role_value(&updated).unwrap();
-    }
-
-    #[test]
-    fn set_for_new_objects_true_mirrors_the_stored_value_rule() {
-        let body = rights_xml("\n", "<value>true</value>").replacen(
-            "<setForNewObjects>false</setForNewObjects>",
-            "<setForNewObjects>true</setForNewObjects>",
-            1,
-        );
-
-        // Явный true при умолчании true уже совпадает с запросом — no-op:
-        // нетронутая избыточная форма не нормализуется.
-        let (same, noop) =
-            apply_role_edit_operation(&body, &operation("Catalog.Demo", "Delete", true), 0)
-                .unwrap();
-        assert_eq!(same, body);
-        assert!(!noop.changed);
-
-        // false — значимое отклонение от умолчания: обычная замена значения.
-        let (with_false, replaced) =
-            apply_role_edit_operation(&body, &operation("Catalog.Demo", "Delete", false), 1)
-                .unwrap();
-        assert!(replaced.changed);
-        assert!(with_false.contains("<value>false</value>"), "{with_false}");
-        validate_every_role_value(&with_false).unwrap();
-
-        // Возврат к true — переход к умолчанию: право уходит из хранения.
-        let (canonical, removed) =
-            apply_role_edit_operation(&with_false, &operation("Catalog.Demo", "Delete", true), 2)
-                .unwrap();
-        assert!(removed.changed);
-        assert_eq!(removed.before, Some(false));
-        let document = Document::parse(&canonical).unwrap();
-        let object =
-            direct_role_children(document.root_element(), "object", ROLE_RIGHTS_NAMESPACE)[0];
-        assert!(
-            !direct_role_children(object, "right", ROLE_RIGHTS_NAMESPACE)
-                .into_iter()
-                .any(|right| {
-                    role_text_content(direct_role_children(right, "name", ROLE_RIGHTS_NAMESPACE)[0])
-                        == "Delete"
-                }),
-            "{canonical}"
-        );
-        drop(document);
-        validate_every_role_value(&canonical).unwrap();
-    }
-
-    #[test]
-    fn missing_object_is_error_except_absent_data_processor_use_false_noop() {
-        let body = rights_xml("\n", "<value>true</value>");
-
-        let missing =
-            apply_role_edit_operation(&body, &operation("Catalog.Missing", "Delete", true), 0)
-                .unwrap_err();
-        assert!(missing.contains("was not found"), "{missing}");
-
-        // Умолчание роли на неперечисленном объекте уже действует: запись
-        // того же значения — законный no-op, а не отказ.
-        let (noop_text, noop) =
-            apply_role_edit_operation(&body, &operation("Catalog.Missing", "Delete", false), 0)
-                .unwrap();
-        assert_eq!(noop_text, body);
-        assert!(!noop.changed);
-        assert_eq!(noop.before, None);
-        assert!(!noop.after);
-        assert_eq!(noop.action, RoleEditEffectAction::SetRight);
-
-        let (without_processor, first) =
-            apply_role_edit_operation(&body, &operation("DataProcessor.Worker", "Use", false), 1)
-                .unwrap();
-        assert!(first.changed);
-        assert_eq!(first.action, RoleEditEffectAction::RemoveObject);
-        assert!(!without_processor.contains("DataProcessor.Worker"));
-
-        let (repeated, second) = apply_role_edit_operation(
-            &without_processor,
-            &operation("DataProcessor.Worker", "Use", false),
-            2,
-        )
-        .unwrap();
-        assert_eq!(repeated, without_processor);
-        assert!(!second.changed);
-        assert_eq!(second.before, None);
-        assert_eq!(second.action, RoleEditEffectAction::RemoveObject);
-    }
 
     fn fixture(name: &str) -> (WorkspaceContext, Map<String, Value>, PathBuf) {
         let root = std::env::temp_dir().join(format!(
@@ -3073,7 +1055,7 @@ pub(crate) mod role_edit_contract_tests {
         assert!(!data.changed);
         assert_eq!(
             data.validation.status,
-            crate::domain::role::RoleEditValidationStatus::Failed
+            unica_roles::RoleEditValidationStatus::Failed
         );
         let encoded = serde_json::to_string(&data).unwrap();
         assert!(!encoded.contains("Rights.xml"), "{encoded}");
@@ -3104,7 +1086,7 @@ pub(crate) mod role_edit_contract_tests {
 
     #[test]
     pub(crate) fn role_edit_without_vendor_support_is_logically_addressed_and_preserves_identity() {
-        use crate::infrastructure::platform::testing::file_identity_for_test;
+        use unica_workspace::test_support::file_identity_for_test;
 
         let (context, args, rights) = fixture("roundtrip");
         assert!(
@@ -3220,12 +1202,14 @@ pub(crate) mod role_edit_contract_tests {
         let saved = rights.with_extension("saved");
         let outside = context.workspace_root.join("outside-rights.xml");
         fs::write(&outside, &original).unwrap();
-        let Some(probe) = create_file_symlink_for_test(&outside, &saved) else {
-            fs::remove_dir_all(context.workspace_root).unwrap();
-            return;
-        };
+        let probe = create_file_symlink_for_test(&outside, &saved)
+            .expect("symlink fixtures exist on Unix and Windows");
         if probe.is_err() {
             fs::remove_dir_all(context.workspace_root).unwrap();
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
             return;
         }
         fs::remove_file(&saved).unwrap();
@@ -3439,7 +1423,7 @@ pub(crate) mod role_edit_contract_tests {
         .unwrap();
 
         let support = WorkspaceSupportStateReader::new(&context)
-            .object_support(&crate::domain::source_target::ResolvedTarget {
+            .object_support(&unica_address::source_target::ResolvedTarget {
                 source_set: "main".to_string(),
                 metadata_path: Some(
                     MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Role.Demo").unwrap(),
@@ -3449,7 +1433,7 @@ pub(crate) mod role_edit_contract_tests {
             .unwrap();
         assert_eq!(
             support.state,
-            crate::domain::support_state::ObjectSupportState::EditableWithSupport
+            unica_metadata::support_state::ObjectSupportState::EditableWithSupport
         );
         assert_eq!(support.direct_edit_safe, Some(true));
 
@@ -3551,12 +1535,14 @@ pub(crate) mod role_edit_contract_tests {
         let probe_source = context.workspace_root.join("link-probe-source");
         let probe_link = context.workspace_root.join("link-probe");
         fs::create_dir(&probe_source).unwrap();
-        let Some(probe_result) = create_dir_symlink_for_test(&probe_source, &probe_link) else {
-            fs::remove_dir_all(context.workspace_root).unwrap();
-            return;
-        };
+        let probe_result = create_dir_symlink_for_test(&probe_source, &probe_link)
+            .expect("symlink fixtures exist on Unix and Windows");
         if probe_result.is_err() {
             fs::remove_dir_all(context.workspace_root).unwrap();
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
             return;
         }
         remove_dir_symlink_for_test(&probe_link).unwrap();
@@ -3590,12 +1576,14 @@ pub(crate) mod role_edit_contract_tests {
         let before = fs::read(&rights).unwrap();
         fs::write(&outside_rights, &before).unwrap();
         fs::remove_dir_all(&role_dir).unwrap();
-        let Some(link_result) = create_dir_symlink_for_test(&outside, &role_dir) else {
-            fs::remove_dir_all(context.workspace_root).unwrap();
-            return;
-        };
+        let link_result = create_dir_symlink_for_test(&outside, &role_dir)
+            .expect("symlink fixtures exist on Unix and Windows");
         if link_result.is_err() {
             fs::remove_dir_all(context.workspace_root).unwrap();
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
             return;
         }
 
@@ -3675,7 +1663,7 @@ pub(super) mod role_info_typed_result_tests {
         // root, not from a directory the walk never reached.
         assert_eq!(
             data.support.state,
-            crate::domain::support_state::ObjectSupportState::NotSupported,
+            unica_metadata::support_state::ObjectSupportState::NotSupported,
             "{data:?}"
         );
         assert_eq!(data.support.direct_edit_safe, None, "{data:?}");
@@ -3875,25 +1863,6 @@ pub(crate) mod role_validate_contract_tests {
             "{outcome:?}"
         );
         fs::remove_dir_all(workspace).unwrap();
-    }
-
-    #[test]
-    fn role_metadata_emitter_defensively_escapes_name() {
-        let xml = role_metadata_xml(
-            "Bad<&\"'Name",
-            "Synonym",
-            "",
-            "2.20",
-            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-            "ru",
-        );
-
-        let doc = Document::parse(&xml).unwrap();
-        let name = doc
-            .descendants()
-            .find(|node| node.is_element() && node.tag_name().name() == "Name")
-            .and_then(|node| node.text());
-        assert_eq!(name, Some("Bad<&\"'Name"));
     }
 
     fn validate_role_stdout(rights_xml: &str) -> String {

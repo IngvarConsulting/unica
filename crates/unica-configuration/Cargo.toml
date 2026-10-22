@@ -1,0 +1,15 @@
+[package]
+name = "unica-configuration"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+unica-diagnostics = { path = "../unica-diagnostics" }
+serde.workspace = true
+unica-code-intelligence = { path = "../unica-code-intelligence" }
+toml.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

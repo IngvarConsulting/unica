@@ -1,12 +1,12 @@
 ---
 id: INV.APP.ADMISSION-FAILURE-ISOLATION
 check:
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::root_view_keeps_the_same_task_and_daemon_past_the_former_deadlines
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::root_check_completes_the_whole_inspection_in_its_task
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::cancel_during_actor_admission_after_handoff_never_begins_and_keeps_the_daemon
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::cancel_during_inline_admission_before_handoff_publishes_cancelled
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::noncooperative_cancel_keeps_only_its_task_while_the_daemon_serves_others
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::root_view_keeps_the_same_task_and_daemon_past_the_former_deadlines
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::root_check_completes_the_whole_inspection_in_its_task
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::cancel_during_actor_admission_after_handoff_never_begins_and_keeps_the_daemon
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::cancel_during_inline_admission_before_handoff_publishes_cancelled
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::noncooperative_cancel_keeps_only_its_task_while_the_daemon_serves_others
+  - crates/unica-coder/tests/platform/receipt_runtime.rs::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks
   - crates/unica-coder/tests/daemon_receipt_ledger.rs::unbound_validation_and_admission_continue_past_the_former_fail_stop_grace
   - crates/unica-coder/tests/daemon_receipt_ledger.rs::noncooperative_prepare_cancel_keeps_the_daemon_listening
 ---

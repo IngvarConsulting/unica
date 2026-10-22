@@ -1,0 +1,8 @@
+format: DESIGNER
+source-set:
+  - name: main
+    type: CONFIGURATION
+    path: src
+  - name: alt
+    type: CONFIGURATION
+    path: alt

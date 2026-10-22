@@ -1,11 +1,6 @@
 //! Bounded registration sorting for the root Configuration view. The root
 //! publishes counts, while the owner proof still needs exact set semantics.
 
-use crate::application::v13::view::ViewError;
-use crate::domain::address::NodeKind;
-use crate::domain::refusal::RefusalDetail;
-use crate::infrastructure::native_operations::common::SupportState;
-use crate::infrastructure::platform::filesystem::{FileStamp, RetainedDirectoryCapability};
 use serde_json::{json, Value};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -13,6 +8,11 @@ use std::fs::File;
 use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
+use unica_address::address::NodeKind;
+use unica_execution_contract::view_error::ViewError;
+use unica_metadata_designer::support::SupportState;
+use unica_refusal::RefusalDetail;
+use unica_source_contract::read::{FileStamp, ReadFile, SourceDirectory};
 use xml::name::OwnedName;
 use xml::reader::{ParserConfig, XmlEvent};
 
@@ -309,14 +309,14 @@ impl RegistrationCache {
     /// again unless a settled, unchanged stamp proves the retained one.
     pub(crate) fn registrations(
         &self,
-        root: &RetainedDirectoryCapability,
+        root: &SourceDirectory,
         checkpoint: &dyn Fn() -> Result<(), ViewError>,
     ) -> Result<Arc<RegistrationIndex>, ViewError> {
         checkpoint()?;
         let file = root
             .open_relative_regular_nofollow(std::path::Path::new("Configuration.xml"))
             .map_err(unreadable)?;
-        let stamp = FileStamp::of(&file).map_err(unreadable)?;
+        let stamp = file.stamp().map_err(unreadable)?;
         // A retained index whose scratch files were poisoned by a panicking
         // reader counts as absent and is rebuilt.
         if let Some((cached, index)) = slot(&self.registrations).as_ref() {
@@ -340,7 +340,7 @@ impl RegistrationCache {
     /// on the next use.
     pub(crate) fn configuration_payload(
         &self,
-        root: &RetainedDirectoryCapability,
+        root: &SourceDirectory,
         build: impl FnOnce() -> Result<Value, ViewError>,
     ) -> Result<Arc<Value>, ViewError> {
         let stamps = configuration_stamps(root)?;
@@ -360,10 +360,10 @@ impl RegistrationCache {
     /// when absent) with the stamp it was read under.
     pub(crate) fn support_state(
         &self,
-        root: &RetainedDirectoryCapability,
+        root: &SourceDirectory,
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
         parse: impl FnOnce(
-            File,
+            ReadFile,
             &mut dyn FnMut() -> Result<(), ViewError>,
         ) -> Result<SupportState, ViewError>,
     ) -> Result<RetainedSupportState, ViewError> {
@@ -377,7 +377,7 @@ impl RegistrationCache {
         };
         let stamp = file
             .as_ref()
-            .map(FileStamp::of)
+            .map(|file| file.stamp())
             .transpose()
             .map_err(unreadable)?;
         if let Some((cached, state)) = slot(&self.support).as_ref() {
@@ -408,7 +408,7 @@ impl RegistrationCache {
 
 /// Stamps of the configuration-root payload files under `root`.
 pub(crate) fn configuration_stamps(
-    root: &RetainedDirectoryCapability,
+    root: &SourceDirectory,
 ) -> Result<ConfigurationStamps, ViewError> {
     let mut stamps = [None; 4];
     for (stamp, relative) in stamps.iter_mut().zip(CONFIGURATION_PAYLOAD_FILES) {
@@ -668,7 +668,7 @@ pub(crate) struct StreamedConfigurationRoot {
 /// occupies parser memory until its event is emitted. The caller
 /// confirms the admitted revision after projecting the returned root.
 pub(super) fn read_configuration_root(
-    file: File,
+    file: impl Read + Seek,
     support: Value,
     home_page: Value,
     interface: Value,
@@ -735,7 +735,7 @@ pub(super) fn read_configuration_root(
 }
 
 pub(crate) fn read_configuration_registration_index(
-    file: File,
+    file: impl Read + Seek,
     checkpoint: &dyn Fn() -> Result<(), ViewError>,
 ) -> Result<RegistrationIndex, ViewError> {
     let state = parse_configuration_owner(file, checkpoint)?;
@@ -743,7 +743,7 @@ pub(crate) fn read_configuration_registration_index(
 }
 
 fn parse_configuration_owner(
-    mut file: File,
+    mut file: impl Read + Seek,
     checkpoint: &dyn Fn() -> Result<(), ViewError>,
 ) -> Result<RootState, ViewError> {
     skip_leading_boms(&mut file, checkpoint)?;
@@ -825,7 +825,7 @@ fn source_unreadable(message: &str) -> ViewError {
 }
 
 fn skip_leading_boms(
-    file: &mut File,
+    file: &mut (impl Read + Seek),
     checkpoint: &dyn Fn() -> Result<(), ViewError>,
 ) -> Result<(), ViewError> {
     loop {
@@ -847,13 +847,13 @@ fn skip_leading_boms(
     }
 }
 
-struct CheckedRead<'a> {
-    file: File,
+struct CheckedRead<'a, R> {
+    file: R,
     checkpoint: &'a dyn Fn() -> Result<(), ViewError>,
     failure: Rc<RefCell<Option<ViewError>>>,
 }
 
-impl Read for CheckedRead<'_> {
+impl<R: Read> Read for CheckedRead<'_, R> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         if let Err(error) = (self.checkpoint)() {
             *self.failure.borrow_mut() = Some(error);
@@ -1044,6 +1044,7 @@ impl RootState {
         }
     }
 
+    /// Fold a completed XML frame into its parent or the configuration result.
     fn end(&mut self, checkpoint: &dyn Fn() -> Result<(), ViewError>) -> Result<(), ViewError> {
         checkpoint()?;
         if self.ignored_depth != 0 {
@@ -1111,16 +1112,14 @@ impl RootState {
                     *last_content = content;
                 }
             }
-            FrameRole::RegistrationName => {
-                if self.stack.len() >= 2 {
-                    let parent_index = self.stack.len() - 2;
-                    if let FrameRole::Registration { fallback_name, .. } =
-                        &mut self.stack[parent_index].role
-                    {
-                        let value = frame.first_text.unwrap_or_default();
-                        if fallback_name.is_none() && !value.trim().is_empty() {
-                            *fallback_name = Some(value.trim().to_string());
-                        }
+            FrameRole::RegistrationName if self.stack.len() >= 2 => {
+                let parent_index = self.stack.len() - 2;
+                if let FrameRole::Registration { fallback_name, .. } =
+                    &mut self.stack[parent_index].role
+                {
+                    let value = frame.first_text.unwrap_or_default();
+                    if fallback_name.is_none() && !value.trim().is_empty() {
+                        *fallback_name = Some(value.trim().to_string());
                     }
                 }
             }
@@ -1211,8 +1210,8 @@ fn is_root_property(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::refusal::RefusalCode;
     use std::cell::Cell;
+    use unica_refusal::RefusalCode;
 
     #[test]
     fn temporary_index_failures_are_distinct_from_unreadable_source_xml() {
@@ -1438,16 +1437,14 @@ mod tests {
     struct ArtifactRoot {
         _directory: tempfile::TempDir,
         path: std::path::PathBuf,
-        root: crate::infrastructure::platform::filesystem::RetainedDirectoryCapability,
+        root: unica_source_contract::read::SourceDirectory,
     }
 
     fn artifact_root(name: &str) -> ArtifactRoot {
         let directory = tempfile::tempdir().unwrap();
         let path = std::fs::canonicalize(directory.path()).unwrap();
         std::fs::write(path.join("Configuration.xml"), configuration_xml(name)).unwrap();
-        let root =
-            crate::infrastructure::platform::filesystem::RetainedDirectoryCapability::open(&path)
-                .unwrap();
+        let root = unica_workspace::read::open_source_directory(&path).unwrap();
         ArtifactRoot {
             _directory: directory,
             path,
@@ -1542,9 +1539,7 @@ mod tests {
         let young = now - std::time::Duration::from_secs(1);
         let future = now + std::time::Duration::from_secs(10);
         let stamp = |modified, changed| {
-            crate::infrastructure::platform::filesystem::FileStamp::for_test(
-                7, 9, modified, changed,
-            )
+            unica_source_contract::read::FileStamp::for_test(7, 9, modified, changed)
         };
         assert!(stamp(Some(old), Some(old)).settled(now, window));
         for (modified, changed) in [
@@ -1561,7 +1556,7 @@ mod tests {
 
     #[test]
     fn stamps_differ_by_every_identity_field() {
-        use crate::infrastructure::platform::filesystem::FileStamp;
+        use unica_source_contract::read::FileStamp;
         let time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
         // SystemTime на Windows хранится в FILETIME с шагом 100 нс: сдвиг
         // меньше шага там неразличим, микросекунда видна на всех системах.
@@ -1615,9 +1610,7 @@ mod tests {
         let marker = fixture.path.join("Ext/ParentConfigurations.bin");
         std::fs::write(&marker, b"one").unwrap();
         let parsed_state = {
-            let mut parser =
-                crate::infrastructure::native_operations::common::SupportStateStreamParser::default(
-                );
+            let mut parser = unica_metadata_designer::support::SupportStateStreamParser::default();
             parser
                 .feed(
                     &std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(

@@ -1,12 +1,17 @@
-use crate::application::v13::view::ViewError;
-use crate::domain::address::{member_address, AddressSegment, NodeKind, QualifiedAddress};
-use crate::domain::module_projection::EventProjection;
 use crate::domain::node_view::{BranchRef, CollectionView, NodeView, NodeViewData};
-use crate::domain::refusal::{RefusalCode, RefusalDetail};
+use unica_bsl::projection::EventProjection;
+use unica_execution_contract::view_error::ViewError;
+
 use crate::infrastructure::logical_tree::{LogicalReader, LogicalTreeRoute};
 use serde_json::{json, Map, Value};
+use unica_address::address::{member_address, AddressSegment, NodeKind, QualifiedAddress};
+use unica_refusal::{RefusalCode, RefusalDetail};
 
+mod form;
+mod member_properties;
+mod metadata;
 mod role;
+pub(crate) use metadata::borrowing_props;
 use role::project_role;
 
 const MAX_PROJECTED_BRANCHES: usize = 256;
@@ -16,7 +21,7 @@ pub(super) fn project_typed_payload(
     route: &LogicalTreeRoute,
     payload: Value,
 ) -> Result<NodeViewData, ViewError> {
-    project_typed_payload_inner(route, payload, None)
+    project_typed_payload_inner(route, payload, None, None)
 }
 
 pub(super) fn project_typed_payload_with_form_events(
@@ -24,35 +29,26 @@ pub(super) fn project_typed_payload_with_form_events(
     payload: Value,
     events: &[EventProjection],
 ) -> Result<NodeViewData, ViewError> {
-    project_typed_payload_inner(route, payload, Some(events))
+    project_typed_payload_inner(route, payload, Some(events), None)
+}
+
+pub(super) fn project_typed_payload_for_source(
+    route: &LogicalTreeRoute,
+    payload: Value,
+    source_kind: unica_source_contract::SourceSetKind,
+) -> Result<NodeViewData, ViewError> {
+    project_typed_payload_inner(route, payload, None, Some(source_kind))
 }
 
 fn project_typed_payload_inner(
     route: &LogicalTreeRoute,
     payload: Value,
     form_events: Option<&[EventProjection]>,
+    source_kind: Option<unica_source_contract::SourceSetKind>,
 ) -> Result<NodeViewData, ViewError> {
     validate_reader_payload(route.reader(), &payload)?;
     if route.at().form_metadata_owner().is_some() {
-        let props = payload
-            .get("properties")
-            .and_then(Value::as_object)
-            .cloned()
-            .ok_or_else(|| {
-                ViewError::detailed(
-                    RefusalDetail::SourceUnreadable,
-                    "form metadata properties are not an object",
-                )
-            })?;
-        let title = props
-            .get("Name")
-            .and_then(Value::as_str)
-            .unwrap_or("Metadata")
-            .to_string();
-        return Ok(NodeViewData::Node(
-            NodeView::new(route.at().to_string(), "Metadata", title, props)
-                .with_limits(metadata_limits(&payload)),
-        ));
+        return metadata::project_form_metadata(route.at(), &payload);
     }
     let root_depth = route
         .reader_metadata_path()
@@ -72,8 +68,17 @@ fn project_typed_payload_inner(
     let suffix = &route.at().segments()[root_depth.min(route.at().segments().len())..];
     match route.reader() {
         LogicalReader::Configuration => return project_configuration(route.at(), &payload, suffix),
-        LogicalReader::Metadata => return project_metadata(route.at(), &payload, suffix),
-        LogicalReader::Form => return project_form(route.at(), &payload, suffix, form_events),
+        LogicalReader::Metadata => {
+            return metadata::project_metadata_for_source(
+                route.at(),
+                &payload,
+                suffix,
+                source_kind,
+            );
+        }
+        LogicalReader::Form => {
+            return form::project_form(route.at(), &payload, suffix, form_events)
+        }
         LogicalReader::Role => return project_role(route.at(), &payload, suffix),
         LogicalReader::Subsystem => return project_subsystem(route.at(), &payload, suffix),
         LogicalReader::Interface => {
@@ -98,275 +103,6 @@ fn project_typed_payload_inner(
         )));
     }
     project_known_suffix(route.reader(), route.at(), &payload, suffix)
-}
-
-fn project_form(
-    address: &QualifiedAddress,
-    payload: &Value,
-    suffix: &[AddressSegment],
-    semantic_events: Option<&[EventProjection]>,
-) -> Result<NodeViewData, ViewError> {
-    if let Some(events) = semantic_events.filter(|_| {
-        suffix
-            .last()
-            .is_some_and(|part| part.kind() == NodeKind::Event)
-    }) {
-        return project_semantic_form_event(address, suffix, events);
-    }
-    if suffix.is_empty() {
-        let props = selected_scalar_props(
-            payload,
-            &[
-                "title",
-                "objectContext",
-                "isExtension",
-                "baseFormVersion",
-                "commandBarLocation",
-            ],
-        );
-        let branches = [
-            NodeKind::Item,
-            NodeKind::Attribute,
-            NodeKind::Parameter,
-            NodeKind::Command,
-            NodeKind::Event,
-        ]
-        .into_iter()
-        .filter_map(|kind| {
-            if kind == NodeKind::Event {
-                if let Some(events) = semantic_events {
-                    let count = form_owner_events(&address.to_string(), events).count();
-                    return (count > 0)
-                        .then(|| BranchRef::new(format!("{}.{}", address, kind.as_str()), count));
-                }
-            }
-            let values = form_child_values(payload, kind)?;
-            let count = values.as_array().map_or(0, Vec::len);
-            (count > 0).then(|| BranchRef::new(format!("{}.{}", address, kind.as_str()), count))
-        })
-        .collect::<Vec<_>>();
-        return Ok(NodeViewData::Node(
-            NodeView::new(
-                address.to_string(),
-                "Form",
-                payload
-                    .get("title")
-                    .and_then(Value::as_str)
-                    .or_else(|| payload.get("name").and_then(Value::as_str))
-                    .unwrap_or("Form"),
-                props,
-            )
-            .with_branches(branches),
-        ));
-    }
-    let first = &suffix[0];
-    let mut values = form_child_values(payload, first.kind()).ok_or_else(|| {
-        ViewError::new(
-            RefusalCode::NotFound,
-            format!("form has no {} collection", first.kind().as_str()),
-        )
-    })?;
-    if first.name().is_none() {
-        if suffix.len() != 1 {
-            return Err(ViewError::new(
-                RefusalCode::NotFound,
-                "form collection did not consume the complete suffix",
-            ));
-        }
-        return form_collection(address, first.kind(), values, semantic_events);
-    }
-    let mut kind = first.kind();
-    let mut item = select_named(values, first.name().unwrap()).ok_or_else(|| {
-        ViewError::new(
-            RefusalCode::NotFound,
-            format!(
-                "form {} `{}` was not found",
-                first.kind().as_str(),
-                first.name().unwrap()
-            ),
-        )
-    })?;
-    for (index, segment) in suffix[1..].iter().enumerate() {
-        kind = segment.kind();
-        values = form_nested_values(item, kind).ok_or_else(|| {
-            ViewError::new(
-                RefusalCode::NotFound,
-                format!("form node has no {} collection", kind.as_str()),
-            )
-        })?;
-        let terminal = index + 2 == suffix.len();
-        let Some(name) = segment.name() else {
-            if !terminal {
-                return Err(ViewError::new(
-                    RefusalCode::NotFound,
-                    "form collection did not consume the complete suffix",
-                ));
-            }
-            return form_collection(address, kind, values, semantic_events);
-        };
-        item = select_named(values, name).ok_or_else(|| {
-            ViewError::new(
-                RefusalCode::NotFound,
-                format!("form {} `{name}` was not found", kind.as_str()),
-            )
-        })?;
-    }
-    Ok(NodeViewData::Node(form_node(
-        address,
-        kind,
-        item,
-        semantic_events,
-    )))
-}
-
-fn project_semantic_form_event(
-    address: &QualifiedAddress,
-    suffix: &[AddressSegment],
-    events: &[EventProjection],
-) -> Result<NodeViewData, ViewError> {
-    let event = suffix
-        .last()
-        .expect("the semantic event route has an Event suffix");
-    if event.name().is_none() {
-        let address_text = address.to_string();
-        let owner_at = address_text.strip_suffix(".Event").ok_or_else(|| {
-            ViewError::new(RefusalCode::NotFound, "event collection owner is invalid")
-        })?;
-        let items = form_owner_events(owner_at, events)
-            .map(crate::infrastructure::v13_read::event_node_value)
-            .collect::<Vec<_>>();
-        if items.is_empty() {
-            return Err(ViewError::new(
-                RefusalCode::NotFound,
-                "form owner has no applicable events",
-            ));
-        }
-        return Ok(NodeViewData::Collection(CollectionView::new(
-            NodeView::new(
-                address.to_string(),
-                NodeKind::Event.as_str(),
-                "Event",
-                Map::new(),
-            ),
-            items,
-        )));
-    }
-    events
-        .iter()
-        .find(|candidate| candidate.at == address.to_string())
-        .map(crate::infrastructure::v13_read::event_node)
-        .map(NodeViewData::Node)
-        .ok_or_else(|| {
-            ViewError::new(
-                RefusalCode::NotFound,
-                format!(
-                    "form Event `{}` was not found",
-                    event.name().unwrap_or_default()
-                ),
-            )
-        })
-}
-
-fn form_owner_events<'a>(
-    owner_at: &'a str,
-    events: &'a [EventProjection],
-) -> impl Iterator<Item = &'a EventProjection> + 'a {
-    events.iter().filter(move |event| {
-        event
-            .at
-            .rsplit_once(".Event.")
-            .is_some_and(|(candidate, _)| candidate == owner_at)
-    })
-}
-
-fn form_child_values(payload: &Value, kind: NodeKind) -> Option<&Value> {
-    match kind {
-        NodeKind::Item => payload.get("elements"),
-        NodeKind::Attribute => payload.get("attributes"),
-        NodeKind::Parameter => payload.get("parameters"),
-        NodeKind::Command => payload.get("commands"),
-        NodeKind::Event => payload.get("events"),
-        _ => None,
-    }
-}
-
-fn form_nested_values(item: &Value, kind: NodeKind) -> Option<&Value> {
-    match kind {
-        NodeKind::Item => item.get("children"),
-        NodeKind::Column => item.get("columns"),
-        NodeKind::Event => item.get("events").or_else(|| item.get("actions")),
-        _ => None,
-    }
-}
-
-fn form_collection(
-    address: &QualifiedAddress,
-    kind: NodeKind,
-    values: &Value,
-    semantic_events: Option<&[EventProjection]>,
-) -> Result<NodeViewData, ViewError> {
-    let items = values
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|item| {
-            let name = item_identity(item)?;
-            let child = address.member(name).ok()?;
-            serde_json::to_value(form_node(&child, kind, item, semantic_events)).ok()
-        })
-        .collect();
-    Ok(NodeViewData::Collection(CollectionView::new(
-        NodeView::new(
-            address.to_string(),
-            kind.as_str(),
-            kind.as_str(),
-            Map::new(),
-        ),
-        items,
-    )))
-}
-
-fn form_node(
-    address: &QualifiedAddress,
-    kind: NodeKind,
-    item: &Value,
-    semantic_events: Option<&[EventProjection]>,
-) -> NodeView {
-    let mut node = NodeView::new(
-        address.to_string(),
-        kind.as_str(),
-        item.get("title")
-            .and_then(Value::as_str)
-            .or_else(|| item_identity(item))
-            .unwrap_or(kind.as_str()),
-        reader_node_props(LogicalReader::Form, kind, item),
-    );
-    let branch_kinds: &[NodeKind] = match kind {
-        NodeKind::Item => &[NodeKind::Item, NodeKind::Event],
-        NodeKind::Attribute => &[NodeKind::Column],
-        NodeKind::Command => &[NodeKind::Event],
-        _ => &[],
-    };
-    node = node.with_branches(
-        branch_kinds
-            .iter()
-            .filter_map(|child_kind| {
-                if *child_kind == NodeKind::Event {
-                    if let Some(events) = semantic_events {
-                        let count = form_owner_events(&address.to_string(), events).count();
-                        return (count > 0).then(|| {
-                            BranchRef::new(format!("{}.{}", address, child_kind.as_str()), count)
-                        });
-                    }
-                }
-                let values = form_nested_values(item, *child_kind)?;
-                let count = values.as_array().map_or(0, Vec::len);
-                (count > 0)
-                    .then(|| BranchRef::new(format!("{}.{}", address, child_kind.as_str()), count))
-            })
-            .collect(),
-    );
-    node
 }
 
 fn project_dcs(
@@ -538,117 +274,6 @@ fn project_dcs(
     )))
 }
 
-/// Строки структуры варианта, чей ближайший именованный предок — элемент
-/// `scope` (`None` — сам вариант). Безымянный элемент прозрачен: его потомки
-/// принадлежат ближайшему именованному предку, поэтому именованная группа под
-/// безымянной адресуется от варианта (#1357).
-pub(crate) fn dcs_structure_scope(rows: &[Value], scope: Option<usize>) -> Vec<usize> {
-    let named = |index: usize| {
-        rows.get(index)
-            .and_then(|row| row.get("name"))
-            .and_then(Value::as_str)
-            .is_some_and(|name| !name.is_empty())
-    };
-    let parent = |index: usize| {
-        rows.get(index)
-            .and_then(|row| row.get("parentIndex"))
-            .and_then(Value::as_u64)
-            .and_then(|parent| usize::try_from(parent).ok())
-    };
-    (0..rows.len())
-        .filter(|index| {
-            let mut current = parent(*index);
-            // Глубина ограничена числом строк: испорченный `parentIndex`
-            // не зацикливает обход.
-            for _ in 0..rows.len() {
-                match current {
-                    Some(ancestor) if !named(ancestor) => current = parent(ancestor),
-                    _ => break,
-                }
-            }
-            current == scope
-        })
-        .collect()
-}
-
-/// Имя строки структуры, которое адресует её в области: непустое и
-/// единственное среди строк этой области.
-fn dcs_structure_address_name<'a>(
-    rows: &'a [Value],
-    scope: &[usize],
-    index: usize,
-) -> Option<&'a str> {
-    let name = rows[index]
-        .get("name")
-        .and_then(Value::as_str)
-        .filter(|name| !name.is_empty())?;
-    (scope
-        .iter()
-        .filter(|other| rows[**other].get("name").and_then(Value::as_str) == Some(name))
-        .count()
-        == 1)
-        .then_some(name)
-}
-
-/// Строка в области `scope` по имени сегмента адреса. Отсутствующее и
-/// повторённое имя одинаково не дают узла: адрес не выбирает за читателя.
-pub(crate) fn dcs_structure_child(
-    rows: &[Value],
-    scope: Option<usize>,
-    name: &str,
-) -> Option<usize> {
-    let members = dcs_structure_scope(rows, scope);
-    members
-        .iter()
-        .copied()
-        .find(|index| dcs_structure_address_name(rows, &members, *index) == Some(name))
-}
-
-/// Пути от варианта до элементов структуры с именем `name`: цепочки имён
-/// именованных предков и самого элемента. Пусто — элемента нет; в ответ
-/// входят только те, чей путь адресует именно их (имя единственно на каждом
-/// уровне), а `found` — сколько элементов с этим именем есть всего.
-pub(crate) fn dcs_structure_paths(rows: &[Value], name: &str) -> (Vec<Vec<String>>, usize) {
-    let row_name = |index: usize| {
-        rows.get(index)
-            .and_then(|row| row.get("name"))
-            .and_then(Value::as_str)
-            .filter(|name| !name.is_empty())
-    };
-    let parent = |index: usize| {
-        rows.get(index)
-            .and_then(|row| row.get("parentIndex"))
-            .and_then(Value::as_u64)
-            .and_then(|parent| usize::try_from(parent).ok())
-    };
-    let mut found = 0;
-    let mut paths = Vec::new();
-    for index in (0..rows.len()).filter(|index| row_name(*index) == Some(name)) {
-        found += 1;
-        let mut chain = vec![name.to_string()];
-        let mut current = parent(index);
-        for _ in 0..rows.len() {
-            let Some(ancestor) = current else { break };
-            if let Some(ancestor_name) = row_name(ancestor) {
-                chain.push(ancestor_name.to_string());
-            }
-            current = parent(ancestor);
-        }
-        chain.reverse();
-        let mut scope = None;
-        for step in &chain {
-            scope = dcs_structure_child(rows, scope, step);
-            if scope.is_none() {
-                break;
-            }
-        }
-        if scope == Some(index) {
-            paths.push(chain);
-        }
-    }
-    (paths, found)
-}
-
 fn dcs_structure_props(row: &Value) -> Map<String, Value> {
     row.as_object()
         .into_iter()
@@ -665,7 +290,7 @@ fn dcs_structure_node(address: &QualifiedAddress, rows: &[Value], index: usize) 
         .get("name")
         .and_then(Value::as_str)
         .unwrap_or("Item");
-    let count = dcs_structure_scope(rows, Some(index)).len();
+    let count = unica_dcs::structure::dcs_structure_scope(rows, Some(index)).len();
     let branches = (count > 0)
         .then(|| BranchRef::new(format!("{address}.Item"), count))
         .into_iter()
@@ -684,7 +309,9 @@ fn dcs_structure_root_count(variant: &Value) -> usize {
     variant
         .get("structureItems")
         .and_then(Value::as_array)
-        .map_or(0, |rows| dcs_structure_scope(rows, None).len())
+        .map_or(0, |rows| {
+            unica_dcs::structure::dcs_structure_scope(rows, None).len()
+        })
 }
 
 /// Элементы структуры варианта: `Setting.V.Item[.<имя>[.Item.<имя>…]]`.
@@ -724,11 +351,11 @@ fn project_dcs_structure(
                     "the structure collection has no addressed children",
                 ));
             }
-            let members = dcs_structure_scope(rows, scope);
+            let members = unica_dcs::structure::dcs_structure_scope(rows, scope);
             let items = members
                 .iter()
                 .map(|index| {
-                    dcs_structure_address_name(rows, &members, *index)
+                    unica_dcs::structure::dcs_structure_address_name(rows, &members, *index)
                         .and_then(|name| address.member(name).ok())
                         .and_then(|at| {
                             serde_json::to_value(dcs_structure_node(&at, rows, *index)).ok()
@@ -741,7 +368,7 @@ fn project_dcs_structure(
                 items,
             )));
         };
-        scope = Some(dcs_structure_child(rows, scope, name).ok_or_else(|| {
+        scope = Some(unica_dcs::structure::dcs_structure_child(rows, scope, name).ok_or_else(|| {
             ViewError::new(
                 RefusalCode::NotFound,
                 format!(
@@ -1176,43 +803,8 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
             "homePage",
             "interface",
         ],
-        LogicalReader::Metadata => &[
-            "name",
-            "synonym",
-            "kind",
-            "details",
-            "support",
-            "properties",
-            "declarations",
-            "relations",
-            "collections",
-            "predefinedItems",
-            // Заимствование расширением: только в наборе вида `extension`.
-            "belonging",
-            "parentId",
-            "parentStatus",
-            "overridesCount",
-            "overridesComplete",
-            "overrides",
-            // Поля, которые читатель не смог спроецировать (см. `metadata_payload`).
-            "unreadable",
-        ],
-        LogicalReader::Form => &[
-            "name",
-            "title",
-            "objectContext",
-            "isExtension",
-            "baseFormVersion",
-            "support",
-            "properties",
-            "events",
-            "autoCommandBar",
-            "commandBarLocation",
-            "elements",
-            "attributes",
-            "parameters",
-            "commands",
-        ],
+        LogicalReader::Metadata => metadata::PAYLOAD_KEYS,
+        LogicalReader::Form => form::PAYLOAD_KEYS,
         LogicalReader::Role => &[
             "name",
             "synonym",
@@ -1225,6 +817,7 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
             "templates",
         ],
         LogicalReader::Subsystem | LogicalReader::Interface => &[
+            "propertyLimits",
             "name",
             "synonym",
             "comment",
@@ -1370,11 +963,7 @@ fn select_kind_value(reader: LogicalReader, value: &Value, kind: NodeKind) -> Op
 
 fn reader_branch_fields(reader: LogicalReader, kind: NodeKind) -> &'static [&'static str] {
     match (reader, kind) {
-        (LogicalReader::Form, NodeKind::Item) => &["elements", "children"],
-        (LogicalReader::Form, NodeKind::Attribute) => &["attributes"],
-        (LogicalReader::Form, NodeKind::Parameter) => &["parameters"],
-        (LogicalReader::Form, NodeKind::Command) => &["commands"],
-        (LogicalReader::Form, NodeKind::Event) => &["events", "actions"],
+        (LogicalReader::Form, _) => form::branch_fields(kind),
         (LogicalReader::Dcs, NodeKind::DataSet) => &["dataSets", "items"],
         (LogicalReader::Dcs, NodeKind::Field) => &["fields"],
         (LogicalReader::Dcs, NodeKind::Query) => &["query"],
@@ -1388,568 +977,6 @@ fn reader_branch_fields(reader: LogicalReader, kind: NodeKind) -> &'static [&'st
     }
 }
 
-fn project_metadata(
-    address: &QualifiedAddress,
-    payload: &Value,
-    suffix: &[AddressSegment],
-) -> Result<NodeViewData, ViewError> {
-    if suffix.is_empty() {
-        let mut props = selected_scalar_props(
-            payload,
-            &[
-                "kind",
-                "synonym",
-                "support",
-                // Заимствование расширением: ключи есть только в наборе
-                // расширения и только у заимствованного объекта, кроме
-                // `belonging` — он отвечает у всякого объекта расширения.
-                "belonging",
-                "parentId",
-                "parentStatus",
-                "overridesCount",
-                "overridesComplete",
-                "overrides",
-            ],
-        );
-        props.extend(metadata_property_props(payload));
-        props.extend(metadata_detail_props(payload));
-        // Счёт предопределённых элементов берётся из ответа читателя, а не из
-        // длины страницы: при урезанной странице они расходятся, и ветвь
-        // обещала бы меньше, чем есть.
-        let predefined_total = payload
-            .get("predefinedItems")
-            .and_then(|predefined| predefined.get("total"))
-            .and_then(Value::as_u64);
-        let mut branches = metadata_branch_kinds()
-            .iter()
-            .filter_map(|kind| {
-                let value = metadata_collection(payload, *kind)?;
-                let count = match (kind, predefined_total) {
-                    (NodeKind::PredefinedItem, Some(total)) => {
-                        usize::try_from(total).unwrap_or(usize::MAX)
-                    }
-                    _ => value.as_array().map_or(0, Vec::len),
-                };
-                (count > 0).then(|| BranchRef::new(format!("{}.{}", address, kind.as_str()), count))
-            })
-            .collect::<Vec<_>>();
-        let relations = metadata_relations(address, payload);
-        if !relations.is_empty() {
-            branches.push(BranchRef::new(
-                format!("{}.{}", address, NodeKind::Relation.as_str()),
-                relations.len(),
-            ));
-        }
-        let title = payload
-            .get("synonym")
-            .and_then(Value::as_str)
-            .or_else(|| payload.get("name").and_then(Value::as_str))
-            .unwrap_or_else(|| {
-                address
-                    .segments()
-                    .last()
-                    .and_then(AddressSegment::name)
-                    .unwrap_or("Metadata")
-            });
-        return Ok(NodeViewData::Node(
-            NodeView::new(
-                address.to_string(),
-                address
-                    .segments()
-                    .last()
-                    .map(AddressSegment::kind)
-                    .unwrap_or(NodeKind::Configuration)
-                    .as_str(),
-                title,
-                props,
-            )
-            .with_branches(branches)
-            .with_limits(metadata_limits(payload)),
-        ));
-    }
-    let first = &suffix[0];
-    if first.kind() == NodeKind::Relation {
-        if suffix.len() > 1 || first.name().is_some() {
-            return Err(ViewError::new(
-                RefusalCode::NotFound,
-                "the relation branch lists targets; read the target at its own address",
-            ));
-        }
-        return Ok(NodeViewData::Collection(CollectionView::new(
-            NodeView::new(
-                address.to_string(),
-                NodeKind::Relation.as_str(),
-                "Relations",
-                Map::new(),
-            )
-            .with_limits(metadata_relation_limits(payload)),
-            metadata_relations(address, payload),
-        )));
-    }
-    // Непрочитанная коллекция приходит `null`; без этой проверки она читалась
-    // бы как пустая.
-    if metadata_collection(payload, first.kind()).is_none_or(Value::is_null) {
-        if let Some(unread) = unreadable_collection(payload, first.kind()) {
-            return Err(ViewError::detailed(
-                RefusalDetail::SourceUnreadable,
-                format!(
-                    "metadata {} collection is unreadable: {unread}",
-                    first.kind().as_str()
-                ),
-            ));
-        }
-    }
-    let collection = metadata_collection(payload, first.kind()).ok_or_else(|| {
-        ViewError::new(
-            RefusalCode::NotFound,
-            format!("metadata has no {} collection", first.kind().as_str()),
-        )
-    })?;
-    if first.kind() == NodeKind::Characteristic {
-        // Прикладного имени у характеристики нет: она названа парой источников,
-        // а не словом. Адресовать в ней нечего, поэтому элементы остаются
-        // строками данных — как строки макета и строки исходника.
-        if first.name().is_some() || suffix.len() > 1 {
-            return Err(ViewError::new(
-                RefusalCode::NotFound,
-                "a characteristic carries no applied name; the branch lists them as rows",
-            ));
-        }
-        return Ok(NodeViewData::Collection(CollectionView::new(
-            NodeView::new(
-                address.to_string(),
-                NodeKind::Characteristic.as_str(),
-                "Characteristics",
-                Map::new(),
-            ),
-            collection.as_array().cloned().unwrap_or_default(),
-        )));
-    }
-    if first.name().is_none() && suffix.len() == 1 {
-        return Ok(NodeViewData::Collection(CollectionView::new(
-            NodeView::new(
-                address.to_string(),
-                first.kind().as_str(),
-                first.kind().as_str(),
-                Map::new(),
-            ),
-            metadata_items(address, first.kind(), collection),
-        )));
-    }
-    let name = first.name().ok_or_else(|| {
-        ViewError::new(
-            RefusalCode::NotFound,
-            "metadata collection name is required",
-        )
-    })?;
-    let mut item = select_named(collection, name).ok_or_else(|| {
-        ViewError::new(
-            RefusalCode::NotFound,
-            format!("metadata node `{name}` was not found"),
-        )
-    })?;
-    let mut kind = first.kind();
-    for segment in &suffix[1..] {
-        kind = segment.kind();
-        let next = match kind {
-            NodeKind::Attribute | NodeKind::Column => item.get("attributes"),
-            NodeKind::Method => item.get("methods"),
-            NodeKind::Parameter => item.get("parameters"),
-            NodeKind::StandardAttribute => item.get("standardAttributes"),
-            _ => None,
-        }
-        .ok_or_else(|| {
-            ViewError::new(
-                RefusalCode::NotFound,
-                "metadata child collection was not found",
-            )
-        })?;
-        if let Some(name) = segment.name() {
-            item = select_named(next, name).ok_or_else(|| {
-                ViewError::new(
-                    RefusalCode::NotFound,
-                    format!("metadata child `{name}` was not found"),
-                )
-            })?;
-        } else {
-            return Ok(NodeViewData::Collection(CollectionView::new(
-                NodeView::new(
-                    address.to_string(),
-                    kind.as_str(),
-                    kind.as_str(),
-                    Map::new(),
-                ),
-                metadata_items(address, kind, next),
-            )));
-        }
-    }
-    Ok(NodeViewData::Node(metadata_item_node(address, kind, item)))
-}
-
-fn metadata_limits(payload: &Value) -> Vec<String> {
-    let mut limits = unreadable_limits(payload);
-    limits.extend(metadata_missing_relation_limits(payload));
-    limits
-}
-
-const METADATA_DETAIL_RELATIONS: &[(&str, &str, &str)] = &[
-    (
-        "registeredDocuments",
-        "registeredDocument",
-        "RegisteredDocuments",
-    ),
-    (
-        "baseCalculationTypes",
-        "baseCalculationType",
-        "BaseCalculationTypes",
-    ),
-    ("xdtoPackages", "xdtoPackage", "XDTOPackages"),
-];
-
-fn metadata_relation_error_field(field: &str) -> Option<String> {
-    if field.starts_with("relations.") {
-        return Some(field.to_string());
-    }
-    for (name, _, xml_name) in METADATA_DETAIL_RELATIONS {
-        let detail = format!("details.{name}");
-        if field == format!("properties.{xml_name}") {
-            return Some(detail);
-        }
-        if field
-            .strip_prefix(&detail)
-            .is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '[']))
-        {
-            return Some(field.to_string());
-        }
-    }
-    None
-}
-
-fn metadata_relation_limits(payload: &Value) -> Vec<String> {
-    let mut limits = unreadable_entries(payload)
-        .filter_map(|(field, message)| {
-            metadata_relation_error_field(field)
-                .map(|field| format!("{field} не прочитано: {message}"))
-        })
-        .collect::<Vec<_>>();
-    limits.extend(metadata_missing_relation_limits(payload));
-    limits
-}
-
-fn metadata_missing_relation_limits(payload: &Value) -> Vec<String> {
-    let mut missing = payload
-        .get("relations")
-        .and_then(Value::as_object)
-        .into_iter()
-        .flatten()
-        .filter(|(_, value)| value.is_null())
-        .map(|(name, _)| format!("relations.{name}"))
-        .collect::<Vec<_>>();
-    if let Some(details) = metadata_details(payload) {
-        missing.extend(
-            METADATA_DETAIL_RELATIONS
-                .iter()
-                .filter(|(name, _, _)| details.get(*name).is_some_and(Value::is_null))
-                .map(|(name, _, _)| format!("details.{name}")),
-        );
-    }
-    missing
-        .into_iter()
-        .filter_map(|field| {
-            let damaged = unreadable_entries(payload).any(|(candidate, _)| {
-                metadata_relation_error_field(candidate).is_some_and(|candidate| {
-                    candidate
-                        .strip_prefix(&field)
-                        .is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '[']))
-                })
-            });
-            (!damaged).then(|| format!("{field} is absent; the relation list may be incomplete"))
-        })
-        .collect()
-}
-
-/// Поля, которые читатель не смог спроецировать, — строками для `limits`.
-fn unreadable_limits(payload: &Value) -> Vec<String> {
-    unreadable_entries(payload)
-        .map(|(field, message)| format!("{field} не прочитано: {message}"))
-        .collect()
-}
-
-/// Причина, по которой коллекция из пофактовой части вида осталась без данных.
-///
-/// Без неё `URLTemplate` сервиса, чей шаблон читатель не разобрал, отвечал бы
-/// «нет такой коллекции», и агент счёл бы сервис пустым.
-fn unreadable_collection(payload: &Value, kind: NodeKind) -> Option<String> {
-    let prefix = match kind {
-        NodeKind::PredefinedItem => "predefinedItems",
-        NodeKind::UrlTemplate => "details.urlTemplates",
-        NodeKind::Operation => "details.operations",
-        _ => return None,
-    };
-    let reasons = unreadable_entries(payload)
-        .filter(|(field, _)| {
-            field
-                .strip_prefix(prefix)
-                .is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '[']))
-        })
-        .map(|(field, message)| format!("{field}: {message}"))
-        .collect::<Vec<_>>();
-    (!reasons.is_empty()).then(|| reasons.join("; "))
-}
-
-fn unreadable_entries(payload: &Value) -> impl Iterator<Item = (&str, &str)> {
-    payload
-        .get("unreadable")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|entry| {
-            Some((
-                entry.get("field")?.as_str()?,
-                entry.get("message")?.as_str()?,
-            ))
-        })
-}
-
-fn metadata_branch_kinds() -> &'static [NodeKind] {
-    &[
-        NodeKind::Attribute,
-        NodeKind::StandardAttribute,
-        NodeKind::TabularSection,
-        NodeKind::Dimension,
-        NodeKind::Resource,
-        NodeKind::Recalculation,
-        NodeKind::EnumValue,
-        NodeKind::Column,
-        NodeKind::Form,
-        NodeKind::Template,
-        NodeKind::Command,
-        NodeKind::UrlTemplate,
-        NodeKind::Operation,
-        NodeKind::Characteristic,
-        NodeKind::StandardTabularSection,
-        NodeKind::PredefinedItem,
-    ]
-}
-
-fn metadata_collection(payload: &Value, kind: NodeKind) -> Option<&Value> {
-    let collections = payload.get("collections")?;
-    let declarations = payload.get("declarations");
-    match kind {
-        NodeKind::Attribute => collections.get("attributes"),
-        NodeKind::StandardAttribute => declarations?.get("standardAttributes"),
-        NodeKind::Characteristic => declarations?.get("characteristics"),
-        NodeKind::StandardTabularSection => declarations?.get("standardTabularSections"),
-        // Страница элементов лежит в `items`, а правдивый счёт — в `total`
-        // рядом: при урезанной странице длина массива соврала бы.
-        NodeKind::PredefinedItem => payload.get("predefinedItems")?.get("items"),
-        NodeKind::TabularSection => collections.get("tabularSections"),
-        NodeKind::Dimension => collections.get("dimensions"),
-        NodeKind::Resource => collections.get("resources"),
-        NodeKind::Recalculation => collections.get("recalculations"),
-        NodeKind::EnumValue => collections.get("enumValues"),
-        NodeKind::Column => collections.get("columns"),
-        NodeKind::Form => collections.get("forms"),
-        NodeKind::Template => collections.get("templates"),
-        NodeKind::Command => collections.get("commands"),
-        // Последовательности пофактовой части вида: платформа держит их не в
-        // `collections`, но для читателя это такая же адресуемая коллекция.
-        NodeKind::UrlTemplate => metadata_details(payload)?.get("urlTemplates"),
-        NodeKind::Operation => metadata_details(payload)?.get("operations"),
-        _ => None,
-    }
-}
-
-/// Все ссылки объекта наружу — одной ветвью.
-///
-/// Платформа держит их в разных местах: владельцы и движения — в `relations`,
-/// зарегистрированные документы журнала и базовые виды расчёта — в пофактовой
-/// части вида. Вопрос при этом один: на что этот объект показывает и почему.
-/// Поэтому имя связи становится полем элемента, а не отдельной ветвью на
-/// каждое имя: девять ветвей ради девяти имён — это девять новых видов узлов
-/// там, где хватает поля.
-fn metadata_relations(address: &QualifiedAddress, payload: &Value) -> Vec<Value> {
-    let mut items = Vec::new();
-    let mut push = |relation: &str, target: &str| {
-        let Ok(at) = QualifiedAddress::parse(&format!("{}:{target}", address.source_set())) else {
-            return;
-        };
-        let Some(kind) = at.segments().last().map(AddressSegment::kind) else {
-            return;
-        };
-        items.push(json!({
-            "relation": relation,
-            "at": at.to_string(),
-            "kind": kind.as_str(),
-        }));
-    };
-    let relations = payload.get("relations");
-    for (field, relation) in [
-        ("owners", "owner"),
-        ("registerRecords", "registerRecord"),
-        ("basedOn", "basedOn"),
-        ("inputByString", "inputByString"),
-        ("dataLockFields", "dataLockField"),
-    ] {
-        let targets = relations
-            .and_then(|relations| relations.get(field))
-            .and_then(Value::as_array);
-        for target in targets.into_iter().flatten() {
-            if let Some(value) = target.get("value").and_then(Value::as_str) {
-                push(relation, value);
-            }
-        }
-    }
-    // Источник события и пакеты XDTO названы платформой по-своему, но
-    // показывают ровно наружу и ложатся сюда же. Вариант без адреса —
-    // `family` у источника, пространство имён у пакета — сюда не попадает:
-    // ветвь адресует объекты, а не строки.
-    let details = metadata_details(payload);
-    for (holder, field, relation) in std::iter::once((relations, "source", "source")).chain(
-        METADATA_DETAIL_RELATIONS
-            .iter()
-            .map(|(field, relation, _)| (details, *field, *relation)),
-    ) {
-        let entries = holder
-            .and_then(|holder| holder.get(field))
-            .and_then(Value::as_array);
-        for entry in entries.into_iter().flatten() {
-            let target = entry
-                .as_str()
-                .or_else(|| entry.get("metadataPath").and_then(Value::as_str));
-            if let Some(target) = target {
-                push(relation, target);
-            }
-        }
-    }
-    // Источник подписки расширения из основной конфигурации платформа пишет
-    // идентификатором типа (`v8:TypeId`, #1361): адреса у него нет, но
-    // скрыть его нельзя — замена источников сохраняет его как есть.
-    let type_ids = relations
-        .and_then(|relations| relations.get("sourceTypeIds"))
-        .and_then(Value::as_array);
-    for type_id in type_ids.into_iter().flatten().filter_map(Value::as_str) {
-        items.push(json!({
-            "relation": "source",
-            "kind": "typeId",
-            "typeId": type_id,
-            "readOnly": true,
-        }));
-    }
-    items
-}
-
-/// Пофактовая часть вида: `details` приходит соседним тегом `{kind, details}`.
-fn metadata_details(payload: &Value) -> Option<&Value> {
-    payload
-        .get("details")
-        .and_then(|adjacent| adjacent.get("details"))
-}
-
-fn metadata_items(address: &QualifiedAddress, kind: NodeKind, value: &Value) -> Vec<Value> {
-    value
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|item| {
-            let name = item.get("name")?.as_str()?;
-            let child = address.member(name).ok()?;
-            serde_json::to_value(metadata_item_node(&child, kind, item)).ok()
-        })
-        .collect()
-}
-
-fn metadata_item_node(address: &QualifiedAddress, kind: NodeKind, item: &Value) -> NodeView {
-    let mut props = selected_scalar_props(
-        item,
-        &[
-            "synonym",
-            "comment",
-            "required",
-            "fillValue",
-            "addressingDimension",
-            "incomplete",
-            "template",
-            "httpMethod",
-            "handler",
-            "procedure",
-            "nillable",
-            "transactioned",
-            "direction",
-            // Предопределённый элемент: собственные скаляры и поля по виду
-            // владельца. Без них ветвь отвечала бы одним заголовком, то есть
-            // домом без содержимого.
-            "id",
-            "parentId",
-            "code",
-            "description",
-            "isFolder",
-            "accountType",
-            "offBalance",
-            "order",
-            "actionPeriodIsBase",
-        ],
-    );
-    for key in ["accountingFlags", "extDimensionTypes"] {
-        if let Some(value) = item.get(key).and_then(|value| bounded_prop(key, value)) {
-            props.insert(key.to_string(), value);
-        }
-    }
-    if let Some(value) = item
-        .get("returnType")
-        .and_then(|value| bounded_prop("returnType", value))
-    {
-        props.insert("returnType".to_string(), value);
-    }
-    if let Some(value) = item
-        .get("type")
-        .and_then(|value| bounded_prop("type", value))
-    {
-        props.insert("type".to_string(), value);
-    }
-    if let Some(value) = item
-        .get("fillValue")
-        .and_then(|value| bounded_prop("fillValue", value))
-    {
-        props.insert("fillValue".to_string(), value);
-    }
-    let mut branches = [
-        ("attributes", NodeKind::Attribute),
-        ("methods", NodeKind::Method),
-        ("parameters", NodeKind::Parameter),
-        ("standardAttributes", NodeKind::StandardAttribute),
-    ]
-    .into_iter()
-    .filter_map(|(field, kind)| {
-        let items = item.get(field)?.as_array()?;
-        (!items.is_empty())
-            .then(|| BranchRef::new(format!("{}.{}", address, kind.as_str()), items.len()))
-    })
-    .collect::<Vec<_>>();
-    branches.extend(
-        item.get("logicalBranches")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|branch| {
-                let kind = branch.get("kind")?.as_str()?;
-                let count = usize::try_from(branch.get("count")?.as_u64()?).ok()?;
-                let kind = NodeKind::parse(kind).ok()?;
-                (count > 0).then(|| BranchRef::new(format!("{}.{}", address, kind.as_str()), count))
-            }),
-    );
-    NodeView::new(
-        address.to_string(),
-        kind.as_str(),
-        item.get("synonym")
-            .and_then(Value::as_str)
-            .or_else(|| item.get("name").and_then(Value::as_str))
-            .unwrap_or(kind.as_str()),
-        props,
-    )
-    .with_branches(branches)
-}
-
 fn project_subsystem(
     address: &QualifiedAddress,
     payload: &Value,
@@ -1958,6 +985,16 @@ fn project_subsystem(
     let (content, dangling) = subsystem_content(address, payload);
     let children = subsystem_children(address, payload, suffix);
     if suffix.is_empty() {
+        let mut limits = content_limits(&dangling);
+        limits.extend(
+            payload
+                .get("propertyLimits")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_string),
+        );
         let mut branches = Vec::new();
         if !content.is_empty() {
             branches.push(BranchRef::new(
@@ -1988,7 +1025,7 @@ fn project_subsystem(
                 payload,
             )
             .with_branches(branches)
-            .with_limits(content_limits(&dangling)),
+            .with_limits(limits),
         ));
     }
     let first = &suffix[0];
@@ -2497,20 +1534,17 @@ fn project_xdto(
                 Value::String(serde_json::to_string(base).unwrap_or_default()),
             );
         }
-        if let Some(facets) = item
-            .get("facets")
-            .and_then(|value| bounded_prop("facets", value))
-        {
-            props.insert("facets".to_owned(), facets);
+        let mut limits = Vec::new();
+        for key in ["baseAt", "facets"] {
+            if let Some(value) = item.get(key) {
+                if let Some(value) = bounded_prop(key, value) {
+                    props.insert(key.to_string(), value);
+                } else {
+                    limits.push(format!("XDTO {key} exceeds the compact property limit of {MAX_COMPACT_PROP_BYTES} bytes"));
+                }
+            }
         }
         let branches = xdto_property_branch(address, item)?;
-        let limits = if item.get("facets").is_some() && !props.contains_key("facets") {
-            vec![format!(
-                "XDTO facets exceed the compact property limit of {MAX_COMPACT_PROP_BYTES} bytes"
-            )]
-        } else {
-            Vec::new()
-        };
         return Ok(NodeViewData::Node(
             NodeView::new(address.to_string(), segment.kind().as_str(), name, props)
                 .with_branches(branches)
@@ -2599,40 +1633,33 @@ fn xdto_property_branch(
 
 fn xdto_property_node(address: &QualifiedAddress, name: &str, property: &Value) -> NodeView {
     let mut props = reader_node_props(LogicalReader::Xdto, NodeKind::Property, property);
-    if let Some(definitions) = property.get("typeDefs").and_then(Value::as_array) {
-        if let [definition] = definitions.as_slice() {
-            if definition.get("discriminator").and_then(Value::as_str) == Some("ValueType") {
-                props.insert(
-                    "anonymousType".to_owned(),
-                    Value::String("ValueType".to_owned()),
-                );
-                for key in ["base", "facets"] {
-                    if let Some(value) = definition
-                        .get(key)
-                        .and_then(|value| bounded_prop(key, value))
-                    {
-                        props.insert(key.to_owned(), value);
-                    }
-                }
-            }
-        }
-    }
     let mut limits: Vec<String> = ["type", "reference", "bounds"]
         .into_iter()
         .filter(|key| property.get(*key).is_some() && !props.contains_key(*key))
         .map(|key| format!("XDTO property {key} exceeds the compact property limit of {MAX_COMPACT_PROP_BYTES} bytes"))
         .collect();
-    if let Some(definition) = property
+    if let Some([definition]) = property
         .get("typeDefs")
         .and_then(Value::as_array)
-        .and_then(|items| items.first())
+        .map(Vec::as_slice)
     {
-        if definition.get("discriminator").and_then(Value::as_str) == Some("ValueType") {
-            for key in ["base", "facets"] {
-                if definition.get(key).is_some() && !props.contains_key(key) {
-                    limits.push(format!("XDTO anonymous {key} exceeds the compact property limit of {MAX_COMPACT_PROP_BYTES} bytes"));
+        match definition.get("discriminator").and_then(Value::as_str) {
+            Some("ObjectType") => {
+                props.insert("anonymousType".to_string(), json!("ObjectType"));
+            }
+            Some("ValueType") => {
+                props.insert("anonymousType".to_string(), json!("ValueType"));
+                for key in ["base", "facets"] {
+                    if let Some(value) = definition.get(key) {
+                        if let Some(value) = bounded_prop(key, value) {
+                            props.insert(key.to_string(), value);
+                        } else {
+                            limits.push(format!("XDTO anonymous {key} exceeds the compact property limit of {MAX_COMPACT_PROP_BYTES} bytes"));
+                        }
+                    }
                 }
             }
+            _ => {}
         }
     }
     NodeView::new(address.to_string(), "Property", name, props).with_limits(limits)
@@ -2657,104 +1684,6 @@ fn bounded_prop(key: &str, value: &Value) -> Option<Value> {
         }
         scalar => safe_prop(key, scalar).then(|| scalar.clone()),
     }
-}
-
-/// Пофактовая часть вида раскладывается в `props` по ролям.
-///
-/// Составное значение из двух-трёх полей не помещается в `props` объектом и
-/// не заслуживает ветви: адресовать внутри него нечего. Роль каждого поля
-/// называет ключ, и родительный падеж уходит в имя: `handlerModule`, а не
-/// `method.metadataPath`.
-fn metadata_detail_props(payload: &Value) -> Map<String, Value> {
-    let mut props = Map::new();
-    let Some(details) = payload
-        .get("details")
-        .and_then(|adjacent| adjacent.get("details"))
-    else {
-        return props;
-    };
-    for (source, roles) in [
-        (
-            "method",
-            &[
-                ("metadataPath", "handlerModule"),
-                ("method", "handlerMethod"),
-            ][..],
-        ),
-        (
-            "schedule",
-            &[
-                ("register", "scheduleRegister"),
-                ("valueField", "scheduleValueField"),
-                ("dateField", "scheduleDateField"),
-            ][..],
-        ),
-    ] {
-        let Some(composite) = details.get(source) else {
-            continue;
-        };
-        for (field, role) in roles {
-            if let Some(value) = composite
-                .get(field)
-                .and_then(|value| bounded_prop(role, value))
-            {
-                props.insert((*role).to_string(), value);
-            }
-        }
-    }
-    if let Some(value) = details
-        .get("type")
-        .and_then(|value| bounded_prop("type", value))
-    {
-        props.insert("type".to_string(), value);
-    }
-    props
-}
-
-fn metadata_property_props(payload: &Value) -> Map<String, Value> {
-    payload
-        .get("properties")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|property| {
-            let key = property.get("key")?.as_str()?;
-            // Синоним узел уже назвал сам — заголовком и собственным `props`.
-            if key == "Synonym" {
-                return None;
-            }
-            let value = bounded_prop(key, property.get("value")?)?;
-            Some((key.to_string(), value))
-        })
-        .collect()
-}
-
-pub(crate) fn borrowing_props(
-    borrowing: &crate::infrastructure::native_operations::meta::MetaBorrowing,
-) -> Map<String, Value> {
-    let mut props = Map::new();
-    props.insert(
-        "belonging".into(),
-        json!(if borrowing.extends.is_some() {
-            "borrowed"
-        } else {
-            "own"
-        }),
-    );
-    if let Some(parent_id) = &borrowing.extends {
-        if safe_prop("parentId", &json!(parent_id)) {
-            props.insert("parentId".into(), json!(parent_id));
-        }
-        props.insert("parentStatus".into(), json!("unavailable"));
-        let overrides = borrowing.overrides.join(", ");
-        let complete = safe_prop("overrides", &json!(overrides));
-        props.insert("overridesCount".into(), json!(borrowing.overrides.len()));
-        props.insert("overridesComplete".into(), json!(complete));
-        if complete && !overrides.is_empty() {
-            props.insert("overrides".into(), json!(overrides));
-        }
-    }
-    props
 }
 
 fn selected_scalar_props(value: &Value, keys: &[&str]) -> Map<String, Value> {
@@ -2837,24 +1766,23 @@ fn node_from_value(
     NodeView::new(address.to_string(), kind.as_str(), title, props)
 }
 
+/// Отбирает публичные свойства из внутренних фактов читателя.
+/// Новый факт становится доступен в `view` только после включения
+/// в профиль соответствующего вида узла; ограничения размера сохраняются.
 fn reader_node_props(reader: LogicalReader, kind: NodeKind, value: &Value) -> Map<String, Value> {
+    if reader == LogicalReader::Form {
+        return form::node_props(kind, value);
+    }
     let keys: &[&str] = match (reader, kind) {
-        (LogicalReader::Form, NodeKind::Item) => {
-            &["tag", "title", "visible", "enabled", "readOnly"]
-        }
-        (LogicalReader::Form, NodeKind::Event) => &["handler", "callType"],
-        (LogicalReader::Form, NodeKind::Attribute | NodeKind::Column) => {
-            &["type", "isMain", "mainTable"]
-        }
-        (LogicalReader::Form, NodeKind::Parameter) => &["type", "isKey"],
-        (LogicalReader::Form, NodeKind::Command) => {
-            &["title", "tooltip", "shortcut", "picture", "representation"]
-        }
         (LogicalReader::Dcs, NodeKind::DataSet) => &["kind", "objectName", "dataSource"],
         (LogicalReader::Dcs, NodeKind::Field) => &["field", "title"],
-        (LogicalReader::Dcs, NodeKind::Parameter) => {
-            &["type", "value", "restricted", "availableAsField"]
-        }
+        (LogicalReader::Dcs, NodeKind::Parameter) => &[
+            "type",
+            "value",
+            "expression",
+            "restricted",
+            "availableAsField",
+        ],
         (LogicalReader::Dcs, NodeKind::Setting) => &["presentation", "filters"],
         (LogicalReader::Dcs, NodeKind::DataSource) => &["kind"],
         (LogicalReader::Dcs, NodeKind::CalculatedField) => &["expression", "title"],
@@ -2895,6 +1823,15 @@ fn reader_node_props(reader: LogicalReader, kind: NodeKind, value: &Value) -> Ma
         _ => &[],
     };
     let mut props = selected_scalar_props(value, keys);
+    if reader == LogicalReader::Subsystem && kind == NodeKind::Subsystem {
+        if let Some(support) = value.get("support") {
+            for (source, key) in [("state", "support"), ("directEditSafe", "directEditSafe")] {
+                if let Some(value) = support.get(source).filter(|value| safe_prop(key, value)) {
+                    props.insert(key.to_string(), value.clone());
+                }
+            }
+        }
+    }
     if kind == NodeKind::Template {
         let format = match reader {
             LogicalReader::Dcs => Some("DataCompositionSchema"),
@@ -2974,13 +1911,7 @@ fn known_reader_branches(
     }
     let kinds: &[NodeKind] = match reader {
         LogicalReader::Configuration => &[],
-        LogicalReader::Form => &[
-            NodeKind::Item,
-            NodeKind::Attribute,
-            NodeKind::Parameter,
-            NodeKind::Command,
-            NodeKind::Event,
-        ],
+        LogicalReader::Form => form::BRANCH_KINDS,
         LogicalReader::Dcs => &[
             NodeKind::DataSet,
             NodeKind::Field,
@@ -3168,7 +2099,7 @@ mod dcs_structure_tests {
         // ни одного.
         let rows = rows.as_array().unwrap();
         assert_eq!(
-            dcs_structure_paths(rows, "Nested.Name"),
+            unica_dcs::structure::dcs_structure_paths(rows, "Nested.Name"),
             (
                 vec![vec![
                     "Unique (group)".to_string(),
@@ -3177,8 +2108,14 @@ mod dcs_structure_tests {
                 1
             )
         );
-        assert_eq!(dcs_structure_paths(rows, "Repeated"), (Vec::new(), 2));
-        assert_eq!(dcs_structure_paths(rows, "Missing"), (Vec::new(), 0));
+        assert_eq!(
+            unica_dcs::structure::dcs_structure_paths(rows, "Repeated"),
+            (Vec::new(), 2)
+        );
+        assert_eq!(
+            unica_dcs::structure::dcs_structure_paths(rows, "Missing"),
+            (Vec::new(), 0)
+        );
     }
 }
 

@@ -1,7 +1,7 @@
 ---
 id: INV.OBS.DETACHED-JOB-STATE
 check:
-  - crates/unica-coder/src/infrastructure/runtime_jobs.rs::detached_worker_owns_the_queued_record_until_terminal_state
+  - crates/unica-coder/src/infrastructure/runtime_jobs_integration.rs::detached_worker_owns_the_queued_record_until_terminal_state
 ---
 
 # Состояние фонового задания сохраняется после завершения worker

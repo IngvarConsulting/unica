@@ -10,7 +10,7 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/v13_read_modes.rs::detailed_dcs_can_publishes_structured_operands_and_refuses_retired_schema_input
   - crates/unica-coder/src/infrastructure/daemon/v13_read_modes.rs::diff_compares_source_backed_data_without_the_computed_dictionary
   - crates/unica-coder/src/application/v13/diff.rs::diff_ignores_computed_view_sections
-  - crates/unica-coder/src/domain/address.rs::a_can_segment_takes_the_rest_of_the_address_as_the_operation_name
+  - crates/unica-address/src/address.rs::a_can_segment_takes_the_rest_of_the_address_as_the_operation_name
   - crates/unica-coder/src/infrastructure/daemon/server.rs::a_retired_read_filter_routes_next_to_the_address_that_replaced_it
   - crates/unica-coder/src/infrastructure/daemon/server.rs::an_operation_address_outside_view_routes_next_to_view
   - crates/unica-coder/src/domain/apply.rs::applicability_follows_the_route_not_the_terminal_kind

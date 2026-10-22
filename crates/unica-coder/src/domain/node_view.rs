@@ -1,5 +1,6 @@
 use serde::Serialize;
 use serde_json::{Map, Value};
+use unica_operation_contract::OperationRef;
 
 /// The seven slots shared by every addressable v0.13 node. Pagination and
 /// revision facts intentionally live in `DomainResult`, while `items` belongs
@@ -53,6 +54,12 @@ impl NodeView {
     }
 
     #[must_use]
+    pub(crate) fn with_additional_limits(mut self, limits: Vec<String>) -> Self {
+        self.limits.extend(limits);
+        self
+    }
+
+    #[must_use]
     pub(crate) fn with_can(mut self, can: Vec<OperationRef>) -> Self {
         self.can = can;
         self
@@ -89,27 +96,6 @@ impl BranchRef {
     pub(crate) fn with_bytes(mut self, bytes: Option<u64>) -> Self {
         self.bytes = bytes;
         self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct OperationRef {
-    op: String,
-    #[serde(skip_serializing_if = "Map::is_empty")]
-    args: Map<String, Value>,
-}
-
-impl OperationRef {
-    pub(crate) fn new(op: impl Into<String>, args: Map<String, Value>) -> Self {
-        Self {
-            op: op.into(),
-            args,
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn op(&self) -> &str {
-        &self.op
     }
 }
 

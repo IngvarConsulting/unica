@@ -1,53 +1,32 @@
-use crate::domain::cache::{CacheAccess, CacheReport};
-use crate::domain::cancellation::CancellationToken;
-use crate::domain::code_intelligence::{
-    CodeIntelligenceReadRequest, ProviderDeadline, SearchRequest,
-};
-use crate::domain::events::{runtime_event_kind, DomainEvent, DomainEventKind};
-use crate::domain::progress::{NoopProgressSink, ProgressSink};
-use crate::domain::workspace::WorkspaceContext;
 pub(crate) use operation_descriptors::SupportGuardRequirement;
-pub(crate) use outcome::AdapterOutcome;
 use ports::{ApplicationPorts, FormatGuardCheck, FormatGuardError, SupportGuardCheck};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-pub(crate) use tool_contracts::{
-    DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS, DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS,
-};
+use unica_code_intelligence::coordinator as code_intelligence;
+use unica_code_intelligence::model::CodeIntelligenceReadRequest;
+use unica_code_intelligence::model::SearchRequest;
+use unica_execution_contract::adapter_outcome::AdapterOutcome;
+use unica_runner::operation::runtime_event_kind;
+use unica_source_contract::events::{DomainEvent, DomainEventKind};
+use unica_source_contract::workspace::WorkspaceContext;
+use unica_work_control::cancellation::CancellationToken;
+use unica_work_control::progress::{NoopProgressSink, ProgressSink};
+use unica_work_control::provider_deadline::ProviderDeadline;
+use unica_workspace::cache::{CacheAccess, CacheReport};
 
-pub(crate) mod code_intelligence;
-pub(crate) mod deferred_delivery;
+use unica_navigation::deferred_delivery;
 pub(crate) mod diagnostics;
-pub(crate) mod documentation;
-// This seam is intentionally dormant while production remains on v0.12.
-#[allow(dead_code)]
-pub(crate) mod invocation;
-// Durable lifecycle ownership is connected by the daemon slice, not v0.12.
-#[allow(dead_code)]
-pub(crate) mod invocation_store;
-#[allow(dead_code)]
-pub(crate) mod invocation_store_v5;
-// Pure protocol-v5 lifecycle decisions are composed only by the hidden daemon.
-#[allow(dead_code)]
-pub(crate) mod invocation_v5;
 pub(crate) mod metadata;
 pub(crate) mod operation_descriptors;
 pub(crate) mod operational_config;
-mod outcome;
 pub(crate) mod ports;
-// The receipt authority is compiled before the private v5 daemon becomes the
-// default composition.
-#[allow(dead_code)]
-pub(crate) mod receipt_ledger;
-#[allow(dead_code)]
-pub(crate) mod receipt_ledger_actor;
-pub(crate) mod result_store;
-pub(crate) mod runtime_admission;
-pub(crate) mod shared_work;
-pub(crate) mod source_navigation;
+pub(crate) use unica_runner::admission as runtime_admission;
+#[cfg(test)]
+mod runtime_admission_integration;
+
 pub(crate) mod tool_contracts;
 // The catalog is compiled for hidden canonical routing, while most semantic
 // descriptors remain unused until the atomic Task 22 public cutover.
@@ -183,7 +162,7 @@ pub struct ToolSpec {
 #[derive(Debug, Clone, Copy)]
 pub enum ToolHandler {
     Metadata {
-        operation: metadata::MetadataOperation,
+        operation: unica_metadata::request::MetadataOperation,
     },
     NativeOperation {
         operation: &'static str,
@@ -250,7 +229,7 @@ pub struct OperationResult {
     /// Состояние работы, не успевшей кончиться внутри вызова. Пустое не
     /// сериализуется: обычный вызов платит за этот слот ноль байтов.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub work: Option<crate::domain::long_work::WorkState>,
+    pub work: Option<unica_work_control::long_work::WorkState>,
 }
 
 /// Closed MCP envelope shared by the four typed Meta operations.
@@ -319,7 +298,7 @@ pub fn role_edit_output_schema() -> Value {
         "properties": {
             "metadataPath": {
                 "type": "string",
-                "pattern": crate::domain::role::ROLE_METADATA_PATH_PATTERN
+                "pattern": unica_roles::ROLE_METADATA_PATH_PATTERN
             },
             "changed": {"type": "boolean"},
             "effects": {
@@ -527,7 +506,7 @@ pub fn metadata_argument_failure_result(
     let ToolHandler::Metadata { operation } = spec.handler else {
         return None;
     };
-    metadata::parse_metadata_request(operation, args)
+    unica_metadata::request::parse_metadata_request(operation, args)
         .err()
         .map(invalid_metadata_arguments_result)
 }
@@ -546,11 +525,11 @@ pub fn role_edit_argument_failure_result(
     if name != "unica.role.edit" {
         return None;
     }
-    let error = crate::domain::role::parse_role_edit_request(args).err()?;
+    let error = unica_roles::parse_role_edit_request(args).err()?;
     let operation_index = error.operation_index?;
     let metadata_path = args.get("metadataPath")?.as_str()?.to_string();
     let message = error.message.clone();
-    let data = crate::domain::role::RoleEditData::failed(
+    let data = unica_roles::RoleEditData::failed(
         metadata_path,
         error.code,
         message.clone(),
@@ -676,11 +655,6 @@ impl UnicaApplication {
         )
     }
 }
-
-#[cfg(test)]
-mod meta_add_surface_tests;
-#[cfg(test)]
-mod meta_info_surface_tests;
 
 pub fn tools() -> Vec<ToolSpec> {
     let mut specs = configuration_tools();
@@ -932,7 +906,7 @@ fn call_tool_with_runtime_admission(
     // a continuation call is served from the immutable snapshot and
     // must not re-read the source, so it short-circuits before workspace
     // discovery and the reader dispatch.
-    if mode == InvocationMode::Read && deferred_delivery::supports(&spec) {
+    if mode == InvocationMode::Read && supports_deferred_delivery(&spec) {
         if let Some(result) = try_deferred_continuation(spec, args, deferred) {
             return Ok(result);
         }
@@ -1204,14 +1178,14 @@ fn call_tool_with_runtime_admission(
 
     let requires_operational_config = operational_config::requires_snapshot(spec, args);
     if requires_operational_config && cancellation.is_cancelled() {
-        return Err(crate::domain::cancellation::cancelled_error(
+        return Err(unica_work_control::cancellation::cancelled_error(
             "operational config resolution stopped before reading workspace files",
         ));
     }
     let resolved_operational_config =
         operational_config::resolve_for_call(ports, spec, args, &context);
     if requires_operational_config && cancellation.is_cancelled() {
-        return Err(crate::domain::cancellation::cancelled_error(
+        return Err(unica_work_control::cancellation::cancelled_error(
             "operational config resolution stopped after reading workspace files",
         ));
     }
@@ -1248,16 +1222,16 @@ fn call_tool_with_runtime_admission(
     // сих пор. Предпросмотр ничего не исполняет и потому ничего не качает.
     if !dry_run {
         match ports.deliver_engine_if_missing(spec, &context, cancellation, progress) {
-            shared_work::EngineDeliveryState::NotRequired
-            | shared_work::EngineDeliveryState::Ready(_) => {}
-            shared_work::EngineDeliveryState::Working {
+            unica_artifact_delivery::shared::EngineDeliveryState::NotRequired
+            | unica_artifact_delivery::shared::EngineDeliveryState::Ready(_) => {}
+            unica_artifact_delivery::shared::EngineDeliveryState::Working {
                 artifact,
                 received,
                 total,
                 poll_interval_ms,
             } => {
-                let state = crate::domain::long_work::WorkState {
-                    status: crate::domain::long_work::WorkStatus::Working,
+                let state = unica_work_control::long_work::WorkState {
+                    status: unica_work_control::long_work::WorkStatus::Working,
                     status_message: match total {
                         Some(total) => {
                             format!("delivering {artifact}: {received} of {total} bytes on disk")
@@ -1268,9 +1242,9 @@ fn call_tool_with_runtime_admission(
                 };
                 return Ok(long_work_result(spec, &context, mode, state));
             }
-            shared_work::EngineDeliveryState::Failed { artifact, failure } => {
-                let state = crate::domain::long_work::WorkState {
-                    status: crate::domain::long_work::WorkStatus::Failed,
+            unica_artifact_delivery::shared::EngineDeliveryState::Failed { artifact, failure } => {
+                let state = unica_work_control::long_work::WorkState {
+                    status: unica_work_control::long_work::WorkStatus::Failed,
                     status_message: format!(
                         "delivery of {artifact} failed: {}",
                         failure.legacy_diagnostic()
@@ -1361,7 +1335,7 @@ fn call_tool_with_runtime_admission(
             command: None,
         };
         handler_data = Some(
-            serde_json::to_value(crate::domain::role::RoleEditData::failed(
+            serde_json::to_value(unica_roles::RoleEditData::failed(
                 target.metadata_path.clone(),
                 code,
                 "the role mutation returned no typed data",
@@ -1465,13 +1439,17 @@ fn call_tool_with_runtime_admission(
 /// Идущая работа несёт `ok`: это состояние, а не неудача, и в задачах протокола
 /// оно называется так же. Неудача остаётся неудачей и называет причину.
 /// Обработчик при этом не звался, поэтому ни вывода, ни команды здесь нет.
+fn supports_deferred_delivery(spec: &ToolSpec) -> bool {
+    matches!(spec.handler, ToolHandler::NativeOperation { operation, .. } if deferred_delivery::supports_operation(operation))
+}
+
 fn long_work_result(
     spec: ToolSpec,
     context: &WorkspaceContext,
     mode: InvocationMode,
-    state: crate::domain::long_work::WorkState,
+    state: unica_work_control::long_work::WorkState,
 ) -> OperationResult {
-    use crate::domain::long_work::WorkStatus;
+    use unica_work_control::long_work::WorkStatus;
     let ok = matches!(state.status, WorkStatus::Working | WorkStatus::Completed);
     OperationResult {
         ok,
@@ -1638,7 +1616,7 @@ fn defer_oversized_typed_read(
     mut handler_outcome: ports::HandlerOutcome,
 ) -> ports::HandlerOutcome {
     if mode != InvocationMode::Read
-        || !deferred_delivery::supports(&spec)
+        || !supports_deferred_delivery(&spec)
         || !handler_outcome.adapter.ok
     {
         return handler_outcome;
@@ -1653,7 +1631,7 @@ fn defer_oversized_typed_read(
         handler_outcome.data = Some(data);
         return handler_outcome;
     }
-    let snapshot = result_store::SnapshotIdentity {
+    let snapshot = unica_navigation::result_store::SnapshotIdentity {
         workspace_epoch: context.workspace_epoch,
         cache_root: context.cache_root.display().to_string(),
         as_of_unix_ms: deferred_delivery::now_unix_ms(),
@@ -1687,7 +1665,7 @@ fn defer_oversized_typed_read(
 fn runtime_receipt_admission_result(
     spec: ToolSpec,
     failure: runtime_admission::RuntimeAdmissionFailure,
-    missing_engine: Option<crate::domain::engine::MissingEngine>,
+    missing_engine: Option<unica_artifact_delivery::engine::MissingEngine>,
 ) -> OperationResult {
     let mut errors = vec![format!("{}: {}", failure.code, failure.message)];
     if let Some(missing) = &missing_engine {
@@ -1722,7 +1700,9 @@ fn runtime_receipt_admission_result(
     }
 }
 
-fn invalid_metadata_arguments_result(failure: metadata::MetaFailure) -> OperationResult {
+fn invalid_metadata_arguments_result(
+    failure: unica_metadata::request::MetaFailure,
+) -> OperationResult {
     let errors = failure
         .diagnostics
         .iter()
@@ -1799,12 +1779,8 @@ impl RoleEditLogicalTarget {
     ) -> OperationResult {
         cache.root.clear();
         let message = format!("{code}: {} — {reason}", self.identity());
-        let data = crate::domain::role::RoleEditData::failed(
-            self.metadata_path.clone(),
-            code,
-            reason,
-            None,
-        );
+        let data =
+            unica_roles::RoleEditData::failed(self.metadata_path.clone(), code, reason, None);
         OperationResult {
             ok: false,
             summary: format!(
@@ -1992,7 +1968,7 @@ fn invoke_code_intelligence_search(
     ports: &dyn ApplicationPorts,
     args: &Map<String, Value>,
     workspace: &WorkspaceContext,
-    operational_config: &crate::domain::operational_config::OperationalConfig,
+    operational_config: &unica_configuration::operational::OperationalConfig,
     cancellation: &CancellationToken,
     progress: &dyn ProgressSink,
 ) -> Result<ports::HandlerOutcome, String> {
@@ -2051,7 +2027,7 @@ struct CodeIntelligenceReadInvocation<'a> {
     operation: CodeIntelligenceOperation,
     args: &'a Map<String, Value>,
     workspace: &'a WorkspaceContext,
-    operational_config: &'a crate::domain::operational_config::OperationalConfig,
+    operational_config: &'a unica_configuration::operational::OperationalConfig,
     cancellation: &'a CancellationToken,
 }
 
@@ -2645,7 +2621,7 @@ fn configuration_tools() -> Vec<ToolSpec> {
                 writes: &[],
             },
             handler: ToolHandler::Metadata {
-                operation: metadata::MetadataOperation::Info,
+                operation: unica_metadata::request::MetadataOperation::Info,
             },
         },
         ToolSpec {
@@ -2658,7 +2634,7 @@ fn configuration_tools() -> Vec<ToolSpec> {
                 writes: &["workspace_graph", "metadata_graph"],
             },
             handler: ToolHandler::Metadata {
-                operation: metadata::MetadataOperation::Add,
+                operation: unica_metadata::request::MetadataOperation::Add,
             },
         },
         ToolSpec {
@@ -2671,7 +2647,7 @@ fn configuration_tools() -> Vec<ToolSpec> {
                 writes: &["workspace_graph", "metadata_graph"],
             },
             handler: ToolHandler::Metadata {
-                operation: metadata::MetadataOperation::Edit,
+                operation: unica_metadata::request::MetadataOperation::Edit,
             },
         },
         ToolSpec {
@@ -2831,7 +2807,7 @@ pub(crate) mod tests {
     use std::time::Duration;
 
     fn normalized_path(path: &std::path::Path) -> std::path::PathBuf {
-        crate::test_support::canonical_path(path)
+        unica_workspace::test_support::canonical_path(path)
     }
 
     fn object_schema_property_maps(schema: &Value) -> Vec<&Map<String, Value>> {
@@ -2855,7 +2831,7 @@ pub(crate) mod tests {
         name: &str,
         args: &Map<String, Value>,
     ) -> Result<OperationResult, String> {
-        let _cwd = crate::test_support::ProcessCwdGuard::enter(workspace)?;
+        let _cwd = unica_workspace::test_support::ProcessCwdGuard::enter(workspace)?;
         UnicaApplication::new().call_tool(name, args)
     }
 
@@ -2903,10 +2879,12 @@ pub(crate) mod tests {
 
     #[test]
     fn code_search_schema_accepts_a_real_partial_provider_section() {
-        use crate::domain::code_intelligence::{
-            ProviderId, ProviderSearchHit, ProviderSearchSection, SearchOrdering, SearchRanking,
-        };
-        use crate::domain::source_location::SourceLocation;
+        use unica_code_intelligence::model::ProviderId;
+        use unica_code_intelligence::model::ProviderSearchHit;
+        use unica_code_intelligence::model::ProviderSearchSection;
+        use unica_code_intelligence::model::SearchOrdering;
+        use unica_code_intelligence::model::SearchRanking;
+        use unica_source_contract::location::SourceLocation;
 
         let section = ProviderSearchSection::partial(
             ProviderId::Rlm.identity(),
@@ -2994,6 +2972,15 @@ pub(crate) mod tests {
         ) -> Result<CacheReport, String> {
             unreachable!("workspace discovery must not run")
         }
+        fn notify_committed_changes(
+            &self,
+            context: &WorkspaceContext,
+            events: &[unica_source_contract::events::DomainEvent],
+            _cancellation: &CancellationToken,
+            _deadline: unica_work_control::operation_deadline::OperationDeadline,
+        ) {
+            self.notify_invalidation(context, events);
+        }
 
         fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {
             unreachable!("workspace discovery must not run")
@@ -3036,13 +3023,12 @@ pub(crate) mod tests {
         }
     }
 
-    static DIAGNOSTICS_BOUNDARY_DESCRIPTOR:
-        crate::domain::diagnostics::DiagnosticProviderDescriptor =
-        crate::domain::diagnostics::DiagnosticProviderDescriptor {
-            id: crate::domain::diagnostics::BSL_ANALYZER_PROVIDER,
+    static DIAGNOSTICS_BOUNDARY_DESCRIPTOR: unica_diagnostics::model::DiagnosticProviderDescriptor =
+        unica_diagnostics::model::DiagnosticProviderDescriptor {
+            id: unica_diagnostics::model::BSL_ANALYZER_PROVIDER,
             actions: &[
-                crate::domain::diagnostics::DiagnosticAction::Analyze,
-                crate::domain::diagnostics::DiagnosticAction::Status,
+                unica_diagnostics::model::DiagnosticAction::Analyze,
+                unica_diagnostics::model::DiagnosticAction::Status,
             ],
             findings_target_kinds: &[],
             emits_focus_kinds: &[],
@@ -3054,29 +3040,29 @@ pub(crate) mod tests {
         fail: bool,
     }
 
-    impl crate::domain::diagnostics::DiagnosticProvider for DiagnosticsBoundaryProvider {
-        fn descriptor(&self) -> &'static crate::domain::diagnostics::DiagnosticProviderDescriptor {
+    impl unica_diagnostics::model::DiagnosticProvider for DiagnosticsBoundaryProvider {
+        fn descriptor(&self) -> &'static unica_diagnostics::model::DiagnosticProviderDescriptor {
             &DIAGNOSTICS_BOUNDARY_DESCRIPTOR
         }
 
         fn execute(
             &self,
-            request: &crate::domain::diagnostics::DiagnosticProviderRequest,
-            _context: &crate::domain::diagnostics::DiagnosticContext,
-            deadline: crate::domain::diagnostics::ProviderDeadline,
+            request: &unica_diagnostics::model::DiagnosticProviderRequest,
+            _context: &unica_diagnostics::model::DiagnosticContext,
+            deadline: unica_diagnostics::model::ProviderDeadline,
             _cancellation: &CancellationToken,
-        ) -> crate::domain::diagnostics::DiagnosticProviderOutcome {
+        ) -> unica_diagnostics::model::DiagnosticProviderOutcome {
             self.calls.fetch_add(1, Ordering::SeqCst);
             *self.observed_budget.lock().unwrap() = deadline.remaining();
             if self.fail {
-                return crate::domain::diagnostics::DiagnosticProviderOutcome {
-                    status: crate::domain::diagnostics::DiagnosticProviderStatus::Failed,
+                return unica_diagnostics::model::DiagnosticProviderOutcome {
+                    status: unica_diagnostics::model::DiagnosticProviderStatus::Failed,
                     complete: false,
                     version: Some("test".to_string()),
                     observations: Vec::new(),
                     rules: Vec::new(),
                     readiness: None,
-                    error: Some(crate::domain::diagnostics::DiagnosticError {
+                    error: Some(unica_diagnostics::model::DiagnosticError {
                         code: "provider_unavailable".to_string(),
                         message: "test provider is unavailable".to_string(),
                         retryable: true,
@@ -3084,19 +3070,19 @@ pub(crate) mod tests {
                     suppressions: Vec::new(),
                 };
             }
-            crate::domain::diagnostics::DiagnosticProviderOutcome {
-                status: if request.action == crate::domain::diagnostics::DiagnosticAction::Analyze {
-                    crate::domain::diagnostics::DiagnosticProviderStatus::Empty
+            unica_diagnostics::model::DiagnosticProviderOutcome {
+                status: if request.action == unica_diagnostics::model::DiagnosticAction::Analyze {
+                    unica_diagnostics::model::DiagnosticProviderStatus::Empty
                 } else {
-                    crate::domain::diagnostics::DiagnosticProviderStatus::Completed
+                    unica_diagnostics::model::DiagnosticProviderStatus::Completed
                 },
                 complete: true,
                 version: Some("test".to_string()),
                 observations: Vec::new(),
                 rules: Vec::new(),
-                readiness: (request.action == crate::domain::diagnostics::DiagnosticAction::Status)
-                    .then_some(crate::domain::diagnostics::DiagnosticReadiness {
-                        state: crate::domain::diagnostics::DiagnosticReadinessState::Ready,
+                readiness: (request.action == unica_diagnostics::model::DiagnosticAction::Status)
+                    .then_some(unica_diagnostics::model::DiagnosticReadiness {
+                        state: unica_diagnostics::model::DiagnosticReadinessState::Ready,
                         retryable: false,
                     }),
                 error: None,
@@ -3139,8 +3125,8 @@ pub(crate) mod tests {
 
         fn diagnostic_provider_registry(
             &self,
-        ) -> Result<crate::domain::diagnostics::DiagnosticProviderRegistry, String> {
-            crate::domain::diagnostics::DiagnosticProviderRegistry::new(vec![Arc::new(
+        ) -> Result<unica_diagnostics::model::DiagnosticProviderRegistry, String> {
+            unica_diagnostics::model::DiagnosticProviderRegistry::new(vec![Arc::new(
                 DiagnosticsBoundaryProvider {
                     calls: Arc::clone(&self.provider_calls),
                     observed_budget: Arc::clone(&self.observed_budget),
@@ -3152,44 +3138,44 @@ pub(crate) mod tests {
 
         fn resolve_diagnostic_context(
             &self,
-            request: &crate::domain::diagnostics::DiagnosticRequest,
+            request: &unica_diagnostics::model::DiagnosticRequest,
             workspace: &WorkspaceContext,
             _cancellation: &CancellationToken,
         ) -> Result<
-            crate::domain::diagnostics::DiagnosticContext,
-            crate::domain::diagnostics::DiagnosticRequestError,
+            unica_diagnostics::model::DiagnosticContext,
+            unica_diagnostics::model::DiagnosticRequestError,
         > {
-            Ok(crate::domain::diagnostics::DiagnosticContext::new(
+            Ok(unica_diagnostics::model::DiagnosticContext::new(
                 workspace.clone(),
-                crate::domain::project_sources::ProjectSourceSet {
+                unica_source_contract::ProjectSourceSet {
                     name: request.source_set.clone(),
-                    kind: crate::domain::project_sources::SourceSetKind::Configuration,
+                    kind: unica_source_contract::SourceSetKind::Configuration,
                     path: "src".to_string(),
-                    source_format: crate::domain::project_sources::SourceFormat::PlatformXml,
-                    source_state: crate::domain::project_sources::SourceSetState::Supported,
+                    source_format: unica_source_contract::SourceFormat::PlatformXml,
+                    source_state: unica_source_contract::SourceSetState::Supported,
                     format_evidence: Vec::new(),
                     format_probe_error: None,
                 },
-                crate::domain::source_roots::ResolvedSourceRoot {
+                unica_source_contract::workspace::ResolvedSourceRoot {
                     source_set: Some(request.source_set.clone()),
                     path: workspace.workspace_root.join("src"),
                 },
-                crate::domain::source_target::ResolvedTarget {
+                unica_address::source_target::ResolvedTarget {
                     source_set: request.source_set.clone(),
                     metadata_path: request.metadata_path.clone(),
-                    target_kind: crate::domain::source_target::TargetKind::SourceRoot,
+                    target_kind: unica_address::source_target::TargetKind::SourceRoot,
                 },
             ))
         }
 
         fn map_diagnostic_observation(
             &self,
-            _observation: crate::domain::diagnostics::DiagnosticObservation,
-            _context: &crate::domain::diagnostics::DiagnosticContext,
+            _observation: unica_diagnostics::model::DiagnosticObservation,
+            _context: &unica_diagnostics::model::DiagnosticContext,
             _cancellation: &CancellationToken,
         ) -> Result<
-            crate::domain::diagnostics::DiagnosticItem,
-            crate::domain::diagnostics::DiagnosticMapError,
+            unica_diagnostics::model::DiagnosticItem,
+            unica_diagnostics::model::DiagnosticMapError,
         > {
             unreachable!("status providers do not emit observations")
         }
@@ -3234,6 +3220,15 @@ pub(crate) mod tests {
                 fresh: Vec::new(),
                 publication_warnings: Vec::new(),
             })
+        }
+        fn notify_committed_changes(
+            &self,
+            context: &WorkspaceContext,
+            events: &[unica_source_contract::events::DomainEvent],
+            _cancellation: &CancellationToken,
+            _deadline: unica_work_control::operation_deadline::OperationDeadline,
+        ) {
+            self.notify_invalidation(context, events);
         }
 
         fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
@@ -3420,39 +3415,39 @@ pub(crate) mod tests {
 
     struct FullRangeReadProvider;
 
-    impl crate::domain::code_intelligence::CodeIntelligenceProvider for FullRangeReadProvider {
-        fn identity(&self) -> crate::domain::code_intelligence::ProviderIdentity {
-            crate::domain::code_intelligence::ProviderId::Rlm.identity()
+    impl unica_code_intelligence::model::CodeIntelligenceProvider for FullRangeReadProvider {
+        fn identity(&self) -> unica_code_intelligence::model::ProviderIdentity {
+            unica_code_intelligence::model::ProviderId::Rlm.identity()
         }
 
-        fn capabilities(&self) -> &[crate::domain::code_intelligence::ProviderCapability] {
+        fn capabilities(&self) -> &[unica_code_intelligence::model::ProviderCapability] {
             &[
-                crate::domain::code_intelligence::ProviderCapability::Definition,
-                crate::domain::code_intelligence::ProviderCapability::Outline,
+                unica_code_intelligence::model::ProviderCapability::Definition,
+                unica_code_intelligence::model::ProviderCapability::Outline,
             ]
         }
 
         fn search(
             &self,
             _request: &SearchRequest,
-            _context: &crate::domain::code_intelligence::CodeIntelligenceContext,
+            _context: &unica_code_intelligence::model::CodeIntelligenceContext,
             _deadline: ProviderDeadline,
             _cancellation: &CancellationToken,
-        ) -> crate::domain::code_intelligence::ProviderSearchSection {
+        ) -> unica_code_intelligence::model::ProviderSearchSection {
             unreachable!("read-only fixture")
         }
 
         fn read(
             &self,
             request: &CodeIntelligenceReadRequest,
-            _context: &crate::domain::code_intelligence::CodeIntelligenceContext,
+            _context: &unica_code_intelligence::model::CodeIntelligenceContext,
             _deadline: ProviderDeadline,
             _cancellation: &CancellationToken,
-        ) -> Result<crate::domain::code_intelligence::ProviderReadOutcome, String> {
+        ) -> Result<unica_code_intelligence::model::ProviderReadOutcome, String> {
             let data = match request {
                 CodeIntelligenceReadRequest::Definition { name, .. } => {
-                    crate::domain::code_intelligence::CodeIntelligenceReadData::Definition(
-                        crate::domain::code_intelligence::CodeDefinitionResult {
+                    unica_code_intelligence::model::CodeIntelligenceReadData::Definition(
+                        unica_code_intelligence::model::CodeDefinitionResult {
                             name: name.clone(),
                             definitions: Vec::new(),
                             index_freshness: None,
@@ -3461,11 +3456,11 @@ pub(crate) mod tests {
                     )
                 }
                 CodeIntelligenceReadRequest::Outline { path, .. } => {
-                    crate::domain::code_intelligence::CodeIntelligenceReadData::Outline(
-                        crate::domain::code_intelligence::CodeOutlineResult {
+                    unica_code_intelligence::model::CodeIntelligenceReadData::Outline(
+                        unica_bsl::outline::CodeOutlineResult {
                             module: path.clone(),
                             identity: Default::default(),
-                            totals: crate::domain::code_intelligence::CodeOutlineTotals {
+                            totals: unica_bsl::outline::CodeOutlineTotals {
                                 methods: 0,
                                 exports: 0,
                                 regions: 0,
@@ -3483,8 +3478,8 @@ pub(crate) mod tests {
                     return Err("the navigation stub answers no call graph".to_string())
                 }
             };
-            Ok(crate::domain::code_intelligence::ProviderReadOutcome {
-                provider: crate::domain::code_intelligence::ProviderId::Rlm.identity(),
+            Ok(unica_code_intelligence::model::ProviderReadOutcome {
+                provider: unica_code_intelligence::model::ProviderId::Rlm.identity(),
                 ok: true,
                 summary: "read".to_string(),
                 warnings: Vec::new(),
@@ -3529,8 +3524,8 @@ pub(crate) mod tests {
             &self,
             _context: &WorkspaceContext,
         ) -> Result<
-            crate::domain::operational_config::OperationalConfig,
-            crate::domain::operational_config::OperationalConfigDiagnostic,
+            unica_configuration::operational::OperationalConfig,
+            unica_configuration::operational::OperationalConfigDiagnostic,
         > {
             self.load_calls.fetch_add(1, Ordering::SeqCst);
             if let Some(cancellation) = &self.cancellation_on_load {
@@ -3538,27 +3533,26 @@ pub(crate) mod tests {
             }
             if self.fail_load {
                 return Err(
-                    crate::domain::operational_config::OperationalConfigDiagnostic::new(
-                        crate::domain::operational_config::OperationalConfigDiagnosticCode::InvalidToml,
-                        crate::domain::operational_config::OperationalConfigDiagnosticSource::Shared,
+                    unica_configuration::operational::OperationalConfigDiagnostic::new(
+                        unica_configuration::operational::OperationalConfigDiagnosticCode::InvalidToml,
+                        unica_configuration::operational::OperationalConfigDiagnosticSource::Shared,
                         "$",
                     ),
                 );
             }
             if self.full_range_workspace.is_some() {
-                let mut layer =
-                    crate::domain::operational_config::OperationalConfigLayer::default();
+                let mut layer = unica_configuration::operational::OperationalConfigLayer::default();
                 layer.set_timeout_seconds(
-                    crate::domain::operational_config::OperationalConfigField::ProviderRead,
+                    unica_configuration::operational::OperationalConfigField::ProviderRead,
                     i64::MAX,
-                    crate::domain::operational_config::OperationalConfigDiagnosticSource::Shared,
+                    unica_configuration::operational::OperationalConfigDiagnosticSource::Shared,
                 )?;
-                return crate::domain::operational_config::OperationalConfig::from_layers(
+                return unica_configuration::operational::OperationalConfig::from_layers(
                     Some(&layer),
                     None,
                 );
             }
-            Ok(crate::domain::operational_config::OperationalConfig::compiled_defaults())
+            Ok(unica_configuration::operational::OperationalConfig::compiled_defaults())
         }
 
         fn prepare_tool_invocation(
@@ -3605,16 +3599,21 @@ pub(crate) mod tests {
             &self,
             context: &WorkspaceContext,
             _args: &Map<String, Value>,
-        ) -> Result<crate::domain::code_intelligence::CodeIntelligenceContext, String> {
+        ) -> Result<unica_code_intelligence::model::CodeIntelligenceContext, String> {
             self.code_context_calls.fetch_add(1, Ordering::SeqCst);
             if self.full_range_workspace.is_some() {
                 return Ok(
-                    crate::domain::code_intelligence::CodeIntelligenceContext::new(
+                    unica_code_intelligence::model::CodeIntelligenceContext::new(
                         context.clone(),
-                        crate::domain::source_roots::ResolvedSourceRoot {
+                        unica_source_contract::workspace::ResolvedSourceRoot {
                             source_set: Some("main".to_string()),
                             path: context.workspace_root.join("src"),
                         },
+                        std::sync::Arc::new(
+                            unica_workspace::discovery::ProjectDiscoveryReader::new(
+                                &context.workspace_root,
+                            ),
+                        ),
                     ),
                 );
             }
@@ -3627,13 +3626,13 @@ pub(crate) mod tests {
             args: &Map<String, Value>,
         ) -> Result<
             (
-                crate::domain::code_intelligence::CodeIntelligenceContext,
-                crate::domain::code_intelligence::CodeSearchScope,
+                unica_code_intelligence::model::CodeIntelligenceContext,
+                unica_code_intelligence::model::CodeSearchScope,
             ),
             String,
         > {
             let provider_context = self.resolve_code_intelligence_context(context, args)?;
-            let scope = crate::domain::code_intelligence::CodeSearchScope::all(
+            let scope = unica_code_intelligence::model::CodeSearchScope::all(
                 "main".to_string(),
                 provider_context.source_root.path.clone(),
                 false,
@@ -3644,7 +3643,7 @@ pub(crate) mod tests {
         fn normalize_code_intelligence_read_request(
             &self,
             request: CodeIntelligenceReadRequest,
-            _context: &crate::domain::code_intelligence::CodeIntelligenceContext,
+            _context: &unica_code_intelligence::model::CodeIntelligenceContext,
         ) -> Result<CodeIntelligenceReadRequest, String> {
             if self.full_range_workspace.is_some() {
                 return Ok(request);
@@ -3654,9 +3653,9 @@ pub(crate) mod tests {
 
         fn code_intelligence_registry(
             &self,
-        ) -> Result<crate::domain::code_intelligence::CodeIntelligenceRegistry, String> {
+        ) -> Result<unica_code_intelligence::model::CodeIntelligenceRegistry, String> {
             if self.full_range_workspace.is_some() {
-                return crate::domain::code_intelligence::CodeIntelligenceRegistry::new(vec![
+                return unica_code_intelligence::model::CodeIntelligenceRegistry::new(vec![
                     Arc::new(FullRangeReadProvider),
                 ]);
             }
@@ -3690,7 +3689,7 @@ pub(crate) mod tests {
             _args: &Map<String, Value>,
             _context: &WorkspaceContext,
             _mode: InvocationMode,
-            operational_config: Option<&crate::domain::operational_config::OperationalConfig>,
+            operational_config: Option<&unica_configuration::operational::OperationalConfig>,
             _cancellation: &CancellationToken,
         ) -> Result<ports::HandlerOutcome, String> {
             self.handler_calls.fetch_add(1, Ordering::SeqCst);
@@ -3728,6 +3727,15 @@ pub(crate) mod tests {
                 publication_warnings: Vec::new(),
             })
         }
+        fn notify_committed_changes(
+            &self,
+            context: &WorkspaceContext,
+            events: &[unica_source_contract::events::DomainEvent],
+            _cancellation: &CancellationToken,
+            _deadline: unica_work_control::operation_deadline::OperationDeadline,
+        ) {
+            self.notify_invalidation(context, events);
+        }
 
         fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
     }
@@ -3737,8 +3745,8 @@ pub(crate) mod tests {
     #[derive(Default)]
     struct DeliveryRecordingPorts {
         steps: std::sync::Mutex<Vec<&'static str>>,
-        missing: Option<crate::domain::engine::MissingEngine>,
-        delivery: shared_work::EngineDeliveryState,
+        missing: Option<unica_artifact_delivery::engine::MissingEngine>,
+        delivery: unica_artifact_delivery::shared::EngineDeliveryState,
     }
 
     impl ports::ApplicationPorts for DeliveryRecordingPorts {
@@ -3769,7 +3777,7 @@ pub(crate) mod tests {
             &self,
             _spec: ToolSpec,
             _cwd: Option<&std::path::Path>,
-        ) -> Option<crate::domain::engine::MissingEngine> {
+        ) -> Option<unica_artifact_delivery::engine::MissingEngine> {
             self.missing.clone()
         }
 
@@ -3779,7 +3787,7 @@ pub(crate) mod tests {
             _context: &WorkspaceContext,
             _cancellation: &CancellationToken,
             _progress: &dyn ProgressSink,
-        ) -> shared_work::EngineDeliveryState {
+        ) -> unica_artifact_delivery::shared::EngineDeliveryState {
             self.steps.lock().expect("steps").push("delivery");
             self.delivery.clone()
         }
@@ -3790,7 +3798,7 @@ pub(crate) mod tests {
             _args: &Map<String, Value>,
             _context: &WorkspaceContext,
             _mode: InvocationMode,
-            _operational_config: Option<&crate::domain::operational_config::OperationalConfig>,
+            _operational_config: Option<&unica_configuration::operational::OperationalConfig>,
             _cancellation: &CancellationToken,
         ) -> Result<ports::HandlerOutcome, String> {
             self.steps.lock().expect("steps").push("handler");
@@ -3854,6 +3862,15 @@ pub(crate) mod tests {
                 publication_warnings: Vec::new(),
             })
         }
+        fn notify_committed_changes(
+            &self,
+            context: &WorkspaceContext,
+            events: &[unica_source_contract::events::DomainEvent],
+            _cancellation: &CancellationToken,
+            _deadline: unica_work_control::operation_deadline::OperationDeadline,
+        ) {
+            self.notify_invalidation(context, events);
+        }
 
         fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
     }
@@ -3874,12 +3891,12 @@ pub(crate) mod tests {
         // классифицированные операции исполняются с названным риском, а
         // неклассифицированную аргументы до допуска не доносят. Отказ остаётся
         // достижим изнутри, и вторая причина в нём названа.
-        let missing = crate::domain::engine::MissingEngine::new(
+        let missing = unica_artifact_delivery::engine::MissingEngine::new(
             "v8-runner",
             "darwin-arm64",
             "/plugins/unica/bin/darwin-arm64/v8-runner",
             Some("0.5.1".to_string()),
-            crate::domain::engine::InstallMode::Source,
+            unica_artifact_delivery::engine::InstallMode::Source,
         );
         let spec = tools()
             .into_iter()
@@ -3931,25 +3948,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn every_runtime_operation_is_classified_so_admission_cannot_mask_a_missing_tool() {
-        // Пока это верно, отказ допуска до резолва инструмента не доходит:
-        // классифицированная операция исполняется и сама говорит про бинарь.
-        for operation in crate::application::tool_contracts::RUNTIME_OPERATIONS {
-            let mut args = Map::new();
-            args.insert("operation".to_string(), json!(operation));
-            if *operation == "syntax" {
-                args.insert("mode".to_string(), json!("edt"));
-            }
-            let outcome = runtime_admission::runtime_risk_notice("unica.runtime.execute", &args)
-                .expect("classification");
-            assert!(
-                !matches!(outcome, runtime_admission::RuntimeRiskOutcome::Refused(_)),
-                "операция {operation} отказывает допуском"
-            );
-        }
-    }
-
-    #[test]
     fn a_missing_engine_is_delivered_before_the_handler_looks_for_it() {
         // Вызов, которому нужен ещё не доставленный движок, не отказывает: он
         // дожидается доставки и исполняется.
@@ -3973,7 +3971,7 @@ pub(crate) mod tests {
         // Срез хоста уносит наш ответ целиком, поэтому отвечаем сами: успешный
         // результат с состоянием, а обработчик не зовётся — работать нечем.
         let ports = Arc::new(DeliveryRecordingPorts {
-            delivery: shared_work::EngineDeliveryState::Working {
+            delivery: unica_artifact_delivery::shared::EngineDeliveryState::Working {
                 artifact: "bsl-analyzer".to_owned(),
                 received: 12,
                 total: Some(69),
@@ -3993,7 +3991,7 @@ pub(crate) mod tests {
         assert!(result.ok, "идущая работа — состояние, а не неудача");
         assert_eq!(
             result.work.as_ref().map(|work| work.status),
-            Some(crate::domain::long_work::WorkStatus::Working)
+            Some(unica_work_control::long_work::WorkStatus::Working)
         );
         assert_eq!(
             result.work.as_ref().and_then(|work| work.poll_interval_ms),
@@ -4018,10 +4016,10 @@ pub(crate) mod tests {
         // `working` — состояние, а не неудача, и потому `ok`. Отказ доставки —
         // неудача, и притворяться идущей работой ему нечем.
         let ports = Arc::new(DeliveryRecordingPorts {
-            delivery: shared_work::EngineDeliveryState::Failed {
+            delivery: unica_artifact_delivery::shared::EngineDeliveryState::Failed {
                 artifact: "bsl-analyzer".to_owned(),
-                failure: Arc::new(shared_work::DeliveryFailure::new(
-                    shared_work::DeliveryFailureClass::Network,
+                failure: Arc::new(unica_artifact_delivery::shared::DeliveryFailure::new(
+                    unica_artifact_delivery::shared::DeliveryFailureClass::Network,
                     "connection refused",
                 )),
             },
@@ -4051,7 +4049,7 @@ pub(crate) mod tests {
             .any(|error| { error == "delivery of bsl-analyzer failed: connection refused" }));
         assert_eq!(
             result.work.as_ref().map(|work| work.status),
-            Some(crate::domain::long_work::WorkStatus::Failed)
+            Some(unica_work_control::long_work::WorkStatus::Failed)
         );
     }
 
@@ -4180,7 +4178,7 @@ pub(crate) mod tests {
             .expect_err("cancellation must win over invalid config");
 
         assert!(
-            error.starts_with(crate::domain::cancellation::CANCELLED_PREFIX),
+            error.starts_with(unica_work_control::cancellation::CANCELLED_PREFIX),
             "{error}"
         );
     }
@@ -4204,45 +4202,6 @@ pub(crate) mod tests {
             result.ok,
             "{tool_name} must answer under a full-range budget"
         );
-    }
-
-    /// ADR-0072: the three duplicate routes are retired without aliases.
-    #[test]
-    fn retired_template_help_routes_fail_as_unknown_tools() {
-        for retired in [
-            "unica.template.add",
-            "unica.template.remove",
-            "unica.help.add",
-        ] {
-            let error = UnicaApplication::new()
-                .call_tool(retired, &Map::new())
-                .expect_err("retired template/help route must not dispatch");
-            assert_eq!(error, format!("unknown unica tool: {retired}"));
-        }
-    }
-
-    #[test]
-    fn retired_dcs_transformers_fail_as_unknown_tools() {
-        for retired in ["unica.dcs.compile", "unica.dcs.edit", "unica.dcs.decompile"] {
-            let error = UnicaApplication::new()
-                .call_tool(retired, &Map::new())
-                .expect_err("retired DCS transformer must not dispatch");
-            assert_eq!(error, format!("unknown unica tool: {retired}"));
-        }
-    }
-
-    #[test]
-    fn retired_meta_routes_fail_as_unknown_tools() {
-        for retired in [
-            "unica.meta.compile",
-            "unica.meta.profile",
-            "unica.meta.validate",
-        ] {
-            let error = UnicaApplication::new()
-                .call_tool(retired, &Map::new())
-                .expect_err("retired Meta route must not dispatch");
-            assert_eq!(error, format!("unknown unica tool: {retired}"));
-        }
     }
 
     #[test]
@@ -4432,16 +4391,6 @@ pub(crate) mod tests {
                 } if actual == operation
             ));
         }
-    }
-
-    #[test]
-    fn removed_code_grep_error_points_to_unified_search() {
-        let error = UnicaApplication::new()
-            .call_tool("unica.code.grep", &Map::new())
-            .unwrap_err();
-
-        assert!(error.contains("removed"), "{error}");
-        assert!(error.contains("unica.code.search"), "{error}");
     }
 
     #[test]
@@ -5182,6 +5131,15 @@ pub(crate) mod tests {
                     publication_warnings: Vec::new(),
                 })
             }
+            fn notify_committed_changes(
+                &self,
+                context: &WorkspaceContext,
+                events: &[unica_source_contract::events::DomainEvent],
+                _cancellation: &CancellationToken,
+                _deadline: unica_work_control::operation_deadline::OperationDeadline,
+            ) {
+                self.notify_invalidation(context, events);
+            }
 
             fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
         }
@@ -5564,7 +5522,7 @@ pub(crate) mod tests {
                 Some(&no_op),
             ));
         }
-        let impact = crate::domain::cache::CacheImpact::from_events(&[DomainEvent::new(
+        let impact = unica_workspace::cache::CacheImpact::from_events(&[DomainEvent::new(
             DomainEventKind::RoleChanged,
             "main + Role.Demo",
         )]);
@@ -6461,7 +6419,12 @@ pub(crate) mod tests {
             cf_edit_mutation_workspace("unica-compile-cf-edit-lock", &before);
         let mut transaction = CompileTransaction::new();
         transaction
-            .register_canonical_child(&config_path, "Role", "Reader")
+            .register_canonical_child(
+                &config_path,
+                "Role",
+                "Reader",
+                unica_source_designer::registration::cf_edit_add_child_object_text,
+            )
             .expect("compile transaction must plan a registration");
 
         let acquired = Arc::new(Barrier::new(2));
@@ -7579,7 +7542,7 @@ pub(crate) mod tests {
                 }
                 ToolHandler::Metadata { operation } => {
                     assert!(
-                        !matches!(operation, metadata::MetadataOperation::Info),
+                        !matches!(operation, unica_metadata::request::MetadataOperation::Info),
                         "{} uses a read-only metadata operation as a mutation",
                         tool.name
                     );
@@ -7764,7 +7727,7 @@ pub(crate) mod tests {
                     support_test_catalog_xml("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
                 )
                 .unwrap();
-                let before = crate::test_support::tree_snapshot(&source);
+                let before = unica_workspace::test_support::tree_snapshot(&source);
                 let mut args = match tool {
                     "unica.meta.add" => Map::from_iter([
                         ("sourceSet".to_string(), json!("main")),
@@ -7801,7 +7764,7 @@ pub(crate) mod tests {
                     .expect("metadata refusal has one typed diagnostic");
                 assert_eq!(diagnostic["code"], "capability_unavailable");
                 assert_eq!(
-                    crate::test_support::tree_snapshot(&source),
+                    unica_workspace::test_support::tree_snapshot(&source),
                     before,
                     "{tool}, version={version} changed source bytes"
                 );
@@ -8659,6 +8622,15 @@ pub(crate) mod tests {
                     publication_warnings: Vec::new(),
                 })
             }
+            fn notify_committed_changes(
+                &self,
+                context: &WorkspaceContext,
+                events: &[unica_source_contract::events::DomainEvent],
+                _cancellation: &CancellationToken,
+                _deadline: unica_work_control::operation_deadline::OperationDeadline,
+            ) {
+                self.notify_invalidation(context, events);
+            }
 
             fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
         }
@@ -8824,6 +8796,15 @@ pub(crate) mod tests {
                     publication_warnings: Vec::new(),
                 })
             }
+            fn notify_committed_changes(
+                &self,
+                context: &WorkspaceContext,
+                events: &[unica_source_contract::events::DomainEvent],
+                _cancellation: &CancellationToken,
+                _deadline: unica_work_control::operation_deadline::OperationDeadline,
+            ) {
+                self.notify_invalidation(context, events);
+            }
 
             fn notify_invalidation(&self, _context: &WorkspaceContext, events: &[DomainEvent]) {
                 self.invalidated
@@ -8939,6 +8920,15 @@ pub(crate) mod tests {
                 _cache_access: CacheAccess,
             ) -> Result<CacheReport, String> {
                 panic!("post-commit cache_report must not run after transactional persistence")
+            }
+            fn notify_committed_changes(
+                &self,
+                context: &WorkspaceContext,
+                events: &[unica_source_contract::events::DomainEvent],
+                _cancellation: &CancellationToken,
+                _deadline: unica_work_control::operation_deadline::OperationDeadline,
+            ) {
+                self.notify_invalidation(context, events);
             }
 
             fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
@@ -9067,6 +9057,15 @@ pub(crate) mod tests {
                 publication_warnings: Vec::new(),
             })
         }
+        fn notify_committed_changes(
+            &self,
+            context: &WorkspaceContext,
+            events: &[unica_source_contract::events::DomainEvent],
+            _cancellation: &CancellationToken,
+            _deadline: unica_work_control::operation_deadline::OperationDeadline,
+        ) {
+            self.notify_invalidation(context, events);
+        }
 
         fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
     }
@@ -9146,6 +9145,15 @@ pub(crate) mod tests {
                 fresh: Vec::new(),
                 publication_warnings: Vec::new(),
             })
+        }
+        fn notify_committed_changes(
+            &self,
+            context: &WorkspaceContext,
+            events: &[unica_source_contract::events::DomainEvent],
+            _cancellation: &CancellationToken,
+            _deadline: unica_work_control::operation_deadline::OperationDeadline,
+        ) {
+            self.notify_invalidation(context, events);
         }
 
         fn notify_invalidation(&self, _context: &WorkspaceContext, _events: &[DomainEvent]) {}
@@ -10036,3 +10044,6 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 }
+
+#[cfg(test)]
+mod execution_catalog_tests;

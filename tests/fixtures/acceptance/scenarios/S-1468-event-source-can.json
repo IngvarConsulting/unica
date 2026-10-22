@@ -1,0 +1,240 @@
+{
+  "id": "S-1468-event-source-can",
+  "issue": 1468,
+  "area": "Метаданные",
+  "task": "Прочитать подробные source-only Can подписки и подготовить добавление реального типизированного источника; preview сохраняет все исходные файлы.",
+  "workspace": "tests/fixtures/acceptance/workspace-event-source-order",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription.Can.relation.add"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Can"
+        },
+        {
+          "pointer": "/data/props/op",
+          "eq": "relation.add"
+        },
+        {
+          "pointer": "/data/props/implemented",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/additionalProperties",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/contract/exampleArgs/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/relation/enum",
+          "eq": [
+            "source"
+          ]
+        }
+      ],
+      "captures": {
+        "before0": {
+          "file": "src/Catalogs/ПримерА.xml",
+          "kind": "sha256"
+        },
+        "before1": {
+          "file": "src/Catalogs/ПримерБ.xml",
+          "kind": "sha256"
+        },
+        "before2": {
+          "file": "src/Catalogs/ПримерВ.xml",
+          "kind": "sha256"
+        },
+        "before3": {
+          "file": "src/CommonModules/EventHandlers.xml",
+          "kind": "sha256"
+        },
+        "before4": {
+          "file": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "kind": "sha256"
+        },
+        "before5": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "before6": {
+          "file": "src/EventSubscriptions/CorpusEventSubscription.xml",
+          "kind": "sha256"
+        },
+        "before7": {
+          "file": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256"
+        },
+        "before8": {
+          "file": "src/Languages/Русский.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription.Can.relation.remove"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Can"
+        },
+        {
+          "pointer": "/data/props/op",
+          "eq": "relation.remove"
+        },
+        {
+          "pointer": "/data/props/implemented",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/additionalProperties",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/contract/exampleArgs/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/relation/enum",
+          "eq": [
+            "source"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription.Can.relation.replace"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Can"
+        },
+        {
+          "pointer": "/data/props/op",
+          "eq": "relation.replace"
+        },
+        {
+          "pointer": "/data/props/implemented",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/additionalProperties",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/contract/exampleArgs/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/relation/enum",
+          "eq": [
+            "source"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription",
+        "ops": [
+          {
+            "op": "relation.add",
+            "args": {
+              "values": {
+                "relation": "source",
+                "targets": [
+                  {
+                    "kind": "object",
+                    "metadataPath": "Catalog.ПримерБ"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/ПримерА.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0"
+        },
+        {
+          "path": "src/Catalogs/ПримерБ.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1"
+        },
+        {
+          "path": "src/Catalogs/ПримерВ.xml",
+          "kind": "sha256",
+          "eq": "$capture.before2"
+        },
+        {
+          "path": "src/CommonModules/EventHandlers.xml",
+          "kind": "sha256",
+          "eq": "$capture.before3"
+        },
+        {
+          "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.before4"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.before5"
+        },
+        {
+          "path": "src/EventSubscriptions/CorpusEventSubscription.xml",
+          "kind": "sha256",
+          "eq": "$capture.before6"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.before7"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.before8"
+        }
+      ]
+    }
+  ]
+}

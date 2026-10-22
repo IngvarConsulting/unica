@@ -1,0 +1,20 @@
+[package]
+name = "unica-roles"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+unica-metadata = { path = "../unica-metadata" }
+unica-operation-contract = { path = "../unica-operation-contract" }
+unica-source-contract = { path = "../unica-source-contract" }
+unica-operations = { path = "../unica-operations" }
+unica-address = { path = "../unica-address" }
+serde.workspace = true
+serde_json.workspace = true
+
+regex.workspace = true
+
+[dev-dependencies]
+jsonschema.workspace = true

@@ -95,5 +95,37 @@ def main():
             raise TimeoutError("MCP recorder reader did not stop")
 
 
+def recorded_calls(records):
+    """Bind each public tool response to its recorder source observations."""
+    requests, calls, allowed = {}, [], None
+    for index, record in enumerate(records):
+        payload = record["payload"]
+        if record["direction"] == "request":
+            if "id" in payload:
+                requests[payload["id"]] = (index, record)
+            continue
+        request = requests.get(payload.get("id"))
+        if request is None:
+            continue
+        start, before = request
+        message = before["payload"]
+        if message["method"] == "tools/list":
+            allowed = {tool["name"] for tool in payload["result"]["tools"]}
+        if message["method"] == "tools/call":
+            result = payload.get("result") or {}
+            calls.append({"index": start, "done": index, "params": message["params"],
+                          "result": result.get("structuredContent"),
+                          "isError": "error" in payload or result.get("isError") is True,
+                          "before": before["sourceSha256"], "after": record["sourceSha256"],
+                          "filesBefore": before.get("sourceFilesSha256"),
+                          "filesAfter": record.get("sourceFilesSha256"),
+                          "rootsBefore": before.get("sourceSetRoots"),
+                          "rootsAfter": record.get("sourceSetRoots")})
+    if not allowed:
+        raise ValueError("Acceptance evaluation omitted the actual MCP inventory")
+    return allowed, sorted(calls, key=lambda call: call["index"])
+
+
+
 if __name__ == "__main__":
     main()

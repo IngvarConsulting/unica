@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import importlib.util
 import json
 import re
 import unittest
@@ -14,6 +15,16 @@ HISTORICAL_SKILLS = {"dcs-compile", "dcs-edit"}
 REMOVED_SKILLS = HISTORICAL_SKILLS | {
     "dcs-decompile", "skd-compile", "skd-edit", "skd-decompile"
 }
+
+
+def load_dcs_registry() -> tuple[set[str], set[str]]:
+    path = REPO_ROOT / "scripts/ci/render-acceptance-registry.py"
+    spec = importlib.util.spec_from_file_location("render_acceptance_registry", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    registry, implemented = module.load_apply_registry()
+    return {name for name, family, _, _ in registry if family == "Dcs"}, implemented
 
 
 def operations_with_checked_publication(scenarios: list[dict]) -> set[str]:
@@ -52,11 +63,10 @@ class DcsNamingContractTests(unittest.TestCase):
         legacy_surface = re.findall(r'name: "(unica\.(?:dcs|skd)\.[^"]+)"', tool_registry)
         self.assertEqual(legacy_surface, [])
 
-        apply_registry = (source / "domain" / "apply.rs").read_text(encoding="utf-8")
-        registered = set(re.findall(r'\(\s*"([^"]+)"\s*,\s*Dcs\s*,', apply_registry))
-        writer = (source / "infrastructure" / "native_operations" / "dcs_primitives.rs").read_text(encoding="utf-8")
-        implemented = set(re.findall(r'"([^"]+)"\s*=>\s*Self::[A-Za-z]+', writer))
-        self.assertEqual(registered, implemented)
+        registered, implemented = load_dcs_registry()
+        # Rust checks the writer's exhaustive DcsIntent match. This guard keeps
+        # every registered DCS operation advertised as implemented.
+        self.assertLessEqual(registered, implemented)
         self.assertTrue({
             "dataSource.add", "dataSet.add", "field.add", "fieldRole.set",
             "query.set", "parameter.add", "variant.add", "selection.add",
@@ -65,8 +75,7 @@ class DcsNamingContractTests(unittest.TestCase):
         self.assertNotIn("dcs.set", registered)
 
     def test_every_dcs_primitive_has_content_checked_publication(self) -> None:
-        registry = (REPO_ROOT / "crates/unica-coder/src/domain/apply.rs").read_text(encoding="utf-8")
-        registered = set(re.findall(r'\(\s*"([^"]+)"\s*,\s*Dcs\s*,', registry))
+        registered, _ = load_dcs_registry()
         # Owner-approved scope of #1310: deleting both implementation and wire
         # must not silently narrow the promised set.
         self.assertEqual(len(registered), 53)
@@ -123,7 +132,7 @@ class DcsNamingContractTests(unittest.TestCase):
         }
         self.assertTrue(HISTORICAL_SKILLS <= entries.keys())
         self.assertTrue({"skd-compile", "skd-edit"}.isdisjoint(entries.keys()))
-        primitive_path = "crates/unica-coder/src/infrastructure/native_operations/dcs_primitives.rs"
+        primitive_path = "crates/unica-dcs-designer/src/primitives.rs"
         for skill in HISTORICAL_SKILLS:
             entry = entries[skill]
             self.assertFalse(entry["promptSkill"])

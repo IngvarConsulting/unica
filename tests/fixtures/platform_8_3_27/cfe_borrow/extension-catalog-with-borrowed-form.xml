@@ -1,0 +1,36 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+	<Catalog uuid="4a1f0000-0000-4000-8000-0000000019c1">
+		<InternalInfo>
+			<xr:GeneratedType name="CatalogObject.CorpusCatalog" category="Object">
+				<xr:TypeId>4a1f0000-0000-4000-8000-000000001910</xr:TypeId>
+				<xr:ValueId>4a1f0000-0000-4000-8000-000000001911</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="CatalogRef.CorpusCatalog" category="Ref">
+				<xr:TypeId>4a1f0000-0000-4000-8000-000000001912</xr:TypeId>
+				<xr:ValueId>4a1f0000-0000-4000-8000-000000001913</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="CatalogSelection.CorpusCatalog" category="Selection">
+				<xr:TypeId>4a1f0000-0000-4000-8000-000000001914</xr:TypeId>
+				<xr:ValueId>4a1f0000-0000-4000-8000-000000001915</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="CatalogList.CorpusCatalog" category="List">
+				<xr:TypeId>4a1f0000-0000-4000-8000-000000001916</xr:TypeId>
+				<xr:ValueId>4a1f0000-0000-4000-8000-000000001917</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="CatalogManager.CorpusCatalog" category="Manager">
+				<xr:TypeId>4a1f0000-0000-4000-8000-000000001918</xr:TypeId>
+				<xr:ValueId>4a1f0000-0000-4000-8000-000000001919</xr:ValueId>
+			</xr:GeneratedType>
+		</InternalInfo>
+		<Properties>
+			<ObjectBelonging>Adopted</ObjectBelonging>
+			<Name>CorpusCatalog</Name>
+			<Comment/>
+			<ExtendedConfigurationObject>1d6b8425-360c-4ab1-9bab-cc9a3b590bb2</ExtendedConfigurationObject>
+		</Properties>
+		<ChildObjects>
+			<Form>CorpusForm</Form>
+		</ChildObjects>
+	</Catalog>
+</MetaDataObject>

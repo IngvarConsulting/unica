@@ -1,10 +1,5 @@
 //! Feature-only process fixture. Only the canonical provider is replaced; the
 //! real daemon owns admission, durable receipt/Task transitions and recovery.
-use crate::application::operation_descriptors::{ExecutionClass, KnownLongReason};
-use crate::domain::cancellation::CancellationToken;
-use crate::domain::invocation::{DomainResult, InvocationFailure};
-use crate::infrastructure::daemon::identity::CoreIdentity;
-use crate::infrastructure::daemon::runtime_v5;
 use crate::infrastructure::daemon::server::{
     ActorBoundExecution, ActorBoundInvocation, CanonicalInvocationService, DaemonServerConfig,
 };
@@ -12,6 +7,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+use unica_daemon::identity::CoreIdentity;
+use unica_execution::receipt_runtime::ports::{ExecutionClass, KnownLongReason};
+use unica_execution_contract::invocation::{DomainResult, InvocationFailure};
+use unica_work_control::cancellation::CancellationToken;
 
 struct BlockingProvider {
     control: PathBuf,
@@ -53,5 +52,5 @@ pub fn run_daemon(state_root: &Path, core_identity: &str, control: &Path) -> Res
         .with_invocation_service(Arc::new(BlockingProvider {
             control: control.to_owned(),
         }));
-    runtime_v5::run_daemon(config)
+    unica_daemon::transport::run_daemon(config.into_transport_config())
 }

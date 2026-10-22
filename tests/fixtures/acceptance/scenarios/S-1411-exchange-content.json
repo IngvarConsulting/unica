@@ -1,0 +1,439 @@
+{
+  "id": "S-1411-exchange-content",
+  "name": "exchange-plan-content-preserves-entries-and-modes",
+  "issue": 1411,
+  "area": "Метаданные",
+  "task": "Изменить состав плана обмена и AutoRecord, сохранив прежние записи; повтор не меняет байты",
+  "workspace": "tests/fixtures/acceptance/workspace-exchange-content",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExchangePlan.CorpusExchangePlan"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "content.set",
+            "args": "items",
+            "implemented": true
+          }
+        }
+      ],
+      "captures": {
+        "before": {
+          "file": "src/ExchangePlans/CorpusExchangePlan/Ext/Content.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ExchangePlan.CorpusExchangePlan",
+        "ops": [
+          {
+            "op": "content.set",
+            "args": {
+              "items": [
+                {
+                  "at": "main:Catalog.Пример",
+                  "autoRecord": "Allow"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/exchangeContent",
+          "eq": [
+            {
+              "at": "main:ExchangePlan.CorpusExchangePlan",
+              "items": [
+                {
+                  "at": "main:Catalog.Прежний",
+                  "autoRecord": "Deny"
+                },
+                {
+                  "at": "main:Catalog.Пример",
+                  "autoRecord": "Allow"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/CorpusExchangePlan/Ext/Content.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/exchangeContent",
+          "eq": [
+            {
+              "at": "main:ExchangePlan.CorpusExchangePlan",
+              "items": [
+                {
+                  "at": "main:Catalog.Прежний",
+                  "autoRecord": "Deny"
+                },
+                {
+                  "at": "main:Catalog.Пример",
+                  "autoRecord": "Allow"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/CorpusExchangePlan/Ext/Content.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/extrnprops}Item/{http://v8.1c.ru/8.3/xcf/extrnprops}Metadata",
+          "eq": [
+            "Catalog.Прежний",
+            "Catalog.Пример"
+          ]
+        },
+        {
+          "path": "src/ExchangePlans/CorpusExchangePlan/Ext/Content.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/extrnprops}Item/{http://v8.1c.ru/8.3/xcf/extrnprops}AutoRecord",
+          "eq": [
+            "Deny",
+            "Allow"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExchangePlan.CorpusExchangePlan.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "inputByString",
+              "at": "main:ExchangePlan.CorpusExchangePlan.StandardAttribute.Description",
+              "kind": "StandardAttribute"
+            },
+            {
+              "relation": "inputByString",
+              "at": "main:ExchangePlan.CorpusExchangePlan.StandardAttribute.Code",
+              "kind": "StandardAttribute"
+            },
+            {
+              "relation": "content",
+              "kind": "Catalog",
+              "at": "main:Catalog.Прежний",
+              "autoRecord": "Deny"
+            },
+            {
+              "relation": "content",
+              "kind": "Catalog",
+              "at": "main:Catalog.Пример",
+              "autoRecord": "Allow"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ExchangePlan.CorpusExchangePlan",
+        "ops": [
+          {
+            "op": "content.set",
+            "args": {
+              "items": [
+                {
+                  "at": "main:Catalog.Пример",
+                  "autoRecord": "Deny"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/exchangeContent",
+          "eq": [
+            {
+              "at": "main:ExchangePlan.CorpusExchangePlan",
+              "items": [
+                {
+                  "at": "main:Catalog.Прежний",
+                  "autoRecord": "Deny"
+                },
+                {
+                  "at": "main:Catalog.Пример",
+                  "autoRecord": "Deny"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/exchangeContent",
+          "eq": [
+            {
+              "at": "main:ExchangePlan.CorpusExchangePlan",
+              "items": [
+                {
+                  "at": "main:Catalog.Прежний",
+                  "autoRecord": "Deny"
+                },
+                {
+                  "at": "main:Catalog.Пример",
+                  "autoRecord": "Deny"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/CorpusExchangePlan/Ext/Content.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/extrnprops}Item/{http://v8.1c.ru/8.3/xcf/extrnprops}Metadata",
+          "eq": [
+            "Catalog.Прежний",
+            "Catalog.Пример"
+          ]
+        },
+        {
+          "path": "src/ExchangePlans/CorpusExchangePlan/Ext/Content.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/extrnprops}Item/{http://v8.1c.ru/8.3/xcf/extrnprops}AutoRecord",
+          "eq": [
+            "Deny",
+            "Deny"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExchangePlan.CorpusExchangePlan.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "inputByString",
+              "at": "main:ExchangePlan.CorpusExchangePlan.StandardAttribute.Description",
+              "kind": "StandardAttribute"
+            },
+            {
+              "relation": "inputByString",
+              "at": "main:ExchangePlan.CorpusExchangePlan.StandardAttribute.Code",
+              "kind": "StandardAttribute"
+            },
+            {
+              "relation": "content",
+              "kind": "Catalog",
+              "at": "main:Catalog.Прежний",
+              "autoRecord": "Deny"
+            },
+            {
+              "relation": "content",
+              "kind": "Catalog",
+              "at": "main:Catalog.Пример",
+              "autoRecord": "Deny"
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "after": {
+          "file": "src/ExchangePlans/CorpusExchangePlan/Ext/Content.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ExchangePlan.CorpusExchangePlan",
+        "ops": [
+          {
+            "op": "content.set",
+            "args": {
+              "items": [
+                {
+                  "at": "main:Catalog.Пример",
+                  "autoRecord": "Deny"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/exchangeContent",
+          "eq": [
+            {
+              "at": "main:ExchangePlan.CorpusExchangePlan",
+              "items": [
+                {
+                  "at": "main:Catalog.Прежний",
+                  "autoRecord": "Deny"
+                },
+                {
+                  "at": "main:Catalog.Пример",
+                  "autoRecord": "Deny"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/CorpusExchangePlan/Ext/Content.xml",
+          "kind": "sha256",
+          "eq": "$capture.after"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/exchangeContent",
+          "eq": [
+            {
+              "at": "main:ExchangePlan.CorpusExchangePlan",
+              "items": [
+                {
+                  "at": "main:Catalog.Прежний",
+                  "autoRecord": "Deny"
+                },
+                {
+                  "at": "main:Catalog.Пример",
+                  "autoRecord": "Deny"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/CorpusExchangePlan/Ext/Content.xml",
+          "kind": "sha256",
+          "eq": "$capture.after"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ExchangePlan.CorpusExchangePlan",
+        "ops": [
+          {
+            "op": "content.set",
+            "args": {
+              "items": [
+                {
+                  "at": "main:Catalog.Пример",
+                  "autoRecord": "Allow"
+                },
+                {
+                  "at": "main:Catalog.Отсутствует",
+                  "autoRecord": "Allow"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/CorpusExchangePlan/Ext/Content.xml",
+          "kind": "sha256",
+          "eq": "$capture.after"
+        }
+      ],
+      "refusal": "not_found: metadata descriptor was not found",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.items[1].at"
+        }
+      ]
+    }
+  ]
+}

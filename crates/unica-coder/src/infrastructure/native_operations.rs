@@ -1,41 +1,22 @@
 //! Thin facade over family-owned native XML/DSL operations.
-#[allow(dead_code)]
-pub(crate) mod apply;
 #[allow(dead_code)] // hidden V13 seam until W2 closes the real route
 pub(crate) mod apply_families;
 pub(crate) mod cf;
 pub(crate) mod cfe;
-pub(crate) mod cfe_borrow_enum_value;
-pub(crate) mod cfe_borrow_object;
-mod cfe_property_states;
 // The pure C1 code planner is intentionally not actor-routed until C13/15D.
 #[allow(dead_code)]
-pub(crate) mod code;
+pub(crate) mod code_patch_composition;
 pub(crate) mod common;
-pub(crate) mod compile_transaction;
 pub(crate) mod dcs;
-pub(crate) mod dcs_primitives;
-pub(crate) mod dcs_xml;
 // The pure B1b planner is intentionally not actor-routed until B2.
 #[allow(dead_code)]
-pub(crate) mod event;
+pub(crate) mod event_implementation;
 pub(crate) mod external;
-pub(crate) mod form;
-pub(crate) mod form_event_registry;
-pub(crate) mod form_move;
-pub(crate) mod help;
-pub(crate) mod interface;
 pub(crate) mod logical_selector;
 pub(crate) mod meta;
-pub(crate) mod mxl;
-pub(crate) mod mxl_cells;
+pub(crate) mod mxl_composition;
 pub(crate) mod registry;
 pub(crate) mod role;
-pub(crate) mod single_file_publisher;
-pub(crate) mod subsystem;
-pub(crate) mod support;
-pub(crate) mod template;
-pub(crate) mod text_snapshot;
 pub(crate) mod typed_result;
 // The A0 validator adapter is consumed by the shared V13 dispatcher in J0.
 // Keep the seam compiled and tested before that wiring lands.
@@ -45,9 +26,10 @@ pub(crate) mod v13_analysis;
 #[allow(dead_code)]
 pub(crate) mod xdto;
 
-use crate::{application::AdapterOutcome, domain::workspace::WorkspaceContext};
 use serde_json::{Map, Value};
 use std::fs;
+use unica_execution_contract::adapter_outcome::AdapterOutcome;
+use unica_source_contract::workspace::WorkspaceContext;
 
 pub struct NativeOperationAdapter;
 impl NativeOperationAdapter {
@@ -64,8 +46,9 @@ impl NativeOperationAdapter {
                 "subsystem-info requires the controlled prepared invocation path".to_string(),
             );
         }
-        let form_edit_without_payload_preview =
-            operation == "form-edit" && dry_run && !form::has_edit_payload(args);
+        let form_edit_without_payload_preview = operation == "form-edit"
+            && dry_run
+            && !unica_forms_designer::codec::has_edit_payload(args);
         if registry::typed_mutation_handler(operation).is_some()
             && !form_edit_without_payload_preview
         {
@@ -77,8 +60,10 @@ impl NativeOperationAdapter {
             if let Some(outcome) = external::preview(operation, tool_name, args, context) {
                 return Ok(outcome);
             }
-            if operation == "form-edit" && form::has_edit_payload(args) {
-                return Ok(form::preview_form_edit(args, context));
+            if operation == "form-edit" && unica_forms_designer::codec::has_edit_payload(args) {
+                return Ok(crate::infrastructure::form_composition::preview_form_edit(
+                    args, context,
+                ));
             }
             let fallback = AdapterOutcome {
                 ok: true,
@@ -133,7 +118,5 @@ impl NativeOperationAdapter {
     }
 }
 
-#[cfg(test)]
-mod source_invariant_tests;
 #[cfg(test)]
 mod tests;

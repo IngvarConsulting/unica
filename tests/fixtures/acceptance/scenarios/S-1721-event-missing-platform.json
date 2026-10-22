@@ -1,0 +1,813 @@
+{
+  "id": "S-1721-event-missing-platform",
+  "issue": 1721,
+  "area": "События",
+  "task": "Дополнить существующую привязку Missing подходящим методом, сохранив весь Form.xml; затем реализовать платформенное BeforeDelete только в модуле объекта. Для каждой публикации проверить сохранённый token, полные независимые postimage SHA, публичное состояние и сигнатуры, затем все соседние исходники.",
+  "workspace": "tests/fixtures/acceptance/workspace",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Event.OnOpen"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/state",
+          "eq": "available"
+        }
+      ],
+      "captures": {
+        "initial0": {
+          "file": "src/Catalogs/Валюты.xml",
+          "kind": "sha256"
+        },
+        "initial1": {
+          "file": "src/Catalogs/Валюты/Ext/ManagerModule.bsl",
+          "kind": "sha256"
+        },
+        "initial2": {
+          "file": "src/Catalogs/Валюты/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        },
+        "initial3": {
+          "file": "src/Catalogs/Валюты/Forms/ФормаСписка.xml",
+          "kind": "sha256"
+        },
+        "initial4": {
+          "file": "src/Catalogs/Валюты/Forms/ФормаСписка/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "initial5": {
+          "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента.xml",
+          "kind": "sha256"
+        },
+        "initial6": {
+          "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "initial7": {
+          "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        },
+        "initial8": {
+          "file": "src/CommonModules/GoogleПереводчик.xml",
+          "kind": "sha256"
+        },
+        "initial9": {
+          "file": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+          "kind": "sha256"
+        },
+        "initial10": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "initial11": {
+          "file": "src/DocumentJournals/ДокументыОрганизации.xml",
+          "kind": "sha256"
+        },
+        "initial12": {
+          "file": "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "kind": "sha256"
+        },
+        "initial13": {
+          "file": "src/Enums/LanguageAware.xml",
+          "kind": "sha256"
+        },
+        "initial14": {
+          "file": "src/Enums/ВажностьПроблемыУчета.xml",
+          "kind": "sha256"
+        },
+        "initial15": {
+          "file": "src/Enums/НастройкиПоставщика.xml",
+          "kind": "sha256"
+        },
+        "initial16": {
+          "file": "src/Enums/СпособыУстановкиКурсаВалюты.xml",
+          "kind": "sha256"
+        },
+        "initial17": {
+          "file": "src/Ext/ParentConfigurations.bin",
+          "kind": "sha256"
+        },
+        "initial18": {
+          "file": "src/HTTPServices/ПроверкаСвязи.xml",
+          "kind": "sha256"
+        },
+        "initial19": {
+          "file": "src/HTTPServices/ПроверкаСвязи/Ext/Module.bsl",
+          "kind": "sha256"
+        },
+        "initial20": {
+          "file": "src/InformationRegisters/АдминистративнаяИерархия.xml",
+          "kind": "sha256"
+        },
+        "initial21": {
+          "file": "src/Languages/English.xml",
+          "kind": "sha256"
+        },
+        "initial22": {
+          "file": "src/Languages/Русский.xml",
+          "kind": "sha256"
+        },
+        "initial23": {
+          "file": "src/Reports/АнализВерсийОбъектов.xml",
+          "kind": "sha256"
+        },
+        "initial24": {
+          "file": "src/Reports/АнализВерсийОбъектов/Templates/МакетОтчета.xml",
+          "kind": "sha256"
+        },
+        "initial25": {
+          "file": "src/Reports/АнализВерсийОбъектов/Templates/МакетОтчета/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "initial26": {
+          "file": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных.xml",
+          "kind": "sha256"
+        },
+        "initial27": {
+          "file": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "initial28": {
+          "file": "src/Roles/SalesReader.xml",
+          "kind": "sha256"
+        },
+        "initial29": {
+          "file": "src/Roles/SalesReader/Ext/Rights.xml",
+          "kind": "sha256"
+        },
+        "initial30": {
+          "file": "src/Subsystems/Администрирование.xml",
+          "kind": "sha256"
+        },
+        "initial31": {
+          "file": "src/Subsystems/Администрирование/Ext/CommandInterface.xml",
+          "kind": "sha256"
+        },
+        "initial32": {
+          "file": "src/Subsystems/Администрирование/Subsystems/КонтрольРаботыПользователей.xml",
+          "kind": "sha256"
+        },
+        "initial33": {
+          "file": "src/WebServices/ОбменДанными.xml",
+          "kind": "sha256"
+        },
+        "initial34": {
+          "file": "src/WebServices/ОбменДанными/Ext/Module.bsl",
+          "kind": "sha256"
+        },
+        "initial35": {
+          "file": "src/XDTOPackages/EnterpriseData_1_17_3.xml",
+          "kind": "sha256"
+        },
+        "initial36": {
+          "file": "src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Event.OnOpen",
+        "ops": [
+          {
+            "op": "event.bind",
+            "args": {
+              "values": {
+                "handler": "ExistingOpen"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        },
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial6"
+        },
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.initial7"
+        }
+      ],
+      "captures": {
+        "bindingToken": {
+          "pointer": "/data/executionToken"
+        },
+        "bindingPlanHash": {
+          "pointer": "/data/planHash"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.bindingToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/planHash",
+          "eq": "$capture.bindingPlanHash"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.initial7"
+        },
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "xml",
+          "select": "./{*}Events/{*}Event[@name=\"OnOpen\"]",
+          "eq": [
+            "ExistingOpen"
+          ]
+        }
+      ],
+      "captures": {
+        "boundForm": {
+          "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Event.OnOpen"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/state",
+          "eq": "missing"
+        },
+        {
+          "pointer": "/data/props/handler",
+          "eq": "ExistingOpen"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.boundForm"
+        },
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.initial7"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Event.OnOpen",
+        "ops": [
+          {
+            "op": "event.implement",
+            "args": {}
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        },
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.boundForm"
+        },
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.initial7"
+        }
+      ],
+      "captures": {
+        "missingToken": {
+          "pointer": "/data/executionToken"
+        },
+        "missingPlanHash": {
+          "pointer": "/data/planHash"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.missingToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/planHash",
+          "eq": "$capture.missingPlanHash"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.boundForm"
+        },
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "1b4616915e7b11bdfc47c6f56d3ea5b568bc5e93c416884211fb6c34b56e9b9c"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Event.OnOpen"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/state",
+          "eq": "implemented"
+        },
+        {
+          "pointer": "/data/props/handler",
+          "eq": "ExistingOpen"
+        },
+        {
+          "pointer": "/data/props/implementationAt",
+          "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Module.Form.Method.ExistingOpen"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Module.Form.Method.ExistingOpen"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/signature",
+          "eq": "Процедура ExistingOpen(Отказ)"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Module.Object.Event.BeforeDelete"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/state",
+          "eq": "available"
+        },
+        {
+          "pointer": "/data/props/handler",
+          "eq": "ПередУдалением"
+        },
+        {
+          "pointer": "/data/props/signature",
+          "eq": "Процедура ПередУдалением(Отказ)"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Module.Object.Event.BeforeDelete",
+        "ops": [
+          {
+            "op": "event.implement",
+            "args": {
+              "callType": "After"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.boundForm"
+        },
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "1b4616915e7b11bdfc47c6f56d3ea5b568bc5e93c416884211fb6c34b56e9b9c"
+        },
+        {
+          "path": "src/Catalogs/Валюты/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.initial2"
+        }
+      ],
+      "refusal": "bad_value: Platform events do not accept callType"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Module.Object.Event.BeforeDelete",
+        "ops": [
+          {
+            "op": "event.implement",
+            "args": {}
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        },
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.boundForm"
+        },
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "1b4616915e7b11bdfc47c6f56d3ea5b568bc5e93c416884211fb6c34b56e9b9c"
+        },
+        {
+          "path": "src/Catalogs/Валюты/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.initial2"
+        }
+      ],
+      "captures": {
+        "platformToken": {
+          "pointer": "/data/executionToken"
+        },
+        "platformPlanHash": {
+          "pointer": "/data/planHash"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.platformToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/planHash",
+          "eq": "$capture.platformPlanHash"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.boundForm"
+        },
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "1b4616915e7b11bdfc47c6f56d3ea5b568bc5e93c416884211fb6c34b56e9b9c"
+        },
+        {
+          "path": "src/Catalogs/Валюты/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "92499d4acd2d18b6030b884ea2928ff1ac64a1c91348a4ea94395c5dba1d756b"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Module.Object.Event.BeforeDelete"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/state",
+          "eq": "implemented"
+        },
+        {
+          "pointer": "/data/props/handler",
+          "eq": "ПередУдалением"
+        },
+        {
+          "pointer": "/data/props/implementationAt",
+          "eq": "main:Catalog.Валюты.Module.Object.Method.ПередУдалением"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Module.Object.Method.ПередУдалением"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/signature",
+          "eq": "Процедура ПередУдалением(Отказ)"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial0"
+        },
+        {
+          "path": "src/Catalogs/Валюты/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.initial1"
+        },
+        {
+          "path": "src/Catalogs/Валюты/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "92499d4acd2d18b6030b884ea2928ff1ac64a1c91348a4ea94395c5dba1d756b"
+        },
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаСписка.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial3"
+        },
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаСписка/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial4"
+        },
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial5"
+        },
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.boundForm"
+        },
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "1b4616915e7b11bdfc47c6f56d3ea5b568bc5e93c416884211fb6c34b56e9b9c"
+        },
+        {
+          "path": "src/CommonModules/GoogleПереводчик.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial8"
+        },
+        {
+          "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.initial9"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial10"
+        },
+        {
+          "path": "src/DocumentJournals/ДокументыОрганизации.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial11"
+        },
+        {
+          "path": "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial12"
+        },
+        {
+          "path": "src/Enums/LanguageAware.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial13"
+        },
+        {
+          "path": "src/Enums/ВажностьПроблемыУчета.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial14"
+        },
+        {
+          "path": "src/Enums/НастройкиПоставщика.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial15"
+        },
+        {
+          "path": "src/Enums/СпособыУстановкиКурсаВалюты.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial16"
+        },
+        {
+          "path": "src/Ext/ParentConfigurations.bin",
+          "kind": "sha256",
+          "eq": "$capture.initial17"
+        },
+        {
+          "path": "src/HTTPServices/ПроверкаСвязи.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial18"
+        },
+        {
+          "path": "src/HTTPServices/ПроверкаСвязи/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.initial19"
+        },
+        {
+          "path": "src/InformationRegisters/АдминистративнаяИерархия.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial20"
+        },
+        {
+          "path": "src/Languages/English.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial21"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial22"
+        },
+        {
+          "path": "src/Reports/АнализВерсийОбъектов.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial23"
+        },
+        {
+          "path": "src/Reports/АнализВерсийОбъектов/Templates/МакетОтчета.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial24"
+        },
+        {
+          "path": "src/Reports/АнализВерсийОбъектов/Templates/МакетОтчета/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial25"
+        },
+        {
+          "path": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial26"
+        },
+        {
+          "path": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial27"
+        },
+        {
+          "path": "src/Roles/SalesReader.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial28"
+        },
+        {
+          "path": "src/Roles/SalesReader/Ext/Rights.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial29"
+        },
+        {
+          "path": "src/Subsystems/Администрирование.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial30"
+        },
+        {
+          "path": "src/Subsystems/Администрирование/Ext/CommandInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial31"
+        },
+        {
+          "path": "src/Subsystems/Администрирование/Subsystems/КонтрольРаботыПользователей.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial32"
+        },
+        {
+          "path": "src/WebServices/ОбменДанными.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial33"
+        },
+        {
+          "path": "src/WebServices/ОбменДанными/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.initial34"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial35"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.initial36"
+        }
+      ]
+    }
+  ]
+}
