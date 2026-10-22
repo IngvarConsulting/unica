@@ -1094,6 +1094,21 @@ fn check_node(checked: &Checked<'_>, at: &str, plan_writes: bool, mismatches: &m
             ));
             continue;
         }
+        // A closed contract: the same accepted arguments plus one unknown
+        // key are refused by the family decoder, not silently ignored.
+        if listed && family == Ok(true) {
+            let mut args = node_args(descriptor, &address);
+            args["unicaUnknownArgument"] = json!(true);
+            let probe = apply_request(at, op, args);
+            match parse_family_operation_for_test(0, &probe.ops()[0], checked.binding) {
+                Err(error)
+                    if error.kind()
+                        == unica_source_contract::proposal::ApplyPlanErrorKind::BadValue => {}
+                other => mismatches.push(format!(
+                    "{at}: `{op}` does not refuse an unknown argument key: {other:?}"
+                )),
+            }
+        }
         if plan_writes && listed && family == Ok(true) {
             if let Ok(paths) = plan(checked, &request) {
                 WRITES_CHECKED.with(|done| done.borrow_mut().insert(write_key(descriptor)));
