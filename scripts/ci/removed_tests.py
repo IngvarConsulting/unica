@@ -110,10 +110,11 @@ def tests_in(source: str) -> list[tuple[str, str]]:
 
 
 # A module item as it reads with comments and literals masked: attributes
-# (one of them `#[path = ...]`), visibility and `mod name;` or `mod name {`;
+# (one of them `#[path = ...]`; the other attribute branch excludes it, so the
+# repetition cannot backtrack), visibility and `mod name;` or `mod name {`;
 # an `include!(...)`; or a brace that opens or closes some other block.
 MODULE_ITEM = re.compile(
-    r"(?:(?:(?P<path>#\[path\s*=[^\]]*\])|#\[[^\]]*\])\s*)*"
+    r"(?:(?:(?P<path>#\[path\s*=[^\]]*\])|#\[(?!path\s*=)[^\]]*\])\s*)*"
     r"(?:pub(?:\([^)]*\))?\s+)?\bmod\s+(?P<name>\w+)\s*(?P<end>[;{])"
     r"|\binclude!\s*\((?P<include>[^)]*)\)|(?P<brace>[{}])")
 STRING = re.compile(r'^\s*"([^"\\]*)"\s*$')
