@@ -283,9 +283,9 @@ class AcceptanceProfileTests(unittest.TestCase):
         builder = tools_builder()
         def corrupt(_url, destination, *, timeout):
             self.assertEqual(timeout, 60)
-            destination.parent.mkdir(parents=True)
             destination.write_bytes(b"corrupt analyzer")
-        with tempfile.TemporaryDirectory() as raw, patch.object(builder, "download", corrupt):
+        with tempfile.TemporaryDirectory() as raw, patch.object(builder, "download", corrupt), \
+                patch.dict(os.environ, {"UNICA_TOOL_CACHE": str(Path(raw) / "cache")}):
             plugin = Path(raw) / "plugin"
             with self.assertRaisesRegex(SystemExit, "checksum mismatch"):
                 stage_analyzer(plugin, builder=builder, system="Linux", machine="x86_64")

@@ -154,7 +154,119 @@ def runtime_manifest(binary: bytes = b"multidist") -> dict:
     }
 
 
+def urllib_error_module():
+    import urllib.error
+
+    return urllib.error
+
+
 class BuildUnicaToolsTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # Проверенные инструменты кешируются по сумме; тест не читает и не
+        # пополняет кеш машины.
+        cache = tempfile.TemporaryDirectory()
+        self.addCleanup(cache.cleanup)
+        environment = patch.dict("os.environ", {"UNICA_TOOL_CACHE": cache.name})
+        environment.start()
+        self.addCleanup(environment.stop)
+
+    def test_download_reports_a_body_shorter_than_announced(self) -> None:
+        module = load_build_module()
+
+        class Response(io.BytesIO):
+            headers = {"Content-Length": "10"}
+
+        with tempfile.TemporaryDirectory() as raw, patch.object(
+            module.urllib.request, "urlopen", return_value=Response(b"short")
+        ):
+            with self.assertRaisesRegex(module.DownloadInterrupted, "ended after 5 of 10 bytes"):
+                module.download("https://example.invalid/asset", Path(raw) / "asset")
+
+    def test_fetch_retries_only_network_failures_and_verifies_the_lock_sum(self) -> None:
+        module = load_build_module()
+        payload = b"pinned tool"
+        asset = {"assetName": "tool", "sha256": hashlib.sha256(payload).hexdigest()}
+        attempts: list[str] = []
+
+        def flaky(_url: str, destination: Path, *, timeout: float | None = None) -> None:
+            attempts.append("download")
+            if len(attempts) == 1:
+                destination.write_bytes(payload[:3])
+                raise module.DownloadInterrupted("ended after 3 of 11 bytes")
+            destination.write_bytes(payload)
+
+        with tempfile.TemporaryDirectory() as raw, patch.object(module, "download", side_effect=flaky):
+            destination = Path(raw) / "out" / "tool"
+            module.fetch_verified_asset(
+                "https://example.invalid/tool", destination, asset, tool_name="tool", target="linux-x64"
+            )
+            self.assertEqual(destination.read_bytes(), payload)
+        self.assertEqual(attempts, ["download", "download"])
+
+        uncached = {"assetName": "tool", "sha256": hashlib.sha256(b"not cached").hexdigest()}
+        for failure in (
+            urllib_error_module().HTTPError("https://example.invalid/tool", 404, "Not Found", {}, None),
+            ValueError("not a network failure"),
+        ):
+            with self.subTest(failure=type(failure).__name__), tempfile.TemporaryDirectory() as raw, patch.object(
+                module, "download", side_effect=failure
+            ) as download_call:
+                with self.assertRaises(type(failure)):
+                    module.fetch_verified_asset(
+                        "https://example.invalid/tool", Path(raw) / "tool", uncached,
+                        tool_name="tool", target="linux-x64",
+                    )
+                download_call.assert_called_once()
+
+    def test_checksum_mismatch_on_a_full_body_is_not_retried_or_cached(self) -> None:
+        module = load_build_module()
+        asset = {"assetName": "tool", "sha256": hashlib.sha256(b"pinned tool").hexdigest()}
+
+        def wrong(_url: str, destination: Path, *, timeout: float | None = None) -> None:
+            destination.write_bytes(b"other bytes")
+
+        with tempfile.TemporaryDirectory() as raw, patch.object(
+            module, "download", side_effect=wrong
+        ) as download_call:
+            with self.assertRaisesRegex(SystemExit, "checksum mismatch"):
+                module.fetch_verified_asset(
+                    "https://example.invalid/tool", Path(raw) / "tool", asset,
+                    tool_name="tool", target="linux-x64",
+                )
+            download_call.assert_called_once()
+        self.assertEqual(list(module.tool_cache_dir().iterdir()), [])
+
+    def test_verified_asset_is_served_from_the_cache_without_network(self) -> None:
+        module = load_build_module()
+        payload = b"pinned tool"
+        asset = {"assetName": "tool", "sha256": hashlib.sha256(payload).hexdigest()}
+
+        def fetch(_url: str, destination: Path, *, timeout: float | None = None) -> None:
+            destination.write_bytes(payload)
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            with patch.object(module, "download", side_effect=fetch):
+                module.fetch_verified_asset(
+                    "https://example.invalid/tool", root / "first", asset, tool_name="tool", target="linux-x64"
+                )
+            with patch.object(module, "download") as download_call:
+                module.fetch_verified_asset(
+                    "https://example.invalid/tool", root / "second", asset, tool_name="tool", target="linux-x64"
+                )
+                download_call.assert_not_called()
+            self.assertEqual((root / "second").read_bytes(), payload)
+
+            # Испорченная запись кеша не выдаётся: инструмент скачивается заново.
+            (module.tool_cache_dir() / asset["sha256"]).write_bytes(b"damaged")
+            with patch.object(module, "download", side_effect=fetch) as download_call:
+                module.fetch_verified_asset(
+                    "https://example.invalid/tool", root / "third", asset, tool_name="tool", target="linux-x64"
+                )
+                download_call.assert_called_once()
+            self.assertEqual((root / "third").read_bytes(), payload)
+            self.assertEqual((module.tool_cache_dir() / asset["sha256"]).read_bytes(), payload)
+
     def test_main_requires_python_3_12(self) -> None:
         module = load_build_module()
 
@@ -465,7 +577,7 @@ class BuildUnicaToolsTests(unittest.TestCase):
         work_dir = root / "work"
         downloads: list[tuple[str, Path]] = []
 
-        def fake_download(url: str, destination: Path) -> None:
+        def fake_download(url: str, destination: Path, *, timeout: float | None = None) -> None:
             downloads.append((url, destination))
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(archive_path, destination)
@@ -601,7 +713,7 @@ class BuildUnicaToolsTests(unittest.TestCase):
         out_dir = root / "bundle"
         downloads: list[str] = []
 
-        def fake_download(url: str, destination: Path) -> None:
+        def fake_download(url: str, destination: Path, *, timeout: float | None = None) -> None:
             downloads.append(url)
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(archive_path, destination)
@@ -1024,7 +1136,7 @@ class BuildUnicaToolsTests(unittest.TestCase):
                 )
         download_call.assert_not_called()
 
-        def fake_download(_url: str, destination: Path) -> None:
+        def fake_download(_url: str, destination: Path, *, timeout: float | None = None) -> None:
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(archive_path, destination)
 
