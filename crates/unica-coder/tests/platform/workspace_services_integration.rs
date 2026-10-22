@@ -2504,12 +2504,20 @@ mod tests {
         let mut identity = WorkspaceServiceIdentity::new(&context, &source_root).unwrap();
         let first = context.workspace_root.join("provider-state-cycle-a");
         let second = context.workspace_root.join("provider-state-cycle-b");
-        let first_link = testing::create_dir_symlink_for_test(&second, &first)
-            .expect("symlink fixtures exist on Unix and Windows");
-        first_link.unwrap();
-        testing::create_dir_symlink_for_test(&first, &second)
-            .expect("the platform that created the first link must expose the second fixture")
-            .unwrap();
+        for (source, target) in [(&second, &first), (&first, &second)] {
+            match testing::create_directory_link_fixture_for_test(source, target).unwrap() {
+                testing::FileLinkFixtureOutcome::Created => {}
+                testing::FileLinkFixtureOutcome::Unsupported
+                | testing::FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+                    cleanup(&context);
+                    unica_process::test_support::skip_without_host_capability(
+                        unica_process::test_support::HostCapability::Symlink,
+                        "the provider-state link cycle needs directory links",
+                    );
+                    return;
+                }
+            }
+        }
         identity.service_dir = first.join("services").join(&identity.key);
         let record = test_record(&identity, 1, CoreIdentity::production().as_str());
         let runtime = new_runtime(identity, &record);

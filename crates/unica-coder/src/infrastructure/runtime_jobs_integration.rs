@@ -3520,7 +3520,11 @@ pub(crate) mod tests {
         runtime_shared_work_separates_physical_resources_and_distinct_v4_leases();
         stale_runtime_shared_work_authority_starts_no_producer_after_lock_replacement();
         replaced_jobs_directory_between_lifecycle_lock_and_admission_starts_no_producer();
-        symlinked_jobs_directory_between_lifecycle_lock_and_admission_starts_no_producer();
+        // Off Unix the standalone case records its skip; here it would mark
+        // the whole contract skipped while the other cases still run.
+        if unica_process::test_support::unix_runtime_authority_tests_supported() {
+            symlinked_jobs_directory_between_lifecycle_lock_and_admission_starts_no_producer();
+        }
         quarantine_release_never_removes_active_lock_from_replacement_jobs_root();
         quarantine_record_read_never_follows_replacement_after_retained_validation();
         quarantine_record_publish_never_writes_replacement_root();

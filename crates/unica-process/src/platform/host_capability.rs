@@ -88,11 +88,14 @@ impl HostCapability {
 /// which may use processes only in tests) names the capability, and its
 /// `#[test]` wrapper reports it here. An unknown name is a defect.
 pub fn skip_named_host_capability(name: &str, reason: &str) {
-    let capability = HostCapability::ALL
+    skip_without_host_capability(named_host_capability(name), reason);
+}
+
+fn named_host_capability(name: &str) -> HostCapability {
+    HostCapability::ALL
         .into_iter()
         .find(|capability| capability.name() == name)
-        .unwrap_or_else(|| panic!("unknown host capability `{name}`"));
-    skip_without_host_capability(capability, reason);
+        .unwrap_or_else(|| panic!("unknown host capability `{name}`"))
 }
 
 /// Record that this test skips because the host lacks `capability`.
@@ -152,12 +155,12 @@ mod tests {
 
     #[test]
     fn a_contract_skip_names_a_known_capability() {
-        // Under the lane runner this records a skip of this very test, so it
-        // names a capability no runner requires; the lookup is what is tested.
-        skip_named_host_capability("windows-job-object", "the name resolves");
-        let unknown = std::panic::catch_unwind(|| {
-            skip_named_host_capability("teleport", "no such capability")
-        });
+        // The lookup alone: recording would turn this passing test into a skip.
+        assert_eq!(
+            named_host_capability("windows-job-object"),
+            HostCapability::WindowsJobObject
+        );
+        let unknown = std::panic::catch_unwind(|| named_host_capability("teleport"));
         assert!(unknown.is_err(), "an unknown capability name is a defect");
     }
 
