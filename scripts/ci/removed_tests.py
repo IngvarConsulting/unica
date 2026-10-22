@@ -109,14 +109,15 @@ def tests_in(source: str) -> list[tuple[str, str]]:
     return found
 
 
-# A module item as it reads with comments and literals masked: attributes
-# (one of them `#[path = ...]`; the other attribute branch excludes it, so the
-# repetition cannot backtrack), visibility and `mod name;` or `mod name {`;
-# an `include!(...)`; or a brace that opens or closes some other block.
+# A module item as it reads with comments and literals masked: attributes,
+# visibility and `mod name;` or `mod name {`; an `include!(...)`; or a brace
+# that opens or closes some other block. An attribute holds no bracket once
+# literals are masked, so the repetition has one way to match.
 MODULE_ITEM = re.compile(
-    r"(?:(?:(?P<path>#\[path\s*=[^\]]*\])|#\[(?!path\s*=)[^\]]*\])\s*)*"
+    r"(?P<attributes>(?:#\[[^\[\]]*\]\s*)*)"
     r"(?:pub(?:\([^)]*\))?\s+)?\bmod\s+(?P<name>\w+)\s*(?P<end>[;{])"
     r"|\binclude!\s*\((?P<include>[^)]*)\)|(?P<brace>[{}])")
+PATH_ATTRIBUTE = re.compile(r"#\[path\s*=([^\[\]]*)\]")
 STRING = re.compile(r'^\s*"([^"\\]*)"\s*$')
 
 
@@ -236,8 +237,9 @@ class Packages:
                 inline.append((depth, item["name"]))
             else:
                 names = [name for _, name in inline]
-                if item["path"]:
-                    literal = STRING.match(source[item.start("path"):item.end("path")].split("=", 1)[1][:-1])
+                path = PATH_ATTRIBUTE.search(masked, item.start("attributes"), item.end("attributes"))
+                if path:
+                    literal = STRING.match(source[path.start(1):path.end(1)])
                     if literal:
                         base = (here if mod_rs or not names else own).joinpath(*names)
                         yield posixpath.normpath(str(base / literal[1])), binary, joined(*names, item["name"]), True
