@@ -32,38 +32,6 @@ MCP_HANDSHAKE = [
     {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
 ]
 
-MUTATION_TOOL_NAMES = frozenset(
-    {
-        "unica.cf.edit",
-        "unica.cf.init",
-        "unica.support.edit",
-        "unica.cfe.borrow",
-        "unica.cfe.init",
-        "unica.epf.init",
-        "unica.erf.init",
-        "unica.cfe.patch_method",
-        "unica.meta.add",
-        "unica.meta.edit",
-        "unica.form.add",
-        "unica.form.compile",
-        "unica.form.edit",
-        "unica.interface.edit",
-        "unica.subsystem.edit",
-        "unica.dcs.compile",
-        "unica.dcs.edit",
-        "unica.role.edit",
-        "unica.build.dump",
-        "unica.build.load",
-        "unica.build.update",
-        "unica.build.make",
-        "unica.build.run",
-        "unica.runtime.execute",
-        "unica.runtime.job.start",
-        "unica.runtime.job.cancel",
-        "unica.code.patch",
-    }
-)
-
 
 def source_smoke_oracle():
     script = Path(__file__).resolve().parents[2] / "scripts/ci/smoke-unica-mcp.py"
