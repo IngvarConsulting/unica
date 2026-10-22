@@ -6,7 +6,6 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn project_health_parent_repository_reports_repository_relative_remediation() {
     let root = temp_root("parent-repository");
     git(&root, &["init"]);
@@ -65,7 +64,6 @@ fn project_health_parent_repository_reports_repository_relative_remediation() {
 
 #[cfg(unix)]
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn runtime_sidecar_remediation_executes_with_literal_git_pathspecs() {
     let root = temp_root("literal-runtime-sidecar-remediation");
     git(&root, &["init"]);
@@ -146,7 +144,6 @@ fn runtime_sidecar_remediation_executes_with_literal_git_pathspecs() {
 }
 
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn project_health_fails_each_equal_root_owner_for_shared_generated_paths() {
     let root = temp_root("equal-root-generated-paths");
     git(&root, &["init"]);
@@ -198,7 +195,6 @@ fn project_health_fails_each_equal_root_owner_for_shared_generated_paths() {
 }
 
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn project_health_reports_case_variant_build_path_from_index() {
     let root = temp_root("case-variant-build-path");
     git(&root, &["init"]);
@@ -245,7 +241,6 @@ fn project_health_reports_case_variant_build_path_from_index() {
 }
 
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn project_health_owns_a_filesystem_caseless_unicode_staged_path() {
     let root = temp_root("caseless-unicode-staged-path");
     git(&root, &["init"]);
@@ -297,7 +292,6 @@ fn project_health_owns_a_filesystem_caseless_unicode_staged_path() {
 }
 
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn project_health_does_not_apply_a_host_alias_gitignore_to_another_git_path() {
     let root = temp_root("gitignore-host-alias");
     git(&root, &["init"]);
@@ -377,7 +371,6 @@ fn project_health_does_not_apply_a_host_alias_gitignore_to_another_git_path() {
 }
 
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn project_health_uses_staged_external_descriptor_for_repository_resource_policy() {
     let root = temp_root("staged-external-descriptor");
     git(&root, &["init"]);
@@ -431,7 +424,6 @@ fn project_health_uses_staged_external_descriptor_for_repository_resource_policy
 }
 
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn staged_platform_marker_completes_repository_resource_aggregate() {
     let root = temp_root("staged-platform-resource-aggregate");
     git(&root, &["init"]);
@@ -496,7 +488,6 @@ fn staged_platform_marker_completes_repository_resource_aggregate() {
 }
 
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn project_health_uses_staged_config_dump_descriptor_for_repository_resource_policy() {
     let root = temp_root("staged-config-dump-descriptor");
     git(&root, &["init"]);
@@ -552,7 +543,6 @@ fn project_health_uses_staged_config_dump_descriptor_for_repository_resource_pol
 }
 
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn project_health_does_not_emit_resource_derivatives_for_inconclusive_config_dump_info() {
     let root = temp_root("inconclusive-config-dump-role");
     git(&root, &["init"]);
@@ -608,7 +598,6 @@ fn project_health_does_not_emit_resource_derivatives_for_inconclusive_config_dum
 }
 
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn project_health_rejects_cross_kind_staged_config_dump_descriptors() {
     for (case, declared_type, descriptor_child) in [
         (
@@ -695,7 +684,6 @@ fn project_health_rejects_cross_kind_staged_config_dump_descriptors() {
 }
 
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn project_health_full_portable_repository_is_ready() {
     let root = temp_root("full-ready");
     git(&root, &["init"]);
@@ -740,7 +728,6 @@ fn project_health_full_portable_repository_is_ready() {
 /// real public `project.status` fixtures prevents the happy path from being
 /// mistaken for proof that each repository prerequisite closes readiness.
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn portable_git_readiness_contract_is_a_closed_positive_and_negative_matrix() {
     project_health_full_portable_repository_is_ready();
     project_health_platform_xml_resource_roles_are_exact();
@@ -751,7 +738,6 @@ fn portable_git_readiness_contract_is_a_closed_positive_and_negative_matrix() {
 }
 
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn project_health_platform_xml_resource_roles_are_exact() {
     let root = temp_root("platform-resource-roles");
     git(&root, &["init"]);
@@ -794,7 +780,6 @@ fn project_health_platform_xml_resource_roles_are_exact() {
 }
 
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn project_health_mixed_platform_and_nested_edt_publish_profile_specific_checks() {
     let root = temp_root("mixed-platform-edt");
     git(&root, &["init"]);
@@ -846,7 +831,6 @@ fn project_health_mixed_platform_and_nested_edt_publish_profile_specific_checks(
 }
 
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn project_health_checks_a_proven_platform_root_when_a_sibling_format_is_unknown() {
     let root = temp_root("platform-with-unknown-sibling");
     git(&root, &["init"]);
@@ -914,7 +898,6 @@ fn project_health_checks_a_proven_platform_root_when_a_sibling_format_is_unknown
 }
 
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn project_health_workspace_root_rejection_suppresses_source_derived_git_facts() {
     let root = temp_root("workspace-root-rejected");
     git(&root, &["init"]);
@@ -979,7 +962,6 @@ fn project_health_workspace_root_rejection_suppresses_source_derived_git_facts()
 }
 
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn project_health_preserves_an_independent_cache_ignore_failure_for_a_rejected_root() {
     let root = temp_root("workspace-root-cache-ignore-missing");
     git(&root, &["init"]);
@@ -1014,7 +996,6 @@ fn project_health_preserves_an_independent_cache_ignore_failure_for_a_rejected_r
 }
 
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn project_health_checks_a_proven_root_when_a_sibling_route_is_unsafe() {
     let root = temp_root("platform-with-unsafe-sibling");
     git(&root, &["init"]);
@@ -1061,7 +1042,6 @@ fn project_health_checks_a_proven_root_when_a_sibling_route_is_unsafe() {
 }
 
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn project_health_keeps_resource_policy_independent_between_source_sets() {
     let root = temp_root("independent-resource-roots");
     git(&root, &["init"]);
@@ -1136,7 +1116,6 @@ fn project_health_keeps_resource_policy_independent_between_source_sets() {
 
 #[cfg(unix)]
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn project_health_keeps_working_eol_errors_scoped_to_the_source_set() {
     use std::os::unix::fs::PermissionsExt;
 
@@ -1204,7 +1183,6 @@ fn project_health_keeps_working_eol_errors_scoped_to_the_source_set() {
 }
 
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn project_health_keeps_lfs_errors_scoped_to_the_source_set() {
     let root = temp_root("independent-lfs");
     git(&root, &["init"]);
@@ -1260,7 +1238,6 @@ fn project_health_keeps_lfs_errors_scoped_to_the_source_set() {
 }
 
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn project_health_reports_index_eol_even_when_text_policy_is_missing() {
     let root = temp_root("missing-attributes-crlf-index");
     git(&root, &["init"]);
@@ -1311,7 +1288,6 @@ fn project_health_reports_index_eol_even_when_text_policy_is_missing() {
 }
 
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn project_health_reports_working_eol_even_when_text_policy_is_local_only() {
     let root = temp_root("local-only-attributes-mixed-working-eol");
     git(&root, &["init"]);
@@ -1343,7 +1319,6 @@ fn project_health_reports_working_eol_even_when_text_policy_is_local_only() {
 
 #[cfg(unix)]
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn project_health_does_not_execute_configured_fsmonitor_hook() {
     use std::os::unix::fs::PermissionsExt;
 
@@ -1380,7 +1355,6 @@ fn project_health_does_not_execute_configured_fsmonitor_hook() {
 }
 
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn project_health_full_portable_linked_worktree_is_ready_and_read_only() {
     let root = temp_root("linked-worktree");
     let repository = root.join("repository");
@@ -1438,7 +1412,6 @@ fn project_health_full_portable_linked_worktree_is_ready_and_read_only() {
 /// call has to answer inside the interactive invocation window, and git work on
 /// a large index is where a slow target spends that window.
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn project_health_handles_a_real_index_past_the_generic_capture_limit() {
     let root = temp_root("large-index");
     git(&root, &["init"]);
@@ -1504,7 +1477,6 @@ fn project_health_handles_a_real_index_past_the_generic_capture_limit() {
 }
 
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn project_health_bounds_equal_root_resource_ownership_composition() {
     let root = temp_root("equal-root-resource-scale");
     git(&root, &["init"]);
@@ -1570,7 +1542,6 @@ fn project_health_bounds_equal_root_resource_ownership_composition() {
 
 #[cfg(unix)]
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn project_health_inspects_unix_source_path_with_literal_backslash() {
     let root = temp_root("literal-backslash-source");
     git(&root, &["init"]);
@@ -1607,7 +1578,6 @@ fn project_health_inspects_unix_source_path_with_literal_backslash() {
 
 #[cfg(unix)]
 #[test]
-#[ignore = "daemon tier: raises a daemon process; disabled on purpose until the tier is routed"]
 fn project_health_linked_source_route_is_reported_without_following_it() {
     use std::os::unix::fs::symlink;
 

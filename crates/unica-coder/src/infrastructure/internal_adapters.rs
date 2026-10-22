@@ -2161,6 +2161,10 @@ mod tests {
     #[test]
     fn bounded_external_epf_rejects_case_only_output_aliases() {
         if path_lock_identity(Path::new("Out.log")) != path_lock_identity(Path::new("out.log")) {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::CaseInsensitiveFilesystem,
+                "case-only aliases exist only where path identity ignores case",
+            );
             return;
         }
 

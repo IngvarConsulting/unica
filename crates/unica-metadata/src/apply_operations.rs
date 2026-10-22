@@ -88,6 +88,7 @@ metadata_operations!(
     PredefinedItemAdd => ("predefinedItem.add", MetadataPredefinedItems, Items),
     PredefinedItemSet => ("predefinedItem.set", MetadataPredefinedItem, Values),
     PredefinedItemRemove => ("predefinedItem.remove", MetadataPredefinedItem, Target),
+    ContentSet => ("content.set", ExchangePlan, Items),
 );
 
 impl MetadataOperation {
@@ -126,7 +127,8 @@ impl MetadataOperation {
             | Self::TemplateRemove
             | Self::PredefinedItemAdd
             | Self::PredefinedItemSet
-            | Self::PredefinedItemRemove => None,
+            | Self::PredefinedItemRemove
+            | Self::ContentSet => None,
         }
     }
 
@@ -179,6 +181,7 @@ impl MetadataOperation {
             Self::PredefinedItemRemove => crate::contracts::metadata_predefined_remove(),
             Self::PredefinedItemAdd => crate::contracts::metadata_predefined_add(owner),
             Self::PredefinedItemSet => crate::contracts::metadata_predefined_set(owner),
+            Self::ContentSet => crate::contracts::metadata_exchange_content_set(),
             Self::RelationAdd | Self::RelationRemove | Self::RelationReplace => {
                 crate::contracts::metadata_relation(
                     self.relation_mode().expect("relation operation"),

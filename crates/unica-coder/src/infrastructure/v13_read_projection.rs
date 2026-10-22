@@ -1523,10 +1523,19 @@ fn project_xdto(
                 Value::String(serde_json::to_string(base).unwrap_or_default()),
             );
         }
+        let mut limits = Vec::new();
+        if let Some(base_at) = item.get("baseAt") {
+            if let Some(value) = bounded_prop("baseAt", base_at) {
+                props.insert("baseAt".to_string(), value);
+            } else {
+                limits.push(format!("XDTO baseAt exceeds the compact property limit of {MAX_COMPACT_PROP_BYTES} bytes"));
+            }
+        }
         let branches = xdto_property_branch(address, item)?;
         return Ok(NodeViewData::Node(
             NodeView::new(address.to_string(), segment.kind().as_str(), name, props)
-                .with_branches(branches),
+                .with_branches(branches)
+                .with_limits(limits),
         ));
     }
     // Свойство любой вложенности: `Type.T.Property.A.Property.B` спускается
@@ -1610,12 +1619,21 @@ fn xdto_property_branch(
 }
 
 fn xdto_property_node(address: &QualifiedAddress, name: &str, property: &Value) -> NodeView {
-    let props = reader_node_props(LogicalReader::Xdto, NodeKind::Property, property);
+    let mut props = reader_node_props(LogicalReader::Xdto, NodeKind::Property, property);
     let limits = ["type", "reference", "bounds"]
         .into_iter()
         .filter(|key| property.get(*key).is_some() && !props.contains_key(*key))
         .map(|key| format!("XDTO property {key} exceeds the compact property limit of {MAX_COMPACT_PROP_BYTES} bytes"))
         .collect();
+    if let Some([definition]) = property
+        .get("typeDefs")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+    {
+        if definition.get("discriminator").and_then(Value::as_str) == Some("ObjectType") {
+            props.insert("anonymousType".to_string(), json!("ObjectType"));
+        }
+    }
     NodeView::new(address.to_string(), "Property", name, props).with_limits(limits)
 }
 

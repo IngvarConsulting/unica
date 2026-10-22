@@ -327,6 +327,73 @@ class SummaryTests(unittest.TestCase):
             metrics.summarize(self.runs("before", [1, 2]) + self.runs("after", [1]), ("before", "after"))
 
 
+def two_runner_jobs():
+    """Раскладка #1813: Linux целиком в `Unica CI`, macOS — в `Rust (macos-14)`."""
+    return [
+        job(1, "Unica CI", t("02:00:00"), t("02:00:10"), t("02:20:00")),
+        job(2, "Rust (macos-14)", t("02:00:00"), t("02:00:30"), t("02:08:00"), label="macos-14"),
+        job(3, "Build tools (${{ matrix.target }})", t("02:20:00"), t("02:20:00"), t("02:20:00"), conclusion="skipped"),
+        job(4, "Delivery CI", t("02:20:00"), t("02:20:00"), t("02:20:00"), conclusion="skipped"),
+    ]
+
+
+class TwoRunnerLayoutTests(unittest.TestCase):
+    def test_the_gate_job_is_the_linux_work_and_counts_toward_the_comparable_time(self):
+        result = metrics.run_metrics(queue_run(), two_runner_jobs(), {}, [], [metrics.shard_metrics(shard_document())])
+        self.assertEqual(result["unicaCi"]["seconds"], 1200.0)
+        self.assertEqual(result["gateEquivalentSeconds"], 1200.0)
+        self.assertEqual(result["lastGateJob"], "Unica CI")
+        self.assertFalse(result["deliveryTailRan"])
+        # Имя джобы больше не говорит, исполнялся ли Rust: это видно по частям.
+        self.assertTrue(result["rustTestsRan"])
+        self.assertFalse(metrics.run_metrics(queue_run(), two_runner_jobs(), {}, [], [])["rustTestsRan"])
+        self.assertAlmostEqual(result["runnerMinutes"]["linux"], 1190 / 60)
+        self.assertAlmostEqual(result["runnerMinutes"]["macos"], 450 / 60)
+        self.assertEqual(result["runnerWait"]["macosMaxSeconds"], 30.0)
+
+    def test_the_delivery_tail_with_its_gate_stays_out_of_the_comparable_time(self):
+        jobs = two_runner_jobs()
+        jobs[2] = job(3, "Build tools (linux-x64)", t("02:20:00"), t("02:20:05"), t("02:40:00"))
+        jobs[3] = job(4, "Delivery CI", t("02:40:00"), t("02:40:05"), t("02:40:20"))
+        result = metrics.run_metrics(queue_run(), jobs, {}, [], [])
+        self.assertTrue(result["deliveryTailRan"])
+        self.assertEqual(result["gateEquivalentSeconds"], 1200.0)
+        self.assertEqual(result["lastGateJob"], "Unica CI")
+
+    def test_lane_directories_inside_runner_artifacts_are_read(self):
+        base = f"repos/{REPO}/actions"
+        artifacts = [
+            {"id": 21, "name": "plan-macos-14", "expired": False},
+            {"id": 22, "name": "results-ubuntu-latest", "expired": False},
+            {"id": 23, "name": "results-ci-routing", "expired": False},
+            {"id": 24, "name": "plan-ubuntu-latest", "expired": True},
+        ]
+        api = queue_api(jobs=two_runner_jobs(), artifacts=artifacts)
+        plan = io.BytesIO()
+        with zipfile.ZipFile(plan, "w") as archive:
+            archive.writestr("plan-rust-macos-14-ordinary/lane.json", json.dumps(dict(lane_document(), lane="ordinary", shards=[[{}]])))
+            archive.writestr("plan-rust-macos-14-platform/plan.json", json.dumps([]))
+        results = io.BytesIO()
+        with zipfile.ZipFile(results, "w") as archive:
+            archive.writestr("results-rust-ubuntu-latest-ordinary-1/shard.json",
+                             json.dumps(dict(shard_document(), runner="ubuntu-latest")))
+            archive.writestr("results-rust-ubuntu-latest-receipt-1/shard.json",
+                             json.dumps(dict(shard_document(), runner="ubuntu-latest", lane="receipt", executionSeconds=60.0)))
+            # Python-результаты в том же артефакте частями полос не являются.
+            archive.writestr("results-python-ci-small/run.json", json.dumps({"runner": "ubuntu-latest"}))
+        api.responses[f"{base}/artifacts/21/zip"] = plan.getvalue()
+        api.responses[f"{base}/artifacts/22/zip"] = results.getvalue()
+        result = metrics.collect(metrics.GitHub(REPO, None, api), 7, None, logs=True, artifacts=True)
+        self.assertEqual([(lane["runner"], lane["lane"], lane["shards"]) for lane in result["lanes"]], [("macos-14", "ordinary", 1)])
+        self.assertEqual([(shard["runner"], shard["lane"], shard["executionSeconds"]) for shard in result["shards"]],
+                         [("ubuntu-latest", "ordinary", 300.5), ("ubuntu-latest", "receipt", 60.0)])
+        self.assertNotIn(f"{base}/artifacts/23/zip", api.calls)
+        self.assertNotIn(f"{base}/artifacts/24/zip", api.calls)
+        self.assertTrue(result["rustTestsRan"])
+        logged = sorted(path for path in api.calls if path.endswith("/logs"))
+        self.assertEqual(logged, [f"{base}/jobs/{n}/logs" for n in (1, 2)])
+
+
 class CollectTests(unittest.TestCase):
     def test_lane_and_shard_artifacts_of_the_attempt_are_read_and_expired_ones_skipped(self):
         api = queue_api()
@@ -336,9 +403,10 @@ class CollectTests(unittest.TestCase):
         self.assertEqual([(shard["shard"], shard["executionSeconds"]) for shard in result["shards"]], [(1, 300.5)])
         self.assertNotIn(f"repos/{REPO}/actions/artifacts/13/zip", api.calls)
         self.assertNotIn(f"repos/{REPO}/actions/artifacts/14/zip", api.calls)
-        # Логи читаются только у исполнявшихся Rust-джоб.
+        # Логи читаются только у исполнявшихся Rust-джоб; `Unica CI` с #1813 сам
+        # собирает Linux, поэтому его лог читается и в прежней раскладке.
         logged = sorted(path for path in api.calls if path.endswith("/logs"))
-        self.assertEqual(logged, [f"repos/{REPO}/actions/jobs/{n}/logs" for n in (2, 3, 4)])
+        self.assertEqual(logged, [f"repos/{REPO}/actions/jobs/{n}/logs" for n in (2, 3, 4, 5)])
 
     def test_artifacts_left_from_another_attempt_are_dropped(self):
         api = queue_api(run=queue_run(attempt=2))

@@ -8,6 +8,10 @@ publish = false
 autotests = false
 
 [[test]]
+name = "compile_transaction"
+path = "tests/compile_transaction.rs"
+
+[[test]]
 name = "project_sources"
 path = "tests/project_sources.rs"
 
@@ -18,6 +22,8 @@ path = "tests/selection.rs"
 [dev-dependencies]
 unica-source-contract = { path = "../unica-source-contract" }
 unica-source-designer = { path = "../unica-source-designer", features = ["test-support"] }
+unica-metadata-designer = { path = "../unica-metadata-designer" }
 unica-workspace = { path = "../unica-workspace", features = ["test-support"] }
 unica-work-control = { path = "../unica-work-control" }
+unica-process = { path = "../unica-process", features = ["test-support"] }
 tempfile.workspace = true

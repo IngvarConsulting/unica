@@ -530,6 +530,20 @@ pub fn metadata_predefined_set(owner: Option<MetadataKind>) -> OperationContract
     }
 }
 
+pub fn metadata_exchange_content_set() -> OperationContract {
+    OperationContract {
+        schema: object(&[("at", text(true)), ("items", json!({"type":"array", "minItems":1,
+            "items":{"type":"object", "additionalProperties":false, "required":["at","autoRecord"],
+            "properties":{"at":{"type":"string"},"autoRecord":{"type":"string","enum":["Allow","Deny"]}}}}))], &["items"]),
+        target: "An ExchangePlan: <source-set>:ExchangePlan.<Name>.",
+        effect: "Update the listed Content.xml entries, appending new targets and preserving unlisted entries and their AutoRecord values.",
+        notes: "Each item names an existing Catalog, Document, Constant, ChartOfCharacteristicTypes, ChartOfAccounts, ChartOfCalculationTypes, InformationRegister, AccumulationRegister, AccountingRegister, CalculationRegister, BusinessProcess or Task of the same source set. AutoRecord is the XML value Allow or Deny; this does not prove runtime change registration. A plan without Content.xml has an empty composition and the first item creates the file. Damaged Content.xml and repeated targets are refused. An equivalent repeat preserves all bytes.",
+        example_args: json!({"items":[{"at":"main:Catalog.Items","autoRecord":"Allow"}]}),
+        help: METADATA_HELP,
+        format_validators: &[],
+    }
+}
+
 pub fn metadata_predefined_remove() -> OperationContract {
     OperationContract {
         schema: object(&[("at", text(true))], &[]),

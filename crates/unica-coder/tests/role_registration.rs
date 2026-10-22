@@ -138,6 +138,7 @@ fn compile_registration_with_declarations(entry: &str, metadata: &str, form: &st
             MetadataDimensions, MetadataDimension, MetadataResources, MetadataResource,
             MetadataEnumValues, MetadataEnumValue, MetadataColumns, MetadataColumn,
             MetadataTemplates, MetadataTemplate, MetadataPredefinedItems, MetadataPredefinedItem,
+            ExchangePlan,
         }}
         enum OperationSkeleton {{ Values, Items, Target, From }}
         mod metadata_operation {{
@@ -413,6 +414,7 @@ fn remaining_metadata_registrations_require_their_typed_variants() {
             "MetadataPredefinedItem",
             "Target",
         ),
+        ("ContentSet", "content.set", "ExchangePlan", "Items"),
     ];
     let typed = operations
         .iter()

@@ -866,7 +866,7 @@ class ProductContractTests(unittest.TestCase):
         # Граница — проверка компилятора в production-коде библиотеки. Python-набор
         # её не собирает: в каждом профиле, включая PR, это делает ordinary-архив
         # Rust (не-тестовый бинарь `unica`, фичи объединены с dev-зависимостями
-        # тестов), а вне PR и push в main — `build-python-product` точным
+        # тестов), а вне PR и push в main — шаг `product` точным
         # production-набором фич (`cargo build -p unica-coder --bin unica`).
         sources = {
             path: (REPO_ROOT / path).read_bytes()

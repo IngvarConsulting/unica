@@ -12,4 +12,4 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 : "${UNICA_PLATFORM_HELP_DIR:?задайте каталог справки платформы}"
-UNICA_UPDATE_PLATFORM_EVENT_CATALOG=1 cargo test -p unica-coder --features research --lib -- --ignored regenerate_checked_platform_event_catalog --nocapture
+UNICA_UPDATE_PLATFORM_EVENT_CATALOG=1 cargo test -p unica-documentation-sources --features research --lib -- --ignored regenerate_checked_platform_event_catalog --nocapture

@@ -48,44 +48,86 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  classify-changes:
+  # Запись очереди занимает два раннера: эту Linux-джобу и джобу macOS
+  # (`rust-os`). На тарифе с 20 одновременными джобами, из них 5 macOS, так
+  # пачка записей не ждёт раннеров. Всё, что раньше шло отдельными джобами, —
+  # маршрут, guards, сборки, тесты, Clippy, Python, сверка инвентаря и итог —
+  # идёт здесь подряд в одном каталоге `target`: архивы полос не покидают
+  # джобу, продукт для Python собирается из тех же зависимостей. `needs` на
+  # macOS сделал бы запись последовательной, поэтому в конце джоба ждёт её по
+  # jobs API (`await_os_jobs.py`) и забирает её отчёт. У джобы нет `if:`:
+  # пропущенную обязательную проверку ruleset засчитал бы как пройденную.
+  unica-ci:
+    # Стабильное имя обязательной проверки ruleset. Смена метки не запускает
+    # этот workflow и потому не создаёт более новый suite без этих ворот.
+    name: Unica CI
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Ночной large исполняет весь набор подряд и ждёт Windows.
+    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.profile == 'large' && 300 || 120 }}
+    # SARIF пишет в Code Scanning; прежний инвентарь и джобы других ОС
+    # читаются из Actions, объяснения пропаж инвентаря — из описаний pull
+    # request. Права джобы заменяют права workflow целиком.
+    # `actions: write` — только чтобы прогон снятой записи очереди отменил себя.
+    permissions:
+      contents: read
+      actions: write
+      pull-requests: read
+      security-events: write
     outputs:
-      rust_changed: ${{ steps.scope.outputs.rust_changed }}
-      platform_changed: ${{ steps.scope.outputs.platform_changed }}
-      toolchain_changed: ${{ steps.scope.outputs.toolchain_changed }}
-      search_integration_changed: ${{ steps.scope.outputs.search_integration_changed }}
-      package_changed: ${{ steps.scope.outputs.package_changed }}
-      plugin_content_changed: ${{ steps.scope.outputs.plugin_content_changed }}
-      ci_changed: ${{ steps.scope.outputs.ci_changed }}
-      release_required: ${{ steps.scope.outputs.release_required }}
-      assessment_required: ${{ steps.scope.outputs.assessment_required }}
-      docs_only: ${{ steps.scope.outputs.docs_only }}
-      rust_required: ${{ steps.scope.outputs.rust_required }}
-      cache_required: ${{ steps.scope.outputs.cache_required }}
+      rust_changed: ${{ steps.classify.outputs.rust_changed }}
+      platform_changed: ${{ steps.classify.outputs.platform_changed }}
+      toolchain_changed: ${{ steps.classify.outputs.toolchain_changed }}
+      search_integration_changed: ${{ steps.classify.outputs.search_integration_changed }}
+      package_changed: ${{ steps.classify.outputs.package_changed }}
+      plugin_content_changed: ${{ steps.classify.outputs.plugin_content_changed }}
+      ci_changed: ${{ steps.classify.outputs.ci_changed }}
+      release_required: ${{ steps.classify.outputs.release_required }}
+      assessment_required: ${{ steps.classify.outputs.assessment_required }}
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+      rust_required: ${{ steps.classify.outputs.rust_required }}
+      cache_required: ${{ steps.classify.outputs.cache_required }}
       line: ${{ steps.line.outputs.line }}
       runners: ${{ steps.runners.outputs.runners }}
       python_matrix: ${{ steps.python-matrix.outputs.python_matrix }}
-      ordinary_build_matrix: ${{ steps.rust-matrices.outputs.ordinary_build_matrix }}
-      ordinary_run_matrix: ${{ steps.rust-matrices.outputs.ordinary_run_matrix }}
-      receipt_build_matrix: ${{ steps.rust-matrices.outputs.receipt_build_matrix }}
-      receipt_run_matrix: ${{ steps.rust-matrices.outputs.receipt_run_matrix }}
-      vendor_build_matrix: ${{ steps.rust-matrices.outputs.vendor_build_matrix }}
-      vendor_run_matrix: ${{ steps.rust-matrices.outputs.vendor_run_matrix }}
+      gate_results: ${{ steps.gate.outputs.gate_results }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      PYTHONUTF8: "1"
+      REPORT: .build/ci-report
+      LANES: .build/ci-lanes
     steps:
+      # Очередь, пересобирая пачку, удаляет ref снятой записи, а её прогон
+      # остаётся ждать раннеров. Прогон, чей ref уже исчез (404), отменяет себя
+      # до занятия второго раннера: его результат никому не нужен. Любой
+      # другой ответ API — не повод отменять: лишний прогон дешевле ложной отмены.
+      - name: Queue entry still exists
+        if: github.event_name == 'merge_group'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          QUEUE_REF: ${{ github.ref }}
+        run: |
+          code="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/git/ref/${QUEUE_REF#refs/}")"
+          if [ "$code" != "404" ]; then exit 0; fi
+          echo "::warning::$QUEUE_REF больше нет: очередь сняла эту запись, прогон отменяется"
+          gh run cancel "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY"
+          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Классификатор и страж неизменности продукта сравнивают с базой.
           fetch-depth: 0
-      # Раннеры матрицы Rust — две полосы. Pull request идёт только на ubuntu:
-      # быстрый сигнал. Полная матрица идёт в очереди слияния, на push в ветку
-      # и по кнопке: очередь проверяет ровно то дерево, что ляжет в `main`, и
-      # класс дефектов `#[cfg]` ловит она, ценой одной выкидки, а не красного
-      # `main`. Метка `ci:full`, прочитанная при старте прогона pull request,
-      # возвращает полную матрицу.
-      # Windows — только в ночном ярусе `large`: с остальных матриц он снят за
-      # нестабильность раннера, а ночью сбой виден и никого не блокирует.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      # Раннеры прогона. Pull request идёт только на Linux; метка `ci:full`,
+      # прочитанная при старте прогона, добавляет macOS. Очередь, push в
+      # ветку и кнопка — Linux и macOS; в очереди macOS исполняет только
+      # платформенные каталоги (профиль nextest `queue-platform`). Windows —
+      # только в ночном ярусе `large`: с остальных снят за нестабильность.
       # Известные отказы Windows large — #1523; отдельные регрессии — #1714,
       # #1746, #1776, #1777, #1786. Advisory снимается вместе с ними.
       - id: runners
@@ -108,31 +150,20 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
         run: echo "line=$(python scripts/ci/resolve-line.py --ref-type "$REF_TYPE" --ref-name "$REF_NAME" --sha "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
       # Классификатор читает неизменяемые SHA из payload события. Он же
-      # определяет обязательные джобы и сохраняет причину docs-only skip
+      # определяет обязательные шаги и сохраняет причину docs-only skip
       # отдельно для каждого Rust-раннера; неизвестный diff не сокращает CI.
-      - id: scope
-        shell: bash
+      - id: classify
         env:
           RUNNERS: ${{ steps.runners.outputs.runners }}
           RUN_LINE: ${{ steps.line.outputs.line }}
         run: python scripts/ci/classify-workflow-changes.py --github-event --runner-matrix "$RUNNERS" --line "$RUN_LINE" --results .build/ci-routing >> "$GITHUB_OUTPUT"
       # Маршрут документации сужает оба Python-набора до small; обычная
-      # очередь сохраняет прежний состав. Gate сверяет эту же матрицу.
+      # очередь сохраняет прежний состав. Гейт сверяет этот же список.
       - id: python-matrix
         env:
-          DOCS_ONLY: ${{ steps.scope.outputs.docs_only }}
+          DOCS_ONLY: ${{ steps.classify.outputs.docs_only }}
         run: echo "python_matrix=$(python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --python-matrix --docs-only "$DOCS_ONLY")" >> "$GITHUB_OUTPUT"
-      - id: rust-matrices
-        env:
-          RUNNERS: ${{ steps.runners.outputs.runners }}
-        run: |
-          for lane in ordinary receipt vendor; do
-            for phase in build run; do
-              matrix="$(python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --rust-lane "$lane" --rust-matrix "$phase" --runners "$RUNNERS")"
-              echo "${lane}_${phase}_matrix=$matrix" >> "$GITHUB_OUTPUT"
-            done
-          done
-      - if: steps.scope.outputs.docs_only == 'true'
+      - if: steps.classify.outputs.docs_only == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: results-ci-routing
@@ -140,765 +171,539 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # Guards и тесты исполняются независимо. Отказ линтера или загрузки SARIF
-  # не отменяет сбор тестовых результатов; обязательный gate ждёт обе ветки.
-  # Находки линтера идут в Code Scanning, а не в Allure.
-  guards:
-    name: Guards
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    # Загрузка SARIF пишет в Code Scanning; права джобы заменяют права
-    # workflow целиком, поэтому `contents: read` повторён.
-    permissions:
-      contents: read
-      security-events: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-      - run: python -m py_compile scripts/ci/*.py tests/ci/*.py
-      - run: python -m py_compile scripts/dev/*.py tests/dev/*.py
-      - run: python scripts/ci/check-version-contract.py
-      - run: python -m pip install -r tests/ci/requirements.txt
-      # Форматирование от цели сборки не зависит — одного раннера хватает.
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+      # Guards. Находки zizmor идут в Code Scanning, а не в гейт. С этого
+      # места каждый шаг идёт и после красного предыдущего (`!cancelled()`):
+      # отказ guards не лишает прогон сборки, тестов и их отчёта.
+      - id: guards-compile
+        run: |
+          python -m py_compile scripts/ci/*.py tests/ci/*.py
+          python -m py_compile scripts/dev/*.py tests/dev/*.py
+      - id: guards-version
+        if: ${{ !cancelled() }}
+        run: python scripts/ci/check-version-contract.py
+      - if: ${{ !cancelled() }}
+        run: python -m pip install -r tests/ci/requirements.txt
+      - if: ${{ !cancelled() }}
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable
-          components: rustfmt
-      - run: cargo fmt --all -- --check
+          components: rustfmt, clippy
+      - id: guards-fmt
+        if: ${{ !cancelled() }}
+        run: cargo fmt --all -- --check
       # Линтер workflow. Версия закреплена; находки гейт не красят — они
       # уходят в Code Scanning, где видны по правилу и строке, и разбираются
       # отдельно. Токен нужен сетевым проверкам: подменённые коммиты, известные
       # уязвимости действий.
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+      - if: ${{ !cancelled() }}
+        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: zizmor@1.30.0
-      - env:
+      # Отчёты лежат в игнорируемом `.build/`: неотслеживаемый файл в дереве
+      # сменил бы отпечаток исходников, к которому привязан продукт для Python.
+      - id: guards-zizmor
+        if: ${{ !cancelled() }}
+        env:
           GH_TOKEN: ${{ github.token }}
-        run: zizmor --config .github/zizmor.yml --format sarif --no-exit-codes .github/workflows > zizmor.sarif
+        run: mkdir -p .build && zizmor --config .github/zizmor.yml --format sarif --no-exit-codes .github/workflows > .build/zizmor.sarif
       # Токен pull request из форка писать в Code Scanning не вправе; своим
-      # веткам и push загрузка доступна.
-      - if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+      # веткам и push загрузка доступна. Сбой загрузки (у очереди ветка
+      # исчезает после вливания) не красит гейт: это отчёт, не проверка.
+      - if: ${{ !cancelled() && hashFiles('.build/zizmor.sarif') != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        continue-on-error: true
         uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
-          sarif_file: zizmor.sarif
+          sarif_file: .build/zizmor.sarif
           category: zizmor
 
-  build-python-product:
-    name: Ordinary binary for Python acceptance
-    needs: [classify-changes]
-    if: ${{ github.event_name != 'pull_request' && !(github.event_name == 'push' && github.ref == 'refs/heads/main') && needs.classify-changes.outputs.docs_only != 'true' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    env:
-      CARGO_PROFILE_DEV_DEBUG: line-tables-only
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
-        with:
-          toolchain: stable
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-      - name: Кэш зависимостей ordinary binary # zizmor: ignore[cache-poisoning] только зависимости; пишут push в ветку и ручной запуск, PR, очередь и тег читают область main; архивы тестовые, поставку собирает build-tools
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          # Продукт собирается в свой target-dir (prepared_binary.PRODUCT_TARGET);
-          # без явного workspaces rust-cache кешировал бы только registry.
-          shared-key: ci-python-product
-          workspaces: ". -> .build/ci-product-target"
-          save-if: ${{ github.ref_type == 'branch' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
-      - run: python scripts/ci/prepared_binary.py build --destination .build/ci-product --archive .build/ci-product.tar.gz
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: ci-python-ordinary
-          path: .build/ci-product.tar.gz
-          retention-days: 1
-          overwrite: true
-          if-no-files-found: error
-
-  test-python:
-    name: Python tests (${{ matrix.slug }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    needs: [classify-changes, build-python-product]
-    # Push в `main` тестов не гоняет. Полный nightly включает Python.
-    if: ${{ !cancelled() && !(github.event_name == 'push' && github.ref == 'refs/heads/main') && (needs.build-python-product.result == 'success' || needs.build-python-product.result == 'skipped') }}
-    # Наборы идут параллельными джобами, по одной на набор, а `tests/ci` —
-    # по полосам размера: одним процессом он шёл в очереди шесть с половиной
-    # минут, из них четыре — несколько `medium`-тестов. Матрицу считает шов
-    # по воротам; каждая джоба зовёт тот же шов с `--suite` и `--only-size`,
-    # гейт видит одну джобу.
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.classify-changes.outputs.python_matrix) }}
-    env:
-      RUN_LINE: ${{ needs.classify-changes.outputs.line }}
-      SUITE: ${{ matrix.suite }}
-      LANE: ${{ matrix.lane }}
-      DOCS_ONLY: ${{ needs.classify-changes.outputs.docs_only }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          # Страж неизменности продукта сравнивает с базой — нужна история.
-          fetch-depth: 0
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-      - run: python -m pip install -r tests/ci/requirements.txt
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
-        with:
-          toolchain: stable
-      - if: needs.build-python-product.result == 'success'
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: ci-python-ordinary
-          path: .build/ci-product-input
-      - if: needs.build-python-product.result == 'success'
-        shell: bash
-        run: |
-          python scripts/ci/prepared_binary.py unpack --archive .build/ci-product-input/ci-product.tar.gz --destination .build/ci-prepared-product
-          echo "UNICA_PREPARED_BINARY_MANIFEST=$PWD/.build/ci-prepared-product/manifest.json" >> "$GITHUB_ENV"
-      # План выгружается до тестов, как у Rust: джоба, умершая на середине
-      # набора, оставляет состав, и недошедшие тесты попадут в отчёт `skipped`.
-      - run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$SUITE" --only-size "$LANE" --docs-only "$DOCS_ONLY" --plan-only --results .build/results --runner ubuntu-latest --line "$RUN_LINE"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: plan-python-${{ matrix.slug }}
-          path: .build/results
-          retention-days: 7
-          overwrite: true
-      # Наборы гоняет одна точка входа: профиль ворот меняется в ней, а не
-      # здесь; `--suite` сужает вызов до набора этой джобы.
-      - run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$SUITE" --only-size "$LANE" --docs-only "$DOCS_ONLY" --results .build/results --runner ubuntu-latest --line "$RUN_LINE"
-      # Результаты едут артефактом и при красном прогоне: ради них он и шёл.
-      - if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: results-python-${{ matrix.slug }}
-          path: .build/results
-          retention-days: 7
-          overwrite: true
-
-  shadow-component-selection:
-    name: Component selection (shadow; full gate retained)
-    needs: [classify-changes]
-    if: ${{ needs.classify-changes.outputs.rust_required == 'true' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-      - run: python scripts/ci/ci_shadow_selector.py --out .build/ci-shadow/selection.json
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: ci-shadow-selection
-          path: .build/ci-shadow
-          retention-days: 7
-          overwrite: true
-          if-no-files-found: error
-
-  build-rust-ordinary:
-    name: Build Rust ordinary (${{ matrix.runner }})
-    needs: [classify-changes]
-    if: ${{ needs.classify-changes.outputs.rust_required == 'true' }}
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.profile == 'large' && 180 || 60 }}
-    # Windows advisory до устранения известных отказов large (#1523).
-    continue-on-error: ${{ matrix.runner == 'windows-latest' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.classify-changes.outputs.ordinary_build_matrix) }}
-    defaults:
-      run:
-        shell: bash
-    env:
-      CARGO_PROFILE_DEV_DEBUG: line-tables-only
-      MATRIX_RUNNER: ${{ matrix.runner }}
-      PYTHONUTF8: "1"
-      RUN_LINE: ${{ needs.classify-changes.outputs.line }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
-        with:
-          toolchain: stable
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+      - if: ${{ !cancelled() && (steps.classify.outputs.rust_required == 'true' || steps.classify.outputs.cache_required == 'true') }}
+        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-nextest@0.9.148
-      - name: Кэш зависимостей Rust ordinary # zizmor: ignore[cache-poisoning] только зависимости; пишут push в ветку и ручной запуск, PR, очередь и тег читают область main; архивы тестовые, поставку собирает build-tools
+      - if: ${{ !cancelled() && steps.classify.outputs.rust_required == 'true' }}
+        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        with:
+          tool: clippy-sarif@0.8.0,sarif-fmt@0.8.0
+      # Один ключ зависимостей на ОС для всего, что собирает джоба: архивы
+      # полос, продукт для Python и Clippy. Пишут push в ветку и ручной запуск
+      # (ночью — large); PR, очередь и тег читают область main. Push в `main`
+      # без прогрева кеш не трогает: иначе почти пустой `target` лёг бы под
+      # новым точным ключом, а точное попадание уже не пересохраняется.
+      - name: Кэш зависимостей Rust # zizmor: ignore[cache-poisoning] только зависимости; пишут push в ветку и ручной запуск, PR, очередь и тег читают область main; поставку собирает build-tools
+        if: ${{ !cancelled() && (steps.classify.outputs.rust_required == 'true' || steps.classify.outputs.cache_required == 'true' || (steps.classify.outputs.docs_only != 'true' && !(github.event_name == 'push' && github.ref == 'refs/heads/main'))) }}
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: ci-rust-ordinary
           save-if: ${{ github.ref_type == 'branch' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
           cache-on-failure: true
-      - run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --rust-lane ordinary --phase build --prepared .build/ci-lane --runner "$MATRIX_RUNNER" --line "$RUN_LINE"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: ci-rust-archive-${{ matrix.runner }}-ordinary
-          path: |
-            .build/ci-lane/tests.tar.zst
-            .build/ci-lane/lane.json
-          retention-days: 1
-          overwrite: true
-          if-no-files-found: error
-      - if: always()
+
+      # Теневой selector: решение о затронутых пакетах для medium pull request.
+      # Обязательный набор он не сокращает. Повторный прогон затронутых тестов
+      # ради замера в одной джобе удлинял бы путь до гейта и здесь не идёт.
+      - id: shadow
+        if: ${{ !cancelled() && steps.classify.outputs.rust_required == 'true' }}
+        run: python scripts/ci/ci_shadow_selector.py --out "$REPORT/ci-shadow/selection.json"
+      # Продукт для Python — ordinary binary этой ревизии. Он собирается в тот
+      # же `target`, что и архивы, и сразу копируется вне него: сборка Receipt
+      # потом пересобирает `unica` со своим признаком.
+      - id: product
+        if: ${{ !cancelled() && github.event_name != 'pull_request' && !(github.event_name == 'push' && github.ref == 'refs/heads/main') && steps.classify.outputs.docs_only != 'true' }}
+        run: |
+          python scripts/ci/prepared_binary.py build --destination .build/ci-product --target-dir target
+          echo "UNICA_PREPARED_BINARY_MANIFEST=$PWD/.build/ci-product/manifest.json" >> "$GITHUB_ENV"
+      # Архивы всех полос этого раннера, их планы и doctests. Архив пинует
+      # байты, которые перечислил план, к байтам, которые исполнит прогон.
+      - id: rust-build
+        if: ${{ !cancelled() && steps.classify.outputs.rust_required == 'true' }}
+        env:
+          RUN_LINE: ${{ steps.line.outputs.line }}
+        run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --phase build --prepared "$LANES" --results "$REPORT" --runner ubuntu-latest --line "$RUN_LINE"
+      # Планы выгружаются до тестов: раннер, умерший на середине, оставляет
+      # состав, и недошедшие тесты попадут в отчёт `skipped`.
+      - id: python-plan
+        if: ${{ !cancelled() && !(github.event_name == 'push' && github.ref == 'refs/heads/main') && github.event_name != 'pull_request' }}
+        env:
+          PYTHON_MATRIX: ${{ steps.python-matrix.outputs.python_matrix }}
+          RUN_LINE: ${{ steps.line.outputs.line }}
+          DOCS_ONLY: ${{ steps.classify.outputs.docs_only }}
+        run: |
+          set -euo pipefail
+          while read -r entry; do
+            suite="$(jq -r .suite <<<"$entry")"; lane="$(jq -r .lane <<<"$entry")"; slug="$(jq -r .slug <<<"$entry")"
+            python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$suite" --only-size "$lane" --docs-only "$DOCS_ONLY" --plan-only --results "$REPORT/plan-python-$slug" --runner ubuntu-latest --line "$RUN_LINE"
+          done < <(jq -c '.[]' <<<"$PYTHON_MATRIX")
+      - if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: plan-rust-${{ matrix.runner }}-ordinary
-          path: .build/ci-lane/*.json
+          name: plan-ubuntu-latest
+          path: .build/ci-report/plan-*
           retention-days: 7
           overwrite: true
-          if-no-files-found: warn
-
-  run-rust-ordinary:
-    name: Rust ordinary (${{ matrix.runner }}, ${{ matrix.shard }}/${{ matrix.shards }})
-    needs: [classify-changes, build-rust-ordinary, shadow-component-selection]
-    if: ${{ needs.classify-changes.outputs.rust_required == 'true' }}
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.profile == 'large' && 180 || 60 }}
-    # Windows advisory до устранения известных отказов large (#1523).
-    continue-on-error: ${{ matrix.runner == 'windows-latest' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.classify-changes.outputs.ordinary_run_matrix) }}
-    defaults:
-      run:
-        shell: bash
-    env:
-      CARGO_PROFILE_DEV_DEBUG: line-tables-only
-      MATRIX_RUNNER: ${{ matrix.runner }}
-      PYTHONUTF8: "1"
-      SHARD: ${{ matrix.shard }}
-      RUN_LINE: ${{ needs.classify-changes.outputs.line }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+          if-no-files-found: ignore
+      # Clippy в очереди и на ветках исполняется в фоне, пока идут тесты:
+      # компиляция и исполнение тестов вместе занимают раннер плотнее, чем
+      # подряд. `cargo` здесь один — прогон архивов его не зовёт. Python с
+      # Clippy не пересекается: MCP-тесты под нагрузкой сборки падают по
+      # таймауту, поэтому Python идёт после ожидания Clippy. Pull request
+      # линтует отдельной джобой `Lint and Python`: так он укладывается в обычное
+      # время, а очередь остаётся на двух раннерах.
+      - id: clippy-start
+        if: ${{ !cancelled() && steps.classify.outputs.rust_required == 'true' && github.event_name != 'pull_request' }}
+        run: python scripts/ci/background_step.py start clippy -- scripts/ci/clippy.sh all
+      - id: rust-run
+        if: ${{ !cancelled() && steps.classify.outputs.rust_required == 'true' }}
+        env:
+          RUN_LINE: ${{ steps.line.outputs.line }}
+        run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --phase run --prepared "$LANES" --results "$REPORT" --runner ubuntu-latest --line "$RUN_LINE"
+      # Pull request исполняет small; medium затронутых пакетов идёт из того
+      # же архива ordinary профилем nextest `queue`. Неизвестный вход, full или
+      # сбой selector — весь medium. Обязательная очередь остаётся полной.
+      - id: rust-medium
+        if: ${{ !cancelled() && github.event_name == 'pull_request' && steps.classify.outputs.rust_required == 'true' }}
+        run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --phase medium --prepared "$LANES" --results "$REPORT" --runner ubuntu-latest --shadow "$REPORT/ci-shadow/selection.json"
+      - id: clippy
+        if: ${{ !cancelled() && steps.classify.outputs.rust_required == 'true' && github.event_name != 'pull_request' }}
+        run: python scripts/ci/background_step.py wait clippy
+      # Категория сохраняет прежнее имя `clippy-ubuntu-latest`, чтобы не
+      # потерять историю оповещений.
+      - if: always() && hashFiles('.build/clippy.sarif') != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
-        with:
-          toolchain: stable
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
-        with:
-          tool: cargo-nextest@0.9.148
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: ci-rust-archive-${{ matrix.runner }}-ordinary
-          path: .build/ci-lane
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: ci-shadow-selection
-          path: .build/ci-shadow
-      - run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --rust-lane ordinary --phase run --prepared .build/ci-lane --shard "$SHARD" --results .build/results --runner "$MATRIX_RUNNER" --line "$RUN_LINE" --shadow .build/ci-shadow/selection.json
-      - if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: results-rust-${{ matrix.runner }}-ordinary-${{ matrix.shard }}
-          path: .build/results
-          retention-days: 7
-          overwrite: true
-          if-no-files-found: warn
-
-  # Pull request гоняет только small; medium раньше впервые запускала очередь.
-  # Архив ordinary уже содержит medium: Linux-джоба исполняет его профилем
-  # nextest `queue` (small и medium, без large), сузив отбор до затронутых
-  # пакетов теневого selector. Неизвестный вход, full или сбой selector —
-  # весь medium. Это добавка к PR: обязательная очередь остаётся полной.
-  run-rust-ordinary-medium:
-    name: Rust ordinary medium (affected, ubuntu-latest)
-    needs: [classify-changes, build-rust-ordinary, shadow-component-selection]
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.classify-changes.outputs.rust_required == 'true' && needs.build-rust-ordinary.result == 'success' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    defaults:
-      run:
-        shell: bash
-    env:
-      CARGO_PROFILE_DEV_DEBUG: line-tables-only
-      PYTHONUTF8: "1"
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
-        with:
-          toolchain: stable
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
-        with:
-          tool: cargo-nextest@0.9.148
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: ci-rust-archive-ubuntu-latest-ordinary
-          path: .build/ci-lane
-      # Без решения selector исполняется весь medium.
-      - if: ${{ needs.shadow-component-selection.result == 'success' }}
+          sarif_file: .build/clippy.sarif
+          category: clippy-ubuntu-latest
+      # Python не идёт параллельно с Rust и Clippy: MCP-тесты ждут ответа по
+      # таймауту и под нагрузкой сборки и nextest падают. Наборы Python идут
+      # параллельно друг другу тем же швом, что и раньше джобами: каждый
+      # в своём процессе и каталоге результатов, их нагрузка — ожидание
+      # процессов продукта, а не компиляция. Красный набор не отменяет
+      # остальные; вывод каждого печатается своей группой.
+      - id: python
+        if: ${{ !cancelled() && !(github.event_name == 'push' && github.ref == 'refs/heads/main') && github.event_name != 'pull_request' }}
+        env:
+          PYTHON_MATRIX: ${{ steps.python-matrix.outputs.python_matrix }}
+          RUN_LINE: ${{ steps.line.outputs.line }}
+          DOCS_ONLY: ${{ steps.classify.outputs.docs_only }}
+        run: |
+          set -uo pipefail
+          slugs=(); pids=(); failed=()
+          while read -r entry; do
+            suite="$(jq -r .suite <<<"$entry")"; lane="$(jq -r .lane <<<"$entry")"; slug="$(jq -r .slug <<<"$entry")"
+            results="$REPORT/results-python-$slug"
+            mkdir -p "$results"
+            cp -R "$REPORT/plan-python-$slug/." "$results/"
+            python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$suite" --only-size "$lane" --docs-only "$DOCS_ONLY" --results "$results" --runner ubuntu-latest --line "$RUN_LINE" > ".build/python-$slug.log" 2>&1 &
+            slugs+=("$slug"); pids+=("$!")
+          done < <(jq -c '.[]' <<<"$PYTHON_MATRIX")
+          for index in "${!pids[@]}"; do
+            wait "${pids[$index]}" || failed+=("${slugs[$index]}")
+            echo "::group::Python ${slugs[$index]}"
+            cat ".build/python-${slugs[$index]}.log"
+            echo "::endgroup::"
+          done
+          if [ "${#failed[@]}" -ne 0 ]; then
+            echo "::error::Python не проходят: ${failed[*]}"
+            exit 1
+          fi
+      # Clippy и Python pull request — шаги джобы `Lint and Python` этого
+      # прогона: каждый своей записью гейта.
+      - id: lint-job
+        if: ${{ !cancelled() && github.event_name == 'pull_request' && steps.classify.outputs.rust_required == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/ci/await_os_jobs.py --runners '["ubuntu-latest"]' --job "Lint and Python::Clippy" --out .build/lint-job.json --timeout 3600 --require-success
+      - id: pr-python
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/ci/await_os_jobs.py --runners '["ubuntu-latest"]' --job "Lint and Python::Python" --out .build/pr-python.json --timeout 3600 --require-success
+      # Джобы других ОС этого прогона: их исход и отчёт. Пока они не
+      # закончились, Linux ждёт; не дождались за час — `timed_out`.
+      - id: os-jobs
+        if: ${{ !cancelled() && !(github.event_name == 'push' && github.ref == 'refs/heads/main') && steps.runners.outputs.runners != '["ubuntu-latest"]' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUNNERS: ${{ steps.runners.outputs.runners }}
+          # Ждать не дольше джобы ОС: час в воротах, три с запасом ночью.
+          WAIT_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.profile == 'large' && 11400 || 3600 }}
+        run: python scripts/ci/await_os_jobs.py --runners "$RUNNERS" --out .build/os-jobs.json --timeout "$WAIT_SECONDS"
+      - if: ${{ !cancelled() && steps.os-jobs.outcome == 'success' }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: ci-shadow-selection
-          path: .build/ci-shadow
-      - run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --rust-lane ordinary --phase medium --prepared .build/ci-lane --results .build/ci-medium --runner ubuntu-latest --shadow .build/ci-shadow/selection.json
-      - if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: ci-rust-medium-ubuntu-latest
-          path: .build/ci-medium/medium.json
-          retention-days: 7
-          overwrite: true
-          if-no-files-found: warn
-
-  build-rust-receipt:
-    name: Build Rust receipt (${{ matrix.runner }})
-    needs: [classify-changes]
-    if: ${{ needs.classify-changes.outputs.rust_required == 'true' && github.event_name != 'pull_request' }}
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.profile == 'large' && 180 || 60 }}
-    # Windows advisory до устранения известных отказов large (#1523).
-    continue-on-error: ${{ matrix.runner == 'windows-latest' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.classify-changes.outputs.receipt_build_matrix) }}
-    defaults:
-      run:
-        shell: bash
-    env:
-      CARGO_PROFILE_DEV_DEBUG: line-tables-only
-      MATRIX_RUNNER: ${{ matrix.runner }}
-      PYTHONUTF8: "1"
-      RUN_LINE: ${{ needs.classify-changes.outputs.line }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
-        with:
-          toolchain: stable
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
-        with:
-          tool: cargo-nextest@0.9.148
-      - name: Кэш зависимостей Rust receipt # zizmor: ignore[cache-poisoning] только зависимости; пишут push в ветку и ручной запуск, PR, очередь и тег читают область main; архивы тестовые, поставку собирает build-tools
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          shared-key: ci-rust-receipt
-          save-if: ${{ github.ref_type == 'branch' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
-          cache-on-failure: true
-      - run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --rust-lane receipt --phase build --prepared .build/ci-lane --runner "$MATRIX_RUNNER" --line "$RUN_LINE"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: ci-rust-archive-${{ matrix.runner }}-receipt
-          path: |
-            .build/ci-lane/tests.tar.zst
-            .build/ci-lane/lane.json
-          retention-days: 1
-          overwrite: true
-          if-no-files-found: error
-      - if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: plan-rust-${{ matrix.runner }}-receipt
-          path: .build/ci-lane/*.json
-          retention-days: 7
-          overwrite: true
-          if-no-files-found: warn
-
-  run-rust-receipt:
-    name: Rust receipt (${{ matrix.runner }}, ${{ matrix.shard }}/${{ matrix.shards }})
-    needs: [classify-changes, build-rust-receipt, shadow-component-selection]
-    if: ${{ needs.classify-changes.outputs.rust_required == 'true' && github.event_name != 'pull_request' }}
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.profile == 'large' && 180 || 60 }}
-    # Windows advisory до устранения известных отказов large (#1523).
-    continue-on-error: ${{ matrix.runner == 'windows-latest' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.classify-changes.outputs.receipt_run_matrix) }}
-    defaults:
-      run:
-        shell: bash
-    env:
-      CARGO_PROFILE_DEV_DEBUG: line-tables-only
-      MATRIX_RUNNER: ${{ matrix.runner }}
-      PYTHONUTF8: "1"
-      SHARD: ${{ matrix.shard }}
-      RUN_LINE: ${{ needs.classify-changes.outputs.line }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
-        with:
-          toolchain: stable
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
-        with:
-          tool: cargo-nextest@0.9.148
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: ci-rust-archive-${{ matrix.runner }}-receipt
-          path: .build/ci-lane
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: ci-shadow-selection
-          path: .build/ci-shadow
-      - run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --rust-lane receipt --phase run --prepared .build/ci-lane --shard "$SHARD" --results .build/results --runner "$MATRIX_RUNNER" --line "$RUN_LINE" --shadow .build/ci-shadow/selection.json
-      - if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: results-rust-${{ matrix.runner }}-receipt-${{ matrix.shard }}
-          path: .build/results
-          retention-days: 7
-          overwrite: true
-          if-no-files-found: warn
-
-  build-rust-vendor:
-    name: Build Rust vendor (${{ matrix.runner }})
-    needs: [classify-changes]
-    if: ${{ needs.classify-changes.outputs.rust_required == 'true' && github.event_name != 'pull_request' }}
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.profile == 'large' && 180 || 60 }}
-    # Windows advisory до устранения известных отказов large (#1523).
-    continue-on-error: ${{ matrix.runner == 'windows-latest' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.classify-changes.outputs.vendor_build_matrix) }}
-    defaults:
-      run:
-        shell: bash
-    env:
-      CARGO_PROFILE_DEV_DEBUG: line-tables-only
-      MATRIX_RUNNER: ${{ matrix.runner }}
-      PYTHONUTF8: "1"
-      RUN_LINE: ${{ needs.classify-changes.outputs.line }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
-        with:
-          toolchain: stable
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
-        with:
-          tool: cargo-nextest@0.9.148
-      - name: Кэш зависимостей Rust vendor # zizmor: ignore[cache-poisoning] только зависимости; пишут push в ветку и ручной запуск, PR, очередь и тег читают область main; архивы тестовые, поставку собирает build-tools
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          shared-key: ci-rust-vendor
-          save-if: ${{ github.ref_type == 'branch' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
-          cache-on-failure: true
-      - run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --rust-lane vendor --phase build --prepared .build/ci-lane --runner "$MATRIX_RUNNER" --line "$RUN_LINE"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: ci-rust-archive-${{ matrix.runner }}-vendor
-          path: |
-            .build/ci-lane/tests.tar.zst
-            .build/ci-lane/lane.json
-          retention-days: 1
-          overwrite: true
-          if-no-files-found: error
-      - if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: plan-rust-${{ matrix.runner }}-vendor
-          path: .build/ci-lane/*.json
-          retention-days: 7
-          overwrite: true
-          if-no-files-found: warn
-
-  run-rust-vendor:
-    name: Rust vendor (${{ matrix.runner }}, ${{ matrix.shard }}/${{ matrix.shards }})
-    needs: [classify-changes, build-rust-vendor, shadow-component-selection]
-    if: ${{ needs.classify-changes.outputs.rust_required == 'true' && github.event_name != 'pull_request' }}
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.profile == 'large' && 180 || 60 }}
-    # Windows advisory до устранения известных отказов large (#1523).
-    continue-on-error: ${{ matrix.runner == 'windows-latest' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.classify-changes.outputs.vendor_run_matrix) }}
-    defaults:
-      run:
-        shell: bash
-    env:
-      CARGO_PROFILE_DEV_DEBUG: line-tables-only
-      MATRIX_RUNNER: ${{ matrix.runner }}
-      PYTHONUTF8: "1"
-      SHARD: ${{ matrix.shard }}
-      RUN_LINE: ${{ needs.classify-changes.outputs.line }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
-        with:
-          toolchain: stable
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
-        with:
-          tool: cargo-nextest@0.9.148
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: ci-rust-archive-${{ matrix.runner }}-vendor
-          path: .build/ci-lane
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: ci-shadow-selection
-          path: .build/ci-shadow
-      - run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --rust-lane vendor --phase run --prepared .build/ci-lane --shard "$SHARD" --results .build/results --runner "$MATRIX_RUNNER" --line "$RUN_LINE" --shadow .build/ci-shadow/selection.json
-      - if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: results-rust-${{ matrix.runner }}-vendor-${{ matrix.shard }}
-          path: .build/results
-          retention-days: 7
-          overwrite: true
-          if-no-files-found: warn
-
-  test-rust-platforms:
-    name: Rust tests (complete inventory)
-    needs: [classify-changes, build-rust-ordinary, build-rust-receipt, build-rust-vendor, run-rust-ordinary, run-rust-receipt, run-rust-vendor, run-rust-ordinary-medium, shadow-component-selection]
-    if: ${{ always() && needs.classify-changes.outputs.rust_required == 'true' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    # Прежний инвентарь — артефакт прогона ближайшего first-parent предка:
-    # читать артефакты чужого прогона можно только с `actions: read`.
-    # Объяснения пропаж берутся из описаний pull request (`pull-requests: read`).
-    permissions:
-      contents: read
-      actions: read
-      pull-requests: read
-    env:
-      RUNNERS: ${{ needs.classify-changes.outputs.runners }}
-      CI_LANE_JOB_RESULTS: ${{ toJSON(needs) }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          # История коммитов без содержимого: предки и объяснения пропаж.
-          fetch-depth: 0
-          filter: blob:none
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          pattern: plan-rust-*
-          path: .build/ci-proof/plans
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          pattern: results-rust-*
-          path: .build/ci-proof/results
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          pattern: ci-rust-medium-*
-          path: .build/ci-proof/medium
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          pattern: ci-shadow-selection
-          path: .build/ci-proof/shadow
+          pattern: "{plan,results}-{macos-14,windows-latest}"
+          path: .build/ci-report/os-runners
+      # Прежний инвентарь — артефакт прогона ближайшего first-parent предка.
+      # Сбой поиска базы не скрывает сверку полноты: verify тогда краснеет
+      # причиной «план не сравнён с прежним инвентарём».
       - name: Find the previous Rust inventory
+        if: ${{ !cancelled() && steps.classify.outputs.rust_required == 'true' }}
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: python scripts/ci/rust_inventory_baseline.py --profile "$GATE_PROFILE" --out .build/ci-baseline/baseline.json
-      # Сбой поиска базы не скрывает сверку полноты: verify тогда краснеет
-      # причиной «план не сравнён с прежним инвентарём».
-      - if: ${{ !cancelled() }}
-        run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --phase verify --runners "$RUNNERS" --sha "$GITHUB_SHA" --results .build/ci-proof --baseline .build/ci-baseline/baseline.json
-      - if: always()
+      - id: verify
+        if: ${{ !cancelled() && steps.classify.outputs.rust_required == 'true' }}
+        env:
+          RUNNERS: ${{ steps.runners.outputs.runners }}
+        run: |
+          set -euo pipefail
+          if [ -f .build/os-jobs.json ]; then CI_JOB_RESULTS="$(cat .build/os-jobs.json)"; else CI_JOB_RESULTS='{}'; fi
+          export CI_JOB_RESULTS
+          python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --phase verify --runners "$RUNNERS" --sha "$GITHUB_SHA" --results "$REPORT" --baseline .build/ci-baseline/baseline.json
+      # Pull request не сравнивает отдельные кейсы с базой очереди: отбор
+      # профилей разный. Снятый тест без строки `Removes-test` в описании
+      # ловится здесь по diff против первого родителя merge-коммита,
+      # а не падением пачки очереди.
+      - name: Removed Rust tests are declared
+        id: removed-tests
+        if: ${{ !cancelled() && github.event_name == 'pull_request' && steps.classify.outputs.rust_required == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/ci/removed_tests.py --base HEAD^1
+      - if: ${{ always() && steps.classify.outputs.rust_required == 'true' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ci-rust-inventory-verification
           path: |
-            .build/ci-proof/verification.json
-            .build/ci-proof/inventory.json
+            .build/ci-report/verification.json
+            .build/ci-report/inventory.json
+            .build/ci-report/ci-rust-medium/medium.json
           retention-days: 7
           overwrite: true
           if-no-files-found: warn
       # Базу следующих прогонов публикует только проверенный инвентарь
       # очереди, ветки, тега или ручного запуска; pull request сверяется с main.
-      - if: ${{ success() && github.event_name != 'pull_request' }}
+      - if: ${{ success() && steps.verify.outcome == 'success' && github.event_name != 'pull_request' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ci-rust-inventory-${{ env.GATE_PROFILE }}
-          path: .build/ci-proof/inventory.json
+          path: .build/ci-report/inventory.json
           retention-days: 90
           overwrite: true
           if-no-files-found: error
+      # Push в `main` тестов не гоняет: дерево проверила очередь. При смене
+      # CI или toolchain он компилирует те же варианты, что собирает очередь,
+      # и пишет ключ зависимостей. Тесты и анализатор не запускаются.
+      - id: warm
+        if: ${{ !cancelled() && steps.classify.outputs.cache_required == 'true' }}
+        run: |
+          set -euo pipefail
+          target="$(rustc -vV | sed -n 's/^host: //p')"
+          cargo test --workspace --no-run --locked --target "$target"
+          cargo test -p unica-coder --features receipt-ledger-test-support --test daemon_receipt_ledger --no-run --locked --target "$target"
+          cargo build -p unica-coder --bin unica --locked --target "$target"
+          cargo check --workspace --all-targets --all-features --locked
+      # Результаты едут и при красном прогоне: ради них он и шёл.
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: results-ubuntu-latest
+          path: .build/ci-report/results-*
+          retention-days: 7
+          overwrite: true
+          if-no-files-found: ignore
+      - id: gate
+        name: Evaluate required CI results
+        if: always()
+        env:
+          GATE_SCOPE: validation
+          STEPS_JSON: ${{ toJSON(steps) }}
+          OS_JOBS_FILE: .build/os-jobs.json
+          RUNNERS: ${{ steps.runners.outputs.runners }}
+          PYTHON_MATRIX: ${{ steps.python-matrix.outputs.python_matrix }}
+        run: python scripts/ci/evaluate-ci-gate.py
 
-
-  lint-rust-platforms:
-    name: Rust lint (${{ matrix.runner }})
-    runs-on: ${{ matrix.runner }}
+  # Clippy и Python pull request: вторая Linux-джоба рядом с `Unica CI`,
+  # которая ждёт исход её шагов по jobs API (`lint-job`, `pr-python`). Python
+  # small продукту не нужен, поэтому он идёт здесь, параллельно сборке и
+  # medium. Только pull request: очередь и ветки исполняют всё внутри
+  # `Unica CI` и держат два раннера на запись.
+  pr-checks:
+    name: Lint and Python
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 60
-    needs: [classify-changes]
-    if: ${{ needs.classify-changes.outputs.rust_required == 'true' }}
+    # SARIF Clippy пишет в Code Scanning.
     permissions:
       contents: read
       security-events: write
+    defaults:
+      run:
+        shell: bash
     env:
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
-    # Ночной Windows остаётся advisory, как у тестов на той же платформе (#1523).
+      PYTHONUTF8: "1"
+      REPORT: .build/ci-report
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - id: line
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: echo "line=$(python scripts/ci/resolve-line.py --ref-type "$REF_TYPE" --ref-name "$REF_NAME" --sha "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
+      # Маршрут — тот же классификатор: без Rust линтовать нечего, документация
+      # сужает Python до small.
+      - id: classify
+        env:
+          RUN_LINE: ${{ steps.line.outputs.line }}
+        run: |
+          set -euo pipefail
+          mkdir -p .build
+          python scripts/ci/classify-workflow-changes.py --github-event --runner-matrix '["ubuntu-latest"]' --line "$RUN_LINE" --results .build/ci-routing-pr >> "$GITHUB_OUTPUT"
+      - id: python-matrix
+        env:
+          DOCS_ONLY: ${{ steps.classify.outputs.docs_only }}
+        run: echo "python_matrix=$(python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --python-matrix --docs-only "$DOCS_ONLY")" >> "$GITHUB_OUTPUT"
+      - run: python -m pip install -r tests/ci/requirements.txt
+      # Python small читает манифесты через `cargo metadata`; Clippy — компоненту.
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+          components: clippy
+      - if: steps.classify.outputs.rust_required == 'true'
+        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        with:
+          tool: clippy-sarif@0.8.0,sarif-fmt@0.8.0
+      # Только чтение: pull request ключ не пишет.
+      - name: Кэш зависимостей Rust # zizmor: ignore[cache-poisoning] restore-only; PR читает область main, джоба публикует только SARIF и отчёт Python
+        if: steps.classify.outputs.rust_required == 'true'
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: ci-rust-ordinary
+          save-if: false
+      # Python и Clippy делят раннер, но не по очереди: Python идёт первым,
+      # пока компиляции нет, — MCP-тесты под нагрузкой сборки падают.
+      - name: Python
+        id: python
+        env:
+          PYTHON_MATRIX: ${{ steps.python-matrix.outputs.python_matrix }}
+          RUN_LINE: ${{ steps.line.outputs.line }}
+          DOCS_ONLY: ${{ steps.classify.outputs.docs_only }}
+        run: |
+          set -uo pipefail
+          slugs=(); pids=(); failed=()
+          while read -r entry; do
+            suite="$(jq -r .suite <<<"$entry")"; lane="$(jq -r .lane <<<"$entry")"; slug="$(jq -r .slug <<<"$entry")"
+            results="$REPORT/results-python-$slug"
+            python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$suite" --only-size "$lane" --docs-only "$DOCS_ONLY" --plan-only --results "$results" --runner ubuntu-latest --line "$RUN_LINE" || failed+=("$slug-plan")
+            python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$suite" --only-size "$lane" --docs-only "$DOCS_ONLY" --results "$results" --runner ubuntu-latest --line "$RUN_LINE" > ".build/python-$slug.log" 2>&1 &
+            slugs+=("$slug"); pids+=("$!")
+          done < <(jq -c '.[]' <<<"$PYTHON_MATRIX")
+          for index in "${!pids[@]}"; do
+            wait "${pids[$index]}" || failed+=("${slugs[$index]}")
+            echo "::group::Python ${slugs[$index]}"
+            cat ".build/python-${slugs[$index]}.log"
+            echo "::endgroup::"
+          done
+          if [ "${#failed[@]}" -ne 0 ]; then
+            echo "::error::Python не проходят: ${failed[*]}"
+            exit 1
+          fi
+      - name: Clippy
+        id: clippy
+        if: ${{ !cancelled() && steps.classify.outputs.rust_required == 'true' }}
+        run: scripts/ci/clippy.sh all
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: results-pr-python
+          path: .build/ci-report/results-*
+          retention-days: 7
+          overwrite: true
+          if-no-files-found: ignore
+      # Категория сохраняет прежнее имя `clippy-ubuntu-latest`, чтобы не
+      # потерять историю оповещений.
+      - if: always() && hashFiles('.build/clippy.sarif') != '' && github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        with:
+          sarif_file: .build/clippy.sarif
+          category: clippy-ubuntu-latest
+
+  # Остальные раннеры прогона. Очередь — macOS с платформенными каталогами
+  # (`queue-platform`); push в релизную ветку, кнопка, тег и ночь — полный
+  # macOS с Clippy, ночью ещё Windows (advisory, #1523). Pull request —
+  # только с меткой `ci:full`. Push в `main` её не запускает: ключ
+  # зависимостей macOS пишет ночь, а прогоны берут ближайший по префиксу.
+  # Маршрут джоба считает тем же классификатором; расхождение с маршрутом
+  # `Unica CI` сверка видит как пропавшую конфигурацию, а `os-job.json`
+  # оставляет его в отчёте для разбора.
+  rust-os:
+    name: Rust (${{ matrix.runner }})
+    # Чтение исходников; `actions: write` — только для самоотмены снятой записи очереди.
+    permissions:
+      contents: read
+      actions: write
+    if: ${{ !(github.event_name == 'push' && github.ref == 'refs/heads/main') && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.profile == 'large' && 180 || 60 }}
+    # Windows advisory до устранения известных отказов large (#1523).
     continue-on-error: ${{ matrix.runner == 'windows-latest' }}
     strategy:
       fail-fast: false
       matrix:
-        runner: ${{ fromJSON(needs.classify-changes.outputs.runners) }}
+        runner: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.profile == 'large' && '["macos-14", "windows-latest"]' || '["macos-14"]') }}
     defaults:
       run:
         shell: bash
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      MATRIX_RUNNER: ${{ matrix.runner }}
+      PYTHONUTF8: "1"
+      REPORT: .build/ci-report
+      LANES: .build/ci-lanes
     steps:
+      # Очередь, пересобирая пачку, удаляет ref снятой записи, а её прогон
+      # остаётся ждать раннеров. Прогон, чей ref уже исчез (404), отменяет себя
+      # до занятия второго раннера: его результат никому не нужен. Любой
+      # другой ответ API — не повод отменять: лишний прогон дешевле ложной отмены.
+      - name: Queue entry still exists
+        if: github.event_name == 'merge_group'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          QUEUE_REF: ${{ github.ref }}
+        run: |
+          code="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/git/ref/${QUEUE_REF#refs/}")"
+          if [ "$code" != "404" ]; then exit 0; fi
+          echo "::warning::$QUEUE_REF больше нет: очередь сняла эту запись, прогон отменяется"
+          gh run cancel "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY"
+          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - id: line
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: echo "line=$(python scripts/ci/resolve-line.py --ref-type "$REF_TYPE" --ref-name "$REF_NAME" --sha "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
+      - id: classify
+        env:
+          RUN_LINE: ${{ steps.line.outputs.line }}
+        run: |
+          set -euo pipefail
+          mkdir -p .build
+          python scripts/ci/classify-workflow-changes.py --github-event --runner-matrix "[\"$MATRIX_RUNNER\"]" --line "$RUN_LINE" --results .build/ci-routing-os > .build/classification.txt
+          cat .build/classification.txt >> "$GITHUB_OUTPUT"
+          mkdir -p "$REPORT"
+          python - "$REPORT/os-job.json" <<'PY'
+          import json, os, sys
+          values = dict(line.split("=", 1) for line in open(".build/classification.txt", encoding="utf-8").read().splitlines() if "=" in line)
+          json.dump({"runner": os.environ["MATRIX_RUNNER"], "sha": os.environ["GITHUB_SHA"], "profile": os.environ["GATE_PROFILE"],
+                     "classification": values}, open(sys.argv[1], "w", encoding="utf-8"), indent=2)
+          PY
+      - if: steps.classify.outputs.rust_required == 'true'
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable
           components: clippy
-      # Clippy не пишет общий ключ первым: его check-артефактов недостаточно
-      # для прогрева тестов, а точный cache hit впоследствии не перезаписать.
-      - name: Кэш зависимостей для Clippy # zizmor: ignore[cache-poisoning] restore-only; область PR не читается main/tag, job публикует только SARIF, поставочные артефакты собираются отдельно
+      - if: steps.classify.outputs.rust_required == 'true'
+        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        with:
+          tool: cargo-nextest@0.9.148
+      - name: Кэш зависимостей Rust # zizmor: ignore[cache-poisoning] только зависимости; пишут push в ветку и ручной запуск, PR, очередь и тег читают область main; поставку собирает build-tools
+        if: steps.classify.outputs.rust_required == 'true'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          shared-key: test-rust-platforms
-          save-if: false
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+          shared-key: ci-rust-ordinary
+          save-if: ${{ github.ref_type == 'branch' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+          cache-on-failure: true
+      - id: rust-build
+        if: steps.classify.outputs.rust_required == 'true'
+        env:
+          RUN_LINE: ${{ steps.line.outputs.line }}
+        run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --phase build --prepared "$LANES" --results "$REPORT" --runner "$MATRIX_RUNNER" --line "$RUN_LINE"
+      - if: ${{ !cancelled() && steps.classify.outputs.rust_required == 'true' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          tool: clippy-sarif@0.8.0,sarif-fmt@0.8.0
-      # #[cfg] требует линта на каждой ОС. Pipefail сохраняет отказ Clippy
-      # при -D warnings; загрузка SARIF не управляет исполнением тестов.
-      - run: |
-          set -o pipefail
-          cargo clippy --workspace --all-targets --all-features --message-format=json -- -D warnings \
-            | clippy-sarif | tee clippy.sarif | sarif-fmt
-      # Сборка workspace объединяет признаки: dev-зависимость одного пакета
-      # включает `test-support` другого, и его код под этим признаком
-      # перестаёт быть мёртвым. Поштучный линт ловит то, что не собирается или
-      # не используется в самом пакете. Шаг идёт поверх уже собранного
-      # workspace и только на одной ОС ради времени: ветки `cfg` по ОС ловит
-      # линт workspace на каждой ОС, но не в сочетании с признаками пакета.
-      - name: Clippy каждого пакета с его признаками
-        if: matrix.runner == 'ubuntu-latest'
-        run: |
-          set -euo pipefail
-          # Подстановка в заголовке `for` скрыла бы отказ cargo metadata.
-          mapfile -t packages < <(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[].name' | sort)
-          wait "$!"
-          if [ "${#packages[@]}" -eq 0 ]; then
-            echo "::error::cargo metadata не вернул ни одного пакета"
-            exit 1
-          fi
-          failed=()
-          for package in "${packages[@]}"; do
-            echo "::group::$package"
-            cargo clippy -p "$package" --all-targets --locked -- -D warnings || failed+=("$package")
-            echo "::endgroup::"
-          done
-          if [ "${#failed[@]}" -ne 0 ]; then
-            echo "::error::Clippy отдельно не проходят: ${failed[*]}"
-            exit 1
-          fi
-      # Code Scanning получает SARIF только с Linux: на macOS отказ Clippy
-      # и так валит джобу через -D warnings. Ночной Windows advisory (#1523),
-      # его отказ остаётся только в логе джобы. Категория сохраняет прежнее
-      # имя `clippy-ubuntu-latest`, чтобы не потерять историю оповещений.
-      - if: always() && matrix.runner == 'ubuntu-latest' && hashFiles('clippy.sarif') != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+          name: plan-${{ matrix.runner }}
+          path: .build/ci-report/plan-*
+          retention-days: 7
+          overwrite: true
+          if-no-files-found: ignore
+      - id: rust-run
+        if: ${{ !cancelled() && steps.classify.outputs.rust_required == 'true' }}
+        env:
+          RUN_LINE: ${{ steps.line.outputs.line }}
+        run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --phase run --prepared "$LANES" --results "$REPORT" --runner "$MATRIX_RUNNER" --line "$RUN_LINE"
+      # Полный контур линтует и эту ОС: ветки `cfg` по ОС. Очередь с одними
+      # платформенными каталогами линтует macOS ночью и на теге.
+      - if: ${{ !cancelled() && steps.classify.outputs.rust_required == 'true' && env.GATE_PROFILE != 'queue' }}
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          sarif_file: clippy.sarif
-          category: clippy-${{ matrix.runner }}
-
-  warm-rust-cache:
-    name: Warm Rust dependencies (${{ matrix.runner }})
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
-    needs: [classify-changes]
-    if: ${{ needs.classify-changes.outputs.cache_required == 'true' }}
-    env:
-      CARGO_PROFILE_DEV_DEBUG: line-tables-only
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: ${{ fromJSON(needs.classify-changes.outputs.runners) }}
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
-        with:
-          toolchain: stable
-      # Только push main после изменения CI/toolchain. Неудачный прогрев
-      # не закрепляет неполный cache; exact hit уже нельзя дополнить.
-      - id: rust-cache # zizmor: ignore[cache-poisoning] job допускает только push main, тестовые и поставочные артефакты не публикует
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          shared-key: test-rust-platforms
-          save-if: true
-          cache-on-failure: false
-      # Компиляция двух тестовых вариантов и check-зависимостей Clippy.
-      # Ни тесты, ни анализатор не запускаются; результатов тестов здесь нет.
-      - if: steps.rust-cache.outputs.cache-hit != 'true'
-        run: cargo test --workspace --no-run --locked
-      - if: steps.rust-cache.outputs.cache-hit != 'true'
-        run: cargo test -p unica-coder --features receipt-ledger-test-support --test daemon_receipt_ledger --no-run --locked
-      - if: steps.rust-cache.outputs.cache-hit != 'true'
-        run: cargo check --workspace --all-targets --all-features --locked
+          name: results-${{ matrix.runner }}
+          path: |
+            .build/ci-report/results-*
+            .build/ci-report/os-job.json
+          retention-days: 7
+          overwrite: true
+          if-no-files-found: ignore
 
   build-tools:
     name: Build tools (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
-    needs: [classify-changes, guards, test-python, test-rust-platforms, lint-rust-platforms]
+    needs: [unica-ci, rust-os]
     if: >-
       ${{
         always() &&
-        needs.classify-changes.result == 'success' &&
-        needs.guards.result == 'success' &&
-        needs.lint-rust-platforms.result == 'success' &&
-        needs.test-python.result == 'success' &&
-        (needs.test-rust-platforms.result == 'success' || needs.test-rust-platforms.result == 'skipped') &&
+        needs.unica-ci.result == 'success' &&
+        needs.rust-os.result == 'success' &&
         (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')) &&
-        (needs.classify-changes.outputs.release_required == 'true' ||
-         needs.classify-changes.outputs.ci_changed == 'true')
+        (needs.unica-ci.outputs.release_required == 'true' ||
+         needs.unica-ci.outputs.ci_changed == 'true')
       }}
     strategy:
       fail-fast: false
@@ -1410,16 +1215,16 @@ jobs:
     name: Assess Linux runtime on BSP
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    needs: [classify-changes, build-tools]
+    needs: [unica-ci, build-tools]
     env:
       RELEASE_TAG: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
     if: >-
       ${{
         always() &&
-        needs.classify-changes.result == 'success' &&
+        needs.unica-ci.result == 'success' &&
         needs.build-tools.result == 'success' &&
         (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')) &&
-        needs.classify-changes.outputs.assessment_required == 'true'
+        needs.unica-ci.outputs.assessment_required == 'true'
       }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1618,21 +1423,16 @@ jobs:
           python scripts/ci/verify-delivery-reachable.py
           --plugin-root .build/thin/plugins/unica
 
-  unica-ci:
-    # Стабильное имя обязательной проверки ruleset. Смена метки не запускает
-    # этот workflow и потому не создаёт более новый suite без этих ворот.
-    name: Unica CI
+  # Итог хвоста поставки тега и ручного запуска: тот же оценщик и та же
+  # таблица, что у `Unica CI`, по её результатам и джобам поставки.
+  delivery-ci:
+    name: Delivery CI
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    if: always()
+    if: ${{ always() && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))) }}
     needs:
-      - classify-changes
-      - guards
-      - test-python
-      - build-python-product
-      - test-rust-platforms
-      - lint-rust-platforms
-      - warm-rust-cache
+      - unica-ci
+      - rust-os
       - build-tools
       - package-thin
       - probe-thin-bootstrap
@@ -1647,6 +1447,8 @@ jobs:
           persist-credentials: false
       - name: Evaluate required CI results
         env:
+          GATE_SCOPE: delivery
           NEEDS_JSON: ${{ toJSON(needs) }}
-          PYTHON_MATRIX: ${{ needs.classify-changes.outputs.python_matrix }}
+          PYTHON_MATRIX: ${{ needs.unica-ci.outputs.python_matrix }}
+          RUNNERS: ${{ needs.unica-ci.outputs.runners }}
         run: python scripts/ci/evaluate-ci-gate.py

@@ -4,7 +4,7 @@ use unica_bsl::projection::{
     CommonModuleProperties, EventProjection, MethodProjection, ModuleProjectionSet,
     RegionProjection,
 };
-use unica_metadata::{MetaDiagnosticSeverity, MetadataKind};
+use unica_metadata::{MetaDiagnosticCode, MetaDiagnosticSeverity, MetadataKind};
 use {
     crate::application::v13::view::ViewReadAuthority,
     crate::application::v13::view::ViewSourceSnapshot,
@@ -1076,13 +1076,27 @@ impl<'a> LogicalViewReadAuthority<'a> {
         // часть вида — узел называет в `limits`, а ветвь без данных отказывает,
         // а не отвечает пустым списком: иначе `view` выдал бы непрочитанное за
         // отсутствующее. Сведения, не зависящие от поля, остаются.
+        // Предупреждение о немоделируемом типе объекта тоже ограничивает
+        // ответ: без него узел молчал бы о том, что `check` того же объекта
+        // называет (#1933). Код в сообщении отличает его от повреждённой
+        // записи.
         let mut unreadable = local
             .diagnostics
             .iter()
-            .filter(|diagnostic| diagnostic.severity == MetaDiagnosticSeverity::Error)
             .filter_map(|diagnostic| {
                 let field = diagnostic.field.as_deref()?;
-                (field.starts_with("details.")
+                if diagnostic.severity == MetaDiagnosticSeverity::Warning {
+                    return (diagnostic.code == MetaDiagnosticCode::ValidationWarning
+                        && field.starts_with("details."))
+                    .then(|| {
+                        json!({
+                            "field": field,
+                            "message": format!("validation_warning: {}", diagnostic.message),
+                        })
+                    });
+                }
+                ((field.starts_with("collections.") && field.ends_with(".type"))
+                    || field.starts_with("details.")
                     || field.starts_with("properties.")
                     || field.starts_with("relations.")
                     || [

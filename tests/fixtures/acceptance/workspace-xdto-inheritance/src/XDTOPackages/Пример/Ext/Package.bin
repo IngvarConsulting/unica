@@ -1,0 +1,8 @@
+﻿<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:tns="urn:unica:example" targetNamespace="urn:unica:example">
+	<objectType name="Основа">
+		<property name="Код" type="xs:string"/>
+	</objectType>
+	<objectType name="ПримерА"/>
+	<!-- Существующие объявления сохраняют порядок -->
+	<objectType name="ПримерВ"/>
+</package>

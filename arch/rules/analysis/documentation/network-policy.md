@@ -12,7 +12,8 @@ check:
   - crates/unica-documentation-sources/src/documentation_policy.rs::machine_policy_applies_to_multiple_workspaces_and_project_overlays_win_per_key
   - crates/unica-documentation-sources/src/documentation_policy.rs::explicit_machine_policy_failure_cannot_be_masked_by_project_allow
   - crates/unica-documentation-sources/src/documentation_policy.rs::machine_policy_requires_an_absolute_nonempty_path
-  - crates/unica-documentation-sources/src/documentation_policy.rs::kb_endpoint_is_rejected_in_every_policy_layer
+  - crates/unica-documentation-sources/src/documentation_policy.rs::a_retired_provider_is_accepted_with_a_warning_and_ignored_in_every_layer
+  - crates/unica-coder/src/infrastructure/application_ports.rs::a_retired_provider_in_the_policy_reaches_the_docs_answer_as_a_warning
   - crates/unica-documentation-sources/src/standards_documentation.rs::resolve_standards_endpoint_prefers_config_then_env_then_builtin
 ---
 
@@ -24,13 +25,16 @@ check:
 который проект не может перекрыть. Без файлов сеть разрешена.
 Явно заданный отсутствующий общий файл вызывает отказ. Присутствующий нечитаемый или неверный файл,
 неизвестный ключ, поставщик или значение политики вызывают отказ.
+Исключение — удалённый поставщик `kb-1ci`: его секция в любом слое
+принимается с предупреждением «поставщик kb-1ci удалён, ключ можно убрать»,
+которое доходит до ответа `unica.docs`, и целиком игнорируется. Иначе строка,
+оставшаяся у пользователя от прежней версии, отключила бы всю документацию.
 
 Собственное `network` поставщика сильнее `network.default`: например,
 при общем `deny` его явное `allow` разрешает сеть.
 
 Адрес сервера стандартов выбирается из локального файла, затем основного,
 затем общего файла политики, затем `UNICA_STANDARDS_MCP_URL`, затем встроенного значения.
-`endpoint` у `kb-1ci` отвергается при разборе, а не игнорируется.
 Это правило проверяет настройку; её исполнение описано отдельно.
 
 Доверие сертификатам и прокси для разрешённых поставщиков описаны

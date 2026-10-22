@@ -30626,10 +30626,10 @@
   },
   {
    "id": "S382",
-   "name": "kb-developer-guide-pinned-older-family",
-   "issue": 1329,
+   "name": "kb-guide-key-left-from-an-older-version",
+   "issue": 1892,
    "area": "Документация и стандарты",
-   "task": "Найти Developer Guide закреплённой 8.3.26 и прочитать обзор и вложенный раздел",
+   "task": "Строка [providers.kb-1ci] прежней версии не ломает справку: поиск отвечает, локаторы Developer Guide 8.3.26 больше не открываются, ответ предупреждает об удалённом поставщике",
    "workspace": "tests/fixtures/acceptance/workspace-docs-8.3.26",
    "wire": [
     {
@@ -30651,9 +30651,22 @@
       "source": "platform-help"
      },
      "expect": [
-      "ok",
-      "provider",
-      "task"
+      "refused"
+     ],
+     "refusal": "not_found: documentation page `https://kb.1ci.com/1C_Enterprise_Platform/Guides/Developer_Guides/1C_Enterprise_Developer_Guide/8.3.26/Introduction/Overview/` was not found",
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/warnings/0/code",
+       "eq": "retired_provider"
+      }
      ]
     },
     {
@@ -30663,19 +30676,32 @@
       "source": "platform-help"
      },
      "expect": [
-      "ok",
-      "provider",
-      "task"
+      "refused"
+     ],
+     "refusal": "not_found: documentation page `https://kb.1ci.com/1C_Enterprise_Platform/Guides/Developer_Guides/1C_Enterprise_Developer_Guide/8.3.26/Chapter_11._Accounting/11.1._Overview",
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/warnings/0/code",
+       "eq": "retired_provider"
+      }
      ]
     }
    ]
   },
   {
    "id": "S383",
-   "name": "kb-administrator-guide-pinned-family",
-   "issue": 1329,
+   "name": "kb-administrator-guide-locators-retired",
+   "issue": 1892,
    "area": "Документация и стандарты",
-   "task": "Найти Administrator Guide закреплённой 8.3.27 и прочитать обзор обоих режимов",
+   "task": "Секция [providers.kb-1ci] с прежними настройками (network, endpoint) игнорируется целиком: локаторы Administrator Guide 8.3.27 обоих режимов больше не открываются, ответ называет строку удалённого поставщика",
    "workspace": "tests/fixtures/acceptance/workspace-docs-8.3.27",
    "wire": [
     {
@@ -30697,9 +30723,22 @@
       "source": "platform-help"
      },
      "expect": [
-      "ok",
-      "provider",
-      "task"
+      "refused"
+     ],
+     "refusal": "not_found: documentation page `https://kb.1ci.com/1C_Enterprise_Platform/Guides/Administrator_Guides/Administrator_Guide_File_Mode/8.3.27/Introduction/Overview/` was not f",
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/warnings/0/code",
+       "eq": "retired_provider"
+      }
      ]
     },
     {
@@ -30709,9 +30748,22 @@
       "source": "platform-help"
      },
      "expect": [
-      "ok",
-      "provider",
-      "task"
+      "refused"
+     ],
+     "refusal": "not_found: documentation page `https://kb.1ci.com/1C_Enterprise_Platform/Guides/Administrator_Guides/Administrator_Guide_Client_Server_Mode/8.3.27/Introduction/Overview/` ",
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/warnings/0/code",
+       "eq": "retired_provider"
+      }
      ]
     }
    ]
@@ -34022,7 +34074,11 @@
        "contains": {
         "relation": "source",
         "at": "ext:Catalog.ПР_НастройкиВалют",
-        "kind": "Catalog"
+        "kind": "Catalog",
+        "target": {
+         "kind": "object",
+         "metadataPath": "Catalog.ПР_НастройкиВалют"
+        }
        }
       }
      ]

@@ -130,7 +130,7 @@ pub fn external_cache_parent_components_publish_without_creating_cancelled_direc
 
 pub fn external_cache_route_rejects_links_including_components_cancelled_by_parent(
     policies: crate::policies::WorkspacePolicies,
-) {
+) -> Result<(), crate::test_support::CapabilitySkip> {
     let _policy_scope = policies_scope(policies);
     for suffix in ["link", "link/cache", "link/../cache"] {
         let temp = tempfile::tempdir().unwrap();
@@ -143,7 +143,10 @@ pub fn external_cache_route_rejects_links_including_components_cancelled_by_pare
         std::fs::create_dir(&foreign).unwrap();
         std::fs::write(foreign.join("keep.bin"), b"foreign").unwrap();
         if !directory_link(&foreign, &outside.join("link")) {
-            return;
+            return Err(crate::test_support::CapabilitySkip {
+                capability: "symlink",
+                reason: "creating a directory link needs the symlink privilege",
+            });
         }
         let actor = actor(&workspace, &outside.join(suffix));
         let before = tree_snapshot(&workspace);
@@ -158,6 +161,7 @@ pub fn external_cache_route_rejects_links_including_components_cancelled_by_pare
         assert!(!outside.join("cache").exists());
         assert!(std::fs::symlink_metadata(outside.join("link")).is_ok());
     }
+    Ok(())
 }
 
 pub fn external_cache_ancestor_replacement_does_not_publish_source_or_foreign_cache(
@@ -234,7 +238,7 @@ pub fn external_cache_missing_tail_occupation_keeps_foreign_entry_and_source(
 
 pub fn shared_workspace_alias_does_not_retarget_prepared_external_or_default_cache(
     policies: crate::policies::WorkspacePolicies,
-) {
+) -> Result<(), crate::test_support::CapabilitySkip> {
     let _policy_scope = policies_scope(policies);
     for external in [false, true] {
         let temp = tempfile::tempdir().unwrap();
@@ -245,7 +249,10 @@ pub fn shared_workspace_alias_does_not_retarget_prepared_external_or_default_cac
         project(&foreign.join("workspace"));
         let alias = base.join("alias");
         if !directory_link(&original, &alias) {
-            return;
+            return Err(crate::test_support::CapabilitySkip {
+                capability: "symlink",
+                reason: "creating a directory link needs the symlink privilege",
+            });
         }
         let cache_suffix = if external {
             "cache"
@@ -273,11 +280,12 @@ pub fn shared_workspace_alias_does_not_retarget_prepared_external_or_default_cac
         assert!(original.join(cache_suffix).join("state.json").is_file());
         assert!(!foreign.join(cache_suffix).exists());
     }
+    Ok(())
 }
 
 pub fn workspace_suffix_alias_cannot_disguise_a_different_shared_cache_ancestor(
     policies: crate::policies::WorkspacePolicies,
-) {
+) -> Result<(), crate::test_support::CapabilitySkip> {
     let _policy_scope = policies_scope(policies);
     let temp = tempfile::tempdir().unwrap();
     let base = canonical_path(temp.path());
@@ -289,7 +297,10 @@ pub fn workspace_suffix_alias_cannot_disguise_a_different_shared_cache_ancestor(
     if !directory_link(&foreign, &alias)
         || !directory_link(&original.join("workspace"), &foreign.join("workspace"))
     {
-        return;
+        return Err(crate::test_support::CapabilitySkip {
+            capability: "symlink",
+            reason: "creating a directory link needs the symlink privilege",
+        });
     }
     // The workspace still resolves to the original identity, but only through
     // another link beneath the common prefix. It cannot authorize foreign/cache.
@@ -304,11 +315,12 @@ pub fn workspace_suffix_alias_cannot_disguise_a_different_shared_cache_ancestor(
     );
     assert_eq!(tree_snapshot(&original), before);
     assert!(!foreign.join("cache").exists());
+    Ok(())
 }
 
 pub fn relative_cache_uses_process_cwd_when_workspace_has_an_alias(
     policies: crate::policies::WorkspacePolicies,
-) {
+) -> Result<(), crate::test_support::CapabilitySkip> {
     let _policy_scope = policies_scope(policies);
     let temp = tempfile::tempdir().unwrap();
     let base = canonical_path(temp.path());
@@ -316,7 +328,10 @@ pub fn relative_cache_uses_process_cwd_when_workspace_has_an_alias(
     project(&workspace);
     let alias = base.join("alias");
     if !directory_link(&workspace, &alias) {
-        return;
+        return Err(crate::test_support::CapabilitySkip {
+            capability: "symlink",
+            reason: "creating a directory link needs the symlink privilege",
+        });
     }
     let _cwd = crate::test_support::ProcessCwdGuard::enter(&base).unwrap();
     let actor = actor(&alias, Path::new("alias/cache"));
@@ -335,11 +350,12 @@ pub fn relative_cache_uses_process_cwd_when_workspace_has_an_alias(
     );
     assert!(workspace.join("cache/state.json").is_file());
     assert!(!base.join("cache").exists());
+    Ok(())
 }
 
 pub fn cache_override_drive_prefix_follows_host_path_semantics_without_erasing_links(
     policies: crate::policies::WorkspacePolicies,
-) {
+) -> Result<(), crate::test_support::CapabilitySkip> {
     let _policy_scope = policies_scope(policies);
     use std::path::{Component, Prefix};
 
@@ -393,10 +409,14 @@ pub fn cache_override_drive_prefix_follows_host_path_semantics_without_erasing_l
     std::fs::create_dir(&foreign).unwrap();
     std::fs::write(foreign.join("keep.bin"), b"foreign").unwrap();
     if !directory_link(&foreign, &workspace.join(link_name)) {
-        return;
+        return Err(crate::test_support::CapabilitySkip {
+            capability: "symlink",
+            reason: "creating a directory link needs the symlink privilege",
+        });
     }
     let owner = actor(&workspace, &linked_cache);
     admit(&owner).expect_err("cache route resolution erased link/.. before no-follow");
     assert!(!workspace.join("other-cache").exists());
     assert_eq!(std::fs::read(foreign.join("keep.bin")).unwrap(), b"foreign");
+    Ok(())
 }

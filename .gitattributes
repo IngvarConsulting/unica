@@ -45,6 +45,7 @@ tests/fixtures/acceptance/workspace-metadata-values/** -text whitespace=cr-at-eo
 tests/fixtures/acceptance/workspace-metadata-commands/** -text whitespace=cr-at-eol
 tests/fixtures/acceptance/workspace-borrowed/** -text whitespace=cr-at-eol
 tests/fixtures/acceptance/metadata-declaration-diagnostics/** -text whitespace=cr-at-eol
+tests/fixtures/acceptance/workspace-event-defined-type/** -text whitespace=cr-at-eol
 tests/fixtures/acceptance/workspace-command-interface/** -text whitespace=cr-at-eol
 
 tests/fixtures/acceptance/workspace/** -text whitespace=cr-at-eol
@@ -80,3 +81,6 @@ tests/fixtures/platform_8_3_27/new-xml/native-chart-of-accounts-descriptor.xml -
 
 # DCS codec fixtures: tests splice them by exact text.
 crates/unica-dcs-designer/tests/fixtures/** text eol=lf
+
+# The ExchangePlan composition fixture keeps the platform's BOM and CRLF layout.
+tests/fixtures/acceptance/workspace-exchange-content/src/ExchangePlans/*/Ext/Content.xml -text -whitespace

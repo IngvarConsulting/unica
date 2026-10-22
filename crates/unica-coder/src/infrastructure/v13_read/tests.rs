@@ -2385,6 +2385,149 @@ fn role_right_projection_never_serializes_an_unbounded_rights_array_into_props()
 }
 
 #[test]
+fn xdto_anonymous_property_view_returns_recursive_addresses_and_bounds() {
+    use serde_json::Value;
+    let fixture = RealReaderFixture::new();
+    let package = fixture
+        .source
+        .join("XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin");
+    let original = fs::read_to_string(&package).unwrap();
+    let xml = original.replace(
+        "</package>",
+        r#"<objectType name="NestedExample">
+        <property name="Rows" lowerBound="0" upperBound="-1">
+            <typeDef xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="ObjectType">
+                <property name="Basis" type="xs:string" lowerBound="0" upperBound="1"/>
+                <property name="Nested"><typeDef xsi:type="ObjectType">
+                    <property name="Recipient" type="xs:decimal" lowerBound="0"/>
+                    <property name="Dotted.Name" type="xs:string"/>
+                </typeDef></property>
+            </typeDef>
+        </property>
+    </objectType></package>"#,
+    );
+    fs::write(&package, &xml).unwrap();
+    let service = fixture.view_service();
+    let root = "main:XDTOPackage.EnterpriseData_1_17_3.Type.NestedExample.Property.Rows";
+    let read = |at: &str| {
+        let result = service.view(ViewRequest::new(at).unwrap());
+        assert!(
+            result.ok,
+            "{at}: {} {:?}",
+            result.summary, result.diagnostics
+        );
+        result.data.unwrap()
+    };
+    let rows = read(root);
+    assert_eq!(rows["props"]["anonymousType"], "ObjectType");
+    let bounds: Value = serde_json::from_str(rows["props"]["bounds"].as_str().unwrap()).unwrap();
+    assert_eq!(bounds["lower"], "0");
+    assert_eq!(bounds["upper"], "-1");
+    let children = read(rows["branches"][0]["at"].as_str().unwrap());
+    assert_eq!(children["items"].as_array().unwrap().len(), 2);
+    let nested = read(children["items"][1]["at"].as_str().unwrap());
+    assert_eq!(nested["props"]["anonymousType"], "ObjectType");
+    let grandchildren = read(nested["branches"][0]["at"].as_str().unwrap());
+    let recipient = read(grandchildren["items"][0]["at"].as_str().unwrap());
+    let type_info: Value =
+        serde_json::from_str(recipient["props"]["type"].as_str().unwrap()).unwrap();
+    assert_eq!(type_info["local"], "decimal");
+    let dotted_at = format!("{root}.Property.Nested.Property.Dotted\\.Name");
+    assert_eq!(grandchildren["items"][1]["at"], dotted_at);
+    let dotted = read(&dotted_at);
+    assert_eq!(dotted["props"], grandchildren["items"][1]["props"]);
+    let type_info: Value = serde_json::from_str(dotted["props"]["type"].as_str().unwrap()).unwrap();
+    assert_eq!(type_info["local"], "string");
+    assert!(dotted
+        .get("limits")
+        .is_none_or(|limits| limits.as_array().unwrap().is_empty()));
+    assert_eq!(fs::read_to_string(&package).unwrap(), xml);
+}
+
+#[test]
+fn xdto_object_view_follows_local_base_to_inherited_property_without_flattening() {
+    let fixture = RealReaderFixture::new();
+    let package = fixture
+        .source
+        .join("XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin");
+    let original = fs::read_to_string(&package).unwrap();
+    let xml = original.replace(
+        "</package>",
+        r#"<objectType name="Основа"><property name="Код" type="xs:string"/></objectType>
+<objectType xmlns:tns="http://v8.1c.ru/edi/edi_stnd/EnterpriseData/1.17.3" name="Наследник" base="tns:Основа"/>
+<objectType xmlns:tns="http://v8.1c.ru/edi/edi_stnd/EnterpriseData/1.17.3" name="НетОсновы" base="tns:НеСуществует"/>
+</package>"#,
+    );
+    fs::write(&package, &xml).unwrap();
+    let service = fixture.view_service();
+    let result = service
+        .view(ViewRequest::new("main:XDTOPackage.EnterpriseData_1_17_3.Type.Наследник").unwrap());
+    assert!(result.ok, "{result:?}");
+    let data = result.data.unwrap();
+    let base = data["props"]["baseAt"]
+        .as_str()
+        .expect("local base must be navigable");
+    assert_eq!(base, "main:XDTOPackage.EnterpriseData_1_17_3.Type.Основа");
+    let qname: serde_json::Value =
+        serde_json::from_str(data["props"]["base"].as_str().unwrap()).unwrap();
+    assert_eq!(qname["local"], "Основа");
+    let inherited = service.view(ViewRequest::new(&format!("{base}.Property.Код")).unwrap());
+    assert!(inherited.ok, "{inherited:?}");
+    let props = inherited.data.unwrap();
+    let type_info: serde_json::Value =
+        serde_json::from_str(props["props"]["type"].as_str().unwrap()).unwrap();
+    assert_eq!(type_info["local"], "string");
+    let missing = service
+        .view(ViewRequest::new("main:XDTOPackage.EnterpriseData_1_17_3.Type.НетОсновы").unwrap());
+    assert!(missing.ok, "{missing:?}");
+    assert!(missing.data.unwrap()["props"].get("baseAt").is_none());
+    assert_eq!(fs::read_to_string(package).unwrap(), xml);
+}
+
+#[test]
+fn xdto_object_view_follows_dotted_local_base_address() {
+    let fixture = RealReaderFixture::new();
+    let package = fixture
+        .source
+        .join("XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin");
+    let original = fs::read_to_string(&package).unwrap();
+    let xml = original.replace(
+        "</package>",
+        r#"<objectType name="Base.WithDot"><property name="Код" type="xs:string"/></objectType>
+<objectType xmlns:tns="http://v8.1c.ru/edi/edi_stnd/EnterpriseData/1.17.3" name="Наследник" base="tns:Base.WithDot"/>
+<objectType xmlns:tns="http://v8.1c.ru/edi/edi_stnd/EnterpriseData/1.17.3" name="НетОсновы" base="tns:НеСуществует"/>
+</package>"#,
+    );
+    fs::write(&package, &xml).unwrap();
+    let service = fixture.view_service();
+    let result = service
+        .view(ViewRequest::new("main:XDTOPackage.EnterpriseData_1_17_3.Type.Наследник").unwrap());
+    assert!(result.ok, "{result:?}");
+    let data = result.data.unwrap();
+    let base = data["props"]["baseAt"]
+        .as_str()
+        .expect("local base must be navigable");
+    assert_eq!(
+        base,
+        "main:XDTOPackage.EnterpriseData_1_17_3.Type.Base\\.WithDot"
+    );
+    let qname: serde_json::Value =
+        serde_json::from_str(data["props"]["base"].as_str().unwrap()).unwrap();
+    assert_eq!(qname["local"], "Base.WithDot");
+    let inherited = service.view(ViewRequest::new(&format!("{base}.Property.Код")).unwrap());
+    assert!(inherited.ok, "{inherited:?}");
+    let props = inherited.data.unwrap();
+    let type_info: serde_json::Value =
+        serde_json::from_str(props["props"]["type"].as_str().unwrap()).unwrap();
+    assert_eq!(type_info["local"], "string");
+    let missing = service
+        .view(ViewRequest::new("main:XDTOPackage.EnterpriseData_1_17_3.Type.НетОсновы").unwrap());
+    assert!(missing.ok, "{missing:?}");
+    assert!(missing.data.unwrap()["props"].get("baseAt").is_none());
+    assert_eq!(fs::read_to_string(package).unwrap(), xml);
+}
+
+#[test]
 fn xdto_property_view_preserves_type_identity_and_explicit_and_effective_bounds() {
     let fixture = RealReaderFixture::new();
     let package = fixture
@@ -2708,6 +2851,10 @@ fn find_walks_every_real_addressable_reader_family_without_parallel_xml_semantic
 #[test]
 fn read_authority_rejects_named_root_replacement_before_node_read() {
     if !supports_retained_root_replacement_test() {
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+            "the platform keeps an open handle from being renamed or replaced",
+        );
         return;
     }
     let fixture = RealReaderFixture::new();
@@ -4066,6 +4213,10 @@ fn diagnostic_module_scope_keeps_admitted_source_after_project_remap() {
 #[test]
 fn diagnostic_module_scope_refuses_replaced_retained_root() {
     if !supports_retained_root_replacement_test() {
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+            "the platform keeps an open handle from being renamed or replaced",
+        );
         return;
     }
     let fixture = RealReaderFixture::new();
@@ -4102,7 +4253,10 @@ fn diagnostic_module_scope_refuses_module_replaced_by_foreign_symlink() {
     let outcome = create_file_link_fixture_for_test(&foreign, &module)
         .expect("unexpected file-link creation error must fail the fixture test");
     if outcome != FileLinkFixtureOutcome::Created {
-        eprintln!("[SKIPPED FIXTURE] file-link fixture unavailable: {outcome:?}");
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::Symlink,
+            "creating a link fixture needs the symlink privilege",
+        );
         return;
     }
     assert!(authority
@@ -4409,6 +4563,10 @@ mod canonical_module_diagnostics {
     #[test]
     fn diagnostic_mapping_refuses_replacement_of_its_retained_source_root() {
         if !supports_retained_root_replacement_test() {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+                "the platform keeps an open handle from being renamed or replaced",
+            );
             return;
         }
         let fixture = RealReaderFixture::new();
@@ -4612,7 +4770,10 @@ fn canonical_dcs_validation_does_not_follow_links_after_input_capture() {
         let outcome = create_file_link_fixture_for_test(&outside, &path)
             .expect("unexpected file-link creation error must fail the fixture test");
         if outcome != FileLinkFixtureOutcome::Created {
-            eprintln!("[SKIPPED FIXTURE] file-link fixture unavailable: {outcome:?}");
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
             return;
         }
     }
@@ -4650,7 +4811,10 @@ fn canonical_dcs_validation_refuses_linked_format_owners_before_capture() {
         let outcome = create_file_link_fixture_for_test(&outside, &owner)
             .expect("unexpected file-link creation error must fail the fixture test");
         if outcome != FileLinkFixtureOutcome::Created {
-            eprintln!("[SKIPPED FIXTURE] file-link fixture unavailable: {outcome:?}");
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
             return;
         }
         let address =
@@ -5037,6 +5201,10 @@ fn external_inventory_preserves_explicit_cancellation_during_a_large_owner_read(
 #[test]
 fn named_external_view_rejects_replaced_retained_root_without_reading_ambient_owner() {
     if !supports_retained_root_replacement_test() {
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+            "the platform keeps an open handle from being renamed or replaced",
+        );
         return;
     }
     let (_workspace, source) = external_leaf_fixture(SourceSetKind::ExternalProcessor);
@@ -6201,7 +6369,10 @@ fn canonical_subsystem_check_refuses_linked_dependencies() {
         fs::write(&foreign, "<CommandInterface version=\"2.20\"/>").unwrap();
         let outcome = create_file_link_fixture_for_test(&foreign, &path).unwrap();
         if outcome != FileLinkFixtureOutcome::Created {
-            eprintln!("[SKIPPED FIXTURE] file-link fixture unavailable: {outcome:?}");
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a link fixture needs the symlink privilege",
+            );
             return;
         }
         let address = QualifiedAddress::parse("main:Subsystem.Sales.Subsystem.Orders").unwrap();
@@ -6220,6 +6391,10 @@ fn canonical_subsystem_check_refuses_linked_dependencies() {
 #[test]
 fn canonical_subsystem_check_refuses_replaced_root() {
     if !supports_retained_root_replacement_test() {
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+            "the platform keeps an open handle from being renamed or replaced",
+        );
         return;
     }
     let fixture = nested_check_fixture();
@@ -6731,7 +6906,10 @@ fn xdto_check_refuses_linked_descriptor_and_package_resources() {
         fs::remove_file(&path).unwrap();
         let outcome = create_file_link_fixture_for_test(&foreign, &path).unwrap();
         if outcome != FileLinkFixtureOutcome::Created {
-            eprintln!("[SKIPPED FIXTURE] file-link fixture unavailable: {outcome:?}");
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating a file link needs the symlink privilege",
+            );
             return;
         }
         let at = QualifiedAddress::parse("main:XDTOPackage.Control").unwrap();

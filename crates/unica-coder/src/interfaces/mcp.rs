@@ -304,6 +304,10 @@ pub struct UnicaServer {
     /// О чём рассказать вызывающему при рукопожатии. Обычная сессия платит за
     /// это ноль байтов поверхности: рассказывать нечего.
     startup_notice: Option<String>,
+    /// Тестовый каталог вместо канонического: постраничный обход `tools/list`
+    /// проверяется на каталоге больше одной страницы.
+    #[cfg(test)]
+    listed_tools_for_test: Option<Arc<Vec<Tool>>>,
 }
 
 #[allow(dead_code)]
@@ -340,6 +344,7 @@ impl UnicaServer {
                 .filter_map(|spec| has_structured_output(&spec).then_some(spec.name))
                 .collect(),
             startup_notice,
+            listed_tools_for_test: None,
         }
     }
 
@@ -348,6 +353,29 @@ impl UnicaServer {
         let unavailable: Arc<CanonicalTaskHandler> =
             Arc::new(|_, _| Err(V5TaskExchangeError::Transport));
         Self::with_canonical_v13_tasks(handler, Arc::clone(&unavailable), unavailable)
+    }
+
+    #[cfg(test)]
+    fn with_canonical_v13_and_startup_notice_for_test(
+        handler: Arc<CanonicalCallHandler>,
+        startup_notice: Option<String>,
+    ) -> Self {
+        Self {
+            startup_notice,
+            ..Self::with_canonical_v13(handler)
+        }
+    }
+
+    /// Канонический маршрут с произвольным каталогом `tools/list`.
+    #[cfg(test)]
+    fn with_canonical_v13_tool_catalog_for_test(
+        handler: Arc<CanonicalCallHandler>,
+        tools: Vec<Tool>,
+    ) -> Self {
+        Self {
+            listed_tools_for_test: Some(Arc::new(tools)),
+            ..Self::with_canonical_v13(handler)
+        }
     }
 
     #[cfg(test)]
@@ -380,6 +408,7 @@ impl UnicaServer {
             manual_calls: Arc::new(ManualCalls::default()),
             structured_tools: HashSet::new(),
             startup_notice: None,
+            listed_tools_for_test: None,
         }
     }
 
@@ -395,6 +424,8 @@ impl UnicaServer {
             manual_calls: Arc::new(ManualCalls::default()),
             structured_tools: HashSet::new(),
             startup_notice,
+            #[cfg(test)]
+            listed_tools_for_test: None,
         }
     }
 
@@ -879,6 +910,11 @@ impl ServerHandler for UnicaServer {
                 )
             }
         };
+        #[cfg(test)]
+        let all: &[Tool] = self
+            .listed_tools_for_test
+            .as_deref()
+            .map_or(all, Vec::as_slice);
         let cursor = request.and_then(|request| request.cursor);
         if !modern {
             // #490: the legacy surface is served whole; no cursor is ever
@@ -2210,13 +2246,46 @@ mod tests {
         })
     }
 
+    /// Канонический обработчик, который отвечает прямым результатом.
+    fn canonical_direct_handler(summary: &'static str) -> Arc<CanonicalCallHandler> {
+        Arc::new(move |_, _, _, _, _| direct_outcome(canonical_result(summary)))
+    }
+
+    /// Канонический сервер с прямым ответом на каждый вызов.
+    fn canonical_direct_server() -> UnicaServer {
+        UnicaServer::with_canonical_v13(canonical_direct_handler("direct"))
+    }
+
+    /// Синтетический каталог длиннее двух страниц `tools/list`: компактный
+    /// каталог v0.13 не доходит до второй страницы.
+    fn synthetic_tool_catalog() -> Vec<Tool> {
+        (0..2 * TOOLS_PAGE_SIZE + 3)
+            .map(|index| {
+                let mut tool = Tool::new(
+                    format!("unica.synthetic.{index}"),
+                    String::new(),
+                    Map::from_iter([("type".to_string(), json!("object"))]),
+                );
+                tool.description = None;
+                tool
+            })
+            .collect()
+    }
+
+    fn synthetic_catalog_server() -> UnicaServer {
+        UnicaServer::with_canonical_v13_tool_catalog_for_test(
+            canonical_direct_handler("direct"),
+            synthetic_tool_catalog(),
+        )
+    }
+
     #[test]
     fn initialize_carries_what_a_killed_startup_left_behind() {
         // Убитая установка своего провода не имела: её рассказ приходит сюда
         // от загрузчика и уходит вызывающему обычным ответом на `initialize`.
         let notice = "a Unica startup was killed while downloading unica 0.13.0";
-        let server = UnicaServer::legacy_with_startup_notice_for_test(
-            application_handler(),
+        let server = UnicaServer::with_canonical_v13_and_startup_notice_for_test(
+            canonical_direct_handler("direct"),
             Some(notice.to_owned()),
         );
 
@@ -2228,7 +2297,10 @@ mod tests {
 
     #[test]
     fn a_session_without_notice_still_carries_bootstrap_instructions() {
-        let server = UnicaServer::legacy_with_startup_notice_for_test(application_handler(), None);
+        let server = UnicaServer::with_canonical_v13_and_startup_notice_for_test(
+            canonical_direct_handler("direct"),
+            None,
+        );
 
         let instructions = server.get_info().instructions.expect("instructions");
         assert!(instructions.contains("unica.view"), "{instructions}");
@@ -2250,7 +2322,7 @@ mod tests {
 
     #[tokio::test]
     async fn initialize_uses_single_public_server_name_and_negotiates_version() {
-        let (mut client, _) = spawn_server(application_handler());
+        let (mut client, _) = spawn_unica_server(canonical_direct_server());
         let response = client.initialize().await;
         assert_eq!(response["result"]["serverInfo"]["name"], "unica");
         assert_eq!(
@@ -2424,7 +2496,7 @@ mod tests {
         // (prompts, resources, logging, completions, tasks, ui) re-enters the
         // declaration together with its implementation slice, so agents never
         // see an advertised-but-empty capability.
-        let (mut client, _) = spawn_server(application_handler());
+        let (mut client, _) = spawn_unica_server(canonical_direct_server());
         client
             .send(json!({
                 "jsonrpc": "2.0",
@@ -2438,9 +2510,14 @@ mod tests {
             }))
             .await;
         let response = client.receive().await;
+        // Tasks are stripped below 2026-07-28; the host workspace channels
+        // are the implemented frontend surface, not an advertised feature.
         assert_eq!(
             response["result"]["capabilities"],
-            json!({"tools": {}}),
+            json!({
+                "tools": {},
+                "experimental": unica_bootstrap::host_workspace_capabilities()
+            }),
             "capabilities must stay exactly the implemented surface"
         );
         client.shutdown().await;
@@ -2471,7 +2548,7 @@ mod tests {
     async fn modern_list_results_carry_required_cache_fields_and_legacy_stays_clean() {
         // 2026-07-28 wire schemas (SEP-2549) require ttlMs/cacheScope on list
         // results; the legacy shape must stay byte-identical to pre-2026.
-        let (mut client, _) = spawn_server(application_handler());
+        let (mut client, _) = spawn_unica_server(canonical_direct_server());
         client
             .send(json!({
                 "jsonrpc": "2.0",
@@ -2485,7 +2562,7 @@ mod tests {
         assert_eq!(modern["result"]["cacheScope"], "private");
         client.shutdown().await;
 
-        let (mut client, _) = spawn_server(application_handler());
+        let (mut client, _) = spawn_unica_server(canonical_direct_server());
         client
             .send(json!({
                 "jsonrpc": "2.0",
@@ -2516,7 +2593,7 @@ mod tests {
         // The Inspector auto-opens `subscriptions/listen` whenever listChanged
         // capabilities are advertised; the default SDK filter (None) turned
         // every attempt into -32601 and an endless client retry loop.
-        let (mut client, _) = spawn_server(application_handler());
+        let (mut client, _) = spawn_unica_server(canonical_direct_server());
         client
             .send(json!({
                 "jsonrpc": "2.0",
@@ -2561,7 +2638,7 @@ mod tests {
         // These surfaces are not advertised; a client probing them anyway
         // gets valid empty lists (SDK defaults plus our handlers), while
         // logging stays method_not_found — nothing pretends to exist.
-        let (mut client, _) = spawn_server(application_handler());
+        let (mut client, _) = spawn_unica_server(canonical_direct_server());
         client
             .send(json!({
                 "jsonrpc": "2.0",
@@ -4579,7 +4656,10 @@ mod tests {
         use unica_process::test_support::JobAttachGateForTest;
 
         if !JobAttachGateForTest::supported() {
-            eprintln!("Windows Job attachment is unavailable on this host");
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::WindowsJobObject,
+                "Windows Job attachment exists only on Windows",
+            );
             return;
         }
 
@@ -5455,13 +5535,6 @@ mod tests {
 
     #[tokio::test]
     async fn native_task_projection_contract_is_capability_gated_durable_and_replay_free() {
-        assert!(
-            !UnicaServer::legacy_for_test(application_handler())
-                .get_info()
-                .capabilities
-                .supports_tasks(),
-            "the explicit v0.12 test profile must not advertise Tasks"
-        );
         tasks_direct_first_capability_case().await;
         legacy_initialized_session_cannot_escalate_tasks_per_request_case().await;
         modern_initialized_session_retains_native_tasks_case().await;
@@ -5538,7 +5611,7 @@ mod tests {
 
     #[tokio::test]
     async fn legacy_offer_2025_11_25_is_echoed() {
-        let (mut client, _) = spawn_server(application_handler());
+        let (mut client, _) = spawn_unica_server(canonical_direct_server());
         client
             .send(json!({
                 "jsonrpc": "2.0",
@@ -5560,7 +5633,7 @@ mod tests {
     async fn legacy_unknown_offer_falls_back_to_pinned_version() {
         // The fallback is pinned to 2025-11-25 explicitly; an SDK bump that
         // moves `ProtocolVersion::LATEST` must not move this answer.
-        let (mut client, _) = spawn_server(application_handler());
+        let (mut client, _) = spawn_unica_server(canonical_direct_server());
         client
             .send(json!({
                 "jsonrpc": "2.0",
@@ -5580,7 +5653,7 @@ mod tests {
 
     #[tokio::test]
     async fn legacy_session_responses_stay_legacy_shaped() {
-        let (mut client, _) = spawn_server(application_handler());
+        let (mut client, _) = spawn_unica_server(canonical_direct_server());
         client.initialize().await;
         client
             .send(json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} }))
@@ -5596,11 +5669,11 @@ mod tests {
 
     #[tokio::test]
     async fn modern_meta_inside_legacy_session_keeps_the_session_model() {
-        // SDK semantics, pinned as observed: a request that declares full
-        // modern `_meta` inside an `initialize` session gets a modern-shaped
-        // response for itself, while the session is not switched — the next
-        // plain request keeps the legacy wire shape.
-        let (mut client, _) = spawn_server(application_handler());
+        // Метаданные одного запроса не повышают полномочия сессии: внутри
+        // сессии `initialize` современный `_meta` меняет форму ответа, но
+        // страницы выдаются только сессии 2026-07-28. Каталог длиннее
+        // страницы, чтобы целый ответ отличался от первой страницы.
+        let (mut client, _) = spawn_unica_server(synthetic_catalog_server());
         client.initialize().await;
         client
             .send(json!({
@@ -5611,13 +5684,15 @@ mod tests {
             }))
             .await;
         let modern_shaped = client.receive().await;
-        // Modern semantics follow the request's effective encoding, pagination
-        // included: the first page plus a continuation cursor.
         assert_eq!(
             modern_shaped["result"]["tools"].as_array().unwrap().len(),
-            TOOLS_PAGE_SIZE
+            synthetic_tool_catalog().len(),
+            "{modern_shaped}"
         );
-        assert!(modern_shaped["result"]["nextCursor"].is_string());
+        assert!(
+            modern_shaped["result"].get("nextCursor").is_none(),
+            "{modern_shaped}"
+        );
         assert_eq!(modern_shaped["result"]["resultType"], "complete");
         client
             .send(json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {} }))
@@ -5632,7 +5707,7 @@ mod tests {
 
     #[tokio::test]
     async fn tools_list_rejects_any_presented_cursor() {
-        let (mut client, _) = spawn_server(application_handler());
+        let (mut client, _) = spawn_unica_server(canonical_direct_server());
         client.initialize().await;
         client
             .send(json!({
@@ -5644,6 +5719,42 @@ mod tests {
             .await;
         let response = client.receive().await;
         assert_eq!(response["error"]["code"], -32602);
+        client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn a_name_outside_the_canonical_profile_is_refused_without_dispatch() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&calls);
+        let handler: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _, _| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            direct_outcome(canonical_result("dispatched"))
+        });
+        let (mut client, _) = spawn_unica_server(UnicaServer::with_canonical_v13(handler));
+        client.initialize().await;
+        // A retired v0.12 name and a name no profile ever had.
+        for (id, name) in [(1, "unica.meta.add"), (2, "unica.nope")] {
+            client
+                .send(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "method": "tools/call",
+                    "params": { "name": name, "arguments": {} }
+                }))
+                .await;
+            let response = client.receive().await;
+            assert_eq!(response["id"], id, "{response}");
+            assert_eq!(response["error"]["code"], -32602, "{name}: {response}");
+            assert_eq!(
+                response["error"]["message"], "tool is not in the canonical v0.13 profile",
+                "{name}: {response}"
+            );
+        }
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "a refused name must not reach the canonical handler"
+        );
         client.shutdown().await;
     }
 
@@ -5829,7 +5940,7 @@ mod tests {
     async fn modern_direct_first_tools_list_pages_through_the_full_registry() {
         // Modern peers page the registry (25 per page, offset cursors);
         // walking every page must reproduce the complete surface exactly.
-        let (mut client, _) = spawn_server(application_handler());
+        let (mut client, _) = spawn_unica_server(synthetic_catalog_server());
         let mut names = Vec::new();
         let mut cursor: Option<String> = None;
         let mut id = 0;
@@ -5854,10 +5965,6 @@ mod tests {
                 "page overflow: {}",
                 tools.len()
             );
-            assert!(
-                tools.iter().all(|tool| tool.get("description").is_none()),
-                "the schema-only baseline holds on the modern branch too"
-            );
             names.extend(
                 tools
                     .iter()
@@ -5869,7 +5976,11 @@ mod tests {
             }
             id += 1;
         }
-        let registry_size = crate::application::tools().len();
+        let registry_size = synthetic_tool_catalog().len();
+        assert!(
+            registry_size > 2 * TOOLS_PAGE_SIZE,
+            "the catalog spans pages"
+        );
         assert_eq!(names.len(), registry_size);
         let unique: HashSet<&String> = names.iter().collect();
         assert_eq!(unique.len(), registry_size, "pages must not overlap");
@@ -5878,7 +5989,9 @@ mod tests {
 
     #[tokio::test]
     async fn modern_tools_list_rejects_a_cursor_the_server_never_issued() {
-        let (mut client, _) = spawn_server(application_handler());
+        // Каталог длиннее страницы: сервер выдаёт настоящие курсоры, и
+        // отказ отличает невыданное смещение от любого предъявленного.
+        let (mut client, _) = spawn_unica_server(synthetic_catalog_server());
         for (id, bad) in ["banana", "7", "0", "10000"].into_iter().enumerate() {
             let mut params = json!({ "_meta": modern_meta() });
             params["cursor"] = json!(bad);
@@ -5901,7 +6014,7 @@ mod tests {
 
     #[tokio::test]
     async fn modern_unknown_version_direct_first_gets_unsupported_error() {
-        let (mut client, _) = spawn_server(application_handler());
+        let (mut client, _) = spawn_unica_server(canonical_direct_server());
         client
             .send(json!({
                 "jsonrpc": "2.0",
@@ -5926,7 +6039,7 @@ mod tests {
         // silent legacy downgrade: admission refuses the connection.
         for method in ["tools/list", "server/discover"] {
             let (client_io, server_io) = tokio::io::duplex(4 * 1024 * 1024);
-            let server = UnicaServer::legacy_for_test(application_handler());
+            let server = canonical_direct_server();
             let handle = tokio::spawn(async move {
                 let (read, write) = tokio::io::split(server_io);
                 let transport =
@@ -6842,6 +6955,7 @@ mod tests {
             manual_calls: Arc::new(ManualCalls::default()),
             structured_tools: HashSet::new(),
             startup_notice: None,
+            listed_tools_for_test: None,
         }
     }
 
@@ -6863,6 +6977,7 @@ mod tests {
                 manual_calls: Arc::new(ManualCalls::default()),
                 structured_tools: HashSet::new(),
                 startup_notice: None,
+                listed_tools_for_test: None,
             },
             keys,
         )
@@ -8448,18 +8563,22 @@ fn main() {
     async fn ping_stays_responsive_and_cancellation_reaches_the_tool() {
         let cancellation_seen = Arc::new(AtomicBool::new(false));
         let seen = Arc::clone(&cancellation_seen);
-        let handler: Arc<ToolCallHandler> = Arc::new(move |_, _, cancellation, _| {
+        let handler: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _, cancellation| {
+            let cancellation = cancellation.token();
             let give_up = Instant::now() + 4 * TEST_STEP;
             while !cancellation.is_cancelled() {
                 if Instant::now() > give_up {
-                    return Err((-32603, "test handler was never cancelled".to_string()));
+                    return Err(ErrorData::internal_error(
+                        "test handler was never cancelled",
+                        None,
+                    ));
                 }
                 std::thread::sleep(Duration::from_millis(5));
             }
             seen.store(true, Ordering::SeqCst);
-            Ok(successful_test_result("unreachable success"))
+            direct_outcome(canonical_result("unreachable success"))
         });
-        let (mut client, _) = spawn_server(handler);
+        let (mut client, _) = spawn_unica_server(UnicaServer::with_canonical_v13(handler));
         client.initialize().await;
 
         client
@@ -8467,7 +8586,7 @@ fn main() {
                 "jsonrpc": "2.0",
                 "id": 7,
                 "method": "tools/call",
-                "params": { "name": "unica.code.search", "arguments": {} }
+                "params": { "name": "unica.search", "arguments": {} }
             }))
             .await;
         client
@@ -8717,18 +8836,23 @@ fn main() {
         let gate = Arc::clone(&release);
         let entered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let worker_entered = Arc::clone(&entered);
-        let handler: Arc<ToolCallHandler> = Arc::new(move |_, _, _, _| {
+        let handler: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _, _| {
             worker_entered.fetch_add(1, Ordering::SeqCst);
             let give_up = Instant::now() + 4 * TEST_STEP;
             while !gate.load(Ordering::SeqCst) {
                 if Instant::now() > give_up {
-                    return Err((-32603, "test handler was never released".to_string()));
+                    return Err(ErrorData::internal_error(
+                        "test handler was never released",
+                        None,
+                    ));
                 }
                 std::thread::sleep(Duration::from_millis(5));
             }
-            Ok(successful_test_result("released"))
+            let mut released = canonical_result("released");
+            released.ok = true;
+            direct_outcome(released)
         });
-        let (mut client, in_flight) = spawn_server(handler);
+        let (mut client, in_flight) = spawn_unica_server(UnicaServer::with_canonical_v13(handler));
         client.initialize().await;
         let expected: std::collections::BTreeSet<_> =
             (0..33).map(|id| format!("blocked-{id}")).collect();
@@ -8736,7 +8860,7 @@ fn main() {
             client
                 .send(json!({
                     "jsonrpc": "2.0", "id": id, "method": "tools/call",
-                    "params": { "name": "unica.code.search", "arguments": {} }
+                    "params": { "name": "unica.search", "arguments": {} }
                 }))
                 .await;
         }
@@ -8772,10 +8896,11 @@ fn main() {
             .collect();
         assert_eq!(actual, expected);
         for response in &responses {
-            let payload: Value =
-                serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())
-                    .unwrap();
-            assert_eq!(payload["summary"], "released");
+            // A canonical Direct success carries its JSON in structuredContent.
+            assert_eq!(
+                response["result"]["structuredContent"]["summary"], "released",
+                "{response}"
+            );
         }
         assert_eq!(in_flight.running(), 0);
     }

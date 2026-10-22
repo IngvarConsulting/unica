@@ -3275,3 +3275,7 @@ mod typed_template_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/platform/template_catalog.rs"]
+mod minimal_template_tests;
