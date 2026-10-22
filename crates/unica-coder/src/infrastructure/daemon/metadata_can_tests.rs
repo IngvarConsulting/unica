@@ -1494,3 +1494,65 @@ fn canonical_apply_refuses_inexact_export_format_and_offers_platform_reexport() 
         );
     }
 }
+
+/// Отказ предпросмотра идёт через проводной `apply`, а не только через
+/// планировщик: недопустимый итог не получает токена, а попытка исполнить
+/// те же входы без предпросмотра (`dryRun: false`) отклоняется. В обоих
+/// случаях исходники не меняются (#959).
+#[test]
+fn canonical_wire_apply_refuses_removing_the_last_required_register_field_without_writes() {
+    let runtime = runtime();
+    let fixture = Fixture::blank();
+    publish(
+        &runtime,
+        &fixture,
+        json!({"at":"main:Configuration","ops":[
+            {"op":"object.create","args":{"values":{"kind":"InformationRegister","name":"Target"}}},
+            {"op":"dimension.add","args":{"at":"main:InformationRegister.Target","items":[{"name":"Only"}]}}
+        ]}),
+    );
+    let ops = json!([{"op":"dimension.remove","args":{}}]);
+    let at = "main:InformationRegister.Target.Dimension.Only";
+    let before = unica_workspace::test_support::tree_snapshot(&fixture.workspace);
+
+    let refused = call(
+        &runtime,
+        &fixture,
+        ToolIdentity::Apply,
+        json!({"at":at,"ops":ops}),
+    );
+    assert!(!refused.ok, "{refused:?}");
+    assert!(
+        refused
+            .data
+            .as_ref()
+            .and_then(|data| data.get("executionToken"))
+            .is_none(),
+        "a refused preview issues no execution token: {refused:?}"
+    );
+    let reasons = serde_json::to_string(&refused.diagnostics).unwrap();
+    assert!(
+        reasons.contains("Register without dimensions, resources, and attributes"),
+        "the refusal names the subject reason: {reasons}"
+    );
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&fixture.workspace),
+        before
+    );
+
+    let direct = call(
+        &runtime,
+        &fixture,
+        ToolIdentity::Apply,
+        json!({"at":at,"ops":ops,"dryRun":false,"ifRev":"unica-source-sha256-v1:1:any"}),
+    );
+    assert!(
+        !direct.ok,
+        "execution without a saved preview is refused: {direct:?}"
+    );
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&fixture.workspace),
+        before,
+        "the refused direct execution changes no source byte"
+    );
+}
