@@ -3,6 +3,7 @@ mod catalog_attribute_tooltip;
 mod catalog_tabular_properties;
 mod dcs_parameter_expression;
 mod form;
+mod form_support;
 mod metadata;
 mod metadata_declaration_diagnostics;
 mod support;
