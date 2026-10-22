@@ -1052,10 +1052,16 @@ fn borrowed_form_with_its_own_form_xml_reads_as_local_content() {
     );
     let service = fixture.extension_view_service();
     let form = service.view(ViewRequest::new("main:DataProcessor.Обработка.Form.Форма").unwrap());
-    assert!(form.ok, "{form:?}");
+    assert!(
+        form.ok,
+        "borrowed form with its own Form.xml must be readable"
+    );
     let data = form.data.unwrap();
     assert_eq!(data["kind"], "Form");
-    assert!(data["props"].get("content").is_none(), "{data}");
+    assert!(
+        data["props"].get("content").is_none(),
+        "borrowed form with its own Form.xml must not read as inherited"
+    );
 }
 
 #[test]
