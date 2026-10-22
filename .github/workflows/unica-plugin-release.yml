@@ -490,10 +490,12 @@ jobs:
       # Маршрут — тот же классификатор: без Rust линтовать нечего, документация
       # сужает Python до small.
       - id: classify
+        env:
+          RUN_LINE: ${{ steps.line.outputs.line }}
         run: |
           set -euo pipefail
           mkdir -p .build
-          python scripts/ci/classify-workflow-changes.py --github-event --runner-matrix '["ubuntu-latest"]' --line "" --results .build/ci-routing-pr >> "$GITHUB_OUTPUT"
+          python scripts/ci/classify-workflow-changes.py --github-event --runner-matrix '["ubuntu-latest"]' --line "$RUN_LINE" --results .build/ci-routing-pr >> "$GITHUB_OUTPUT"
       - id: python-matrix
         env:
           DOCS_ONLY: ${{ steps.classify.outputs.docs_only }}

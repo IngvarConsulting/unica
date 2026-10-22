@@ -490,6 +490,21 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("python scripts/ci/classify-workflow-changes.py --github-event", other["run"])
         self.assertNotIn("results-ci-routing", "\n".join(upload["name"] for upload in uploads(job(self.release, "rust-os"))))
 
+    def test_every_classifier_call_gets_the_resolved_line(self) -> None:
+        """Документационный пропуск пишет пометку с линией: пустая линия —
+        отказ классификатора, и PR из одной прозы стал бы красным."""
+        calls = 0
+        for job_id, found in jobs(self.release).items():
+            for step in steps(found):
+                if "classify-workflow-changes.py" not in step.get("run", ""):
+                    continue
+                calls += 1
+                with self.subTest(job=job_id):
+                    self.assertIn('--line "$RUN_LINE"', step["run"])
+                    self.assertEqual(step["env"]["RUN_LINE"], "${{ steps.line.outputs.line }}")
+                    self.assertIn("line", {other.get("id") for other in steps(found)})
+        self.assertEqual(calls, 3)
+
     def test_classifier_keeps_history_and_does_not_fetch_a_mutable_base(self) -> None:
         for job_id in ("unica-ci", "rust-os"):
             with self.subTest(job=job_id):
