@@ -78,8 +78,10 @@ fn changes_support_state(
 /// support with changes disabled, refuses `invalid_state` before any family
 /// stages a byte when the actor's support policy is `deny`; under `warn` it
 /// proceeds and returns the `support_locked` warning the plan carries; `off`
-/// is silent. Under `deny`, removing a vendor object also requires its own
-/// rule to be `off-support`: permission to edit it does not permit removal.
+/// is silent. Removal follows the same policy: an editable vendor object is
+/// removed while staying on support, and only a `locked` rule on the object
+/// or on one of its own child objects refuses under `deny` or warns under
+/// `warn`. The marker is not changed by the removal.
 /// The owner is the top-level metadata object of the addressed node, or the
 /// configuration root for root-level targets; nested forms, templates and
 /// attributes inherit the rule of their owner, as they do in the platform.
@@ -152,22 +154,40 @@ fn refuse_targets_on_locked_vendor_objects(
     };
     let support_rule =
         support_root_uuid_from_bytes(&bytes).and_then(|uuid| state.object_rule(&uuid));
-    if deny
-        && matches!(support_rule, Some(0 | 1))
-        && request.ops().iter().any(|operation| {
-            unica_metadata::apply_operations::MetadataOperation::named(operation.name())
-                == Some(unica_metadata::apply_operations::MetadataOperation::ObjectRemove)
-        })
-    {
-        let rule_name = if support_rule == Some(0) {
-            "locked"
+    let removes = request.ops().iter().any(|operation| {
+        unica_metadata::apply_operations::MetadataOperation::named(operation.name())
+            == Some(unica_metadata::apply_operations::MetadataOperation::ObjectRemove)
+    });
+    if removes {
+        // An editable vendor object is removed without leaving support, as
+        // the configurator does; only a lock on it or on one of its own
+        // child objects stands in the way.
+        // An object taken off support no longer answers for its children.
+        let reason = if support_rule == Some(0) {
+            format!("`{owner}` is a vendor object with the support rule `locked`")
+        } else if support_rule != Some(1) {
+            return Ok(None);
         } else {
-            "editable"
+            let children =
+                locked_vendor_children(&state, &owner, &owner_relative, &bytes, staged, &at)?;
+            if children.is_empty() {
+                return Ok(None);
+            }
+            format!(
+                "`{owner}` has vendor child objects with the support rule `locked`: {}",
+                children.join(", ")
+            )
         };
+        if !deny {
+            return Ok(Some(support_locked(
+                &owner,
+                format!("{reason}; the project support policy `warn` permits its removal"),
+            )));
+        }
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::InvalidState,
             format!(
-                "`{owner}` is a vendor object with the support rule `{rule_name}`; set `off-support` with `supportRule.set` in a separate apply before removal"
+                "{reason}; take the object off support with `supportRule.set` and the rule `off-support` in a separate apply before removal"
             ),
         )
         .at_path(at));
@@ -188,6 +208,80 @@ fn refuse_targets_on_locked_vendor_objects(
         .at_path(at));
     }
     Ok(None)
+}
+
+/// The child objects of a removed vendor object that carry their own
+/// `locked` rule: attributes, tabular sections and other nodes declared in
+/// its descriptor, and forms, templates and commands described in their own
+/// descriptors under its directory.
+fn locked_vendor_children(
+    state: &unica_metadata_designer::support::SupportState,
+    owner: &str,
+    owner_relative: &std::path::Path,
+    owner_bytes: &[u8],
+    staged: &mut ApplyStagedState,
+    at: &str,
+) -> Result<Vec<String>, ApplyPlanError> {
+    let mut locked = Vec::new();
+    let mut collect = |base: &str, bytes: &[u8]| {
+        let Some(document) = std::str::from_utf8(bytes)
+            .ok()
+            .and_then(|text| roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).ok())
+        else {
+            return;
+        };
+        let named = |node: roxmltree::Node<'_, '_>| {
+            node.children()
+                .find(|child| child.has_tag_name("Properties"))?
+                .children()
+                .find(|child| child.has_tag_name("Name"))?
+                .text()
+                .map(|name| name.trim().to_string())
+        };
+        for node in document.descendants().filter(|node| node.is_element()) {
+            let Some(uuid) = node.attribute("uuid") else {
+                continue;
+            };
+            if state.object_rule(uuid) != Some(0) || named(node).is_none() {
+                continue;
+            }
+            // The outermost named node is the described object itself.
+            let mut chain = node
+                .ancestors()
+                .filter_map(|ancestor| {
+                    named(ancestor).map(|name| format!(".{}.{name}", ancestor.tag_name().name()))
+                })
+                .collect::<Vec<_>>();
+            chain.pop();
+            if chain.is_empty() && base == owner {
+                continue;
+            }
+            chain.reverse();
+            locked.push(format!("`{base}{}`", chain.concat()));
+        }
+    };
+    collect(owner, owner_bytes);
+    let directory = owner_relative.with_extension("");
+    let (files, _) = staged
+        .enumerate_tree_with_root_absence(&directory)
+        .map_err(|error| ApplyPlanError::staging(error, at.to_string()))?;
+    for relative in files {
+        let (base, descriptor) = unica_metadata_designer::remove::meta_remove_referrer(&relative);
+        let is_xml = relative
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("xml"));
+        if !descriptor || !is_xml {
+            continue;
+        }
+        if let Some(bytes) = staged
+            .read(&relative)
+            .map_err(|error| ApplyPlanError::staging(error, at.to_string()))?
+        {
+            collect(&base, &bytes);
+        }
+    }
+    Ok(locked)
 }
 
 /// The descriptor that carries the support rule of the addressed node: the
@@ -1682,40 +1776,162 @@ mod tests {
         }
     }
 
-    #[test]
-    fn vendor_object_removal_requires_separate_off_support_apply() {
+    /// Plans the removal of `Document.First` under `policy` over `marker`
+    /// and returns the outcome with the source tree before and after.
+    fn plan_vendor_removal(
+        policy: &str,
+        marker: &str,
+        prepare: impl FnOnce(&std::path::Path),
+    ) -> (
+        Result<Vec<serde_json::Value>, unica_source_contract::proposal::ApplyPlanError>,
+        bool,
+        std::path::PathBuf,
+    ) {
         use unica_workspace::test_support::tree_snapshot;
 
-        for rule in [1, 0] {
-            let fixture = ApplySeamFixture::new();
-            let marker = fixture.source_dir().join("Ext/ParentConfigurations.bin");
-            std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
-            std::fs::write(&marker, vendor_removal_support_marker(rule, true)).unwrap();
-            let before = tree_snapshot(&fixture.source_dir());
-            if rule == 1 {
-                let ordinary = seam_request(
-                    "main:Document.First",
-                    "props.set",
-                    serde_json::json!({"values": {"Comment": "editable"}}),
+        let fixture = ApplySeamFixture::new();
+        std::fs::write(
+            fixture
+                .source_dir()
+                .parent()
+                .unwrap()
+                .join(".v8-project.json"),
+            serde_json::json!({"editingAllowedCheck": policy}).to_string(),
+        )
+        .unwrap();
+        let path = fixture.source_dir().join("Ext/ParentConfigurations.bin");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, marker).unwrap();
+        prepare(&fixture.source_dir());
+        let before = tree_snapshot(&fixture.source_dir());
+        let request = seam_request(
+            "main:Document.First",
+            "object.remove",
+            serde_json::json!({}),
+        );
+        let outcome = plan_hidden_v13_apply(&request, &fixture.binding, &fixture.admission()).map(
+            |(mut staged, effects)| {
+                assert!(staged
+                    .read(std::path::Path::new("Documents/First.xml"))
+                    .unwrap()
+                    .is_none());
+                // The removal leaves the support marker as it is.
+                assert_eq!(
+                    staged
+                        .read(std::path::Path::new("Ext/ParentConfigurations.bin"))
+                        .unwrap()
+                        .as_deref(),
+                    Some(marker.as_bytes())
                 );
-                let (staged, _) =
-                    plan_hidden_v13_apply(&ordinary, &fixture.binding, &fixture.admission())
-                        .expect("the editable rule still permits ordinary property edits");
-                assert!(!staged.planned_changes().is_empty());
-            }
-            let request = seam_request(
-                "main:Document.First",
-                "object.remove",
-                serde_json::json!({}),
-            );
-            let error = plan_hidden_v13_apply(&request, &fixture.binding, &fixture.admission())
-                .expect_err("a vendor object must be off support before removal");
-            assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);
-            assert!(error.to_string().contains("off-support"), "{error}");
-            assert!(error.to_string().contains("supportRule.set"), "{error}");
-            assert!(error.to_string().contains("separate apply"), "{error}");
-            assert_eq!(tree_snapshot(&fixture.source_dir()), before);
+                effects.warnings().to_vec()
+            },
+        );
+        let unchanged = tree_snapshot(&fixture.source_dir()) == before;
+        (outcome, unchanged, fixture.source_dir())
+    }
+
+    /// An editable vendor object is removed while staying on support, as the
+    /// configurator removes it, under every support policy and silently.
+    #[test]
+    fn vendor_object_removal_keeps_editable_objects_on_support_under_every_policy() {
+        for policy in ["deny", "warn", "off"] {
+            let (outcome, unchanged, _) =
+                plan_vendor_removal(policy, &vendor_removal_support_marker(1, true), |_| {});
+            let warnings =
+                outcome.unwrap_or_else(|error| panic!("editable removal under {policy}: {error}"));
+            assert!(warnings.is_empty(), "{policy}: {warnings:?}");
+            assert!(unchanged, "{policy}");
         }
+    }
+
+    /// A locked vendor object refuses removal under `deny` with the way out,
+    /// is removed with `support_locked` under `warn` and silently under `off`.
+    #[test]
+    fn vendor_object_removal_of_locked_objects_follows_the_support_policy() {
+        let marker = vendor_removal_support_marker(0, true);
+        let (outcome, unchanged, _) = plan_vendor_removal("deny", &marker, |_| {});
+        let error = outcome.expect_err("a locked vendor object is not removed under deny");
+        assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);
+        let message = error.to_string();
+        assert!(message.contains("`Document.First`"), "{message}");
+        assert!(message.contains("support rule `locked`"), "{message}");
+        assert!(message.contains("supportRule.set"), "{message}");
+        assert!(message.contains("off-support"), "{message}");
+        assert!(message.contains("separate apply"), "{message}");
+        assert!(unchanged);
+
+        let (outcome, unchanged, _) = plan_vendor_removal("warn", &marker, |_| {});
+        let warnings = outcome.expect("warn removes a locked vendor object");
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(warnings[0]["code"], "support_locked");
+        assert_eq!(warnings[0]["at"], "main:Document.First");
+        assert!(unchanged);
+
+        let (outcome, unchanged, _) = plan_vendor_removal("off", &marker, |_| {});
+        let warnings = outcome.expect("off removes a locked vendor object");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(unchanged);
+    }
+
+    /// An editable vendor object with a locked child of its own — an
+    /// attribute in its descriptor or a form described next to it — follows
+    /// the policy of a locked object and names that child.
+    #[test]
+    fn vendor_object_removal_with_locked_children_follows_the_support_policy() {
+        // The fixture attribute `Total` carries the uuid 2222….
+        let attribute = vendor_removal_support_marker(1, true).replace(
+            "}",
+            ",0,0,22222222-2222-4222-8222-222222222222,22222222-2222-4222-8222-222222222222}",
+        );
+        let form = vendor_removal_support_marker(1, true).replace(
+            "}",
+            ",0,0,77777777-7777-4777-8777-777777777777,77777777-7777-4777-8777-777777777777}",
+        );
+        let with_form = |source: &std::path::Path| {
+            std::fs::create_dir_all(source.join("Documents/First/Forms")).unwrap();
+            std::fs::write(
+                source.join("Documents/First/Forms/Card.xml"),
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form uuid="77777777-7777-4777-8777-777777777777"><Properties><Name>Card</Name></Properties></Form></MetaDataObject>"#,
+            )
+            .unwrap();
+        };
+        for (marker, child) in [
+            (attribute.as_str(), "`Document.First.Attribute.Total`"),
+            (form.as_str(), "`Document.First.Form.Card`"),
+        ] {
+            let (outcome, unchanged, _) = plan_vendor_removal("deny", marker, with_form);
+            let error = outcome.expect_err("a locked child keeps its owner under deny");
+            assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);
+            let message = error.to_string();
+            assert!(message.contains(child), "{message}");
+            assert!(message.contains("off-support"), "{message}");
+            assert!(unchanged);
+
+            let (outcome, unchanged, _) = plan_vendor_removal("warn", marker, with_form);
+            let warnings = outcome.expect("warn removes an object with a locked child");
+            assert_eq!(warnings.len(), 1, "{warnings:?}");
+            assert_eq!(warnings[0]["code"], "support_locked");
+            assert!(
+                warnings[0]["message"].as_str().unwrap().contains(child),
+                "{warnings:?}"
+            );
+            assert!(unchanged);
+
+            let (outcome, _, _) = plan_vendor_removal("off", marker, with_form);
+            assert!(outcome.expect("off removes silently").is_empty());
+        }
+        // Once the object itself is off support its locked children no
+        // longer keep it: this is what the refusal tells the caller to do.
+        let off_support = attribute.replacen(",3,1,0,", ",3,2,0,", 1);
+        assert_ne!(off_support, attribute);
+        let (outcome, _, _) = plan_vendor_removal("deny", &off_support, with_form);
+        assert!(outcome
+            .expect("an object off support is removed")
+            .is_empty());
+        // Without a locked child the same form changes nothing.
+        let (outcome, _, _) =
+            plan_vendor_removal("deny", &vendor_removal_support_marker(1, true), with_form);
+        assert!(outcome.expect("editable children do not block").is_empty());
     }
 
     fn vendor_removal_support_marker(rule: u8, editing_enabled: bool) -> String {
@@ -1733,13 +1949,6 @@ mod tests {
             ("deny", None),
             ("deny", Some(vendor_removal_support_marker(2, true))),
             ("deny", Some("\u{feff}{6,0,0}".to_string())),
-            (
-                "deny",
-                Some(vendor_removal_support_marker(0, true).replace(
-                    "11111111-1111-4111-8111-111111111111",
-                    "22222222-2222-4222-8222-222222222222",
-                )),
-            ),
             ("warn", Some(vendor_removal_support_marker(0, false))),
             ("warn", Some(vendor_removal_support_marker(1, true))),
             ("off", Some(vendor_removal_support_marker(0, false))),

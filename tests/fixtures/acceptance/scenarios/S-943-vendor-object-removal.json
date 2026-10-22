@@ -1,9 +1,9 @@
 {
  "id": "S-943-vendor-object-removal",
- "name": "remove-vendor-object-after-separate-off-support-publication",
+ "name": "remove-vendor-object-with-locked-forms-after-separate-off-support-publication",
  "issue": 943,
  "area": "Поддержка поставщика",
- "task": "Отказать удалению редактируемого объекта поставщика, снять поддержку только с объекта отдельным применением и затем удалить его",
+ "task": "Отказать удалению редактируемого объекта поставщика с закрытыми формами, снять поддержку только с объекта отдельным применением и затем удалить его, не меняя маркер при удалении",
  "workspace": "tests/fixtures/acceptance/workspace-support-form",
  "wire": [
   {
@@ -67,7 +67,7 @@
      "eq": "096a8d156b5648b6c84d094837034f914946bea24d64c9180280fd5409facd3a"
     }
    ],
-   "refusal": "invalid_state: `Catalog.Items` is a vendor object with the support rule `editable`; set `off-support` with `supportRule.set` in a separate apply before removal",
+   "refusal": "invalid_state: `Catalog.Items` has vendor child objects with the support rule `locked`: `Catalog.Items.Form.Main`, `Catalog.Items.Form.Other`; take the object off support with",
    "assertions": [
     {
      "pointer": "/diagnostics/0/code",
@@ -148,7 +148,7 @@
      "eq": "096a8d156b5648b6c84d094837034f914946bea24d64c9180280fd5409facd3a"
     }
    ],
-   "refusal": "invalid_state: `Catalog.Items` is a vendor object with the support rule `editable`; set `off-support` with `supportRule.set` in a separate apply before removal",
+   "refusal": "invalid_state: `Catalog.Items` has vendor child objects with the support rule `locked`: `Catalog.Items.Form.Main`, `Catalog.Items.Form.Other`; take the object off support with",
    "assertions": [
     {
      "pointer": "/diagnostics/0/code",

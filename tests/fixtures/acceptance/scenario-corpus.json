@@ -7770,7 +7770,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; set `off-support` with `supportRule.set` in a separate apply before removal"
+     "refusal": "invalid_state: `Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; take the object off support with `supportRule.set` and the rule `off-support` in a"
     }
    ]
   },

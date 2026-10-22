@@ -412,7 +412,7 @@ pub fn metadata_object_remove() -> OperationContract {
         schema: metadata_object_remove_input_schema().clone(),
         target: "The existing metadata object: <source-set>:<Kind>.<Name>.",
         effect: "Remove the object descriptor, its resource directory and its registration; update subsystem membership.",
-        notes: "References from other metadata refuse the removal and are listed by the referring address and property; remove them first. References only in module code are listed by module address and line in the code_references warning of the plan, and executing its token confirms the removal. Subsystem membership is removed with the object. Under the deny support policy, a vendor object must be taken off support in a separate apply call first.",
+        notes: "References from other metadata refuse the removal and are listed by the referring address and property; remove them first. References only in module code are listed by module address and line in the code_references warning of the plan, and executing its token confirms the removal. Subsystem membership is removed with the object. An editable vendor object is removed while staying on support; a locked vendor object, or one with a locked child, refuses under the deny support policy until a separate supportRule.set apply takes it off support, warns support_locked under warn and is removed silently under off. The support marker is not changed.",
         example_args: json!({}),
         help: METADATA_HELP,
         format_validators: &[],

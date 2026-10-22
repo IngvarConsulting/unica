@@ -566,7 +566,7 @@ pub fn meta_remove_references(
 /// own descriptor: `Catalogs/X.xml` and `Catalogs/X/Forms/F.xml` are
 /// descriptors, `Catalogs/X/Forms/F/Ext/Form.xml` belongs to `Catalog.X.Form.F`.
 /// Files outside a metadata collection belong to the configuration.
-fn meta_remove_referrer(relative: &Path) -> (String, bool) {
+pub fn meta_remove_referrer(relative: &Path) -> (String, bool) {
     let parts = relative
         .components()
         .filter_map(|component| component.as_os_str().to_str())
