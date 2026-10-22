@@ -1109,6 +1109,20 @@ class HostCapabilitySkipTests(unittest.TestCase):
                                                          profile="queue", reasons={})
             self.assertEqual([entry["status"] for entry in entries if entry["name"] == "u"], ["broken", "skipped"])
 
+    def test_tests_get_an_absolute_record_directory_from_any_working_directory(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(lanes.os.environ, {}, clear=True):
+            previous = Path.cwd()
+            lanes.os.chdir(temporary)
+            try:
+                environment = lanes.capability_environment(Path(".build/results"))
+            finally:
+                lanes.os.chdir(previous)
+            directory = Path(environment[lanes.HOST_CAPABILITY_SKIPS_ENV])
+            # nextest starts a test in its package directory, not the runner's checkout.
+            self.assertTrue(directory.is_absolute())
+            self.assertEqual(directory, (Path(temporary) / ".build/results/capability-skips").resolve())
+            self.assertTrue(directory.is_dir())
+
     def test_only_a_capability_reason_excuses_a_required_case(self):
         record = {"id": "package::case", "status": "skipped"}
         self.assertEqual(lanes.capability_skip_refusal({**record, "reason": "flaky"}, "windows-latest"),
