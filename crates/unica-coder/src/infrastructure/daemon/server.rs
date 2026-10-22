@@ -1559,6 +1559,9 @@ impl unica_daemon::transport::ObservationLifecycle for CapacityObservation {
 }
 
 #[cfg(test)]
+#[path = "code_target_tests.rs"]
+mod code_target_tests;
+#[cfg(test)]
 mod external_cache_apply_tests;
 #[cfg(test)]
 #[path = "form_lifecycle_tests.rs"]
