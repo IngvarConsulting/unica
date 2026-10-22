@@ -46,12 +46,15 @@ impl Fixture {
         .unwrap()
     }
 
-    /// A preview of one code operation at `at`.
-    fn preview(&self, op: &str, at: &str) -> DomainResult {
-        let text = "Процедура Добавлена()\nКонецПроцедуры";
+    /// A preview of one code operation at `at`, with `extra` arguments.
+    fn preview(&self, op: &str, at: &str, extra: Value) -> DomainResult {
+        let mut args = json!({"at": at, "text": "Процедура Добавлена()\nКонецПроцедуры"});
+        args.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
         self.call(
             ToolIdentity::Apply,
-            json!({"at": at, "ops": [{"op": op, "args": {"at": at, "text": text}}]}),
+            json!({"at": at, "ops": [{"op": op, "args": args}]}),
         )
     }
 }
@@ -61,26 +64,32 @@ fn canonical_code_edits_write_only_at_a_module_address() {
     let fixture = Fixture::code();
     let before = unica_workspace::test_support::tree_snapshot(&fixture.workspace);
 
-    // A module address is the write target. The common module is its own
-    // module: its object address is a module address, not an owner.
-    for (op, at, module) in [
+    // A module address, its `Body` or `Method.M` is the write target. The
+    // common module is its own module: its object address is a module
+    // address, not an owner.
+    let object = "main:Catalog.Пример.Module.Object";
+    let method = "main:Catalog.Пример.Module.Object.Method.ОбработатьПример";
+    for (op, at, extra, module) in [
+        ("code.insert", object.to_string(), json!({}), object),
         (
             "code.insert",
-            "main:Catalog.Пример.Module.Object",
-            "main:Catalog.Пример.Module.Object",
+            "main:CommonModule.Пример".to_string(),
+            json!({}),
+            "main:CommonModule.Пример",
         ),
+        ("code.insert", format!("{object}.Body"), json!({}), object),
         (
             "code.insert",
-            "main:CommonModule.Пример",
-            "main:CommonModule.Пример",
+            method.to_string(),
+            json!({"position": "after"}),
+            object,
         ),
-        (
-            "code.replace",
-            "main:Catalog.Пример.Module.Object.Method.ОбработатьПример",
-            "main:Catalog.Пример.Module.Object",
-        ),
+        ("code.replace", method.to_string(), json!({}), object),
+        ("code.replace", format!("{object}.Body"), json!({}), object),
+        ("code.replace", format!("{method}.Body"), json!({}), object),
     ] {
-        let planned = fixture.preview(op, at);
+        let at = at.as_str();
+        let planned = fixture.preview(op, at, extra);
         assert!(planned.ok, "{op} {at}: {planned:?}");
         assert_eq!(
             planned.changed,
@@ -107,10 +116,13 @@ fn canonical_code_edits_write_only_at_a_module_address() {
             ("main:Catalog.Пример.Module", None, ""),
             ("main:Language.Русский", None, ""),
         ] {
-            let refused = fixture.preview(op, at);
+            let refused = fixture.preview(op, at, json!({}));
             assert!(!refused.ok, "{op} {at}: {refused:?}");
             assert_eq!(refused.diagnostics.len(), 1, "{op} {at}: {refused:?}");
-            assert_eq!(refused.diagnostics[0]["code"], "bad_value", "{op} {at}");
+            assert_eq!(
+                refused.diagnostics[0]["code"], "bad_value",
+                "{op} {at}: {refused:?}"
+            );
             let message = refused.diagnostics[0]["message"].as_str().unwrap();
             assert!(
                 message.contains("does not apply to")

@@ -5073,10 +5073,14 @@ pub(super) fn preflight_apply_operations_with(
                 // Код пишется в модуль, а не в его владельца: узел с модулями
                 // ведёт к их адресам (#1964).
                 if descriptor.family() == unica_operations::OperationFamily::Code {
-                    if let Some(branch) = owned_module_branch(operation.at()) {
+                    if let Some(branch) = crate::infrastructure::v13_read::module_branch_for_parent(
+                        operation.at(),
+                        crate::domain::apply::source_classification_profile(source),
+                        source.kind(),
+                    ) {
                         refusal.next.push(json!({
                             "tool": "unica.view",
-                            "args": {"at": branch},
+                            "args": {"at": branch.at()},
                             "reason": "адреса модулей этого узла: код пишется по адресу модуля",
                         }));
                     }
@@ -5101,20 +5105,6 @@ pub(super) fn preflight_apply_operations_with(
         return Err(Box::new(refusal));
     }
     Ok(())
-}
-
-/// Ветка `Module` узла, которому профиль платформы даёт модули: корень
-/// набора ведёт к модулям приложения, объект — к своим. Сама ветка и узел без
-/// модулей ветки не дают.
-fn owned_module_branch(at: &QualifiedAddress) -> Option<String> {
-    let branch = match at.segments() {
-        [root] if root.kind() == NodeKind::Configuration => format!("{}:Module", at.source_set()),
-        [.., last] if last.kind() == NodeKind::Module && last.name().is_none() => return None,
-        _ => format!("{at}.Module"),
-    };
-    let branch = QualifiedAddress::parse(&branch).ok()?;
-    let modules = unica_bsl::profile::PlatformProfile::v8_3_27().module_children(&branch);
-    (!modules.is_empty()).then(|| branch.to_string())
 }
 
 /// Отказ снятой операции без записи (#1354, #1465). Создающая операция
