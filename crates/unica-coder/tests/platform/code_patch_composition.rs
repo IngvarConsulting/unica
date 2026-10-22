@@ -684,28 +684,69 @@ fn canonical_code_insert_inside_older_source_set_is_refused_without_writes() {
             let source_before = snapshot_staged_code_tree(&fixture.source);
             let cache = fixture.root.join(".build/unica");
             let cache_before = snapshot_staged_code_tree(&cache);
-            let operation = [staged_insert(
-                "main:CommonModule.Sample",
-                "Procedure Added()\nEndProcedure",
-                None,
-                None,
-            )];
+            let operations = [
+                (
+                    staged_insert(
+                        "main:CommonModule.Sample",
+                        "Procedure Added()\nEndProcedure",
+                        None,
+                        None,
+                    ),
+                    json!({"op":"code.insert","args":{"at":"main:CommonModule.Sample","text":"Procedure Added()\nEndProcedure"}}),
+                ),
+                (
+                    staged_replace(
+                        "main:CommonModule.Sample.Method.Base",
+                        "Procedure Base()\n    Return;\nEndProcedure",
+                        None,
+                    ),
+                    json!({"op":"code.replace","args":{"at":"main:CommonModule.Sample.Method.Base","text":"Procedure Base()\n    Return;\nEndProcedure"}}),
+                ),
+            ];
 
-            for dry_run in [true, false] {
-                let admission = staged_code_admission(&fixture, dry_run);
-                let error = plan_admitted_code(&admission, &fixture.binding, &operation)
-                    .expect_err("an older format owner must block the code insert");
-                assert_eq!(
-                    error.kind(),
-                    ApplyPlanErrorKind::InvalidSource,
-                    "{relative} version={version} dryRun={dry_run}: {error}"
-                );
-                // Причина — именно формат владельца, а не любая ошибка исходника.
-                let message = error.to_string();
-                assert!(
-                    message.contains("serialization profile"),
-                    "{relative} version={version} dryRun={dry_run}: {message}"
-                );
+            for (operation, op) in operations {
+                let name = op["op"].as_str().unwrap();
+                for dry_run in [true, false] {
+                    let case = format!("{name} {relative} version={version} dryRun={dry_run}");
+                    // The family planner proves the owner chain itself; the
+                    // canonical apply refuses earlier, at the shared guard,
+                    // and only its preview can reach it: execution needs the
+                    // preview's `ifRev`.
+                    let admission = staged_code_admission(&fixture, dry_run);
+                    let mut errors = vec![plan_admitted_code(
+                        &admission,
+                        &fixture.binding,
+                        std::slice::from_ref(&operation),
+                    )
+                    .map(|_| ())
+                    .expect_err("an older format owner must block the code planner")];
+                    if dry_run {
+                        errors.push(
+                            plan_canonical_code(&fixture, "main:CommonModule.Sample", &op)
+                                .expect_err(
+                                    "an older format owner must block the canonical preview",
+                                ),
+                        );
+                    }
+                    for error in errors {
+                        assert_eq!(
+                            error.kind(),
+                            ApplyPlanErrorKind::InvalidSource,
+                            "{case}: {error}"
+                        );
+                        // The refusal names the owner file, the version it
+                        // records, the writable profile and the remedy.
+                        let message = error.to_string();
+                        for part in [
+                            relative,
+                            version,
+                            "2.20 for 1C 8.3.27",
+                            "re-export the sources with the platform",
+                        ] {
+                            assert!(message.contains(part), "{case}: {part}: {message}");
+                        }
+                    }
+                }
             }
             assert_eq!(snapshot_staged_code_tree(&fixture.source), source_before);
             assert_eq!(snapshot_staged_code_tree(&cache), cache_before);
@@ -4071,6 +4112,35 @@ fn plan_admitted_code(
     let staged = admission.staged_state().unwrap();
     let authority = admission.code_planning_authority(binding)?;
     plan_code_batch_owned_for_test(staged, authority, operations)
+}
+
+/// Plans one operation the way the `unica.apply` preview does: the shared
+/// guards first, then the family planner.
+fn plan_canonical_code(
+    fixture: &StagedCodeFixture,
+    at: &str,
+    op: &Value,
+) -> Result<(), ApplyPlanError> {
+    let args = json!({"at": at, "ops": [op], "dryRun": true});
+    let request =
+        crate::domain::apply::ApplyRequest::parse(args.as_object().unwrap(), &["main"]).unwrap();
+    let mut admission = staged_code_admission(fixture, true);
+    admission.bind_request_identity(
+        &request.at().to_string(),
+        request.ops().iter().map(|operation| {
+            (
+                operation.name(),
+                operation.at().to_string(),
+                operation.args(),
+            )
+        }),
+    );
+    crate::infrastructure::native_operations::apply_families::plan_hidden_v13_apply(
+        &request,
+        &fixture.binding,
+        &admission,
+    )
+    .map(|_| ())
 }
 
 fn assert_v12_c1_operation_parity(

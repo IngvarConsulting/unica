@@ -143,6 +143,58 @@ pub fn classify_root_version(raw: Option<&str>) -> Result<FormatCompatibility, F
     })
 }
 
+/// Why a write refuses a versioned platform XML root outside the writable
+/// profile: the file, the version as written, the profile and what to do.
+pub struct WritableProfileRefusal {
+    pub code: &'static str,
+    pub actual: String,
+    pub message: String,
+}
+
+/// The refusal for a versioned root recording `raw`, or `None` for the
+/// exact writable profile. One wording for every writer that checks it.
+pub fn writable_profile_refusal(
+    relative: impl fmt::Display,
+    raw: Option<&str>,
+) -> Option<WritableProfileRefusal> {
+    let FormatProfile {
+        platform_line,
+        export_format,
+    } = ACTIVE_FORMAT_PROFILE;
+    let (code, actual, message) = match classify_root_version(raw) {
+        Ok(FormatCompatibility::Supported { .. }) => return None,
+        Ok(FormatCompatibility::Older { actual }) => (
+            "formatMigrationAvailable",
+            actual.to_string(),
+            format!(
+                "{relative}: export format {actual} is older than the writable profile {export_format} for 1C {platform_line}; re-export the sources with the platform before editing them"
+            ),
+        ),
+        Ok(FormatCompatibility::Newer { actual }) => (
+            "platformVersionUnsupported",
+            actual.to_string(),
+            format!(
+                "{relative}: export format {actual} is newer than the writable profile {export_format} for 1C {platform_line}; Unica does not edit this export yet"
+            ),
+        ),
+        Err(error) => {
+            let raw = raw.unwrap_or_default();
+            (
+                error.code(),
+                raw.to_string(),
+                format!(
+                    "{relative}: export format version {raw} is not the exact writable profile {export_format} for 1C {platform_line}; re-export the sources with the platform before editing them"
+                ),
+            )
+        }
+    };
+    Some(WritableProfileRefusal {
+        code,
+        actual,
+        message,
+    })
+}
+
 pub fn format_compatibility_warning(compatibility: &FormatCompatibility) -> String {
     match compatibility {
         FormatCompatibility::Older { actual } => format!(
