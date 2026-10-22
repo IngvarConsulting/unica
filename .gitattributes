@@ -94,3 +94,6 @@ crates/unica-dcs-designer/tests/fixtures/** text eol=lf
 
 # The ExchangePlan composition fixture keeps the platform's BOM and CRLF layout.
 tests/fixtures/acceptance/workspace-exchange-content/src/ExchangePlans/*/Ext/Content.xml -text -whitespace
+
+# Runtime refusal corpus preserves the native owner seed bytes.
+tests/fixtures/acceptance/workspace-pull-validation/src/Configuration.xml -text whitespace=cr-at-eol
