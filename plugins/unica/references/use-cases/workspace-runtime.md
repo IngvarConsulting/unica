@@ -128,10 +128,22 @@ source-set path itself has no stronger structural evidence.
 | Build a `.cf`/`.cfe`/`.epf`/`.erf` from sources | `make`, `output`; for CF/CFE optional `sourceSet` and `extension` (CFE); EPF/ERF require `sourceSet` naming a singleton matching Designer external source set and a declared main configuration |
 | Export the whole infobase as `.dt` | `infobase.dump`, `output` |
 | Load a `.dt` | `infobase.restore`, `input`, `mode=create` or `mode=replace` |
-| Launch a 1C client | `launch`, `clientMode`, optional `execute`; `waitForExit` with `waitTimeoutMs` supports `thin` + `.epf`; terminal, no preview required |
+| Launch a 1C client | `launch`, `clientMode`, optional `execute` and `applicationParameter`; bounded `waitForExit` with `waitTimeoutMs` supports `thin` + `.epf` or an explicit application parameter; terminal, no preview required |
 | Inspect installed extensions | `extensions.list`, empty args; preview/apply opens a platform session |
 | Change installed extension activity | `extensions.set`, `name`, boolean `active`; other properties are unavailable |
 | Apply or discard pending configuration changes | `apply` and `reset` — unavailable until the runner supports them ([#1246](https://github.com/IngvarConsulting/unica/issues/1246)) |
+
+For `launch`, `applicationParameter` passes one exact `/C` string to an enterprise
+client. Empty is distinct from omitted; NUL and `designer` are rejected. It may
+accompany `execute`; when waiting, that file must be `.epf`. Inspect `wait.exitCode`
+and `wait.timedOut`: completion alone does not prove an application update succeeded.
+The parameter and raw runner command are not echoed in the response. Exact empty
+and quote-boundary delivery is live-verified on macOS 8.3.27.2214; the runner keeps
+its prior argv handling on Windows/Linux, where these boundaries remain unverified. Waiting with
+only an application parameter requires the runner capability added for
+[#491](https://github.com/IngvarConsulting/v8-runner-rust/issues/491); the pinned
+0.15.2 release does not provide it. A locally patched runner proves only that local
+installation until a released dependency is pinned.
 
 A previewApply operation requires explicit boolean `dryRun`: `true` shows the
 plan without execution, and `false` executes using the current inputs. The API
