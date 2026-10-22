@@ -1307,6 +1307,12 @@ fn contextual_form_event_does_not_accept_server_no_context() {
             "&НаСервере\nПроцедура СоздатьФорму",
             &format!("{directive}\nПроцедура СоздатьФорму"),
         );
+        // A fixture checked out with CRLF made this replacement a silent no-op
+        // and the test then read the original directive (#1970).
+        assert!(
+            source.contains(&format!("{directive}\nПроцедура СоздатьФорму")),
+            "{directive}: the handler directive must be substituted"
+        );
         fs::write(&path, &source).unwrap();
         let service = fixture.view_service();
         let event_at = "main:Catalog.Items.Form.List.Event.OnCreateAtServer";
