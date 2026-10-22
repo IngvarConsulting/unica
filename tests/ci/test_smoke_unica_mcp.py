@@ -492,7 +492,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                 ):
                     session.close()
                 elapsed = time.monotonic() - started
-            # Ожидание EOF длилось бы весь срок жизни держателя (60 с).
+            # Ожидание EOF длилось бы весь срок жизни держателя.
             self.assertLess(elapsed, HOLDER_LIFETIME_SECONDS / 2)
             assert_processes_exit(
                 self, module, {grandchild_pid}, "cleanup left the pipe holder alive"
@@ -1875,6 +1875,46 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             module._close_session_and_workspace_services(
                 FailingSession(), cache_root, 7.0
             )
+
+        self.assertEqual(
+            events,
+            [
+                ("shutdown", cache_root, 7.0),
+                "close",
+                ("wait", cache_root, 7.0, {41}),
+                ("terminate", cache_root, set()),
+            ],
+        )
+
+    def test_unreadable_process_table_still_stops_services_before_refusing(self) -> None:
+        # Мягкой остановке сервисов таблица процессов не нужна; без таблицы
+        # нельзя только утверждать, что дерево снято, поэтому отказ — в конце.
+        module = load_module()
+        events: list[object] = []
+
+        class Session:
+            def close(self) -> None:
+                events.append("close")
+
+            def terminate_tree(
+                self, root: Path, known_service_identities: set[object]
+            ) -> None:
+                events.append(("terminate", root, known_service_identities))
+
+        def unreadable(session, identities):
+            raise module.ProcessObservationError("process table is unreadable: hung")
+
+        cache_root = Path("cache")
+        module._capture_owned_processes = unreadable
+        module._shutdown_workspace_services = lambda root, timeout: (
+            events.append(("shutdown", root, timeout)) or {41}
+        )
+        module._wait_for_workspace_services = lambda root, timeout, pids: events.append(
+            ("wait", root, timeout, pids)
+        )
+
+        with self.assertRaisesRegex(SystemExit, "snapshot failed before cleanup"):
+            module._close_session_and_workspace_services(Session(), cache_root, 7.0)
 
         self.assertEqual(
             events,

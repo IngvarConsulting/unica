@@ -2295,10 +2295,10 @@ fn test_only() { std::process::Command::new("git"); }
             "    raise SystemExit(19)\n"
             "if INDEX_MODE == 'hang':\n"
             "    child = subprocess.Popen([sys.executable, '-c', "
-            "'import time; time.sleep(30)'])\n"
+            f"'import time; time.sleep({RLM_FAKE_HANG_SECONDS})'])\n"
             f"    Path({str(pid_log)!r}).write_text("
             "f'{os.getpid()}\\n{child.pid}\\n', encoding='utf-8')\n"
-            "    time.sleep(30)\n"
+            f"    time.sleep({RLM_FAKE_HANG_SECONDS})\n"
             f"Path({str(index_log)!r}).write_text("
             "json.dumps({'argv': sys.argv[1:], "
             "'index_dir': os.environ.get('RLM_INDEX_DIR')}), encoding='utf-8')\n"
@@ -2332,14 +2332,21 @@ fn test_only() { std::process::Command::new("git"); }
                 check=False,
             )
             return result.returncode == 0 and f'"{pid}"' in result.stdout
+        # Отсутствие сообщает ядро; `ps` нужен только чтобы отличить зомби,
+        # и его сбой не выдаёт живой процесс за мёртвый.
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
         result = subprocess.run(
             ["ps", "-o", "stat=", "-p", str(pid)],
             text=True,
             capture_output=True,
             check=False,
         )
-        state = result.stdout.strip()
-        return result.returncode == 0 and bool(state) and not state.startswith("Z")
+        return not result.stdout.strip().startswith("Z")
 
     def kill_process_tree_best_effort(self, parent_pid: int, child_pid: int) -> None:
         if os.name == "nt":

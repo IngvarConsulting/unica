@@ -1713,16 +1713,16 @@ def _close_session_and_workspace_services(
     # prove that the current process is the service that wrote it.
     service_pids = _workspace_service_pids(cache_root)
     service_identities = _observed_service_identities(session)
+    # A graceful service shutdown does not need the process table; only the
+    # final ownership claim does, so a failed snapshot is reported after it.
+    snapshot_error: ProcessObservationError | None = None
     try:
         ownership, owned_processes = _capture_owned_processes(
             session, service_identities
         )
     except ProcessObservationError as error:
-        _trace(f"cleanup failed: {_describe_error(error)}")
-        session.terminate_tree(cache_root, service_identities)
-        raise SystemExit(
-            f"Unica MCP owned process snapshot failed before cleanup: {error}"
-        ) from error
+        snapshot_error = error
+        ownership, owned_processes = None, set()
     try:
         try:
             # On Windows, a detached workspace service may inherit extra copies of
@@ -1750,6 +1750,11 @@ def _close_session_and_workspace_services(
                     _remaining_smoke_timeout(deadline, timeout_seconds),
                     service_pids,
                 )
+                if snapshot_error is not None:
+                    raise SystemExit(
+                        "Unica MCP owned process snapshot failed before cleanup: "
+                        f"{snapshot_error}"
+                    ) from snapshot_error
                 _trace("cleanup: quiescing owned processes")
                 _quiesce_owned_processes(
                     ownership,

@@ -289,8 +289,14 @@ class ProcessOwnership:
                     self.signal(survivors, signal.SIGKILL)
         except ProcessObservationError as error:
             # Without a readable table no identity can be proven exact, so
-            # nothing more is signalled and the claim stays incomplete.
+            # only the leader is stopped through its own handle and the claim
+            # stays incomplete.
             observation_errors.append(str(error))
+            try:
+                if self.process.poll() is None:
+                    self.process.kill()
+            except OSError:
+                pass
         try:
             self.process.wait(
                 timeout=max(0.0, cleanup_deadline - time.monotonic())
