@@ -3,7 +3,7 @@
 //! Три теста писателя v0.12 (`call_edit`, `add_catalog`) ждут решения
 //! владельца и остаются на прежнем входе только для записи.
 
-use super::{OperationResult, UnicaApplication};
+use crate::application::{OperationResult, UnicaApplication};
 use crate::composition::testing::{
     with_meta_info_descriptor_image_hook, with_registrar_processing_hook,
     with_subsystem_evidence_processing_hook,

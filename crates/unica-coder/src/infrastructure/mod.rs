@@ -103,4 +103,8 @@ pub(crate) mod interface_composition;
 
 pub(crate) mod support_composition;
 
+#[cfg(test)]
+mod meta_add_surface_tests;
+#[cfg(test)]
+mod meta_info_surface_tests;
 mod source_ids;

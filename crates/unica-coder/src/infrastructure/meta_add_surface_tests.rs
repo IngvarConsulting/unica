@@ -1,4 +1,4 @@
-use super::{OperationResult, UnicaApplication};
+use crate::application::{OperationResult, UnicaApplication};
 use crate::composition::testing::{
     with_meta_add_after_authorization_hook, with_meta_edit_before_reauthorization_hook,
 };

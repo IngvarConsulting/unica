@@ -1,7 +1,7 @@
 ---
 id: INV.SOURCE.METADATA-OBJECT-FACTS
 check:
-  - crates/unica-coder/src/application/meta_info_surface_tests.rs::info_marks_bare_fill_value_incomplete_with_diagnostic
+  - crates/unica-coder/src/infrastructure/meta_info_surface_tests.rs::info_marks_bare_fill_value_incomplete_with_diagnostic
   - crates/unica-coder/src/infrastructure/v13_read/tests/metadata_declaration_diagnostics.rs::malformed_standard_attributes_keep_the_cause_and_the_characteristic_sibling
   - crates/unica-coder/src/infrastructure/v13_read/tests/metadata_declaration_diagnostics.rs::malformed_characteristics_keep_the_cause_and_the_standard_attribute_sibling
   - crates/unica-coder/src/infrastructure/v13_read/tests/metadata_declaration_diagnostics.rs::malformed_standard_tabular_sections_keep_the_root_attribute_sibling

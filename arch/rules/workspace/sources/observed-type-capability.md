@@ -3,9 +3,9 @@ id: INV.SOURCE.OBSERVED-TYPE-CAPABILITY
 check:
   - crates/unica-coder/src/infrastructure/daemon/metadata_can_tests.rs::canonical_uuid_attribute_round_trips_as_an_editable_observed_type
   - crates/unica-metadata/src/observed_types.rs::read_only_observation_cannot_be_narrowed_into_the_writer_algebra
-  - crates/unica-coder/src/application/meta_info_surface_tests.rs::info_localizes_an_unknown_but_valid_platform_type_as_a_warning
-  - crates/unica-coder/src/application/meta_info_surface_tests.rs::info_localizes_an_unmodelled_constant_type_with_the_warning_code
-  - crates/unica-coder/src/application/meta_info_surface_tests.rs::info_keeps_a_broken_qualifier_in_the_error_severity_branch
+  - crates/unica-coder/src/infrastructure/meta_info_surface_tests.rs::info_localizes_an_unknown_but_valid_platform_type_as_a_warning
+  - crates/unica-coder/src/infrastructure/meta_info_surface_tests.rs::info_localizes_an_unmodelled_constant_type_with_the_warning_code
+  - crates/unica-coder/src/infrastructure/meta_info_surface_tests.rs::info_keeps_a_broken_qualifier_in_the_error_severity_branch
   - crates/unica-metadata-designer/tests/platform/info_projection.rs::observed_type_reads_an_extension_type_id_as_a_read_only_variant
 gap: https://github.com/IngvarConsulting/unica/issues/1933
 ---

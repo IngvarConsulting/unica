@@ -656,11 +656,6 @@ impl UnicaApplication {
     }
 }
 
-#[cfg(test)]
-mod meta_add_surface_tests;
-#[cfg(test)]
-mod meta_info_surface_tests;
-
 pub fn tools() -> Vec<ToolSpec> {
     let mut specs = configuration_tools();
     specs.extend([
